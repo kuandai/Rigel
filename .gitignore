@@ -1,0 +1,33 @@
+# CMake build directories
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+build.ninja
+
+# Conan files
+conanbuildinfo.*
+conaninfo.txt
+conan.lock
+
+# VSCode settings
+.vscode/
+*.code-workspace
+
+# Clangd
+.cache/
+
+# Compiled source files
+*.o
+*.obj
+*.so
+*.dll
+*.exe
+*.out
+
+# MacOS files
+.DS_Store
+
+# Other
+*.log

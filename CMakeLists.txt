@@ -37,6 +37,7 @@ find_package(GLEW REQUIRED)
 add_executable(${PROJECT_NAME} 
     src/main.cpp
     src/core/Application.cpp
+    src/input/keypress.cpp
 )
 
 # Add include directories

@@ -2,6 +2,7 @@
 #include <spdlog/spdlog.h>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include "Rigel/input/keypress.h"
 #include "Rigel/version.h"
 
 namespace Rigel {
@@ -35,6 +36,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         glfwTerminate();
         throw std::runtime_error("Failed to create GLFW window");
     }
+    glViewport(0, 0, 800, 600);
     
     glfwMakeContextCurrent(m_impl->window);
     
@@ -49,6 +51,12 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     
     // Print OpenGL version
     spdlog::info("OpenGL Version: {}", (char*)glGetString(GL_VERSION));
+
+    // Set Callbacks
+    glfwSetFramebufferSizeCallback(m_impl->window, [](GLFWwindow* window, int width, int height)-> void {
+        glViewport(0, 0, width, height);
+    });
+    glfwSetKeyCallback(m_impl->window, Rigel::keyCallback);
 }
 
 Application::~Application() {
@@ -62,14 +70,18 @@ Application::~Application() {
 void Application::run() {
     // Render loop
     while (!glfwWindowShouldClose(m_impl->window)) {
+        // Frame setup
         glClear(GL_COLOR_BUFFER_BIT);
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+
+        // Flush event queue
+        glfwPollEvents();
+        Rigel::keyupdate();
         
         glfwSwapBuffers(m_impl->window);
-        glfwPollEvents();
         
         // Exit on ESC
-        if (glfwGetKey(m_impl->window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+        if (isKeyPressed(GLFW_KEY_ESCAPE)) {
             glfwSetWindowShouldClose(m_impl->window, true);
         }
     }

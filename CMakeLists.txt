@@ -38,6 +38,7 @@ add_executable(${PROJECT_NAME}
     src/main.cpp
     src/core/Application.cpp
     src/input/keypress.cpp
+    src/input/keys.cpp
 )
 
 # Add include directories

@@ -1,6 +1,7 @@
 # CMake build directories
 build/
 CMakeFiles/
+.cmake/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
@@ -18,6 +19,7 @@ conan.lock
 
 # Clangd
 .cache/
+.clangd
 
 # Compiled source files
 *.o

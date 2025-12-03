@@ -1,7 +1,7 @@
-cmake_minimum_required(VERSION 3.15)
-project(Rigel VERSION 0.0.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.20)
+project(Rigel VERSION 0.0.0 LANGUAGES CXX ASM)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -21,7 +21,12 @@ file(GLOB_RECURSE SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc
 )
 
+# Asset embed
+include(cmake/AssetResources.cmake)
+
 add_executable(${PROJECT_NAME} ${SOURCES})
+
+target_embed_resources(${PROJECT_NAME} "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 
 target_include_directories(${PROJECT_NAME}
     PRIVATE

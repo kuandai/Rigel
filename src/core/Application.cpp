@@ -13,7 +13,7 @@ struct Application::Impl {
 
 Application::Application() : m_impl(std::make_unique<Impl>()) {
     #ifdef DEBUG
-    spdlog::info("Rigel v{} Debug build", RIGEL_VERSION);
+    spdlog::info("Rigel v{} Developer Preview", RIGEL_VERSION);
     #else
     spdlog::info("Rigel v{}", RIGEL_VERSION);
     #endif

@@ -26,6 +26,10 @@ include(cmake/AssetResources.cmake)
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 
+target_compile_definitions(Rigel PRIVATE
+    $<$<CONFIG:Debug>:DEBUG>
+)
+
 target_embed_resources(${PROJECT_NAME} "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 
 target_include_directories(${PROJECT_NAME}

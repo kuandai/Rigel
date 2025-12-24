@@ -11,7 +11,8 @@ class RigelConan(ConanFile):
     requires = (
         "spdlog/1.12.0",
         "glew/2.2.0",
-        "glfw/3.3.8"
+        "glfw/3.3.8",
+        "rapidyaml/0.10.0"
     )
 
     # Options for dependencies

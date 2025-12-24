@@ -43,6 +43,7 @@ find_package(spdlog REQUIRED)
 find_package(glew REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(OpenGL REQUIRED)
+find_package(ryml REQUIRED)
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
@@ -50,6 +51,7 @@ target_link_libraries(${PROJECT_NAME}
         GLEW::GLEW
         glfw
         OpenGL::GL
+        ryml::ryml
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES

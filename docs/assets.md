@@ -4,15 +4,15 @@ The `ResourceRegistry` allows the `Rigel` application to access static assets (i
 
 Asset paths start at the root of the `assets/` directory.
 
-* **Wrong:** `ResourceRegistry::Get("static/logo.png");`
+* **Wrong:** `ResourceRegistry::Get("assets/logo.png");`
 * **Correct:** `ResourceRegistry::Get("logo.png");`
 
 ## 1. Adding Assets
 
 To add a file to the application:
 
-1. Place the file anywhere inside the **`static/`** directory in the project root.
-   * You can use subdirectories (e.g., `static/textures/logo.png`).
+1. Place the file anywhere inside the **`assets/`** directory in the project root.
+   * You can use subdirectories (e.g., `assets/textures/logo.png`).
 2. Run CMake or compile. The build system automatically detects new files.
 
 ## 2. Accessing Assets in C++
@@ -32,7 +32,7 @@ Use the static `Get` method to retrieve a view of the file contents.
 Retrieves a memory view of an embedded file.
 
 * **Parameters:**
-  * `path`: The relative path to the file inside the `static/` directory. Use forward slashes (`/`).
+  * `path`: The relative path to the file inside the `assets/` directory. Use forward slashes (`/`).
 * **Returns:**
   * `std::span<const char>`: A lightweight view of the memory. The data is read-only and lives for the lifetime of the application (static storage).
 * **Throws:**

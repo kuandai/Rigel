@@ -2,6 +2,7 @@
 #include "Rigel/Voxel/BlockLoader.h"
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <chrono>
 
 namespace Rigel::Voxel {
@@ -25,7 +26,7 @@ void World::initialize(Asset::AssetManager& assets) {
 
     // Connect renderer to texture atlas
     m_renderer.setTextureAtlas(&m_textureAtlas);
-    m_streamer.bind(&m_chunkManager, &m_renderer, m_generator);
+    m_streamer.bind(&m_chunkManager, &m_renderer, &m_blockRegistry, &m_textureAtlas, m_generator);
 
     // Load block definitions and populate texture atlas
     try {
@@ -54,22 +55,7 @@ BlockState World::getBlock(int wx, int wy, int wz) const {
 }
 
 void World::updateMeshes() {
-    // Get dirty chunks
-    auto dirtyChunks = m_chunkManager.getDirtyChunks();
-
-    if (dirtyChunks.empty()) {
-        return;
-    }
-
-    // Rebuild meshes for dirty chunks
-    for (const ChunkCoord& coord : dirtyChunks) {
-        rebuildChunkMesh(coord);
-    }
-
-    // Clear dirty flags
-    m_chunkManager.clearDirtyFlags();
-
-    spdlog::debug("Rebuilt {} chunk meshes", dirtyChunks.size());
+    m_streamer.processCompletions();
 }
 
 void World::updateStreaming(const glm::vec3& cameraPos) {
@@ -88,15 +74,19 @@ void World::render(const glm::mat4& viewProjection, const glm::vec3& cameraPos) 
 void World::clear() {
     m_chunkManager.clear();
     m_renderer.clear();
+    m_streamer.reset();
 }
 
 void World::setGenerator(std::shared_ptr<WorldGenerator> generator) {
     m_generator = std::move(generator);
-    m_streamer.bind(&m_chunkManager, &m_renderer, m_generator);
+    m_streamer.bind(&m_chunkManager, &m_renderer, &m_blockRegistry, &m_textureAtlas, m_generator);
 }
 
 void World::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
     m_streamer.setConfig(config);
+    m_renderer.config().renderDistance =
+        (static_cast<float>(std::max(0, config.viewDistanceChunks)) + 0.5f) *
+        static_cast<float>(Chunk::SIZE);
 }
 
 void World::rebuildChunkMesh(ChunkCoord coord) {

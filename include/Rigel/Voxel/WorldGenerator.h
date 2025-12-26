@@ -7,6 +7,7 @@
 #include "WorldGenConfig.h"
 
 #include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -31,7 +32,14 @@ struct WorldGenContext {
     const WorldGenConfig* config = nullptr;
     BlockID solidBlock = BlockRegistry::airId();
     BlockID surfaceBlock = BlockRegistry::airId();
+    BlockID waterBlock = BlockRegistry::airId();
     std::array<int, Chunk::SIZE * Chunk::SIZE> heightMap{};
+    const std::atomic_bool* cancel = nullptr;
+
+    bool shouldCancel() const {
+        return cancel && cancel->load(std::memory_order_relaxed);
+    }
+
 };
 
 class WorldGenStage {
@@ -50,7 +58,8 @@ public:
     void setConfig(WorldGenConfig config);
     const WorldGenConfig& config() const { return m_config; }
 
-    void generate(ChunkCoord coord, ChunkBuffer& out) const;
+    void generate(ChunkCoord coord, ChunkBuffer& out,
+                  const std::atomic_bool* cancel = nullptr) const;
 
 private:
     const BlockRegistry& m_registry;

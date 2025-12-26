@@ -23,7 +23,10 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     config.terrain.surfaceDepth = 1;
     config.stream.viewDistanceChunks = 0;
     config.stream.unloadDistanceChunks = 0;
-    config.stream.maxGeneratePerFrame = 0;
+    config.stream.genQueueLimit = 0;
+    config.stream.meshQueueLimit = 0;
+    config.stream.applyBudgetPerFrame = 0;
+    config.stream.workerThreads = 0;
 
     auto generator = std::make_shared<WorldGenerator>(world.blockRegistry());
     generator->setConfig(config);
@@ -31,5 +34,6 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     world.setStreamConfig(config.stream);
 
     world.updateStreaming(glm::vec3(0.0f));
+    world.updateMeshes();
     CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(1));
 }

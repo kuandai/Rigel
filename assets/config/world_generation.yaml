@@ -13,9 +13,12 @@ terrain:
     persistence: 0.5
 
 streaming:
-  view_distance_chunks: 10
-  unload_distance_chunks: 14
-  max_generate_per_frame: 2
+  view_distance_chunks: 5
+  unload_distance_chunks: 7
+  gen_queue_limit: 128
+  mesh_queue_limit: 128
+  apply_budget_per_frame: 128
+  worker_threads: 2
   max_resident_chunks: 0
 
 generation:

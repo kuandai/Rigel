@@ -22,7 +22,10 @@ terrain:
 streaming:
   view_distance_chunks: 3
   unload_distance_chunks: 5
-  max_generate_per_frame: 0
+  gen_queue_limit: 4
+  mesh_queue_limit: 6
+  apply_budget_per_frame: 9
+  worker_threads: 0
   max_resident_chunks: 100
 generation:
   pipeline:
@@ -52,7 +55,10 @@ generation:
     CHECK_NEAR(config.terrain.baseHeight, 5.0f, 0.001f);
     CHECK_EQ(config.terrain.surfaceDepth, 2);
     CHECK_EQ(config.stream.viewDistanceChunks, 3);
-    CHECK_EQ(config.stream.maxGeneratePerFrame, 0);
+    CHECK_EQ(config.stream.genQueueLimit, static_cast<size_t>(4));
+    CHECK_EQ(config.stream.meshQueueLimit, static_cast<size_t>(6));
+    CHECK_EQ(config.stream.applyBudgetPerFrame, 9);
+    CHECK_EQ(config.stream.workerThreads, 0);
     CHECK_EQ(config.stream.maxResidentChunks, static_cast<size_t>(100));
     CHECK(!config.isStageEnabled("terrain_density"));
 }

@@ -91,10 +91,33 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         ryml::ConstNodeRef streamNode = root["streaming"];
         stream.viewDistanceChunks = readInt(streamNode, "view_distance_chunks", stream.viewDistanceChunks);
         stream.unloadDistanceChunks = readInt(streamNode, "unload_distance_chunks", stream.unloadDistanceChunks);
-        stream.maxGeneratePerFrame = readInt(streamNode, "max_generate_per_frame", stream.maxGeneratePerFrame);
-        stream.maxResidentChunks = static_cast<size_t>(
-            readInt(streamNode, "max_resident_chunks", static_cast<int>(stream.maxResidentChunks))
-        );
+        int genLimit = readInt(streamNode, "gen_queue_limit", static_cast<int>(stream.genQueueLimit));
+        if (genLimit < 0) {
+            genLimit = 0;
+        }
+        stream.genQueueLimit = static_cast<size_t>(genLimit);
+
+        int meshLimit = readInt(streamNode, "mesh_queue_limit", static_cast<int>(stream.meshQueueLimit));
+        if (meshLimit < 0) {
+            meshLimit = 0;
+        }
+        stream.meshQueueLimit = static_cast<size_t>(meshLimit);
+
+        stream.applyBudgetPerFrame = readInt(streamNode, "apply_budget_per_frame", stream.applyBudgetPerFrame);
+        if (stream.applyBudgetPerFrame < 0) {
+            stream.applyBudgetPerFrame = 0;
+        }
+
+        stream.workerThreads = readInt(streamNode, "worker_threads", stream.workerThreads);
+        if (stream.workerThreads < 0) {
+            stream.workerThreads = 0;
+        }
+
+        int resident = readInt(streamNode, "max_resident_chunks", static_cast<int>(stream.maxResidentChunks));
+        if (resident < 0) {
+            resident = 0;
+        }
+        stream.maxResidentChunks = static_cast<size_t>(resident);
     }
 
     if (root.has_child("generation") && root["generation"].has_child("pipeline")) {

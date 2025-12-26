@@ -17,6 +17,7 @@ constexpr const char* kPipelineStages[] = {
     "structures",
     "post_process"
 };
+constexpr const char* kDefaultWaterBlock = "rigel:water";
 
 uint64_t hash64(uint64_t x) {
     x ^= x >> 33;
@@ -107,10 +108,23 @@ public:
         const auto& config = *ctx.config;
         const auto& terrain = config.terrain;
 
+        if (ctx.coord.y < 0 && !ctx.waterBlock.isAir()) {
+            BlockState state;
+            state.id = ctx.waterBlock;
+            buffer.blocks.fill(state);
+            return;
+        }
+
         buffer.blocks.fill(BlockState{});
 
         for (int z = 0; z < Chunk::SIZE; ++z) {
+            if (ctx.shouldCancel()) {
+                return;
+            }
             for (int x = 0; x < Chunk::SIZE; ++x) {
+                if (ctx.shouldCancel()) {
+                    return;
+                }
                 int worldX = ctx.coord.x * Chunk::SIZE + x;
                 int worldZ = ctx.coord.z * Chunk::SIZE + z;
                 float noise = fbm2D(static_cast<float>(worldX),
@@ -143,9 +157,18 @@ public:
         if (ctx.surfaceBlock.isAir()) {
             return;
         }
+        if (ctx.coord.y < 0 && !ctx.waterBlock.isAir()) {
+            return;
+        }
 
         for (int z = 0; z < Chunk::SIZE; ++z) {
+            if (ctx.shouldCancel()) {
+                return;
+            }
             for (int x = 0; x < Chunk::SIZE; ++x) {
+                if (ctx.shouldCancel()) {
+                    return;
+                }
                 int height = ctx.heightMap[x + z * Chunk::SIZE];
                 for (int y = 0; y < Chunk::SIZE; ++y) {
                     int worldY = ctx.coord.y * Chunk::SIZE + y;
@@ -174,10 +197,12 @@ void WorldGenerator::setConfig(WorldGenConfig config) {
     rebuildStages();
 }
 
-void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out) const {
+void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
+                              const std::atomic_bool* cancel) const {
     WorldGenContext ctx;
     ctx.coord = coord;
     ctx.config = &m_config;
+    ctx.cancel = cancel;
 
     auto solidId = m_registry.findByIdentifier(m_config.solidBlock);
     ctx.solidBlock = solidId.value_or(BlockRegistry::airId());
@@ -185,7 +210,10 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out) const {
     auto surfaceId = m_registry.findByIdentifier(m_config.surfaceBlock);
     ctx.surfaceBlock = surfaceId.value_or(BlockRegistry::airId());
 
-    if (ctx.solidBlock.isAir() || ctx.surfaceBlock.isAir()) {
+    auto waterId = m_registry.findByIdentifier(kDefaultWaterBlock);
+    ctx.waterBlock = waterId.value_or(BlockRegistry::airId());
+
+    if (ctx.solidBlock.isAir() || ctx.surfaceBlock.isAir() || ctx.waterBlock.isAir()) {
         static bool warned = false;
         if (!warned) {
             if (ctx.solidBlock.isAir()) {
@@ -194,12 +222,21 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out) const {
             if (ctx.surfaceBlock.isAir()) {
                 spdlog::warn("WorldGenerator: surface block '{}' not found, using air", m_config.surfaceBlock);
             }
+            if (ctx.waterBlock.isAir()) {
+                spdlog::warn("WorldGenerator: water block '{}' not found, using air", kDefaultWaterBlock);
+            }
             warned = true;
         }
     }
 
     for (const auto& stage : m_stages) {
+        if (ctx.shouldCancel()) {
+            return;
+        }
         stage->apply(ctx, out);
+        if (ctx.shouldCancel()) {
+            return;
+        }
     }
 }
 

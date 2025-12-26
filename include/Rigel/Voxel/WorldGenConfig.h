@@ -2,6 +2,7 @@
 
 #include "Chunk.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -32,7 +33,10 @@ struct WorldGenConfig {
     struct StreamConfig {
         int viewDistanceChunks = 6;
         int unloadDistanceChunks = 8;
-        int maxGeneratePerFrame = 2;
+        size_t genQueueLimit = 0;
+        size_t meshQueueLimit = 0;
+        int applyBudgetPerFrame = 0;
+        int workerThreads = 2;
         size_t maxResidentChunks = 0;  // 0 = no cap
     };
 

@@ -276,7 +276,9 @@ void Application::run() {
             glfwGetFramebufferSize(m_impl->window, &width, &height);
             float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
 
-            glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 500.0f);
+            float renderDistance = m_impl->world.renderer().config().renderDistance;
+            float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
+            glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, 0.1f, farPlane);
             glm::mat4 view = glm::lookAt(
                 m_impl->cameraPos,
                 m_impl->cameraTarget,

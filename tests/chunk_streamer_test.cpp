@@ -36,16 +36,20 @@ TEST_CASE(ChunkStreamer_GeneratesSphere) {
     WorldGenConfig::StreamConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
-    stream.maxGeneratePerFrame = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, nullptr, generator);
+    streamer.bind(&manager, nullptr, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
     CHECK_EQ(manager.loadedChunkCount(), static_cast<size_t>(7));
 }
 
-TEST_CASE(ChunkStreamer_RespectsCap) {
+TEST_CASE(ChunkStreamer_RespectsQueueLimit) {
     ChunkManager manager;
     BlockRegistry registry;
     auto generator = makeGenerator(registry);
@@ -54,12 +58,16 @@ TEST_CASE(ChunkStreamer_RespectsCap) {
     WorldGenConfig::StreamConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
-    stream.maxGeneratePerFrame = 2;
+    stream.genQueueLimit = 2;
+    stream.meshQueueLimit = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, nullptr, generator);
+    streamer.bind(&manager, nullptr, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
     CHECK_EQ(manager.loadedChunkCount(), static_cast<size_t>(2));
 }
 
@@ -72,14 +80,19 @@ TEST_CASE(ChunkStreamer_EvictsOutsideRadius) {
     WorldGenConfig::StreamConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
-    stream.maxGeneratePerFrame = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, nullptr, generator);
+    streamer.bind(&manager, nullptr, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
     CHECK_EQ(manager.loadedChunkCount(), static_cast<size_t>(1));
 
     streamer.update(glm::vec3(static_cast<float>(ChunkSize * 4), 0.0f, 0.0f));
+    streamer.processCompletions();
     CHECK_EQ(manager.loadedChunkCount(), static_cast<size_t>(1));
 }

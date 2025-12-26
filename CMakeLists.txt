@@ -21,22 +21,28 @@ file(GLOB_RECURSE SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc
 )
 
+list(REMOVE_ITEM SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+)
+
 # Asset embed
 include(cmake/AssetResources.cmake)
 
-add_executable(${PROJECT_NAME} ${SOURCES})
+add_library(RigelLib ${SOURCES})
 
-target_compile_definitions(Rigel PRIVATE
+target_compile_definitions(RigelLib PRIVATE
     $<$<CONFIG:Debug>:DEBUG>
 )
 
-target_embed_resources(${PROJECT_NAME} "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_embed_resources(RigelLib "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 
-target_include_directories(${PROJECT_NAME}
-    PRIVATE
+target_include_directories(RigelLib
+    PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_BINARY_DIR}/include
 )
+
+add_executable(${PROJECT_NAME} src/main.cpp)
 
 # Conan 2 generates these configs in build folder
 find_package(spdlog REQUIRED)
@@ -47,8 +53,8 @@ find_package(ryml REQUIRED)
 find_package(stb REQUIRED)
 find_package(glm REQUIRED)
 
-target_link_libraries(${PROJECT_NAME}
-    PRIVATE
+target_link_libraries(RigelLib
+    PUBLIC
         spdlog::spdlog
         GLEW::GLEW
         glfw
@@ -58,6 +64,40 @@ target_link_libraries(${PROJECT_NAME}
         glm::glm
 )
 
+target_link_libraries(${PROJECT_NAME}
+    PRIVATE
+        RigelLib
+)
+
 set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+option(RIGEL_BUILD_TESTS "Build Rigel tests" ON)
+if (RIGEL_BUILD_TESTS)
+    enable_testing()
+
+    file(GLOB_RECURSE TEST_SOURCES
+        CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp
+    )
+
+    add_executable(Rigel_tests ${TEST_SOURCES})
+    target_include_directories(Rigel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(Rigel_tests PRIVATE RigelLib)
+
+    set(TEST_CASE_NAMES "")
+    foreach(test_src ${TEST_SOURCES})
+        file(READ "${test_src}" test_contents)
+        string(REGEX MATCHALL "TEST_CASE\\(([A-Za-z0-9_]+)\\)" test_matches "${test_contents}")
+        foreach(test_match ${test_matches})
+            string(REGEX REPLACE "TEST_CASE\\(([A-Za-z0-9_]+)\\)" "\\1" test_name "${test_match}")
+            list(APPEND TEST_CASE_NAMES "${test_name}")
+        endforeach()
+    endforeach()
+    list(REMOVE_DUPLICATES TEST_CASE_NAMES)
+
+    foreach(test_name ${TEST_CASE_NAMES})
+        add_test(NAME Rigel_${test_name} COMMAND Rigel_tests --filter ${test_name})
+    endforeach()
+endif()

@@ -261,7 +261,6 @@ public:
      */
     static GLuint compile(const ShaderSource& source, const std::string& shaderId);
 
-private:
     /**
      * @brief Preprocess shader source by injecting defines after #version.
      *
@@ -298,6 +297,7 @@ private:
     static std::string preprocess(const std::string& source,
                                   const std::unordered_map<std::string, std::string>& defines);
 
+private:
     /**
      * @brief Compile a single shader stage.
      *

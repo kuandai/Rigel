@@ -89,6 +89,9 @@ struct BlockType {
     /// Whether this block has collision
     bool isSolid = true;
 
+    /// Cull faces when adjacent to the same block type
+    bool cullSameType = false;
+
     /// Per-face texture assignments
     FaceTextures textures;
 

@@ -74,7 +74,8 @@ private:
     /**
      * @brief Check if a face should be rendered.
      *
-     * A face is rendered if the neighboring block is air or non-opaque.
+     * A face is rendered if the neighboring block is air, or if the neighbor
+     * is non-opaque and not a same-type cull target.
      *
      * @param ctx Build context
      * @param x Local X coordinate
@@ -86,7 +87,9 @@ private:
     bool shouldRenderFace(
         const BuildContext& ctx,
         int x, int y, int z,
-        Direction face
+        Direction face,
+        const BlockState& state,
+        const BlockType& type
     ) const;
 
     /**

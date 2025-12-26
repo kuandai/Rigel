@@ -85,6 +85,10 @@ BlockType BlockLoader::parseBlockType(
         type.isSolid = *solid;
     }
 
+    if (auto cullSameType = getOptionalBool(entry.config, "cull_same_type")) {
+        type.cullSameType = *cullSameType;
+    }
+
     // Parse render layer
     if (auto layer = entry.getString("layer")) {
         type.layer = parseRenderLayer(*layer);

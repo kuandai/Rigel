@@ -80,7 +80,7 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                 for (size_t faceIdx = 0; faceIdx < DirectionCount; faceIdx++) {
                     Direction face = static_cast<Direction>(faceIdx);
 
-                    if (!shouldRenderFace(ctx, x, y, z, face)) {
+                    if (!shouldRenderFace(ctx, x, y, z, face, state, type)) {
                         continue;
                     }
 
@@ -151,7 +151,9 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
 bool MeshBuilder::shouldRenderFace(
     const BuildContext& ctx,
     int x, int y, int z,
-    Direction face
+    Direction face,
+    const BlockState& state,
+    const BlockType& type
 ) const {
     // Get offset for this direction
     int dx, dy, dz;
@@ -160,13 +162,21 @@ bool MeshBuilder::shouldRenderFace(
     // Get neighbor block
     BlockState neighbor = getBlockAt(ctx, x + dx, y + dy, z + dz);
 
-    // Render face if neighbor is air or non-opaque
+    // Render face if neighbor is air
     if (neighbor.isAir()) {
         return true;
     }
 
     const BlockType& neighborType = ctx.registry.getType(neighbor.id);
-    return !neighborType.isOpaque;
+    if (neighborType.isOpaque) {
+        return false;
+    }
+
+    if (type.cullSameType && neighbor.id == state.id) {
+        return false;
+    }
+
+    return true;
 }
 
 BlockState MeshBuilder::getBlockAt(

@@ -98,7 +98,7 @@ struct ChunkMesh {
     /**
      * @brief Check if mesh has no geometry.
      */
-    bool isEmpty() const { return vertices.empty(); }
+    bool isEmpty() const { return vertices.empty() && indices.empty() && vao == 0; }
 
     /**
      * @brief Get total vertex count.

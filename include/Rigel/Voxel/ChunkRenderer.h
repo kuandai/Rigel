@@ -55,6 +55,7 @@ public:
     struct Config {
         float renderDistance = 256.0f;  ///< Max distance to render chunks
         glm::vec3 sunDirection = glm::vec3(0.5f, 1.0f, 0.3f);  ///< Sun direction for lighting
+        float transparentAlpha = 0.5f;  ///< Alpha multiplier for transparent layer
     };
 
     /**
@@ -152,6 +153,8 @@ private:
     GLint m_locChunkOffset = -1;
     GLint m_locTextureAtlas = -1;
     GLint m_locSunDirection = -1;
+    GLint m_locAlphaMultiplier = -1;
+    GLint m_locAlphaCutoff = -1;
 
     void cacheUniformLocations();
     void renderPass(RenderLayer layer, const glm::mat4& viewProjection, const glm::vec3& cameraPos);

@@ -9,6 +9,8 @@ flat in int v_textureLayer;
 // Uniforms
 uniform sampler2DArray u_textureAtlas;
 uniform vec3 u_sunDirection;
+uniform float u_alphaMultiplier;
+uniform float u_alphaCutoff;
 
 // Output
 out vec4 fragColor;
@@ -16,9 +18,10 @@ out vec4 fragColor;
 void main() {
     // Sample texture from array
     vec4 texColor = texture(u_textureAtlas, vec3(v_uv, float(v_textureLayer)));
+    float alpha = texColor.a * u_alphaMultiplier;
 
     // Alpha test for cutout materials
-    if (texColor.a < 0.5) {
+    if (alpha < u_alphaCutoff) {
         discard;
     }
 
@@ -31,5 +34,5 @@ void main() {
 
     // Final color
     vec3 finalColor = texColor.rgb * lighting * ao;
-    fragColor = vec4(finalColor, texColor.a);
+    fragColor = vec4(finalColor, alpha);
 }

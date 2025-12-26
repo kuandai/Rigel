@@ -24,6 +24,8 @@ ${SYM_START}:
     .incbin \"${FILE_PATH}\"
 ${SYM_END}:
         ")
+        # Rebuild this ASM file if the source asset changes.
+        set_source_files_properties(${ASM_FILE} PROPERTIES OBJECT_DEPENDS "${FILE_PATH}")
         list(APPEND GENERATED_SOURCES "${ASM_FILE}")
 
         # Add entry to the C++ map generator

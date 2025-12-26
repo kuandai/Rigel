@@ -1,6 +1,47 @@
 namespace: rigel
 
 assets:
+  raw:
+    world_config:
+      path: config/world_generation.yaml
+  blocks:
+    stone:
+      model: cube
+      opaque: true
+      solid: true
+      layer: opaque
+      textures:
+        all: textures/blocks/stone.bmp
+    dirt:
+      model: cube
+      opaque: true
+      solid: true
+      layer: opaque
+      textures:
+        all: textures/blocks/dirt.bmp
+    grass:
+      model: cube
+      opaque: true
+      solid: true
+      layer: opaque
+      textures:
+        top: textures/blocks/grass_top.bmp
+        bottom: textures/blocks/dirt.bmp
+        sides: textures/blocks/grass_side.bmp
+    sand:
+      model: cube
+      opaque: true
+      solid: true
+      layer: opaque
+      textures:
+        all: textures/blocks/sand.bmp
+    water:
+      model: cube
+      opaque: false
+      solid: false
+      layer: transparent
+      textures:
+        all: textures/blocks/water.bmp
   shaders:
     voxel:
       vertex: shaders/voxel.vert

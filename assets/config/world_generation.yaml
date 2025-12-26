@@ -1,0 +1,38 @@
+seed: 1337
+solid_block: rigel:stone
+surface_block: rigel:grass
+
+terrain:
+  base_height: 16.0
+  height_variation: 16.0
+  surface_depth: 3
+  noise:
+    octaves: 5
+    frequency: 0.005
+    lacunarity: 2.0
+    persistence: 0.5
+
+streaming:
+  view_distance_chunks: 10
+  unload_distance_chunks: 14
+  max_generate_per_frame: 2
+  max_resident_chunks: 0
+
+generation:
+  pipeline:
+    - stage: climate_global
+      enabled: true
+    - stage: climate_local
+      enabled: true
+    - stage: biome_resolve
+      enabled: true
+    - stage: terrain_density
+      enabled: true
+    - stage: caves
+      enabled: true
+    - stage: surface_rules
+      enabled: true
+    - stage: structures
+      enabled: true
+    - stage: post_process
+      enabled: true

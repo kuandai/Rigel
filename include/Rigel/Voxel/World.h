@@ -14,6 +14,9 @@
 #include "MeshBuilder.h"
 #include "ChunkRenderer.h"
 #include "TextureAtlas.h"
+#include "ChunkBenchmark.h"
+#include "ChunkStreamer.h"
+#include "WorldGenerator.h"
 
 #include <Rigel/Asset/AssetManager.h>
 
@@ -133,6 +136,14 @@ public:
     void updateMeshes();
 
     /**
+     * @brief Stream/generate chunks around the camera.
+     *
+     * @param cameraPos Camera world position
+     */
+    void updateStreaming(const glm::vec3& cameraPos);
+    void setBenchmark(ChunkBenchmarkStats* stats);
+
+    /**
      * @brief Render the world.
      *
      * @param viewProjection View-projection matrix
@@ -152,12 +163,23 @@ public:
 
     /// @}
 
+    /// @name Generation
+    /// @{
+
+    void setGenerator(std::shared_ptr<WorldGenerator> generator);
+    void setStreamConfig(const WorldGenConfig::StreamConfig& config);
+
+    /// @}
+
 private:
     BlockRegistry m_blockRegistry;
     ChunkManager m_chunkManager;
     MeshBuilder m_meshBuilder;
     ChunkRenderer m_renderer;
     TextureAtlas m_textureAtlas;
+    ChunkStreamer m_streamer;
+    std::shared_ptr<WorldGenerator> m_generator;
+    ChunkBenchmarkStats* m_benchmark = nullptr;
 
     bool m_initialized = false;
 

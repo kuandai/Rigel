@@ -374,7 +374,7 @@ public:
 private:
     bool shouldRenderFace(const BuildContext& ctx,
                           int x, int y, int z,
-                          Face face) const;
+                          Direction face) const;
 
     void appendCubeFaces(const BuildContext& ctx,
                          int x, int y, int z,
@@ -1240,7 +1240,7 @@ All JSON and YAML files are parsed using **rapidyaml**. Since JSON is a valid su
 
 BlockModel BlockModel::fromJSON(std::span<const char> jsonData) {
     ryml::Tree tree = ryml::parse_in_arena(
-        ryml::to_csubstr(jsonData.data(), jsonData.size())
+        ryml::csubstr(jsonData.data(), jsonData.size())
     );
     ryml::ConstNodeRef root = tree.rootref();
 

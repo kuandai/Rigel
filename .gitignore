@@ -34,3 +34,6 @@ conan.lock
 
 # Other
 *.log
+
+# Binary assets
+assets/textures/

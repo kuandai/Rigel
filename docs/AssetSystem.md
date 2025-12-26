@@ -122,6 +122,50 @@ namespace Rigel::Asset::Manifest {
 }
 ```
 
+### 2.4 Internal Asset Entry Structure
+
+Assets are stored internally with their full manifest configuration preserved, enabling complex assets like shaders that require multiple source files or nested properties:
+
+```cpp
+struct AssetEntry {
+    std::string id;           // Full asset ID (e.g., "shaders/voxel")
+    std::string category;     // Category name (e.g., "shaders")
+    ryml::Tree configTree;    // Preserved YAML subtree for this asset
+    ryml::ConstNodeRef config; // Reference to asset's config node
+
+    // Convenience accessors
+    std::optional<std::string> getPath() const;
+    std::optional<std::string> getString(const std::string& key) const;
+    std::optional<ryml::ConstNodeRef> getNode(const std::string& key) const;
+
+    // For inheritance support
+    std::optional<std::string> inherit;  // Parent asset ID if inheriting
+    bool resolved = false;               // True after inheritance is resolved
+};
+```
+
+**Why preserve the full config node:**
+
+| Asset Type | Simple `path` field | Full config needed |
+|------------|--------------------|--------------------|
+| Textures | `path: texture.png` | filter, wrap, mipmaps |
+| Shaders | — | vertex, fragment, geometry, defines map |
+| Models | `path: model.gltf` | scale, origin, textures map |
+| Animations | — | frames list, timing, events |
+
+For assets like shaders that don't have a single `path`, the loader receives the full config node and extracts what it needs:
+
+```cpp
+// Shader manifest entry - no single "path" field
+shaders:
+  voxel:
+    vertex: shaders/voxel.vert      # Multiple source paths
+    fragment: shaders/voxel.frag
+    defines:                         # Nested map
+      MAX_LIGHTS: 8
+      ENABLE_AO: true
+```
+
 ---
 
 ## 3. Asset Manifest Format
@@ -142,7 +186,7 @@ public:
         AssetManifest manifest;
         // Parse into arena (zero-copy where possible)
         manifest.m_tree = ryml::parse_in_arena(
-            ryml::to_csubstr(yamlData.data(), yamlData.size())
+            ryml::csubstr(yamlData.data(), yamlData.size())
         );
         manifest.m_root = manifest.m_tree.rootref();
 
@@ -226,7 +270,7 @@ assets:
 
 | Variable | Expansion |
 |----------|-----------|
-| `${ASSET_ROOT}` | Root of static/ directory |
+| `${ASSET_ROOT}` | Root of assets/ directory |
 | `${MANIFEST_DIR}` | Directory containing current manifest |
 | `${NAMESPACE}` | Current manifest namespace |
 
@@ -692,7 +736,95 @@ private:
 6. materials/stone           (depends on 2, 5)
 ```
 
-### 6.3 Lazy Loading
+### 6.3 Shader Inheritance
+
+Shaders support inheritance via the `inherit` field, allowing shader variants to share common configuration:
+
+```yaml
+assets:
+  shaders:
+    voxel_base:
+      vertex: shaders/voxel.vert
+      fragment: shaders/voxel_opaque.frag
+      defines:
+        ENABLE_AO: true
+        MAX_TEXTURE_LAYERS: 256
+
+    voxel_transparent:
+      inherit: shaders/voxel_base       # Parent shader
+      fragment: shaders/voxel_alpha.frag  # Override fragment only
+      defines:
+        ENABLE_ALPHA_BLEND: true         # Additional define
+```
+
+**Inheritance Resolution:**
+
+1. Parent must be loaded before child (automatic dependency)
+2. Child inherits all fields from parent
+3. Child's explicit fields override parent's
+4. `defines` maps are merged (child values win on conflict)
+
+```cpp
+struct ResolvedShaderConfig {
+    std::string vertex;
+    std::string fragment;
+    std::optional<std::string> geometry;
+    std::optional<std::string> compute;
+    std::unordered_map<std::string, std::string> defines;
+};
+
+ResolvedShaderConfig resolveShaderInheritance(
+    ryml::ConstNodeRef config,
+    const std::optional<ResolvedShaderConfig>& parent
+) {
+    ResolvedShaderConfig result;
+
+    // Start with parent values if inheriting
+    if (parent) {
+        result = *parent;
+    }
+
+    // Override with child values
+    if (config.has_child("vertex")) {
+        config["vertex"] >> result.vertex;
+    }
+    if (config.has_child("fragment")) {
+        config["fragment"] >> result.fragment;
+    }
+
+    // Merge defines (child wins)
+    if (config.has_child("defines")) {
+        for (auto child : config["defines"].children()) {
+            ryml::csubstr key = child.key();
+            std::string value;
+            child >> value;
+            result.defines[std::string(key.data(), key.size())] = value;
+        }
+    }
+
+    return result;
+}
+```
+
+**Circular Inheritance Detection:**
+
+```cpp
+bool hasCircularInheritance(const std::string& id,
+                            std::unordered_set<std::string>& visited) {
+    if (visited.contains(id)) {
+        return true;  // Cycle detected
+    }
+    visited.insert(id);
+
+    auto& entry = m_entries[id];
+    if (entry.inherit) {
+        return hasCircularInheritance(*entry.inherit, visited);
+    }
+    return false;
+}
+```
+
+### 6.4 Lazy Loading
 
 Assets can be marked for deferred loading:
 
@@ -723,6 +855,12 @@ public:
     void loadManifest(const std::string& path);
     void loadManifest(std::span<const char> yamlData);
 
+    // Loader registration (call before loadManifest)
+    template<typename LoaderT>
+    void registerLoader();
+
+    void registerLoader(std::unique_ptr<IAssetLoader> loader);
+
     // Synchronous access (blocks if not loaded)
     template<typename T>
     Handle<T> get(const std::string& id);
@@ -749,8 +887,12 @@ public:
     void onAssetFailed(std::function<void(const std::string&, const Error&)> callback);
 
 private:
-    std::unordered_map<std::string, std::shared_ptr<AssetBase>> m_assets;
-    std::vector<std::unique_ptr<IAssetLoader>> m_loaders;
+    // Loader selection by category or type
+    IAssetLoader* findLoader(const std::string& category, ryml::ConstNodeRef config);
+
+    std::unordered_map<std::string, AssetEntry> m_entries;
+    std::unordered_map<std::string, std::shared_ptr<AssetBase>> m_cache;
+    std::unordered_map<std::string, std::unique_ptr<IAssetLoader>> m_loaders;  // category -> loader
 };
 
 enum class AssetStatus {
@@ -1013,60 +1155,125 @@ private:
 ### 10.1 Custom Asset Loaders
 
 ```cpp
+/// Context provided to asset loaders
+struct LoadContext {
+    const std::string& id;              // Asset ID being loaded
+    ryml::ConstNodeRef config;          // Full manifest config for this asset
+
+    // Load raw data from ResourceRegistry
+    std::span<const char> loadResource(const std::string& path) const;
+
+    // Load a dependency (another asset that must be loaded first)
+    template<typename T>
+    Handle<T> loadDependency(const std::string& assetId);
+};
+
 class IAssetLoader {
 public:
     virtual ~IAssetLoader() = default;
 
-    // Asset type this loader handles
-    virtual std::string_view typeName() const = 0;
+    // Category this loader handles (e.g., "textures", "shaders")
+    virtual std::string_view category() const = 0;
 
-    // File extensions this loader supports
-    virtual std::span<const std::string_view> extensions() const = 0;
+    // Load asset using the provided context
+    // The loader reads config, loads resources, and returns the asset
+    virtual std::shared_ptr<AssetBase> load(const LoadContext& ctx) = 0;
 
-    // Load from raw data
-    // config: rapidyaml node containing asset declaration from manifest
-    virtual std::shared_ptr<AssetBase> load(
-        const std::string& id,
-        std::span<const char> data,
-        ryml::ConstNodeRef config
-    ) = 0;
-
-    // Optional: unload/cleanup
+    // Optional: unload/cleanup (called when asset is evicted from cache)
     virtual void unload(AssetBase& asset) {}
 };
 
-// Registration
-assets.registerLoader<CustomModelLoader>();
+// Registration - loaders are registered by category
+assets.registerLoader("textures", std::make_unique<TextureLoader>());
+assets.registerLoader("shaders", std::make_unique<ShaderLoader>());
 ```
 
-**Example Custom Loader:**
+**Example: Simple Texture Loader:**
 
 ```cpp
-class VoxModelLoader : public IAssetLoader {
+class TextureLoader : public IAssetLoader {
 public:
-    std::string_view typeName() const override { return "vox_model"; }
+    std::string_view category() const override { return "textures"; }
 
-    std::span<const std::string_view> extensions() const override {
-        static constexpr std::string_view exts[] = { ".vox" };
-        return exts;
-    }
+    std::shared_ptr<AssetBase> load(const LoadContext& ctx) override {
+        // Get path from config
+        std::string path;
+        ctx.config["path"] >> path;
 
-    std::shared_ptr<AssetBase> load(
-        const std::string& id,
-        std::span<const char> data,
-        ryml::ConstNodeRef config
-    ) override {
-        auto model = std::make_shared<VoxModelAsset>();
+        // Load raw image data
+        auto data = ctx.loadResource(path);
 
-        // Parse MagicaVoxel .vox format
-        parseVoxFormat(data, *model);
+        // Decode and create texture
+        auto texture = std::make_shared<TextureAsset>();
+        // ... stb_image loading, OpenGL texture creation ...
 
-        // Read optional scale from manifest config
-        if (config.has_child("scale")) {
-            config["scale"] >> model->scale;
+        // Apply optional properties from config
+        if (ctx.config.has_child("filter")) {
+            std::string filter;
+            ctx.config["filter"] >> filter;
+            // ... apply filter setting ...
         }
 
-        return model;
+        return texture;
+    }
+};
+```
+
+**Example: Multi-Source Shader Loader:**
+
+```cpp
+class ShaderLoader : public IAssetLoader {
+public:
+    std::string_view category() const override { return "shaders"; }
+
+    std::shared_ptr<AssetBase> load(const LoadContext& ctx) override {
+        auto shader = std::make_shared<ShaderAsset>();
+
+        // Handle inheritance first
+        if (ctx.config.has_child("inherit")) {
+            std::string parentId;
+            ctx.config["inherit"] >> parentId;
+            // Load parent and copy its configuration
+            auto parent = ctx.loadDependency<ShaderAsset>(parentId);
+            // Merge parent settings with current config...
+        }
+
+        // Load multiple source files
+        std::string vertexSource, fragmentSource;
+
+        if (ctx.config.has_child("vertex")) {
+            std::string vertPath;
+            ctx.config["vertex"] >> vertPath;
+            auto data = ctx.loadResource(vertPath);
+            vertexSource = std::string(data.data(), data.size());
+        }
+
+        if (ctx.config.has_child("fragment")) {
+            std::string fragPath;
+            ctx.config["fragment"] >> fragPath;
+            auto data = ctx.loadResource(fragPath);
+            fragmentSource = std::string(data.data(), data.size());
+        }
+
+        // Extract defines map
+        std::unordered_map<std::string, std::string> defines;
+        if (ctx.config.has_child("defines")) {
+            for (auto child : ctx.config["defines"].children()) {
+                ryml::csubstr key = child.key();
+                std::string value;
+                child >> value;
+                defines[std::string(key.data(), key.size())] = value;
+            }
+        }
+
+        // Compile and link
+        shader->program = ShaderCompiler::compile({
+            .vertex = vertexSource,
+            .fragment = fragmentSource,
+            .defines = defines
+        });
+
+        return shader;
     }
 };
 ```
@@ -1288,8 +1495,8 @@ ryml::ConstNodeRef root = tree.rootref();
 
 // Parse with filename for error messages
 ryml::Tree tree = ryml::parse_in_arena(
-    ryml::to_csubstr("manifest.yaml"),  // filename
-    ryml::to_csubstr(yamlData)          // content
+    ryml::to_csubstr("manifest.yaml"),             // filename
+    ryml::csubstr(yamlData.data(), yamlData.size()) // content from span
 );
 ```
 
@@ -1363,11 +1570,12 @@ for (ryml::ConstNodeRef layer : layers.children()) {
 
 ryml::ConstNodeRef defines = node["defines"];
 for (ryml::ConstNodeRef child : defines.children()) {
-    std::string key;
-    child.key() >> key;  // "MAX_LIGHTS", "ENABLE_AO"
+    // key() and val() return csubstr directly - convert to std::string
+    ryml::csubstr keyStr = child.key();
+    std::string key(keyStr.data(), keyStr.size());  // "MAX_LIGHTS", "ENABLE_AO"
 
     std::string value;
-    child.val() >> value;  // "8", "true" (as strings)
+    child >> value;  // "8", "true" (as strings) - use >> on the node itself
 }
 ```
 

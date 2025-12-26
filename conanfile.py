@@ -12,7 +12,9 @@ class RigelConan(ConanFile):
         "spdlog/1.12.0",
         "glew/2.2.0",
         "glfw/3.3.8",
-        "rapidyaml/0.10.0"
+        "rapidyaml/0.10.0",
+        "stb/cci.20240531",
+        "glm/cci.20230113"
     )
 
     # Options for dependencies

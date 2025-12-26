@@ -1,0 +1,7 @@
+namespace: rigel
+
+assets:
+  shaders:
+    voxel:
+      vertex: shaders/voxel.vert
+      fragment: shaders/voxel.frag

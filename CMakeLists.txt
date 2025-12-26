@@ -44,6 +44,8 @@ find_package(glew REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(ryml REQUIRED)
+find_package(stb REQUIRED)
+find_package(glm REQUIRED)
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
@@ -52,6 +54,8 @@ target_link_libraries(${PROJECT_NAME}
         glfw
         OpenGL::GL
         ryml::ryml
+        stb::stb
+        glm::glm
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES

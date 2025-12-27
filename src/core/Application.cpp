@@ -9,10 +9,14 @@
 #include "Rigel/version.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstddef>
 #include <limits>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace Rigel {
 
@@ -23,6 +27,58 @@ struct RaycastHit {
     glm::ivec3 normal{};
     float distance = 0.0f;
 };
+
+constexpr float kDebugTargetSpan = 6.0f;
+constexpr float kDebugDistance = 8.0f;
+constexpr float kDebugAlpha = 0.35f;
+constexpr int kDebugViewportSize = 130;
+constexpr int kDebugViewportMargin = 12;
+
+constexpr float kCubeVertices[] = {
+    // +X
+    0.5f, -0.5f, -0.5f,
+    0.5f,  0.5f, -0.5f,
+    0.5f,  0.5f,  0.5f,
+    0.5f, -0.5f, -0.5f,
+    0.5f,  0.5f,  0.5f,
+    0.5f, -0.5f,  0.5f,
+    // -X
+    -0.5f, -0.5f,  0.5f,
+    -0.5f,  0.5f,  0.5f,
+    -0.5f,  0.5f, -0.5f,
+    -0.5f, -0.5f,  0.5f,
+    -0.5f,  0.5f, -0.5f,
+    -0.5f, -0.5f, -0.5f,
+    // +Y
+    -0.5f,  0.5f, -0.5f,
+    0.5f,  0.5f, -0.5f,
+    0.5f,  0.5f,  0.5f,
+    -0.5f,  0.5f, -0.5f,
+    0.5f,  0.5f,  0.5f,
+    -0.5f,  0.5f,  0.5f,
+    // -Y
+    -0.5f, -0.5f,  0.5f,
+    0.5f, -0.5f,  0.5f,
+    0.5f, -0.5f, -0.5f,
+    -0.5f, -0.5f,  0.5f,
+    0.5f, -0.5f, -0.5f,
+    -0.5f, -0.5f, -0.5f,
+    // +Z
+    -0.5f, -0.5f,  0.5f,
+    -0.5f,  0.5f,  0.5f,
+    0.5f,  0.5f,  0.5f,
+    -0.5f, -0.5f,  0.5f,
+    0.5f,  0.5f,  0.5f,
+    0.5f, -0.5f,  0.5f,
+    // -Z
+    0.5f, -0.5f, -0.5f,
+    0.5f,  0.5f, -0.5f,
+    -0.5f,  0.5f, -0.5f,
+    0.5f, -0.5f, -0.5f,
+    -0.5f,  0.5f, -0.5f,
+    -0.5f, -0.5f, -0.5f
+};
+
 
 bool raycastBlock(const Voxel::World& world,
                   const glm::vec3& origin,
@@ -112,6 +168,20 @@ bool raycastBlock(const Voxel::World& world,
 } // namespace
 
 struct Application::Impl {
+    struct DebugField {
+        GLuint vao = 0;
+        std::array<GLuint, 4> vbos{};
+        Asset::Handle<Asset::ShaderAsset> shader;
+        GLint locViewProjection = -1;
+        GLint locFieldOrigin = -1;
+        GLint locFieldRight = -1;
+        GLint locFieldUp = -1;
+        GLint locFieldForward = -1;
+        GLint locCellSize = -1;
+        GLint locColor = -1;
+        bool initialized = false;
+    };
+
     GLFWwindow* window = nullptr;
     Asset::AssetManager assets;
     Voxel::World world;
@@ -119,6 +189,8 @@ struct Application::Impl {
     glm::vec3 cameraPos = glm::vec3(48.0f, 32.0f, 48.0f);
     glm::vec3 cameraTarget = glm::vec3(8.0f, 0.0f, 8.0f);
     glm::vec3 cameraForward = glm::vec3(0.0f, 0.0f, -1.0f);
+    glm::vec3 cameraRight = glm::vec3(1.0f, 0.0f, 0.0f);
+    glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
     float cameraYaw = -135.0f;
     float cameraPitch = -20.0f;
     float moveSpeed = 10.0f;
@@ -134,6 +206,10 @@ struct Application::Impl {
     Voxel::BlockID placeBlock = Voxel::BlockRegistry::airId();
     bool lastLeftDown = false;
     bool lastRightDown = false;
+    DebugField debugField;
+    std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
+    float debugDistance = kDebugDistance;
+    bool debugOverlayEnabled = true;
 
     void setCursorCaptured(bool captured) {
         cursorCaptured = captured;
@@ -168,6 +244,7 @@ struct Application::Impl {
 
         glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
         glm::vec3 right = glm::normalize(glm::cross(forward, worldUp));
+        glm::vec3 up = glm::normalize(glm::cross(right, forward));
 
         glm::vec3 move(0.0f);
         if (isKeyPressed(GLFW_KEY_W)) {
@@ -199,7 +276,232 @@ struct Application::Impl {
         }
 
         cameraForward = forward;
+        cameraRight = right;
+        cameraUp = up;
         cameraTarget = cameraPos + forward;
+    }
+
+    void initDebugField() {
+        try {
+            debugField.shader = assets.get<Asset::ShaderAsset>("shaders/chunk_debug");
+        } catch (const std::exception& e) {
+            spdlog::warn("Debug chunk shader unavailable: {}", e.what());
+            return;
+        }
+
+        glGenVertexArrays(1, &debugField.vao);
+        glGenBuffers(static_cast<GLsizei>(debugField.vbos.size()), debugField.vbos.data());
+
+        glBindVertexArray(debugField.vao);
+
+        glBindVertexArray(0);
+
+        debugField.locViewProjection = debugField.shader->uniform("u_viewProjection");
+        debugField.locFieldOrigin = debugField.shader->uniform("u_fieldOrigin");
+        debugField.locFieldRight = debugField.shader->uniform("u_fieldRight");
+        debugField.locFieldUp = debugField.shader->uniform("u_fieldUp");
+        debugField.locFieldForward = debugField.shader->uniform("u_fieldForward");
+        debugField.locCellSize = debugField.shader->uniform("u_cellSize");
+        debugField.locColor = debugField.shader->uniform("u_color");
+
+        debugField.initialized = true;
+    }
+
+    void renderDebugField(const glm::vec3& viewForward,
+                          int viewportWidth,
+                          int viewportHeight) {
+        if (!debugOverlayEnabled || !debugField.initialized) {
+            return;
+        }
+
+        world.getChunkDebugStates(debugStates);
+        if (debugStates.empty()) {
+            return;
+        }
+
+        int radius = std::max(0, world.viewDistanceChunks());
+        int diameter = radius * 2 + 1;
+        if (diameter <= 0) {
+            return;
+        }
+
+        float cellSize = kDebugTargetSpan / static_cast<float>(diameter);
+
+        auto centerCoord = Voxel::worldToChunk(
+            static_cast<int>(std::floor(cameraPos.x)),
+            static_cast<int>(std::floor(cameraPos.y)),
+            static_cast<int>(std::floor(cameraPos.z))
+        );
+
+        std::unordered_map<Voxel::ChunkCoord,
+                           Voxel::ChunkStreamer::DebugState,
+                           Voxel::ChunkCoordHash> stateMap;
+        stateMap.reserve(debugStates.size());
+        std::array<std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash>, 4> occupancy;
+        for (auto& set : occupancy) {
+            set.reserve(debugStates.size());
+        }
+
+        for (const auto& entry : debugStates) {
+            int dx = entry.coord.x - centerCoord.x;
+            int dy = entry.coord.y - centerCoord.y;
+            int dz = entry.coord.z - centerCoord.z;
+
+            if (std::abs(dx) > radius || std::abs(dy) > radius || std::abs(dz) > radius) {
+                continue;
+            }
+            Voxel::ChunkCoord offset{dx, dy, dz};
+            stateMap[offset] = entry.state;
+            switch (entry.state) {
+                case Voxel::ChunkStreamer::DebugState::QueuedGen:
+                    occupancy[0].insert(offset);
+                    break;
+                case Voxel::ChunkStreamer::DebugState::ReadyData:
+                    occupancy[1].insert(offset);
+                    break;
+                case Voxel::ChunkStreamer::DebugState::QueuedMesh:
+                    occupancy[2].insert(offset);
+                    break;
+                case Voxel::ChunkStreamer::DebugState::ReadyMesh:
+                    occupancy[3].insert(offset);
+                    break;
+            }
+        }
+
+        if (stateMap.empty()) {
+            return;
+        }
+
+        std::array<std::vector<glm::vec3>, 4> meshVertices;
+        std::array<glm::vec4, 4> colors = {
+            glm::vec4(1.0f, 0.2f, 0.2f, kDebugAlpha),
+            glm::vec4(1.0f, 0.9f, 0.2f, kDebugAlpha),
+            glm::vec4(0.2f, 0.8f, 1.0f, kDebugAlpha),
+            glm::vec4(0.2f, 1.0f, 0.3f, kDebugAlpha)
+        };
+        std::array<std::array<int, 3>, 6> offsets = {{
+            { 1, 0, 0},
+            {-1, 0, 0},
+            { 0, 1, 0},
+            { 0,-1, 0},
+            { 0, 0, 1},
+            { 0, 0,-1}
+        }};
+
+        for (const auto& [coord, state] : stateMap) {
+            int stateIdx = 0;
+            switch (state) {
+                case Voxel::ChunkStreamer::DebugState::QueuedGen:
+                    stateIdx = 0;
+                    break;
+                case Voxel::ChunkStreamer::DebugState::ReadyData:
+                    stateIdx = 1;
+                    break;
+                case Voxel::ChunkStreamer::DebugState::QueuedMesh:
+                    stateIdx = 2;
+                    break;
+                case Voxel::ChunkStreamer::DebugState::ReadyMesh:
+                    stateIdx = 3;
+                    break;
+            }
+
+            for (int face = 0; face < 6; ++face) {
+                Voxel::ChunkCoord neighbor{
+                    coord.x + offsets[face][0],
+                    coord.y + offsets[face][1],
+                    coord.z + offsets[face][2]
+                };
+                if (occupancy[stateIdx].find(neighbor) != occupancy[stateIdx].end()) {
+                    continue;
+                }
+
+                size_t base = static_cast<size_t>(face) * 18;
+                for (int v = 0; v < 6; ++v) {
+                    float x = kCubeVertices[base + v * 3 + 0] + static_cast<float>(coord.x);
+                    float y = kCubeVertices[base + v * 3 + 1] + static_cast<float>(coord.y);
+                    float z = kCubeVertices[base + v * 3 + 2] + static_cast<float>(coord.z);
+                    meshVertices[stateIdx].push_back(glm::vec3(x, y, z));
+                }
+            }
+        }
+
+        GLint previousViewport[4] = {};
+        glGetIntegerv(GL_VIEWPORT, previousViewport);
+
+        int viewportSize = std::min(kDebugViewportSize, std::min(viewportWidth, viewportHeight));
+        int marginX = std::min(kDebugViewportMargin, std::max(0, viewportWidth - viewportSize));
+        int marginY = std::min(kDebugViewportMargin, std::max(0, viewportHeight - viewportSize));
+        int viewportX = marginX;
+        int viewportY = std::max(0, viewportHeight - viewportSize - marginY);
+        glViewport(viewportX, viewportY, viewportSize, viewportSize);
+
+        float renderDistance = world.renderer().config().renderDistance;
+        float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
+        glm::mat4 debugProjection = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, farPlane);
+        glm::mat4 debugView = glm::lookAt(
+            cameraPos,
+            cameraTarget,
+            glm::vec3(0.0f, 1.0f, 0.0f)
+        );
+        glm::mat4 debugViewProjection = debugProjection * debugView;
+
+        debugField.shader->bind();
+        if (debugField.locViewProjection >= 0) {
+            glUniformMatrix4fv(debugField.locViewProjection, 1, GL_FALSE, glm::value_ptr(debugViewProjection));
+        }
+        glm::vec3 fieldOrigin = cameraPos + viewForward * debugDistance;
+        if (debugField.locFieldOrigin >= 0) {
+            glUniform3fv(debugField.locFieldOrigin, 1, glm::value_ptr(fieldOrigin));
+        }
+        if (debugField.locFieldRight >= 0) {
+            glUniform3fv(debugField.locFieldRight, 1, glm::value_ptr(glm::vec3(1.0f, 0.0f, 0.0f)));
+        }
+        if (debugField.locFieldUp >= 0) {
+            glUniform3fv(debugField.locFieldUp, 1, glm::value_ptr(glm::vec3(0.0f, 1.0f, 0.0f)));
+        }
+        if (debugField.locFieldForward >= 0) {
+            glUniform3fv(debugField.locFieldForward, 1, glm::value_ptr(glm::vec3(0.0f, 0.0f, 1.0f)));
+        }
+        if (debugField.locCellSize >= 0) {
+            glUniform1f(debugField.locCellSize, cellSize);
+        }
+
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        glBindVertexArray(debugField.vao);
+        for (size_t i = 0; i < meshVertices.size(); ++i) {
+            if (meshVertices[i].empty()) {
+                continue;
+            }
+
+            if (debugField.locColor >= 0) {
+                glUniform4fv(debugField.locColor, 1, glm::value_ptr(colors[i]));
+            }
+
+            glBindBuffer(GL_ARRAY_BUFFER, debugField.vbos[i]);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(meshVertices[i].size() * sizeof(glm::vec3)),
+                         meshVertices[i].data(),
+                         GL_DYNAMIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
+
+            glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(meshVertices[i].size()));
+        }
+
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
+        glBindVertexArray(0);
+        glUseProgram(0);
+        glViewport(previousViewport[0],
+                   previousViewport[1],
+                   previousViewport[2],
+                   previousViewport[3]);
     }
 
 };
@@ -293,7 +595,6 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             impl->firstMouse = true;
         }
     });
-
     const char* benchEnv = std::getenv("RIGEL_CHUNK_BENCH");
     if (benchEnv && benchEnv[0] != '\0' && benchEnv[0] != '0') {
         m_impl->benchmarkEnabled = true;
@@ -340,6 +641,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             m_impl->placeBlock = Voxel::BlockID{1};
         }
 
+        m_impl->initDebugField();
         m_impl->worldReady = true;
     } catch (const std::exception& e) {
         spdlog::error("Voxel bootstrap failed: {}", e.what());
@@ -409,6 +711,10 @@ void Application::run() {
             m_impl->lastLeftDown = leftDown;
             m_impl->lastRightDown = rightDown;
 
+            if (isKeyJustReleased(GLFW_KEY_F1)) {
+                m_impl->debugOverlayEnabled = !m_impl->debugOverlayEnabled;
+            }
+
             int width = 0;
             int height = 0;
             glfwGetFramebufferSize(m_impl->window, &width, &height);
@@ -428,6 +734,9 @@ void Application::run() {
             m_impl->world.updateStreaming(m_impl->cameraPos);
             m_impl->world.updateMeshes();
             m_impl->world.render(viewProjection, m_impl->cameraPos);
+            m_impl->renderDebugField(m_impl->cameraForward,
+                                     width,
+                                     height);
         }
 
         glfwSwapBuffers(m_impl->window);

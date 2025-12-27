@@ -12,8 +12,104 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 
 namespace Rigel {
+
+namespace {
+
+struct RaycastHit {
+    glm::ivec3 block{};
+    glm::ivec3 normal{};
+    float distance = 0.0f;
+};
+
+bool raycastBlock(const Voxel::World& world,
+                  const glm::vec3& origin,
+                  const glm::vec3& direction,
+                  float maxDistance,
+                  RaycastHit& outHit) {
+    float dirLen = glm::length(direction);
+    if (dirLen <= 0.0001f) {
+        return false;
+    }
+
+    glm::vec3 dir = direction / dirLen;
+    glm::ivec3 blockPos(
+        static_cast<int>(std::floor(origin.x)),
+        static_cast<int>(std::floor(origin.y)),
+        static_cast<int>(std::floor(origin.z))
+    );
+
+    glm::ivec3 step(0);
+    glm::vec3 tMax(0.0f);
+    glm::vec3 tDelta(0.0f);
+
+    auto setupAxis = [](float originCoord, float dirCoord, int blockCoord,
+                        int& stepOut, float& tMaxOut, float& tDeltaOut) {
+        if (dirCoord > 0.0f) {
+            stepOut = 1;
+            float nextBoundary = static_cast<float>(blockCoord + 1);
+            tMaxOut = (nextBoundary - originCoord) / dirCoord;
+            tDeltaOut = 1.0f / dirCoord;
+        } else if (dirCoord < 0.0f) {
+            stepOut = -1;
+            float nextBoundary = static_cast<float>(blockCoord);
+            tMaxOut = (originCoord - nextBoundary) / -dirCoord;
+            tDeltaOut = 1.0f / -dirCoord;
+        } else {
+            stepOut = 0;
+            tMaxOut = std::numeric_limits<float>::infinity();
+            tDeltaOut = std::numeric_limits<float>::infinity();
+        }
+    };
+
+    setupAxis(origin.x, dir.x, blockPos.x, step.x, tMax.x, tDelta.x);
+    setupAxis(origin.y, dir.y, blockPos.y, step.y, tMax.y, tDelta.y);
+    setupAxis(origin.z, dir.z, blockPos.z, step.z, tMax.z, tDelta.z);
+
+    glm::ivec3 normal(0);
+    float t = 0.0f;
+
+    while (t <= maxDistance) {
+        if (!world.getBlock(blockPos.x, blockPos.y, blockPos.z).isAir()) {
+            outHit.block = blockPos;
+            outHit.normal = normal;
+            outHit.distance = t;
+            return true;
+        }
+
+        if (tMax.x < tMax.y) {
+            if (tMax.x < tMax.z) {
+                blockPos.x += step.x;
+                t = tMax.x;
+                tMax.x += tDelta.x;
+                normal = glm::ivec3(-step.x, 0, 0);
+            } else {
+                blockPos.z += step.z;
+                t = tMax.z;
+                tMax.z += tDelta.z;
+                normal = glm::ivec3(0, 0, -step.z);
+            }
+        } else {
+            if (tMax.y < tMax.z) {
+                blockPos.y += step.y;
+                t = tMax.y;
+                tMax.y += tDelta.y;
+                normal = glm::ivec3(0, -step.y, 0);
+            } else {
+                blockPos.z += step.z;
+                t = tMax.z;
+                tMax.z += tDelta.z;
+                normal = glm::ivec3(0, 0, -step.z);
+            }
+        }
+    }
+
+    return false;
+}
+
+} // namespace
 
 struct Application::Impl {
     GLFWwindow* window = nullptr;
@@ -22,6 +118,7 @@ struct Application::Impl {
     bool worldReady = false;
     glm::vec3 cameraPos = glm::vec3(48.0f, 32.0f, 48.0f);
     glm::vec3 cameraTarget = glm::vec3(8.0f, 0.0f, 8.0f);
+    glm::vec3 cameraForward = glm::vec3(0.0f, 0.0f, -1.0f);
     float cameraYaw = -135.0f;
     float cameraPitch = -20.0f;
     float moveSpeed = 10.0f;
@@ -34,6 +131,9 @@ struct Application::Impl {
     bool benchmarkEnabled = false;
     double benchmarkStartTime = 0.0;
     Voxel::ChunkBenchmarkStats benchmark;
+    Voxel::BlockID placeBlock = Voxel::BlockRegistry::airId();
+    bool lastLeftDown = false;
+    bool lastRightDown = false;
 
     void setCursorCaptured(bool captured) {
         cursorCaptured = captured;
@@ -98,6 +198,7 @@ struct Application::Impl {
             cameraPos += glm::normalize(move) * speed * dt;
         }
 
+        cameraForward = forward;
         cameraTarget = cameraPos + forward;
     }
 
@@ -229,6 +330,15 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         if (m_impl->benchmarkEnabled) {
             m_impl->world.setBenchmark(&m_impl->benchmark);
         }
+        auto placeId = m_impl->world.blockRegistry().findByIdentifier(config.solidBlock);
+        if (!placeId) {
+            placeId = m_impl->world.blockRegistry().findByIdentifier("rigel:stone");
+        }
+        if (placeId) {
+            m_impl->placeBlock = *placeId;
+        } else if (m_impl->world.blockRegistry().size() > 1) {
+            m_impl->placeBlock = Voxel::BlockID{1};
+        }
 
         m_impl->worldReady = true;
     } catch (const std::exception& e) {
@@ -270,6 +380,34 @@ void Application::run() {
                 m_impl->setCursorCaptured(true);
             }
             m_impl->updateCamera(deltaTime);
+
+            bool leftDown = glfwGetMouseButton(m_impl->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            bool rightDown = glfwGetMouseButton(m_impl->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+            if (m_impl->cursorCaptured) {
+                const float interactDistance = 8.0f;
+                RaycastHit hit;
+                if (leftDown && !m_impl->lastLeftDown) {
+                    if (raycastBlock(m_impl->world, m_impl->cameraPos, m_impl->cameraForward,
+                                     interactDistance, hit)) {
+                        m_impl->world.setBlock(hit.block.x, hit.block.y, hit.block.z, Voxel::BlockState{});
+                    }
+                }
+                if (rightDown && !m_impl->lastRightDown) {
+                    if (raycastBlock(m_impl->world, m_impl->cameraPos, m_impl->cameraForward,
+                                     interactDistance, hit)) {
+                        glm::ivec3 placePos = hit.block + hit.normal;
+                        if (hit.normal != glm::ivec3(0) &&
+                            m_impl->placeBlock != Voxel::BlockRegistry::airId() &&
+                            m_impl->world.getBlock(placePos.x, placePos.y, placePos.z).isAir()) {
+                            Voxel::BlockState state;
+                            state.id = m_impl->placeBlock;
+                            m_impl->world.setBlock(placePos.x, placePos.y, placePos.z, state);
+                        }
+                    }
+                }
+            }
+            m_impl->lastLeftDown = leftDown;
+            m_impl->lastRightDown = rightDown;
 
             int width = 0;
             int height = 0;

@@ -61,7 +61,40 @@ void ChunkManager::setBlock(int wx, int wy, int wz, BlockState state) {
     int lx, ly, lz;
     worldToLocal(wx, wy, wz, lx, ly, lz);
 
+    if (chunk.getBlock(lx, ly, lz) == state) {
+        return;
+    }
     chunk.setBlock(lx, ly, lz, state);
+
+    if (lx == 0) {
+        if (Chunk* neighbor = getChunk(chunkCoord.offset(-1, 0, 0))) {
+            neighbor->markDirty();
+        }
+    } else if (lx == Chunk::SIZE - 1) {
+        if (Chunk* neighbor = getChunk(chunkCoord.offset(1, 0, 0))) {
+            neighbor->markDirty();
+        }
+    }
+
+    if (ly == 0) {
+        if (Chunk* neighbor = getChunk(chunkCoord.offset(0, -1, 0))) {
+            neighbor->markDirty();
+        }
+    } else if (ly == Chunk::SIZE - 1) {
+        if (Chunk* neighbor = getChunk(chunkCoord.offset(0, 1, 0))) {
+            neighbor->markDirty();
+        }
+    }
+
+    if (lz == 0) {
+        if (Chunk* neighbor = getChunk(chunkCoord.offset(0, 0, -1))) {
+            neighbor->markDirty();
+        }
+    } else if (lz == Chunk::SIZE - 1) {
+        if (Chunk* neighbor = getChunk(chunkCoord.offset(0, 0, 1))) {
+            neighbor->markDirty();
+        }
+    }
 }
 
 void ChunkManager::loadChunk(ChunkCoord coord, std::span<const uint8_t> data) {

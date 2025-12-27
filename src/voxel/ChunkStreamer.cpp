@@ -120,6 +120,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         ? std::numeric_limits<size_t>::max()
         : static_cast<size_t>(m_config.meshQueueLimit);
     size_t meshLimitMissing = meshLimit;
+    size_t meshLimitDirty = meshLimit;
     if (meshLimit != std::numeric_limits<size_t>::max()) {
         size_t reserve = meshLimit / 4;
         if (meshLimit > 1 && reserve == 0) {
@@ -129,11 +130,13 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             reserve = meshLimit - 1;
         }
         meshLimitMissing = meshLimit - reserve;
+        meshLimitDirty = reserve;
     }
 
     bool genFull = m_inFlightGen >= genLimit;
     bool meshFull = m_inFlightMesh >= meshLimit;
-    bool meshFullMissing = m_inFlightMesh >= meshLimitMissing;
+    bool meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
+    bool meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
 
     for (const ChunkCoord& coord : m_desired) {
         if (genFull && meshFullMissing) {
@@ -150,8 +153,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         Chunk* chunk = m_chunkManager->getChunk(coord);
         if (chunk) {
             bool hasMesh = m_renderer && m_renderer->hasChunkMesh(coord);
+            bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
             if (stateIt == m_states.end() || state == ChunkState::QueuedGen) {
-                state = hasMesh ? ChunkState::ReadyMesh : ChunkState::ReadyData;
+                state = isMeshed ? ChunkState::ReadyMesh : ChunkState::ReadyData;
                 m_states[coord] = state;
             }
 
@@ -164,10 +168,11 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 continue;
             }
 
-            if (!hasMesh && state != ChunkState::QueuedMesh) {
+            if (!isMeshed && state != ChunkState::QueuedMesh) {
                 if (!meshFullMissing) {
-                    enqueueMesh(coord, *chunk);
-                    meshFullMissing = m_inFlightMesh >= meshLimitMissing;
+                    enqueueMesh(coord, *chunk, MeshRequestKind::Missing);
+                    meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
+                    meshFull = m_inFlightMesh >= meshLimit;
                 }
             }
             continue;
@@ -184,7 +189,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     }
 
     for (const ChunkCoord& coord : m_desired) {
-        if (meshFull) {
+        if (meshFull || meshFullDirty) {
             break;
         }
 
@@ -200,11 +205,13 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
 
         bool hasMesh = m_renderer && m_renderer->hasChunkMesh(coord);
-        if (!hasMesh || !chunk->isDirty() || state == ChunkState::QueuedMesh) {
+        bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+        if (!isMeshed || !chunk->isDirty() || state == ChunkState::QueuedMesh) {
             continue;
         }
 
-        enqueueMesh(coord, *chunk);
+        enqueueMesh(coord, *chunk, MeshRequestKind::Dirty);
+        meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
         meshFull = m_inFlightMesh >= meshLimit;
     }
 
@@ -235,6 +242,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_chunkManager->unloadChunk(coord);
         m_states.erase(coord);
     }
+
 }
 
 ChunkCoord ChunkStreamer::cameraToChunk(const glm::vec3& cameraPos) const {
@@ -257,10 +265,39 @@ void ChunkStreamer::processCompletions() {
     applyMeshCompletions(budget);
 }
 
+void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out) const {
+    out.clear();
+    out.reserve(m_states.size());
+
+    for (const auto& [coord, state] : m_states) {
+        DebugState debugState;
+        switch (state) {
+            case ChunkState::QueuedGen:
+                debugState = DebugState::QueuedGen;
+                break;
+            case ChunkState::ReadyData:
+                debugState = DebugState::ReadyData;
+                break;
+            case ChunkState::QueuedMesh:
+                debugState = DebugState::QueuedMesh;
+                break;
+            case ChunkState::ReadyMesh:
+                debugState = DebugState::ReadyMesh;
+                break;
+            default:
+                continue;
+        }
+        out.push_back({coord, debugState});
+    }
+}
+
 void ChunkStreamer::reset() {
     m_states.clear();
     m_inFlightGen = 0;
     m_inFlightMesh = 0;
+    m_inFlightMeshMissing = 0;
+    m_inFlightMeshDirty = 0;
+    m_meshInFlight.clear();
     m_cache = ChunkCache();
     m_cache.setMaxChunks(m_config.maxResidentChunks);
     m_desired.clear();
@@ -345,6 +382,19 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         if (m_inFlightMesh > 0) {
             --m_inFlightMesh;
         }
+        auto kindIt = m_meshInFlight.find(meshResult.coord);
+        if (kindIt != m_meshInFlight.end()) {
+            if (kindIt->second == MeshRequestKind::Missing) {
+                if (m_inFlightMeshMissing > 0) {
+                    --m_inFlightMeshMissing;
+                }
+            } else {
+                if (m_inFlightMeshDirty > 0) {
+                    --m_inFlightMeshDirty;
+                }
+            }
+            m_meshInFlight.erase(kindIt);
+        }
 
         auto stateIt = m_states.find(meshResult.coord);
         if (stateIt == m_states.end() || stateIt->second != ChunkState::QueuedMesh) {
@@ -423,12 +473,15 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
     }
 }
 
-void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk) {
+void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind kind) {
     if (!m_registry) {
         return;
     }
     if (m_config.meshQueueLimit > 0 &&
         m_inFlightMesh >= m_config.meshQueueLimit) {
+        return;
+    }
+    if (m_meshInFlight.find(coord) != m_meshInFlight.end()) {
         return;
     }
 
@@ -504,6 +557,12 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk) {
 
     m_states[coord] = ChunkState::QueuedMesh;
     ++m_inFlightMesh;
+    m_meshInFlight[coord] = kind;
+    if (kind == MeshRequestKind::Missing) {
+        ++m_inFlightMeshMissing;
+    } else {
+        ++m_inFlightMeshDirty;
+    }
 
     BlockRegistry* registry = m_registry;
     TextureAtlas* atlas = m_atlas;

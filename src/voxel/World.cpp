@@ -71,6 +71,14 @@ void World::render(const glm::mat4& viewProjection, const glm::vec3& cameraPos) 
     m_renderer.render(viewProjection, cameraPos);
 }
 
+void World::getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const {
+    m_streamer.getDebugStates(out);
+}
+
+int World::viewDistanceChunks() const {
+    return m_streamer.viewDistanceChunks();
+}
+
 void World::clear() {
     m_chunkManager.clear();
     m_renderer.clear();

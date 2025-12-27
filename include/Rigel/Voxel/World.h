@@ -23,6 +23,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <memory>
+#include <vector>
 
 namespace Rigel::Voxel {
 
@@ -150,6 +151,16 @@ public:
      * @param cameraPos Camera position for distance culling
      */
     void render(const glm::mat4& viewProjection, const glm::vec3& cameraPos);
+
+    /**
+     * @brief Populate debug chunk states for visualization.
+     */
+    void getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const;
+
+    /**
+     * @brief Get the current streaming view distance in chunks.
+     */
+    int viewDistanceChunks() const;
 
     /// @}
 

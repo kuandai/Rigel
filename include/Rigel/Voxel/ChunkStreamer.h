@@ -23,6 +23,18 @@ namespace Rigel::Voxel {
 
 class ChunkStreamer {
 public:
+    enum class DebugState : uint8_t {
+        QueuedGen,
+        ReadyData,
+        QueuedMesh,
+        ReadyMesh
+    };
+
+    struct DebugChunkState {
+        ChunkCoord coord;
+        DebugState state;
+    };
+
     ChunkStreamer() = default;
     ~ChunkStreamer() = default;
 
@@ -37,6 +49,8 @@ public:
     void update(const glm::vec3& cameraPos);
     void processCompletions();
     void reset();
+    void getDebugStates(std::vector<DebugChunkState>& out) const;
+    int viewDistanceChunks() const { return m_config.viewDistanceChunks; }
 
 private:
     static constexpr int kPaddedSize = Chunk::SIZE + 2;
@@ -71,6 +85,11 @@ private:
         bool empty = false;
     };
 
+    enum class MeshRequestKind : uint8_t {
+        Missing,
+        Dirty
+    };
+
     WorldGenConfig::StreamConfig m_config;
     ChunkManager* m_chunkManager = nullptr;
     ChunkRenderer* m_renderer = nullptr;
@@ -85,10 +104,13 @@ private:
     detail::ConcurrentQueue<MeshResult> m_meshComplete;
     std::unordered_map<ChunkCoord, ChunkState, ChunkCoordHash> m_states;
     std::unordered_map<ChunkCoord, std::shared_ptr<std::atomic_bool>, ChunkCoordHash> m_genCancel;
+    std::unordered_map<ChunkCoord, MeshRequestKind, ChunkCoordHash> m_meshInFlight;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     size_t m_inFlightGen = 0;
     size_t m_inFlightMesh = 0;
+    size_t m_inFlightMeshMissing = 0;
+    size_t m_inFlightMeshDirty = 0;
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;
@@ -96,7 +118,7 @@ private:
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);
     void enqueueGeneration(ChunkCoord coord);
-    void enqueueMesh(ChunkCoord coord, Chunk& chunk);
+    void enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind kind);
     void ensureThreadPool();
 
     ChunkCoord cameraToChunk(const glm::vec3& cameraPos) const;

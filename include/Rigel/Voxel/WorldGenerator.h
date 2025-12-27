@@ -33,6 +33,7 @@ struct WorldGenContext {
     BlockID solidBlock = BlockRegistry::airId();
     BlockID surfaceBlock = BlockRegistry::airId();
     BlockID waterBlock = BlockRegistry::airId();
+    BlockID sandBlock = BlockRegistry::airId();
     std::array<int, Chunk::SIZE * Chunk::SIZE> heightMap{};
     const std::atomic_bool* cancel = nullptr;
 

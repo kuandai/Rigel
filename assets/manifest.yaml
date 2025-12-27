@@ -11,30 +11,30 @@ assets:
       solid: true
       layer: opaque
       textures:
-        all: textures/blocks/stone.bmp
+        all: textures/blocks/stone.png
     dirt:
       model: cube
       opaque: true
       solid: true
       layer: opaque
       textures:
-        all: textures/blocks/dirt.bmp
+        all: textures/blocks/dirt.png
     grass:
       model: cube
       opaque: true
       solid: true
       layer: opaque
       textures:
-        top: textures/blocks/grass_top.bmp
-        bottom: textures/blocks/dirt.bmp
-        sides: textures/blocks/grass_side.bmp
+        top: textures/blocks/grass_top.png
+        bottom: textures/blocks/dirt.png
+        sides: textures/blocks/grass_side.png
     sand:
       model: cube
       opaque: true
       solid: true
       layer: opaque
       textures:
-        all: textures/blocks/sand.bmp
+        all: textures/blocks/sand.png
     water:
       model: cube
       opaque: false
@@ -42,8 +42,11 @@ assets:
       cull_same_type: true
       layer: transparent
       textures:
-        all: textures/blocks/water.bmp
+        all: textures/blocks/water.png
   shaders:
     voxel:
       vertex: shaders/voxel.vert
       fragment: shaders/voxel.frag
+    chunk_debug:
+      vertex: shaders/chunk_debug.vert
+      fragment: shaders/chunk_debug.frag

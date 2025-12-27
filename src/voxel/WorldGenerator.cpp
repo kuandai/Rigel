@@ -18,6 +18,7 @@ constexpr const char* kPipelineStages[] = {
     "post_process"
 };
 constexpr const char* kDefaultWaterBlock = "rigel:water";
+constexpr const char* kDefaultSandBlock = "rigel:sand";
 
 uint64_t hash64(uint64_t x) {
     x ^= x >> 33;
@@ -108,13 +109,6 @@ public:
         const auto& config = *ctx.config;
         const auto& terrain = config.terrain;
 
-        if (ctx.coord.y < 0 && !ctx.waterBlock.isAir()) {
-            BlockState state;
-            state.id = ctx.waterBlock;
-            buffer.blocks.fill(state);
-            return;
-        }
-
         buffer.blocks.fill(BlockState{});
 
         for (int z = 0; z < Chunk::SIZE; ++z) {
@@ -141,6 +135,10 @@ public:
                         BlockState state;
                         state.id = ctx.solidBlock;
                         buffer.at(x, y, z) = state;
+                    } else if (worldY <= 0 && !ctx.waterBlock.isAir()) {
+                        BlockState state;
+                        state.id = ctx.waterBlock;
+                        buffer.at(x, y, z) = state;
                     }
                 }
             }
@@ -154,10 +152,7 @@ public:
 
     void apply(WorldGenContext& ctx, ChunkBuffer& buffer) override {
         const auto& terrain = ctx.config->terrain;
-        if (ctx.surfaceBlock.isAir()) {
-            return;
-        }
-        if (ctx.coord.y < 0 && !ctx.waterBlock.isAir()) {
+        if (ctx.surfaceBlock.isAir() && ctx.sandBlock.isAir()) {
             return;
         }
 
@@ -170,11 +165,15 @@ public:
                     return;
                 }
                 int height = ctx.heightMap[x + z * Chunk::SIZE];
+                BlockID surfaceId = ctx.surfaceBlock;
+                if (height <= 4 && !ctx.sandBlock.isAir()) {
+                    surfaceId = ctx.sandBlock;
+                }
                 for (int y = 0; y < Chunk::SIZE; ++y) {
                     int worldY = ctx.coord.y * Chunk::SIZE + y;
                     if (worldY <= height && worldY > height - terrain.surfaceDepth) {
                         BlockState state;
-                        state.id = ctx.surfaceBlock;
+                        state.id = surfaceId;
                         buffer.at(x, y, z) = state;
                     }
                 }
@@ -213,7 +212,11 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
     auto waterId = m_registry.findByIdentifier(kDefaultWaterBlock);
     ctx.waterBlock = waterId.value_or(BlockRegistry::airId());
 
-    if (ctx.solidBlock.isAir() || ctx.surfaceBlock.isAir() || ctx.waterBlock.isAir()) {
+    auto sandId = m_registry.findByIdentifier(kDefaultSandBlock);
+    ctx.sandBlock = sandId.value_or(BlockRegistry::airId());
+
+    if (ctx.solidBlock.isAir() || ctx.surfaceBlock.isAir() ||
+        ctx.waterBlock.isAir() || ctx.sandBlock.isAir()) {
         static bool warned = false;
         if (!warned) {
             if (ctx.solidBlock.isAir()) {
@@ -224,6 +227,9 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
             }
             if (ctx.waterBlock.isAir()) {
                 spdlog::warn("WorldGenerator: water block '{}' not found, using air", kDefaultWaterBlock);
+            }
+            if (ctx.sandBlock.isAir()) {
+                spdlog::warn("WorldGenerator: sand block '{}' not found, using air", kDefaultSandBlock);
             }
             warned = true;
         }

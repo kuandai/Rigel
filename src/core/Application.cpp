@@ -5,6 +5,8 @@
 #include <spdlog/spdlog.h>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include "Rigel/input/InputBindingsLoader.h"
+#include "Rigel/input/InputDispatcher.h"
 #include "Rigel/input/keypress.h"
 #include "Rigel/version.h"
 #include <glm/glm.hpp>
@@ -168,6 +170,19 @@ bool raycastBlock(const Voxel::World& world,
 } // namespace
 
 struct Application::Impl {
+    struct DebugOverlayListener : InputListener {
+        Impl* owner = nullptr;
+
+        void onActionReleased(std::string_view action) override {
+            if (!owner) {
+                return;
+            }
+            if (action == "debug_overlay") {
+                owner->debugOverlayEnabled = !owner->debugOverlayEnabled;
+            }
+        }
+    };
+
     struct DebugField {
         GLuint vao = 0;
         std::array<GLuint, 4> vbos{};
@@ -210,6 +225,9 @@ struct Application::Impl {
     std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
     float debugDistance = kDebugDistance;
     bool debugOverlayEnabled = true;
+    std::shared_ptr<InputBindings> inputBindings;
+    InputDispatcher inputDispatcher;
+    DebugOverlayListener debugOverlayListener;
 
     void setCursorCaptured(bool captured) {
         cursorCaptured = captured;
@@ -247,27 +265,27 @@ struct Application::Impl {
         glm::vec3 up = glm::normalize(glm::cross(right, forward));
 
         glm::vec3 move(0.0f);
-        if (isKeyPressed(GLFW_KEY_W)) {
+        if (inputDispatcher.isActionPressed("move_forward")) {
             move += forward;
         }
-        if (isKeyPressed(GLFW_KEY_S)) {
+        if (inputDispatcher.isActionPressed("move_backward")) {
             move -= forward;
         }
-        if (isKeyPressed(GLFW_KEY_D)) {
+        if (inputDispatcher.isActionPressed("move_right")) {
             move += right;
         }
-        if (isKeyPressed(GLFW_KEY_A)) {
+        if (inputDispatcher.isActionPressed("move_left")) {
             move -= right;
         }
-        if (isKeyPressed(GLFW_KEY_SPACE)) {
+        if (inputDispatcher.isActionPressed("move_up")) {
             move += worldUp;
         }
-        if (isKeyPressed(GLFW_KEY_LEFT_CONTROL) || isKeyPressed(GLFW_KEY_RIGHT_CONTROL)) {
+        if (inputDispatcher.isActionPressed("move_down")) {
             move -= worldUp;
         }
 
         float speed = moveSpeed;
-        if (isKeyPressed(GLFW_KEY_LEFT_SHIFT)) {
+        if (inputDispatcher.isActionPressed("sprint")) {
             speed *= 2.0f;
         }
 
@@ -507,6 +525,7 @@ struct Application::Impl {
 };
 
 Application::Application() : m_impl(std::make_unique<Impl>()) {
+    m_impl->debugOverlayListener.owner = m_impl.get();
     #ifdef DEBUG
     spdlog::info("Rigel v{} Developer Preview", RIGEL_VERSION);
     #else
@@ -603,7 +622,45 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
     try {
         m_impl->assets.loadManifest("manifest.yaml");
+        m_impl->assets.registerLoader("input", std::make_unique<InputBindingsLoader>());
         m_impl->world.initialize(m_impl->assets);
+
+        if (m_impl->assets.exists("input/default")) {
+            auto bindingsHandle = m_impl->assets.get<InputBindings>("input/default");
+            m_impl->inputBindings = bindingsHandle.shared();
+        }
+        if (!m_impl->inputBindings) {
+            m_impl->inputBindings = std::make_shared<InputBindings>();
+        }
+        if (!m_impl->inputBindings->hasAction("debug_overlay")) {
+            m_impl->inputBindings->bind("debug_overlay", GLFW_KEY_F1);
+        }
+        if (!m_impl->inputBindings->hasAction("move_forward")) {
+            m_impl->inputBindings->bind("move_forward", GLFW_KEY_W);
+        }
+        if (!m_impl->inputBindings->hasAction("move_backward")) {
+            m_impl->inputBindings->bind("move_backward", GLFW_KEY_S);
+        }
+        if (!m_impl->inputBindings->hasAction("move_left")) {
+            m_impl->inputBindings->bind("move_left", GLFW_KEY_A);
+        }
+        if (!m_impl->inputBindings->hasAction("move_right")) {
+            m_impl->inputBindings->bind("move_right", GLFW_KEY_D);
+        }
+        if (!m_impl->inputBindings->hasAction("move_up")) {
+            m_impl->inputBindings->bind("move_up", GLFW_KEY_SPACE);
+        }
+        if (!m_impl->inputBindings->hasAction("move_down")) {
+            m_impl->inputBindings->bind("move_down", GLFW_KEY_LEFT_CONTROL);
+        }
+        if (!m_impl->inputBindings->hasAction("sprint")) {
+            m_impl->inputBindings->bind("sprint", GLFW_KEY_LEFT_SHIFT);
+        }
+        if (!m_impl->inputBindings->hasAction("exit")) {
+            m_impl->inputBindings->bind("exit", GLFW_KEY_ESCAPE);
+        }
+        m_impl->inputDispatcher.setBindings(m_impl->inputBindings);
+        m_impl->inputDispatcher.addListener(&m_impl->debugOverlayListener);
 
         Voxel::ConfigProvider configProvider;
         configProvider.addSource(
@@ -675,6 +732,7 @@ void Application::run() {
         // Flush event queue
         glfwPollEvents();
         Rigel::keyupdate();
+        m_impl->inputDispatcher.update();
 
         if (m_impl->worldReady) {
             if (m_impl->cursorCaptured &&
@@ -711,10 +769,6 @@ void Application::run() {
             m_impl->lastLeftDown = leftDown;
             m_impl->lastRightDown = rightDown;
 
-            if (isKeyJustReleased(GLFW_KEY_F1)) {
-                m_impl->debugOverlayEnabled = !m_impl->debugOverlayEnabled;
-            }
-
             int width = 0;
             int height = 0;
             glfwGetFramebufferSize(m_impl->window, &width, &height);
@@ -742,7 +796,7 @@ void Application::run() {
         glfwSwapBuffers(m_impl->window);
 
         // Exit on ESC
-        if (isKeyPressed(GLFW_KEY_ESCAPE)) {
+        if (m_impl->inputDispatcher.isActionPressed("exit")) {
             glfwSetWindowShouldClose(m_impl->window, true);
         }
     }

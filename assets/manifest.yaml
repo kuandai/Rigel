@@ -4,6 +4,18 @@ assets:
   raw:
     world_config:
       path: config/world_generation.yaml
+  input:
+    default:
+      bindings:
+        debug_overlay: F1
+        move_forward: W
+        move_backward: S
+        move_left: A
+        move_right: D
+        move_up: SPACE
+        move_down: LCTRL
+        sprint: LSHIFT
+        exit: ESC
   blocks:
     stone:
       model: cube

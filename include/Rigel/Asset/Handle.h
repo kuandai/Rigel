@@ -30,6 +30,9 @@ public:
     /// Get raw pointer (use sparingly)
     T* get() const { return m_asset.get(); }
 
+    /// Get shared ownership pointer
+    std::shared_ptr<T> shared() const { return m_asset; }
+
     /// Comparison operators
     bool operator==(const Handle& other) const { return m_asset == other.m_asset; }
     bool operator!=(const Handle& other) const { return m_asset != other.m_asset; }

@@ -438,36 +438,68 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk) {
     task.coord = coord;
     task.blocks = chunk.blocks();
 
-    task.neighbors[static_cast<size_t>(Direction::PosX)] = {};
-    task.neighbors[static_cast<size_t>(Direction::NegX)] = {};
-    task.neighbors[static_cast<size_t>(Direction::PosY)] = {};
-    task.neighbors[static_cast<size_t>(Direction::NegY)] = {};
-    task.neighbors[static_cast<size_t>(Direction::PosZ)] = {};
-    task.neighbors[static_cast<size_t>(Direction::NegZ)] = {};
+    std::array<const Chunk*, 27> neighborChunks{};
+    auto neighborIndex = [](int dx, int dy, int dz) {
+        return (dx + 1) + (dy + 1) * 3 + (dz + 1) * 9;
+    };
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                ChunkCoord neighborCoord = coord.offset(dx, dy, dz);
+                neighborChunks[neighborIndex(dx, dy, dz)] = m_chunkManager->getChunk(neighborCoord);
+            }
+        }
+    }
+    neighborChunks[neighborIndex(0, 0, 0)] = &chunk;
 
-    const Chunk* neighbor = m_chunkManager->getChunk(coord.offset(1, 0, 0));
-    if (neighbor) {
-        task.neighbors[static_cast<size_t>(Direction::PosX)] = neighbor->blocks();
-    }
-    neighbor = m_chunkManager->getChunk(coord.offset(-1, 0, 0));
-    if (neighbor) {
-        task.neighbors[static_cast<size_t>(Direction::NegX)] = neighbor->blocks();
-    }
-    neighbor = m_chunkManager->getChunk(coord.offset(0, 1, 0));
-    if (neighbor) {
-        task.neighbors[static_cast<size_t>(Direction::PosY)] = neighbor->blocks();
-    }
-    neighbor = m_chunkManager->getChunk(coord.offset(0, -1, 0));
-    if (neighbor) {
-        task.neighbors[static_cast<size_t>(Direction::NegY)] = neighbor->blocks();
-    }
-    neighbor = m_chunkManager->getChunk(coord.offset(0, 0, 1));
-    if (neighbor) {
-        task.neighbors[static_cast<size_t>(Direction::PosZ)] = neighbor->blocks();
-    }
-    neighbor = m_chunkManager->getChunk(coord.offset(0, 0, -1));
-    if (neighbor) {
-        task.neighbors[static_cast<size_t>(Direction::NegZ)] = neighbor->blocks();
+    BlockState air;
+    for (int pz = 0; pz < kPaddedSize; ++pz) {
+        int lz = pz - 1;
+        for (int py = 0; py < kPaddedSize; ++py) {
+            int ly = py - 1;
+            for (int px = 0; px < kPaddedSize; ++px) {
+                int lx = px - 1;
+
+                int ox = 0;
+                int oy = 0;
+                int oz = 0;
+                int sx = lx;
+                int sy = ly;
+                int sz = lz;
+
+                if (sx < 0) {
+                    ox = -1;
+                    sx += Chunk::SIZE;
+                } else if (sx >= Chunk::SIZE) {
+                    ox = 1;
+                    sx -= Chunk::SIZE;
+                }
+                if (sy < 0) {
+                    oy = -1;
+                    sy += Chunk::SIZE;
+                } else if (sy >= Chunk::SIZE) {
+                    oy = 1;
+                    sy -= Chunk::SIZE;
+                }
+                if (sz < 0) {
+                    oz = -1;
+                    sz += Chunk::SIZE;
+                } else if (sz >= Chunk::SIZE) {
+                    oz = 1;
+                    sz -= Chunk::SIZE;
+                }
+
+                const Chunk* source = neighborChunks[neighborIndex(ox, oy, oz)];
+                size_t index = static_cast<size_t>(px)
+                    + static_cast<size_t>(py) * kPaddedSize
+                    + static_cast<size_t>(pz) * kPaddedSize * kPaddedSize;
+                if (source) {
+                    task.paddedBlocks[index] = source->getBlock(sx, sy, sz);
+                } else {
+                    task.paddedBlocks[index] = air;
+                }
+            }
+        }
     }
 
     m_states[coord] = ChunkState::QueuedMesh;
@@ -479,30 +511,15 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk) {
         Chunk chunk(task.coord);
         chunk.copyFrom(task.blocks);
 
-        std::array<std::unique_ptr<Chunk>, DirectionCount> neighborChunks;
         std::array<const Chunk*, DirectionCount> neighborPtrs{};
-        for (size_t i = 0; i < DirectionCount; ++i) {
-            if (task.neighbors[i]) {
-                Direction dir = static_cast<Direction>(i);
-                int dx = 0;
-                int dy = 0;
-                int dz = 0;
-                directionOffset(dir, dx, dy, dz);
-                ChunkCoord neighborCoord = task.coord.offset(dx, dy, dz);
-                neighborChunks[i] = std::make_unique<Chunk>(neighborCoord);
-                neighborChunks[i]->copyFrom(*task.neighbors[i]);
-                neighborPtrs[i] = neighborChunks[i].get();
-            } else {
-                neighborPtrs[i] = nullptr;
-            }
-        }
 
         MeshBuilder builder;
         MeshBuilder::BuildContext ctx{
             .chunk = chunk,
             .registry = *registry,
             .atlas = atlas,
-            .neighbors = neighborPtrs
+            .neighbors = neighborPtrs,
+            .paddedBlocks = &task.paddedBlocks
         };
 
         auto start = std::chrono::steady_clock::now();

@@ -44,6 +44,9 @@ namespace Rigel::Voxel {
  */
 class MeshBuilder {
 public:
+    static constexpr int PaddedSize = Chunk::SIZE + 2;
+    static constexpr int PaddedVolume = PaddedSize * PaddedSize * PaddedSize;
+
     /**
      * @brief Context for mesh building.
      */
@@ -60,6 +63,11 @@ public:
         /// Neighbor chunks for face culling at boundaries.
         /// Indexed by Direction enum. May be nullptr if neighbor not loaded.
         std::array<const Chunk*, DirectionCount> neighbors{};
+
+        /// Optional padded block buffer (1-block border on all sides).
+        /// When provided, AO and face culling sample from this buffer instead
+        /// of crossing chunk boundaries directly.
+        const std::array<BlockState, PaddedVolume>* paddedBlocks = nullptr;
     };
 
     /**

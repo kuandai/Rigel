@@ -39,6 +39,9 @@ public:
     void reset();
 
 private:
+    static constexpr int kPaddedSize = Chunk::SIZE + 2;
+    static constexpr int kPaddedVolume = kPaddedSize * kPaddedSize * kPaddedSize;
+
     enum class ChunkState : uint8_t {
         Missing,
         QueuedGen,
@@ -58,7 +61,7 @@ private:
     struct MeshTask {
         ChunkCoord coord;
         std::array<BlockState, Chunk::VOLUME> blocks{};
-        std::array<std::optional<std::array<BlockState, Chunk::VOLUME>>, DirectionCount> neighbors{};
+        std::array<BlockState, kPaddedVolume> paddedBlocks{};
     };
 
     struct MeshResult {

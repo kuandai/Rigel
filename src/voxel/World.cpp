@@ -110,11 +110,77 @@ void World::rebuildChunkMesh(ChunkCoord coord) {
     }
 
     // Build context with neighbors and texture atlas
+    std::array<BlockState, MeshBuilder::PaddedVolume> paddedBlocks{};
+    std::array<const Chunk*, 27> neighborChunks{};
+    auto neighborIndex = [](int dx, int dy, int dz) {
+        return (dx + 1) + (dy + 1) * 3 + (dz + 1) * 9;
+    };
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                ChunkCoord neighborCoord = coord.offset(dx, dy, dz);
+                neighborChunks[neighborIndex(dx, dy, dz)] = m_chunkManager.getChunk(neighborCoord);
+            }
+        }
+    }
+    neighborChunks[neighborIndex(0, 0, 0)] = chunk;
+
+    BlockState air;
+    for (int pz = 0; pz < MeshBuilder::PaddedSize; ++pz) {
+        int lz = pz - 1;
+        for (int py = 0; py < MeshBuilder::PaddedSize; ++py) {
+            int ly = py - 1;
+            for (int px = 0; px < MeshBuilder::PaddedSize; ++px) {
+                int lx = px - 1;
+
+                int ox = 0;
+                int oy = 0;
+                int oz = 0;
+                int sx = lx;
+                int sy = ly;
+                int sz = lz;
+
+                if (sx < 0) {
+                    ox = -1;
+                    sx += Chunk::SIZE;
+                } else if (sx >= Chunk::SIZE) {
+                    ox = 1;
+                    sx -= Chunk::SIZE;
+                }
+                if (sy < 0) {
+                    oy = -1;
+                    sy += Chunk::SIZE;
+                } else if (sy >= Chunk::SIZE) {
+                    oy = 1;
+                    sy -= Chunk::SIZE;
+                }
+                if (sz < 0) {
+                    oz = -1;
+                    sz += Chunk::SIZE;
+                } else if (sz >= Chunk::SIZE) {
+                    oz = 1;
+                    sz -= Chunk::SIZE;
+                }
+
+                const Chunk* source = neighborChunks[neighborIndex(ox, oy, oz)];
+                size_t index = static_cast<size_t>(px)
+                    + static_cast<size_t>(py) * MeshBuilder::PaddedSize
+                    + static_cast<size_t>(pz) * MeshBuilder::PaddedSize * MeshBuilder::PaddedSize;
+                if (source) {
+                    paddedBlocks[index] = source->getBlock(sx, sy, sz);
+                } else {
+                    paddedBlocks[index] = air;
+                }
+            }
+        }
+    }
+
     MeshBuilder::BuildContext ctx{
         .chunk = *chunk,
         .registry = m_blockRegistry,
         .atlas = &m_textureAtlas,
-        .neighbors = {}
+        .neighbors = {},
+        .paddedBlocks = &paddedBlocks
     };
 
     // Get neighbor chunks

@@ -3,6 +3,7 @@
 #include <ryml.hpp>
 #include <ryml_std.hpp>
 #include <spdlog/spdlog.h>
+#include <algorithm>
 
 namespace Rigel::Voxel {
 
@@ -54,11 +55,44 @@ std::string readString(ryml::ConstNodeRef node, const char* key, const std::stri
     return value;
 }
 
+std::string toStdString(ryml::csubstr value) {
+    return std::string(value.data(), value.size());
+}
+
 void applyNoise(ryml::ConstNodeRef node, WorldGenConfig::NoiseConfig& noise) {
     noise.octaves = readInt(node, "octaves", noise.octaves);
     noise.frequency = readFloat(node, "frequency", noise.frequency);
     noise.lacunarity = readFloat(node, "lacunarity", noise.lacunarity);
     noise.persistence = readFloat(node, "persistence", noise.persistence);
+    noise.scale = readFloat(node, "scale", noise.scale);
+    noise.offset = readFloat(node, "offset", noise.offset);
+}
+
+void applyClimateLayer(ryml::ConstNodeRef node, WorldGenConfig::ClimateLayerConfig& layer) {
+    if (!node.readable()) {
+        return;
+    }
+    if (node.has_child("temperature")) {
+        applyNoise(node["temperature"], layer.temperature);
+    }
+    if (node.has_child("humidity")) {
+        applyNoise(node["humidity"], layer.humidity);
+    }
+    if (node.has_child("continentalness")) {
+        applyNoise(node["continentalness"], layer.continentalness);
+    }
+}
+
+WorldGenConfig::BiomeTarget readBiomeTarget(ryml::ConstNodeRef node,
+                                            const WorldGenConfig::BiomeTarget& fallback) {
+    WorldGenConfig::BiomeTarget target = fallback;
+    if (!node.readable()) {
+        return target;
+    }
+    target.temperature = readFloat(node, "temperature", target.temperature);
+    target.humidity = readFloat(node, "humidity", target.humidity);
+    target.continentalness = readFloat(node, "continentalness", target.continentalness);
+    return target;
 }
 } // namespace
 
@@ -77,13 +111,217 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
     solidBlock = readString(root, "solid_block", solidBlock);
     surfaceBlock = readString(root, "surface_block", surfaceBlock);
 
+    if (root.has_child("world")) {
+        ryml::ConstNodeRef worldNode = root["world"];
+        world.minY = readInt(worldNode, "min_y", world.minY);
+        world.maxY = readInt(worldNode, "max_y", world.maxY);
+        world.seaLevel = readInt(worldNode, "sea_level", world.seaLevel);
+        world.lavaLevel = readInt(worldNode, "lava_level", world.lavaLevel);
+        world.version = static_cast<uint32_t>(readInt(worldNode, "version",
+                                                      static_cast<int>(world.version)));
+    }
+
     if (root.has_child("terrain")) {
         ryml::ConstNodeRef terrainNode = root["terrain"];
         terrain.baseHeight = readFloat(terrainNode, "base_height", terrain.baseHeight);
         terrain.heightVariation = readFloat(terrainNode, "height_variation", terrain.heightVariation);
         terrain.surfaceDepth = readInt(terrainNode, "surface_depth", terrain.surfaceDepth);
+        terrain.densityStrength = readFloat(terrainNode, "density_strength", terrain.densityStrength);
+        terrain.gradientStrength = readFloat(terrainNode, "gradient_strength", terrain.gradientStrength);
         if (terrainNode.has_child("noise")) {
             applyNoise(terrainNode["noise"], terrain.heightNoise);
+        }
+        if (terrainNode.has_child("density_noise")) {
+            applyNoise(terrainNode["density_noise"], terrain.densityNoise);
+        }
+    }
+
+    if (root.has_child("climate")) {
+        ryml::ConstNodeRef climateNode = root["climate"];
+        climate.localBlend = readFloat(climateNode, "local_blend", climate.localBlend);
+        climate.latitudeScale = readFloat(climateNode, "latitude_scale", climate.latitudeScale);
+        climate.latitudeStrength = readFloat(climateNode, "latitude_strength", climate.latitudeStrength);
+        climate.elevationLapse = readFloat(climateNode, "elevation_lapse", climate.elevationLapse);
+        if (climateNode.has_child("global")) {
+            applyClimateLayer(climateNode["global"], climate.global);
+        }
+        if (climateNode.has_child("local")) {
+            applyClimateLayer(climateNode["local"], climate.local);
+        }
+    }
+
+    if (root.has_child("biomes")) {
+        ryml::ConstNodeRef biomesNode = root["biomes"];
+        biomes.blend.blendPower = readFloat(biomesNode, "blend_power", biomes.blend.blendPower);
+        biomes.blend.epsilon = readFloat(biomesNode, "epsilon", biomes.blend.epsilon);
+        if (biomesNode.has_child("entries")) {
+            ryml::ConstNodeRef entries = biomesNode["entries"];
+            if (entries.is_seq()) {
+                for (ryml::ConstNodeRef entry : entries.children()) {
+                    BiomeConfig biome;
+                    biome.name = readString(entry, "name", "");
+                    if (entry.has_child("target")) {
+                        biome.target = readBiomeTarget(entry["target"], biome.target);
+                    }
+                    biome.weight = readFloat(entry, "weight", biome.weight);
+                    if (entry.has_child("surface")) {
+                        ryml::ConstNodeRef surface = entry["surface"];
+                        if (surface.is_seq()) {
+                            for (ryml::ConstNodeRef layerNode : surface.children()) {
+                                SurfaceLayer layer;
+                                layer.block = readString(layerNode, "block", "");
+                                layer.depth = readInt(layerNode, "depth", layer.depth);
+                                if (!layer.block.empty()) {
+                                    biome.surface.push_back(std::move(layer));
+                                }
+                            }
+                        }
+                    }
+                    if (!biome.name.empty()) {
+                        biomes.entries.push_back(std::move(biome));
+                    }
+                }
+            }
+        }
+        if (biomesNode.has_child("coast_band")) {
+            ryml::ConstNodeRef bandNode = biomesNode["coast_band"];
+            biomes.coastBand.biome = readString(bandNode, "biome", biomes.coastBand.biome);
+            biomes.coastBand.minContinentalness = readFloat(
+                bandNode, "min_continentalness", biomes.coastBand.minContinentalness);
+            biomes.coastBand.maxContinentalness = readFloat(
+                bandNode, "max_continentalness", biomes.coastBand.maxContinentalness);
+            if (bandNode.has_child("min")) {
+                biomes.coastBand.minContinentalness = readFloat(
+                    bandNode, "min", biomes.coastBand.minContinentalness);
+            }
+            if (bandNode.has_child("max")) {
+                biomes.coastBand.maxContinentalness = readFloat(
+                    bandNode, "max", biomes.coastBand.maxContinentalness);
+            }
+            biomes.coastBand.enabled = !biomes.coastBand.biome.empty();
+            if (biomes.coastBand.minContinentalness > biomes.coastBand.maxContinentalness) {
+                std::swap(biomes.coastBand.minContinentalness,
+                          biomes.coastBand.maxContinentalness);
+            }
+        }
+    }
+
+    if (root.has_child("density_graph")) {
+        ryml::ConstNodeRef graphNode = root["density_graph"];
+        if (graphNode.has_child("outputs")) {
+            ryml::ConstNodeRef outputs = graphNode["outputs"];
+            if (outputs.is_map()) {
+                for (ryml::ConstNodeRef output : outputs.children()) {
+                    std::string key = toStdString(output.key());
+                    std::string value;
+                    output >> value;
+                    if (!key.empty() && !value.empty()) {
+                        densityGraph.outputs[key] = value;
+                    }
+                }
+            }
+        }
+        if (graphNode.has_child("nodes")) {
+            ryml::ConstNodeRef nodes = graphNode["nodes"];
+            if (nodes.is_seq()) {
+                for (ryml::ConstNodeRef node : nodes.children()) {
+                    DensityNodeConfig config;
+                    config.id = readString(node, "id", "");
+                    config.type = readString(node, "type", "");
+                    config.field = readString(node, "field", "");
+                    config.value = readFloat(node, "value", config.value);
+                    config.minValue = readFloat(node, "min", config.minValue);
+                    config.maxValue = readFloat(node, "max", config.maxValue);
+                    config.scale = readFloat(node, "scale", config.scale);
+                    config.offset = readFloat(node, "offset", config.offset);
+                    if (node.has_child("inputs")) {
+                        ryml::ConstNodeRef inputs = node["inputs"];
+                        if (inputs.is_seq()) {
+                            for (ryml::ConstNodeRef input : inputs.children()) {
+                                std::string name;
+                                input >> name;
+                                if (!name.empty()) {
+                                    config.inputs.push_back(std::move(name));
+                                }
+                            }
+                        }
+                    }
+                    if (node.has_child("noise")) {
+                        applyNoise(node["noise"], config.noise);
+                    } else {
+                        applyNoise(node, config.noise);
+                    }
+                    if (node.has_child("spline")) {
+                        ryml::ConstNodeRef spline = node["spline"];
+                        if (spline.is_seq()) {
+                            for (ryml::ConstNodeRef point : spline.children()) {
+                                float x = 0.0f;
+                                float y = 0.0f;
+                                if (point.is_seq() && point.num_children() >= 2) {
+                                    point[0] >> x;
+                                    point[1] >> y;
+                                } else {
+                                    x = readFloat(point, "x", x);
+                                    y = readFloat(point, "y", y);
+                                }
+                                config.splinePoints.emplace_back(x, y);
+                            }
+                        }
+                    }
+                    if (!config.id.empty() && !config.type.empty()) {
+                        auto it = std::find_if(
+                            densityGraph.nodes.begin(),
+                            densityGraph.nodes.end(),
+                            [&](const DensityNodeConfig& existing) { return existing.id == config.id; }
+                        );
+                        if (it != densityGraph.nodes.end()) {
+                            *it = std::move(config);
+                        } else {
+                            densityGraph.nodes.push_back(std::move(config));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (root.has_child("caves")) {
+        ryml::ConstNodeRef cavesNode = root["caves"];
+        caves.enabled = readBool(cavesNode, "enabled", caves.enabled);
+        caves.densityOutput = readString(cavesNode, "density_output", caves.densityOutput);
+        caves.threshold = readFloat(cavesNode, "threshold", caves.threshold);
+        caves.sampleStep = readInt(cavesNode, "sample_step", caves.sampleStep);
+    }
+
+    if (root.has_child("structures")) {
+        ryml::ConstNodeRef structuresNode = root["structures"];
+        if (structuresNode.has_child("features")) {
+            ryml::ConstNodeRef features = structuresNode["features"];
+            if (features.is_seq()) {
+                for (ryml::ConstNodeRef featureNode : features.children()) {
+                    FeatureConfig feature;
+                    feature.name = readString(featureNode, "name", "");
+                    feature.block = readString(featureNode, "block", "");
+                    feature.chance = readFloat(featureNode, "chance", feature.chance);
+                    feature.minHeight = readInt(featureNode, "min_height", feature.minHeight);
+                    feature.maxHeight = readInt(featureNode, "max_height", feature.maxHeight);
+                    if (featureNode.has_child("biomes")) {
+                        ryml::ConstNodeRef biomesNode = featureNode["biomes"];
+                        if (biomesNode.is_seq()) {
+                            for (ryml::ConstNodeRef biomeNode : biomesNode.children()) {
+                                std::string biomeName;
+                                biomeNode >> biomeName;
+                                if (!biomeName.empty()) {
+                                    feature.biomes.push_back(std::move(biomeName));
+                                }
+                            }
+                        }
+                    }
+                    if (!feature.block.empty()) {
+                        structures.features.push_back(std::move(feature));
+                    }
+                }
+            }
         }
     }
 
@@ -146,6 +384,31 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         }
     }
 
+    if (root.has_child("flags")) {
+        ryml::ConstNodeRef flagsNode = root["flags"];
+        if (flagsNode.is_map()) {
+            for (ryml::ConstNodeRef flagNode : flagsNode.children()) {
+                std::string key = toStdString(flagNode.key());
+                bool value = readBool(flagsNode, key.c_str(), false);
+                flags[key] = value;
+            }
+        }
+    }
+
+    if (root.has_child("overlays")) {
+        ryml::ConstNodeRef overlaysNode = root["overlays"];
+        if (overlaysNode.is_seq()) {
+            for (ryml::ConstNodeRef overlayNode : overlaysNode.children()) {
+                OverlayConfig overlay;
+                overlay.path = readString(overlayNode, "path", "");
+                overlay.when = readString(overlayNode, "when", "");
+                if (!overlay.path.empty()) {
+                    overlays.push_back(std::move(overlay));
+                }
+            }
+        }
+    }
+
     spdlog::debug("Applied world gen config from {}", sourceName);
 }
 
@@ -153,6 +416,14 @@ bool WorldGenConfig::isStageEnabled(const std::string& stage) const {
     auto it = stageEnabled.find(stage);
     if (it == stageEnabled.end()) {
         return true;
+    }
+    return it->second;
+}
+
+bool WorldGenConfig::isFlagEnabled(const std::string& name) const {
+    auto it = flags.find(name);
+    if (it == flags.end()) {
+        return false;
     }
     return it->second;
 }

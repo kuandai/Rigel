@@ -35,6 +35,10 @@ constexpr float kDebugDistance = 8.0f;
 constexpr float kDebugAlpha = 0.35f;
 constexpr int kDebugViewportSize = 130;
 constexpr int kDebugViewportMargin = 12;
+constexpr int kFrameGraphSamples = 180;
+constexpr float kFrameGraphMaxMs = 50.0f;
+constexpr float kFrameGraphHeight = 0.28f;
+constexpr float kFrameGraphBottom = -0.95f;
 
 constexpr float kCubeVertices[] = {
     // +X
@@ -197,6 +201,17 @@ struct Application::Impl {
         bool initialized = false;
     };
 
+    struct FrameTimeGraph {
+        GLuint vao = 0;
+        GLuint vbo = 0;
+        Asset::Handle<Asset::ShaderAsset> shader;
+        GLint locColor = -1;
+        std::vector<float> samples;
+        size_t cursor = 0;
+        size_t filled = 0;
+        bool initialized = false;
+    };
+
     GLFWwindow* window = nullptr;
     Asset::AssetManager assets;
     Voxel::World world;
@@ -222,6 +237,7 @@ struct Application::Impl {
     bool lastLeftDown = false;
     bool lastRightDown = false;
     DebugField debugField;
+    FrameTimeGraph frameGraph;
     std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
     float debugDistance = kDebugDistance;
     bool debugOverlayEnabled = true;
@@ -323,6 +339,92 @@ struct Application::Impl {
         debugField.locColor = debugField.shader->uniform("u_color");
 
         debugField.initialized = true;
+    }
+
+    void initFrameGraph() {
+        try {
+            frameGraph.shader = assets.get<Asset::ShaderAsset>("shaders/frame_graph");
+        } catch (const std::exception& e) {
+            spdlog::warn("Frame graph shader unavailable: {}", e.what());
+            return;
+        }
+
+        glGenVertexArrays(1, &frameGraph.vao);
+        glGenBuffers(1, &frameGraph.vbo);
+        frameGraph.samples.assign(kFrameGraphSamples, 0.0f);
+        frameGraph.initialized = true;
+        frameGraph.locColor = frameGraph.shader->uniform("u_color");
+    }
+
+    void recordFrameTime(float seconds) {
+        if (!frameGraph.initialized || seconds <= 0.0f) {
+            return;
+        }
+        float ms = seconds * 1000.0f;
+        frameGraph.samples[frameGraph.cursor] = ms;
+        frameGraph.cursor = (frameGraph.cursor + 1) % frameGraph.samples.size();
+        frameGraph.filled = std::min(frameGraph.samples.size(), frameGraph.filled + 1);
+    }
+
+    void renderFrameGraph() {
+        if (!debugOverlayEnabled || !frameGraph.initialized || frameGraph.filled == 0) {
+            return;
+        }
+
+        const size_t sampleCount = frameGraph.samples.size();
+        const float barWidth = 2.0f / static_cast<float>(sampleCount);
+        const float baseY = kFrameGraphBottom;
+        const float topSpan = kFrameGraphHeight;
+
+        std::vector<glm::vec2> vertices;
+        vertices.reserve(frameGraph.filled * 6);
+
+        for (size_t i = 0; i < frameGraph.filled; ++i) {
+            size_t sampleIndex = (frameGraph.cursor + sampleCount - 1 - i) % sampleCount;
+            float ms = frameGraph.samples[sampleIndex];
+            float t = std::min(ms, kFrameGraphMaxMs) / kFrameGraphMaxMs;
+            float height = t * topSpan;
+
+            float x1 = 1.0f - static_cast<float>(i) * barWidth;
+            float x0 = x1 - barWidth;
+            float y0 = baseY;
+            float y1 = baseY + height;
+
+            vertices.emplace_back(x0, y0);
+            vertices.emplace_back(x1, y0);
+            vertices.emplace_back(x1, y1);
+
+            vertices.emplace_back(x0, y0);
+            vertices.emplace_back(x1, y1);
+            vertices.emplace_back(x0, y1);
+        }
+
+        frameGraph.shader->bind();
+        if (frameGraph.locColor >= 0) {
+            glm::vec4 color(0.2f, 0.9f, 0.9f, 0.85f);
+            glUniform4fv(frameGraph.locColor, 1, glm::value_ptr(color));
+        }
+
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        glBindVertexArray(frameGraph.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, frameGraph.vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(vertices.size() * sizeof(glm::vec2)),
+                     vertices.data(),
+                     GL_DYNAMIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2), nullptr);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
+
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
+        glBindVertexArray(0);
+        glUseProgram(0);
     }
 
     void renderDebugField(const glm::vec3& viewForward,
@@ -699,6 +801,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         }
 
         m_impl->initDebugField();
+        m_impl->initFrameGraph();
         m_impl->worldReady = true;
     } catch (const std::exception& e) {
         spdlog::error("Voxel bootstrap failed: {}", e.what());
@@ -706,8 +809,40 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 }
 
 Application::~Application() {
-    if (m_impl->window) {
+    if (m_impl && m_impl->window) {
+        glfwMakeContextCurrent(m_impl->window);
+
+        if (m_impl->debugField.initialized) {
+            if (m_impl->debugField.vao != 0) {
+                glDeleteVertexArrays(1, &m_impl->debugField.vao);
+                m_impl->debugField.vao = 0;
+            }
+            for (GLuint& vbo : m_impl->debugField.vbos) {
+                if (vbo != 0) {
+                    glDeleteBuffers(1, &vbo);
+                    vbo = 0;
+                }
+            }
+            m_impl->debugField.initialized = false;
+        }
+        if (m_impl->frameGraph.initialized) {
+            if (m_impl->frameGraph.vao != 0) {
+                glDeleteVertexArrays(1, &m_impl->frameGraph.vao);
+                m_impl->frameGraph.vao = 0;
+            }
+            if (m_impl->frameGraph.vbo != 0) {
+                glDeleteBuffers(1, &m_impl->frameGraph.vbo);
+                m_impl->frameGraph.vbo = 0;
+            }
+            m_impl->frameGraph.initialized = false;
+        }
+
+        m_impl->world.clear();
+        m_impl->world.releaseRenderResources();
+        m_impl->assets.clearCache();
+
         glfwDestroyWindow(m_impl->window);
+        m_impl->window = nullptr;
     }
     glfwTerminate();
     spdlog::info("Application terminated successfully");
@@ -724,6 +859,7 @@ void Application::run() {
         double now = glfwGetTime();
         float deltaTime = static_cast<float>(now - m_impl->lastTime);
         m_impl->lastTime = now;
+        m_impl->recordFrameTime(deltaTime);
 
         // Frame setup
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
@@ -817,6 +953,7 @@ void Application::run() {
             m_impl->renderDebugField(m_impl->cameraForward,
                                      width,
                                      height);
+            m_impl->renderFrameGraph();
         }
 
         glfwSwapBuffers(m_impl->window);

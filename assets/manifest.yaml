@@ -62,3 +62,6 @@ assets:
     chunk_debug:
       vertex: shaders/chunk_debug.vert
       fragment: shaders/chunk_debug.frag
+    frame_graph:
+      vertex: shaders/frame_graph.vert
+      fragment: shaders/frame_graph.frag

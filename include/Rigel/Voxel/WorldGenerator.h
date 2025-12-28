@@ -4,6 +4,7 @@
 #include "BlockRegistry.h"
 #include "Chunk.h"
 #include "ChunkCoord.h"
+#include "DensityFunction.h"
 #include "WorldGenConfig.h"
 
 #include <array>
@@ -27,14 +28,29 @@ struct ChunkBuffer {
     }
 };
 
+struct ClimateSample {
+    float temperature = 0.0f;
+    float humidity = 0.0f;
+    float continentalness = 0.0f;
+};
+
+struct BiomeSample {
+    int primary = -1;
+    int secondary = -1;
+    float blend = 0.0f;
+};
+
 struct WorldGenContext {
     ChunkCoord coord;
     const WorldGenConfig* config = nullptr;
+    const BlockRegistry* registry = nullptr;
     BlockID solidBlock = BlockRegistry::airId();
     BlockID surfaceBlock = BlockRegistry::airId();
     BlockID waterBlock = BlockRegistry::airId();
     BlockID sandBlock = BlockRegistry::airId();
     std::array<int, Chunk::SIZE * Chunk::SIZE> heightMap{};
+    std::array<ClimateSample, Chunk::SIZE * Chunk::SIZE> climate{};
+    std::array<BiomeSample, Chunk::SIZE * Chunk::SIZE> biomes{};
     const std::atomic_bool* cancel = nullptr;
 
     bool shouldCancel() const {
@@ -65,6 +81,7 @@ public:
 private:
     const BlockRegistry& m_registry;
     WorldGenConfig m_config;
+    DensityGraph m_densityGraph;
     std::vector<std::unique_ptr<WorldGenStage>> m_stages;
     std::unordered_map<std::string, StageFactory> m_stageFactories;
 

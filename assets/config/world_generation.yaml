@@ -2,6 +2,16 @@ seed: 1337
 solid_block: rigel:stone
 surface_block: rigel:grass
 
+world:
+  min_y: -64
+  max_y: 320
+  sea_level: 60
+  lava_level: -32
+  version: 1
+
+flags:
+  no_carvers: false
+
 terrain:
   base_height: 12.0
   height_variation: 32.0
@@ -11,10 +21,248 @@ terrain:
     frequency: 0.008
     lacunarity: 2.0
     persistence: 0.5
+    scale: 1.0
+    offset: 0.0
+  density_noise:
+    octaves: 4
+    frequency: 0.05
+    lacunarity: 2.0
+    persistence: 0.5
+    scale: 1.0
+    offset: 0.0
+  density_strength: 1.5
+  gradient_strength: 0.0
+
+climate:
+  latitude_scale: 0.0002
+  latitude_strength: 0.3
+  elevation_lapse: 0.0
+  local_blend: 0.3
+  global:
+    temperature:
+      octaves: 2
+      frequency: 0.0005
+      lacunarity: 2.0
+      persistence: 0.5
+      scale: 1.0
+      offset: 0.0
+    humidity:
+      octaves: 2
+      frequency: 0.0005
+      lacunarity: 2.0
+      persistence: 0.5
+      scale: 1.0
+      offset: 0.0
+    continentalness:
+      octaves: 1
+      frequency: 0.0004
+      lacunarity: 2.0
+      persistence: 0.5
+      scale: 1.0
+      offset: 0.0
+  local:
+    temperature:
+      octaves: 1
+      frequency: 0.01
+      lacunarity: 2.0
+      persistence: 0.5
+      scale: 1.0
+      offset: 0.0
+    humidity:
+      octaves: 1
+      frequency: 0.01
+      lacunarity: 2.0
+      persistence: 0.5
+      scale: 1.0
+      offset: 0.0
+    continentalness:
+      octaves: 1
+      frequency: 0.008
+      lacunarity: 2.0
+      persistence: 0.5
+      scale: 1.0
+      offset: 0.0
+
+biomes:
+  blend_power: 2.0
+  epsilon: 0.0001
+  coast_band:
+    biome: beach
+    min_continentalness: -0.15
+    max_continentalness: -0.05
+  entries:
+    - name: land
+      target:
+        temperature: 0.0
+        humidity: 0.0
+        continentalness: 0.4
+      surface:
+        - block: rigel:grass
+          depth: 1
+        - block: rigel:dirt
+          depth: 3
+    - name: beach
+      target:
+        temperature: 0.0
+        humidity: 0.0
+        continentalness: -0.1
+      surface:
+        - block: rigel:sand
+          depth: 4
+    - name: sea
+      target:
+        temperature: 0.0
+        humidity: 0.0
+        continentalness: -0.6
+      surface:
+        - block: rigel:sand
+          depth: 4
+
+density_graph:
+  outputs:
+    base_density: base_density
+    cave_density: cave_density
+  nodes:
+    - id: base_height
+      type: constant
+      value: 12.0
+    - id: height_noise
+      type: noise2d
+      noise:
+        octaves: 5
+        frequency: 0.008
+        lacunarity: 2.0
+        persistence: 0.5
+        scale: 32.0
+        offset: 0.0
+    - id: height
+      type: add
+      inputs: [base_height, height_noise]
+    - id: y
+      type: y
+    - id: y_invert
+      type: invert
+      inputs: [y]
+    - id: height_minus_y
+      type: add
+      inputs: [height, y_invert]
+    - id: gradient_strength
+      type: constant
+      value: 0.0
+    - id: gradient
+      type: mul
+      inputs: [height_minus_y, gradient_strength]
+    - id: density_noise
+      type: noise3d
+      noise:
+        octaves: 4
+        frequency: 0.05
+        lacunarity: 2.0
+        persistence: 0.5
+        scale: 1.0
+        offset: 0.0
+    - id: y_norm
+      type: y
+      scale: 0.0026041667
+      offset: 0.1666667
+    - id: continentalness_raw
+      type: climate
+      field: continentalness
+    - id: continentalness
+      type: clamp
+      min: -1.0
+      max: 1.0
+      inputs: [continentalness_raw]
+    - id: continent_shift
+      type: spline
+      inputs: [continentalness]
+      spline:
+        - [-1.0, 0.25]
+        - [-0.6, 0.18]
+        - [-0.2, 0.06]
+        - [-0.15, 0.02]
+        - [-0.05, 0.0]
+        - [0.0, -0.02]
+        - [0.2, -0.08]
+        - [0.5, -0.18]
+        - [1.0, -0.25]
+    - id: y_norm_shifted
+      type: add
+      inputs: [y_norm, continent_shift]
+    - id: threshold_curve
+      type: spline
+      inputs: [y_norm_shifted]
+      spline:
+        - [0.0, -2.0]
+        - [0.2969, -2.0]
+        - [0.375, 2.0]
+        - [1.0, 2.0]
+    - id: threshold_invert
+      type: invert
+      inputs: [threshold_curve]
+    - id: continent_bias
+      type: spline
+      inputs: [continentalness]
+      spline:
+        - [-1.0, -2.2]
+        - [-0.6, -2.0]
+        - [-0.2, -0.3]
+        - [-0.05, -0.05]
+        - [0.0, 0.0]
+        - [0.2, 0.12]
+        - [0.5, 0.3]
+        - [1.0, 0.6]
+    - id: base_density
+      type: add
+      inputs: [density_noise, threshold_invert, continent_bias]
+    - id: cave_noise
+      type: noise3d
+      noise:
+        octaves: 2
+        frequency: 0.02
+        lacunarity: 2.0
+        persistence: 0.5
+        scale: 1.0
+        offset: 0.0
+    - id: cave_depth_bias
+      type: spline
+      inputs: [y]
+      spline:
+        - [-64.0, 0.3]
+        - [0.0, 0.0]
+        - [30.0, -0.2]
+        - [50.0, -0.35]
+        - [60.0, -0.5]
+        - [70.0, -0.65]
+        - [80.0, -0.8]
+        - [100.0, -1.0]
+        - [140.0, -1.2]
+    - id: cave_density
+      type: add
+      inputs: [cave_noise, cave_depth_bias]
+
+caves:
+  enabled: true
+  density_output: cave_density
+  threshold: 0.75
+  sample_step: 8
+
+structures:
+  features:
+    - name: boulders
+      block: rigel:stone
+      chance: 0.02
+      min_height: 2
+      max_height: 4
+      biomes: [plains]
+
+overlays:
+  - path: assets/config/worldgen_overlays/no_carvers.yaml
+    when: no_carvers
 
 streaming:
-  view_distance_chunks: 10
-  unload_distance_chunks: 12 
+  view_distance_chunks: 15
+  unload_distance_chunks: 16 
   gen_queue_limit: 128
   mesh_queue_limit: 128
   apply_budget_per_frame: 128
@@ -36,6 +284,6 @@ generation:
     - stage: surface_rules
       enabled: true
     - stage: structures
-      enabled: true
+      enabled: false
     - stage: post_process
       enabled: true

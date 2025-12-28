@@ -176,7 +176,7 @@ configurable but the stage ordering is fixed for deterministic behavior.
 
 2. **Global Climate Fields**
    - Sample global-scale climate signals (temperature, humidity,
-     continentalness, erosion, weirdness).
+     continentalness).
 
 3. **Local Climate Refinement**
    - Add local-scale noise variation without breaking global continuity.
@@ -186,11 +186,13 @@ configurable but the stage ordering is fixed for deterministic behavior.
    - Produce blended biome parameters.
 
 5. **Terrain Height and Base Density**
-   - Compute base height (continentalness + erosion curves).
+   - Compute base height (continentalness curves).
    - Compute base density from height and 3D noise.
+   - When configured, `density_graph.outputs.base_density` supplies the density.
 
 6. **Caves and Density Carving**
    - Apply threshold caves and worm tunnels (configurable).
+   - When configured, `density_graph.outputs.cave_density` supplies the carve signal.
 
 7. **Surface Rules**
    - Apply biome surface materials (topsoil, subsoil, rock strata).
@@ -290,11 +292,13 @@ mod packs) without restricting runtime behavior.
 
 Config defines:
 
+- **World bounds and versioning**:
+  - `world.min_y`, `world.max_y`, `world.sea_level`, `world.lava_level`
+  - `world.version` for regeneration when the pipeline changes
 - **World seed** and world size scaling (meters per block, km per chunk).
 - **Global climate curves**:
   - latitude → temperature multiplier
   - continentalness → base height
-  - erosion → roughness
 - **Noise stack parameters**:
   - octave count, lacunarity, persistence
   - domain warp strength, frequency ranges
@@ -303,9 +307,14 @@ Config defines:
   - blending exponent
   - surface block layers
   - structure lists and probabilities
+- **Density graph**:
+  - named nodes and outputs (`base_density`, `cave_density`)
+  - node types like noise, add/mul, clamp, spline, and climate lookups
 - **Cave tuning**:
   - threshold values
   - worm counts, step sizes, radius ranges
+- **Overlays**:
+  - optional configs merged when `flags` toggle on
 
 Configuration is loaded at startup and may be hot-reloaded when supported by
 the active config source.

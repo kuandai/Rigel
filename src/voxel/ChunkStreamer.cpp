@@ -425,14 +425,19 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             continue;
         }
 
+        if (chunk->meshRevision() != meshResult.revision) {
+            stateIt->second = ChunkState::ReadyData;
+            continue;
+        }
+
         bool needsRemesh = chunk->isDirty();
 
         if (meshResult.empty) {
-            if (m_renderer) {
-                m_renderer->removeChunkMesh(meshResult.coord);
+            if (m_meshStore) {
+                m_meshStore->remove(meshResult.coord);
             }
-        } else if (m_renderer) {
-            m_renderer->setChunkMesh(meshResult.coord, std::move(meshResult.mesh));
+        } else if (m_meshStore) {
+            m_meshStore->set(meshResult.coord, std::move(meshResult.mesh));
         }
         if (needsRemesh) {
             stateIt->second = ChunkState::ReadyData;
@@ -508,6 +513,7 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
 
     MeshTask task;
     task.coord = coord;
+    task.revision = chunk.meshRevision();
     chunk.copyBlocks(task.blocks);
 
     std::array<const Chunk*, 27> neighborChunks{};
@@ -606,6 +612,7 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
 
         MeshResult result;
         result.coord = task.coord;
+        result.revision = task.revision;
         result.mesh = std::move(mesh);
         result.seconds = std::chrono::duration<double>(end - start).count();
         result.empty = result.mesh.isEmpty();

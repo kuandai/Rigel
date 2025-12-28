@@ -133,7 +133,10 @@ public:
     void clearDirty() { m_dirty = false; }
 
     /// Mark chunk as needing mesh rebuild
-    void markDirty() { m_dirty = true; }
+    void markDirty() {
+        m_dirty = true;
+        bumpMeshRevision();
+    }
 
     /// Check if chunk contains only air blocks
     bool isEmpty() const { return m_nonAirCount == 0; }
@@ -146,6 +149,9 @@ public:
 
     /// Get count of opaque blocks
     uint32_t opaqueCount() const { return m_opaqueCount; }
+
+    /// Mesh revision for tracking stale mesh tasks
+    uint32_t meshRevision() const { return m_meshRevision; }
 
     /// Get worldgen version metadata
     uint32_t worldGenVersion() const { return m_worldGenVersion; }
@@ -199,6 +205,7 @@ private:
     bool m_dirty = true;
     uint32_t m_nonAirCount = 0;
     uint32_t m_opaqueCount = 0;
+    uint32_t m_meshRevision = 0;
     uint32_t m_worldGenVersion = 0;
 
     /// Convert 3D coordinates to flat array index
@@ -216,6 +223,11 @@ private:
 
     static constexpr int subchunkFlatIndex(int x, int y, int z) {
         return x + y * SUBCHUNK_SIZE + z * SUBCHUNK_SIZE * SUBCHUNK_SIZE;
+    }
+
+    void bumpMeshRevision() {
+        uint32_t next = m_meshRevision + 1;
+        m_meshRevision = (next == 0) ? 1 : next;
     }
 
     void setBlockInternal(int x, int y, int z, BlockState state, const BlockRegistry* registry);

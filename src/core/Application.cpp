@@ -744,12 +744,37 @@ void Application::run() {
             bool leftDown = glfwGetMouseButton(m_impl->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             bool rightDown = glfwGetMouseButton(m_impl->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
             if (m_impl->cursorCaptured) {
+                auto rebuildEditedChunk = [&](const glm::ivec3& worldPos) {
+                    Voxel::ChunkCoord coord = Voxel::worldToChunk(worldPos.x, worldPos.y, worldPos.z);
+                    int lx = 0;
+                    int ly = 0;
+                    int lz = 0;
+                    Voxel::worldToLocal(worldPos.x, worldPos.y, worldPos.z, lx, ly, lz);
+                    m_impl->world.rebuildChunkMesh(coord);
+                    if (lx == 0) {
+                        m_impl->world.rebuildChunkMesh(coord.offset(-1, 0, 0));
+                    } else if (lx == Voxel::Chunk::SIZE - 1) {
+                        m_impl->world.rebuildChunkMesh(coord.offset(1, 0, 0));
+                    }
+                    if (ly == 0) {
+                        m_impl->world.rebuildChunkMesh(coord.offset(0, -1, 0));
+                    } else if (ly == Voxel::Chunk::SIZE - 1) {
+                        m_impl->world.rebuildChunkMesh(coord.offset(0, 1, 0));
+                    }
+                    if (lz == 0) {
+                        m_impl->world.rebuildChunkMesh(coord.offset(0, 0, -1));
+                    } else if (lz == Voxel::Chunk::SIZE - 1) {
+                        m_impl->world.rebuildChunkMesh(coord.offset(0, 0, 1));
+                    }
+                };
+
                 const float interactDistance = 8.0f;
                 RaycastHit hit;
                 if (leftDown && !m_impl->lastLeftDown) {
                     if (raycastBlock(m_impl->world, m_impl->cameraPos, m_impl->cameraForward,
                                      interactDistance, hit)) {
                         m_impl->world.setBlock(hit.block.x, hit.block.y, hit.block.z, Voxel::BlockState{});
+                        rebuildEditedChunk(hit.block);
                     }
                 }
                 if (rightDown && !m_impl->lastRightDown) {
@@ -762,6 +787,7 @@ void Application::run() {
                             Voxel::BlockState state;
                             state.id = m_impl->placeBlock;
                             m_impl->world.setBlock(placePos.x, placePos.y, placePos.z, state);
+                            rebuildEditedChunk(placePos);
                         }
                     }
                 }

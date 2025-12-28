@@ -75,12 +75,14 @@ private:
 
     struct MeshTask {
         ChunkCoord coord;
+        uint32_t revision = 0;
         std::array<BlockState, Chunk::VOLUME> blocks{};
         std::array<BlockState, kPaddedVolume> paddedBlocks{};
     };
 
     struct MeshResult {
         ChunkCoord coord;
+        uint32_t revision = 0;
         ChunkMesh mesh;
         double seconds = 0.0;
         bool empty = false;

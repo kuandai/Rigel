@@ -172,6 +172,11 @@ public:
      */
     int viewDistanceChunks() const;
 
+    /**
+     * @brief Rebuild mesh for a specific chunk immediately.
+     */
+    void rebuildChunkMesh(ChunkCoord coord);
+
     /// @}
 
     /// @name Lifecycle
@@ -204,14 +209,16 @@ private:
     ChunkManager m_chunkManager;
     MeshBuilder m_meshBuilder;
     ChunkRenderer m_renderer;
+    WorldMeshStore m_meshStore;
     TextureAtlas m_textureAtlas;
     ChunkStreamer m_streamer;
     std::shared_ptr<WorldGenerator> m_generator;
+    Asset::Handle<Asset::ShaderAsset> m_shader;
+    WorldRenderConfig m_renderConfig;
     ChunkBenchmarkStats* m_benchmark = nullptr;
 
     bool m_initialized = false;
 
-    void rebuildChunkMesh(ChunkCoord coord);
 };
 
 } // namespace Rigel::Voxel

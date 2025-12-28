@@ -101,6 +101,7 @@ void Chunk::setBlockInternal(int x, int y, int z, BlockState state, const BlockR
     }
 
     m_dirty = true;
+    bumpMeshRevision();
 }
 
 void Chunk::fill(BlockState state) {
@@ -164,6 +165,7 @@ void Chunk::copyFromInternal(std::span<const BlockState> data, const BlockRegist
     }
 
     m_dirty = true;
+    bumpMeshRevision();
 }
 
 std::vector<uint8_t> Chunk::serialize() const {
@@ -278,6 +280,7 @@ void Chunk::fillInternal(BlockState state, const BlockRegistry* registry) {
         m_nonAirCount = 0;
         m_opaqueCount = 0;
         m_dirty = true;
+        bumpMeshRevision();
         return;
     }
 
@@ -296,6 +299,7 @@ void Chunk::fillInternal(BlockState state, const BlockRegistry* registry) {
     m_nonAirCount = VOLUME;
     m_opaqueCount = isOpaque ? VOLUME : 0;
     m_dirty = true;
+    bumpMeshRevision();
 }
 
 void Chunk::Subchunk::allocate() {

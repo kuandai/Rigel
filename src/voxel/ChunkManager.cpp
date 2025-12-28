@@ -1,4 +1,5 @@
 #include "Rigel/Voxel/ChunkManager.h"
+#include "Rigel/Voxel/BlockRegistry.h"
 
 #include <spdlog/spdlog.h>
 
@@ -64,7 +65,11 @@ void ChunkManager::setBlock(int wx, int wy, int wz, BlockState state) {
     if (chunk.getBlock(lx, ly, lz) == state) {
         return;
     }
-    chunk.setBlock(lx, ly, lz, state);
+    if (m_registry) {
+        chunk.setBlock(lx, ly, lz, state, *m_registry);
+    } else {
+        chunk.setBlock(lx, ly, lz, state);
+    }
 
     if (lx == 0) {
         if (Chunk* neighbor = getChunk(chunkCoord.offset(-1, 0, 0))) {
@@ -103,7 +108,13 @@ void ChunkManager::loadChunk(ChunkCoord coord, std::span<const uint8_t> data) {
     // Override position from coordinate (in case data has wrong position)
     // Note: This requires making a new chunk since position is set in constructor
     auto newChunk = std::make_unique<Chunk>(coord);
-    newChunk->copyFrom(std::span<const BlockState>(chunk.blocks().data(), chunk.blocks().size()));
+    std::array<BlockState, Chunk::VOLUME> blocks{};
+    chunk.copyBlocks(blocks);
+    if (m_registry) {
+        newChunk->copyFrom(blocks, *m_registry);
+    } else {
+        newChunk->copyFrom(blocks);
+    }
 
     m_chunks[coord] = std::move(newChunk);
 

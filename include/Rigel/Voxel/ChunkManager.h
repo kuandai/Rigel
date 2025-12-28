@@ -17,6 +17,7 @@
 #include <vector>
 
 namespace Rigel::Voxel {
+class BlockRegistry;
 
 /**
  * @brief Manages multiple chunks in a voxel world.
@@ -184,8 +185,14 @@ public:
 
     /// @}
 
+    /**
+     * @brief Provide block registry for opacity tracking.
+     */
+    void setRegistry(const BlockRegistry* registry) { m_registry = registry; }
+
 private:
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> m_chunks;
+    const BlockRegistry* m_registry = nullptr;
 };
 
 } // namespace Rigel::Voxel

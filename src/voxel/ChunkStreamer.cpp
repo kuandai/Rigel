@@ -152,6 +152,19 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
 
         Chunk* chunk = m_chunkManager->getChunk(coord);
         if (chunk) {
+            if (m_generator &&
+                chunk->worldGenVersion() != m_generator->config().world.version) {
+                if (m_renderer) {
+                    m_renderer->removeChunkMesh(coord);
+                }
+                m_chunkManager->unloadChunk(coord);
+                m_states.erase(coord);
+                if (!genFull) {
+                    enqueueGeneration(coord);
+                    genFull = m_inFlightGen >= genLimit;
+                }
+                continue;
+            }
             bool hasMesh = m_renderer && m_renderer->hasChunkMesh(coord);
             bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
             if (stateIt == m_states.end() || state == ChunkState::QueuedGen) {
@@ -344,7 +357,12 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         }
 
         Chunk& chunk = m_chunkManager->getOrCreateChunk(genResult.coord);
-        chunk.copyFrom(genResult.blocks);
+        if (m_registry) {
+            chunk.copyFrom(genResult.blocks, *m_registry);
+        } else {
+            chunk.copyFrom(genResult.blocks);
+        }
+        chunk.setWorldGenVersion(genResult.worldGenVersion);
 
         if (m_benchmark) {
             m_benchmark->addGeneration(genResult.seconds);
@@ -460,6 +478,7 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
         GenResult result;
         result.coord = coord;
         result.blocks = buffer.blocks;
+        result.worldGenVersion = generator ? generator->config().world.version : 0;
         result.seconds = std::chrono::duration<double>(end - start).count();
         result.cancelled = cancelToken->load(std::memory_order_relaxed);
         result.cancelToken = cancelToken;
@@ -489,7 +508,7 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
 
     MeshTask task;
     task.coord = coord;
-    task.blocks = chunk.blocks();
+    chunk.copyBlocks(task.blocks);
 
     std::array<const Chunk*, 27> neighborChunks{};
     auto neighborIndex = [](int dx, int dy, int dz) {

@@ -106,12 +106,10 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
     std::array<std::vector<VoxelVertex>, RenderLayerCount> layerVertices;
     std::array<std::vector<uint32_t>, RenderLayerCount> layerIndices;
 
-    // Iterate all blocks
-    const auto& blocks = ctx.chunk.blocks();
     for (int z = 0; z < Chunk::SIZE; z++) {
         for (int y = 0; y < Chunk::SIZE; y++) {
             for (int x = 0; x < Chunk::SIZE; x++) {
-                BlockState state = blocks[x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE];
+                BlockState state = ctx.chunk.getBlock(x, y, z);
 
                 // Skip air
                 if (state.isAir()) {

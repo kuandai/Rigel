@@ -12,6 +12,7 @@
 #include "ChunkCoord.h"
 
 #include <array>
+#include <memory>
 #include <span>
 #include <vector>
 #include <cstdint>
@@ -34,6 +35,8 @@ namespace Rigel::Voxel {
  * Chunk is not thread-safe. External synchronization is required for
  * concurrent access.
  */
+class BlockRegistry;
+
 class Chunk {
 public:
     /// Chunk dimension (blocks per side)
@@ -41,6 +44,17 @@ public:
 
     /// Total blocks in chunk
     static constexpr int VOLUME = SIZE * SIZE * SIZE;
+
+    /// Subchunk dimension (blocks per side)
+    static constexpr int SUBCHUNK_SIZE = SIZE / 2;
+
+    /// Total blocks per subchunk
+    static constexpr int SUBCHUNK_VOLUME = SUBCHUNK_SIZE * SUBCHUNK_SIZE * SUBCHUNK_SIZE;
+
+    /// Total subchunks per chunk (2x2x2)
+    static constexpr int SUBCHUNK_COUNT = 8;
+
+    static_assert(SIZE % 2 == 0, "Chunk SIZE must be divisible by 2");
 
     /**
      * @brief Construct an empty chunk at origin.
@@ -81,10 +95,20 @@ public:
     void setBlock(int x, int y, int z, BlockState state);
 
     /**
+     * @brief Set block with registry-driven opacity tracking.
+     */
+    void setBlock(int x, int y, int z, BlockState state, const BlockRegistry& registry);
+
+    /**
      * @brief Fill entire chunk with a single block state.
      * @param state The block state to fill with
      */
     void fill(BlockState state);
+
+    /**
+     * @brief Fill entire chunk with a single block state (opacity-aware).
+     */
+    void fill(BlockState state, const BlockRegistry& registry);
 
     /**
      * @brief Copy block data from a span.
@@ -93,6 +117,11 @@ public:
      * @throws std::invalid_argument if data.size() != VOLUME
      */
     void copyFrom(std::span<const BlockState> data);
+
+    /**
+     * @brief Copy block data from a span (opacity-aware).
+     */
+    void copyFrom(std::span<const BlockState> data, const BlockRegistry& registry);
 
     /// @name State Tracking
     /// @{
@@ -115,16 +144,23 @@ public:
     /// Get count of non-air blocks
     uint32_t nonAirCount() const { return m_nonAirCount; }
 
+    /// Get count of opaque blocks
+    uint32_t opaqueCount() const { return m_opaqueCount; }
+
+    /// Get worldgen version metadata
+    uint32_t worldGenVersion() const { return m_worldGenVersion; }
+
+    /// Set worldgen version metadata
+    void setWorldGenVersion(uint32_t version) { m_worldGenVersion = version; }
+
     /// @}
 
     /**
-     * @brief Get read-only access to raw block data.
+     * @brief Copy all blocks into an output span.
      *
-     * Useful for mesh generation where all blocks need to be accessed.
-     *
-     * @return Reference to internal block array
+     * The output span must be VOLUME in size.
      */
-    const std::array<BlockState, VOLUME>& blocks() const { return m_blocks; }
+    void copyBlocks(std::span<BlockState> out) const;
 
     /// @name Serialization
     /// @{
@@ -146,21 +182,45 @@ public:
     /// @}
 
 private:
+    struct Subchunk {
+        std::unique_ptr<std::array<BlockState, SUBCHUNK_VOLUME>> blocks;
+        uint32_t nonAirCount = 0;
+        uint32_t opaqueCount = 0;
+
+        bool isAllocated() const { return blocks != nullptr; }
+        void allocate();
+        void clear();
+    };
+
     ChunkCoord m_position{0, 0, 0};
-    std::array<BlockState, VOLUME> m_blocks{};
+    std::array<Subchunk, SUBCHUNK_COUNT> m_subchunks{};
 
     // Cached state
     bool m_dirty = true;
     uint32_t m_nonAirCount = 0;
     uint32_t m_opaqueCount = 0;
+    uint32_t m_worldGenVersion = 0;
 
     /// Convert 3D coordinates to flat array index
     static constexpr int flatIndex(int x, int y, int z) {
         return x + y * SIZE + z * SIZE * SIZE;
     }
 
-    /// Update counters when a block changes
-    void updateCounters(BlockState oldState, BlockState newState);
+    static constexpr int subchunkIndex(int x, int y, int z) {
+        return (x / SUBCHUNK_SIZE) + (y / SUBCHUNK_SIZE) * 2 + (z / SUBCHUNK_SIZE) * 4;
+    }
+
+    static constexpr int subchunkLocal(int value) {
+        return value % SUBCHUNK_SIZE;
+    }
+
+    static constexpr int subchunkFlatIndex(int x, int y, int z) {
+        return x + y * SUBCHUNK_SIZE + z * SUBCHUNK_SIZE * SUBCHUNK_SIZE;
+    }
+
+    void setBlockInternal(int x, int y, int z, BlockState state, const BlockRegistry* registry);
+    void fillInternal(BlockState state, const BlockRegistry* registry);
+    void copyFromInternal(std::span<const BlockState> data, const BlockRegistry* registry);
 };
 
 } // namespace Rigel::Voxel

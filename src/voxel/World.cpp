@@ -32,6 +32,7 @@ void World::initialize(Asset::AssetManager& assets) {
     try {
         BlockLoader loader;
         size_t loaded = loader.loadFromManifest(assets, m_blockRegistry, m_textureAtlas);
+        m_chunkManager.setRegistry(&m_blockRegistry);
         if (m_textureAtlas.textureCount() > 0) {
             m_textureAtlas.upload();
         }

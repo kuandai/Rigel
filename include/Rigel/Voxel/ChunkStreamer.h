@@ -67,6 +67,7 @@ private:
     struct GenResult {
         ChunkCoord coord;
         std::array<BlockState, Chunk::VOLUME> blocks{};
+        uint32_t worldGenVersion = 0;
         double seconds = 0.0;
         bool cancelled = false;
         std::shared_ptr<std::atomic_bool> cancelToken;

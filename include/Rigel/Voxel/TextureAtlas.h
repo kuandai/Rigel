@@ -185,6 +185,13 @@ public:
      */
     int tileSize() const { return m_config.tileSize; }
 
+    /**
+     * @brief Release GPU resources.
+     *
+     * Safe to call multiple times. Requires a valid OpenGL context.
+     */
+    void releaseGPU();
+
 private:
     Config m_config;
     GLuint m_textureArray = 0;
@@ -197,8 +204,6 @@ private:
 
     std::vector<TextureEntry> m_entries;
     std::unordered_map<std::string, TextureHandle> m_pathToHandle;
-
-    void releaseGPU();
 };
 
 } // namespace Rigel::Voxel

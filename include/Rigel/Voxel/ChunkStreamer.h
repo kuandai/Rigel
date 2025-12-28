@@ -4,9 +4,9 @@
 #include "ChunkCache.h"
 #include "ChunkBenchmark.h"
 #include "ChunkManager.h"
-#include "ChunkRenderer.h"
 #include "ChunkMesh.h"
 #include "TextureAtlas.h"
+#include "WorldMeshStore.h"
 #include "WorldGenConfig.h"
 #include "WorldGenerator.h"
 
@@ -40,7 +40,7 @@ public:
 
     void setConfig(const WorldGenConfig::StreamConfig& config);
     void bind(ChunkManager* manager,
-              ChunkRenderer* renderer,
+              WorldMeshStore* meshStore,
               BlockRegistry* registry,
               TextureAtlas* atlas,
               std::shared_ptr<WorldGenerator> generator);
@@ -93,7 +93,7 @@ private:
 
     WorldGenConfig::StreamConfig m_config;
     ChunkManager* m_chunkManager = nullptr;
-    ChunkRenderer* m_renderer = nullptr;
+    WorldMeshStore* m_meshStore = nullptr;
     BlockRegistry* m_registry = nullptr;
     TextureAtlas* m_atlas = nullptr;
     std::shared_ptr<WorldGenerator> m_generator;

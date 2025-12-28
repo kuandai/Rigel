@@ -39,7 +39,6 @@ namespace Rigel::Voxel {
  * };
  *
  * ChunkMesh mesh = builder.build(ctx);
- * mesh.uploadToGPU();
  * @endcode
  */
 class MeshBuilder {
@@ -74,7 +73,7 @@ public:
      * @brief Build mesh for a chunk.
      *
      * @param ctx Build context with chunk, registry, and neighbors
-     * @return The generated mesh (CPU-side data only, call uploadToGPU())
+     * @return The generated mesh (CPU-side data)
      */
     ChunkMesh build(const BuildContext& ctx) const;
 

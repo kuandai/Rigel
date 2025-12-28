@@ -4,66 +4,36 @@
  * @file ChunkRenderer.h
  * @brief Rendering system for voxel chunks.
  *
- * ChunkRenderer handles multi-pass rendering of chunk meshes with proper
- * layer ordering for transparency.
+ * ChunkRenderer consumes world mesh data and manages GPU resources per
+ * renderer/context.
  */
 
 #include "Block.h"
-#include "ChunkMesh.h"
 #include "ChunkCoord.h"
-#include "TextureAtlas.h"
+#include "ChunkMesh.h"
+#include "WorldMeshStore.h"
+#include "WorldRenderContext.h"
 
-#include <Rigel/Asset/Types.h>
 #include <Rigel/Asset/Handle.h>
+#include <Rigel/Asset/Types.h>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
-#include <memory>
 #include <unordered_map>
+#include <vector>
+#include <GL/glew.h>
 
 namespace Rigel::Voxel {
 
 /**
  * @brief Renders voxel chunks with multi-pass transparency support.
  *
- * Manages a collection of chunk meshes and renders them in the correct
- * order for transparency. Supports:
- * - Opaque pass (depth write, no blend)
- * - Cutout pass (alpha test)
- * - Transparent pass (alpha blend, sorted)
- * - Emissive pass (additive blend)
- *
- * @section usage Usage
- *
- * @code
- * ChunkRenderer renderer;
- * renderer.setShader(myShader);
- * renderer.setTextureAtlas(&atlas);
- *
- * // Add meshes
- * renderer.setChunkMesh(chunkCoord, std::move(mesh));
- *
- * // Each frame
- * renderer.render(viewProjection, cameraPosition);
- * @endcode
+ * Renderer holds GPU resources only. World mesh data is provided through
+ * WorldRenderContext each frame.
  */
 class ChunkRenderer {
 public:
-    /**
-     * @brief Renderer configuration.
-     */
-    struct Config {
-        float renderDistance = 256.0f;  ///< Max distance to render chunks
-        glm::vec3 sunDirection = glm::vec3(0.5f, 1.0f, 0.3f);  ///< Sun direction for lighting
-        float transparentAlpha = 0.5f;  ///< Alpha multiplier for transparent layer
-    };
-
-    /**
-     * @brief Construct renderer with configuration.
-     */
-    ChunkRenderer();
-    explicit ChunkRenderer(const Config& config);
-
+    ChunkRenderer() = default;
     ~ChunkRenderer() = default;
 
     /// Non-copyable
@@ -75,78 +45,53 @@ public:
     ChunkRenderer& operator=(ChunkRenderer&&) = default;
 
     /**
-     * @brief Set the shader program for rendering.
-     *
-     * @param shader Handle to shader asset
+     * @brief Render a world context.
      */
-    void setShader(Asset::Handle<Asset::ShaderAsset> shader);
+    void render(const WorldRenderContext& ctx);
 
     /**
-     * @brief Set the texture atlas.
-     *
-     * @param atlas Pointer to texture atlas (must remain valid)
+     * @brief Clear all GPU-resident meshes.
      */
-    void setTextureAtlas(TextureAtlas* atlas);
+    void clearCache();
 
     /**
-     * @brief Add or update mesh for a chunk.
-     *
-     * @param coord Chunk coordinate
-     * @param mesh The mesh to store (moved)
+     * @brief Get number of cached GPU meshes.
      */
-    void setChunkMesh(ChunkCoord coord, ChunkMesh mesh);
-
-    /**
-     * @brief Remove mesh for a chunk.
-     *
-     * @param coord Chunk coordinate
-     */
-    void removeChunkMesh(ChunkCoord coord);
-
-    /**
-     * @brief Check if a chunk has a mesh.
-     */
-    bool hasChunkMesh(ChunkCoord coord) const;
-
-    /**
-     * @brief Get number of stored meshes.
-     */
-    size_t meshCount() const { return m_meshes.size(); }
-
-    /**
-     * @brief Clear all stored meshes.
-     */
-    void clear();
-
-    /**
-     * @brief Render all visible chunks.
-     *
-     * @param viewProjection Combined view-projection matrix
-     * @param cameraPos Camera world position (for distance culling)
-     */
-    void render(const glm::mat4& viewProjection, const glm::vec3& cameraPos);
-
-    /**
-     * @brief Set sun direction for lighting.
-     */
-    void setSunDirection(const glm::vec3& dir);
-
-    /**
-     * @brief Get current configuration.
-     */
-    const Config& config() const { return m_config; }
-
-    /**
-     * @brief Modify configuration.
-     */
-    Config& config() { return m_config; }
+    size_t cachedMeshCount() const { return m_meshes.size(); }
 
 private:
-    Config m_config;
-    Asset::Handle<Asset::ShaderAsset> m_shader;
-    TextureAtlas* m_atlas = nullptr;
+    struct GpuMesh {
+        GLuint vao = 0;
+        GLuint vbo = 0;
+        GLuint ebo = 0;
+        size_t indexCount = 0;
+        std::array<ChunkMesh::LayerRange, RenderLayerCount> layers{};
 
-    std::unordered_map<ChunkCoord, ChunkMesh, ChunkCoordHash> m_meshes;
+        GpuMesh() = default;
+        ~GpuMesh();
+
+        GpuMesh(const GpuMesh&) = delete;
+        GpuMesh& operator=(const GpuMesh&) = delete;
+
+        GpuMesh(GpuMesh&& other) noexcept;
+        GpuMesh& operator=(GpuMesh&& other) noexcept;
+
+        bool isValid() const { return vao != 0 && indexCount > 0; }
+
+        void release();
+    };
+
+    struct GpuMeshEntry {
+        ChunkCoord coord{};
+        MeshRevision revision{};
+        GpuMesh mesh;
+    };
+
+    std::unordered_map<MeshId, GpuMeshEntry, MeshIdHash> m_meshes;
+    std::unordered_map<uint32_t, uint64_t> m_storeVersions;
+
+    Asset::Handle<Asset::ShaderAsset> m_shader;
+    const TextureAtlas* m_atlas = nullptr;
 
     // Cached uniform locations
     GLint m_locViewProjection = -1;
@@ -156,9 +101,19 @@ private:
     GLint m_locAlphaMultiplier = -1;
     GLint m_locAlphaCutoff = -1;
 
+    struct RenderEntry {
+        ChunkCoord coord{};
+        MeshId meshId{};
+        float distanceSq = 0.0f;
+    };
+
+    void uploadMesh(GpuMesh& gpu, const ChunkMesh& mesh) const;
+    void pruneCache(const WorldMeshStore& store);
     void cacheUniformLocations();
-    void renderPass(RenderLayer layer, const glm::mat4& viewProjection, const glm::vec3& cameraPos);
-    void setupLayerState(RenderLayer layer);
+    void renderPass(RenderLayer layer,
+                    const std::vector<RenderEntry>& entries,
+                    const WorldRenderContext& ctx);
+    void setupLayerState(RenderLayer layer) const;
 };
 
 } // namespace Rigel::Voxel

@@ -1,28 +1,45 @@
 #include "TestFramework.h"
 
-#include "Rigel/Voxel/ChunkRenderer.h"
-
-#include <glm/glm.hpp>
+#include "Rigel/Voxel/WorldMeshStore.h"
 
 using namespace Rigel::Voxel;
 
-TEST_CASE(ChunkRenderer_MeshTracking) {
-    ChunkRenderer renderer;
-    CHECK_EQ(renderer.meshCount(), static_cast<size_t>(0));
-
+TEST_CASE(WorldMeshStore_RevisionTracking) {
+    WorldMeshStore store;
     ChunkMesh mesh;
-    renderer.setChunkMesh({0, 0, 0}, std::move(mesh));
-    CHECK(renderer.hasChunkMesh({0, 0, 0}));
-    CHECK_EQ(renderer.meshCount(), static_cast<size_t>(1));
+    mesh.vertices.resize(3);
+    mesh.indices.resize(3);
 
-    renderer.removeChunkMesh({0, 0, 0});
-    CHECK_EQ(renderer.meshCount(), static_cast<size_t>(0));
+    store.set({0, 0, 0}, mesh);
+    MeshRevision firstRevision{};
+    store.forEach([&](const WorldMeshEntry& entry) {
+        firstRevision = entry.revision;
+    });
+    CHECK_EQ(firstRevision.value, static_cast<uint32_t>(1));
+
+    store.set({0, 0, 0}, mesh);
+    MeshRevision secondRevision{};
+    store.forEach([&](const WorldMeshEntry& entry) {
+        secondRevision = entry.revision;
+    });
+    CHECK_EQ(secondRevision.value, static_cast<uint32_t>(2));
+
+    CHECK(store.contains({0, 0, 0}));
+    store.remove({0, 0, 0});
+    CHECK(!store.contains({0, 0, 0}));
 }
 
-TEST_CASE(ChunkRenderer_SunDirectionNormalized) {
-    ChunkRenderer renderer;
-    renderer.setSunDirection(glm::vec3(10.0f, 0.0f, 0.0f));
+TEST_CASE(WorldMeshStore_VersionIncrement) {
+    WorldMeshStore store;
+    uint64_t version0 = store.version();
 
-    float length = glm::length(renderer.config().sunDirection);
-    CHECK_NEAR(length, 1.0f, 0.0001f);
+    ChunkMesh mesh;
+    mesh.vertices.resize(3);
+    mesh.indices.resize(3);
+    store.set({1, 0, 0}, mesh);
+    CHECK(store.version() != version0);
+
+    uint64_t version1 = store.version();
+    store.remove({1, 0, 0});
+    CHECK(store.version() != version1);
 }

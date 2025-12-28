@@ -1,99 +1,224 @@
 #include "Rigel/Voxel/ChunkRenderer.h"
 
+#include "Rigel/Voxel/VoxelVertex.h"
+
+#include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <vector>
 
 namespace Rigel::Voxel {
 
-ChunkRenderer::ChunkRenderer()
-    : m_config{}
-{
-    m_config.sunDirection = glm::normalize(m_config.sunDirection);
-}
-
-ChunkRenderer::ChunkRenderer(const Config& config)
-    : m_config(config)
-{
-    m_config.sunDirection = glm::normalize(m_config.sunDirection);
-}
-
-void ChunkRenderer::setShader(Asset::Handle<Asset::ShaderAsset> shader) {
-    m_shader = std::move(shader);
-    if (m_shader) {
-        cacheUniformLocations();
+namespace {
+glm::vec3 normalizeOrDefault(const glm::vec3& value) {
+    float lengthSq = glm::dot(value, value);
+    if (lengthSq <= 0.000001f) {
+        return glm::vec3(0.0f, 1.0f, 0.0f);
     }
+    return glm::normalize(value);
 }
 
-void ChunkRenderer::setTextureAtlas(TextureAtlas* atlas) {
-    m_atlas = atlas;
-}
+} // namespace
 
-void ChunkRenderer::setChunkMesh(ChunkCoord coord, ChunkMesh mesh) {
-    // Upload to GPU if not already
-    if (!mesh.isEmpty() && !mesh.isUploaded()) {
-        mesh.uploadToGPU();
+void ChunkRenderer::GpuMesh::release() {
+    if (vao != 0) {
+        glDeleteVertexArrays(1, &vao);
+        vao = 0;
     }
-    mesh.clearCPUData();
-    m_meshes[coord] = std::move(mesh);
+    if (vbo != 0) {
+        glDeleteBuffers(1, &vbo);
+        vbo = 0;
+    }
+    if (ebo != 0) {
+        glDeleteBuffers(1, &ebo);
+        ebo = 0;
+    }
+    indexCount = 0;
 }
 
-void ChunkRenderer::removeChunkMesh(ChunkCoord coord) {
-    m_meshes.erase(coord);
+ChunkRenderer::GpuMesh::~GpuMesh() {
+    release();
 }
 
-bool ChunkRenderer::hasChunkMesh(ChunkCoord coord) const {
-    return m_meshes.find(coord) != m_meshes.end();
+ChunkRenderer::GpuMesh::GpuMesh(GpuMesh&& other) noexcept
+    : vao(other.vao)
+    , vbo(other.vbo)
+    , ebo(other.ebo)
+    , indexCount(other.indexCount)
+    , layers(other.layers)
+{
+    other.vao = 0;
+    other.vbo = 0;
+    other.ebo = 0;
+    other.indexCount = 0;
 }
 
-void ChunkRenderer::clear() {
+ChunkRenderer::GpuMesh& ChunkRenderer::GpuMesh::operator=(GpuMesh&& other) noexcept {
+    if (this != &other) {
+        release();
+        vao = other.vao;
+        vbo = other.vbo;
+        ebo = other.ebo;
+        indexCount = other.indexCount;
+        layers = other.layers;
+        other.vao = 0;
+        other.vbo = 0;
+        other.ebo = 0;
+        other.indexCount = 0;
+    }
+    return *this;
+}
+
+void ChunkRenderer::clearCache() {
     m_meshes.clear();
+    m_storeVersions.clear();
 }
 
-void ChunkRenderer::render(const glm::mat4& viewProjection, const glm::vec3& cameraPos) {
-    if (!m_shader || m_meshes.empty()) {
+void ChunkRenderer::uploadMesh(GpuMesh& gpu, const ChunkMesh& mesh) const {
+    if (mesh.vertices.empty() || mesh.indices.empty()) {
+        gpu.release();
+        gpu.layers = {};
         return;
     }
 
-    // Bind shader
-    m_shader->bind();
+    if (gpu.vao == 0) {
+        glGenVertexArrays(1, &gpu.vao);
+        glGenBuffers(1, &gpu.vbo);
+        glGenBuffers(1, &gpu.ebo);
+    }
 
-    // Set view-projection matrix
+    glBindVertexArray(gpu.vao);
+
+    glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(mesh.vertices.size() * sizeof(VoxelVertex)),
+        mesh.vertices.data(),
+        GL_STATIC_DRAW
+    );
+
+    VoxelVertex::setupAttributes();
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
+    glBufferData(
+        GL_ELEMENT_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(mesh.indices.size() * sizeof(uint32_t)),
+        mesh.indices.data(),
+        GL_STATIC_DRAW
+    );
+
+    glBindVertexArray(0);
+
+    gpu.indexCount = mesh.indices.size();
+    gpu.layers = mesh.layers;
+}
+
+void ChunkRenderer::pruneCache(const WorldMeshStore& store) {
+    uint32_t storeId = store.storeId();
+    for (auto it = m_meshes.begin(); it != m_meshes.end(); ) {
+        if (it->first.storeId != storeId) {
+            ++it;
+            continue;
+        }
+        if (!store.contains(it->second.coord)) {
+            it = m_meshes.erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
+void ChunkRenderer::render(const WorldRenderContext& ctx) {
+    if (!ctx.meshes || !ctx.shader) {
+        return;
+    }
+
+    if (m_shader != ctx.shader) {
+        m_shader = ctx.shader;
+        cacheUniformLocations();
+    }
+    m_atlas = ctx.atlas;
+
+    uint32_t storeId = ctx.meshes->storeId();
+    uint64_t version = ctx.meshes->version();
+    auto versionIt = m_storeVersions.find(storeId);
+    if (versionIt == m_storeVersions.end() || versionIt->second != version) {
+        pruneCache(*ctx.meshes);
+        m_storeVersions[storeId] = version;
+    }
+
+    glm::mat4 viewProjection = ctx.viewProjection * ctx.worldTransform;
+    glm::vec3 sunDirection = normalizeOrDefault(ctx.config.sunDirection);
+
+    m_shader->bind();
     if (m_locViewProjection >= 0) {
         glUniformMatrix4fv(m_locViewProjection, 1, GL_FALSE, glm::value_ptr(viewProjection));
     }
-
-    // Set sun direction
     if (m_locSunDirection >= 0) {
-        glUniform3fv(m_locSunDirection, 1, glm::value_ptr(m_config.sunDirection));
+        glUniform3fv(m_locSunDirection, 1, glm::value_ptr(sunDirection));
     }
-
-    // Bind texture atlas
     if (m_atlas && m_locTextureAtlas >= 0) {
         m_atlas->bind(0);
         glUniform1i(m_locTextureAtlas, 0);
     }
 
-    // Render each pass
-    renderPass(RenderLayer::Opaque, viewProjection, cameraPos);
-    renderPass(RenderLayer::Cutout, viewProjection, cameraPos);
-    renderPass(RenderLayer::Transparent, viewProjection, cameraPos);
-    renderPass(RenderLayer::Emissive, viewProjection, cameraPos);
+    float renderDistance = std::max(0.0f, ctx.config.renderDistance);
+    float renderDistanceSq = renderDistance * renderDistance;
 
-    // Cleanup - reset GL state to defaults
+    std::vector<RenderEntry> entries;
+    ctx.meshes->forEach([&](const WorldMeshEntry& entry) {
+        if (entry.mesh.isEmpty()) {
+            return;
+        }
+
+        auto meshIt = m_meshes.find(entry.id);
+        if (meshIt == m_meshes.end()) {
+            GpuMeshEntry gpuEntry;
+            gpuEntry.coord = entry.coord;
+            gpuEntry.revision = entry.revision;
+            uploadMesh(gpuEntry.mesh, entry.mesh);
+            meshIt = m_meshes.emplace(entry.id, std::move(gpuEntry)).first;
+        } else if (meshIt->second.revision.value != entry.revision.value) {
+            meshIt->second.coord = entry.coord;
+            meshIt->second.revision = entry.revision;
+            uploadMesh(meshIt->second.mesh, entry.mesh);
+        }
+
+        if (!meshIt->second.mesh.isValid()) {
+            return;
+        }
+
+        glm::vec3 center = entry.coord.toWorldCenter();
+        glm::vec3 worldCenter = glm::vec3(ctx.worldTransform * glm::vec4(center, 1.0f));
+        glm::vec3 delta = worldCenter - ctx.cameraPos;
+        float distanceSq = glm::dot(delta, delta);
+        if (distanceSq > renderDistanceSq) {
+            return;
+        }
+
+        entries.push_back(RenderEntry{entry.coord, entry.id, distanceSq});
+    });
+
+    if (entries.empty()) {
+        glUseProgram(0);
+        return;
+    }
+
+    renderPass(RenderLayer::Opaque, entries, ctx);
+    renderPass(RenderLayer::Cutout, entries, ctx);
+    renderPass(RenderLayer::Transparent, entries, ctx);
+    renderPass(RenderLayer::Emissive, entries, ctx);
+
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
     glUseProgram(0);
 }
 
-void ChunkRenderer::setSunDirection(const glm::vec3& dir) {
-    m_config.sunDirection = glm::normalize(dir);
-}
-
 void ChunkRenderer::cacheUniformLocations() {
-    if (!m_shader) return;
+    if (!m_shader) {
+        return;
+    }
 
     m_locViewProjection = m_shader->uniform("u_viewProjection");
     m_locChunkOffset = m_shader->uniform("u_chunkOffset");
@@ -103,7 +228,9 @@ void ChunkRenderer::cacheUniformLocations() {
     m_locAlphaCutoff = m_shader->uniform("u_alphaCutoff");
 }
 
-void ChunkRenderer::renderPass(RenderLayer layer, const glm::mat4& viewProjection, const glm::vec3& cameraPos) {
+void ChunkRenderer::renderPass(RenderLayer layer,
+                               const std::vector<RenderEntry>& entries,
+                               const WorldRenderContext& ctx) {
     setupLayerState(layer);
 
     float alphaMultiplier = 1.0f;
@@ -111,7 +238,7 @@ void ChunkRenderer::renderPass(RenderLayer layer, const glm::mat4& viewProjectio
     if (layer == RenderLayer::Cutout) {
         alphaCutoff = 0.5f;
     } else if (layer == RenderLayer::Transparent) {
-        alphaMultiplier = m_config.transparentAlpha;
+        alphaMultiplier = ctx.config.transparentAlpha;
     }
 
     if (m_locAlphaMultiplier >= 0) {
@@ -121,75 +248,53 @@ void ChunkRenderer::renderPass(RenderLayer layer, const glm::mat4& viewProjectio
         glUniform1f(m_locAlphaCutoff, alphaCutoff);
     }
 
-    auto drawChunk = [&](ChunkCoord coord, ChunkMesh& mesh) {
-        glm::vec3 chunkOffset = coord.toWorldMin();
+    auto drawEntry = [&](const RenderEntry& entry) {
+        auto meshIt = m_meshes.find(entry.meshId);
+        if (meshIt == m_meshes.end()) {
+            return;
+        }
+        const GpuMesh& mesh = meshIt->second.mesh;
+        if (!mesh.isValid()) {
+            return;
+        }
+        const auto& range = mesh.layers[static_cast<size_t>(layer)];
+        if (range.isEmpty()) {
+            return;
+        }
+
+        glm::vec3 chunkOffset = entry.coord.toWorldMin();
         if (m_locChunkOffset >= 0) {
             glUniform3fv(m_locChunkOffset, 1, glm::value_ptr(chunkOffset));
         }
-        mesh.drawLayer(layer);
+
+        glBindVertexArray(mesh.vao);
+        glDrawElements(
+            GL_TRIANGLES,
+            static_cast<GLsizei>(range.indexCount),
+            GL_UNSIGNED_INT,
+            reinterpret_cast<void*>(static_cast<uintptr_t>(range.indexStart * sizeof(uint32_t)))
+        );
+        glBindVertexArray(0);
     };
 
     if (layer == RenderLayer::Transparent) {
-        struct TransparentEntry {
-            ChunkCoord coord;
-            ChunkMesh* mesh;
-            float distance;
-        };
-        std::vector<TransparentEntry> entries;
-        entries.reserve(m_meshes.size());
-
-        for (auto& [coord, mesh] : m_meshes) {
-            if (mesh.isEmpty() || !mesh.isUploaded()) {
-                continue;
-            }
-
-            const auto& range = mesh.layers[static_cast<size_t>(layer)];
-            if (range.isEmpty()) {
-                continue;
-            }
-
-            glm::vec3 chunkCenter = coord.toWorldCenter();
-            float distance = glm::length(chunkCenter - cameraPos);
-            if (distance > m_config.renderDistance) {
-                continue;
-            }
-
-            entries.push_back({coord, &mesh, distance});
-        }
-
-        std::sort(entries.begin(), entries.end(),
-                  [](const TransparentEntry& a, const TransparentEntry& b) {
-                      return a.distance > b.distance;
+        std::vector<RenderEntry> sorted = entries;
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const RenderEntry& a, const RenderEntry& b) {
+                      return a.distanceSq > b.distanceSq;
                   });
-
-        for (const auto& entry : entries) {
-            drawChunk(entry.coord, *entry.mesh);
+        for (const auto& entry : sorted) {
+            drawEntry(entry);
         }
         return;
     }
 
-    // Opaque/cutout/emissive order doesn't need sorting.
-    for (auto& [coord, mesh] : m_meshes) {
-        if (mesh.isEmpty() || !mesh.isUploaded()) {
-            continue;
-        }
-
-        const auto& range = mesh.layers[static_cast<size_t>(layer)];
-        if (range.isEmpty()) {
-            continue;
-        }
-
-        glm::vec3 chunkCenter = coord.toWorldCenter();
-        float distance = glm::length(chunkCenter - cameraPos);
-        if (distance > m_config.renderDistance) {
-            continue;
-        }
-
-        drawChunk(coord, mesh);
+    for (const auto& entry : entries) {
+        drawEntry(entry);
     }
 }
 
-void ChunkRenderer::setupLayerState(RenderLayer layer) {
+void ChunkRenderer::setupLayerState(RenderLayer layer) const {
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
     glFrontFace(GL_CW);
@@ -205,12 +310,11 @@ void ChunkRenderer::setupLayerState(RenderLayer layer) {
             glEnable(GL_DEPTH_TEST);
             glDepthMask(GL_TRUE);
             glDisable(GL_BLEND);
-            // Alpha testing is done in shader
             break;
 
         case RenderLayer::Transparent:
             glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_FALSE);  // Don't write depth
+            glDepthMask(GL_FALSE);
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             break;
@@ -219,7 +323,7 @@ void ChunkRenderer::setupLayerState(RenderLayer layer) {
             glEnable(GL_DEPTH_TEST);
             glDepthMask(GL_FALSE);
             glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE);  // Additive
+            glBlendFunc(GL_ONE, GL_ONE);
             break;
     }
 }

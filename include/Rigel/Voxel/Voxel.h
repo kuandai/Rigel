@@ -29,6 +29,8 @@
 #include "ChunkBenchmark.h"
 #include "ChunkCache.h"
 #include "ChunkStreamer.h"
+#include "WorldMeshStore.h"
+#include "WorldRenderContext.h"
 #include "WorldGenConfig.h"
 #include "WorldConfigProvider.h"
 #include "WorldGenerator.h"

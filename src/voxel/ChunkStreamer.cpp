@@ -30,12 +30,12 @@ void ChunkStreamer::setConfig(const WorldGenConfig::StreamConfig& config) {
 }
 
 void ChunkStreamer::bind(ChunkManager* manager,
-                         ChunkRenderer* renderer,
+                         WorldMeshStore* meshStore,
                          BlockRegistry* registry,
                          TextureAtlas* atlas,
                          std::shared_ptr<WorldGenerator> generator) {
     m_chunkManager = manager;
-    m_renderer = renderer;
+    m_meshStore = meshStore;
     m_registry = registry;
     m_atlas = atlas;
     m_generator = std::move(generator);
@@ -46,7 +46,7 @@ void ChunkStreamer::setBenchmark(ChunkBenchmarkStats* stats) {
 }
 
 void ChunkStreamer::update(const glm::vec3& cameraPos) {
-    if (!m_chunkManager || !m_generator) {
+    if (!m_chunkManager || !m_generator || !m_meshStore) {
         return;
     }
 
@@ -154,8 +154,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         if (chunk) {
             if (m_generator &&
                 chunk->worldGenVersion() != m_generator->config().world.version) {
-                if (m_renderer) {
-                    m_renderer->removeChunkMesh(coord);
+                if (m_meshStore) {
+                    m_meshStore->remove(coord);
                 }
                 m_chunkManager->unloadChunk(coord);
                 m_states.erase(coord);
@@ -165,7 +165,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 }
                 continue;
             }
-            bool hasMesh = m_renderer && m_renderer->hasChunkMesh(coord);
+            bool hasMesh = m_meshStore && m_meshStore->contains(coord);
             bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
             if (stateIt == m_states.end() || state == ChunkState::QueuedGen) {
                 state = isMeshed ? ChunkState::ReadyMesh : ChunkState::ReadyData;
@@ -173,8 +173,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
 
             if (chunk->isEmpty()) {
-                if (m_renderer) {
-                    m_renderer->removeChunkMesh(coord);
+                if (m_meshStore) {
+                    m_meshStore->remove(coord);
                 }
                 chunk->clearDirty();
                 m_states[coord] = ChunkState::ReadyMesh;
@@ -217,7 +217,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             continue;
         }
 
-        bool hasMesh = m_renderer && m_renderer->hasChunkMesh(coord);
+        bool hasMesh = m_meshStore && m_meshStore->contains(coord);
         bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
         if (!isMeshed || !chunk->isDirty() || state == ChunkState::QueuedMesh) {
             continue;
@@ -238,8 +238,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         });
 
         for (const ChunkCoord& coord : toEvict) {
-            if (m_renderer) {
-                m_renderer->removeChunkMesh(coord);
+            if (m_meshStore) {
+                m_meshStore->remove(coord);
             }
             m_chunkManager->unloadChunk(coord);
             m_cache.erase(coord);
@@ -249,8 +249,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     }
 
     for (const ChunkCoord& coord : m_cache.evict(m_desiredSet)) {
-        if (m_renderer) {
-            m_renderer->removeChunkMesh(coord);
+        if (m_meshStore) {
+            m_meshStore->remove(coord);
         }
         m_chunkManager->unloadChunk(coord);
         m_states.erase(coord);
@@ -369,8 +369,8 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         }
 
         if (chunk.isEmpty()) {
-            if (m_renderer) {
-                m_renderer->removeChunkMesh(genResult.coord);
+            if (m_meshStore) {
+                m_meshStore->remove(genResult.coord);
             }
             chunk.clearDirty();
             stateIt->second = ChunkState::ReadyMesh;

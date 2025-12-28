@@ -17,16 +17,13 @@ void World::initialize(Asset::AssetManager& assets) {
 
     // Load voxel shader
     try {
-        auto shader = assets.get<Asset::ShaderAsset>("shaders/voxel");
-        m_renderer.setShader(shader);
+        m_shader = assets.get<Asset::ShaderAsset>("shaders/voxel");
     } catch (const std::exception& e) {
         spdlog::error("Failed to load voxel shader: {}", e.what());
         throw;
     }
 
-    // Connect renderer to texture atlas
-    m_renderer.setTextureAtlas(&m_textureAtlas);
-    m_streamer.bind(&m_chunkManager, &m_renderer, &m_blockRegistry, &m_textureAtlas, m_generator);
+    m_streamer.bind(&m_chunkManager, &m_meshStore, &m_blockRegistry, &m_textureAtlas, m_generator);
 
     // Load block definitions and populate texture atlas
     try {
@@ -69,7 +66,15 @@ void World::setBenchmark(ChunkBenchmarkStats* stats) {
 }
 
 void World::render(const glm::mat4& viewProjection, const glm::vec3& cameraPos) {
-    m_renderer.render(viewProjection, cameraPos);
+    WorldRenderContext ctx;
+    ctx.meshes = &m_meshStore;
+    ctx.atlas = &m_textureAtlas;
+    ctx.shader = m_shader;
+    ctx.config = m_renderConfig;
+    ctx.viewProjection = viewProjection;
+    ctx.cameraPos = cameraPos;
+    ctx.worldTransform = glm::mat4(1.0f);
+    m_renderer.render(ctx);
 }
 
 void World::getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const {
@@ -82,24 +87,31 @@ int World::viewDistanceChunks() const {
 
 void World::clear() {
     m_chunkManager.clear();
-    m_renderer.clear();
+    m_meshStore.clear();
+    m_renderer.clearCache();
     m_streamer.reset();
+}
+
+void World::releaseRenderResources() {
+    m_renderer.clearCache();
+    m_textureAtlas.releaseGPU();
+    m_shader = {};
 }
 
 void World::setGenerator(std::shared_ptr<WorldGenerator> generator) {
     m_generator = std::move(generator);
-    m_streamer.bind(&m_chunkManager, &m_renderer, &m_blockRegistry, &m_textureAtlas, m_generator);
+    m_streamer.bind(&m_chunkManager, &m_meshStore, &m_blockRegistry, &m_textureAtlas, m_generator);
 }
 
 void World::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
     m_streamer.setConfig(config);
-    m_renderer.config().renderDistance =
+    m_renderConfig.renderDistance =
         (static_cast<float>(std::max(0, config.viewDistanceChunks)) + 0.5f) *
         static_cast<float>(Chunk::SIZE);
 }
 
 void World::rebuildChunkMesh(ChunkCoord coord) {
-    const Chunk* chunk = m_chunkManager.getChunk(coord);
+    Chunk* chunk = m_chunkManager.getChunk(coord);
     if (!chunk) {
         return;
     }
@@ -107,7 +119,8 @@ void World::rebuildChunkMesh(ChunkCoord coord) {
     // Skip empty chunks
     auto start = std::chrono::steady_clock::now();
     if (chunk->isEmpty()) {
-        m_renderer.removeChunkMesh(coord);
+        m_meshStore.remove(coord);
+        chunk->clearDirty();
         if (m_benchmark) {
             auto end = std::chrono::steady_clock::now();
             m_benchmark->addMesh(
@@ -205,10 +218,11 @@ void World::rebuildChunkMesh(ChunkCoord coord) {
     auto end = std::chrono::steady_clock::now();
 
     if (mesh.isEmpty()) {
-        m_renderer.removeChunkMesh(coord);
+        m_meshStore.remove(coord);
     } else {
-        m_renderer.setChunkMesh(coord, std::move(mesh));
+        m_meshStore.set(coord, std::move(mesh));
     }
+    chunk->clearDirty();
 
     if (m_benchmark) {
         m_benchmark->addMesh(

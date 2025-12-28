@@ -30,6 +30,7 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
 TEST_CASE(ChunkStreamer_GeneratesSphere) {
     ChunkManager manager;
     BlockRegistry registry;
+    WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
@@ -42,7 +43,7 @@ TEST_CASE(ChunkStreamer_GeneratesSphere) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, nullptr, &registry, nullptr, generator);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     streamer.processCompletions();
@@ -52,6 +53,7 @@ TEST_CASE(ChunkStreamer_GeneratesSphere) {
 TEST_CASE(ChunkStreamer_RespectsQueueLimit) {
     ChunkManager manager;
     BlockRegistry registry;
+    WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
@@ -64,7 +66,7 @@ TEST_CASE(ChunkStreamer_RespectsQueueLimit) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, nullptr, &registry, nullptr, generator);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     streamer.processCompletions();
@@ -74,6 +76,7 @@ TEST_CASE(ChunkStreamer_RespectsQueueLimit) {
 TEST_CASE(ChunkStreamer_EvictsOutsideRadius) {
     ChunkManager manager;
     BlockRegistry registry;
+    WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
@@ -86,7 +89,7 @@ TEST_CASE(ChunkStreamer_EvictsOutsideRadius) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, nullptr, &registry, nullptr, generator);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     streamer.processCompletions();

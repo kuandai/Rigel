@@ -453,7 +453,7 @@ struct Application::Impl {
         int viewportY = std::max(0, viewportHeight - viewportSize - marginY);
         glViewport(viewportX, viewportY, viewportSize, viewportSize);
 
-        float renderDistance = world.renderer().config().renderDistance;
+        float renderDistance = world.renderConfig().renderDistance;
         float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
         glm::mat4 debugProjection = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, farPlane);
         glm::mat4 debugView = glm::lookAt(
@@ -774,7 +774,7 @@ void Application::run() {
             glfwGetFramebufferSize(m_impl->window, &width, &height);
             float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
 
-            float renderDistance = m_impl->world.renderer().config().renderDistance;
+            float renderDistance = m_impl->world.renderConfig().renderDistance;
             float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
             glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, 0.1f, farPlane);
             glm::mat4 view = glm::lookAt(

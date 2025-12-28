@@ -14,6 +14,8 @@
 #include "MeshBuilder.h"
 #include "ChunkRenderer.h"
 #include "TextureAtlas.h"
+#include "WorldMeshStore.h"
+#include "WorldRenderContext.h"
 #include "ChunkBenchmark.h"
 #include "ChunkStreamer.h"
 #include "WorldGenerator.h"
@@ -100,6 +102,14 @@ public:
     ChunkRenderer& renderer() { return m_renderer; }
     const ChunkRenderer& renderer() const { return m_renderer; }
 
+    /// Access the world mesh store
+    WorldMeshStore& meshStore() { return m_meshStore; }
+    const WorldMeshStore& meshStore() const { return m_meshStore; }
+
+    /// Access render configuration owned by the world
+    WorldRenderConfig& renderConfig() { return m_renderConfig; }
+    const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
+
     /// @}
 
     /// @name Block Access (World Coordinates)
@@ -171,6 +181,13 @@ public:
      * @brief Unload all chunks and clear meshes.
      */
     void clear();
+
+    /**
+     * @brief Release GPU resources owned by the world.
+     *
+     * Call before destroying the OpenGL context.
+     */
+    void releaseRenderResources();
 
     /// @}
 

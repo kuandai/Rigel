@@ -1,19 +1,23 @@
 #include "TestFramework.h"
 
 #include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldResources.h"
+#include "Rigel/Voxel/WorldView.h"
 
 using namespace Rigel::Voxel;
 
 TEST_CASE(World_StreamingPopulatesChunks) {
-    World world;
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
 
     BlockType solid;
     solid.identifier = "rigel:stone";
-    world.blockRegistry().registerBlock(solid.identifier, solid);
+    resources.registry().registerBlock(solid.identifier, solid);
 
     BlockType surface;
     surface.identifier = "rigel:grass";
-    world.blockRegistry().registerBlock(surface.identifier, surface);
+    resources.registry().registerBlock(surface.identifier, surface);
 
     WorldGenConfig config;
     config.solidBlock = solid.identifier;
@@ -28,12 +32,13 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     config.stream.applyBudgetPerFrame = 0;
     config.stream.workerThreads = 0;
 
-    auto generator = std::make_shared<WorldGenerator>(world.blockRegistry());
+    auto generator = std::make_shared<WorldGenerator>(resources.registry());
     generator->setConfig(config);
     world.setGenerator(generator);
-    world.setStreamConfig(config.stream);
+    view.setGenerator(generator);
+    view.setStreamConfig(config.stream);
 
-    world.updateStreaming(glm::vec3(0.0f));
-    world.updateMeshes();
+    view.updateStreaming(glm::vec3(0.0f));
+    view.updateMeshes();
     CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(1));
 }

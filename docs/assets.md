@@ -57,6 +57,14 @@ try {
 }
 ```
 
+### Common Embedded Configs
+
+The build embeds project configs under `assets/config/` so they can be loaded
+via `ResourceRegistry` (or the config provider):
+
+- `config/world_generation.yaml`
+- `config/render.yaml`
+
 ### Example B: Loading Binary Data (OpenGL Textures)
 
 You can pass the data pointer directly to libraries like `stb_image` or OpenGL.

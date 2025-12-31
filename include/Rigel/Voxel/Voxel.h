@@ -9,8 +9,9 @@
  * @code
  * #include <Rigel/Voxel/Voxel.h>
  *
- * Rigel::Voxel::World world;
- * world.initialize(assets);
+ * Rigel::Voxel::WorldResources resources;
+ * resources.initialize(assets);
+ * Rigel::Voxel::World world(resources);
  * @endcode
  */
 
@@ -35,3 +36,7 @@
 #include "WorldConfigProvider.h"
 #include "WorldGenerator.h"
 #include "World.h"
+#include "WorldId.h"
+#include "WorldResources.h"
+#include "WorldView.h"
+#include "WorldSet.h"

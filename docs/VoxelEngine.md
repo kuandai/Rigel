@@ -32,7 +32,6 @@ This document outlines the architecture for a flexible, extensible voxel engine 
 
 ### Non-Goals
 
-- Infinite procedural terrain (out of scope for core engine)
 - Physics simulation (delegated to external systems)
 - Multiplayer synchronization (networking layer separate)
 
@@ -44,25 +43,15 @@ This document outlines the architecture for a flexible, extensible voxel engine 
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        VoxelWorld                               │
-│  ┌───────────────┐  ┌───────────────┐  ┌────────────────────┐   │
-│  │ ChunkManager  │  │ BlockRegistry │  │ TextureAtlasManager│   │
-│  └───────┬───────┘  └───────┬───────┘  └──────────┬─────────┘   │
-│          │                  │                     │             │
-│          ▼                  ▼                     ▼             │
-│  ┌───────────────┐  ┌───────────────┐  ┌────────────────────┐   │
-│  │    Chunk[]    │  │  BlockType[]  │  │    TextureAtlas    │   │
-│  └───────┬───────┘  └───────────────┘  └────────────────────┘   │
-│          │                                                      │
-│          ▼                                                      │
-│  ┌───────────────┐                                              │
-│  │ MeshBuilder   │──────────────────────────────────────────────┤
-│  └───────┬───────┘                                              │
-│          │                                                      │
-│          ▼                                                      │
-│  ┌───────────────┐                                              │
-│  │ ChunkRenderer │                                              │
-│  └───────────────┘                                              │
+│                           WorldSet                              │
+│  ┌────────────────┐   ┌──────────────────────────────────────┐  │
+│  │ WorldResources │   │ WorldEntry (WorldId -> World/View)    │  │
+│  │ BlockRegistry  │   │  ┌──────────────┐  ┌───────────────┐  │  │
+│  │ TextureAtlas   │   │  │    World     │  │   WorldView   │  │  │
+│  └────────────────┘   │  │ ChunkManager│  │ WorldMeshStore│  │  │
+│                       │  │ Generator   │  │ ChunkStreamer │  │  │
+│                       │  └──────────────┘  │ ChunkRenderer │  │  │
+│                       └────────────────────┴───────────────┘  │  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -71,21 +60,20 @@ This document outlines the architecture for a flexible, extensible voxel engine 
 ```cpp
 namespace Rigel::Voxel {
     class World;
+    class WorldView;
+    class WorldSet;
+    class WorldResources;
     class Chunk;
     class ChunkManager;
+    class ChunkStreamer;
     class MeshBuilder;
     class ChunkRenderer;
-}
-
-namespace Rigel::Voxel::Block {
-    struct BlockType;
-    class BlockRegistry;
-    class BlockModel;
-}
-
-namespace Rigel::Voxel::Texture {
+    class WorldMeshStore;
+    using WorldId = uint32_t;
     class TextureAtlas;
-    class AnimatedTexture;
+    class BlockRegistry;
+    struct BlockType;
+    class BlockModel;
 }
 ```
 
@@ -410,7 +398,7 @@ struct GreedyMeshConfig {
 
 ```cpp
 struct ChunkMesh {
-    // Geometry
+    // Geometry (CPU-only)
     std::vector<VoxelVertex> vertices;
     std::vector<uint32_t> indices;
 
@@ -420,16 +408,12 @@ struct ChunkMesh {
         uint32_t indexCount;
     };
     std::array<LayerRange, 4> layers;  // Opaque, Cutout, Transparent, Emissive
-
-    // GPU resources (lazily created)
-    GLuint vao = 0;
-    GLuint vbo = 0;
-    GLuint ebo = 0;
-
-    void uploadToGPU();
-    void releaseGPU();
 };
 ```
+
+GPU resources are managed by `ChunkRenderer` and keyed by mesh revision in the
+`WorldMeshStore` owned by `WorldView`. `ChunkMesh` is treated as immutable once
+published.
 
 ---
 
@@ -444,15 +428,12 @@ class TextureAtlas {
 public:
     struct Config {
         int tileSize = 16;           // Pixels per texture tile
-        int atlasSize = 2048;        // Atlas dimensions
         int maxLayers = 256;         // Array texture depth
         bool generateMipmaps = true;
     };
 
     // Registration
     TextureHandle addTexture(const std::string& path);
-    TextureHandle addAnimatedTexture(const std::string& path,
-                                      AnimationConfig config);
 
     // Lookup
     TextureCoords getUVs(TextureHandle handle) const;
@@ -475,7 +456,7 @@ struct TextureCoords {
 };
 ```
 
-### 6.2 Animated Textures
+### 6.2 Animated Textures (planned)
 
 Animated textures use texture array layers for each frame. The shader interpolates based on time:
 
@@ -493,24 +474,11 @@ enum class AnimationMode {
     Once         // 0, 1, 2, 2, 2, ... (hold last frame)
 };
 
-class AnimatedTexture {
-public:
-    AnimatedTexture(std::span<const TextureHandle> frames,
-                    AnimationConfig config);
-
-    // Returns fractional frame for interpolation
-    float getCurrentFrame(float worldTime) const;
-
-    // Frame layers in the atlas
-    std::span<const int> getFrameLayers() const;
-
-private:
-    std::vector<int> m_frameLayers;
-    AnimationConfig m_config;
-};
+// Animated textures are not implemented yet. The design below is aspirational
+// and will be introduced when a time-based atlas animation system is added.
 ```
 
-**Shader Integration:**
+**Shader Integration (planned):**
 
 ```glsl
 // Vertex shader output

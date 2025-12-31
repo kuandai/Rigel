@@ -2,68 +2,45 @@
 
 /**
  * @file World.h
- * @brief Top-level facade for the voxel system.
+ * @brief Authoritative voxel space (data + generator).
  *
- * World coordinates all voxel components: block registry, chunk management,
- * mesh generation, texture atlas, and rendering.
+ * World owns chunk data and the world generator. Rendering and mesh ownership
+ * live in WorldView.
  */
 
 #include "Block.h"
 #include "BlockRegistry.h"
 #include "ChunkManager.h"
-#include "MeshBuilder.h"
-#include "ChunkRenderer.h"
-#include "TextureAtlas.h"
-#include "WorldMeshStore.h"
-#include "WorldRenderContext.h"
-#include "ChunkBenchmark.h"
-#include "ChunkStreamer.h"
 #include "WorldGenerator.h"
+#include "WorldId.h"
 
-#include <Rigel/Asset/AssetManager.h>
-
-#include <glm/mat4x4.hpp>
-#include <glm/vec3.hpp>
 #include <memory>
 #include <vector>
 
 namespace Rigel::Voxel {
 
+class WorldResources;
+
 /**
- * @brief Top-level facade for the voxel system.
+ * @brief Authoritative voxel space.
  *
- * World provides a high-level interface for working with voxels:
- * - Block type registration
- * - Block placement and queries
- * - Automatic mesh updates
- * - Rendering
+ * World provides access to chunk data and the world generator. Rendering,
+ * streaming, and mesh ownership are handled by WorldView.
  *
  * @section usage Usage
  *
  * @code
- * // Create world
- * Voxel::World world;
+ * Voxel::WorldResources resources;
+ * resources.initialize(assets);
  *
- * // Initialize with asset manager
- * world.initialize(assets);
- *
- * // Register block types
- * BlockType stone;
- * stone.identifier = "rigel:stone";
- * stone.textures = FaceTextures::uniform("textures/stone.png");
- * world.blockRegistry().registerBlock(stone.identifier, stone);
- *
- * // Place blocks
+ * Voxel::World world(resources);
  * world.setBlock(0, 0, 0, BlockState{stoneId});
- *
- * // Each frame
- * world.updateMeshes();
- * world.render(viewProjection, cameraPos);
  * @endcode
  */
 class World {
 public:
     World();
+    explicit World(WorldResources& resources);
     ~World() = default;
 
     /// Non-copyable
@@ -75,40 +52,24 @@ public:
     World& operator=(World&&) = default;
 
     /**
-     * @brief Initialize with asset manager.
-     *
-     * Loads the voxel shader from the asset manifest.
-     *
-     * @param assets Asset manager to load from
+     * @brief Initialize with shared resources.
      */
-    void initialize(Asset::AssetManager& assets);
+    void initialize(WorldResources& resources);
+
+    /// World identifier (assigned by WorldSet).
+    WorldId id() const { return m_id; }
+    void setId(WorldId id) { m_id = id; }
 
     /// @name Component Access
     /// @{
 
     /// Get the block registry for type registration
-    BlockRegistry& blockRegistry() { return m_blockRegistry; }
-    const BlockRegistry& blockRegistry() const { return m_blockRegistry; }
+    BlockRegistry& blockRegistry();
+    const BlockRegistry& blockRegistry() const;
 
     /// Get the chunk manager for direct chunk access
     ChunkManager& chunkManager() { return m_chunkManager; }
     const ChunkManager& chunkManager() const { return m_chunkManager; }
-
-    /// Get the texture atlas
-    TextureAtlas& textureAtlas() { return m_textureAtlas; }
-    const TextureAtlas& textureAtlas() const { return m_textureAtlas; }
-
-    /// Get the renderer
-    ChunkRenderer& renderer() { return m_renderer; }
-    const ChunkRenderer& renderer() const { return m_renderer; }
-
-    /// Access the world mesh store
-    WorldMeshStore& meshStore() { return m_meshStore; }
-    const WorldMeshStore& meshStore() const { return m_meshStore; }
-
-    /// Access render configuration owned by the world
-    WorldRenderConfig& renderConfig() { return m_renderConfig; }
-    const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
 
     /// @}
 
@@ -136,70 +97,13 @@ public:
 
     /// @}
 
-    /// @name Update and Render
-    /// @{
-
-    /**
-     * @brief Rebuild meshes for dirty chunks.
-     *
-     * Call once per frame before render().
-     */
-    void updateMeshes();
-
-    /**
-     * @brief Stream/generate chunks around the camera.
-     *
-     * @param cameraPos Camera world position
-     */
-    void updateStreaming(const glm::vec3& cameraPos);
-    void setBenchmark(ChunkBenchmarkStats* stats);
-
-    /**
-     * @brief Render the world.
-     *
-     * @param view View matrix
-     * @param projection Projection matrix
-     * @param cameraPos Camera position for distance culling
-     * @param nearPlane Near clipping plane
-     * @param farPlane Far clipping plane
-     */
-    void render(const glm::mat4& view,
-                const glm::mat4& projection,
-                const glm::vec3& cameraPos,
-                float nearPlane,
-                float farPlane);
-
-    /**
-     * @brief Populate debug chunk states for visualization.
-     */
-    void getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const;
-
-    /**
-     * @brief Get the current streaming view distance in chunks.
-     */
-    int viewDistanceChunks() const;
-
-    /**
-     * @brief Rebuild mesh for a specific chunk immediately.
-     */
-    void rebuildChunkMesh(ChunkCoord coord);
-
-    /// @}
-
     /// @name Lifecycle
     /// @{
 
     /**
-     * @brief Unload all chunks and clear meshes.
+     * @brief Unload all chunks.
      */
     void clear();
-
-    /**
-     * @brief Release GPU resources owned by the world.
-     *
-     * Call before destroying the OpenGL context.
-     */
-    void releaseRenderResources();
 
     /// @}
 
@@ -207,25 +111,22 @@ public:
     /// @{
 
     void setGenerator(std::shared_ptr<WorldGenerator> generator);
-    void setStreamConfig(const WorldGenConfig::StreamConfig& config);
+    const std::shared_ptr<WorldGenerator>& generator() const { return m_generator; }
+
+    /**
+     * @brief Serialize a delta for replication.
+     *
+     * Stub for network integration.
+     */
+    std::vector<uint8_t> serializeChunkDelta(ChunkCoord coord) const;
 
     /// @}
 
 private:
-    BlockRegistry m_blockRegistry;
+    WorldId m_id = kDefaultWorldId;
+    WorldResources* m_resources = nullptr;
     ChunkManager m_chunkManager;
-    MeshBuilder m_meshBuilder;
-    ChunkRenderer m_renderer;
-    WorldMeshStore m_meshStore;
-    TextureAtlas m_textureAtlas;
-    ChunkStreamer m_streamer;
     std::shared_ptr<WorldGenerator> m_generator;
-    Asset::Handle<Asset::ShaderAsset> m_shader;
-    Asset::Handle<Asset::ShaderAsset> m_shadowDepthShader;
-    Asset::Handle<Asset::ShaderAsset> m_shadowTransmitShader;
-    WorldRenderConfig m_renderConfig;
-    ChunkBenchmarkStats* m_benchmark = nullptr;
-
     bool m_initialized = false;
 
 };

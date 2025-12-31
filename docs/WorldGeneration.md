@@ -30,15 +30,13 @@ captured in `~/artifact.md`. The focus is realistic, climate-driven terrain.
 
 ## 3. Chunk Lifecycle and Streaming
 
-Chunk states:
+Chunk states (current implementation):
 
 ```
-Missing -> Requested -> Loading -> ReadyData -> Meshing -> ReadyMesh
-                     \-> Generating -> ReadyData
+Missing -> Requested -> Generating -> ReadyData -> Meshing -> ReadyMesh
 ```
 
 - **Requested**: enqueued by streamer; priority by distance and view direction.
-- **Loading**: disk read from storage layer.
 - **Generating**: seed-based generator fills block data.
 - **ReadyData**: chunk exists, needs mesh.
 - **Meshing**: CPU mesh build.
@@ -62,9 +60,9 @@ Responsible for:
 
 - LRU cache over `ChunkCoord`.
 - Configurable max chunk count.
-- Eviction hook that serializes to storage.
+- Eviction hook is planned for future persistence.
 
-### 4.3 ChunkStorage
+### 4.3 ChunkStorage (planned)
 
 ```cpp
 class IChunkStorage {
@@ -76,7 +74,7 @@ public:
 };
 ```
 
-Implementations:
+Implementations (planned):
 - `DiskChunkStorage` using region-style files, LZ4 compression.
 - `MemoryChunkStorage` for testing.
 
@@ -110,8 +108,6 @@ breaking large-scale coherence.
 - **Temperature**: base noise + latitude + elevation lapse.
 - **Humidity**: base noise + distance to ocean + orographic effect.
 - **Continentalness**: distance from oceans; defines coasts and inland.
-- **Erosion**: controls roughness, cliffs, river likelihood.
-- **Weirdness**: adds biome variety (plateaus, peaks).
 
 All five parameters are used to pick and blend biomes.
 
@@ -120,10 +116,10 @@ All five parameters are used to pick and blend biomes.
 Global climate should be coherent over hundreds or thousands of chunks:
 
 - **Latitude**: map world Z to a latitude curve (equator → poles).
-- **Prevailing winds**: configurable wind direction used for rainfall modeling.
+- **Prevailing winds** (planned): configurable wind direction used for rainfall modeling.
 - **Ocean influence**: continentalness computed from low-frequency noise or
   derived ocean masks.
-- **Orographic lift**: humidity increases on windward slopes.
+- **Orographic lift** (planned): humidity increases on windward slopes.
 - **Temperature lapse**: cooling with altitude.
 
 The model is tunable by global-scale curves and multipliers.
@@ -290,7 +286,18 @@ The engine should be tunable without code changes. Use a layered config
 provider that can merge multiple sources (embedded defaults, user overrides,
 mod packs) without restricting runtime behavior.
 
-Config defines:
+World generation config is loaded from (in order):
+- `assets/config/world_generation.yaml` (embedded default)
+- `config/world_generation.yaml` (project override)
+- `world_generation.yaml` (working directory override)
+
+Render settings are defined separately and are not part of the world
+generation schema. Render config is loaded from (in order):
+- `assets/config/render.yaml` (embedded default)
+- `config/render.yaml` (project override)
+- `render.yaml` (working directory override)
+
+World generation config defines:
 
 - **World bounds and versioning**:
   - `world.min_y`, `world.max_y`, `world.sea_level`, `world.lava_level`
@@ -368,9 +375,11 @@ Use priority queues based on camera distance and direction.
 
 ### World API Changes
 
-`Voxel::World` gains:
+`Voxel::World` owns chunk data and generators:
 - `setGenerator(...)`
-- `setStorage(...)`
+- `setStorage(...)` (planned)
+
+`Voxel::WorldView` owns streaming and mesh updates:
 - `updateStreaming(cameraPos)`
 - `updateMeshes()` called from streamer only when data ready.
 

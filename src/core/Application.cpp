@@ -1,6 +1,6 @@
 #include "Rigel/Application.h"
 #include "Rigel/Asset/AssetManager.h"
-#include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldSet.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 #include <spdlog/spdlog.h>
 #include <GL/glew.h>
@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstddef>
 #include <limits>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -210,6 +211,44 @@ int findFirstAirY(const Voxel::WorldGenerator& generator,
     return maxY;
 }
 
+Voxel::ConfigProvider makeWorldConfigProvider(Asset::AssetManager& assets,
+                                              Voxel::WorldId worldId) {
+    Voxel::ConfigProvider provider;
+    provider.addSource(
+        std::make_unique<Voxel::EmbeddedConfigSource>(assets, "raw/world_config")
+    );
+    provider.addSource(
+        std::make_unique<Voxel::FileConfigSource>("config/world_generation.yaml")
+    );
+    provider.addSource(
+        std::make_unique<Voxel::FileConfigSource>("world_generation.yaml")
+    );
+    provider.addSource(
+        std::make_unique<Voxel::FileConfigSource>(
+            "config/worlds/" + std::to_string(worldId) + "/world_generation.yaml")
+    );
+    return provider;
+}
+
+Voxel::ConfigProvider makeRenderConfigProvider(Asset::AssetManager& assets,
+                                               Voxel::WorldId worldId) {
+    Voxel::ConfigProvider provider;
+    provider.addSource(
+        std::make_unique<Voxel::EmbeddedConfigSource>(assets, "raw/render_config")
+    );
+    provider.addSource(
+        std::make_unique<Voxel::FileConfigSource>("config/render.yaml")
+    );
+    provider.addSource(
+        std::make_unique<Voxel::FileConfigSource>("render.yaml")
+    );
+    provider.addSource(
+        std::make_unique<Voxel::FileConfigSource>(
+            "config/worlds/" + std::to_string(worldId) + "/render.yaml")
+    );
+    return provider;
+}
+
 } // namespace
 
 struct Application::Impl {
@@ -253,7 +292,10 @@ struct Application::Impl {
 
     GLFWwindow* window = nullptr;
     Asset::AssetManager assets;
-    Voxel::World world;
+    Voxel::WorldSet worldSet;
+    Voxel::WorldId activeWorldId = Voxel::WorldSet::defaultWorldId();
+    Voxel::World* world = nullptr;
+    Voxel::WorldView* worldView = nullptr;
     bool worldReady = false;
     glm::vec3 cameraPos = glm::vec3(48.0f, 32.0f, 48.0f);
     glm::vec3 cameraTarget = glm::vec3(8.0f, 0.0f, 8.0f);
@@ -469,16 +511,16 @@ struct Application::Impl {
     void renderDebugField(const glm::vec3& viewForward,
                           int viewportWidth,
                           int viewportHeight) {
-        if (!debugOverlayEnabled || !debugField.initialized) {
+        if (!debugOverlayEnabled || !debugField.initialized || !worldView) {
             return;
         }
 
-        world.getChunkDebugStates(debugStates);
+        worldView->getChunkDebugStates(debugStates);
         if (debugStates.empty()) {
             return;
         }
 
-        int radius = std::max(0, world.viewDistanceChunks());
+        int radius = std::max(0, worldView->viewDistanceChunks());
         int diameter = radius * 2 + 1;
         if (diameter <= 0) {
             return;
@@ -594,7 +636,7 @@ struct Application::Impl {
         int viewportY = std::max(0, viewportHeight - viewportSize - marginY);
         glViewport(viewportX, viewportY, viewportSize, viewportSize);
 
-        float renderDistance = world.renderConfig().renderDistance;
+        float renderDistance = worldView->renderConfig().renderDistance;
         float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
         glm::mat4 debugProjection = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, farPlane);
         glm::mat4 debugView = glm::lookAt(
@@ -764,7 +806,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     try {
         m_impl->assets.loadManifest("manifest.yaml");
         m_impl->assets.registerLoader("input", std::make_unique<InputBindingsLoader>());
-        m_impl->world.initialize(m_impl->assets);
+        m_impl->worldSet.initializeResources(m_impl->assets);
 
         if (m_impl->assets.exists("input/default")) {
             auto bindingsHandle = m_impl->assets.get<InputBindings>("input/default");
@@ -803,17 +845,8 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->inputDispatcher.setBindings(m_impl->inputBindings);
         m_impl->inputDispatcher.addListener(&m_impl->debugOverlayListener);
 
-        Voxel::ConfigProvider configProvider;
-        configProvider.addSource(
-            std::make_unique<Voxel::EmbeddedConfigSource>(m_impl->assets, "raw/world_config")
-        );
-        configProvider.addSource(
-            std::make_unique<Voxel::FileConfigSource>("config/world_generation.yaml")
-        );
-        configProvider.addSource(
-            std::make_unique<Voxel::FileConfigSource>("world_generation.yaml")
-        );
-
+        Voxel::ConfigProvider configProvider =
+            makeWorldConfigProvider(m_impl->assets, m_impl->activeWorldId);
         Voxel::WorldGenConfig config = configProvider.loadConfig();
         if (config.solidBlock.empty()) {
             config.solidBlock = "rigel:stone";
@@ -822,31 +855,30 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             config.surfaceBlock = "rigel:grass";
         }
 
-        auto generator = std::make_shared<Voxel::WorldGenerator>(m_impl->world.blockRegistry());
+        m_impl->world = &m_impl->worldSet.createWorld(m_impl->activeWorldId);
+        m_impl->worldView = &m_impl->worldSet.createView(m_impl->activeWorldId, m_impl->assets);
+
+        auto generator =
+            std::make_shared<Voxel::WorldGenerator>(m_impl->worldSet.resources().registry());
         generator->setConfig(config);
-        m_impl->world.setGenerator(generator);
-        Voxel::ConfigProvider renderConfigProvider;
-        renderConfigProvider.addSource(
-            std::make_unique<Voxel::EmbeddedConfigSource>(m_impl->assets, "raw/render_config")
-        );
-        renderConfigProvider.addSource(
-            std::make_unique<Voxel::FileConfigSource>("config/render.yaml")
-        );
-        renderConfigProvider.addSource(
-            std::make_unique<Voxel::FileConfigSource>("render.yaml")
-        );
-        m_impl->world.renderConfig() = renderConfigProvider.loadRenderConfig();
-        m_impl->world.setStreamConfig(config.stream);
+        m_impl->world->setGenerator(generator);
+        m_impl->worldView->setGenerator(generator);
+
+        Voxel::ConfigProvider renderConfigProvider =
+            makeRenderConfigProvider(m_impl->assets, m_impl->activeWorldId);
+        m_impl->worldView->renderConfig() = renderConfigProvider.loadRenderConfig();
+        m_impl->worldView->setStreamConfig(config.stream);
         if (m_impl->benchmarkEnabled) {
-            m_impl->world.setBenchmark(&m_impl->benchmark);
+            m_impl->worldView->setBenchmark(&m_impl->benchmark);
         }
-        auto placeId = m_impl->world.blockRegistry().findByIdentifier(config.solidBlock);
+
+        auto placeId = m_impl->world->blockRegistry().findByIdentifier(config.solidBlock);
         if (!placeId) {
-            placeId = m_impl->world.blockRegistry().findByIdentifier("rigel:stone");
+            placeId = m_impl->world->blockRegistry().findByIdentifier("rigel:stone");
         }
         if (placeId) {
             m_impl->placeBlock = *placeId;
-        } else if (m_impl->world.blockRegistry().size() > 1) {
+        } else if (m_impl->world->blockRegistry().size() > 1) {
             m_impl->placeBlock = Voxel::BlockID{1};
         }
 
@@ -892,8 +924,17 @@ Application::~Application() {
             m_impl->frameGraph.initialized = false;
         }
 
-        m_impl->world.clear();
-        m_impl->world.releaseRenderResources();
+        if (m_impl->worldView) {
+            m_impl->worldView->clear();
+            m_impl->worldView->releaseRenderResources();
+        }
+        if (m_impl->world) {
+            m_impl->world->clear();
+        }
+        m_impl->worldSet.resources().releaseRenderResources();
+        m_impl->worldSet.clear();
+        m_impl->worldView = nullptr;
+        m_impl->world = nullptr;
         m_impl->assets.clearCache();
 
         glfwDestroyWindow(m_impl->window);
@@ -925,7 +966,7 @@ void Application::run() {
         Rigel::keyupdate();
         m_impl->inputDispatcher.update();
 
-        if (m_impl->worldReady) {
+        if (m_impl->worldReady && m_impl->world && m_impl->worldView) {
             if (m_impl->cursorCaptured &&
                 glfwGetInputMode(m_impl->window, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
                 m_impl->setCursorCaptured(true);
@@ -941,43 +982,43 @@ void Application::run() {
                     int ly = 0;
                     int lz = 0;
                     Voxel::worldToLocal(worldPos.x, worldPos.y, worldPos.z, lx, ly, lz);
-                    m_impl->world.rebuildChunkMesh(coord);
+                    m_impl->worldView->rebuildChunkMesh(coord);
                     if (lx == 0) {
-                        m_impl->world.rebuildChunkMesh(coord.offset(-1, 0, 0));
+                        m_impl->worldView->rebuildChunkMesh(coord.offset(-1, 0, 0));
                     } else if (lx == Voxel::Chunk::SIZE - 1) {
-                        m_impl->world.rebuildChunkMesh(coord.offset(1, 0, 0));
+                        m_impl->worldView->rebuildChunkMesh(coord.offset(1, 0, 0));
                     }
                     if (ly == 0) {
-                        m_impl->world.rebuildChunkMesh(coord.offset(0, -1, 0));
+                        m_impl->worldView->rebuildChunkMesh(coord.offset(0, -1, 0));
                     } else if (ly == Voxel::Chunk::SIZE - 1) {
-                        m_impl->world.rebuildChunkMesh(coord.offset(0, 1, 0));
+                        m_impl->worldView->rebuildChunkMesh(coord.offset(0, 1, 0));
                     }
                     if (lz == 0) {
-                        m_impl->world.rebuildChunkMesh(coord.offset(0, 0, -1));
+                        m_impl->worldView->rebuildChunkMesh(coord.offset(0, 0, -1));
                     } else if (lz == Voxel::Chunk::SIZE - 1) {
-                        m_impl->world.rebuildChunkMesh(coord.offset(0, 0, 1));
+                        m_impl->worldView->rebuildChunkMesh(coord.offset(0, 0, 1));
                     }
                 };
 
                 const float interactDistance = 8.0f;
                 RaycastHit hit;
                 if (leftDown && !m_impl->lastLeftDown) {
-                    if (raycastBlock(m_impl->world, m_impl->cameraPos, m_impl->cameraForward,
+                    if (raycastBlock(*m_impl->world, m_impl->cameraPos, m_impl->cameraForward,
                                      interactDistance, hit)) {
-                        m_impl->world.setBlock(hit.block.x, hit.block.y, hit.block.z, Voxel::BlockState{});
+                        m_impl->world->setBlock(hit.block.x, hit.block.y, hit.block.z, Voxel::BlockState{});
                         rebuildEditedChunk(hit.block);
                     }
                 }
                 if (rightDown && !m_impl->lastRightDown) {
-                    if (raycastBlock(m_impl->world, m_impl->cameraPos, m_impl->cameraForward,
+                    if (raycastBlock(*m_impl->world, m_impl->cameraPos, m_impl->cameraForward,
                                      interactDistance, hit)) {
                         glm::ivec3 placePos = hit.block + hit.normal;
                         if (hit.normal != glm::ivec3(0) &&
                             m_impl->placeBlock != Voxel::BlockRegistry::airId() &&
-                            m_impl->world.getBlock(placePos.x, placePos.y, placePos.z).isAir()) {
+                            m_impl->world->getBlock(placePos.x, placePos.y, placePos.z).isAir()) {
                             Voxel::BlockState state;
                             state.id = m_impl->placeBlock;
-                            m_impl->world.setBlock(placePos.x, placePos.y, placePos.z, state);
+                            m_impl->world->setBlock(placePos.x, placePos.y, placePos.z, state);
                             rebuildEditedChunk(placePos);
                         }
                     }
@@ -991,7 +1032,7 @@ void Application::run() {
             glfwGetFramebufferSize(m_impl->window, &width, &height);
             float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
 
-            float renderDistance = m_impl->world.renderConfig().renderDistance;
+            float renderDistance = m_impl->worldView->renderConfig().renderDistance;
             float nearPlane = 0.1f;
             float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
             glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, nearPlane, farPlane);
@@ -1001,9 +1042,9 @@ void Application::run() {
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
 
-            m_impl->world.updateStreaming(m_impl->cameraPos);
-            m_impl->world.updateMeshes();
-            m_impl->world.render(view, projection, m_impl->cameraPos, nearPlane, farPlane);
+            m_impl->worldView->updateStreaming(m_impl->cameraPos);
+            m_impl->worldView->updateMeshes();
+            m_impl->worldView->render(view, projection, m_impl->cameraPos, nearPlane, farPlane);
             m_impl->renderDebugField(m_impl->cameraForward,
                                      width,
                                      height);

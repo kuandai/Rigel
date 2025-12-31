@@ -8,6 +8,7 @@
  * to minimize texture binds during rendering.
  */
 
+#include <array>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -166,14 +167,31 @@ public:
     void bind(GLuint unit = 0) const;
 
     /**
+     * @brief Bind the tint atlas texture to a texture unit.
+     *
+     * @param unit Texture unit (0-31)
+     */
+    void bindTint(GLuint unit = 0) const;
+
+    /**
      * @brief Get the OpenGL texture ID.
      */
     GLuint textureId() const { return m_textureArray; }
 
     /**
+     * @brief Get the OpenGL tint texture ID.
+     */
+    GLuint tintTextureId() const { return m_tintArray; }
+
+    /**
      * @brief Check if atlas has been uploaded.
      */
     bool isUploaded() const { return m_textureArray != 0; }
+
+    /**
+     * @brief Check if tint atlas has been uploaded.
+     */
+    bool isTintUploaded() const { return m_tintArray != 0; }
 
     /**
      * @brief Get number of textures in atlas.
@@ -195,10 +213,12 @@ public:
 private:
     Config m_config;
     GLuint m_textureArray = 0;
+    GLuint m_tintArray = 0;
 
     struct TextureEntry {
         std::string path;
         std::vector<unsigned char> pixels;  // RGBA data
+        std::array<unsigned char, 4> tint{};
         int layer;
     };
 

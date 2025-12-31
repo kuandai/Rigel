@@ -111,7 +111,18 @@ std::shared_ptr<AssetBase> ShaderLoader::load(const LoadContext& ctx) {
         if (config.vertex.empty()) {
             throw AssetLoadError(ctx.id, "Shader missing 'vertex' source");
         }
-        if (config.fragment.empty()) {
+
+        std::string fragmentPath = config.fragment;
+        if (fragmentPath.empty() && !config.vertex.empty()) {
+            std::string candidate = config.vertex;
+            size_t pos = candidate.rfind(".vert");
+            if (pos != std::string::npos) {
+                candidate.replace(pos, 5, ".frag");
+                fragmentPath = candidate;
+                spdlog::warn("Shader '{}' missing fragment; falling back to {}", ctx.id, fragmentPath);
+            }
+        }
+        if (fragmentPath.empty()) {
             throw AssetLoadError(ctx.id, "Shader missing 'fragment' source");
         }
 
@@ -119,9 +130,9 @@ std::shared_ptr<AssetBase> ShaderLoader::load(const LoadContext& ctx) {
         source.vertex = std::string(vertData.data(), vertData.size());
         spdlog::debug("Loaded vertex shader source: {}", config.vertex);
 
-        auto fragData = ctx.loadResource(config.fragment);
+        auto fragData = ctx.loadResource(fragmentPath);
         source.fragment = std::string(fragData.data(), fragData.size());
-        spdlog::debug("Loaded fragment shader source: {}", config.fragment);
+        spdlog::debug("Loaded fragment shader source: {}", fragmentPath);
 
         // Optional geometry shader
         if (config.geometry) {

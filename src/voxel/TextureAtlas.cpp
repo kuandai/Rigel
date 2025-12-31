@@ -8,6 +8,33 @@
 
 namespace Rigel::Voxel {
 
+namespace {
+std::array<unsigned char, 4> computeAverageTint(const unsigned char* pixels, size_t pixelCount) {
+    if (!pixels || pixelCount == 0) {
+        return {255, 255, 255, 255};
+    }
+
+    uint64_t sumR = 0;
+    uint64_t sumG = 0;
+    uint64_t sumB = 0;
+    uint64_t sumA = 0;
+    for (size_t i = 0; i < pixelCount; ++i) {
+        size_t base = i * 4;
+        sumR += pixels[base + 0];
+        sumG += pixels[base + 1];
+        sumB += pixels[base + 2];
+        sumA += pixels[base + 3];
+    }
+
+    uint64_t count = pixelCount;
+    unsigned char r = static_cast<unsigned char>(sumR / count);
+    unsigned char g = static_cast<unsigned char>(sumG / count);
+    unsigned char b = static_cast<unsigned char>(sumB / count);
+    unsigned char a = static_cast<unsigned char>(sumA / count);
+    return {r, g, b, a};
+}
+} // namespace
+
 TextureAtlas::TextureAtlas()
     : m_config{}
 {
@@ -25,10 +52,12 @@ TextureAtlas::~TextureAtlas() {
 TextureAtlas::TextureAtlas(TextureAtlas&& other) noexcept
     : m_config(other.m_config)
     , m_textureArray(other.m_textureArray)
+    , m_tintArray(other.m_tintArray)
     , m_entries(std::move(other.m_entries))
     , m_pathToHandle(std::move(other.m_pathToHandle))
 {
     other.m_textureArray = 0;
+    other.m_tintArray = 0;
 }
 
 TextureAtlas& TextureAtlas::operator=(TextureAtlas&& other) noexcept {
@@ -36,9 +65,11 @@ TextureAtlas& TextureAtlas::operator=(TextureAtlas&& other) noexcept {
         releaseGPU();
         m_config = other.m_config;
         m_textureArray = other.m_textureArray;
+        m_tintArray = other.m_tintArray;
         m_entries = std::move(other.m_entries);
         m_pathToHandle = std::move(other.m_pathToHandle);
         other.m_textureArray = 0;
+        other.m_tintArray = 0;
     }
     return *this;
 }
@@ -64,6 +95,8 @@ TextureHandle TextureAtlas::addTexture(const std::string& path, const unsigned c
     size_t pixelDataSize = static_cast<size_t>(m_config.tileSize * m_config.tileSize * 4);
     entry.pixels.resize(pixelDataSize);
     std::memcpy(entry.pixels.data(), pixels, pixelDataSize);
+    entry.tint = computeAverageTint(entry.pixels.data(),
+                                    static_cast<size_t>(m_config.tileSize * m_config.tileSize));
 
     TextureHandle handle{static_cast<uint16_t>(m_entries.size())};
     m_entries.push_back(std::move(entry));
@@ -213,6 +246,45 @@ void TextureAtlas::upload() {
 
     glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
+    if (m_tintArray == 0) {
+        glGenTextures(1, &m_tintArray);
+    }
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, m_tintArray);
+
+    glTexImage3D(
+        GL_TEXTURE_2D_ARRAY,
+        0,
+        GL_RGBA8,
+        1,
+        1,
+        layerCount,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        nullptr
+    );
+
+    for (size_t i = 0; i < m_entries.size(); i++) {
+        const TextureEntry& entry = m_entries[i];
+        glTexSubImage3D(
+            GL_TEXTURE_2D_ARRAY,
+            0,
+            0, 0, static_cast<GLint>(i),
+            1, 1, 1,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            entry.tint.data()
+        );
+    }
+
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+
     spdlog::info("TextureAtlas: uploaded {} textures ({}x{} each)",
                  m_entries.size(), m_config.tileSize, m_config.tileSize);
 }
@@ -222,10 +294,19 @@ void TextureAtlas::bind(GLuint unit) const {
     glBindTexture(GL_TEXTURE_2D_ARRAY, m_textureArray);
 }
 
+void TextureAtlas::bindTint(GLuint unit) const {
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, m_tintArray);
+}
+
 void TextureAtlas::releaseGPU() {
     if (m_textureArray != 0) {
         glDeleteTextures(1, &m_textureArray);
         m_textureArray = 0;
+    }
+    if (m_tintArray != 0) {
+        glDeleteTextures(1, &m_tintArray);
+        m_tintArray = 0;
     }
 }
 

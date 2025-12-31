@@ -171,6 +171,45 @@ bool raycastBlock(const Voxel::World& world,
     return false;
 }
 
+int findFirstAirY(const Voxel::WorldGenerator& generator,
+                  const Voxel::WorldGenConfig& config,
+                  int worldX,
+                  int worldZ) {
+    int minY = config.world.minY;
+    int maxY = config.world.maxY;
+
+    Voxel::ChunkCoord baseCoord = Voxel::worldToChunk(worldX, 0, worldZ);
+    int localX = 0;
+    int localZ = 0;
+    int localY = 0;
+    Voxel::worldToLocal(worldX, 0, worldZ, localX, localY, localZ);
+
+    int minChunkY = Voxel::worldToChunk(0, minY, 0).y;
+    int maxChunkY = Voxel::worldToChunk(0, maxY, 0).y;
+
+    for (int cy = maxChunkY; cy >= minChunkY; --cy) {
+        Voxel::ChunkCoord coord{baseCoord.x, cy, baseCoord.z};
+        Voxel::ChunkBuffer buffer;
+        generator.generate(coord, buffer, nullptr);
+
+        for (int ly = Voxel::Chunk::SIZE - 1; ly >= 0; --ly) {
+            int worldY = cy * Voxel::Chunk::SIZE + ly;
+            if (worldY > maxY || worldY < minY) {
+                continue;
+            }
+            if (!buffer.at(localX, ly, localZ).isAir()) {
+                int airY = worldY + 1;
+                if (airY <= maxY) {
+                    return airY;
+                }
+                return maxY + 1;
+            }
+        }
+    }
+
+    return maxY;
+}
+
 } // namespace
 
 struct Application::Impl {
@@ -786,6 +825,17 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         auto generator = std::make_shared<Voxel::WorldGenerator>(m_impl->world.blockRegistry());
         generator->setConfig(config);
         m_impl->world.setGenerator(generator);
+        Voxel::ConfigProvider renderConfigProvider;
+        renderConfigProvider.addSource(
+            std::make_unique<Voxel::EmbeddedConfigSource>(m_impl->assets, "raw/render_config")
+        );
+        renderConfigProvider.addSource(
+            std::make_unique<Voxel::FileConfigSource>("config/render.yaml")
+        );
+        renderConfigProvider.addSource(
+            std::make_unique<Voxel::FileConfigSource>("render.yaml")
+        );
+        m_impl->world.renderConfig() = renderConfigProvider.loadRenderConfig();
         m_impl->world.setStreamConfig(config.stream);
         if (m_impl->benchmarkEnabled) {
             m_impl->world.setBenchmark(&m_impl->benchmark);
@@ -799,6 +849,11 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         } else if (m_impl->world.blockRegistry().size() > 1) {
             m_impl->placeBlock = Voxel::BlockID{1};
         }
+
+        int spawnX = static_cast<int>(std::floor(m_impl->cameraPos.x));
+        int spawnZ = static_cast<int>(std::floor(m_impl->cameraPos.z));
+        int spawnY = findFirstAirY(*generator, config, spawnX, spawnZ);
+        m_impl->cameraPos.y = static_cast<float>(spawnY) + 0.5f;
 
         m_impl->initDebugField();
         m_impl->initFrameGraph();
@@ -937,19 +992,18 @@ void Application::run() {
             float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
 
             float renderDistance = m_impl->world.renderConfig().renderDistance;
+            float nearPlane = 0.1f;
             float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
-            glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, 0.1f, farPlane);
+            glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, nearPlane, farPlane);
             glm::mat4 view = glm::lookAt(
                 m_impl->cameraPos,
                 m_impl->cameraTarget,
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
 
-            glm::mat4 viewProjection = projection * view;
-
             m_impl->world.updateStreaming(m_impl->cameraPos);
             m_impl->world.updateMeshes();
-            m_impl->world.render(viewProjection, m_impl->cameraPos);
+            m_impl->world.render(view, projection, m_impl->cameraPos, nearPlane, farPlane);
             m_impl->renderDebugField(m_impl->cameraForward,
                                      width,
                                      height);

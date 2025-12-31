@@ -7,12 +7,15 @@ layout(location = 2) in vec4 a_packedData;  // normalIndex, aoLevel, textureLaye
 
 // Uniforms
 uniform mat4 u_viewProjection;
+uniform mat4 u_view;
 uniform vec3 u_chunkOffset;
 
 // Outputs to fragment shader
 out vec2 v_uv;
 out float v_ao;
 out vec3 v_normal;
+out vec3 v_worldPos;
+out float v_viewDepth;
 flat out int v_textureLayer;
 
 // Normal lookup table for axis-aligned faces
@@ -28,6 +31,7 @@ const vec3 NORMALS[6] = vec3[](
 void main() {
     // Calculate world position
     vec3 worldPos = a_position + u_chunkOffset;
+    vec4 viewPos = u_view * vec4(worldPos, 1.0);
     gl_Position = u_viewProjection * vec4(worldPos, 1.0);
 
     // Pass through UV coordinates
@@ -40,4 +44,6 @@ void main() {
 
     // Look up normal from table
     v_normal = NORMALS[clamp(normalIndex, 0, 5)];
+    v_worldPos = worldPos;
+    v_viewDepth = -viewPos.z;
 }

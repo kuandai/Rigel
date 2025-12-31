@@ -1,0 +1,17 @@
+render:
+  sun_direction: [0.5, 1.0, 0.3]
+  transparent_alpha: 0.5
+  shadow:
+    enabled: false
+    cascades: 3
+    map_size: 1024
+    max_distance: 200.0
+    split_lambda: 0.25
+    bias: 0.0005
+    normal_bias: 0.005
+    pcf_radius: 2
+    pcf_radius_near: 2
+    pcf_radius_far: 3
+    transparent_scale: 1.0
+    strength: 2.0
+    fade_power: 1.0

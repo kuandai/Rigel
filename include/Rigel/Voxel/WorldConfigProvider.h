@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RenderConfig.h"
 #include "WorldGenConfig.h"
 
 #include <Rigel/Asset/AssetManager.h>
@@ -54,6 +55,7 @@ class ConfigProvider {
 public:
     void addSource(std::unique_ptr<IConfigSource> source);
     WorldGenConfig loadConfig() const;
+    WorldRenderConfig loadRenderConfig() const;
 
 private:
     std::vector<std::unique_ptr<IConfigSource>> m_sources;

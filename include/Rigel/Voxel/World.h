@@ -157,10 +157,17 @@ public:
     /**
      * @brief Render the world.
      *
-     * @param viewProjection View-projection matrix
+     * @param view View matrix
+     * @param projection Projection matrix
      * @param cameraPos Camera position for distance culling
+     * @param nearPlane Near clipping plane
+     * @param farPlane Far clipping plane
      */
-    void render(const glm::mat4& viewProjection, const glm::vec3& cameraPos);
+    void render(const glm::mat4& view,
+                const glm::mat4& projection,
+                const glm::vec3& cameraPos,
+                float nearPlane,
+                float farPlane);
 
     /**
      * @brief Populate debug chunk states for visualization.
@@ -214,6 +221,8 @@ private:
     ChunkStreamer m_streamer;
     std::shared_ptr<WorldGenerator> m_generator;
     Asset::Handle<Asset::ShaderAsset> m_shader;
+    Asset::Handle<Asset::ShaderAsset> m_shadowDepthShader;
+    Asset::Handle<Asset::ShaderAsset> m_shadowTransmitShader;
     WorldRenderConfig m_renderConfig;
     ChunkBenchmarkStats* m_benchmark = nullptr;
 

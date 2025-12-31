@@ -261,8 +261,8 @@ overlays:
     when: no_carvers
 
 streaming:
-  view_distance_chunks: 15
-  unload_distance_chunks: 16 
+  view_distance_chunks: 10
+  unload_distance_chunks: 11 
   gen_queue_limit: 128
   mesh_queue_limit: 128
   apply_budget_per_frame: 128

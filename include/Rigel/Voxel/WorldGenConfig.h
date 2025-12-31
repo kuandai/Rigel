@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Chunk.h"
-
 #include <cstddef>
 #include <cstdint>
 #include <string>

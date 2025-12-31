@@ -1,7 +1,8 @@
 #pragma once
 
-#include "WorldMeshStore.h"
+#include "RenderConfig.h"
 #include "TextureAtlas.h"
+#include "WorldMeshStore.h"
 
 #include <Rigel/Asset/Handle.h>
 #include <Rigel/Asset/Types.h>
@@ -11,19 +12,19 @@
 
 namespace Rigel::Voxel {
 
-struct WorldRenderConfig {
-    float renderDistance = 256.0f;
-    glm::vec3 sunDirection = glm::vec3(0.5f, 1.0f, 0.3f);
-    float transparentAlpha = 0.5f;
-};
-
 struct WorldRenderContext {
     const WorldMeshStore* meshes = nullptr;
     const TextureAtlas* atlas = nullptr;
     Asset::Handle<Asset::ShaderAsset> shader;
+    Asset::Handle<Asset::ShaderAsset> shadowDepthShader;
+    Asset::Handle<Asset::ShaderAsset> shadowTransmitShader;
     WorldRenderConfig config;
+    glm::mat4 view{1.0f};
+    glm::mat4 projection{1.0f};
     glm::mat4 viewProjection{1.0f};
     glm::vec3 cameraPos{0.0f};
+    float nearPlane = 0.1f;
+    float farPlane = 1000.0f;
     glm::mat4 worldTransform{1.0f};
 };
 

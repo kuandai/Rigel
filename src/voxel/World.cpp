@@ -22,6 +22,12 @@ void World::initialize(Asset::AssetManager& assets) {
         spdlog::error("Failed to load voxel shader: {}", e.what());
         throw;
     }
+    try {
+        m_shadowDepthShader = assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_depth");
+        m_shadowTransmitShader = assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_transmit");
+    } catch (const std::exception& e) {
+        spdlog::warn("Shadow shaders unavailable: {}", e.what());
+    }
 
     m_streamer.bind(&m_chunkManager, &m_meshStore, &m_blockRegistry, &m_textureAtlas, m_generator);
 
@@ -65,14 +71,24 @@ void World::setBenchmark(ChunkBenchmarkStats* stats) {
     m_streamer.setBenchmark(stats);
 }
 
-void World::render(const glm::mat4& viewProjection, const glm::vec3& cameraPos) {
+void World::render(const glm::mat4& view,
+                   const glm::mat4& projection,
+                   const glm::vec3& cameraPos,
+                   float nearPlane,
+                   float farPlane) {
     WorldRenderContext ctx;
     ctx.meshes = &m_meshStore;
     ctx.atlas = &m_textureAtlas;
     ctx.shader = m_shader;
+    ctx.shadowDepthShader = m_shadowDepthShader;
+    ctx.shadowTransmitShader = m_shadowTransmitShader;
     ctx.config = m_renderConfig;
-    ctx.viewProjection = viewProjection;
+    ctx.view = view;
+    ctx.projection = projection;
+    ctx.viewProjection = projection * view;
     ctx.cameraPos = cameraPos;
+    ctx.nearPlane = nearPlane;
+    ctx.farPlane = farPlane;
     ctx.worldTransform = glm::mat4(1.0f);
     m_renderer.render(ctx);
 }
@@ -93,9 +109,11 @@ void World::clear() {
 }
 
 void World::releaseRenderResources() {
-    m_renderer.clearCache();
+    m_renderer.releaseResources();
     m_textureAtlas.releaseGPU();
     m_shader = {};
+    m_shadowDepthShader = {};
+    m_shadowTransmitShader = {};
 }
 
 void World::setGenerator(std::shared_ptr<WorldGenerator> generator) {

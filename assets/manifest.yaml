@@ -4,6 +4,8 @@ assets:
   raw:
     world_config:
       path: config/world_generation.yaml
+    render_config:
+      path: config/render.yaml
   input:
     default:
       bindings:
@@ -59,6 +61,12 @@ assets:
     voxel:
       vertex: shaders/voxel.vert
       fragment: shaders/voxel.frag
+    voxel_shadow_depth:
+      vertex: shaders/voxel_shadow_depth.vert
+      fragment: shaders/voxel_shadow_depth.frag
+    voxel_shadow_transmit:
+      vertex: shaders/voxel_shadow_transmit.vert
+      fragment: shaders/voxel_shadow_transmit.frag
     chunk_debug:
       vertex: shaders/chunk_debug.vert
       fragment: shaders/chunk_debug.frag

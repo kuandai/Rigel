@@ -14,6 +14,8 @@
 #include "WorldGenerator.h"
 #include "WorldId.h"
 
+#include <Rigel/Entity/WorldEntities.h>
+
 #include <memory>
 #include <vector>
 
@@ -71,6 +73,10 @@ public:
     ChunkManager& chunkManager() { return m_chunkManager; }
     const ChunkManager& chunkManager() const { return m_chunkManager; }
 
+    /// Access the entity manager
+    Entity::WorldEntities& entities() { return m_entities; }
+    const Entity::WorldEntities& entities() const { return m_entities; }
+
     /// @}
 
     /// @name Block Access (World Coordinates)
@@ -114,6 +120,11 @@ public:
     const std::shared_ptr<WorldGenerator>& generator() const { return m_generator; }
 
     /**
+     * @brief Tick entities for this world.
+     */
+    void tickEntities(float dt);
+
+    /**
      * @brief Serialize a delta for replication.
      *
      * Stub for network integration.
@@ -126,6 +137,7 @@ private:
     WorldId m_id = kDefaultWorldId;
     WorldResources* m_resources = nullptr;
     ChunkManager m_chunkManager;
+    Entity::WorldEntities m_entities;
     std::shared_ptr<WorldGenerator> m_generator;
     bool m_initialized = false;
 

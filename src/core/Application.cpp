@@ -1042,6 +1042,7 @@ void Application::run() {
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
 
+            m_impl->world->tickEntities(deltaTime);
             m_impl->worldView->updateStreaming(m_impl->cameraPos);
             m_impl->worldView->updateMeshes();
             m_impl->worldView->render(view, projection, m_impl->cameraPos, nearPlane, farPlane);

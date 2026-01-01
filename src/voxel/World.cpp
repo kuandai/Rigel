@@ -20,6 +20,7 @@ void World::initialize(WorldResources& resources) {
 
     m_resources = &resources;
     m_chunkManager.setRegistry(&m_resources->registry());
+    m_entities.bind(this);
 
     m_initialized = true;
     spdlog::debug("Voxel world initialized");
@@ -49,10 +50,15 @@ BlockState World::getBlock(int wx, int wy, int wz) const {
 
 void World::clear() {
     m_chunkManager.clear();
+    m_entities.clear();
 }
 
 void World::setGenerator(std::shared_ptr<WorldGenerator> generator) {
     m_generator = std::move(generator);
+}
+
+void World::tickEntities(float dt) {
+    m_entities.tick(dt);
 }
 
 std::vector<uint8_t> World::serializeChunkDelta(ChunkCoord coord) const {

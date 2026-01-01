@@ -123,6 +123,25 @@ void applyShadowConfig(ryml::ConstNodeRef shadowNode, ShadowConfig& shadow) {
     }
 }
 
+void applyTaaConfig(ryml::ConstNodeRef taaNode, TaaConfig& taa) {
+    if (!taaNode.readable()) {
+        return;
+    }
+
+    taa.enabled = readBool(taaNode, "enabled", taa.enabled);
+    taa.blend = readFloat(taaNode, "blend", taa.blend);
+    taa.jitterScale = readFloat(taaNode, "jitter_scale", taa.jitterScale);
+
+    if (taa.blend < 0.0f) {
+        taa.blend = 0.0f;
+    } else if (taa.blend > 1.0f) {
+        taa.blend = 1.0f;
+    }
+    if (taa.jitterScale < 0.0f) {
+        taa.jitterScale = 0.0f;
+    }
+}
+
 void applyRenderYaml(const char* sourceName,
                      const std::string& yaml,
                      WorldRenderConfig& config) {
@@ -149,6 +168,9 @@ void applyRenderYaml(const char* sourceName,
 
     if (renderNode.has_child("shadow")) {
         applyShadowConfig(renderNode["shadow"], config.shadow);
+    }
+    if (renderNode.has_child("taa")) {
+        applyTaaConfig(renderNode["taa"], config.taa);
     }
 }
 

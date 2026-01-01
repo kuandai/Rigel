@@ -115,10 +115,11 @@ void main() {
     }
 
     // Simple directional lighting
-    float diffuse = max(dot(v_normal, u_sunDirection), 0.0);
+    vec3 sunDir = normalize(u_sunDirection);
+    float diffuse = max(dot(v_normal, sunDir), 0.0);
     float ambient = 0.3;
     float sun = 0.7 * diffuse;
-    float viewDistance = length(v_worldPos - u_cameraPos);
+    float viewDistance = max(v_viewDepth, 0.0);
 
     vec3 shadowColor = vec3(1.0);
     if (u_shadowEnabled != 0 && u_shadowCascadeCount > 0 && u_renderLayer != 2) {
@@ -150,10 +151,11 @@ void main() {
             float fade = clamp(1.0 - t, 0.0, 1.0);
             shadowColor = mix(vec3(1.0), shadowColor, fade);
         }
+
     }
 
     // Apply ambient occlusion
-    float ao = 0.5 + 0.5 * v_ao;
+    float ao = 0.75 + 0.25 * v_ao;
 
     // Final color
     vec3 finalColor = texColor.rgb * (ambient + sun * shadowColor) * ao;

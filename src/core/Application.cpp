@@ -12,6 +12,7 @@
 #include "Rigel/input/keypress.h"
 #include "Rigel/version.h"
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
@@ -42,6 +43,17 @@ constexpr int kFrameGraphSamples = 180;
 constexpr float kFrameGraphMaxMs = 50.0f;
 constexpr float kFrameGraphHeight = 0.28f;
 constexpr float kFrameGraphBottom = -0.95f;
+
+float halton(uint32_t index, uint32_t base) {
+    float f = 1.0f;
+    float result = 0.0f;
+    while (index > 0) {
+        f /= static_cast<float>(base);
+        result += f * static_cast<float>(index % base);
+        index /= base;
+    }
+    return result;
+}
 
 constexpr float kCubeVertices[] = {
     // +X
@@ -306,6 +318,34 @@ struct Application::Impl {
         bool initialized = false;
     };
 
+    struct TemporalAA {
+        GLuint sceneFbo = 0;
+        GLuint sceneColor = 0;
+        GLuint sceneDepth = 0;
+        GLuint resolveFbo = 0;
+        std::array<GLuint, 2> history{};
+        std::array<GLuint, 2> historyDepth{};
+        GLuint quadVao = 0;
+        Asset::Handle<Asset::ShaderAsset> shader;
+        GLint locCurrentColor = -1;
+        GLint locCurrentDepth = -1;
+        GLint locHistory = -1;
+        GLint locHistoryDepth = -1;
+        GLint locCurrentJitter = -1;
+        GLint locInvViewProjection = -1;
+        GLint locPrevViewProjection = -1;
+        GLint locHistoryBlend = -1;
+        GLint locHistoryValid = -1;
+        GLint locTexelSize = -1;
+        int width = 0;
+        int height = 0;
+        int historyIndex = 0;
+        bool initialized = false;
+        bool historyValid = false;
+        glm::mat4 prevViewProjection{1.0f};
+        uint64_t frameIndex = 0;
+    };
+
     GLFWwindow* window = nullptr;
     Asset::AssetManager assets;
     Voxel::WorldSet worldSet;
@@ -336,6 +376,7 @@ struct Application::Impl {
     DebugField debugField;
     FrameTimeGraph frameGraph;
     EntityDebug entityDebug;
+    TemporalAA taa;
     std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
     float debugDistance = kDebugDistance;
     bool debugOverlayEnabled = true;
@@ -475,6 +516,246 @@ struct Application::Impl {
         entityDebug.locCellSize = entityDebug.shader->uniform("u_cellSize");
         entityDebug.locColor = entityDebug.shader->uniform("u_color");
         entityDebug.initialized = true;
+    }
+
+    void releaseTaaTargets() {
+        if (taa.sceneFbo != 0) {
+            glDeleteFramebuffers(1, &taa.sceneFbo);
+            taa.sceneFbo = 0;
+        }
+        if (taa.resolveFbo != 0) {
+            glDeleteFramebuffers(1, &taa.resolveFbo);
+            taa.resolveFbo = 0;
+        }
+        if (taa.sceneColor != 0) {
+            glDeleteTextures(1, &taa.sceneColor);
+            taa.sceneColor = 0;
+        }
+        if (taa.sceneDepth != 0) {
+            glDeleteTextures(1, &taa.sceneDepth);
+            taa.sceneDepth = 0;
+        }
+        for (GLuint& tex : taa.history) {
+            if (tex != 0) {
+                glDeleteTextures(1, &tex);
+                tex = 0;
+            }
+        }
+        for (GLuint& tex : taa.historyDepth) {
+            if (tex != 0) {
+                glDeleteTextures(1, &tex);
+                tex = 0;
+            }
+        }
+        taa.width = 0;
+        taa.height = 0;
+        taa.historyValid = false;
+    }
+
+    void initTaa() {
+        if (taa.initialized) {
+            return;
+        }
+        try {
+            taa.shader = assets.get<Asset::ShaderAsset>("shaders/taa_resolve");
+        } catch (const std::exception& e) {
+            spdlog::warn("TAA shader unavailable: {}", e.what());
+            return;
+        }
+
+        glGenVertexArrays(1, &taa.quadVao);
+        glBindVertexArray(taa.quadVao);
+        glBindVertexArray(0);
+
+        taa.locCurrentColor = taa.shader->uniform("u_currentColor");
+        taa.locCurrentDepth = taa.shader->uniform("u_currentDepth");
+        taa.locHistory = taa.shader->uniform("u_historyColor");
+        taa.locHistoryDepth = taa.shader->uniform("u_historyDepth");
+        taa.locCurrentJitter = taa.shader->uniform("u_currentJitter");
+        taa.locInvViewProjection = taa.shader->uniform("u_invViewProjection");
+        taa.locPrevViewProjection = taa.shader->uniform("u_prevViewProjection");
+        taa.locHistoryBlend = taa.shader->uniform("u_historyBlend");
+        taa.locHistoryValid = taa.shader->uniform("u_historyValid");
+        taa.locTexelSize = taa.shader->uniform("u_texelSize");
+
+        taa.initialized = true;
+    }
+
+    void ensureTaaTargets(int width, int height) {
+        initTaa();
+        if (!taa.initialized || width <= 0 || height <= 0) {
+            return;
+        }
+        if (taa.width == width && taa.height == height && taa.sceneFbo != 0) {
+            return;
+        }
+
+        releaseTaaTargets();
+
+        taa.width = width;
+        taa.height = height;
+        taa.historyValid = false;
+
+        glGenTextures(1, &taa.sceneColor);
+        glBindTexture(GL_TEXTURE_2D, taa.sceneColor);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0,
+                     GL_RGBA, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        glGenTextures(1, &taa.sceneDepth);
+        glBindTexture(GL_TEXTURE_2D, taa.sceneDepth);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0,
+                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+
+        glGenTextures(2, taa.history.data());
+        for (GLuint& tex : taa.history) {
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0,
+                         GL_RGBA, GL_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        glGenTextures(2, taa.historyDepth.data());
+        for (GLuint& tex : taa.historyDepth) {
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0,
+                         GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        }
+
+        glGenFramebuffers(1, &taa.sceneFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, taa.sceneFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, taa.sceneColor, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                               GL_TEXTURE_2D, taa.sceneDepth, 0);
+        GLenum drawBuffer = GL_COLOR_ATTACHMENT0;
+        glDrawBuffers(1, &drawBuffer);
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            spdlog::warn("TAA scene FBO incomplete: status=0x{:X}", status);
+        }
+
+        glGenFramebuffers(1, &taa.resolveFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    glm::vec2 nextJitter(int width, int height, float scale) {
+        if (width <= 0 || height <= 0) {
+            return glm::vec2(0.0f);
+        }
+        ++taa.frameIndex;
+        float jx = halton(static_cast<uint32_t>(taa.frameIndex), 2) - 0.5f;
+        float jy = halton(static_cast<uint32_t>(taa.frameIndex), 3) - 0.5f;
+        float offsetX = jx * scale * 2.0f / static_cast<float>(width);
+        float offsetY = jy * scale * 2.0f / static_cast<float>(height);
+        return glm::vec2(offsetX, offsetY);
+    }
+
+    bool resolveTaa(const glm::mat4& invViewProjection,
+                    const glm::mat4& viewProjection,
+                    const glm::vec2& jitterUv,
+                    float blend) {
+        if (!taa.initialized || taa.resolveFbo == 0 || taa.sceneColor == 0) {
+            return false;
+        }
+
+        int readIndex = taa.historyIndex;
+        int writeIndex = (taa.historyIndex + 1) % 2;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, taa.resolveFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, taa.history[writeIndex], 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                               GL_TEXTURE_2D, taa.historyDepth[writeIndex], 0);
+        GLenum drawBuffer = GL_COLOR_ATTACHMENT0;
+        glDrawBuffers(1, &drawBuffer);
+
+        taa.shader->bind();
+        if (taa.locCurrentColor >= 0) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, taa.sceneColor);
+            glUniform1i(taa.locCurrentColor, 0);
+        }
+        if (taa.locCurrentDepth >= 0) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, taa.sceneDepth);
+            glUniform1i(taa.locCurrentDepth, 1);
+        }
+        if (taa.locHistory >= 0) {
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, taa.history[readIndex]);
+            glUniform1i(taa.locHistory, 2);
+        }
+        if (taa.locHistoryDepth >= 0) {
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, taa.historyDepth[readIndex]);
+            glUniform1i(taa.locHistoryDepth, 3);
+        }
+        if (taa.locCurrentJitter >= 0) {
+            glUniform2fv(taa.locCurrentJitter, 1, glm::value_ptr(jitterUv));
+        }
+        if (taa.locInvViewProjection >= 0) {
+            glUniformMatrix4fv(taa.locInvViewProjection, 1, GL_FALSE,
+                               glm::value_ptr(invViewProjection));
+        }
+        if (taa.locPrevViewProjection >= 0) {
+            glUniformMatrix4fv(taa.locPrevViewProjection, 1, GL_FALSE,
+                               glm::value_ptr(taa.prevViewProjection));
+        }
+        if (taa.locHistoryBlend >= 0) {
+            glUniform1f(taa.locHistoryBlend, blend);
+        }
+        if (taa.locHistoryValid >= 0) {
+            glUniform1i(taa.locHistoryValid, taa.historyValid ? 1 : 0);
+        }
+        if (taa.locTexelSize >= 0) {
+            glm::vec2 texelSize(1.0f / static_cast<float>(taa.width),
+                                1.0f / static_cast<float>(taa.height));
+            glUniform2fv(taa.locTexelSize, 1, glm::value_ptr(texelSize));
+        }
+
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_DEPTH_TEST);
+
+        glBindVertexArray(taa.quadVao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+        glUseProgram(0);
+
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, taa.resolveFbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, taa.width, taa.height,
+                          0, 0, taa.width, taa.height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, taa.sceneFbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, taa.resolveFbo);
+        glBlitFramebuffer(0, 0, taa.width, taa.height,
+                          0, 0, taa.width, taa.height,
+                          GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        taa.historyValid = true;
+        taa.historyIndex = writeIndex;
+        taa.prevViewProjection = viewProjection;
+
+        return true;
     }
 
     void recordFrameTime(float seconds) {
@@ -1012,6 +1293,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->initDebugField();
         m_impl->initFrameGraph();
         m_impl->initEntityDebug();
+        m_impl->initTaa();
         m_impl->worldReady = true;
     } catch (const std::exception& e) {
         spdlog::error("Voxel bootstrap failed: {}", e.what());
@@ -1057,6 +1339,12 @@ Application::~Application() {
             }
             m_impl->entityDebug.initialized = false;
         }
+        if (m_impl->taa.quadVao != 0) {
+            glDeleteVertexArrays(1, &m_impl->taa.quadVao);
+            m_impl->taa.quadVao = 0;
+        }
+        m_impl->releaseTaaTargets();
+        m_impl->taa.initialized = false;
 
         if (m_impl->worldView) {
             m_impl->worldView->clear();
@@ -1093,7 +1381,6 @@ void Application::run() {
 
         // Frame setup
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         // Flush event queue
         glfwPollEvents();
@@ -1189,21 +1476,62 @@ void Application::run() {
             float nearPlane = 0.1f;
             float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
             glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, nearPlane, farPlane);
+            glm::mat4 projectionNoJitter = projection;
             glm::mat4 view = glm::lookAt(
                 m_impl->cameraPos,
                 m_impl->cameraTarget,
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
 
+            bool useTaa = m_impl->worldView->renderConfig().taa.enabled;
+            if (useTaa) {
+                m_impl->ensureTaaTargets(width, height);
+                useTaa = m_impl->taa.initialized && m_impl->taa.sceneFbo != 0;
+            } else {
+                m_impl->taa.historyValid = false;
+            }
+
+            glm::vec2 jitter(0.0f);
+            if (useTaa) {
+                jitter = m_impl->nextJitter(width, height,
+                                            m_impl->worldView->renderConfig().taa.jitterScale);
+                projection[2][0] += jitter.x;
+                projection[2][1] += jitter.y;
+            }
+
+            glBindFramebuffer(GL_FRAMEBUFFER, useTaa ? m_impl->taa.sceneFbo : 0);
+            glViewport(0, 0, width, height);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
             m_impl->world->tickEntities(deltaTime);
             m_impl->worldView->updateStreaming(m_impl->cameraPos);
             m_impl->worldView->updateMeshes();
             m_impl->worldView->render(view, projection, m_impl->cameraPos, nearPlane, farPlane, deltaTime);
-            m_impl->renderEntityDebugBoxes(view, projection);
+
+            if (useTaa) {
+                glm::mat4 viewProjection = projection * view;
+                glm::mat4 invViewProjection = glm::inverse(viewProjection);
+                glm::mat4 viewProjectionNoJitter = projectionNoJitter * view;
+                glm::vec2 jitterUv = jitter * 0.5f;
+                m_impl->resolveTaa(invViewProjection,
+                                   viewProjectionNoJitter,
+                                   jitterUv,
+                                   m_impl->worldView->renderConfig().taa.blend);
+                glViewport(0, 0, width, height);
+            }
+
+            m_impl->renderEntityDebugBoxes(view, projectionNoJitter);
             m_impl->renderDebugField(m_impl->cameraForward,
                                      width,
                                      height);
             m_impl->renderFrameGraph();
+        } else {
+            int width = 0;
+            int height = 0;
+            glfwGetFramebufferSize(m_impl->window, &width, &height);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, width, height);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         }
 
         glfwSwapBuffers(m_impl->window);

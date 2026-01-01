@@ -46,6 +46,10 @@ render:
     transparent_scale: 0.75
     strength: 1.8
     fade_power: 1.5
+  taa:
+    enabled: true
+    blend: 0.8
+    jitter_scale: 1.5
 )";
 
     ConfigProvider provider;
@@ -70,4 +74,7 @@ render:
     CHECK_NEAR(config.shadow.transparentScale, 0.75f, 0.0001f);
     CHECK_NEAR(config.shadow.strength, 1.8f, 0.0001f);
     CHECK_NEAR(config.shadow.fadePower, 1.5f, 0.0001f);
+    CHECK(config.taa.enabled);
+    CHECK_NEAR(config.taa.blend, 0.8f, 0.0001f);
+    CHECK_NEAR(config.taa.jitterScale, 1.5f, 0.0001f);
 }

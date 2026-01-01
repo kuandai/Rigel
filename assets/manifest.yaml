@@ -77,6 +77,9 @@ assets:
     entity_shadow_depth:
       vertex: shaders/entity_shadow_depth.vert
       fragment: shaders/entity_shadow_depth.frag
+    taa_resolve:
+      vertex: shaders/taa_resolve.vert
+      fragment: shaders/taa_resolve.frag
     voxel_shadow_depth:
       vertex: shaders/voxel_shadow_depth.vert
       fragment: shaders/voxel_shadow_depth.frag

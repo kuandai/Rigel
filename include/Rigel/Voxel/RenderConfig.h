@@ -27,11 +27,18 @@ struct ShadowConfig {
     float fadePower = 1.0f;
 };
 
+struct TaaConfig {
+    bool enabled = false;
+    float blend = 0.9f;
+    float jitterScale = 1.0f;
+};
+
 struct WorldRenderConfig {
     float renderDistance = 256.0f;
     glm::vec3 sunDirection = glm::vec3(0.5f, 1.0f, 0.3f);
     float transparentAlpha = 0.5f;
     ShadowConfig shadow;
+    TaaConfig taa;
 };
 
 } // namespace Rigel::Voxel

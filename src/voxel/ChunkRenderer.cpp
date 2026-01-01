@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
@@ -551,8 +552,8 @@ bool ChunkRenderer::ensureShadowResources(const ShadowConfig& config) {
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT24,
                  mapSize, mapSize, cascades, 0,
                  GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     float borderDepth[] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -578,6 +579,10 @@ bool ChunkRenderer::ensureShadowResources(const ShadowConfig& config) {
 
 bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
                                   const std::vector<RenderEntry>& entries) {
+    GLint prevDrawFbo = 0;
+    GLint prevReadFbo = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFbo);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevReadFbo);
     const ShadowConfig& shadow = ctx.config.shadow;
     if (!shadow.enabled || !m_shadowDepthShader || !m_atlas) {
         static int skipLogCounter = 0;
@@ -626,40 +631,59 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
         m_shadowState.splits[i] = split;
     }
 
-    glm::vec3 sunDir = normalizeOrDefault(ctx.config.sunDirection);
-    glm::vec3 cameraPos = ctx.cameraPos;
-
     for (int i = 0; i < cascades; ++i) {
         float cascadeNear = (i == 0) ? nearPlane : m_shadowState.splits[i - 1];
         float cascadeFar = m_shadowState.splits[i];
-        float radius = std::max(cascadeFar, cascadeNear);
-        glm::vec3 centerWorld = cameraPos;
 
-        float lightDistance = radius + 10.0f;
+        float tanHalfFov = 1.0f / ctx.projection[1][1];
+        float fovY = 2.0f * std::atan(tanHalfFov);
+        float aspect = ctx.projection[1][1] / ctx.projection[0][0];
+
+        glm::mat4 splitProjection = glm::perspective(fovY, aspect, cascadeNear, cascadeFar);
+        glm::mat4 invViewProj = glm::inverse(splitProjection * ctx.view);
+        auto corners = getFrustumCornersWorld(invViewProj);
+
+        glm::vec3 centerWorld(0.0f);
+        for (const auto& corner : corners) {
+            centerWorld += corner;
+        }
+        centerWorld /= static_cast<float>(corners.size());
+
+        glm::vec3 sunDir = normalizeOrDefault(ctx.config.sunDirection);
+        float lightDistance = cascadeFar + 50.0f;
         glm::vec3 lightPos = centerWorld + sunDir * lightDistance;
         glm::mat4 lightView = glm::lookAt(lightPos, centerWorld, pickUpVector(sunDir));
 
-        glm::vec3 centerLS = glm::vec3(lightView * glm::vec4(centerWorld, 1.0f));
-        float extent = radius * 2.0f;
-        if (extent > 0.0f) {
-            float texelSize = extent / static_cast<float>(m_shadowState.mapSize);
-            if (texelSize > 0.0f) {
-                centerLS.x = std::floor(centerLS.x / texelSize) * texelSize;
-                centerLS.y = std::floor(centerLS.y / texelSize) * texelSize;
-            }
+        glm::vec3 minLS(std::numeric_limits<float>::max());
+        glm::vec3 maxLS(std::numeric_limits<float>::lowest());
+        for (const auto& corner : corners) {
+            glm::vec3 lightSpace = glm::vec3(lightView * glm::vec4(corner, 1.0f));
+            minLS = glm::min(minLS, lightSpace);
+            maxLS = glm::max(maxLS, lightSpace);
         }
 
-        float minX = centerLS.x - radius;
-        float maxX = centerLS.x + radius;
-        float minY = centerLS.y - radius;
-        float maxY = centerLS.y + radius;
-        float minZ = centerLS.z - radius;
-        float maxZ = centerLS.z + radius;
+        float extentX = maxLS.x - minLS.x;
+        float extentY = maxLS.y - minLS.y;
+        if (extentX > 0.0f && extentY > 0.0f) {
+            float texelX = extentX / static_cast<float>(m_shadowState.mapSize);
+            float texelY = extentY / static_cast<float>(m_shadowState.mapSize);
+            glm::vec2 centerLS((minLS.x + maxLS.x) * 0.5f,
+                               (minLS.y + maxLS.y) * 0.5f);
+            centerLS.x = std::floor(centerLS.x / texelX) * texelX;
+            centerLS.y = std::floor(centerLS.y / texelY) * texelY;
+            minLS.x = centerLS.x - extentX * 0.5f;
+            maxLS.x = centerLS.x + extentX * 0.5f;
+            minLS.y = centerLS.y - extentY * 0.5f;
+            maxLS.y = centerLS.y + extentY * 0.5f;
+        }
 
         float zPadding = 20.0f;
-        float nearZ = -maxZ - zPadding;
-        float farZ = -minZ + zPadding;
-        glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, nearZ, farZ);
+        float nearZ = -maxLS.z - zPadding;
+        float farZ = -minLS.z + zPadding;
+        if (nearZ > farZ) {
+            std::swap(nearZ, farZ);
+        }
+        glm::mat4 lightProj = glm::ortho(minLS.x, maxLS.x, minLS.y, maxLS.y, nearZ, farZ);
         m_shadowState.matrices[i] = lightProj * lightView;
     }
 
@@ -686,7 +710,9 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CW);
 
     if (!hasTransparent || shadow.transparentScale <= 0.0f || !m_shadowTransmitShader) {
         glDisable(GL_DEPTH_TEST);
@@ -750,7 +776,9 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
             glEnable(GL_DEPTH_TEST);
             glDepthMask(GL_TRUE);
             glDisable(GL_BLEND);
-            glDisable(GL_CULL_FACE);
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+            glFrontFace(GL_CW);
         }
     }
 
@@ -768,6 +796,9 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
         glEnable(GL_BLEND);
         glBlendFunc(GL_ZERO, GL_SRC_COLOR);
         glBlendEquation(GL_FUNC_ADD);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CW);
 
         for (int cascade = 0; cascade < cascades; ++cascade) {
             glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
@@ -800,7 +831,8 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
         glDepthMask(GL_TRUE);
     }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFbo);
     glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     glUseProgram(0);
     return true;

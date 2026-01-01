@@ -4,14 +4,18 @@ render:
   shadow:
     enabled: true
     cascades: 3
-    map_size: 1024
+    map_size: 6144
     max_distance: 200.0
     split_lambda: 0.25
-    bias: 0.0005
-    normal_bias: 0.005
+    bias: 0.001
+    normal_bias: 0.02
     pcf_radius: 2
     pcf_radius_near: 2
     pcf_radius_far: 3
     transparent_scale: 1.0
-    strength: 2.0
+    strength: 3.0
     fade_power: 1.0
+  taa:
+    enabled: true
+    blend: 0.95
+    jitter_scale: 1.0

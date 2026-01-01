@@ -1,0 +1,12 @@
+texture_width: 16
+texture_height: 16
+model_scale: 1.0
+textures:
+  diffuse: textures/entity_debug
+animation_set: entity_anims/demo_spin
+default_animation: spin
+bones:
+  - name: root
+    cubes:
+      - origin: [-0.5, -0.5, -0.5]
+        size: [1.0, 1.0, 1.0]

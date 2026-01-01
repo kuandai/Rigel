@@ -249,6 +249,42 @@ void Entity::removeRenderComponent(IRenderEntityComponent* component) {
     m_renderComponents.erase(it, m_renderComponents.end());
 }
 
+void Entity::render(const EntityRenderContext& ctx,
+                    const glm::mat4& modelMatrix,
+                    bool shouldRender) {
+    if (m_modelInstance) {
+        m_modelInstance->setTint(m_renderTint);
+        m_modelInstance->render(ctx, *this, modelMatrix, shouldRender);
+    }
+
+    for (IRenderEntityComponent* component : m_renderComponents) {
+        if (component) {
+            component->render(*this, ctx, modelMatrix, shouldRender);
+        }
+    }
+}
+
+void Entity::setModel(Asset::Handle<EntityModelAsset> model) {
+    m_model = std::move(model);
+    m_modelInstance.reset();
+}
+
+void Entity::clearModelInstance() {
+    m_modelInstance.reset();
+}
+
+bool Entity::ensureModelInstance(Asset::AssetManager& assets,
+                                 const Asset::Handle<Asset::ShaderAsset>& shader) {
+    if (m_modelInstance) {
+        return true;
+    }
+    if (!m_model) {
+        return false;
+    }
+    m_modelInstance = m_model->createInstance(assets, shader);
+    return m_modelInstance != nullptr;
+}
+
 void Entity::applyFloorFriction(float friction) {
     m_floorFriction = friction;
     applyFriction(friction, m_velocity);

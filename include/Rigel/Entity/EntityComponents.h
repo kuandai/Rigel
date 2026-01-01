@@ -1,5 +1,7 @@
 #pragma once
 
+#include <glm/mat4x4.hpp>
+
 namespace Rigel::Voxel {
 class World;
 }
@@ -7,6 +9,7 @@ class World;
 namespace Rigel::Entity {
 
 class Entity;
+struct EntityRenderContext;
 
 struct IEntityComponent {
     virtual ~IEntityComponent() = default;
@@ -27,8 +30,14 @@ struct IUpdateEntityComponent : public IEntityComponent {
 };
 
 struct IRenderEntityComponent : public IEntityComponent {
-    virtual void render(Entity& entity) {
+    virtual void render(Entity& entity,
+                        const EntityRenderContext& ctx,
+                        const glm::mat4& modelMatrix,
+                        bool shouldRender) {
         (void)entity;
+        (void)ctx;
+        (void)modelMatrix;
+        (void)shouldRender;
     }
 };
 

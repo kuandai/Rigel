@@ -3,9 +3,16 @@
 #include "Aabb.h"
 #include "EntityComponents.h"
 #include "EntityId.h"
+#include "EntityModel.h"
+#include "EntityModelInstance.h"
+#include "EntityRenderContext.h"
 #include "EntityTags.h"
 
+#include <Rigel/Asset/Handle.h>
+#include <Rigel/Asset/AssetManager.h>
+
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include <memory>
 #include <string>
@@ -63,6 +70,20 @@ public:
     void removeRenderComponent(IRenderEntityComponent* component);
 
     virtual void update(Voxel::World& world, float dt);
+    virtual void render(const EntityRenderContext& ctx,
+                        const glm::mat4& modelMatrix,
+                        bool shouldRender);
+
+    void setModel(Asset::Handle<EntityModelAsset> model);
+    const Asset::Handle<EntityModelAsset>& model() const { return m_model; }
+
+    IEntityModelInstance* modelInstance() const { return m_modelInstance.get(); }
+    void clearModelInstance();
+    bool ensureModelInstance(Asset::AssetManager& assets,
+                             const Asset::Handle<Asset::ShaderAsset>& shader);
+
+    void setRenderTint(const glm::vec4& tint) { m_renderTint = tint; }
+    const glm::vec4& renderTint() const { return m_renderTint; }
 
     EntityChunk* currentChunk() const { return m_currentChunk; }
     void setCurrentChunk(EntityChunk* chunk) { m_currentChunk = chunk; }
@@ -100,6 +121,9 @@ protected:
     std::vector<IRenderEntityComponent*> m_renderComponents;
 
     EntityChunk* m_currentChunk = nullptr;
+    Asset::Handle<EntityModelAsset> m_model;
+    std::unique_ptr<IEntityModelInstance> m_modelInstance;
+    glm::vec4 m_renderTint{1.0f};
 };
 
 } // namespace Rigel::Entity

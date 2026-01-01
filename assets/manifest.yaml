@@ -6,6 +6,10 @@ assets:
       path: config/world_generation.yaml
     render_config:
       path: config/render.yaml
+  textures:
+    entity_debug:
+      path: textures/blocks/stone.png
+      filter: nearest
   input:
     default:
       bindings:
@@ -57,10 +61,22 @@ assets:
       layer: transparent
       textures:
         all: textures/blocks/water.png
+  entity_anims:
+    demo_spin:
+      path: models/entities/demo_anim.yaml
+  entity_models:
+    demo_cube:
+      path: models/entities/demo_cube.yaml
   shaders:
     voxel:
       vertex: shaders/voxel.vert
       fragment: shaders/voxel.frag
+    entity:
+      vertex: shaders/entity.vert
+      fragment: shaders/entity.frag
+    entity_shadow_depth:
+      vertex: shaders/entity_shadow_depth.vert
+      fragment: shaders/entity_shadow_depth.frag
     voxel_shadow_depth:
       vertex: shaders/voxel_shadow_depth.vert
       fragment: shaders/voxel_shadow_depth.frag

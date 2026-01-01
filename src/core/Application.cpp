@@ -1,5 +1,7 @@
 #include "Rigel/Application.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Entity/Entity.h"
+#include "Rigel/Entity/EntityModelLoader.h"
 #include "Rigel/Voxel/WorldSet.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 #include <spdlog/spdlog.h>
@@ -290,6 +292,20 @@ struct Application::Impl {
         bool initialized = false;
     };
 
+    struct EntityDebug {
+        GLuint vao = 0;
+        GLuint vbo = 0;
+        Asset::Handle<Asset::ShaderAsset> shader;
+        GLint locViewProjection = -1;
+        GLint locFieldOrigin = -1;
+        GLint locFieldRight = -1;
+        GLint locFieldUp = -1;
+        GLint locFieldForward = -1;
+        GLint locCellSize = -1;
+        GLint locColor = -1;
+        bool initialized = false;
+    };
+
     GLFWwindow* window = nullptr;
     Asset::AssetManager assets;
     Voxel::WorldSet worldSet;
@@ -319,6 +335,7 @@ struct Application::Impl {
     bool lastRightDown = false;
     DebugField debugField;
     FrameTimeGraph frameGraph;
+    EntityDebug entityDebug;
     std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
     float debugDistance = kDebugDistance;
     bool debugOverlayEnabled = true;
@@ -435,6 +452,29 @@ struct Application::Impl {
         frameGraph.samples.assign(kFrameGraphSamples, 0.0f);
         frameGraph.initialized = true;
         frameGraph.locColor = frameGraph.shader->uniform("u_color");
+    }
+
+    void initEntityDebug() {
+        try {
+            entityDebug.shader = assets.get<Asset::ShaderAsset>("shaders/chunk_debug");
+        } catch (const std::exception& e) {
+            spdlog::warn("Entity debug shader unavailable: {}", e.what());
+            return;
+        }
+
+        glGenVertexArrays(1, &entityDebug.vao);
+        glGenBuffers(1, &entityDebug.vbo);
+        glBindVertexArray(entityDebug.vao);
+        glBindVertexArray(0);
+
+        entityDebug.locViewProjection = entityDebug.shader->uniform("u_viewProjection");
+        entityDebug.locFieldOrigin = entityDebug.shader->uniform("u_fieldOrigin");
+        entityDebug.locFieldRight = entityDebug.shader->uniform("u_fieldRight");
+        entityDebug.locFieldUp = entityDebug.shader->uniform("u_fieldUp");
+        entityDebug.locFieldForward = entityDebug.shader->uniform("u_fieldForward");
+        entityDebug.locCellSize = entityDebug.shader->uniform("u_cellSize");
+        entityDebug.locColor = entityDebug.shader->uniform("u_color");
+        entityDebug.initialized = true;
     }
 
     void recordFrameTime(float seconds) {
@@ -705,6 +745,83 @@ struct Application::Impl {
                    previousViewport[3]);
     }
 
+    void renderEntityDebugBoxes(const glm::mat4& view, const glm::mat4& projection) {
+        if (!debugOverlayEnabled || !entityDebug.initialized || !world || world->entities().size() == 0) {
+            return;
+        }
+
+        constexpr size_t kCubeVertexCount = sizeof(kCubeVertices) / (sizeof(float) * 3);
+        std::vector<glm::vec3> vertices;
+        vertices.reserve(world->entities().size() * kCubeVertexCount);
+
+        world->entities().forEach([&](Entity::Entity& entity) {
+            const Entity::Aabb& bounds = entity.worldBounds();
+            glm::vec3 center = (bounds.min + bounds.max) * 0.5f;
+            glm::vec3 size = bounds.max - bounds.min;
+
+            for (size_t i = 0; i < kCubeVertexCount; ++i) {
+                size_t base = i * 3;
+                glm::vec3 local(kCubeVertices[base + 0],
+                                kCubeVertices[base + 1],
+                                kCubeVertices[base + 2]);
+                vertices.push_back(center + local * size);
+            }
+        });
+
+        if (vertices.empty()) {
+            return;
+        }
+
+        glm::mat4 viewProjection = projection * view;
+
+        entityDebug.shader->bind();
+        if (entityDebug.locViewProjection >= 0) {
+            glUniformMatrix4fv(entityDebug.locViewProjection, 1, GL_FALSE,
+                               glm::value_ptr(viewProjection));
+        }
+        if (entityDebug.locFieldOrigin >= 0) {
+            glUniform3fv(entityDebug.locFieldOrigin, 1, glm::value_ptr(glm::vec3(0.0f)));
+        }
+        if (entityDebug.locFieldRight >= 0) {
+            glUniform3fv(entityDebug.locFieldRight, 1, glm::value_ptr(glm::vec3(1.0f, 0.0f, 0.0f)));
+        }
+        if (entityDebug.locFieldUp >= 0) {
+            glUniform3fv(entityDebug.locFieldUp, 1, glm::value_ptr(glm::vec3(0.0f, 1.0f, 0.0f)));
+        }
+        if (entityDebug.locFieldForward >= 0) {
+            glUniform3fv(entityDebug.locFieldForward, 1, glm::value_ptr(glm::vec3(0.0f, 0.0f, 1.0f)));
+        }
+        if (entityDebug.locCellSize >= 0) {
+            glUniform1f(entityDebug.locCellSize, 1.0f);
+        }
+        if (entityDebug.locColor >= 0) {
+            glm::vec4 color(1.0f, 0.1f, 0.1f, 0.9f);
+            glUniform4fv(entityDebug.locColor, 1, glm::value_ptr(color));
+        }
+
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
+        glBindVertexArray(entityDebug.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, entityDebug.vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(vertices.size() * sizeof(glm::vec3)),
+                     vertices.data(),
+                     GL_DYNAMIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
+
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_CULL_FACE);
+        glBindVertexArray(0);
+        glUseProgram(0);
+    }
+
 };
 
 Application::Application() : m_impl(std::make_unique<Impl>()) {
@@ -806,6 +923,8 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     try {
         m_impl->assets.loadManifest("manifest.yaml");
         m_impl->assets.registerLoader("input", std::make_unique<InputBindingsLoader>());
+        m_impl->assets.registerLoader("entity_models", std::make_unique<Entity::EntityModelLoader>());
+        m_impl->assets.registerLoader("entity_anims", std::make_unique<Entity::EntityAnimationSetLoader>());
         m_impl->worldSet.initializeResources(m_impl->assets);
 
         if (m_impl->assets.exists("input/default")) {
@@ -841,6 +960,9 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         }
         if (!m_impl->inputBindings->hasAction("exit")) {
             m_impl->inputBindings->bind("exit", GLFW_KEY_ESCAPE);
+        }
+        if (!m_impl->inputBindings->hasAction("demo_spawn_entity")) {
+            m_impl->inputBindings->bind("demo_spawn_entity", GLFW_KEY_F2);
         }
         m_impl->inputDispatcher.setBindings(m_impl->inputBindings);
         m_impl->inputDispatcher.addListener(&m_impl->debugOverlayListener);
@@ -889,6 +1011,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         m_impl->initDebugField();
         m_impl->initFrameGraph();
+        m_impl->initEntityDebug();
         m_impl->worldReady = true;
     } catch (const std::exception& e) {
         spdlog::error("Voxel bootstrap failed: {}", e.what());
@@ -922,6 +1045,17 @@ Application::~Application() {
                 m_impl->frameGraph.vbo = 0;
             }
             m_impl->frameGraph.initialized = false;
+        }
+        if (m_impl->entityDebug.initialized) {
+            if (m_impl->entityDebug.vao != 0) {
+                glDeleteVertexArrays(1, &m_impl->entityDebug.vao);
+                m_impl->entityDebug.vao = 0;
+            }
+            if (m_impl->entityDebug.vbo != 0) {
+                glDeleteBuffers(1, &m_impl->entityDebug.vbo);
+                m_impl->entityDebug.vbo = 0;
+            }
+            m_impl->entityDebug.initialized = false;
         }
 
         if (m_impl->worldView) {
@@ -972,6 +1106,25 @@ void Application::run() {
                 m_impl->setCursorCaptured(true);
             }
             m_impl->updateCamera(deltaTime);
+
+            if (m_impl->inputDispatcher.isActionJustPressed("demo_spawn_entity")) {
+                auto entity = std::make_unique<Entity::Entity>("rigel:demo_entity");
+                glm::vec3 spawnPos = m_impl->cameraPos + m_impl->cameraForward * 2.0f;
+                spawnPos.y += 0.5f;
+                entity->setPosition(spawnPos);
+                if (m_impl->assets.exists("entity_models/demo_cube")) {
+                    auto model = m_impl->assets.get<Entity::EntityModelAsset>("entity_models/demo_cube");
+                    entity->setModel(std::move(model));
+                }
+                Entity::EntityId id = m_impl->world->entities().spawn(std::move(entity));
+                if (!id.isNull()) {
+                    spdlog::info("Spawned demo entity {}:{}:{} at {:.2f}, {:.2f}, {:.2f}",
+                                 id.time, id.random, id.counter,
+                                 spawnPos.x, spawnPos.y, spawnPos.z);
+                } else {
+                    spdlog::warn("Failed to spawn demo entity");
+                }
+            }
 
             bool leftDown = glfwGetMouseButton(m_impl->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             bool rightDown = glfwGetMouseButton(m_impl->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
@@ -1045,7 +1198,8 @@ void Application::run() {
             m_impl->world->tickEntities(deltaTime);
             m_impl->worldView->updateStreaming(m_impl->cameraPos);
             m_impl->worldView->updateMeshes();
-            m_impl->worldView->render(view, projection, m_impl->cameraPos, nearPlane, farPlane);
+            m_impl->worldView->render(view, projection, m_impl->cameraPos, nearPlane, farPlane, deltaTime);
+            m_impl->renderEntityDebugBoxes(view, projection);
             m_impl->renderDebugField(m_impl->cameraForward,
                                      width,
                                      height);

@@ -30,6 +30,8 @@ void WorldView::initialize(Asset::AssetManager& assets) {
         spdlog::warn("Shadow shaders unavailable: {}", e.what());
     }
 
+    m_entityRenderer.initialize(assets);
+
     if (m_world && m_resources) {
         m_streamer.bind(&m_world->chunkManager(),
                         &m_meshStore,
@@ -76,10 +78,33 @@ void WorldView::render(const glm::mat4& view,
                        const glm::mat4& projection,
                        const glm::vec3& cameraPos,
                        float nearPlane,
-                       float farPlane) {
+                       float farPlane,
+                       float dt) {
     if (!m_resources) {
         return;
     }
+
+    Entity::EntityRenderContext entityCtx;
+    entityCtx.deltaTime = dt;
+    entityCtx.frameIndex = ++m_frameCounter;
+
+    struct EntityShadowCaster final : IShadowCaster {
+        Entity::EntityRenderer* renderer = nullptr;
+        Voxel::World* world = nullptr;
+        const Entity::EntityRenderContext* context = nullptr;
+
+        void renderShadowCascade(const ShadowCascadeContext& ctx) override {
+            if (!renderer || !world || !context) {
+                return;
+            }
+            renderer->renderShadowCasters(*world, *context, ctx);
+        }
+    };
+
+    EntityShadowCaster shadowCaster;
+    shadowCaster.renderer = &m_entityRenderer;
+    shadowCaster.world = m_world;
+    shadowCaster.context = &entityCtx;
 
     WorldRenderContext ctx;
     ctx.meshes = &m_meshStore;
@@ -87,6 +112,7 @@ void WorldView::render(const glm::mat4& view,
     ctx.shader = m_shader;
     ctx.shadowDepthShader = m_shadowDepthShader;
     ctx.shadowTransmitShader = m_shadowTransmitShader;
+    ctx.shadowCaster = m_world ? &shadowCaster : nullptr;
     ctx.config = m_renderConfig;
     ctx.view = view;
     ctx.projection = projection;
@@ -96,6 +122,34 @@ void WorldView::render(const glm::mat4& view,
     ctx.farPlane = farPlane;
     ctx.worldTransform = glm::mat4(1.0f);
     m_renderer.render(ctx);
+
+    if (m_world) {
+        entityCtx.viewProjection = ctx.viewProjection;
+        entityCtx.view = ctx.view;
+        entityCtx.cameraPos = cameraPos;
+        entityCtx.sunDirection = ctx.config.sunDirection;
+        entityCtx.ambientStrength = 0.3f;
+        auto shadowState = m_renderer.shadowRenderState();
+        entityCtx.shadow.enabled = shadowState.active && ctx.config.shadow.enabled;
+        entityCtx.shadow.depthMap = shadowState.depthArray;
+        entityCtx.shadow.transmittanceMap = shadowState.transmitArray;
+        entityCtx.shadow.cascadeCount = shadowState.cascades;
+        entityCtx.shadow.matrices = shadowState.matrices;
+        entityCtx.shadow.splits = shadowState.splits;
+        entityCtx.shadow.bias = ctx.config.shadow.bias;
+        entityCtx.shadow.normalBias = ctx.config.shadow.normalBias;
+        entityCtx.shadow.pcfRadius = ctx.config.shadow.pcfRadius;
+        entityCtx.shadow.pcfNear = static_cast<float>(ctx.config.shadow.pcfRadiusNear);
+        entityCtx.shadow.pcfFar = static_cast<float>(ctx.config.shadow.pcfRadiusFar);
+        entityCtx.shadow.strength = ctx.config.shadow.strength;
+        entityCtx.shadow.nearPlane = ctx.nearPlane;
+        float fadeStart = ctx.config.shadow.maxDistance > 0.0f
+            ? std::min(ctx.config.shadow.maxDistance, ctx.farPlane)
+            : ctx.farPlane;
+        entityCtx.shadow.fadeStart = fadeStart;
+        entityCtx.shadow.fadePower = ctx.config.shadow.fadePower;
+        m_entityRenderer.render(*m_world, entityCtx);
+    }
 }
 
 void WorldView::getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const {

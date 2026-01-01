@@ -48,6 +48,7 @@ std::array<glm::vec3, 8> getFrustumCornersWorld(const glm::mat4& invViewProj) {
     return corners;
 }
 
+
 } // namespace
 
 void ChunkRenderer::GpuMesh::release() {
@@ -164,6 +165,7 @@ void ChunkRenderer::pruneCache(const WorldMeshStore& store) {
 }
 
 void ChunkRenderer::render(const WorldRenderContext& ctx) {
+    m_shadowsActive = false;
     if (!ctx.meshes || !ctx.shader) {
         return;
     }
@@ -235,6 +237,7 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     }
 
     bool shadowsActive = renderShadows(ctx, entries);
+    m_shadowsActive = shadowsActive;
 
     glm::mat4 viewProjection = ctx.viewProjection * ctx.worldTransform;
     glm::vec3 sunDirection = normalizeOrDefault(ctx.config.sunDirection);
@@ -248,6 +251,10 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     }
     if (m_locSunDirection >= 0) {
         glUniform3fv(m_locSunDirection, 1, glm::value_ptr(sunDirection));
+    }
+    GLint locCameraPos = m_shader->uniform("u_cameraPos");
+    if (locCameraPos >= 0) {
+        glUniform3fv(locCameraPos, 1, glm::value_ptr(ctx.cameraPos));
     }
     if (m_atlas && m_locTextureAtlas >= 0) {
         m_atlas->bind(0);
@@ -330,6 +337,18 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
     glUseProgram(0);
+}
+
+ChunkRenderer::ShadowRenderState ChunkRenderer::shadowRenderState() const {
+    ShadowRenderState state{};
+    state.active = m_shadowsActive;
+    state.depthArray = m_shadowState.depthArray;
+    state.transmitArray = m_shadowState.transmitArray;
+    state.cascades = m_shadowState.cascades;
+    state.mapSize = m_shadowState.mapSize;
+    state.matrices = m_shadowState.matrices;
+    state.splits = m_shadowState.splits;
+    return state;
 }
 
 void ChunkRenderer::cacheUniformLocations() {
@@ -560,14 +579,13 @@ bool ChunkRenderer::ensureShadowResources(const ShadowConfig& config) {
 bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
                                   const std::vector<RenderEntry>& entries) {
     const ShadowConfig& shadow = ctx.config.shadow;
-    if (!shadow.enabled || !m_shadowDepthShader || !m_shadowTransmitShader || !m_atlas) {
+    if (!shadow.enabled || !m_shadowDepthShader || !m_atlas) {
         static int skipLogCounter = 0;
         if (skipLogCounter++ < 3) {
             spdlog::info(
-                "Shadow pass skipped: enabled={}, depthShader={}, transmitShader={}, atlas={}",
+                "Shadow pass skipped: enabled={}, depthShader={}, atlas={}",
                 shadow.enabled ? 1 : 0,
                 static_cast<bool>(m_shadowDepthShader),
-                static_cast<bool>(m_shadowTransmitShader),
                 static_cast<bool>(m_atlas)
             );
         }
@@ -595,9 +613,6 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
     int cascades = m_shadowState.cascades;
     float nearPlane = std::max(ctx.nearPlane, 0.01f);
     float farPlane = std::max(ctx.farPlane, nearPlane + 0.1f);
-    float maxDistance = shadow.maxDistance > 0.0f
-        ? std::min(shadow.maxDistance, farPlane)
-        : farPlane;
     float shadowFar = std::max(farPlane, nearPlane + 0.1f);
 
     float shadowClipRange = shadowFar - nearPlane;
@@ -673,13 +688,29 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
 
-    m_shadowDepthShader->bind();
-    if (m_shadowDepthUniforms.textureAtlas >= 0) {
-        m_atlas->bind(0);
-        glUniform1i(m_shadowDepthUniforms.textureAtlas, 0);
+    if (!hasTransparent || shadow.transparentScale <= 0.0f || !m_shadowTransmitShader) {
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_BLEND);
+        for (int cascade = 0; cascade < cascades; ++cascade) {
+            glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                      m_shadowState.transmitArray, 0, cascade);
+            GLenum drawBuffer = GL_COLOR_ATTACHMENT0;
+            glDrawBuffers(1, &drawBuffer);
+            glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
     }
 
     for (int cascade = 0; cascade < cascades; ++cascade) {
+        m_shadowDepthShader->bind();
+        if (m_shadowDepthUniforms.textureAtlas >= 0) {
+            m_atlas->bind(0);
+            glUniform1i(m_shadowDepthUniforms.textureAtlas, 0);
+        }
+
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                                   m_shadowState.depthArray, 0, cascade);
         glDrawBuffer(GL_NONE);
@@ -710,9 +741,20 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
         }
         renderShadowLayer(entries, RenderLayer::Cutout, ctx, m_shadowDepthUniforms);
 
+        if (ctx.shadowCaster) {
+            ShadowCascadeContext shadowCtx;
+            shadowCtx.cascade = cascade;
+            shadowCtx.lightViewProjection = m_shadowState.matrices[cascade];
+            ctx.shadowCaster->renderShadowCascade(shadowCtx);
+
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+            glDisable(GL_CULL_FACE);
+        }
     }
 
-    if (hasTransparent && shadow.transparentScale > 0.0f) {
+    if (hasTransparent && shadow.transparentScale > 0.0f && m_shadowTransmitShader) {
         m_shadowTransmitShader->bind();
         if (m_shadowTransmitUniforms.tintAtlas >= 0) {
             m_atlas->bindTint(0);

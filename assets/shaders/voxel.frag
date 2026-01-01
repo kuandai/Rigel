@@ -29,6 +29,7 @@ uniform float u_shadowStrength;
 uniform float u_shadowNear;
 uniform float u_shadowFadeStart;
 uniform float u_shadowFadePower;
+uniform vec3 u_cameraPos;
 
 // Output
 out vec4 fragColor;
@@ -68,7 +69,9 @@ float sampleShadowMap(vec4 shadowPos, int layer, float bias, float radius) {
     float shadow = 0.0;
     float totalWeight = 0.0;
     float radiusClamped = max(radius, 0.0);
-    int radiusCeil = int(ceil(radiusClamped));
+    float maxRadius = max(u_shadowPcfNear, u_shadowPcfFar);
+    maxRadius = clamp(maxRadius, 0.0, 4.0);
+    int radiusCeil = int(ceil(maxRadius));
     for (int y = -radiusCeil; y <= radiusCeil; ++y) {
         for (int x = -radiusCeil; x <= radiusCeil; ++x) {
             vec2 offset = vec2(float(x), float(y)) * texel;
@@ -115,33 +118,32 @@ void main() {
     float diffuse = max(dot(v_normal, u_sunDirection), 0.0);
     float ambient = 0.3;
     float sun = 0.7 * diffuse;
+    float viewDistance = length(v_worldPos - u_cameraPos);
 
     vec3 shadowColor = vec3(1.0);
     if (u_shadowEnabled != 0 && u_shadowCascadeCount > 0 && u_renderLayer != 2) {
-        int cascade = selectCascade(v_viewDepth);
-        float radius = computePcfRadius(v_viewDepth);
+        int cascade = selectCascade(viewDistance);
+        float radius = computePcfRadius(viewDistance);
         shadowColor = sampleShadowColor(cascade, diffuse, radius);
 
         if (cascade + 1 < u_shadowCascadeCount) {
             float split = u_shadowSplits[cascade];
             float prevSplit = (cascade == 0) ? u_shadowNear : u_shadowSplits[cascade - 1];
-            float base = max(prevSplit, 0.0001);
-            float denom = log(max(split / base, 1.0001));
-            float depthClamped = clamp(v_viewDepth, base, split);
-            float t = (denom > 0.0) ? (log(depthClamped / base) / denom) : 0.0;
+            float blendSpan = max((split - prevSplit) * 0.1, 2.0);
+            float t = clamp((viewDistance - (split - blendSpan)) / blendSpan, 0.0, 1.0);
             if (t > 0.0) {
                 vec3 nextColor = sampleShadowColor(cascade + 1, diffuse, radius);
-                shadowColor = mix(shadowColor, nextColor, clamp(t, 0.0, 1.0));
+                shadowColor = mix(shadowColor, nextColor, t);
             }
         }
 
         int lastCascade = max(u_shadowCascadeCount - 1, 0);
         float shadowFar = u_shadowSplits[lastCascade];
         float fadeStart = min(u_shadowFadeStart, shadowFar);
-        if (fadeStart > 0.0 && fadeStart < shadowFar && v_viewDepth > fadeStart) {
+        if (fadeStart > 0.0 && fadeStart < shadowFar && viewDistance > fadeStart) {
             float base = max(fadeStart, 0.0001);
             float denom = log(max(shadowFar / base, 1.0001));
-            float depthClamped = clamp(v_viewDepth, base, shadowFar);
+            float depthClamped = clamp(viewDistance, base, shadowFar);
             float t = (denom > 0.0) ? (log(depthClamped / base) / denom) : 1.0;
             t = clamp(t, 0.0, 1.0);
             t = pow(t, max(u_shadowFadePower, 0.0));

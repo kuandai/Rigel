@@ -12,12 +12,24 @@
 
 namespace Rigel::Voxel {
 
+struct ShadowCascadeContext {
+    int cascade = 0;
+    glm::mat4 lightViewProjection{1.0f};
+};
+
+class IShadowCaster {
+public:
+    virtual ~IShadowCaster() = default;
+    virtual void renderShadowCascade(const ShadowCascadeContext& ctx) = 0;
+};
+
 struct WorldRenderContext {
     const WorldMeshStore* meshes = nullptr;
     const TextureAtlas* atlas = nullptr;
     Asset::Handle<Asset::ShaderAsset> shader;
     Asset::Handle<Asset::ShaderAsset> shadowDepthShader;
     Asset::Handle<Asset::ShaderAsset> shadowTransmitShader;
+    IShadowCaster* shadowCaster = nullptr;
     WorldRenderConfig config;
     glm::mat4 view{1.0f};
     glm::mat4 projection{1.0f};

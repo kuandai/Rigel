@@ -50,6 +50,26 @@ public:
      */
     void render(const WorldRenderContext& ctx);
 
+    struct ShadowRenderState {
+        bool active = false;
+        GLuint depthArray = 0;
+        GLuint transmitArray = 0;
+        int cascades = 0;
+        int mapSize = 0;
+        std::array<glm::mat4, ShadowConfig::MaxCascades> matrices{};
+        std::array<float, ShadowConfig::MaxCascades> splits{};
+    };
+
+    /**
+     * @brief Snapshot the latest shadow render state.
+     */
+    ShadowRenderState shadowRenderState() const;
+
+    /**
+     * @brief Check if shadow maps were rendered this frame.
+     */
+    bool shadowsActive() const { return m_shadowsActive; }
+
     /**
      * @brief Clear all GPU-resident meshes.
      */
@@ -158,6 +178,7 @@ private:
     };
 
     ShadowState m_shadowState;
+    bool m_shadowsActive = false;
 
     void uploadMesh(GpuMesh& gpu, const ChunkMesh& mesh) const;
     void pruneCache(const WorldMeshStore& store);

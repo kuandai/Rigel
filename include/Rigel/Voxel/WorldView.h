@@ -11,9 +11,11 @@
 #include "WorldResources.h"
 
 #include <Rigel/Asset/AssetManager.h>
+#include <Rigel/Entity/EntityRenderer.h>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <unordered_set>
@@ -60,7 +62,8 @@ public:
                 const glm::mat4& projection,
                 const glm::vec3& cameraPos,
                 float nearPlane,
-                float farPlane);
+                float farPlane,
+                float dt = 0.0f);
     void getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const;
     int viewDistanceChunks() const;
     void rebuildChunkMesh(ChunkCoord coord);
@@ -83,6 +86,8 @@ private:
     Asset::Handle<Asset::ShaderAsset> m_shadowTransmitShader;
     ChunkBenchmarkStats* m_benchmark = nullptr;
     WorldReplicationState m_replication;
+    Entity::EntityRenderer m_entityRenderer;
+    uint64_t m_frameCounter = 0;
     bool m_initialized = false;
 };
 

@@ -36,7 +36,7 @@ public:
     };
 
     ChunkStreamer() = default;
-    ~ChunkStreamer() = default;
+    ~ChunkStreamer();
 
     void setConfig(const WorldGenConfig::StreamConfig& config);
     void bind(ChunkManager* manager,

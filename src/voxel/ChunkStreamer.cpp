@@ -18,6 +18,13 @@ int distanceSquared(const ChunkCoord& a, const ChunkCoord& b) {
 }
 } // namespace
 
+ChunkStreamer::~ChunkStreamer() {
+    if (m_pool) {
+        m_pool->stop();
+        m_pool.reset();
+    }
+}
+
 void ChunkStreamer::setConfig(const WorldGenConfig::StreamConfig& config) {
     m_config = config;
     m_cache.setMaxChunks(m_config.maxResidentChunks);

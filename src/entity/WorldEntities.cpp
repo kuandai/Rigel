@@ -31,6 +31,13 @@ EntityId WorldEntities::spawn(std::unique_ptr<Entity> entity) {
 }
 
 bool WorldEntities::despawn(const EntityId& id) {
+    if (m_isTicking) {
+        if (m_entities.find(id) == m_entities.end()) {
+            return false;
+        }
+        m_pendingDespawns.push_back(id);
+        return true;
+    }
     auto it = m_entities.find(id);
     if (it == m_entities.end()) {
         return false;
@@ -66,14 +73,31 @@ void WorldEntities::tick(float dt) {
     if (!m_world) {
         return;
     }
-    std::vector<Entity*> entities;
-    entities.reserve(m_entities.size());
-    for (auto& [_, entity] : m_entities) {
-        entities.push_back(entity.get());
+    m_isTicking = true;
+    std::vector<EntityId> ids;
+    ids.reserve(m_entities.size());
+    for (auto& [id, _] : m_entities) {
+        ids.push_back(id);
     }
-    for (Entity* entity : entities) {
+    for (const EntityId& id : ids) {
+        auto it = m_entities.find(id);
+        if (it == m_entities.end()) {
+            continue;
+        }
+        Entity* entity = it->second.get();
         entity->update(*m_world, dt);
-        updateEntityChunk(*entity);
+        if (m_entities.find(id) != m_entities.end()) {
+            updateEntityChunk(*entity);
+        }
+    }
+    m_isTicking = false;
+
+    if (!m_pendingDespawns.empty()) {
+        std::vector<EntityId> pending = std::move(m_pendingDespawns);
+        m_pendingDespawns.clear();
+        for (const EntityId& id : pending) {
+            despawn(id);
+        }
     }
 }
 
@@ -81,6 +105,7 @@ void WorldEntities::clear() {
     m_entities.clear();
     m_regions.clear();
     m_chunkIndex.clear();
+    m_pendingDespawns.clear();
 }
 
 void WorldEntities::updateEntityChunk(Entity& entity) {

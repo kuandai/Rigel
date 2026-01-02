@@ -118,6 +118,86 @@ glm::mat4 rotationFromEuler(const glm::vec3& degrees) {
     rot = glm::rotate(rot, glm::radians(degrees.z), glm::vec3(0.0f, 0.0f, 1.0f));
     return rot;
 }
+
+struct FaceUvRect {
+    glm::vec2 min{0.0f};
+    glm::vec2 max{1.0f};
+};
+
+FaceUvRect buildFaceUvRect(const EntityModelCube& cube,
+                           const EntityModelAsset& model,
+                           int faceIndex) {
+    if (!cube.hasUv || model.texWidth <= 0.0f || model.texHeight <= 0.0f) {
+        return {};
+    }
+
+    float dx = cube.size.x;
+    float dy = cube.size.y;
+    float dz = cube.size.z;
+    float u0 = cube.uv.x;
+    float v0 = cube.uv.y;
+
+    float u1 = u0 + dz;
+    float u2 = u1 + dx;
+    float u3 = u2 + dz;
+    float u4 = u3 + dx;
+    float v1 = v0 + dz;
+    float v2 = v1 + dy;
+
+    float uMin = u0;
+    float uMax = u1;
+    float vMin = v1;
+    float vMax = v2;
+
+    switch (faceIndex) {
+        case 0: // +X (east)
+            uMin = u2;
+            uMax = u3;
+            break;
+        case 1: // -X (west)
+            uMin = u0;
+            uMax = u1;
+            break;
+        case 2: // +Y (up)
+            uMin = u1;
+            uMax = u2;
+            vMin = v0;
+            vMax = v1;
+            break;
+        case 3: // -Y (down)
+            uMin = u2;
+            uMax = u3;
+            vMin = v0;
+            vMax = v1;
+            break;
+        case 4: // +Z (south)
+            uMin = u3;
+            uMax = u4;
+            break;
+        case 5: // -Z (north)
+            uMin = u1;
+            uMax = u2;
+            break;
+        default:
+            break;
+    }
+
+    float invW = 1.0f / model.texWidth;
+    float invH = 1.0f / model.texHeight;
+    float uMinNorm = uMin * invW;
+    float uMaxNorm = uMax * invW;
+    float vMinNorm = 1.0f - (vMax * invH);
+    float vMaxNorm = 1.0f - (vMin * invH);
+
+    if (cube.mirror) {
+        std::swap(uMinNorm, uMaxNorm);
+    }
+
+    FaceUvRect rect;
+    rect.min = glm::vec2(uMinNorm, vMinNorm);
+    rect.max = glm::vec2(uMaxNorm, vMaxNorm);
+    return rect;
+}
 }
 
 EntityModelInstance::EntityModelInstance(std::shared_ptr<const EntityModelAsset> model,
@@ -387,6 +467,9 @@ void EntityModelInstance::renderShadow(const EntityRenderContext& ctx,
 }
 
 void EntityModelInstance::updateAnimations(const EntityRenderContext& ctx) {
+    if (m_activeAnimations.empty()) {
+        return;
+    }
     if (ctx.frameIndex != 0 && ctx.frameIndex == m_lastAnimFrame) {
         return;
     }
@@ -475,10 +558,15 @@ void EntityModelInstance::rebuildMesh(const EntityRenderContext& ctx) {
 
             glm::mat4 finalTransform = scaleMat * boneTransform * cubeMat;
             glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(finalTransform)));
+            std::array<FaceUvRect, 6> faceUvs{};
+            for (int faceIndex = 0; faceIndex < static_cast<int>(faceUvs.size()); ++faceIndex) {
+                faceUvs[faceIndex] = buildFaceUvRect(cube, *m_model, faceIndex);
+            }
 
             for (size_t i = 0; i < cubeVertexCount; ++i) {
                 size_t posBase = i * 3;
                 size_t uvBase = (i % 6) * 2;
+                int faceIndex = static_cast<int>(i / 6);
 
                 glm::vec3 pos(kCubePositions[posBase + 0],
                              kCubePositions[posBase + 1],
@@ -486,7 +574,9 @@ void EntityModelInstance::rebuildMesh(const EntityRenderContext& ctx) {
                 glm::vec3 normal(kCubeNormals[posBase + 0],
                                 kCubeNormals[posBase + 1],
                                 kCubeNormals[posBase + 2]);
-                glm::vec2 uv(kCubeUVs[uvBase + 0], kCubeUVs[uvBase + 1]);
+                glm::vec2 baseUv(kCubeUVs[uvBase + 0], kCubeUVs[uvBase + 1]);
+                const FaceUvRect& faceUv = faceUvs[faceIndex];
+                glm::vec2 uv = glm::mix(faceUv.min, faceUv.max, baseUv);
 
                 glm::vec4 worldPos = finalTransform * glm::vec4(pos, 1.0f);
                 glm::vec3 worldNormal = glm::normalize(normalMat * normal);

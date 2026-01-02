@@ -36,6 +36,7 @@ struct EntityModelCube {
     glm::vec3 origin{0.0f};
     glm::vec3 size{1.0f};
     glm::vec2 uv{0.0f};
+    bool hasUv = false;
     glm::vec3 pivot{0.0f};
     glm::vec3 rotation{0.0f};
     float inflate = 0.0f;

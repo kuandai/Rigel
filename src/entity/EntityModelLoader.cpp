@@ -162,7 +162,9 @@ std::shared_ptr<Asset::AssetBase> EntityModelLoader::load(const Asset::LoadConte
                         readVec3(cubeNode["size"], cube.size);
                     }
                     if (cubeNode.has_child("uv")) {
-                        readVec2(cubeNode["uv"], cube.uv);
+                        if (readVec2(cubeNode["uv"], cube.uv)) {
+                            cube.hasUv = true;
+                        }
                     }
                     if (cubeNode.has_child("pivot")) {
                         readVec3(cubeNode["pivot"], cube.pivot);

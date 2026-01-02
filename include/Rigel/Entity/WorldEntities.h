@@ -5,6 +5,7 @@
 
 #include <unordered_map>
 #include <memory>
+#include <vector>
 
 namespace Rigel::Voxel {
 class World;
@@ -39,6 +40,8 @@ private:
     std::unordered_map<EntityId, std::unique_ptr<Entity>, EntityIdHash> m_entities;
     std::unordered_map<EntityRegionCoord, std::unique_ptr<EntityRegion>, EntityRegionCoordHash> m_regions;
     std::unordered_map<Voxel::ChunkCoord, EntityChunk*, Voxel::ChunkCoordHash> m_chunkIndex;
+    std::vector<EntityId> m_pendingDespawns;
+    bool m_isTicking = false;
 };
 
 } // namespace Rigel::Entity

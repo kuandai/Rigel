@@ -89,12 +89,8 @@ void EntityRenderer::renderShadowCasters(Voxel::World& world,
         return;
     }
 
-    std::array<glm::vec4, 6> planes = extractPlanes(shadowCtx.lightViewProjection);
-
     world.entities().forEach([&](Entity& entity) {
         const Aabb& bounds = entity.worldBounds();
-        bool visible = isVisible(bounds, planes);
-
         if (!entity.ensureModelInstance(*m_assets, m_shader)) {
             return;
         }
@@ -106,7 +102,7 @@ void EntityRenderer::renderShadowCasters(Voxel::World& world,
 
         glm::mat4 modelMatrix = glm::translate(glm::mat4(1.0f), entity.position());
         instance->renderShadow(ctx, entity, modelMatrix, shadowCtx.lightViewProjection,
-                               m_shadowShader, visible);
+                               m_shadowShader, true);
     });
 }
 

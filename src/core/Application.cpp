@@ -497,7 +497,7 @@ struct Application::Impl {
 
     void initEntityDebug() {
         try {
-            entityDebug.shader = assets.get<Asset::ShaderAsset>("shaders/chunk_debug");
+            entityDebug.shader = assets.get<Asset::ShaderAsset>("shaders/entity_debug");
         } catch (const std::exception& e) {
             spdlog::warn("Entity debug shader unavailable: {}", e.what());
             return;
@@ -745,11 +745,22 @@ struct Application::Impl {
                           0, 0, taa.width, taa.height,
                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, taa.sceneFbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, taa.width, taa.height,
+                          0, 0, taa.width, taa.height,
+                          GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, taa.sceneFbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, taa.resolveFbo);
         glBlitFramebuffer(0, 0, taa.width, taa.height,
                           0, 0, taa.width, taa.height,
                           GL_DEPTH_BUFFER_BIT, GL_NEAREST);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
         taa.historyValid = true;
         taa.historyIndex = writeIndex;
@@ -1509,6 +1520,10 @@ void Application::run() {
             m_impl->worldView->render(view, projection, m_impl->cameraPos, nearPlane, farPlane, deltaTime);
 
             if (useTaa) {
+                m_impl->renderEntityDebugBoxes(view, projection);
+            }
+
+            if (useTaa) {
                 glm::mat4 viewProjection = projection * view;
                 glm::mat4 invViewProjection = glm::inverse(viewProjection);
                 glm::mat4 viewProjectionNoJitter = projectionNoJitter * view;
@@ -1520,7 +1535,9 @@ void Application::run() {
                 glViewport(0, 0, width, height);
             }
 
-            m_impl->renderEntityDebugBoxes(view, projectionNoJitter);
+            if (!useTaa) {
+                m_impl->renderEntityDebugBoxes(view, projectionNoJitter);
+            }
             m_impl->renderDebugField(m_impl->cameraForward,
                                      width,
                                      height);

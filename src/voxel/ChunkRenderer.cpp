@@ -639,25 +639,25 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
         float fovY = 2.0f * std::atan(tanHalfFov);
         float aspect = ctx.projection[1][1] / ctx.projection[0][0];
 
-        glm::mat4 splitProjection = glm::perspective(fovY, aspect, cascadeNear, cascadeFar);
-        glm::mat4 invViewProj = glm::inverse(splitProjection * ctx.view);
-        auto corners = getFrustumCornersWorld(invViewProj);
-
-        glm::vec3 centerWorld(0.0f);
-        for (const auto& corner : corners) {
-            centerWorld += corner;
-        }
-        centerWorld /= static_cast<float>(corners.size());
-
+        glm::vec3 centerWorld = ctx.cameraPos;
         glm::vec3 sunDir = normalizeOrDefault(ctx.config.sunDirection);
         float lightDistance = cascadeFar + 50.0f;
         glm::vec3 lightPos = centerWorld + sunDir * lightDistance;
         glm::mat4 lightView = glm::lookAt(lightPos, centerWorld, pickUpVector(sunDir));
 
+        float casterLimit = (shadow.maxDistance > 0.0f) ? shadow.maxDistance : cascadeFar;
+        float casterRadius = std::min(cascadeFar, casterLimit);
+
         glm::vec3 minLS(std::numeric_limits<float>::max());
         glm::vec3 maxLS(std::numeric_limits<float>::lowest());
-        for (const auto& corner : corners) {
-            glm::vec3 lightSpace = glm::vec3(lightView * glm::vec4(corner, 1.0f));
+        for (int cornerIndex = 0; cornerIndex < 8; ++cornerIndex) {
+            glm::vec3 corner(
+                (cornerIndex & 1) ? casterRadius : -casterRadius,
+                (cornerIndex & 2) ? casterRadius : -casterRadius,
+                (cornerIndex & 4) ? casterRadius : -casterRadius
+            );
+            glm::vec3 worldCorner = centerWorld + corner;
+            glm::vec3 lightSpace = glm::vec3(lightView * glm::vec4(worldCorner, 1.0f));
             minLS = glm::min(minLS, lightSpace);
             maxLS = glm::max(maxLS, lightSpace);
         }
@@ -706,13 +706,25 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
     glViewport(0, 0, m_shadowState.mapSize, m_shadowState.mapSize);
 
     glBindFramebuffer(GL_FRAMEBUFFER, m_shadowState.fbo);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    glDepthMask(GL_TRUE);
-    glDisable(GL_BLEND);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-    glFrontFace(GL_CW);
+    auto setShadowDepthState = []() {
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        // Render two-sided into the shadow map so backfacing faces still cast.
+        glDisable(GL_CULL_FACE);
+    };
+    auto setShadowTransmitState = []() {
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ZERO, GL_SRC_COLOR);
+        glBlendEquation(GL_FUNC_ADD);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CW);
+    };
+
+    setShadowDepthState();
 
     if (!hasTransparent || shadow.transparentScale <= 0.0f || !m_shadowTransmitShader) {
         glDisable(GL_DEPTH_TEST);
@@ -773,12 +785,7 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
             shadowCtx.lightViewProjection = m_shadowState.matrices[cascade];
             ctx.shadowCaster->renderShadowCascade(shadowCtx);
 
-            glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_TRUE);
-            glDisable(GL_BLEND);
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
-            glFrontFace(GL_CW);
+            setShadowDepthState();
         }
     }
 
@@ -792,13 +799,7 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
             glUniform1f(m_shadowTransmitUniforms.transparentScale, shadow.transparentScale);
         }
 
-        glDepthMask(GL_FALSE);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ZERO, GL_SRC_COLOR);
-        glBlendEquation(GL_FUNC_ADD);
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
-        glFrontFace(GL_CW);
+        setShadowTransmitState();
 
         for (int cascade = 0; cascade < cascades; ++cascade) {
             glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,

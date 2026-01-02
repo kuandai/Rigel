@@ -57,7 +57,7 @@ float computePcfRadius(float viewDepth) {
     return radius;
 }
 
-float sampleShadowMap(vec4 shadowPos, int layer, float bias, float radius) {
+float sampleShadowMap(vec4 shadowPos, int layer, float baseBias, float slopeBias, float radius) {
     vec3 proj = shadowPos.xyz / shadowPos.w;
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0) {
@@ -65,6 +65,9 @@ float sampleShadowMap(vec4 shadowPos, int layer, float bias, float radius) {
     }
 
     ivec3 mapSize = textureSize(u_shadowMap, 0);
+    float baseBiasClamped = min(baseBias, 2.0 / float(mapSize.x));
+    float slopeBiasClamped = min(slopeBias, 4.0 / float(mapSize.x));
+    float bias = max(baseBiasClamped, slopeBiasClamped);
     vec2 texel = 1.0 / vec2(mapSize.xy);
     float shadow = 0.0;
     float totalWeight = 0.0;
@@ -91,8 +94,8 @@ float sampleShadowMap(vec4 shadowPos, int layer, float bias, float radius) {
 
 vec3 sampleShadowColor(int cascade, float diffuse, float radius) {
     vec4 shadowPos = u_shadowMatrices[cascade] * vec4(v_worldPos, 1.0);
-    float bias = u_shadowBias + u_shadowNormalBias * (1.0 - diffuse);
-    float shadowFactor = sampleShadowMap(shadowPos, cascade, bias, radius);
+    float slopeBias = u_shadowNormalBias * (1.0 - diffuse);
+    float shadowFactor = sampleShadowMap(shadowPos, cascade, u_shadowBias, slopeBias, radius);
     shadowFactor = pow(shadowFactor, max(u_shadowStrength, 0.0));
     vec3 shadowTint = vec3(1.0);
     vec3 proj = shadowPos.xyz / shadowPos.w;
@@ -119,7 +122,7 @@ void main() {
     float diffuse = max(dot(v_normal, sunDir), 0.0);
     float ambient = 0.3;
     float sun = 0.7 * diffuse;
-    float viewDistance = max(v_viewDepth, 0.0);
+    float viewDistance = length(v_worldPos - u_cameraPos);
 
     vec3 shadowColor = vec3(1.0);
     if (u_shadowEnabled != 0 && u_shadowCascadeCount > 0 && u_renderLayer != 2) {

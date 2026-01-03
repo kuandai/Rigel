@@ -64,6 +64,10 @@ target_link_libraries(RigelLib
         glm::glm
 )
 
+if (CMAKE_DL_LIBS)
+    target_link_libraries(RigelLib PUBLIC ${CMAKE_DL_LIBS})
+endif()
+
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
         RigelLib

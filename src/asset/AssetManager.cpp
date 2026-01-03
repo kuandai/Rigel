@@ -16,16 +16,18 @@ namespace Rigel::Asset {
 
 // AssetEntry convenience methods
 std::optional<std::string> AssetManager::AssetEntry::getString(const std::string& key) const {
-    if (!config.readable() || !config.has_child(ryml::to_csubstr(key))) {
+    ryml::ConstNodeRef root = configTree.crootref();
+    if (!root.readable() || !root.has_child(ryml::to_csubstr(key))) {
         return std::nullopt;
     }
     std::string value;
-    config[ryml::to_csubstr(key)] >> value;
+    root[ryml::to_csubstr(key)] >> value;
     return value;
 }
 
 bool AssetManager::AssetEntry::hasChild(const std::string& key) const {
-    return config.readable() && config.has_child(ryml::to_csubstr(key));
+    ryml::ConstNodeRef root = configTree.crootref();
+    return root.readable() && root.has_child(ryml::to_csubstr(key));
 }
 
 // LoadContext implementation
@@ -179,6 +181,27 @@ void AssetManager::loadManifest(const std::string& path) {
         }
     }
 
+    for (auto& [id, entry] : m_entries) {
+        entry.config = entry.configTree.rootref();
+    }
+
+    for (auto& [id, entry] : m_entries) {
+        if (entry.category != "shaders") {
+            continue;
+        }
+        ryml::NodeRef root = entry.configTree.rootref();
+        if (!root.has_child("fragment") && root.has_child("vertex")) {
+            std::string vertexPath;
+            root[ryml::to_csubstr("vertex")] >> vertexPath;
+            size_t pos = vertexPath.rfind(".vert");
+            if (pos != std::string::npos) {
+                vertexPath.replace(pos, 5, ".frag");
+                root[ryml::to_csubstr("fragment")] =
+                    entry.configTree.copy_to_arena(ryml::to_csubstr(vertexPath));
+            }
+        }
+    }
+
     spdlog::info("Loaded {} assets from manifest", m_entries.size());
 }
 
@@ -224,7 +247,7 @@ std::shared_ptr<RawAsset> AssetManager::loadRawAsset(
     const AssetEntry& entry
 ) {
     RawLoader loader;
-    LoadContext ctx{id, entry.config, *this};
+    LoadContext ctx{id, entry.configTree.crootref(), *this};
     auto baseAsset = loader.load(ctx);
     auto asset = std::dynamic_pointer_cast<RawAsset>(baseAsset);
     if (!asset) {
@@ -238,7 +261,7 @@ std::shared_ptr<TextureAsset> AssetManager::loadTextureAsset(
     const AssetEntry& entry
 ) {
     TextureLoader loader;
-    LoadContext ctx{id, entry.config, *this};
+    LoadContext ctx{id, entry.configTree.crootref(), *this};
     auto baseAsset = loader.load(ctx);
     auto asset = std::dynamic_pointer_cast<TextureAsset>(baseAsset);
     if (!asset) {

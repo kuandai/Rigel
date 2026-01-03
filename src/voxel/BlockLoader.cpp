@@ -8,11 +8,6 @@
 namespace Rigel::Voxel {
 
 namespace {
-    // Helper to convert csubstr to std::string
-    std::string toStdString(ryml::csubstr s) {
-        return std::string(s.data(), s.size());
-    }
-
     // Helper to read optional string from config
     std::optional<std::string> getOptionalString(ryml::ConstNodeRef node, const char* key) {
         if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {
@@ -48,7 +43,8 @@ size_t BlockLoader::loadFromManifest(
         try {
             BlockType blockType = parseBlockType(name, entry, ns, atlas);
 
-            BlockID id = registry.registerBlock(blockType.identifier, std::move(blockType));
+            std::string identifier = blockType.identifier;
+            BlockID id = registry.registerBlock(identifier, std::move(blockType));
             spdlog::debug("Registered block '{}' with ID {}", name, id.type);
 
             ++count;

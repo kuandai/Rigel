@@ -22,10 +22,13 @@ BlockRegistry::BlockRegistry() {
 }
 
 BlockID BlockRegistry::registerBlock(const std::string& identifier, BlockType type) {
-    // Use type.identifier since it contains the moved-in value
-    // (the identifier parameter may be a reference to a moved-from string)
-    // Make a copy since we'll move type later
-    std::string actualId = type.identifier.empty() ? identifier : type.identifier;
+    if (!type.identifier.empty() && type.identifier != identifier) {
+        throw BlockRegistrationError(
+            "Block identifier mismatch: registry '" + identifier + "' vs type '" + type.identifier + "'"
+        );
+    }
+
+    std::string actualId = identifier;
 
     // Check for duplicate
     if (m_identifierMap.find(actualId) != m_identifierMap.end()) {
@@ -43,10 +46,7 @@ BlockID BlockRegistry::registerBlock(const std::string& identifier, BlockType ty
 
     BlockID id{static_cast<uint16_t>(m_types.size())};
 
-    // Ensure identifier is set
-    if (type.identifier.empty()) {
-        type.identifier = identifier;
-    }
+    type.identifier = actualId;
 
     m_types.push_back(std::move(type));
     m_identifierMap[actualId] = id;

@@ -129,14 +129,23 @@ public:
     /// Check if chunk needs mesh rebuild
     bool isDirty() const { return m_dirty; }
 
+    /// Check if chunk needs persistence write
+    bool isPersistDirty() const { return m_persistDirty; }
+
     /// Clear dirty flag (after mesh rebuild)
     void clearDirty() { m_dirty = false; }
+
+    /// Clear persistence dirty flag (after save or load)
+    void clearPersistDirty() { m_persistDirty = false; }
 
     /// Mark chunk as needing mesh rebuild
     void markDirty() {
         m_dirty = true;
         bumpMeshRevision();
     }
+
+    /// Mark chunk as needing persistence write
+    void markPersistDirty() { m_persistDirty = true; }
 
     /// Check if chunk contains only air blocks
     bool isEmpty() const { return m_nonAirCount == 0; }
@@ -203,6 +212,7 @@ private:
 
     // Cached state
     bool m_dirty = true;
+    bool m_persistDirty = false;
     uint32_t m_nonAirCount = 0;
     uint32_t m_opaqueCount = 0;
     uint32_t m_meshRevision = 0;

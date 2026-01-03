@@ -117,3 +117,16 @@ TEST_CASE(Chunk_CopyBlocks) {
         + (Chunk::SIZE - 1) * Chunk::SIZE * Chunk::SIZE;
     CHECK_EQ(out[static_cast<size_t>(maxIndex)].id.type, static_cast<uint16_t>(9));
 }
+
+TEST_CASE(Chunk_PersistDirty) {
+    Chunk chunk({0, 0, 0});
+    CHECK(!chunk.isPersistDirty());
+
+    BlockState state;
+    state.id.type = 3;
+    chunk.setBlock(0, 0, 0, state);
+    CHECK(chunk.isPersistDirty());
+
+    chunk.clearPersistDirty();
+    CHECK(!chunk.isPersistDirty());
+}

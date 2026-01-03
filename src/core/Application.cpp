@@ -2,6 +2,12 @@
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Entity/EntityModelLoader.h"
+#include "Rigel/Persistence/Backends/CR/CRChunkData.h"
+#include "Rigel/Persistence/Backends/CR/CRChunkMapping.h"
+#include "Rigel/Persistence/Backends/CR/CRFormat.h"
+#include "Rigel/Persistence/Backends/CR/CRPaths.h"
+#include "Rigel/Persistence/Backends/CR/CRSettings.h"
+#include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/WorldSet.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 #include <spdlog/spdlog.h>
@@ -17,10 +23,14 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstddef>
+#include <filesystem>
 #include <limits>
+#include <map>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -43,6 +53,135 @@ constexpr int kFrameGraphSamples = 180;
 constexpr float kFrameGraphMaxMs = 50.0f;
 constexpr float kFrameGraphHeight = 0.28f;
 constexpr float kFrameGraphBottom = -0.95f;
+constexpr const char* kDefaultZoneId = "rigel:default";
+
+std::string mainWorldRootPath(Voxel::WorldId id) {
+    return "saves/world_" + std::to_string(id);
+}
+
+int floorDiv(int value, int divisor) {
+    int q = value / divisor;
+    int r = value % divisor;
+    if (r < 0) {
+        q -= 1;
+    }
+    return q;
+}
+
+bool parseRegionFilename(const std::string& name, int& rx, int& ry, int& rz) {
+    return std::sscanf(name.c_str(), "region_%d_%d_%d.cosmicreach", &rx, &ry, &rz) == 3;
+}
+
+void loadWorldFromDisk(Voxel::World& world,
+                       Persistence::PersistenceService& service,
+                       Persistence::PersistenceContext context,
+                       uint32_t worldGenVersion) {
+    namespace fs = std::filesystem;
+
+    fs::path regionDir = fs::path(Persistence::Backends::CR::CRPaths::zoneRoot(kDefaultZoneId, context)) / "regions";
+    if (!fs::exists(regionDir)) {
+        return;
+    }
+
+    world.clear();
+    world.chunkManager().clearDirtyFlags();
+
+    for (const auto& entry : fs::directory_iterator(regionDir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        int rx = 0;
+        int ry = 0;
+        int rz = 0;
+        if (!parseRegionFilename(entry.path().filename().string(), rx, ry, rz)) {
+            continue;
+        }
+        Persistence::RegionKey key{std::string(kDefaultZoneId), rx, ry, rz};
+        Persistence::ChunkRegionSnapshot region = service.loadRegion(key, context);
+        for (const auto& chunk : region.chunks) {
+            Persistence::Backends::CR::decodeChunkSnapshot(
+                chunk,
+                world.chunkManager(),
+                world.blockRegistry(),
+                worldGenVersion);
+        }
+    }
+}
+
+void saveWorldToDisk(const Voxel::World& world,
+                     Persistence::PersistenceService& service,
+                     Persistence::PersistenceContext context) {
+    const auto& registry = world.blockRegistry();
+
+    struct RegionSave {
+        Persistence::RegionKey key;
+        std::vector<Voxel::ChunkCoord> dirtyChunks;
+    };
+
+    std::map<std::tuple<int, int, int>, RegionSave> regions;
+    world.chunkManager().forEachChunk([&](Voxel::ChunkCoord coord, const Voxel::Chunk& chunk) {
+        if (!chunk.isPersistDirty()) {
+            return;
+        }
+        int rx = floorDiv(coord.x, 16);
+        int ry = floorDiv(coord.y, 16);
+        int rz = floorDiv(coord.z, 16);
+        auto keyTuple = std::make_tuple(rx, ry, rz);
+        auto& region = regions[keyTuple];
+        if (region.dirtyChunks.empty()) {
+            region.key = Persistence::RegionKey{std::string(kDefaultZoneId), rx, ry, rz};
+        }
+        region.dirtyChunks.push_back(coord);
+    });
+
+    for (auto& [coords, regionSave] : regions) {
+        Persistence::ChunkRegionSnapshot existing = service.loadRegion(regionSave.key, context);
+        using KeyTuple = std::tuple<int32_t, int32_t, int32_t>;
+        std::map<KeyTuple, Persistence::ChunkSnapshot> merged;
+        for (auto& snapshot : existing.chunks) {
+            KeyTuple key{snapshot.key.x, snapshot.key.y, snapshot.key.z};
+            merged.emplace(key, std::move(snapshot));
+        }
+
+        for (const Voxel::ChunkCoord& coord : regionSave.dirtyChunks) {
+            for (int subchunkIndex = 0; subchunkIndex < 8; ++subchunkIndex) {
+                Persistence::ChunkKey crKey =
+                    Persistence::Backends::CR::toCRChunk({coord.x, coord.y, coord.z, subchunkIndex});
+                KeyTuple key{crKey.x, crKey.y, crKey.z};
+                merged.erase(key);
+            }
+
+            const Voxel::Chunk* chunk = world.chunkManager().getChunk(coord);
+            if (!chunk) {
+                continue;
+            }
+            auto snapshots = Persistence::Backends::CR::encodeRigelChunk(
+                *chunk,
+                registry,
+                coord,
+                kDefaultZoneId);
+            for (auto& snapshot : snapshots) {
+                KeyTuple key{snapshot.key.x, snapshot.key.y, snapshot.key.z};
+                merged[key] = std::move(snapshot);
+            }
+        }
+
+        Persistence::ChunkRegionSnapshot out;
+        out.key = regionSave.key;
+        out.chunks.reserve(merged.size());
+        for (auto& entry : merged) {
+            out.chunks.push_back(std::move(entry.second));
+        }
+
+        service.saveRegion(out, context);
+    }
+
+    Persistence::WorldSnapshot worldSnapshot;
+    worldSnapshot.metadata.worldId = "world_" + std::to_string(world.id());
+    worldSnapshot.metadata.displayName = worldSnapshot.metadata.worldId;
+    worldSnapshot.zones.push_back(Persistence::ZoneMetadata{std::string(kDefaultZoneId), std::string(kDefaultZoneId)});
+    service.saveWorld(worldSnapshot, Persistence::SaveScope::MetadataOnly, context);
+}
 
 float halton(uint32_t index, uint32_t base) {
     float f = 1.0f;
@@ -1217,6 +1356,13 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->assets.registerLoader("input", std::make_unique<InputBindingsLoader>());
         m_impl->assets.registerLoader("entity_models", std::make_unique<Entity::EntityModelLoader>());
         m_impl->assets.registerLoader("entity_anims", std::make_unique<Entity::EntityAnimationSetLoader>());
+        m_impl->worldSet.persistenceFormats().registerFormat(
+            Persistence::Backends::CR::descriptor(),
+            Persistence::Backends::CR::factory(),
+            Persistence::Backends::CR::probe());
+        m_impl->worldSet.setPersistenceStorage(std::make_shared<Persistence::FilesystemBackend>());
+        m_impl->worldSet.setPersistenceRoot(mainWorldRootPath(m_impl->activeWorldId));
+        m_impl->worldSet.setPersistencePreferredFormat("cr");
         m_impl->worldSet.initializeResources(m_impl->assets);
 
         if (m_impl->assets.exists("input/default")) {
@@ -1272,11 +1418,20 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->world = &m_impl->worldSet.createWorld(m_impl->activeWorldId);
         m_impl->worldView = &m_impl->worldSet.createView(m_impl->activeWorldId, m_impl->assets);
 
+        auto crSettings = std::make_shared<Persistence::Backends::CR::CRPersistenceSettings>();
+        crSettings->enableLz4 = config.persistence.cr.lz4;
+        m_impl->world->persistenceProviders().add(Persistence::Backends::CR::kCRSettingsProviderId, crSettings);
+
         auto generator =
             std::make_shared<Voxel::WorldGenerator>(m_impl->worldSet.resources().registry());
         generator->setConfig(config);
         m_impl->world->setGenerator(generator);
         m_impl->worldView->setGenerator(generator);
+
+        loadWorldFromDisk(*m_impl->world,
+                          m_impl->worldSet.persistenceService(),
+                          m_impl->worldSet.persistenceContext(m_impl->activeWorldId),
+                          generator->config().world.version);
 
         Voxel::ConfigProvider renderConfigProvider =
             makeRenderConfigProvider(m_impl->assets, m_impl->activeWorldId);
@@ -1312,6 +1467,16 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 }
 
 Application::~Application() {
+    if (m_impl && m_impl->worldReady && m_impl->world) {
+        try {
+            saveWorldToDisk(*m_impl->world,
+                            m_impl->worldSet.persistenceService(),
+                            m_impl->worldSet.persistenceContext(m_impl->activeWorldId));
+        } catch (const std::exception& e) {
+            spdlog::error("World save failed: {}", e.what());
+        }
+    }
+
     if (m_impl && m_impl->window) {
         glfwMakeContextCurrent(m_impl->window);
 

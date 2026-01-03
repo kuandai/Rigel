@@ -214,11 +214,14 @@ private:
 ```yaml
 # assets/manifest.yaml
 namespace: rigel
+#
+# Note: AssetManager currently loads a single manifest. Imports are planned
+# but not implemented yet.
 
-# Import other manifests
-imports:
-  - textures/blocks.yaml
-  - models/entities.yaml
+# Import other manifests (planned, not yet implemented)
+# imports:
+#   - textures/blocks.yaml
+#   - models/entities.yaml
 
 # Inline asset declarations
 assets:
@@ -226,7 +229,6 @@ assets:
     stone:
       path: textures/blocks/stone.png
       filter: nearest
-      wrap: repeat
 
   shaders:
     voxel:
@@ -238,41 +240,32 @@ assets:
 
 ### 3.2 Asset Identifier Format
 
-Assets are referenced by qualified identifiers:
+Assets are referenced by identifiers of the form:
 
 ```
-<namespace>:<category>/<name>
+<category>/<name>
 ```
 
 **Examples:**
-- `rigel:textures/stone`
-- `rigel:shaders/voxel`
-- `mymod:models/custom_block`
+- `textures/stone`
+- `shaders/voxel`
+- `models/custom_block`
 
-**Resolution Rules:**
-1. Fully qualified: `rigel:textures/stone` → exact match
-2. Category-qualified: `textures/stone` → uses current manifest's namespace
-3. Name-only: `stone` → requires category context (e.g., in a texture reference field)
+Namespace-qualified IDs are planned, but the current `AssetManager` treats IDs
+as `category/name` only and does not resolve `rigel:textures/stone` yet.
 
 ### 3.3 Path Resolution
 
 ```yaml
-# Paths are relative to the manifest file's directory
+# Paths map directly to ResourceRegistry keys (embedded asset paths)
 assets:
   textures:
     logo:
-      path: ../images/logo.png      # Relative path
-      path: /textures/logo.png      # Absolute from asset root
-      path: ${TEXTURES}/logo.png    # Variable expansion
+      path: textures/logo.png
 ```
 
-**Built-in Variables:**
-
-| Variable | Expansion |
-|----------|-----------|
-| `${ASSET_ROOT}` | Root of assets/ directory |
-| `${MANIFEST_DIR}` | Directory containing current manifest |
-| `${NAMESPACE}` | Current manifest namespace |
+Variable expansion and manifest-relative path resolution are planned but not
+implemented yet.
 
 ---
 
@@ -286,23 +279,10 @@ textures:
   dirt:
     path: textures/dirt.png
 
-  # Full specification
+  # Full specification (current loader supports only `filter`)
   grass_top:
     path: textures/grass_top.png
-    filter: nearest              # nearest | linear | linear_mipmap
-    wrap: repeat                 # repeat | clamp | mirror
-    format: rgba8                # rgba8 | rgb8 | rg8 | r8 | srgb
-    generate_mipmaps: true
-    max_anisotropy: 4
-
-  # Texture array (for atlas layers)
-  terrain_atlas:
-    type: array
-    layers:
-      - textures/stone.png
-      - textures/dirt.png
-      - textures/grass_side.png
-    tile_size: 16
+    filter: nearest              # nearest | linear
 ```
 
 **C++ API:**
@@ -315,7 +295,7 @@ struct TextureAsset {
     GLenum format;
 };
 
-Handle<TextureAsset> tex = assets.get<TextureAsset>("rigel:textures/stone");
+Handle<TextureAsset> tex = assets.get<TextureAsset>("textures/stone");
 glBindTexture(GL_TEXTURE_2D, tex->id);
 ```
 
@@ -687,6 +667,9 @@ public:
 ---
 
 ## 6. Dependency Resolution
+
+Dependency resolution is planned but not implemented in the current
+`AssetManager`. Assets are loaded on demand without a dependency graph.
 
 ### 6.1 Dependency Graph
 
@@ -1363,12 +1346,7 @@ assets.loadPack("mods/mymod/manifest.yaml");      // Mod overrides
 namespace: rigel
 version: 1.0
 
-imports:
-  - textures/blocks.yaml
-  - textures/entities.yaml
-  - models/blocks.yaml
-  - animations/textures.yaml
-  - audio/sounds.yaml
+# imports: [...]  # Planned, not yet implemented
 
 fallbacks:
   textures: textures/missing.png
@@ -1414,9 +1392,9 @@ assets:
 # Top-level manifest fields
 namespace: string              # Required: asset namespace
 version: string                # Optional: manifest version
-imports: [string]              # Optional: other manifests to include
-fallbacks: map                 # Optional: fallback assets by category
-asset_types: map               # Optional: custom asset type definitions
+imports: [string]              # Planned: other manifests to include
+fallbacks: map                 # Planned: fallback assets by category
+asset_types: map               # Planned: custom asset type definitions
 
 # Asset declaration common fields
 <asset_name>:
@@ -1426,11 +1404,11 @@ asset_types: map               # Optional: custom asset type definitions
   priority: int                # Optional: load priority (higher = sooner)
 
 # Texture-specific fields
-filter: nearest | linear | linear_mipmap
-wrap: repeat | clamp | mirror
-format: rgba8 | rgb8 | srgb | ...
-generate_mipmaps: bool
-max_anisotropy: int
+filter: nearest | linear       # linear_mipmap planned
+wrap: repeat | clamp | mirror  # Planned
+format: rgba8 | rgb8 | srgb    # Planned
+generate_mipmaps: bool         # Planned
+max_anisotropy: int            # Planned
 
 # Shader-specific fields
 vertex: string

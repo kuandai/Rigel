@@ -26,7 +26,7 @@ This document describes a simple shader loading system for Rigel that compiles G
 | **Primary** | Provide uniform location caching |
 | **Secondary** | Support compile-time defines |
 | **Secondary** | Shader inheritance for variants |
-| **Tertiary** | Include directive support |
+| **Tertiary (planned)** | Include directive support |
 
 ### Out of Scope (for now)
 
@@ -343,25 +343,10 @@ in vec3 a_position;
 // ...
 ```
 
-### 6.2 Include Directive (Future)
+### 6.2 Include Directive (Not Yet Supported)
 
-Support for `#include` directives:
-
-```glsl
-#version 410 core
-
-#include "common/lighting.glsl"
-#include "common/noise.glsl"
-
-void main() {
-    // Use functions from includes
-}
-```
-
-**Resolution:**
-1. Paths are relative to `assets/shaders/`
-2. Absolute paths start with `/`
-3. Include guards are NOT automatic (use manual `#ifndef`/`#define`/`#endif` guards)
+The current shader preprocessor only injects `#version` and manifest `defines`.
+`#include` handling is not implemented yet.
 
 ### 6.3 Preprocessing Implementation
 

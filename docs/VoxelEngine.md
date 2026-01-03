@@ -73,7 +73,6 @@ namespace Rigel::Voxel {
     class TextureAtlas;
     class BlockRegistry;
     struct BlockType;
-    class BlockModel;
 }
 ```
 
@@ -114,12 +113,13 @@ struct BlockType {
     std::string identifier;        // "rigel:stone", "mymod:glowing_ore"
 
     // Geometry
-    BlockModelRef model;           // Reference to geometry definition
+    std::string model;             // "cube" (only cube is rendered today)
     bool isOpaque;                 // Occludes faces of neighbors
     bool isSolid;                  // Has collision
+    bool cullSameType;             // Cull faces when adjacent to same type
 
     // Rendering
-    FaceTextureMap textures;       // Per-face texture assignments
+    FaceTextures textures;         // Per-face texture assignments
     RenderLayer layer;             // Opaque, Transparent, Translucent
 
     // Lighting
@@ -137,6 +137,9 @@ enum class RenderLayer : uint8_t {
     Emissive      // Additive blending for glow effects
 };
 ```
+
+Note: the current mesh builder only renders blocks with `model == "cube"`.
+Other model strings are parsed but skipped during meshing.
 
 ### 3.3 Block Registry
 
@@ -167,21 +170,21 @@ BlockRegistry registry;
 
 // Simple opaque block
 registry.registerBlock("rigel:stone", {
-    .model = BlockModel::Cube(),
+    .model = "cube",
     .isOpaque = true,
-    .textures = FaceTextureMap::uniform("textures/stone.png"),
+    .textures = FaceTextures::uniform("textures/stone.png"),
     .layer = RenderLayer::Opaque
 });
 
 // Transparent block with per-face textures
 registry.registerBlock("rigel:grass", {
-    .model = BlockModel::Cube(),
+    .model = "cube",
     .isOpaque = true,
-    .textures = {
-        {Face::Top,    "textures/grass_top.png"},
-        {Face::Bottom, "textures/dirt.png"},
-        {Face::Sides,  "textures/grass_side.png"}
-    },
+    .textures = FaceTextures::topBottomSides(
+        "textures/grass_top.png",
+        "textures/dirt.png",
+        "textures/grass_side.png"
+    ),
     .layer = RenderLayer::Opaque
 });
 ```
@@ -199,6 +202,9 @@ class Chunk {
 public:
     static constexpr int SIZE = 32;
     static constexpr int VOLUME = SIZE * SIZE * SIZE;  // 32,768 blocks
+    static constexpr int SUBCHUNK_SIZE = SIZE / 2;
+    static constexpr int SUBCHUNK_VOLUME = SUBCHUNK_SIZE * SUBCHUNK_SIZE * SUBCHUNK_SIZE;
+    static constexpr int SUBCHUNK_COUNT = 8;           // 2x2x2
 
     // Block access
     BlockState getBlock(int x, int y, int z) const;
@@ -218,8 +224,14 @@ public:
     static Chunk deserialize(std::span<const uint8_t> data);
 
 private:
+    struct Subchunk {
+        std::unique_ptr<std::array<BlockState, SUBCHUNK_VOLUME>> blocks;
+        uint32_t nonAirCount = 0;
+        uint32_t opaqueCount = 0;
+    };
+
     ChunkCoord m_position;
-    std::array<BlockState, VOLUME> m_blocks;
+    std::array<Subchunk, SUBCHUNK_COUNT> m_subchunks;
 
     // Cached state
     bool m_dirty = true;
@@ -227,6 +239,9 @@ private:
     uint32_t m_opaqueCount = 0;
 };
 ```
+
+Chunks allocate 2x2x2 subchunks on demand, so empty space does not reserve a full
+128 KB block array.
 
 ### 4.2 Chunk Coordinate System
 
@@ -293,13 +308,14 @@ public:
     void clearDirtyFlags();
 
     // Iteration
-    void forEachLoadedChunk(std::function<void(ChunkCoord, Chunk&)> fn);
+    void forEachChunk(std::function<void(ChunkCoord, Chunk&)> fn);
 
 private:
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> m_chunks;
-    std::vector<ChunkCoord> m_dirtyList;
 };
 ```
+
+Dirty tracking currently scans loaded chunks and collects those with the dirty flag set.
 
 ---
 
@@ -316,28 +332,12 @@ struct VoxelVertex {
     float u, v;
 
     // Packed data (4 bytes)
-    uint8_t normalIndex;      // 0-5 for axis-aligned, 6-255 for custom
+    uint8_t normalIndex;      // 0-5 for axis-aligned directions
     uint8_t aoLevel;          // Ambient occlusion: 0-3
     uint8_t textureLayer;     // Array texture layer
-    uint8_t animationFrame;   // For animated textures (shader uniform for time)
+    uint8_t flags;            // Reserved for future use
 
     // Total: 24 bytes per vertex
-};
-```
-
-**Alternative Compact Format (for simple cubes):**
-
-```cpp
-struct PackedVoxelVertex {
-    // Position packed into 32 bits (10-10-10-2 format)
-    uint32_t positionPacked;  // x:10, y:10, z:10, ao:2
-
-    // UV + metadata packed
-    uint16_t u, v;            // Fixed-point 0-65535
-    uint16_t textureLayer;
-    uint16_t flags;           // normal:3, animation:13
-
-    // Total: 12 bytes per vertex
 };
 ```
 
@@ -357,7 +357,7 @@ public:
         std::array<const Chunk*, 6> neighbors;  // +X, -X, +Y, -Y, +Z, -Z
     };
 
-    ChunkMesh buildMesh(const BuildContext& ctx);
+    ChunkMesh build(const BuildContext& ctx);
 
 private:
     bool shouldRenderFace(const BuildContext& ctx,
@@ -369,18 +369,13 @@ private:
                          const BlockType& type,
                          std::vector<VoxelVertex>& vertices,
                          std::vector<uint32_t>& indices);
-
-    void appendCustomModel(const BuildContext& ctx,
-                           int x, int y, int z,
-                           const BlockModel& model,
-                           std::vector<VoxelVertex>& vertices,
-                           std::vector<uint32_t>& indices);
 };
 ```
 
-### 5.3 Greedy Meshing
+### 5.3 Greedy Meshing (Planned)
 
-For contiguous regions of identical blocks, faces can be merged to reduce vertex count:
+Greedy meshing is not implemented yet. The current mesh builder emits per-face
+geometry. The following notes describe a planned optimization:
 
 ```cpp
 struct GreedyMeshConfig {
@@ -531,7 +526,10 @@ TextureCoords TextureAtlas::getUVs(TextureHandle handle) const {
 
 ---
 
-## 7. Custom Models & Non-Axis Aligned Faces
+## 7. Custom Models & Non-Axis Aligned Faces (Planned)
+
+This section documents a future design. The current implementation only renders
+`model == "cube"`; other model definitions are not used by the mesh builder yet.
 
 ### 7.1 BlockModel Structure
 
@@ -830,7 +828,7 @@ void ChunkRenderer::collectVisibleChunks(const Camera& camera) {
     Frustum frustum;
     frustum.update(camera.getViewProjection());
 
-    m_chunkManager.forEachLoadedChunk([&](ChunkCoord coord, Chunk& chunk) {
+m_chunkManager.forEachChunk([&](ChunkCoord coord, Chunk& chunk) {
         if (chunk.isEmpty()) return;
 
         AABB bounds = chunk.getBoundingBox();
@@ -1032,7 +1030,7 @@ public:
 
 // Registration
 registry.registerBlock("mymod:custom_block", {
-    .model = BlockModel::Cube(),
+    .model = "cube",
     .behavior = std::make_shared<MyCustomBehavior>()
 });
 ```
@@ -1070,7 +1068,7 @@ public:
 
 // Blocks can specify custom shaders
 registry.registerBlock("mymod:hologram", {
-    .model = BlockModel::Cube(),
+    .model = "cube",
     .shader = "mymod:hologram_shader",  // Uses custom rendering
     .layer = RenderLayer::Transparent
 });

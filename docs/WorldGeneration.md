@@ -33,13 +33,12 @@ captured in `~/artifact.md`. The focus is realistic, climate-driven terrain.
 Chunk states (current implementation):
 
 ```
-Missing -> Requested -> Generating -> ReadyData -> Meshing -> ReadyMesh
+Missing -> QueuedGen -> ReadyData -> QueuedMesh -> ReadyMesh
 ```
 
-- **Requested**: enqueued by streamer; priority by distance and view direction.
-- **Generating**: seed-based generator fills block data.
-- **ReadyData**: chunk exists, needs mesh.
-- **Meshing**: CPU mesh build.
+- **QueuedGen**: enqueued by streamer; priority by distance and view direction.
+- **ReadyData**: chunk exists with block data, needs mesh.
+- **QueuedMesh**: enqueued for CPU mesh build.
 - **ReadyMesh**: mesh uploaded, renderable.
 
 Streaming uses hysteresis: load within distance N, unload beyond N+H.

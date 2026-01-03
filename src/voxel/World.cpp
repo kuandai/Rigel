@@ -1,16 +1,21 @@
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
+#include "Rigel/Persistence/Providers.h"
 
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
 namespace Rigel::Voxel {
 
-World::World() = default;
+World::World()
+    : m_persistenceProviders(std::make_shared<Persistence::ProviderRegistry>()) {
+}
 
 World::World(WorldResources& resources) {
     initialize(resources);
 }
+
+World::~World() = default;
 
 void World::initialize(WorldResources& resources) {
     if (m_initialized) {
@@ -24,6 +29,28 @@ void World::initialize(WorldResources& resources) {
 
     m_initialized = true;
     spdlog::debug("Voxel world initialized");
+}
+
+Persistence::ProviderRegistry& World::persistenceProviders() {
+    if (!m_persistenceProviders) {
+        m_persistenceProviders = std::make_shared<Persistence::ProviderRegistry>();
+    }
+    return *m_persistenceProviders;
+}
+
+const Persistence::ProviderRegistry& World::persistenceProviders() const {
+    if (!m_persistenceProviders) {
+        throw std::runtime_error("World persistence providers not initialized");
+    }
+    return *m_persistenceProviders;
+}
+
+std::shared_ptr<Persistence::ProviderRegistry> World::persistenceProvidersHandle() const {
+    return m_persistenceProviders;
+}
+
+void World::setPersistenceProviders(std::shared_ptr<Persistence::ProviderRegistry> providers) {
+    m_persistenceProviders = std::move(providers);
 }
 
 BlockRegistry& World::blockRegistry() {

@@ -4,6 +4,12 @@
 
 namespace Rigel::Voxel {
 
+WorldSet::WorldSet()
+    : m_persistenceService(m_persistenceFormats) {
+}
+
+WorldSet::~WorldSet() = default;
+
 void WorldSet::initializeResources(Asset::AssetManager& assets) {
     m_resources.initialize(assets);
 }
@@ -81,6 +87,17 @@ void WorldSet::removeWorld(WorldId id) {
 
 void WorldSet::clear() {
     m_worlds.clear();
+}
+
+Persistence::PersistenceContext WorldSet::persistenceContext(WorldId id) const {
+    const World& target = world(id);
+    Persistence::PersistenceContext ctx;
+    ctx.rootPath = m_persistenceRoot;
+    ctx.preferredFormat = m_persistencePreferredFormat;
+    ctx.policies = m_persistencePolicies;
+    ctx.storage = m_persistenceStorage;
+    ctx.providers = target.persistenceProvidersHandle();
+    return ctx;
 }
 
 } // namespace Rigel::Voxel

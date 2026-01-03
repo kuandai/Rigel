@@ -19,6 +19,10 @@
 #include <memory>
 #include <vector>
 
+namespace Rigel::Persistence {
+class ProviderRegistry;
+}
+
 namespace Rigel::Voxel {
 
 class WorldResources;
@@ -43,7 +47,7 @@ class World {
 public:
     World();
     explicit World(WorldResources& resources);
-    ~World() = default;
+    ~World();
 
     /// Non-copyable
     World(const World&) = delete;
@@ -76,6 +80,12 @@ public:
     /// Access the entity manager
     Entity::WorldEntities& entities() { return m_entities; }
     const Entity::WorldEntities& entities() const { return m_entities; }
+
+    /// Access persistence providers for this world
+    Rigel::Persistence::ProviderRegistry& persistenceProviders();
+    const Rigel::Persistence::ProviderRegistry& persistenceProviders() const;
+    std::shared_ptr<Rigel::Persistence::ProviderRegistry> persistenceProvidersHandle() const;
+    void setPersistenceProviders(std::shared_ptr<Rigel::Persistence::ProviderRegistry> providers);
 
     /// @}
 
@@ -140,6 +150,7 @@ private:
     Entity::WorldEntities m_entities;
     std::shared_ptr<WorldGenerator> m_generator;
     bool m_initialized = false;
+    std::shared_ptr<Rigel::Persistence::ProviderRegistry> m_persistenceProviders;
 
 };
 

@@ -276,10 +276,6 @@ void EntityModelInstance::render(const EntityRenderContext& ctx,
     if (locViewProjection >= 0) {
         glUniformMatrix4fv(locViewProjection, 1, GL_FALSE, glm::value_ptr(ctx.viewProjection));
     }
-    GLint locView = m_shader->uniform("u_view");
-    if (locView >= 0) {
-        glUniformMatrix4fv(locView, 1, GL_FALSE, glm::value_ptr(ctx.view));
-    }
     GLint locModel = m_shader->uniform("u_model");
     if (locModel >= 0) {
         glUniformMatrix4fv(locModel, 1, GL_FALSE, glm::value_ptr(modelMatrix));
@@ -334,7 +330,6 @@ void EntityModelInstance::render(const EntityRenderContext& ctx,
     GLint locShadowCascadeCount = m_shader->uniform("u_shadowCascadeCount");
     GLint locShadowBias = m_shader->uniform("u_shadowBias");
     GLint locShadowNormalBias = m_shader->uniform("u_shadowNormalBias");
-    GLint locShadowPcfRadius = m_shader->uniform("u_shadowPcfRadius");
     GLint locShadowPcfNear = m_shader->uniform("u_shadowPcfNear");
     GLint locShadowPcfFar = m_shader->uniform("u_shadowPcfFar");
     GLint locShadowStrength = m_shader->uniform("u_shadowStrength");
@@ -380,9 +375,6 @@ void EntityModelInstance::render(const EntityRenderContext& ctx,
         }
         if (locShadowNormalBias >= 0) {
             glUniform1f(locShadowNormalBias, ctx.shadow.normalBias);
-        }
-        if (locShadowPcfRadius >= 0) {
-            glUniform1i(locShadowPcfRadius, ctx.shadow.pcfRadius);
         }
         if (locShadowPcfNear >= 0) {
             glUniform1f(locShadowPcfNear, ctx.shadow.pcfNear);

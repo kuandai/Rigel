@@ -22,7 +22,6 @@ uniform float u_shadowSplits[4];
 uniform int u_shadowCascadeCount;
 uniform float u_shadowBias;
 uniform float u_shadowNormalBias;
-uniform int u_shadowPcfRadius;
 uniform float u_shadowPcfNear;
 uniform float u_shadowPcfFar;
 uniform float u_shadowStrength;

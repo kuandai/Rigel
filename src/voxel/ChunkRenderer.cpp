@@ -299,13 +299,10 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         if (m_locShadowNormalBias >= 0) {
             glUniform1f(m_locShadowNormalBias, ctx.config.shadow.normalBias);
         }
-        if (m_locShadowPcfRadius >= 0) {
-            glUniform1i(m_locShadowPcfRadius, ctx.config.shadow.pcfRadius);
-        }
-        if (m_locShadowPcfNear >= 0) {
-            glUniform1f(m_locShadowPcfNear,
-                        static_cast<float>(ctx.config.shadow.pcfRadiusNear));
-        }
+    if (m_locShadowPcfNear >= 0) {
+        glUniform1f(m_locShadowPcfNear,
+                    static_cast<float>(ctx.config.shadow.pcfRadiusNear));
+    }
         if (m_locShadowPcfFar >= 0) {
             glUniform1f(m_locShadowPcfFar,
                         static_cast<float>(ctx.config.shadow.pcfRadiusFar));
@@ -373,7 +370,6 @@ void ChunkRenderer::cacheUniformLocations() {
     m_locShadowCascadeCount = m_shader->uniform("u_shadowCascadeCount");
     m_locShadowBias = m_shader->uniform("u_shadowBias");
     m_locShadowNormalBias = m_shader->uniform("u_shadowNormalBias");
-    m_locShadowPcfRadius = m_shader->uniform("u_shadowPcfRadius");
     m_locShadowStrength = m_shader->uniform("u_shadowStrength");
     m_locShadowNear = m_shader->uniform("u_shadowNear");
     m_locShadowFadeStart = m_shader->uniform("u_shadowFadeStart");

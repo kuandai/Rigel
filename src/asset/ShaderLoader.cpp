@@ -119,7 +119,6 @@ std::shared_ptr<AssetBase> ShaderLoader::load(const LoadContext& ctx) {
             if (pos != std::string::npos) {
                 candidate.replace(pos, 5, ".frag");
                 fragmentPath = candidate;
-                spdlog::warn("Shader '{}' missing fragment; falling back to {}", ctx.id, fragmentPath);
             }
         }
         if (fragmentPath.empty()) {

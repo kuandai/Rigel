@@ -3,7 +3,6 @@
 in vec2 v_uv;
 in vec3 v_normal;
 in vec3 v_worldPos;
-in float v_viewDepth;
 
 uniform sampler2D u_diffuse;
 uniform sampler2D u_emission;
@@ -20,7 +19,6 @@ uniform float u_shadowSplits[4];
 uniform int u_shadowCascadeCount;
 uniform float u_shadowBias;
 uniform float u_shadowNormalBias;
-uniform int u_shadowPcfRadius;
 uniform float u_shadowPcfNear;
 uniform float u_shadowPcfFar;
 uniform float u_shadowStrength;

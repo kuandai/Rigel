@@ -140,7 +140,6 @@ private:
     GLint m_locShadowCascadeCount = -1;
     GLint m_locShadowBias = -1;
     GLint m_locShadowNormalBias = -1;
-    GLint m_locShadowPcfRadius = -1;
     GLint m_locShadowStrength = -1;
     GLint m_locShadowNear = -1;
     GLint m_locShadowFadeStart = -1;

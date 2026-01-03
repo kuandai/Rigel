@@ -130,6 +130,42 @@ void AssetManager::loadManifest(const std::string& path) {
             entry.configTree = std::move(subtree);
             entry.config = entry.configTree.rootref();
 
+            if (entry.category == "shaders") {
+                auto readNodeString = [](ryml::ConstNodeRef node, const char* key)
+                    -> std::optional<std::string> {
+                    if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {
+                        return std::nullopt;
+                    }
+                    std::string value;
+                    node[ryml::to_csubstr(key)] >> value;
+                    return value;
+                };
+
+                auto computeOpt = readNodeString(assetNode, "compute");
+                auto vertexOpt = readNodeString(assetNode, "vertex");
+                auto fragmentOpt = readNodeString(assetNode, "fragment");
+
+                ryml::NodeRef root = entry.configTree.rootref();
+                if (vertexOpt) {
+                    root[ryml::to_csubstr("vertex")] =
+                        entry.configTree.copy_to_arena(ryml::to_csubstr(*vertexOpt));
+                }
+                if (fragmentOpt) {
+                    root[ryml::to_csubstr("fragment")] =
+                        entry.configTree.copy_to_arena(ryml::to_csubstr(*fragmentOpt));
+                }
+
+                if (!computeOpt && vertexOpt && (!fragmentOpt || fragmentOpt->empty())) {
+                    std::string candidate = *vertexOpt;
+                    size_t pos = candidate.rfind(".vert");
+                    if (pos != std::string::npos) {
+                        candidate.replace(pos, 5, ".frag");
+                        root[ryml::to_csubstr("fragment")] =
+                            entry.configTree.copy_to_arena(ryml::to_csubstr(candidate));
+                    }
+                }
+            }
+
             // Build full asset ID: category/name
             std::string fullId = categoryName + "/" + assetName;
 

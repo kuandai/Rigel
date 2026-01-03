@@ -105,6 +105,9 @@ streaming:
   apply_budget_per_frame: 9
   worker_threads: 0
   max_resident_chunks: 100
+persistence:
+  cr:
+    lz4: true
 generation:
   pipeline:
     - stage: climate_global
@@ -154,5 +157,6 @@ generation:
     CHECK_EQ(config.stream.applyBudgetPerFrame, 9);
     CHECK_EQ(config.stream.workerThreads, 0);
     CHECK_EQ(config.stream.maxResidentChunks, static_cast<size_t>(100));
+    CHECK(config.persistence.cr.lz4);
     CHECK(!config.isStageEnabled("terrain_density"));
 }

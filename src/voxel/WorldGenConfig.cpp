@@ -5,67 +5,20 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 
+#include "Rigel/Util/Yaml.h"
+#include "Rigel/Util/Ryml.h"
+#include "Rigel/Voxel/WorldGenStages.h"
+
 namespace Rigel::Voxel {
 
 namespace {
-constexpr const char* kPipelineStages[] = {
-    "climate_global",
-    "climate_local",
-    "biome_resolve",
-    "terrain_density",
-    "caves",
-    "surface_rules",
-    "structures",
-    "post_process"
-};
-
-bool readBool(ryml::ConstNodeRef node, const char* key, bool fallback) {
-    if (!node.readable() || !node.has_child(key)) {
-        return fallback;
-    }
-    std::string value;
-    node[key] >> value;
-    return value == "true" || value == "yes" || value == "1";
-}
-
-int readInt(ryml::ConstNodeRef node, const char* key, int fallback) {
-    if (!node.readable() || !node.has_child(key)) {
-        return fallback;
-    }
-    int value = fallback;
-    node[key] >> value;
-    return value;
-}
-
-float readFloat(ryml::ConstNodeRef node, const char* key, float fallback) {
-    if (!node.readable() || !node.has_child(key)) {
-        return fallback;
-    }
-    float value = fallback;
-    node[key] >> value;
-    return value;
-}
-
-std::string readString(ryml::ConstNodeRef node, const char* key, const std::string& fallback) {
-    if (!node.readable() || !node.has_child(key)) {
-        return fallback;
-    }
-    std::string value;
-    node[key] >> value;
-    return value;
-}
-
-std::string toStdString(ryml::csubstr value) {
-    return std::string(value.data(), value.size());
-}
-
 void applyNoise(ryml::ConstNodeRef node, WorldGenConfig::NoiseConfig& noise) {
-    noise.octaves = readInt(node, "octaves", noise.octaves);
-    noise.frequency = readFloat(node, "frequency", noise.frequency);
-    noise.lacunarity = readFloat(node, "lacunarity", noise.lacunarity);
-    noise.persistence = readFloat(node, "persistence", noise.persistence);
-    noise.scale = readFloat(node, "scale", noise.scale);
-    noise.offset = readFloat(node, "offset", noise.offset);
+    noise.octaves = Util::readInt(node, "octaves", noise.octaves);
+    noise.frequency = Util::readFloat(node, "frequency", noise.frequency);
+    noise.lacunarity = Util::readFloat(node, "lacunarity", noise.lacunarity);
+    noise.persistence = Util::readFloat(node, "persistence", noise.persistence);
+    noise.scale = Util::readFloat(node, "scale", noise.scale);
+    noise.offset = Util::readFloat(node, "offset", noise.offset);
 }
 
 void applyClimateLayer(ryml::ConstNodeRef node, WorldGenConfig::ClimateLayerConfig& layer) {
@@ -89,9 +42,9 @@ WorldGenConfig::BiomeTarget readBiomeTarget(ryml::ConstNodeRef node,
     if (!node.readable()) {
         return target;
     }
-    target.temperature = readFloat(node, "temperature", target.temperature);
-    target.humidity = readFloat(node, "humidity", target.humidity);
-    target.continentalness = readFloat(node, "continentalness", target.continentalness);
+    target.temperature = Util::readFloat(node, "temperature", target.temperature);
+    target.humidity = Util::readFloat(node, "humidity", target.humidity);
+    target.continentalness = Util::readFloat(node, "continentalness", target.continentalness);
     return target;
 }
 } // namespace
@@ -107,27 +60,27 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
     );
     ryml::ConstNodeRef root = tree.rootref();
 
-    seed = static_cast<uint32_t>(readInt(root, "seed", static_cast<int>(seed)));
-    solidBlock = readString(root, "solid_block", solidBlock);
-    surfaceBlock = readString(root, "surface_block", surfaceBlock);
+    seed = static_cast<uint32_t>(Util::readInt(root, "seed", static_cast<int>(seed)));
+    solidBlock = Util::readString(root, "solid_block", solidBlock);
+    surfaceBlock = Util::readString(root, "surface_block", surfaceBlock);
 
     if (root.has_child("world")) {
         ryml::ConstNodeRef worldNode = root["world"];
-        world.minY = readInt(worldNode, "min_y", world.minY);
-        world.maxY = readInt(worldNode, "max_y", world.maxY);
-        world.seaLevel = readInt(worldNode, "sea_level", world.seaLevel);
-        world.lavaLevel = readInt(worldNode, "lava_level", world.lavaLevel);
-        world.version = static_cast<uint32_t>(readInt(worldNode, "version",
+        world.minY = Util::readInt(worldNode, "min_y", world.minY);
+        world.maxY = Util::readInt(worldNode, "max_y", world.maxY);
+        world.seaLevel = Util::readInt(worldNode, "sea_level", world.seaLevel);
+        world.lavaLevel = Util::readInt(worldNode, "lava_level", world.lavaLevel);
+        world.version = static_cast<uint32_t>(Util::readInt(worldNode, "version",
                                                       static_cast<int>(world.version)));
     }
 
     if (root.has_child("terrain")) {
         ryml::ConstNodeRef terrainNode = root["terrain"];
-        terrain.baseHeight = readFloat(terrainNode, "base_height", terrain.baseHeight);
-        terrain.heightVariation = readFloat(terrainNode, "height_variation", terrain.heightVariation);
-        terrain.surfaceDepth = readInt(terrainNode, "surface_depth", terrain.surfaceDepth);
-        terrain.densityStrength = readFloat(terrainNode, "density_strength", terrain.densityStrength);
-        terrain.gradientStrength = readFloat(terrainNode, "gradient_strength", terrain.gradientStrength);
+        terrain.baseHeight = Util::readFloat(terrainNode, "base_height", terrain.baseHeight);
+        terrain.heightVariation = Util::readFloat(terrainNode, "height_variation", terrain.heightVariation);
+        terrain.surfaceDepth = Util::readInt(terrainNode, "surface_depth", terrain.surfaceDepth);
+        terrain.densityStrength = Util::readFloat(terrainNode, "density_strength", terrain.densityStrength);
+        terrain.gradientStrength = Util::readFloat(terrainNode, "gradient_strength", terrain.gradientStrength);
         if (terrainNode.has_child("noise")) {
             applyNoise(terrainNode["noise"], terrain.heightNoise);
         }
@@ -138,10 +91,10 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
 
     if (root.has_child("climate")) {
         ryml::ConstNodeRef climateNode = root["climate"];
-        climate.localBlend = readFloat(climateNode, "local_blend", climate.localBlend);
-        climate.latitudeScale = readFloat(climateNode, "latitude_scale", climate.latitudeScale);
-        climate.latitudeStrength = readFloat(climateNode, "latitude_strength", climate.latitudeStrength);
-        climate.elevationLapse = readFloat(climateNode, "elevation_lapse", climate.elevationLapse);
+        climate.localBlend = Util::readFloat(climateNode, "local_blend", climate.localBlend);
+        climate.latitudeScale = Util::readFloat(climateNode, "latitude_scale", climate.latitudeScale);
+        climate.latitudeStrength = Util::readFloat(climateNode, "latitude_strength", climate.latitudeStrength);
+        climate.elevationLapse = Util::readFloat(climateNode, "elevation_lapse", climate.elevationLapse);
         if (climateNode.has_child("global")) {
             applyClimateLayer(climateNode["global"], climate.global);
         }
@@ -152,25 +105,25 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
 
     if (root.has_child("biomes")) {
         ryml::ConstNodeRef biomesNode = root["biomes"];
-        biomes.blend.blendPower = readFloat(biomesNode, "blend_power", biomes.blend.blendPower);
-        biomes.blend.epsilon = readFloat(biomesNode, "epsilon", biomes.blend.epsilon);
+        biomes.blend.blendPower = Util::readFloat(biomesNode, "blend_power", biomes.blend.blendPower);
+        biomes.blend.epsilon = Util::readFloat(biomesNode, "epsilon", biomes.blend.epsilon);
         if (biomesNode.has_child("entries")) {
             ryml::ConstNodeRef entries = biomesNode["entries"];
             if (entries.is_seq()) {
                 for (ryml::ConstNodeRef entry : entries.children()) {
                     BiomeConfig biome;
-                    biome.name = readString(entry, "name", "");
+                    biome.name = Util::readString(entry, "name", "");
                     if (entry.has_child("target")) {
                         biome.target = readBiomeTarget(entry["target"], biome.target);
                     }
-                    biome.weight = readFloat(entry, "weight", biome.weight);
+                    biome.weight = Util::readFloat(entry, "weight", biome.weight);
                     if (entry.has_child("surface")) {
                         ryml::ConstNodeRef surface = entry["surface"];
                         if (surface.is_seq()) {
                             for (ryml::ConstNodeRef layerNode : surface.children()) {
                                 SurfaceLayer layer;
-                                layer.block = readString(layerNode, "block", "");
-                                layer.depth = readInt(layerNode, "depth", layer.depth);
+                                layer.block = Util::readString(layerNode, "block", "");
+                                layer.depth = Util::readInt(layerNode, "depth", layer.depth);
                                 if (!layer.block.empty()) {
                                     biome.surface.push_back(std::move(layer));
                                 }
@@ -185,17 +138,17 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         }
         if (biomesNode.has_child("coast_band")) {
             ryml::ConstNodeRef bandNode = biomesNode["coast_band"];
-            biomes.coastBand.biome = readString(bandNode, "biome", biomes.coastBand.biome);
-            biomes.coastBand.minContinentalness = readFloat(
+            biomes.coastBand.biome = Util::readString(bandNode, "biome", biomes.coastBand.biome);
+            biomes.coastBand.minContinentalness = Util::readFloat(
                 bandNode, "min_continentalness", biomes.coastBand.minContinentalness);
-            biomes.coastBand.maxContinentalness = readFloat(
+            biomes.coastBand.maxContinentalness = Util::readFloat(
                 bandNode, "max_continentalness", biomes.coastBand.maxContinentalness);
             if (bandNode.has_child("min")) {
-                biomes.coastBand.minContinentalness = readFloat(
+                biomes.coastBand.minContinentalness = Util::readFloat(
                     bandNode, "min", biomes.coastBand.minContinentalness);
             }
             if (bandNode.has_child("max")) {
-                biomes.coastBand.maxContinentalness = readFloat(
+                biomes.coastBand.maxContinentalness = Util::readFloat(
                     bandNode, "max", biomes.coastBand.maxContinentalness);
             }
             biomes.coastBand.enabled = !biomes.coastBand.biome.empty();
@@ -212,7 +165,7 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
             ryml::ConstNodeRef outputs = graphNode["outputs"];
             if (outputs.is_map()) {
                 for (ryml::ConstNodeRef output : outputs.children()) {
-                    std::string key = toStdString(output.key());
+                    std::string key = Util::toStdString(output.key());
                     std::string value;
                     output >> value;
                     if (!key.empty() && !value.empty()) {
@@ -226,14 +179,14 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
             if (nodes.is_seq()) {
                 for (ryml::ConstNodeRef node : nodes.children()) {
                     DensityNodeConfig config;
-                    config.id = readString(node, "id", "");
-                    config.type = readString(node, "type", "");
-                    config.field = readString(node, "field", "");
-                    config.value = readFloat(node, "value", config.value);
-                    config.minValue = readFloat(node, "min", config.minValue);
-                    config.maxValue = readFloat(node, "max", config.maxValue);
-                    config.scale = readFloat(node, "scale", config.scale);
-                    config.offset = readFloat(node, "offset", config.offset);
+                    config.id = Util::readString(node, "id", "");
+                    config.type = Util::readString(node, "type", "");
+                    config.field = Util::readString(node, "field", "");
+                    config.value = Util::readFloat(node, "value", config.value);
+                    config.minValue = Util::readFloat(node, "min", config.minValue);
+                    config.maxValue = Util::readFloat(node, "max", config.maxValue);
+                    config.scale = Util::readFloat(node, "scale", config.scale);
+                    config.offset = Util::readFloat(node, "offset", config.offset);
                     if (node.has_child("inputs")) {
                         ryml::ConstNodeRef inputs = node["inputs"];
                         if (inputs.is_seq()) {
@@ -261,8 +214,8 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
                                     point[0] >> x;
                                     point[1] >> y;
                                 } else {
-                                    x = readFloat(point, "x", x);
-                                    y = readFloat(point, "y", y);
+                                    x = Util::readFloat(point, "x", x);
+                                    y = Util::readFloat(point, "y", y);
                                 }
                                 config.splinePoints.emplace_back(x, y);
                             }
@@ -287,10 +240,10 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
 
     if (root.has_child("caves")) {
         ryml::ConstNodeRef cavesNode = root["caves"];
-        caves.enabled = readBool(cavesNode, "enabled", caves.enabled);
-        caves.densityOutput = readString(cavesNode, "density_output", caves.densityOutput);
-        caves.threshold = readFloat(cavesNode, "threshold", caves.threshold);
-        caves.sampleStep = readInt(cavesNode, "sample_step", caves.sampleStep);
+        caves.enabled = Util::readBool(cavesNode, "enabled", caves.enabled);
+        caves.densityOutput = Util::readString(cavesNode, "density_output", caves.densityOutput);
+        caves.threshold = Util::readFloat(cavesNode, "threshold", caves.threshold);
+        caves.sampleStep = Util::readInt(cavesNode, "sample_step", caves.sampleStep);
     }
 
     if (root.has_child("structures")) {
@@ -300,11 +253,11 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
             if (features.is_seq()) {
                 for (ryml::ConstNodeRef featureNode : features.children()) {
                     FeatureConfig feature;
-                    feature.name = readString(featureNode, "name", "");
-                    feature.block = readString(featureNode, "block", "");
-                    feature.chance = readFloat(featureNode, "chance", feature.chance);
-                    feature.minHeight = readInt(featureNode, "min_height", feature.minHeight);
-                    feature.maxHeight = readInt(featureNode, "max_height", feature.maxHeight);
+                    feature.name = Util::readString(featureNode, "name", "");
+                    feature.block = Util::readString(featureNode, "block", "");
+                    feature.chance = Util::readFloat(featureNode, "chance", feature.chance);
+                    feature.minHeight = Util::readInt(featureNode, "min_height", feature.minHeight);
+                    feature.maxHeight = Util::readInt(featureNode, "max_height", feature.maxHeight);
                     if (featureNode.has_child("biomes")) {
                         ryml::ConstNodeRef biomesNode = featureNode["biomes"];
                         if (biomesNode.is_seq()) {
@@ -327,31 +280,31 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
 
     if (root.has_child("streaming")) {
         ryml::ConstNodeRef streamNode = root["streaming"];
-        stream.viewDistanceChunks = readInt(streamNode, "view_distance_chunks", stream.viewDistanceChunks);
-        stream.unloadDistanceChunks = readInt(streamNode, "unload_distance_chunks", stream.unloadDistanceChunks);
-        int genLimit = readInt(streamNode, "gen_queue_limit", static_cast<int>(stream.genQueueLimit));
+        stream.viewDistanceChunks = Util::readInt(streamNode, "view_distance_chunks", stream.viewDistanceChunks);
+        stream.unloadDistanceChunks = Util::readInt(streamNode, "unload_distance_chunks", stream.unloadDistanceChunks);
+        int genLimit = Util::readInt(streamNode, "gen_queue_limit", static_cast<int>(stream.genQueueLimit));
         if (genLimit < 0) {
             genLimit = 0;
         }
         stream.genQueueLimit = static_cast<size_t>(genLimit);
 
-        int meshLimit = readInt(streamNode, "mesh_queue_limit", static_cast<int>(stream.meshQueueLimit));
+        int meshLimit = Util::readInt(streamNode, "mesh_queue_limit", static_cast<int>(stream.meshQueueLimit));
         if (meshLimit < 0) {
             meshLimit = 0;
         }
         stream.meshQueueLimit = static_cast<size_t>(meshLimit);
 
-        stream.applyBudgetPerFrame = readInt(streamNode, "apply_budget_per_frame", stream.applyBudgetPerFrame);
+        stream.applyBudgetPerFrame = Util::readInt(streamNode, "apply_budget_per_frame", stream.applyBudgetPerFrame);
         if (stream.applyBudgetPerFrame < 0) {
             stream.applyBudgetPerFrame = 0;
         }
 
-        stream.workerThreads = readInt(streamNode, "worker_threads", stream.workerThreads);
+        stream.workerThreads = Util::readInt(streamNode, "worker_threads", stream.workerThreads);
         if (stream.workerThreads < 0) {
             stream.workerThreads = 0;
         }
 
-        int resident = readInt(streamNode, "max_resident_chunks", static_cast<int>(stream.maxResidentChunks));
+        int resident = Util::readInt(streamNode, "max_resident_chunks", static_cast<int>(stream.maxResidentChunks));
         if (resident < 0) {
             resident = 0;
         }
@@ -360,7 +313,7 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
 
     if (root.has_child("generation") && root["generation"].has_child("pipeline")) {
         ryml::ConstNodeRef pipeline = root["generation"]["pipeline"];
-        bool orderMatches = (pipeline.num_children() == sizeof(kPipelineStages) / sizeof(kPipelineStages[0]));
+        bool orderMatches = (pipeline.num_children() == kWorldGenPipelineStages.size());
         size_t index = 0;
         for (ryml::ConstNodeRef stage : pipeline.children()) {
             if (!stage.has_child("stage")) {
@@ -369,11 +322,11 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
             }
             std::string stageName;
             stage["stage"] >> stageName;
-            bool enabled = readBool(stage, "enabled", true);
+            bool enabled = Util::readBool(stage, "enabled", true);
             stageEnabled[stageName] = enabled;
             if (orderMatches) {
-                if (index >= sizeof(kPipelineStages) / sizeof(kPipelineStages[0]) ||
-                    stageName != kPipelineStages[index]) {
+                if (index >= kWorldGenPipelineStages.size() ||
+                    stageName != kWorldGenPipelineStages[index]) {
                     orderMatches = false;
                 }
             }
@@ -388,8 +341,8 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         ryml::ConstNodeRef flagsNode = root["flags"];
         if (flagsNode.is_map()) {
             for (ryml::ConstNodeRef flagNode : flagsNode.children()) {
-                std::string key = toStdString(flagNode.key());
-                bool value = readBool(flagsNode, key.c_str(), false);
+                std::string key = Util::toStdString(flagNode.key());
+                bool value = Util::readBool(flagsNode, key.c_str(), false);
                 flags[key] = value;
             }
         }
@@ -400,8 +353,8 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         if (overlaysNode.is_seq()) {
             for (ryml::ConstNodeRef overlayNode : overlaysNode.children()) {
                 OverlayConfig overlay;
-                overlay.path = readString(overlayNode, "path", "");
-                overlay.when = readString(overlayNode, "when", "");
+                overlay.path = Util::readString(overlayNode, "path", "");
+                overlay.when = Util::readString(overlayNode, "when", "");
                 if (!overlay.path.empty()) {
                     overlays.push_back(std::move(overlay));
                 }

@@ -2,6 +2,7 @@
 
 #include "Rigel/Asset/Types.h"
 #include "ResourceRegistry.h"
+#include "Rigel/Util/Yaml.h"
 
 #include <glm/vec3.hpp>
 #include <ryml.hpp>
@@ -36,33 +37,6 @@ std::string stripAssetsPrefix(std::string_view path) {
     return std::string(path);
 }
 
-bool readBool(ryml::ConstNodeRef node, const char* key, bool fallback) {
-    if (!node.readable() || !node.has_child(key)) {
-        return fallback;
-    }
-    std::string value;
-    node[key] >> value;
-    return value == "true" || value == "yes" || value == "1";
-}
-
-int readInt(ryml::ConstNodeRef node, const char* key, int fallback) {
-    if (!node.readable() || !node.has_child(key)) {
-        return fallback;
-    }
-    int value = fallback;
-    node[key] >> value;
-    return value;
-}
-
-float readFloat(ryml::ConstNodeRef node, const char* key, float fallback) {
-    if (!node.readable() || !node.has_child(key)) {
-        return fallback;
-    }
-    float value = fallback;
-    node[key] >> value;
-    return value;
-}
-
 bool readVec3(ryml::ConstNodeRef node, const char* key, glm::vec3& value) {
     if (!node.readable() || !node.has_child(key)) {
         return false;
@@ -81,19 +55,19 @@ void applyShadowConfig(ryml::ConstNodeRef shadowNode, ShadowConfig& shadow) {
     if (!shadowNode.readable()) {
         return;
     }
-    shadow.enabled = readBool(shadowNode, "enabled", shadow.enabled);
-    shadow.cascades = readInt(shadowNode, "cascades", shadow.cascades);
-    shadow.mapSize = readInt(shadowNode, "map_size", shadow.mapSize);
-    shadow.maxDistance = readFloat(shadowNode, "max_distance", shadow.maxDistance);
-    shadow.splitLambda = readFloat(shadowNode, "split_lambda", shadow.splitLambda);
-    shadow.bias = readFloat(shadowNode, "bias", shadow.bias);
-    shadow.normalBias = readFloat(shadowNode, "normal_bias", shadow.normalBias);
-    shadow.pcfRadius = readInt(shadowNode, "pcf_radius", shadow.pcfRadius);
-    shadow.pcfRadiusNear = readInt(shadowNode, "pcf_radius_near", shadow.pcfRadius);
-    shadow.pcfRadiusFar = readInt(shadowNode, "pcf_radius_far", shadow.pcfRadius);
-    shadow.transparentScale = readFloat(shadowNode, "transparent_scale", shadow.transparentScale);
-    shadow.strength = readFloat(shadowNode, "strength", shadow.strength);
-    shadow.fadePower = readFloat(shadowNode, "fade_power", shadow.fadePower);
+    shadow.enabled = Util::readBool(shadowNode, "enabled", shadow.enabled);
+    shadow.cascades = Util::readInt(shadowNode, "cascades", shadow.cascades);
+    shadow.mapSize = Util::readInt(shadowNode, "map_size", shadow.mapSize);
+    shadow.maxDistance = Util::readFloat(shadowNode, "max_distance", shadow.maxDistance);
+    shadow.splitLambda = Util::readFloat(shadowNode, "split_lambda", shadow.splitLambda);
+    shadow.bias = Util::readFloat(shadowNode, "bias", shadow.bias);
+    shadow.normalBias = Util::readFloat(shadowNode, "normal_bias", shadow.normalBias);
+    shadow.pcfRadius = Util::readInt(shadowNode, "pcf_radius", shadow.pcfRadius);
+    shadow.pcfRadiusNear = Util::readInt(shadowNode, "pcf_radius_near", shadow.pcfRadius);
+    shadow.pcfRadiusFar = Util::readInt(shadowNode, "pcf_radius_far", shadow.pcfRadius);
+    shadow.transparentScale = Util::readFloat(shadowNode, "transparent_scale", shadow.transparentScale);
+    shadow.strength = Util::readFloat(shadowNode, "strength", shadow.strength);
+    shadow.fadePower = Util::readFloat(shadowNode, "fade_power", shadow.fadePower);
 
     if (shadow.cascades < 1) {
         shadow.cascades = 1;
@@ -128,9 +102,9 @@ void applyTaaConfig(ryml::ConstNodeRef taaNode, TaaConfig& taa) {
         return;
     }
 
-    taa.enabled = readBool(taaNode, "enabled", taa.enabled);
-    taa.blend = readFloat(taaNode, "blend", taa.blend);
-    taa.jitterScale = readFloat(taaNode, "jitter_scale", taa.jitterScale);
+    taa.enabled = Util::readBool(taaNode, "enabled", taa.enabled);
+    taa.blend = Util::readFloat(taaNode, "blend", taa.blend);
+    taa.jitterScale = Util::readFloat(taaNode, "jitter_scale", taa.jitterScale);
 
     if (taa.blend < 0.0f) {
         taa.blend = 0.0f;
@@ -163,8 +137,8 @@ void applyRenderYaml(const char* sourceName,
     }
 
     readVec3(renderNode, "sun_direction", config.sunDirection);
-    config.transparentAlpha = readFloat(renderNode, "transparent_alpha", config.transparentAlpha);
-    config.renderDistance = readFloat(renderNode, "render_distance", config.renderDistance);
+    config.transparentAlpha = Util::readFloat(renderNode, "transparent_alpha", config.transparentAlpha);
+    config.renderDistance = Util::readFloat(renderNode, "render_distance", config.renderDistance);
 
     if (renderNode.has_child("shadow")) {
         applyShadowConfig(renderNode["shadow"], config.shadow);

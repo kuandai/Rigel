@@ -3,6 +3,7 @@
 #include "Rigel/Asset/TextureLoader.h"
 #include "Rigel/Asset/ShaderLoader.h"
 #include "ResourceRegistry.h"
+#include "Rigel/Util/Ryml.h"
 
 #include <ryml.hpp>
 #include <ryml_std.hpp>
@@ -12,13 +13,6 @@
 #include <stb_image.h>
 
 namespace Rigel::Asset {
-
-namespace {
-    // Helper to convert csubstr to std::string
-    std::string toStdString(ryml::csubstr s) {
-        return std::string(s.data(), s.size());
-    }
-}
 
 // AssetEntry convenience methods
 std::optional<std::string> AssetManager::AssetEntry::getString(const std::string& key) const {
@@ -75,11 +69,11 @@ void AssetManager::loadManifest(const std::string& path) {
 
     // Iterate categories (raw, textures, shaders, etc.)
     for (ryml::ConstNodeRef category : assets.children()) {
-        std::string categoryName = toStdString(category.key());
+        std::string categoryName = Util::toStdString(category.key());
 
         // Iterate assets in category
         for (ryml::ConstNodeRef assetNode : category.children()) {
-            std::string assetName = toStdString(assetNode.key());
+            std::string assetName = Util::toStdString(assetNode.key());
 
             AssetEntry entry;
             entry.category = categoryName;

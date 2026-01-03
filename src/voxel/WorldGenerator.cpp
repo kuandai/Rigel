@@ -2,6 +2,7 @@
 
 #include "Rigel/Voxel/DensityFunction.h"
 #include "Rigel/Voxel/Noise.h"
+#include "Rigel/Voxel/WorldGenStages.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,16 +11,6 @@
 namespace Rigel::Voxel {
 
 namespace {
-constexpr const char* kPipelineStages[] = {
-    "climate_global",
-    "climate_local",
-    "biome_resolve",
-    "terrain_density",
-    "caves",
-    "surface_rules",
-    "structures",
-    "post_process"
-};
 constexpr const char* kDefaultWaterBlock = "rigel:water";
 constexpr const char* kDefaultSandBlock = "rigel:sand";
 constexpr int kClimateColumnCount = Chunk::SIZE * Chunk::SIZE;
@@ -1000,7 +991,7 @@ void WorldGenerator::registerDefaultStages() {
 void WorldGenerator::rebuildStages() {
     m_stages.clear();
 
-    for (const char* stageName : kPipelineStages) {
+    for (const char* stageName : kWorldGenPipelineStages) {
         if (!isStageEnabled(stageName)) {
             continue;
         }

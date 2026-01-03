@@ -2,18 +2,13 @@
 #include "Rigel/Asset/ShaderCompiler.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Asset/Types.h"
+#include "Rigel/Util/Ryml.h"
 
 #include <ryml_std.hpp>
 #include <spdlog/spdlog.h>
 #include <unordered_set>
 
 namespace Rigel::Asset {
-
-namespace {
-    std::string toStdString(ryml::csubstr s) {
-        return std::string(s.data(), s.size());
-    }
-}
 
 std::optional<std::string> ShaderLoader::getString(ryml::ConstNodeRef config, const char* key) {
     if (!config.readable() || !config.has_child(ryml::to_csubstr(key))) {
@@ -34,7 +29,7 @@ void ShaderLoader::extractDefines(
 
     ryml::ConstNodeRef definesNode = node["defines"];
     for (ryml::ConstNodeRef child : definesNode.children()) {
-        std::string key = toStdString(child.key());
+        std::string key = Util::toStdString(child.key());
         std::string value;
         child >> value;
         defines[key] = value;

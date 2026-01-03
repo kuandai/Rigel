@@ -1,4 +1,5 @@
 #include "Rigel/Voxel/BlockLoader.h"
+#include "Rigel/Util/Ryml.h"
 
 #include <spdlog/spdlog.h>
 #include <ryml.hpp>

@@ -6,6 +6,7 @@
 
 #include <unordered_map>
 #include <memory>
+#include <Rigel/Util/SpatialHash.h>
 
 namespace Rigel::Entity {
 
@@ -21,11 +22,7 @@ struct EntityRegionCoord {
 
 struct EntityRegionCoordHash {
     size_t operator()(const EntityRegionCoord& coord) const noexcept {
-        return std::hash<int64_t>{}(
-            (static_cast<int64_t>(coord.x) * 73856093) ^
-            (static_cast<int64_t>(coord.y) * 19349663) ^
-            (static_cast<int64_t>(coord.z) * 83492791)
-        );
+        return Rigel::Util::spatialHash3D(coord.x, coord.y, coord.z);
     }
 };
 

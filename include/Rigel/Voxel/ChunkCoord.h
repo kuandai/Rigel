@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <glm/vec3.hpp>
+#include <Rigel/Util/SpatialHash.h>
 
 namespace Rigel::Voxel {
 
@@ -73,12 +74,7 @@ struct ChunkCoord {
  */
 struct ChunkCoordHash {
     std::size_t operator()(const ChunkCoord& c) const {
-        // Interleaved hashing for spatial coherence
-        return std::hash<int64_t>{}(
-            (static_cast<int64_t>(c.x) * 73856093) ^
-            (static_cast<int64_t>(c.y) * 19349663) ^
-            (static_cast<int64_t>(c.z) * 83492791)
-        );
+        return Rigel::Util::spatialHash3D(c.x, c.y, c.z);
     }
 };
 

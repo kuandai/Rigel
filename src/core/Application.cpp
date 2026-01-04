@@ -1690,8 +1690,8 @@ void Application::run() {
 
             if (useTaa) {
                 glm::mat4 viewProjection = projection * view;
-                glm::mat4 invViewProjection = glm::inverse(viewProjection);
                 glm::mat4 viewProjectionNoJitter = projectionNoJitter * view;
+                glm::mat4 invViewProjection = glm::inverse(viewProjectionNoJitter);
                 glm::vec2 jitterUv = jitter * 0.5f;
                 m_impl->resolveTaa(invViewProjection,
                                    viewProjectionNoJitter,

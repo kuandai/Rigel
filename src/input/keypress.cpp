@@ -3,7 +3,7 @@
 
 #include <spdlog/spdlog.h>
 
-namespace Rigel {
+namespace Rigel::Input {
 
 // Bitwise and w/ keystate != 0
 const uint8_t PRESSED_BITMASK = 0x01,
@@ -65,4 +65,4 @@ void keyupdate() {
     }
 }
 
-} // namespace Rigel
+} // namespace Rigel::Input

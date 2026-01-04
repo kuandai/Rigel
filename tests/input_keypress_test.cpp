@@ -3,7 +3,7 @@
 #include "Rigel/input/keypress.h"
 #include <GLFW/glfw3.h>
 
-using namespace Rigel;
+using namespace Rigel::Input;
 
 TEST_CASE(Keypress_Transitions) {
     keyCallback(nullptr, GLFW_KEY_A, 0, GLFW_PRESS, 0);

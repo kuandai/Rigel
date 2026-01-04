@@ -7,7 +7,7 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace Rigel {
+namespace Rigel::Input {
 
 class InputBindings : public Asset::AssetBase {
 public:
@@ -27,4 +27,4 @@ private:
     std::unordered_map<std::string, std::optional<int>> m_bindings;
 };
 
-} // namespace Rigel
+} // namespace Rigel::Input

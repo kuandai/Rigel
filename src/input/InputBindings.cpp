@@ -1,6 +1,6 @@
 #include "Rigel/input/InputBindings.h"
 
-namespace Rigel {
+namespace Rigel::Input {
 
 void InputBindings::bind(const std::string& action, int key) {
     m_bindings[action] = key;
@@ -31,4 +31,4 @@ std::optional<int> InputBindings::keyFor(std::string_view action) const {
     return it->second;
 }
 
-} // namespace Rigel
+} // namespace Rigel::Input

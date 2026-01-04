@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace Rigel {
+namespace Rigel::Input {
 
 class InputListener {
 public:
@@ -39,4 +39,4 @@ private:
     std::vector<InputListener*> m_listeners;
 };
 
-} // namespace Rigel
+} // namespace Rigel::Input

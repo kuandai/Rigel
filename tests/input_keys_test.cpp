@@ -3,7 +3,7 @@
 #include "Rigel/input/keys.h"
 #include <GLFW/glfw3.h>
 
-using namespace Rigel;
+using namespace Rigel::Input;
 
 TEST_CASE(KeyNames_KnownAndInvalid) {
     CHECK_EQ(std::string(getKeyName(GLFW_KEY_SPACE)), "SPACE");

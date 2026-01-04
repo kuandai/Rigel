@@ -1,7 +1,7 @@
 #pragma once
 
-namespace Rigel {
+namespace Rigel::Input {
 
 char* getKeyName(int keycode);
 
-} // namespace Rigel
+} // namespace Rigel::Input

@@ -4,7 +4,7 @@
 
 #include <string_view>
 
-namespace Rigel {
+namespace Rigel::Input {
 
 class InputBindingsLoader : public Asset::IAssetLoader {
 public:
@@ -12,4 +12,4 @@ public:
     std::shared_ptr<Asset::AssetBase> load(const Asset::LoadContext& ctx) override;
 };
 
-} // namespace Rigel
+} // namespace Rigel::Input

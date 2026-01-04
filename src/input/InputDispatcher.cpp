@@ -3,7 +3,7 @@
 
 #include <algorithm>
 
-namespace Rigel {
+namespace Rigel::Input {
 
 std::optional<int> InputDispatcher::resolveKey(std::string_view action) const {
     if (!m_bindings) {
@@ -69,4 +69,4 @@ bool InputDispatcher::isActionJustReleased(std::string_view action) const {
     return key && isKeyJustReleased(*key);
 }
 
-} // namespace Rigel
+} // namespace Rigel::Input

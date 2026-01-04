@@ -1,7 +1,7 @@
 #include <Rigel/input/keys.h>
 #include <GLFW/glfw3.h>
 
-namespace Rigel {
+namespace Rigel::Input {
 
 // GLFW key names array, indexed by keycode
 const char* glfw_key_names[349] = {
@@ -364,4 +364,4 @@ char* getKeyName(int keycode) {
     return const_cast<char*>(glfw_key_names[keycode]);
 }
 
-} // namespace Rigel
+} // namespace Rigel::Input

@@ -7,7 +7,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace Rigel {
+namespace Rigel::Input {
 
 namespace {
 std::string normalizeKeyName(std::string_view name) {
@@ -168,4 +168,4 @@ std::shared_ptr<Asset::AssetBase> InputBindingsLoader::load(const Asset::LoadCon
     return bindings;
 }
 
-} // namespace Rigel
+} // namespace Rigel::Input

@@ -45,6 +45,7 @@ public:
     void setPosition(float x, float y, float z);
 
     void setVelocity(const glm::vec3& vel) { m_velocity = vel; }
+    void setViewDirection(const glm::vec3& viewDir) { m_viewDirection = viewDir; }
     void accelerate(const glm::vec3& accel) { m_acceleration += accel; }
     void accelerate(float x, float y, float z) { m_acceleration += glm::vec3(x, y, z); }
 

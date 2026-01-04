@@ -69,6 +69,12 @@ void WorldEntities::forEach(const std::function<void(Entity&)>& fn) {
     }
 }
 
+void WorldEntities::forEach(const std::function<void(const Entity&)>& fn) const {
+    for (const auto& [_, entity] : m_entities) {
+        fn(*entity);
+    }
+}
+
 void WorldEntities::tick(float dt) {
     if (!m_world) {
         return;

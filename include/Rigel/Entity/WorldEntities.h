@@ -23,6 +23,7 @@ public:
     const Entity* get(const EntityId& id) const;
 
     void forEach(const std::function<void(Entity&)>& fn);
+    void forEach(const std::function<void(const Entity&)>& fn) const;
     void tick(float dt);
     void clear();
 

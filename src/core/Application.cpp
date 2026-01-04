@@ -1,7 +1,9 @@
 #include "Rigel/Application.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
+#include "Rigel/Entity/EntityFactory.h"
 #include "Rigel/Entity/EntityModelLoader.h"
+#include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Persistence/Backends/CR/CRChunkData.h"
 #include "Rigel/Persistence/Backends/CR/CRChunkMapping.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
@@ -53,6 +55,7 @@ constexpr int kFrameGraphSamples = 180;
 constexpr float kFrameGraphMaxMs = 50.0f;
 constexpr float kFrameGraphHeight = 0.28f;
 constexpr float kFrameGraphBottom = -0.95f;
+constexpr float kMaxFrameTime = 0.05f;
 constexpr const char* kDefaultZoneId = "rigel:default";
 
 std::string mainWorldRootPath(Voxel::WorldId id) {
@@ -72,38 +75,86 @@ bool parseRegionFilename(const std::string& name, int& rx, int& ry, int& rz) {
     return std::sscanf(name.c_str(), "region_%d_%d_%d.cosmicreach", &rx, &ry, &rz) == 3;
 }
 
+bool parseEntityRegionFilename(const std::string& name, int& rx, int& ry, int& rz) {
+    return std::sscanf(name.c_str(), "entityRegion_%d_%d_%d.crbin", &rx, &ry, &rz) == 3;
+}
+
 void loadWorldFromDisk(Voxel::World& world,
+                       Asset::AssetManager& assets,
                        Persistence::PersistenceService& service,
                        Persistence::PersistenceContext context,
                        uint32_t worldGenVersion) {
     namespace fs = std::filesystem;
 
     fs::path regionDir = fs::path(Persistence::Backends::CR::CRPaths::zoneRoot(kDefaultZoneId, context)) / "regions";
-    if (!fs::exists(regionDir)) {
-        return;
-    }
-
     world.clear();
     world.chunkManager().clearDirtyFlags();
 
-    for (const auto& entry : fs::directory_iterator(regionDir)) {
-        if (!entry.is_regular_file()) {
-            continue;
+    if (fs::exists(regionDir)) {
+        for (const auto& entry : fs::directory_iterator(regionDir)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            int rx = 0;
+            int ry = 0;
+            int rz = 0;
+            if (!parseRegionFilename(entry.path().filename().string(), rx, ry, rz)) {
+                continue;
+            }
+            Persistence::RegionKey key{std::string(kDefaultZoneId), rx, ry, rz};
+            Persistence::ChunkRegionSnapshot region = service.loadRegion(key, context);
+            for (const auto& chunk : region.chunks) {
+                Persistence::Backends::CR::decodeChunkSnapshot(
+                    chunk,
+                    world.chunkManager(),
+                    world.blockRegistry(),
+                    worldGenVersion);
+            }
         }
-        int rx = 0;
-        int ry = 0;
-        int rz = 0;
-        if (!parseRegionFilename(entry.path().filename().string(), rx, ry, rz)) {
-            continue;
-        }
-        Persistence::RegionKey key{std::string(kDefaultZoneId), rx, ry, rz};
-        Persistence::ChunkRegionSnapshot region = service.loadRegion(key, context);
-        for (const auto& chunk : region.chunks) {
-            Persistence::Backends::CR::decodeChunkSnapshot(
-                chunk,
-                world.chunkManager(),
-                world.blockRegistry(),
-                worldGenVersion);
+    }
+
+    fs::path entityDir = fs::path(Persistence::Backends::CR::CRPaths::zoneRoot(kDefaultZoneId, context)) / "entities";
+    if (fs::exists(entityDir)) {
+        std::vector<Entity::EntityPersistedChunk> chunks;
+        for (const auto& entry : fs::directory_iterator(entityDir)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            int rx = 0;
+            int ry = 0;
+            int rz = 0;
+            if (!parseEntityRegionFilename(entry.path().filename().string(), rx, ry, rz)) {
+                continue;
+            }
+            Persistence::EntityRegionKey key{std::string(kDefaultZoneId), rx, ry, rz};
+            Persistence::EntityRegionSnapshot region = service.loadEntities(key, context);
+            if (region.payload.empty()) {
+                continue;
+            }
+            if (!Entity::decodeEntityRegionPayload(region.payload, chunks)) {
+                spdlog::warn("Entity region {} {} {} failed to decode", rx, ry, rz);
+                continue;
+            }
+            for (const auto& chunk : chunks) {
+                for (const auto& saved : chunk.entities) {
+                    std::unique_ptr<Entity::Entity> entity;
+                    if (Entity::EntityFactory::instance().hasType(saved.typeId)) {
+                        entity = Entity::EntityFactory::instance().create(saved.typeId);
+                    }
+                    if (!entity) {
+                        entity = std::make_unique<Entity::Entity>(saved.typeId);
+                    }
+                    entity->setId(saved.id);
+                    entity->setPosition(saved.position);
+                    entity->setVelocity(saved.velocity);
+                    entity->setViewDirection(saved.viewDirection);
+                    if (!saved.modelId.empty() && assets.exists(saved.modelId)) {
+                        auto model = assets.get<Entity::EntityModelAsset>(saved.modelId);
+                        entity->setModel(std::move(model));
+                    }
+                    world.entities().spawn(std::move(entity));
+                }
+            }
         }
     }
 }
@@ -174,6 +225,87 @@ void saveWorldToDisk(const Voxel::World& world,
         }
 
         service.saveRegion(out, context);
+    }
+
+    struct EntityRegionSave {
+        Persistence::EntityRegionKey key;
+        std::unordered_map<Voxel::ChunkCoord, size_t, Voxel::ChunkCoordHash> chunkIndex;
+        std::vector<Entity::EntityPersistedChunk> chunks;
+    };
+
+    std::unordered_map<Entity::EntityRegionCoord,
+                       EntityRegionSave,
+                       Entity::EntityRegionCoordHash> entityRegions;
+
+    world.entities().forEach([&](const Entity::Entity& entity) {
+        if (entity.hasTag(Entity::EntityTags::NoSaveInChunks)) {
+            return;
+        }
+        const glm::vec3& pos = entity.position();
+        Voxel::ChunkCoord coord = Voxel::worldToChunk(
+            static_cast<int>(std::floor(pos.x)),
+            static_cast<int>(std::floor(pos.y)),
+            static_cast<int>(std::floor(pos.z))
+        );
+        Entity::EntityRegionCoord regionCoord = Entity::chunkToRegion(coord);
+        auto& region = entityRegions[regionCoord];
+        if (region.chunks.empty() && region.chunkIndex.empty()) {
+            region.key = Persistence::EntityRegionKey{std::string(kDefaultZoneId),
+                                                      regionCoord.x,
+                                                      regionCoord.y,
+                                                      regionCoord.z};
+        }
+        auto it = region.chunkIndex.find(coord);
+        if (it == region.chunkIndex.end()) {
+            Entity::EntityPersistedChunk chunk;
+            chunk.coord = coord;
+            region.chunks.push_back(std::move(chunk));
+            size_t index = region.chunks.size() - 1;
+            region.chunkIndex.emplace(coord, index);
+            it = region.chunkIndex.find(coord);
+        }
+        Entity::EntityPersistedEntity saved;
+        saved.typeId = entity.typeId();
+        saved.id = entity.id();
+        saved.position = entity.position();
+        saved.velocity = entity.velocity();
+        saved.viewDirection = entity.viewDirection();
+        if (entity.model()) {
+            saved.modelId = entity.model().id();
+        }
+        region.chunks[it->second].entities.push_back(std::move(saved));
+    });
+
+    namespace fs = std::filesystem;
+    fs::path entityDir = fs::path(Persistence::Backends::CR::CRPaths::zoneRoot(kDefaultZoneId, context)) / "entities";
+    if (fs::exists(entityDir)) {
+        for (const auto& entry : fs::directory_iterator(entityDir)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            int rx = 0;
+            int ry = 0;
+            int rz = 0;
+            if (!parseEntityRegionFilename(entry.path().filename().string(), rx, ry, rz)) {
+                continue;
+            }
+            Entity::EntityRegionCoord coord{rx, ry, rz};
+            if (entityRegions.find(coord) != entityRegions.end()) {
+                continue;
+            }
+            EntityRegionSave empty;
+            empty.key = Persistence::EntityRegionKey{std::string(kDefaultZoneId), rx, ry, rz};
+            entityRegions.emplace(coord, std::move(empty));
+        }
+    }
+
+    for (auto& [coord, region] : entityRegions) {
+        Persistence::EntityRegionSnapshot snapshot;
+        snapshot.key = region.key;
+        if (!region.chunks.empty()) {
+            snapshot.payload = Entity::encodeEntityRegionPayload(region.chunks);
+        }
+        service.saveEntities(snapshot, context);
     }
 
     Persistence::WorldSnapshot worldSnapshot;
@@ -506,6 +638,8 @@ struct Application::Impl {
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
     double lastTime = 0.0;
+    bool windowFocused = true;
+    bool pendingTimeReset = false;
     bool benchmarkEnabled = false;
     double benchmarkStartTime = 0.0;
     Voxel::ChunkBenchmarkStats benchmark;
@@ -1339,6 +1473,8 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             return;
         }
 
+        impl->windowFocused = focused != 0;
+        impl->pendingTimeReset = true;
         if (focused) {
             impl->setCursorCaptured(true);
         } else {
@@ -1409,10 +1545,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             makeWorldConfigProvider(m_impl->assets, m_impl->activeWorldId);
         Voxel::WorldGenConfig config = configProvider.loadConfig();
         if (config.solidBlock.empty()) {
-            config.solidBlock = "rigel:stone";
+            config.solidBlock = "base:stone_shale";
         }
         if (config.surfaceBlock.empty()) {
-            config.surfaceBlock = "rigel:grass";
+            config.surfaceBlock = "base:grass";
         }
 
         m_impl->world = &m_impl->worldSet.createWorld(m_impl->activeWorldId);
@@ -1429,6 +1565,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->worldView->setGenerator(generator);
 
         loadWorldFromDisk(*m_impl->world,
+                          m_impl->assets,
                           m_impl->worldSet.persistenceService(),
                           m_impl->worldSet.persistenceContext(m_impl->activeWorldId),
                           generator->config().world.version);
@@ -1443,7 +1580,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         auto placeId = m_impl->world->blockRegistry().findByIdentifier(config.solidBlock);
         if (!placeId) {
-            placeId = m_impl->world->blockRegistry().findByIdentifier("rigel:stone");
+            placeId = m_impl->world->blockRegistry().findByIdentifier("base:stone_shale");
         }
         if (placeId) {
             m_impl->placeBlock = *placeId;
@@ -1553,13 +1690,21 @@ void Application::run() {
         double now = glfwGetTime();
         float deltaTime = static_cast<float>(now - m_impl->lastTime);
         m_impl->lastTime = now;
-        m_impl->recordFrameTime(deltaTime);
 
         // Frame setup
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
 
         // Flush event queue
         glfwPollEvents();
+        if (m_impl->pendingTimeReset) {
+            m_impl->lastTime = glfwGetTime();
+            deltaTime = 0.0f;
+            m_impl->pendingTimeReset = false;
+        }
+        if (deltaTime > kMaxFrameTime) {
+            deltaTime = kMaxFrameTime;
+        }
+        m_impl->recordFrameTime(deltaTime);
         Rigel::keyupdate();
         m_impl->inputDispatcher.update();
 
@@ -1575,8 +1720,8 @@ void Application::run() {
                 glm::vec3 spawnPos = m_impl->cameraPos + m_impl->cameraForward * 2.0f;
                 spawnPos.y += 0.5f;
                 entity->setPosition(spawnPos);
-                if (m_impl->assets.exists("entity_models/demo_cube")) {
-                    auto model = m_impl->assets.get<Entity::EntityModelAsset>("entity_models/demo_cube");
+                if (m_impl->assets.exists("entity_models/model_drone_interceptor")) {
+                    auto model = m_impl->assets.get<Entity::EntityModelAsset>("entity_models/model_drone_interceptor");
                     entity->setModel(std::move(model));
                 }
                 Entity::EntityId id = m_impl->world->entities().spawn(std::move(entity));

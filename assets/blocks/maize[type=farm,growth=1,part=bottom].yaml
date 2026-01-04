@@ -1,0 +1,8 @@
+id: maize[type=farm,growth=1,part=bottom]
+model: cube
+opaque: false
+solid: false
+layer: transparent
+light_attenuation: 2
+textures:
+  all: textures/blocks/crops/maize/maize_bottom_growth_1.png

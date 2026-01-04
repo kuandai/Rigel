@@ -1,0 +1,7 @@
+id: bricks
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/bricks.png

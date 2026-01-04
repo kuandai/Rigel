@@ -1,0 +1,7 @@
+id: wood_planks
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/wood_planks.png

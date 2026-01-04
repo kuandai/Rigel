@@ -1,0 +1,9 @@
+id: workbench
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  top: textures/blocks/machines/workbench_top.png
+  bottom: textures/blocks/machines/workbench_bottom.png
+  sides: textures/blocks/machines/workbench_side.png

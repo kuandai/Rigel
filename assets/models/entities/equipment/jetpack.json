@@ -1,0 +1,67 @@
+{
+  "id": "equipment/jetpack",
+  "lighting": "unlit",
+  "texture_width": 16,
+  "texture_height": 16,
+  "textures": {
+    "diffuse": "textures/items/equipment/jetpack.png"
+  },
+  "bones": [
+    {
+      "name": "chest",
+      "pivot": [
+        0,
+        18,
+        0
+      ],
+      "parent": "hips",
+      "cubes": [
+        {
+          "origin": [
+            -8,
+            11,
+            0
+          ],
+          "size": [
+            16,
+            16,
+            6
+          ],
+          "uv": [
+            -6,
+            -6
+          ],
+          "pivot": [
+            0,
+            19,
+            3
+          ],
+          "rotation": [
+            0,
+            180,
+            0
+          ],
+          "inflate": -3
+        }
+      ]
+    },
+    {
+      "name": "hips",
+      "pivot": [
+        0,
+        16,
+        0
+      ],
+      "parent": "root"
+    },
+    {
+      "name": "root",
+      "pivot": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "model_scale": 0.0625
+}

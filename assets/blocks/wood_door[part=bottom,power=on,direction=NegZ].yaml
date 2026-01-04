@@ -1,0 +1,9 @@
+id: wood_door[part=bottom,power=on,direction=NegZ]
+model: cube
+opaque: false
+solid: true
+layer: transparent
+textures:
+  top: textures/blocks/furniture/wood_door_bottom.png
+  bottom: textures/blocks/furniture/wood_door_bottom.png
+  sides: textures/blocks/furniture/wood_door_bottom.png

@@ -1,0 +1,7 @@
+id: snow[type=bricks]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/snow_bricks.png

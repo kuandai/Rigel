@@ -1,0 +1,8 @@
+id: recycler[direction=NegZ]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  pos_x: textures/blocks/machines/recycler_front.png
+  pos_y: textures/blocks/machines/machine_top.png

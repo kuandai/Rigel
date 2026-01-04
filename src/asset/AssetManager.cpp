@@ -12,6 +12,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include <algorithm>
+#include <string_view>
+
 namespace Rigel::Asset {
 
 // AssetEntry convenience methods
@@ -201,6 +204,116 @@ void AssetManager::loadManifest(const std::string& path) {
             }
         }
     }
+
+    auto startsWith = [](std::string_view value, std::string_view prefix) {
+        return value.size() >= prefix.size() &&
+               value.compare(0, prefix.size(), prefix) == 0;
+    };
+
+    auto endsWith = [](std::string_view value, std::string_view suffix) {
+        return value.size() >= suffix.size() &&
+               value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+
+    auto readEmbeddedId = [&](const std::string& entryPath) -> std::optional<std::string> {
+        if (!endsWith(entryPath, ".json") && !endsWith(entryPath, ".yaml") &&
+            !endsWith(entryPath, ".yml")) {
+            return std::nullopt;
+        }
+        try {
+            auto data = ResourceRegistry::Get(entryPath);
+            ryml::Tree tree = ryml::parse_in_arena(
+                ryml::to_csubstr(entryPath.c_str()),
+                ryml::csubstr(data.data(), data.size())
+            );
+            ryml::ConstNodeRef root = tree.rootref();
+            if (root.has_child("id")) {
+                std::string id;
+                root["id"] >> id;
+                if (!id.empty()) {
+                    return id;
+                }
+            }
+            if (root.has_child("name")) {
+                std::string name;
+                root["name"] >> name;
+                if (!name.empty()) {
+                    return name;
+                }
+            }
+        } catch (const std::exception& e) {
+            spdlog::warn("AssetManager: failed to read id from '{}': {}", entryPath, e.what());
+        }
+        return std::nullopt;
+    };
+
+    auto registerEmbeddedCategory = [&](const std::string& category,
+                                        std::string_view prefix,
+                                        std::string_view primarySuffix,
+                                        std::string_view secondarySuffix = {},
+                                        bool stripSuffix = true) {
+        std::vector<std::string> paths;
+        for (std::string_view pathView : ResourceRegistry::Paths()) {
+            if (!startsWith(pathView, prefix)) {
+                continue;
+            }
+            if (!endsWith(pathView, primarySuffix) &&
+                (secondarySuffix.empty() || !endsWith(pathView, secondarySuffix))) {
+                continue;
+            }
+            paths.emplace_back(pathView);
+        }
+        std::sort(paths.begin(), paths.end());
+
+        for (const auto& entryPath : paths) {
+            std::string name;
+            if (auto id = readEmbeddedId(entryPath)) {
+                name = *id;
+            } else {
+                std::string_view relative(entryPath);
+                relative.remove_prefix(prefix.size());
+            if (stripSuffix) {
+                if (endsWith(relative, ".animation.json")) {
+                    relative.remove_suffix(std::string_view(".animation.json").size());
+                } else if (endsWith(relative, primarySuffix)) {
+                    relative.remove_suffix(primarySuffix.size());
+                } else if (!secondarySuffix.empty() && endsWith(relative, secondarySuffix)) {
+                    relative.remove_suffix(secondarySuffix.size());
+                }
+            }
+            name.assign(relative);
+        }
+
+            if (name.empty()) {
+                spdlog::warn("AssetManager: skipped embedded {} entry with empty id ('{}')",
+                             category, entryPath);
+                continue;
+            }
+
+            std::string fullId = category + "/" + name;
+            if (m_entries.find(fullId) != m_entries.end()) {
+                continue;
+            }
+
+            AssetEntry entry;
+            entry.category = category;
+            ryml::Tree tree;
+            ryml::NodeRef root = tree.rootref();
+            root |= ryml::MAP;
+            root[ryml::to_csubstr("path")] =
+                tree.copy_to_arena(ryml::to_csubstr(entryPath));
+            entry.configTree = std::move(tree);
+            entry.config = entry.configTree.rootref();
+            auto [it, inserted] = m_entries.emplace(std::move(fullId), std::move(entry));
+            if (inserted) {
+                it->second.config = it->second.configTree.rootref();
+            }
+        }
+    };
+
+    registerEmbeddedCategory("entity_models", "models/entities/", ".json", ".yaml", true);
+    registerEmbeddedCategory("entity_anims", "animations/entities/", ".json", ".yaml", true);
+    registerEmbeddedCategory("textures", "textures/", ".png", {}, false);
 
     spdlog::info("Loaded {} assets from manifest", m_entries.size());
 }

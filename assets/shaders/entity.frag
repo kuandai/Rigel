@@ -101,6 +101,9 @@ vec3 sampleShadowColor(int cascade, float diffuse, float radius) {
 
 void main() {
     vec4 texColor = texture(u_diffuse, v_uv);
+    if (texColor.a <= 0.0) {
+        discard;
+    }
     vec3 baseColor = texColor.rgb * u_tintColor.rgb;
 
     float diffuse = max(dot(normalize(v_normal), normalize(u_sunDirection)), 0.0);

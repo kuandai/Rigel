@@ -1,0 +1,8 @@
+id: crusher[direction=NegZ]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  pos_x: textures/blocks/machines/crusher_front.png
+  pos_y: textures/blocks/machines/crusher_top.png

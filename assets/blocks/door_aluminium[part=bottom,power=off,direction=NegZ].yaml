@@ -1,0 +1,10 @@
+id: door_aluminium[part=bottom,power=off,direction=NegZ]
+model: cube
+opaque: false
+solid: true
+layer: transparent
+light_attenuation: 0
+textures:
+  top: textures/blocks/furniture/aluminium_door_bottom.png
+  bottom: textures/blocks/furniture/aluminium_door_bottom.png
+  sides: textures/blocks/furniture/aluminium_door_bottom.png

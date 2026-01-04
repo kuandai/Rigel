@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EntityAnimation.h"
+#include "Aabb.h"
 
 #include <Rigel/Asset/AssetLoader.h>
 #include <Rigel/Asset/Handle.h>
@@ -9,6 +10,7 @@
 #include <glm/vec3.hpp>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -22,6 +24,11 @@ struct ShaderAsset;
 namespace Rigel::Entity {
 
 class IEntityModelInstance;
+
+enum class EntityLightingMode {
+    Lit,
+    Unlit
+};
 
 class IEntityModel {
 public:
@@ -62,6 +69,9 @@ struct EntityModelAsset : public Asset::AssetBase,
     float texWidth = 16.0f;
     float texHeight = 16.0f;
     float modelScale = 1.0f;
+    glm::vec3 renderOffset{0.0f};
+    EntityLightingMode lighting = EntityLightingMode::Lit;
+    std::optional<Aabb> hitbox;
     std::unordered_map<std::string, std::string> textures;
     std::vector<EntityBone> bones;
     std::unordered_map<std::string, size_t> boneLookup;

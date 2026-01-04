@@ -1,0 +1,8 @@
+id: leaves_poplar[type=permanent]
+model: cube
+opaque: false
+solid: true
+layer: transparent
+light_attenuation: 2
+textures:
+  all: textures/blocks/foliage/leaves_poplar.png

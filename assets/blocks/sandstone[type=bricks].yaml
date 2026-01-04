@@ -1,0 +1,7 @@
+id: sandstone[type=bricks]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/stone/sandstone_bricks.png

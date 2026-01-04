@@ -1,5 +1,4 @@
-namespace: rigel
-
+namespace: base
 assets:
   raw:
     world_config:
@@ -8,7 +7,7 @@ assets:
       path: config/render.yaml
   textures:
     entity_debug:
-      path: textures/blocks/stone.png
+      path: textures/blocks/stone/stone_shale.png
       filter: nearest
   input:
     default:
@@ -22,51 +21,6 @@ assets:
         move_down: LCTRL
         sprint: LSHIFT
         exit: ESC
-  blocks:
-    stone:
-      model: cube
-      opaque: true
-      solid: true
-      layer: opaque
-      textures:
-        all: textures/blocks/stone.png
-    dirt:
-      model: cube
-      opaque: true
-      solid: true
-      layer: opaque
-      textures:
-        all: textures/blocks/dirt.png
-    grass:
-      model: cube
-      opaque: true
-      solid: true
-      layer: opaque
-      textures:
-        top: textures/blocks/grass_top.png
-        bottom: textures/blocks/dirt.png
-        sides: textures/blocks/grass_side.png
-    sand:
-      model: cube
-      opaque: true
-      solid: true
-      layer: opaque
-      textures:
-        all: textures/blocks/sand.png
-    water:
-      model: cube
-      opaque: false
-      solid: false
-      cull_same_type: true
-      layer: transparent
-      textures:
-        all: textures/blocks/water.png
-  entity_anims:
-    demo_spin:
-      path: models/entities/demo_anim.yaml
-  entity_models:
-    demo_cube:
-      path: models/entities/demo_cube.yaml
   shaders:
     voxel:
       vertex: shaders/voxel.vert
@@ -74,6 +28,9 @@ assets:
     entity:
       vertex: shaders/entity.vert
       fragment: shaders/entity.frag
+    entity_unlit:
+      vertex: shaders/entity.vert
+      fragment: shaders/entity_unlit.frag
     entity_shadow_depth:
       vertex: shaders/entity_shadow_depth.vert
       fragment: shaders/entity_shadow_depth.frag

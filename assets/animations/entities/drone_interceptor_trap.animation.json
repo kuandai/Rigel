@@ -1,0 +1,424 @@
+{
+  "id": "drone_interceptor_trap",
+  "animations": {
+    "animation.drone-interceptor-trap.set_ally": {
+      "loop": false,
+      "textures": {
+        "diffuse": {
+          "0.0": "base:textures/entities/drone_interceptor_trap_ally.png"
+        },
+        "emission": {
+          "0.0": "base:textures/entities/drone_interceptor_trap_ally_emissive.png"
+        }
+      }
+    },
+    "animation.drone-interceptor-trap.set_enemy": {
+      "loop": false,
+      "textures": {
+        "diffuse": {
+          "0.0": "base:textures/entities/drone_interceptor_trap.png"
+        },
+        "emission": {
+          "0.0": "base:textures/entities/drone_interceptor_trap_emissive.png"
+        }
+      }
+    },
+    "animation.drone-interceptor-trap.idle": {
+      "loop": true,
+      "bones": {
+        "inner_claw_east": {
+          "rotation": [
+            0,
+            0,
+            -2.5
+          ]
+        },
+        "outer_claw_east": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_east_out": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "inner_claw_east_top": {
+          "rotation": [
+            0,
+            0,
+            -45
+          ]
+        },
+        "inner_claw_south": {
+          "rotation": [
+            0,
+            0,
+            -2.5
+          ]
+        },
+        "inner_claw_south_top": {
+          "rotation": [
+            0,
+            0,
+            -80
+          ]
+        },
+        "outer_claw_south": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_south_out": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "inner_claw_west": {
+          "rotation": [
+            0,
+            0,
+            -2.5
+          ]
+        },
+        "inner_claw_west_top": {
+          "rotation": [
+            0,
+            0,
+            -45
+          ]
+        },
+        "outer_claw_west": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_west_out": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_north_out": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_north": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "inner_claw_north": {
+          "rotation": [
+            0,
+            0,
+            -2.5
+          ]
+        },
+        "inner_claw_north_top": {
+          "rotation": [
+            0,
+            0,
+            -80
+          ]
+        }
+      }
+    },
+    "animation.drone-interceptor-trap.open": {
+      "loop": false,
+      "animation_length": 1,
+      "bones": {
+        "inner_claw_east": {
+          "rotation": {
+            "0.0": [
+              0,
+              0,
+              -2.5
+            ],
+            "0.0417": [
+              0,
+              0,
+              0.19546
+            ],
+            "0.0833": [
+              0,
+              0,
+              8.22961
+            ],
+            "0.1667": [
+              0,
+              0,
+              31.77039
+            ],
+            "0.2083": [
+              0,
+              0,
+              39.80454
+            ],
+            "0.25": [
+              0,
+              0,
+              42.5
+            ]
+          }
+        },
+        "outer_claw_east": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_east_out": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "inner_claw_east_top": {
+          "rotation": [
+            0,
+            0,
+            -45
+          ]
+        },
+        "inner_claw_south": {
+          "rotation": {
+            "0.0": [
+              0,
+              0,
+              -2.5
+            ],
+            "0.0417": [
+              0,
+              0,
+              0.19546
+            ],
+            "0.0833": [
+              0,
+              0,
+              8.22961
+            ],
+            "0.1667": [
+              0,
+              0,
+              31.77039
+            ],
+            "0.2083": [
+              0,
+              0,
+              39.80454
+            ],
+            "0.25": [
+              0,
+              0,
+              42.5
+            ]
+          }
+        },
+        "inner_claw_south_top": {
+          "rotation": {
+            "0.0": [
+              0,
+              0,
+              -80
+            ],
+            "0.0417": [
+              0,
+              0,
+              -77.90353
+            ],
+            "0.0833": [
+              0,
+              0,
+              -71.65475
+            ],
+            "0.1667": [
+              0,
+              0,
+              -53.34525
+            ],
+            "0.2083": [
+              0,
+              0,
+              -47.09647
+            ],
+            "0.25": [
+              0,
+              0,
+              -45
+            ]
+          }
+        },
+        "outer_claw_south": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_south_out": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "inner_claw_west": {
+          "rotation": {
+            "0.0": [
+              0,
+              0,
+              -2.5
+            ],
+            "0.0417": [
+              0,
+              0,
+              0.19546
+            ],
+            "0.0833": [
+              0,
+              0,
+              8.22961
+            ],
+            "0.1667": [
+              0,
+              0,
+              31.77039
+            ],
+            "0.2083": [
+              0,
+              0,
+              39.80454
+            ],
+            "0.25": [
+              0,
+              0,
+              42.5
+            ]
+          }
+        },
+        "inner_claw_west_top": {
+          "rotation": [
+            0,
+            0,
+            -45
+          ]
+        },
+        "outer_claw_west": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_west_out": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_north_out": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "outer_claw_north": {
+          "rotation": [
+            0,
+            0,
+            15
+          ]
+        },
+        "inner_claw_north": {
+          "rotation": {
+            "0.0": [
+              0,
+              0,
+              -2.5
+            ],
+            "0.0417": [
+              0,
+              0,
+              0.19546
+            ],
+            "0.0833": [
+              0,
+              0,
+              8.22961
+            ],
+            "0.1667": [
+              0,
+              0,
+              31.77039
+            ],
+            "0.2083": [
+              0,
+              0,
+              39.80454
+            ],
+            "0.25": [
+              0,
+              0,
+              42.5
+            ]
+          }
+        },
+        "inner_claw_north_top": {
+          "rotation": {
+            "0.0": [
+              0,
+              0,
+              -80
+            ],
+            "0.0417": [
+              0,
+              0,
+              -77.90353
+            ],
+            "0.0833": [
+              0,
+              0,
+              -71.65475
+            ],
+            "0.1667": [
+              0,
+              0,
+              -53.34525
+            ],
+            "0.2083": [
+              0,
+              0,
+              -47.09647
+            ],
+            "0.25": [
+              0,
+              0,
+              -45
+            ]
+          }
+        }
+      }
+    }
+  }
+}

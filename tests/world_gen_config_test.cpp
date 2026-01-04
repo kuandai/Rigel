@@ -8,8 +8,8 @@ TEST_CASE(WorldGenConfig_ApplyYaml) {
     WorldGenConfig config;
     std::string yaml = R"(
 seed: 42
-solid_block: rigel:stone
-surface_block: rigel:grass
+solid_block: base:stone_shale
+surface_block: base:grass
 world:
   min_y: -32
   max_y: 128
@@ -73,7 +73,7 @@ biomes:
         humidity: 0.2
         continentalness: 0.3
       surface:
-        - block: rigel:grass
+        - block: base:grass
           depth: 1
 density_graph:
   outputs:
@@ -89,7 +89,7 @@ caves:
 structures:
   features:
     - name: boulders
-      block: rigel:stone
+      block: base:stone_shale
       chance: 0.1
       min_height: 2
       max_height: 3
@@ -131,8 +131,8 @@ generation:
     config.applyYaml("test", yaml);
 
     CHECK_EQ(config.seed, static_cast<uint32_t>(42));
-    CHECK_EQ(config.solidBlock, "rigel:stone");
-    CHECK_EQ(config.surfaceBlock, "rigel:grass");
+    CHECK_EQ(config.solidBlock, "base:stone_shale");
+    CHECK_EQ(config.surfaceBlock, "base:grass");
     CHECK_EQ(config.world.minY, -32);
     CHECK_EQ(config.world.maxY, 128);
     CHECK_EQ(config.world.seaLevel, 8);

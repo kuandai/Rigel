@@ -1,0 +1,7 @@
+id: stone_gravel
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/stone/stone_gravel.png

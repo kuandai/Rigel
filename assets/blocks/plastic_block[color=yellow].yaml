@@ -1,0 +1,7 @@
+id: plastic_block[color=yellow]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/plastics/plastic_block_yellow.png

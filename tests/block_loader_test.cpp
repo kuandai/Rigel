@@ -19,6 +19,6 @@ TEST_CASE(BlockLoader_LoadsManifestBlocks) {
         SKIP_TEST("No block definitions loaded; embedded textures may be missing");
     }
 
-    CHECK(registry.hasIdentifier("rigel:stone"));
+    CHECK(registry.hasIdentifier("base:dirt"));
     CHECK(atlas.textureCount() >= 1);
 }

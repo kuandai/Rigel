@@ -1,0 +1,7 @@
+id: sapphire_block
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/ores/sapphire/sapphire_block.png

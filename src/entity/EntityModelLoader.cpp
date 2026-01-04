@@ -50,24 +50,50 @@ void sortTrack(EntityAnimationTrack& track) {
 
 EntityAnimationTrack parseTrack(ryml::ConstNodeRef node) {
     EntityAnimationTrack track;
-    if (!node.readable() || !node.is_seq()) {
+    if (!node.readable()) {
         return track;
     }
-    for (ryml::ConstNodeRef keyframe : node.children()) {
-        if (!keyframe.is_map()) {
-            continue;
+    if (node.is_seq()) {
+        for (ryml::ConstNodeRef keyframe : node.children()) {
+            if (!keyframe.is_map()) {
+                continue;
+            }
+            EntityKeyframe frame;
+            if (keyframe.has_child("time")) {
+                keyframe["time"] >> frame.time;
+            }
+            if (keyframe.has_child("value")) {
+                readVec3(keyframe["value"], frame.value);
+            }
+            track.keys.push_back(frame);
         }
-        EntityKeyframe frame;
-        if (keyframe.has_child("time")) {
-            keyframe["time"] >> frame.time;
+    } else if (node.is_map()) {
+        for (ryml::ConstNodeRef keyframe : node.children()) {
+            if (!keyframe.is_seq()) {
+                continue;
+            }
+            EntityKeyframe frame;
+            std::string timeStr(keyframe.key().data(), keyframe.key().size());
+            try {
+                frame.time = std::stof(timeStr);
+            } catch (const std::exception&) {
+                continue;
+            }
+            if (!readVec3(keyframe, frame.value)) {
+                continue;
+            }
+            track.keys.push_back(frame);
         }
-        if (keyframe.has_child("value")) {
-            readVec3(keyframe["value"], frame.value);
-        }
-        track.keys.push_back(frame);
     }
     sortTrack(track);
     return track;
+}
+
+float trackMaxTime(const EntityAnimationTrack& track) {
+    if (track.keys.empty()) {
+        return 0.0f;
+    }
+    return track.keys.back().time;
 }
 } // namespace
 
@@ -95,6 +121,22 @@ std::shared_ptr<Asset::AssetBase> EntityModelLoader::load(const Asset::LoadConte
     if (root.has_child("model_scale")) {
         root["model_scale"] >> asset->modelScale;
     }
+    if (root.has_child("render_offset")) {
+        if (!readVec3(root["render_offset"], asset->renderOffset)) {
+            spdlog::warn("EntityModelAsset: render_offset invalid in {}", *pathOpt);
+        }
+    }
+    if (root.has_child("lighting")) {
+        std::string lighting;
+        root["lighting"] >> lighting;
+        if (lighting == "unlit") {
+            asset->lighting = EntityLightingMode::Unlit;
+        } else if (lighting == "lit") {
+            asset->lighting = EntityLightingMode::Lit;
+        } else if (!lighting.empty()) {
+            spdlog::warn("EntityModelAsset: unknown lighting mode '{}' in {}", lighting, *pathOpt);
+        }
+    }
     if (root.has_child("default_animation")) {
         root["default_animation"] >> asset->defaultAnimation;
     }
@@ -117,6 +159,18 @@ std::shared_ptr<Asset::AssetBase> EntityModelLoader::load(const Asset::LoadConte
             }
         }
     }
+    if (root.has_child("hitbox")) {
+        ryml::ConstNodeRef hitbox = root["hitbox"];
+        glm::vec3 min(0.0f);
+        glm::vec3 max(0.0f);
+        bool hasMin = hitbox.has_child("min") && readVec3(hitbox["min"], min);
+        bool hasMax = hitbox.has_child("max") && readVec3(hitbox["max"], max);
+        if (hasMin && hasMax) {
+            asset->hitbox = Aabb{min, max};
+        } else {
+            spdlog::warn("EntityModelAsset: hitbox missing min/max in {}", *pathOpt);
+        }
+    }
 
     std::unordered_map<std::string, std::string> parentNames;
 
@@ -135,6 +189,7 @@ std::shared_ptr<Asset::AssetBase> EntityModelLoader::load(const Asset::LoadConte
             }
             if (boneNode.has_child("rotation")) {
                 readVec3(boneNode["rotation"], bone.rotation);
+                bone.rotation.x *= -1.0f;
             }
             if (boneNode.has_child("scale")) {
                 readVec3(boneNode["scale"], bone.scale);
@@ -239,6 +294,9 @@ std::shared_ptr<Asset::AssetBase> EntityAnimationSetLoader::load(const Asset::Lo
         if (animNode.has_child("duration")) {
             animNode["duration"] >> animation.duration;
         }
+        if (animNode.has_child("animation_length") && animation.duration <= 0.0f) {
+            animNode["animation_length"] >> animation.duration;
+        }
         if (animNode.has_child("loop")) {
             animNode["loop"] >> animation.loop;
         }
@@ -258,6 +316,11 @@ std::shared_ptr<Asset::AssetBase> EntityAnimationSetLoader::load(const Asset::Lo
                 }
                 if (boneNode.has_child("scale")) {
                     boneAnim.scale = parseTrack(boneNode["scale"]);
+                }
+                if (animation.duration <= 0.0f) {
+                    animation.duration = std::max(animation.duration, trackMaxTime(boneAnim.position));
+                    animation.duration = std::max(animation.duration, trackMaxTime(boneAnim.rotation));
+                    animation.duration = std::max(animation.duration, trackMaxTime(boneAnim.scale));
                 }
                 animation.bones.emplace(std::move(boneName), std::move(boneAnim));
             }

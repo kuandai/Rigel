@@ -1,13 +1,49 @@
 #include "Rigel/Voxel/BlockLoader.h"
 #include "Rigel/Util/Ryml.h"
+#include "ResourceRegistry.h"
 
 #include <spdlog/spdlog.h>
 #include <ryml.hpp>
 #include <ryml_std.hpp>
 
+#include <algorithm>
+#include <string_view>
+#include <vector>
+
 namespace Rigel::Voxel {
 
 namespace {
+    ryml::Tree loadBlockConfigTree(const std::string& path) {
+        auto data = ResourceRegistry::Get(path);
+        return ryml::parse_in_arena(
+            ryml::to_csubstr(path.c_str()),
+            ryml::csubstr(data.data(), data.size())
+        );
+    }
+
+    bool startsWith(std::string_view value, std::string_view prefix) {
+        return value.size() >= prefix.size() &&
+               value.compare(0, prefix.size(), prefix) == 0;
+    }
+
+    bool endsWith(std::string_view value, std::string_view suffix) {
+        return value.size() >= suffix.size() &&
+               value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+    }
+
+    std::string blockNameFromPath(const std::string& path) {
+        static constexpr std::string_view kPrefix = "blocks/";
+        static constexpr std::string_view kSuffix = ".yaml";
+        std::string_view view(path);
+        if (startsWith(view, kPrefix)) {
+            view.remove_prefix(kPrefix.size());
+        }
+        if (endsWith(view, kSuffix)) {
+            view.remove_suffix(kSuffix.size());
+        }
+        return std::string(view);
+    }
+
     // Helper to read optional string from config
     std::optional<std::string> getOptionalString(ryml::ConstNodeRef node, const char* key) {
         if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {
@@ -37,21 +73,37 @@ size_t BlockLoader::loadFromManifest(
     size_t count = 0;
     const std::string& ns = assets.ns();
 
-    spdlog::info("Loading block definitions from manifest...");
+    spdlog::info("Loading block definitions from blocks directory...");
 
-    assets.forEachInCategory("blocks", [&](const std::string& name, const Asset::AssetManager::AssetEntry& entry) {
+    std::vector<std::string> blockPaths;
+    for (std::string_view path : ResourceRegistry::Paths()) {
+        if (!startsWith(path, "blocks/") || !endsWith(path, ".yaml")) {
+            continue;
+        }
+        blockPaths.emplace_back(path);
+    }
+    std::sort(blockPaths.begin(), blockPaths.end());
+
+    for (const auto& path : blockPaths) {
         try {
-            BlockType blockType = parseBlockType(name, entry, ns, atlas);
+            ryml::Tree blockTree = loadBlockConfigTree(path);
+            ryml::ConstNodeRef config = blockTree.rootref();
+            std::string name = blockNameFromPath(path);
+            BlockType blockType = parseBlockType(name, config, ns, atlas);
 
             std::string identifier = blockType.identifier;
+            if (registry.hasIdentifier(identifier)) {
+                spdlog::warn("Skipping duplicate block identifier '{}'", identifier);
+                continue;
+            }
             BlockID id = registry.registerBlock(identifier, std::move(blockType));
-            spdlog::debug("Registered block '{}' with ID {}", name, id.type);
+            spdlog::debug("Registered block '{}' from '{}' with ID {}", name, path, id.type);
 
             ++count;
         } catch (const std::exception& e) {
-            spdlog::error("Failed to load block '{}': {}", name, e.what());
+            spdlog::error("Failed to load block from '{}': {}", path, e.what());
         }
-    });
+    }
 
     spdlog::info("Loaded {} block definitions", count);
     return count;
@@ -59,40 +111,52 @@ size_t BlockLoader::loadFromManifest(
 
 BlockType BlockLoader::parseBlockType(
     const std::string& name,
-    const Asset::AssetManager::AssetEntry& entry,
+    ryml::ConstNodeRef config,
     const std::string& ns,
     TextureAtlas& atlas
 ) {
     BlockType type;
 
     // Build fully qualified identifier (namespace:name)
-    type.identifier = ns.empty() ? name : ns + ":" + name;
+    if (auto explicitId = getOptionalString(config, "id")) {
+        type.identifier = *explicitId;
+    } else if (auto explicitId = getOptionalString(config, "identifier")) {
+        type.identifier = *explicitId;
+    } else if (auto explicitName = getOptionalString(config, "name")) {
+        type.identifier = *explicitName;
+    } else {
+        type.identifier = ns.empty() ? name : ns + ":" + name;
+    }
+
+    if (type.identifier.find(':') == std::string::npos && !ns.empty()) {
+        type.identifier = ns + ":" + type.identifier;
+    }
 
     // Parse model (default: "cube")
-    if (auto model = entry.getString("model")) {
+    if (auto model = getOptionalString(config, "model")) {
         type.model = *model;
     }
 
     // Parse boolean properties
-    if (auto opaque = getOptionalBool(entry.config, "opaque")) {
+    if (auto opaque = getOptionalBool(config, "opaque")) {
         type.isOpaque = *opaque;
     }
 
-    if (auto solid = getOptionalBool(entry.config, "solid")) {
+    if (auto solid = getOptionalBool(config, "solid")) {
         type.isSolid = *solid;
     }
 
-    if (auto cullSameType = getOptionalBool(entry.config, "cull_same_type")) {
+    if (auto cullSameType = getOptionalBool(config, "cull_same_type")) {
         type.cullSameType = *cullSameType;
     }
 
     // Parse render layer
-    if (auto layer = entry.getString("layer")) {
+    if (auto layer = getOptionalString(config, "layer")) {
         type.layer = parseRenderLayer(*layer);
     }
 
     // Parse lighting properties
-    if (auto emit = getOptionalString(entry.config, "emits_light")) {
+    if (auto emit = getOptionalString(config, "emits_light")) {
         try {
             type.emittedLight = static_cast<uint8_t>(std::stoi(*emit));
         } catch (...) {
@@ -100,7 +164,7 @@ BlockType BlockLoader::parseBlockType(
         }
     }
 
-    if (auto atten = getOptionalString(entry.config, "light_attenuation")) {
+    if (auto atten = getOptionalString(config, "light_attenuation")) {
         try {
             type.lightAttenuation = static_cast<uint8_t>(std::stoi(*atten));
         } catch (...) {
@@ -109,8 +173,8 @@ BlockType BlockLoader::parseBlockType(
     }
 
     // Parse textures
-    if (entry.hasChild("textures")) {
-        type.textures = parseTextures(entry.config["textures"], atlas);
+    if (config.has_child("textures")) {
+        type.textures = parseTextures(config["textures"], atlas);
     }
 
     return type;

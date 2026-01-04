@@ -1,0 +1,7 @@
+id: piston[direction=NegZ,type=suction,part=head]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  pos_x: textures/blocks/rubber_block.png

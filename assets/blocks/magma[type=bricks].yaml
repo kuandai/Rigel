@@ -1,0 +1,8 @@
+id: magma[type=bricks]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+emits_light: 15
+textures:
+  all: textures/blocks/magma_bricks.png

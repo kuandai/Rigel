@@ -1,0 +1,8 @@
+id: piston[power=off,direction=NegZ,type=suction,part=body]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  pos_x: textures/blocks/rubber_block.png
+  neg_x: textures/blocks/machines/piston_base.png

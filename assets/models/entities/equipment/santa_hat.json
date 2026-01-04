@@ -1,0 +1,228 @@
+{
+  "id": "equipment/santa_hat",
+  "lighting": "unlit",
+  "texture_width": 64,
+  "texture_height": 64,
+  "textures": {
+    "diffuse": "textures/entities/equipment/santa_hat.png"
+  },
+  "bones": [
+    {
+      "name": "root",
+      "pivot": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "hips",
+      "parent": "root",
+      "pivot": [
+        0,
+        16,
+        0
+      ]
+    },
+    {
+      "name": "chest",
+      "parent": "hips",
+      "pivot": [
+        0,
+        18,
+        0
+      ]
+    },
+    {
+      "name": "head",
+      "parent": "chest",
+      "pivot": [
+        0,
+        24,
+        0
+      ]
+    },
+    {
+      "name": "santa_hat_base",
+      "parent": "head",
+      "pivot": [
+        0,
+        32,
+        0
+      ],
+      "cubes": [
+        {
+          "origin": [
+            -5,
+            32,
+            -5
+          ],
+          "size": [
+            10,
+            2,
+            10
+          ],
+          "uv": [
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bone2",
+      "parent": "santa_hat_base",
+      "pivot": [
+        0,
+        34,
+        -4.1
+      ],
+      "rotation": [
+        17.5,
+        0,
+        0
+      ],
+      "cubes": [
+        {
+          "origin": [
+            -4,
+            33.9947,
+            -4.1374
+          ],
+          "size": [
+            8,
+            4,
+            8
+          ],
+          "uv": [
+            0,
+            12
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bone3",
+      "parent": "bone2",
+      "pivot": [
+        0,
+        38,
+        -3.1374
+      ],
+      "rotation": [
+        17.5,
+        0,
+        0
+      ],
+      "cubes": [
+        {
+          "origin": [
+            -3,
+            38,
+            -3.1374
+          ],
+          "size": [
+            6,
+            4,
+            6
+          ],
+          "uv": [
+            0,
+            24
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bone4",
+      "parent": "bone3",
+      "pivot": [
+        -2,
+        41.9947,
+        -2.1374
+      ],
+      "rotation": [
+        22.5,
+        0,
+        0
+      ],
+      "cubes": [
+        {
+          "origin": [
+            -2,
+            41.9947,
+            -2.1374
+          ],
+          "size": [
+            4,
+            4,
+            4
+          ],
+          "uv": [
+            24,
+            24
+          ]
+        }
+      ]
+    },
+    {
+      "name": "santa_hat_ball",
+      "parent": "bone4",
+      "pivot": [
+        0,
+        45.9947,
+        -1.1374
+      ],
+      "rotation": [
+        22.5,
+        0,
+        0
+      ],
+      "cubes": [
+        {
+          "origin": [
+            -1,
+            45.9947,
+            -1.1374
+          ],
+          "size": [
+            2,
+            3,
+            2
+          ],
+          "uv": [
+            32,
+            18
+          ]
+        },
+        {
+          "origin": [
+            -1.5,
+            47.9947,
+            -1.6374
+          ],
+          "size": [
+            3,
+            3,
+            3
+          ],
+          "pivot": [
+            0,
+            48.3019,
+            0.6224
+          ],
+          "rotation": [
+            22.5,
+            0,
+            0
+          ],
+          "uv": [
+            32,
+            12
+          ]
+        }
+      ]
+    }
+  ],
+  "model_scale": 0.0625
+}

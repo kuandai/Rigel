@@ -12,7 +12,7 @@ TEST_CASE(WorldConfigProvider_FileSource) {
     {
         std::ofstream out(path);
         out << "seed: 99\n";
-        out << "solid_block: rigel:stone\n";
+        out << "solid_block: base:stone_shale\n";
     }
 
     ConfigProvider provider;
@@ -20,7 +20,7 @@ TEST_CASE(WorldConfigProvider_FileSource) {
     WorldGenConfig config = provider.loadConfig();
 
     CHECK_EQ(config.seed, static_cast<uint32_t>(99));
-    CHECK_EQ(config.solidBlock, "rigel:stone");
+    CHECK_EQ(config.solidBlock, "base:stone_shale");
 
     std::filesystem::remove(path);
 }

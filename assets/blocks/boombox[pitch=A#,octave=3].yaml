@@ -1,0 +1,9 @@
+id: boombox[pitch=A#,octave=3]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  top: textures/blocks/boombox_top.png
+  bottom: textures/blocks/boombox_top.png
+  sides: textures/blocks/boombox_side.png

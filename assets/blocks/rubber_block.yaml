@@ -1,0 +1,7 @@
+id: rubber_block
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/rubber_block.png

@@ -1,0 +1,9 @@
+id: torch[type=ground,level=1]
+model: cube
+opaque: false
+solid: false
+layer: transparent
+emits_light: 4
+light_attenuation: 0
+textures:
+  all: textures/blocks/torch.png

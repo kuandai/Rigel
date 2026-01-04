@@ -75,7 +75,11 @@ void EntityRenderer::render(Voxel::World& world, const EntityRenderContext& ctx)
             return;
         }
 
-        glm::mat4 modelMatrix = glm::translate(glm::mat4(1.0f), entity.position());
+        glm::vec3 renderOffset(0.0f);
+        if (const auto& model = entity.model()) {
+            renderOffset = model->renderOffset;
+        }
+        glm::mat4 modelMatrix = glm::translate(glm::mat4(1.0f), entity.position() + renderOffset);
         EntityRenderContext localCtx = ctx;
         localCtx.ambientOcclusion = computeEntityAo(world, bounds);
         entity.render(localCtx, modelMatrix, visible);
@@ -100,7 +104,11 @@ void EntityRenderer::renderShadowCasters(Voxel::World& world,
             return;
         }
 
-        glm::mat4 modelMatrix = glm::translate(glm::mat4(1.0f), entity.position());
+        glm::vec3 renderOffset(0.0f);
+        if (const auto& model = entity.model()) {
+            renderOffset = model->renderOffset;
+        }
+        glm::mat4 modelMatrix = glm::translate(glm::mat4(1.0f), entity.position() + renderOffset);
         instance->renderShadow(ctx, entity, modelMatrix, shadowCtx.lightViewProjection,
                                m_shadowShader, true);
     });

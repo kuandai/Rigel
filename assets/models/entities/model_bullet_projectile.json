@@ -1,0 +1,32 @@
+{
+  "id": "model_bullet_projectile",
+  "lighting": "unlit",
+  "bones": [
+    {
+      "name": "body",
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "particle_systems": [
+        {
+          "id": "base:particles_bullet_projectile"
+        }
+      ]
+    }
+  ],
+  "model_scale": 0.0625,
+  "hitbox": {
+    "min": [
+      -0.1,
+      -0.1,
+      -0.1
+    ],
+    "max": [
+      0.1,
+      0.1,
+      0.1
+    ]
+  }
+}

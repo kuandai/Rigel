@@ -1,6 +1,6 @@
 seed: 1337
-solid_block: rigel:stone
-surface_block: rigel:grass
+solid_block: base:stone_shale
+surface_block: base:grass
 
 world:
   min_y: -64
@@ -97,9 +97,9 @@ biomes:
         humidity: 0.0
         continentalness: 0.4
       surface:
-        - block: rigel:grass
+        - block: base:grass
           depth: 1
-        - block: rigel:dirt
+        - block: base:dirt
           depth: 3
     - name: beach
       target:
@@ -107,7 +107,7 @@ biomes:
         humidity: 0.0
         continentalness: -0.1
       surface:
-        - block: rigel:sand
+        - block: base:sand
           depth: 4
     - name: sea
       target:
@@ -115,7 +115,7 @@ biomes:
         humidity: 0.0
         continentalness: -0.6
       surface:
-        - block: rigel:sand
+        - block: base:sand
           depth: 4
 
 density_graph:
@@ -250,7 +250,7 @@ caves:
 structures:
   features:
     - name: boulders
-      block: rigel:stone
+      block: base:stone_shale
       chance: 0.02
       min_height: 2
       max_height: 4
@@ -261,8 +261,8 @@ overlays:
     when: no_carvers
 
 streaming:
-  view_distance_chunks: 10
-  unload_distance_chunks: 11 
+  view_distance_chunks: 8
+  unload_distance_chunks: 9 
   gen_queue_limit: 128
   mesh_queue_limit: 128
   apply_budget_per_frame: 128

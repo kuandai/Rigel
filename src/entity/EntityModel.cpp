@@ -19,7 +19,15 @@ const EntityBone* EntityModelAsset::findBone(std::string_view name) const {
 std::unique_ptr<IEntityModelInstance> EntityModelAsset::createInstance(
     Asset::AssetManager& assets,
     const Asset::Handle<Asset::ShaderAsset>& shader) const {
-    if (!shader) {
+    Asset::Handle<Asset::ShaderAsset> resolvedShader = shader;
+    if (lighting == EntityLightingMode::Unlit) {
+        if (assets.exists("shaders/entity_unlit")) {
+            resolvedShader = assets.get<Asset::ShaderAsset>("shaders/entity_unlit");
+        } else {
+            spdlog::warn("EntityModelAsset: unlit shader missing, falling back to lit shader");
+        }
+    }
+    if (!resolvedShader) {
         spdlog::warn("EntityModelAsset: shader handle missing when creating instance");
         return nullptr;
     }
@@ -38,7 +46,7 @@ std::unique_ptr<IEntityModelInstance> EntityModelAsset::createInstance(
     std::shared_ptr<const EntityModelAsset> constShared = shared_from_this();
     return std::make_unique<EntityModelInstance>(
         std::move(constShared),
-        shader,
+        resolvedShader,
         std::move(resolved)
     );
 }

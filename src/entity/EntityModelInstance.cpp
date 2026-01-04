@@ -6,197 +6,118 @@
 #include <spdlog/spdlog.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <array>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 
 namespace Rigel::Entity {
 
 namespace {
-constexpr float kCubePositions[] = {
-    // +X
-    0.5f, -0.5f, -0.5f,
-    0.5f,  0.5f, -0.5f,
-    0.5f,  0.5f,  0.5f,
-    0.5f, -0.5f, -0.5f,
-    0.5f,  0.5f,  0.5f,
-    0.5f, -0.5f,  0.5f,
-    // -X
-    -0.5f, -0.5f,  0.5f,
-    -0.5f,  0.5f,  0.5f,
-    -0.5f,  0.5f, -0.5f,
-    -0.5f, -0.5f,  0.5f,
-    -0.5f,  0.5f, -0.5f,
-    -0.5f, -0.5f, -0.5f,
-    // +Y
-    -0.5f,  0.5f, -0.5f,
-    0.5f,  0.5f, -0.5f,
-    0.5f,  0.5f,  0.5f,
-    -0.5f,  0.5f, -0.5f,
-    0.5f,  0.5f,  0.5f,
-    -0.5f,  0.5f,  0.5f,
-    // -Y
-    -0.5f, -0.5f,  0.5f,
-    0.5f, -0.5f,  0.5f,
-    0.5f, -0.5f, -0.5f,
-    -0.5f, -0.5f,  0.5f,
-    0.5f, -0.5f, -0.5f,
-    -0.5f, -0.5f, -0.5f,
-    // +Z
-    -0.5f, -0.5f,  0.5f,
-    -0.5f,  0.5f,  0.5f,
-    0.5f,  0.5f,  0.5f,
-    -0.5f, -0.5f,  0.5f,
-    0.5f,  0.5f,  0.5f,
-    0.5f, -0.5f,  0.5f,
-    // -Z
-    0.5f, -0.5f, -0.5f,
-    0.5f,  0.5f, -0.5f,
-    -0.5f,  0.5f, -0.5f,
-    0.5f, -0.5f, -0.5f,
-    -0.5f,  0.5f, -0.5f,
-    -0.5f, -0.5f, -0.5f
+constexpr glm::vec3 kCubeCorners[8] = {
+    {-0.5f, -0.5f, -0.5f}, // 000
+    {-0.5f,  0.5f, -0.5f}, // 010
+    { 0.5f, -0.5f, -0.5f}, // 100
+    { 0.5f,  0.5f, -0.5f}, // 110
+    {-0.5f, -0.5f,  0.5f}, // 001
+    {-0.5f,  0.5f,  0.5f}, // 011
+    { 0.5f, -0.5f,  0.5f}, // 101
+    { 0.5f,  0.5f,  0.5f}  // 111
 };
 
-constexpr float kCubeNormals[] = {
-    // +X
-    1.0f, 0.0f, 0.0f,
-    1.0f, 0.0f, 0.0f,
-    1.0f, 0.0f, 0.0f,
-    1.0f, 0.0f, 0.0f,
-    1.0f, 0.0f, 0.0f,
-    1.0f, 0.0f, 0.0f,
-    // -X
-    -1.0f, 0.0f, 0.0f,
-    -1.0f, 0.0f, 0.0f,
-    -1.0f, 0.0f, 0.0f,
-    -1.0f, 0.0f, 0.0f,
-    -1.0f, 0.0f, 0.0f,
-    -1.0f, 0.0f, 0.0f,
-    // +Y
-    0.0f, 1.0f, 0.0f,
-    0.0f, 1.0f, 0.0f,
-    0.0f, 1.0f, 0.0f,
-    0.0f, 1.0f, 0.0f,
-    0.0f, 1.0f, 0.0f,
-    0.0f, 1.0f, 0.0f,
-    // -Y
-    0.0f, -1.0f, 0.0f,
-    0.0f, -1.0f, 0.0f,
-    0.0f, -1.0f, 0.0f,
-    0.0f, -1.0f, 0.0f,
-    0.0f, -1.0f, 0.0f,
-    0.0f, -1.0f, 0.0f,
-    // +Z
-    0.0f, 0.0f, 1.0f,
-    0.0f, 0.0f, 1.0f,
-    0.0f, 0.0f, 1.0f,
-    0.0f, 0.0f, 1.0f,
-    0.0f, 0.0f, 1.0f,
-    0.0f, 0.0f, 1.0f,
-    // -Z
-    0.0f, 0.0f, -1.0f,
-    0.0f, 0.0f, -1.0f,
-    0.0f, 0.0f, -1.0f,
-    0.0f, 0.0f, -1.0f,
-    0.0f, 0.0f, -1.0f,
-    0.0f, 0.0f, -1.0f
+struct FaceUvRect {
+    glm::vec2 a{0.0f};
+    glm::vec2 b{1.0f};
 };
 
-constexpr float kCubeUVs[] = {
-    0.0f, 0.0f,
-    1.0f, 0.0f,
-    1.0f, 1.0f,
-    0.0f, 0.0f,
-    1.0f, 1.0f,
-    0.0f, 1.0f,
-};
-
-glm::mat4 rotationFromEuler(const glm::vec3& degrees) {
+glm::mat4 rotationYawPitchRoll(const glm::vec3& degrees) {
     glm::mat4 rot(1.0f);
-    rot = glm::rotate(rot, glm::radians(degrees.x), glm::vec3(1.0f, 0.0f, 0.0f));
     rot = glm::rotate(rot, glm::radians(degrees.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    rot = glm::rotate(rot, glm::radians(degrees.x), glm::vec3(1.0f, 0.0f, 0.0f));
     rot = glm::rotate(rot, glm::radians(degrees.z), glm::vec3(0.0f, 0.0f, 1.0f));
     return rot;
 }
 
-struct FaceUvRect {
-    glm::vec2 min{0.0f};
-    glm::vec2 max{1.0f};
-};
+void setFaceUv(FaceUvRect& rect, const glm::vec2& uvA, const glm::vec2& uvB,
+               float invW, float invH) {
+    rect.a = glm::vec2(uvA.x * invW, 1.0f - (uvA.y * invH));
+    rect.b = glm::vec2(uvB.x * invW, 1.0f - (uvB.y * invH));
+}
 
-FaceUvRect buildFaceUvRect(const EntityModelCube& cube,
-                           const EntityModelAsset& model,
-                           int faceIndex) {
+void computeFaceUvs(const EntityModelCube& cube,
+                    const EntityModelAsset& model,
+                    std::array<FaceUvRect, 6>& out) {
     if (!cube.hasUv || model.texWidth <= 0.0f || model.texHeight <= 0.0f) {
-        return {};
+        for (auto& rect : out) {
+            rect = {};
+        }
+        return;
     }
 
-    float dx = cube.size.x;
-    float dy = cube.size.y;
-    float dz = cube.size.z;
+    float csx = std::floor(cube.size.x);
+    float csy = std::floor(cube.size.y);
+    float csz = std::floor(cube.size.z);
     float u0 = cube.uv.x;
     float v0 = cube.uv.y;
-
-    float u1 = u0 + dz;
-    float u2 = u1 + dx;
-    float u3 = u2 + dz;
-    float u4 = u3 + dx;
-    float v1 = v0 + dz;
-    float v2 = v1 + dy;
-
-    float uMin = u0;
-    float uMax = u1;
-    float vMin = v1;
-    float vMax = v2;
-
-    switch (faceIndex) {
-        case 0: // +X (east)
-            uMin = u2;
-            uMax = u3;
-            break;
-        case 1: // -X (west)
-            uMin = u0;
-            uMax = u1;
-            break;
-        case 2: // +Y (up)
-            uMin = u1;
-            uMax = u2;
-            vMin = v0;
-            vMax = v1;
-            break;
-        case 3: // -Y (down)
-            uMin = u2;
-            uMax = u3;
-            vMin = v0;
-            vMax = v1;
-            break;
-        case 4: // +Z (south)
-            uMin = u3;
-            uMax = u4;
-            break;
-        case 5: // -Z (north)
-            uMin = u1;
-            uMax = u2;
-            break;
-        default:
-            break;
-    }
-
     float invW = 1.0f / model.texWidth;
     float invH = 1.0f / model.texHeight;
-    float uMinNorm = uMin * invW;
-    float uMaxNorm = uMax * invW;
-    float vMinNorm = 1.0f - (vMax * invH);
-    float vMaxNorm = 1.0f - (vMin * invH);
 
+    glm::vec2 uvA;
+    glm::vec2 uvB;
+
+    // -Z
+    uvB = glm::vec2(u0 + csz, v0 + csz);
+    uvA = uvB + glm::vec2(csx, csy);
     if (cube.mirror) {
-        std::swap(uMinNorm, uMaxNorm);
+        uvB = glm::vec2(u0 + csz + csx, v0 + csz);
+        uvA = uvB + glm::vec2(-csx, csy);
     }
+    setFaceUv(out[0], uvA, uvB, invW, invH);
 
-    FaceUvRect rect;
-    rect.min = glm::vec2(uMinNorm, vMinNorm);
-    rect.max = glm::vec2(uMaxNorm, vMaxNorm);
-    return rect;
+    // +Z
+    uvA = glm::vec2(u0 + csz + csx + csz, v0 + csz);
+    uvB = uvA + glm::vec2(csx, csy);
+    if (cube.mirror) {
+        uvA = glm::vec2(u0 + csz + csx + csx + csz, v0 + csz);
+        uvB = uvA + glm::vec2(-csx, csy);
+    }
+    setFaceUv(out[1], uvA, uvB, invW, invH);
+
+    // -Y
+    uvB = glm::vec2(u0 + csz + csx, v0 + csz);
+    uvA = uvB + glm::vec2(csx, -csz);
+    if (cube.mirror) {
+        uvB = glm::vec2(u0 + csz + csx + csx, v0 + csz);
+        uvA = uvB + glm::vec2(-csx, -csz);
+    }
+    setFaceUv(out[2], uvA, uvB, invW, invH);
+
+    // +Y
+    uvB = glm::vec2(u0 + csz, v0);
+    uvA = uvB + glm::vec2(csx, csz);
+    if (cube.mirror) {
+        uvB = glm::vec2(u0 + csz + csx, v0);
+        uvA = uvB + glm::vec2(-csx, csz);
+    }
+    setFaceUv(out[3], uvA, uvB, invW, invH);
+
+    // -X
+    uvB = glm::vec2(u0 + csx + csz, v0 + csz);
+    uvA = uvB + glm::vec2(csz, csy);
+    if (cube.mirror) {
+        uvB = glm::vec2(u0 + csz, v0 + csz);
+        uvA = uvB + glm::vec2(-csz, csy);
+    }
+    setFaceUv(out[4], uvA, uvB, invW, invH);
+
+    // +X
+    uvB = glm::vec2(u0, v0 + csz);
+    uvA = uvB + glm::vec2(csz, csy);
+    if (cube.mirror) {
+        uvA = glm::vec2(u0 + csz + csz + csx, v0 + csz);
+        uvB = uvA + glm::vec2(-csz, csy);
+    }
+    setFaceUv(out[5], uvA, uvB, invW, invH);
 }
 }
 
@@ -445,6 +366,17 @@ void EntityModelInstance::renderShadow(const EntityRenderContext& ctx,
     if (locModel >= 0) {
         glUniformMatrix4fv(locModel, 1, GL_FALSE, glm::value_ptr(modelMatrix));
     }
+    GLint locDiffuse = shadowShader->uniform("u_diffuse");
+    GLint locUseAlphaTest = shadowShader->uniform("u_useAlphaTest");
+    auto diffuseIt = m_textures.find("diffuse");
+    bool hasDiffuse = diffuseIt != m_textures.end() && diffuseIt->second;
+    if (locDiffuse >= 0 && hasDiffuse) {
+        diffuseIt->second->bind(GL_TEXTURE0);
+        glUniform1i(locDiffuse, 0);
+    }
+    if (locUseAlphaTest >= 0) {
+        glUniform1i(locUseAlphaTest, hasDiffuse ? 1 : 0);
+    }
 
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
@@ -510,11 +442,15 @@ void EntityModelInstance::rebuildMesh(const EntityRenderContext& ctx) {
             }
         }
 
+        glm::vec3 totalRot = bone.rotation + animRot;
         glm::mat4 local(1.0f);
-        local = glm::translate(local, bone.pivot + animPos);
-        local *= rotationFromEuler(bone.rotation + animRot);
-        local = glm::translate(local, -bone.pivot);
+        local = glm::translate(local, bone.pivot);
         local = glm::scale(local, bone.scale * animScale);
+        local = glm::rotate(local, glm::radians(totalRot.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        local = glm::rotate(local, glm::radians(-totalRot.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        local = glm::rotate(local, glm::radians(-totalRot.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        local = glm::translate(local, -bone.pivot);
+        local = glm::translate(local, animPos);
 
         if (bone.parentIndex >= 0) {
             boneTransforms[i] = boneTransforms[static_cast<size_t>(bone.parentIndex)] * local;
@@ -528,57 +464,71 @@ void EntityModelInstance::rebuildMesh(const EntityRenderContext& ctx) {
         scaleMat = glm::scale(scaleMat, glm::vec3(m_model->modelScale));
     }
 
-    const size_t cubeVertexCount = sizeof(kCubePositions) / (sizeof(float) * 3);
-    m_cpuVertices.reserve(m_model->bones.size() * cubeVertexCount);
+    constexpr size_t kFaceVertices = 6;
+    constexpr size_t kCubeFaces = 6;
+    m_cpuVertices.reserve(m_model->bones.size() * kFaceVertices * kCubeFaces);
 
     for (size_t boneIndex = 0; boneIndex < m_model->bones.size(); ++boneIndex) {
         const EntityBone& bone = m_model->bones[boneIndex];
         const glm::mat4& boneTransform = boneTransforms[boneIndex];
 
         for (const EntityModelCube& cube : bone.cubes) {
-            glm::vec3 inflate(cube.inflate);
-            glm::vec3 origin = cube.origin - inflate;
-            glm::vec3 size = cube.size + inflate * 2.0f;
-            glm::vec3 center = origin + size * 0.5f;
+            glm::vec3 size = cube.size;
+            glm::vec3 pivot = cube.pivot;
+            float inflate = cube.inflate;
 
             glm::mat4 cubeMat(1.0f);
-            cubeMat = glm::translate(cubeMat, center);
-            if (cube.rotation != glm::vec3(0.0f)) {
-                cubeMat *= rotationFromEuler(cube.rotation);
-            }
-            cubeMat = glm::scale(cubeMat, size);
+            cubeMat = glm::translate(cubeMat, cube.origin);
+            cubeMat = glm::translate(cubeMat, size * 0.5f);
+            cubeMat = glm::scale(cubeMat, size + glm::vec3(inflate));
+
+            glm::mat4 rotMat(1.0f);
+            rotMat = glm::translate(rotMat, pivot);
+            rotMat *= rotationYawPitchRoll(cube.rotation);
+            rotMat = glm::translate(rotMat, -pivot);
+            cubeMat = rotMat * cubeMat;
 
             glm::mat4 finalTransform = scaleMat * boneTransform * cubeMat;
-            glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(finalTransform)));
+            std::array<glm::vec3, 8> corners{};
+            for (size_t c = 0; c < corners.size(); ++c) {
+                glm::vec4 pos = finalTransform * glm::vec4(kCubeCorners[c], 1.0f);
+                corners[c] = glm::vec3(pos);
+            }
+
             std::array<FaceUvRect, 6> faceUvs{};
-            for (int faceIndex = 0; faceIndex < static_cast<int>(faceUvs.size()); ++faceIndex) {
-                faceUvs[faceIndex] = buildFaceUvRect(cube, *m_model, faceIndex);
-            }
+            computeFaceUvs(cube, *m_model, faceUvs);
 
-            for (size_t i = 0; i < cubeVertexCount; ++i) {
-                size_t posBase = i * 3;
-                size_t uvBase = (i % 6) * 2;
-                int faceIndex = static_cast<int>(i / 6);
+            glm::vec3 normalZ = glm::normalize((corners[0] + corners[3]) * 0.5f -
+                                               (corners[4] + corners[7]) * 0.5f);
+            glm::vec3 normalY = glm::normalize((corners[0] + corners[6]) * 0.5f -
+                                               (corners[1] + corners[7]) * 0.5f);
+            glm::vec3 normalX = glm::normalize((corners[0] + corners[5]) * 0.5f -
+                                               (corners[2] + corners[7]) * 0.5f);
 
-                glm::vec3 pos(kCubePositions[posBase + 0],
-                             kCubePositions[posBase + 1],
-                             kCubePositions[posBase + 2]);
-                glm::vec3 normal(kCubeNormals[posBase + 0],
-                                kCubeNormals[posBase + 1],
-                                kCubeNormals[posBase + 2]);
-                glm::vec2 baseUv(kCubeUVs[uvBase + 0], kCubeUVs[uvBase + 1]);
-                const FaceUvRect& faceUv = faceUvs[faceIndex];
-                glm::vec2 uv = glm::mix(faceUv.min, faceUv.max, baseUv);
+            auto emitRect = [&](const glm::vec3& c00,
+                                const glm::vec3& c10,
+                                const glm::vec3& c11,
+                                const glm::vec3& c01,
+                                const glm::vec3& normal,
+                                const FaceUvRect& uv) {
+                Vertex v0{c00, normal, glm::vec2(uv.a.x, uv.a.y)};
+                Vertex v1{c10, normal, glm::vec2(uv.a.x, uv.b.y)};
+                Vertex v2{c11, normal, glm::vec2(uv.b.x, uv.b.y)};
+                Vertex v3{c01, normal, glm::vec2(uv.b.x, uv.a.y)};
+                m_cpuVertices.push_back(v0);
+                m_cpuVertices.push_back(v1);
+                m_cpuVertices.push_back(v2);
+                m_cpuVertices.push_back(v0);
+                m_cpuVertices.push_back(v2);
+                m_cpuVertices.push_back(v3);
+            };
 
-                glm::vec4 worldPos = finalTransform * glm::vec4(pos, 1.0f);
-                glm::vec3 worldNormal = glm::normalize(normalMat * normal);
-
-                Vertex v;
-                v.position = glm::vec3(worldPos);
-                v.normal = worldNormal;
-                v.uv = uv;
-                m_cpuVertices.push_back(v);
-            }
+            emitRect(corners[0], corners[1], corners[3], corners[2], normalZ, faceUvs[0]);       // -Z
+            emitRect(corners[5], corners[4], corners[6], corners[7], -normalZ, faceUvs[1]);      // +Z
+            emitRect(corners[4], corners[0], corners[2], corners[6], normalY, faceUvs[2]);       // -Y
+            emitRect(corners[1], corners[5], corners[7], corners[3], -normalY, faceUvs[3]);      // +Y
+            emitRect(corners[4], corners[5], corners[1], corners[0], normalX, faceUvs[4]);       // -X
+            emitRect(corners[2], corners[3], corners[7], corners[6], -normalX, faceUvs[5]);      // +X
         }
     }
 

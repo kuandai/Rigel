@@ -1,0 +1,7 @@
+id: ladder_wooden[direction=NegZ]
+model: cube
+opaque: false
+solid: true
+layer: transparent
+textures:
+  all: textures/blocks/furniture/ladder_wooden.png

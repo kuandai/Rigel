@@ -4,12 +4,14 @@
  * @file BlockLoader.h
  * @brief Loads block definitions from asset manifests.
  *
- * BlockLoader parses block entries from the "blocks" category in the asset
- * manifest and registers them with the BlockRegistry and TextureAtlas.
+ * BlockLoader parses block entries from per-block YAML files in
+ * "assets/blocks" and registers them with the BlockRegistry and TextureAtlas.
+ * Each block file declares its own name or identifier.
  */
 
 #include "BlockRegistry.h"
 #include "TextureAtlas.h"
+#include "Rigel/Util/Ryml.h"
 
 #include <Rigel/Asset/AssetManager.h>
 
@@ -27,30 +29,38 @@ namespace Rigel::Voxel {
  *
  * @code{.yaml}
  * assets:
- *   blocks:
- *     stone:
- *       model: cube
- *       opaque: true
- *       solid: true
- *       textures:
- *         all: textures/blocks/stone.png
+ *   # Blocks are discovered from assets/blocks/*.yaml
+ * @endcode
  *
- *     grass:
- *       model: cube
- *       opaque: true
- *       solid: true
- *       textures:
- *         top: textures/blocks/grass_top.png
- *         bottom: textures/blocks/dirt.png
- *         sides: textures/blocks/grass_side.png
+ * @section block_file_format Block File Format
  *
- *     glass:
- *       model: cube
- *       opaque: false
- *       solid: true
- *       layer: transparent
- *       textures:
- *         all: textures/blocks/glass.png
+ * @code{.yaml}
+ * # assets/blocks/stone.yaml
+ * id: stone
+ * model: cube
+ * opaque: true
+ * solid: true
+ * textures:
+ *   all: textures/blocks/stone.png
+ *
+ * # assets/blocks/grass.yaml
+ * id: grass
+ * model: cube
+ * opaque: true
+ * solid: true
+ * textures:
+ *   top: textures/blocks/grass_top.png
+ *   bottom: textures/blocks/dirt.png
+ *   sides: textures/blocks/grass_side.png
+ *
+ * # assets/blocks/glass.yaml
+ * id: glass
+ * model: cube
+ * opaque: false
+ * solid: true
+ * layer: transparent
+ * textures:
+ *   all: textures/blocks/glass.png
  * @endcode
  *
  * @section usage Usage
@@ -69,11 +79,11 @@ public:
     ~BlockLoader() = default;
 
     /**
-     * @brief Load all blocks from the "blocks" category in the manifest.
+     * @brief Load all blocks from the embedded blocks directory.
      *
-     * Iterates through all block entries in the manifest, parses their
-     * configuration, registers them with the BlockRegistry, and loads
-     * their textures into the TextureAtlas.
+     * Scans embedded resources under "blocks/" for YAML files, parses their
+     * configuration, registers them with the BlockRegistry, and loads their
+     * textures into the TextureAtlas.
      *
      * @param assets The asset manager containing the manifest
      * @param registry The block registry to register types with
@@ -92,7 +102,7 @@ private:
      * @brief Parse a single block type from manifest config.
      *
      * @param id The block identifier (e.g., "stone")
-     * @param entry The asset entry containing the config
+     * @param config The block config node to parse
      * @param ns The manifest namespace (e.g., "rigel")
      * @param atlas The texture atlas for texture loading
      *
@@ -100,7 +110,7 @@ private:
      */
     BlockType parseBlockType(
         const std::string& id,
-        const Asset::AssetManager::AssetEntry& entry,
+        ryml::ConstNodeRef config,
         const std::string& ns,
         TextureAtlas& atlas
     );

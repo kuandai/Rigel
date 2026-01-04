@@ -1,0 +1,7 @@
+id: tree_log[type=bark]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/tree_log_side.png

@@ -1,0 +1,18 @@
+id: demo_spin
+animations:
+  spin:
+    duration: 1.0
+    loop: true
+    bones:
+      root:
+        rotation:
+        - time: 0.0
+          value:
+          - 0.0
+          - 0.0
+          - 0.0
+        - time: 1.0
+          value:
+          - 0.0
+          - 360.0
+          - 0.0

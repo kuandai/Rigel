@@ -1,0 +1,7 @@
+id: cobblestone_sandstone
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  all: textures/blocks/stone/cobblestone_sandstone.png

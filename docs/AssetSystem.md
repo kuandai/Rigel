@@ -962,22 +962,26 @@ assets.unloadUnused();
 The asset system integrates with `VoxelEngine.md` components:
 
 ```yaml
-# Block definitions reference assets
-blocks:
-  stone:
-    model: rigel:models/cube
-    textures:
-      all: rigel:textures/stone
-    sounds:
-      place: rigel:audio/block_place
-      break: rigel:audio/stone_break
+# Block definitions live in assets/blocks/*.yaml (no manifest entry)
+```
 
-  water:
-    model: rigel:models/fluid
-    textures:
-      still: rigel:animations/water_still    # Animated texture
-      flow: rigel:animations/water_flow
-    render_layer: transparent
+```yaml
+# assets/blocks/stone.yaml
+id: stone
+model: rigel:models/cube
+textures:
+  all: rigel:textures/stone
+sounds:
+  place: rigel:audio/block_place
+  break: rigel:audio/stone_break
+
+# assets/blocks/water.yaml
+id: water
+model: rigel:models/fluid
+textures:
+  still: rigel:animations/water_still    # Animated texture
+  flow: rigel:animations/water_flow
+render_layer: transparent
 ```
 
 **TextureAtlas Integration:**

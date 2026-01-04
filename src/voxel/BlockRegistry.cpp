@@ -7,7 +7,7 @@ namespace Rigel::Voxel {
 BlockRegistry::BlockRegistry() {
     // Register air as type 0
     BlockType air;
-    air.identifier = "rigel:air";
+    air.identifier = "base:air";
     air.model = "none";
     air.isOpaque = false;
     air.isSolid = false;
@@ -16,7 +16,7 @@ BlockRegistry::BlockRegistry() {
     air.lightAttenuation = 0;
 
     m_types.push_back(std::move(air));
-    m_identifierMap["rigel:air"] = BlockID{0};
+    m_identifierMap["base:air"] = BlockID{0};
 
     spdlog::debug("BlockRegistry initialized with air (ID 0)");
 }

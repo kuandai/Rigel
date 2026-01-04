@@ -563,8 +563,8 @@ public:
      *           - entry is the full AssetEntry with configuration
      *
      * @code
-     * assets.forEachInCategory("blocks", [&](const std::string& name, const AssetEntry& entry) {
-     *     spdlog::info("Found block: {}", name);
+     * assets.forEachInCategory("textures", [&](const std::string& name, const AssetEntry& entry) {
+     *     spdlog::info("Found texture: {}", name);
      * });
      * @endcode
      */

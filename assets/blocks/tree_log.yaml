@@ -1,0 +1,9 @@
+id: tree_log
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  top: textures/blocks/tree_log_top.png
+  bottom: textures/blocks/tree_log_top.png
+  sides: textures/blocks/tree_log_side.png

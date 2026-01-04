@@ -10,7 +10,9 @@ TEST_CASE(AssetManager_LoadsEmbeddedManifest) {
 
     CHECK(assets.exists("raw/world_config"));
     CHECK(assets.exists("shaders/voxel"));
-    CHECK(assets.exists("blocks/stone"));
+    CHECK(!assets.exists("blocks/dirt"));
+    CHECK(assets.exists("entity_models/demo_cube"));
+    CHECK(assets.exists("entity_anims/demo_spin"));
 }
 
 TEST_CASE(AssetManager_ShaderEntriesHaveFragmentSources) {

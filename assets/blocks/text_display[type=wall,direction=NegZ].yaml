@@ -1,0 +1,7 @@
+id: text_display[type=wall,direction=NegZ]
+model: cube
+opaque: false
+solid: true
+layer: transparent
+textures:
+  all: textures/blocks/boombox_top.png

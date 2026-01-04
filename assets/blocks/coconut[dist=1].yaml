@@ -1,0 +1,9 @@
+id: coconut[dist=1]
+model: cube
+opaque: true
+solid: true
+layer: opaque
+textures:
+  top: textures/blocks/coconut_top.png
+  bottom: textures/blocks/coconut_top.png
+  sides: textures/blocks/coconut_side.png

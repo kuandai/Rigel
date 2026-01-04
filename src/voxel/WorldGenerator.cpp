@@ -11,8 +11,8 @@
 namespace Rigel::Voxel {
 
 namespace {
-constexpr const char* kDefaultWaterBlock = "rigel:water";
-constexpr const char* kDefaultSandBlock = "rigel:sand";
+constexpr const char* kDefaultWaterBlock = "base:water[type=source]";
+constexpr const char* kDefaultSandBlock = "base:sand";
 constexpr int kClimateColumnCount = Chunk::SIZE * Chunk::SIZE;
 constexpr int kDefaultNoiseSampleStep = 4;
 static_assert(Chunk::SIZE % kDefaultNoiseSampleStep == 0,

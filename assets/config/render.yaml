@@ -16,6 +16,6 @@ render:
     strength: 3.0
     fade_power: 1.0
   taa:
-    enabled: true
+    enabled: false
     blend: 0.95
     jitter_scale: 1.0

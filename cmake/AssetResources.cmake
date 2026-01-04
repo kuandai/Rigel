@@ -3,6 +3,7 @@ function(target_embed_resources TARGET_NAME RESOURCE_DIR)
 
     set(GENERATED_SOURCES "")
     set(REGISTRY_ENTRIES "")
+    set(REGISTRY_KEYS "")
 
     foreach(FILE_PATH ${RESOURCES})
         # Get the relative path (e.g., "subdir/image.png") for the lookup key
@@ -31,6 +32,7 @@ ${SYM_END}:
         # Add entry to the C++ map generator
         # We store: { "filename", { start_pointer, end_pointer } }
         string(APPEND REGISTRY_ENTRIES "    { \"${REL_PATH}\", { ${SYM_START}, ${SYM_END} } },\n")
+        string(APPEND REGISTRY_KEYS "    \"${REL_PATH}\",\n")
         
         # We need to declare the externs in the header so the map can see them
         string(APPEND EXTERN_DECLS "extern const char ${SYM_START}[];\nextern const char ${SYM_END}[];\n")
@@ -44,6 +46,8 @@ ${SYM_END}:
 #include <unordered_map>
 #include <span>
 #include <stdexcept>
+#include <string_view>
+#include <vector>
 
 // Forward declarations of the ASM symbols
 extern \"C\" {
@@ -64,6 +68,13 @@ ${REGISTRY_ENTRIES}
         
         // Return a span (view) of the memory
         return std::span<const char>(it->second.first, it->second.second - it->second.first);
+    }
+
+    static const std::vector<std::string_view>& Paths() {
+        static const std::vector<std::string_view> paths = {
+${REGISTRY_KEYS}
+        };
+        return paths;
     }
 };
     ")

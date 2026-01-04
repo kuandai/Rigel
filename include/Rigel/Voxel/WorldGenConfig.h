@@ -154,8 +154,8 @@ struct WorldGenConfig {
     };
 
     uint32_t seed = 1337;
-    std::string solidBlock = "rigel:debug_block";
-    std::string surfaceBlock = "rigel:debug_block";
+    std::string solidBlock = "base:debug";
+    std::string surfaceBlock = "base:debug";
     WorldConfig world;
     TerrainConfig terrain;
     ClimateConfig climate;

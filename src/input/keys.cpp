@@ -356,7 +356,7 @@ const char* glfw_key_names[349] = {
     [348] = "MENU",
 };
 
-char* getKeyName(int keycode) {
+const char* getKeyName(int keycode) {
     if (keycode < 0 || keycode > GLFW_KEY_LAST) {
         return "";
     }

@@ -2,6 +2,6 @@
 
 namespace Rigel::Input {
 
-char* getKeyName(int keycode);
+const char* getKeyName(int keycode);
 
 } // namespace Rigel::Input

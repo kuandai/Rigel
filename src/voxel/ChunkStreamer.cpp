@@ -52,6 +52,14 @@ void ChunkStreamer::setBenchmark(ChunkBenchmarkStats* stats) {
     m_benchmark = stats;
 }
 
+void ChunkStreamer::setChunkLoader(ChunkLoadCallback loader) {
+    m_chunkLoader = std::move(loader);
+}
+
+void ChunkStreamer::setChunkPendingCallback(ChunkPendingCallback pending) {
+    m_chunkPending = std::move(pending);
+}
+
 void ChunkStreamer::update(const glm::vec3& cameraPos) {
     if (!m_chunkManager || !m_generator || !m_meshStore) {
         return;
@@ -158,6 +166,11 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
 
         Chunk* chunk = m_chunkManager->getChunk(coord);
+        if (!chunk && state != ChunkState::QueuedGen && m_chunkLoader) {
+            if (m_chunkLoader(coord)) {
+                chunk = m_chunkManager->getChunk(coord);
+            }
+        }
         if (chunk) {
             if (m_generator &&
                 chunk->worldGenVersion() != m_generator->config().world.version) {
@@ -189,7 +202,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
 
             if (!isMeshed && state != ChunkState::QueuedMesh) {
-                if (!meshFullMissing) {
+                if (!meshFullMissing && hasAllNeighborsLoaded(coord)) {
                     enqueueMesh(coord, *chunk, MeshRequestKind::Missing);
                     meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
                     meshFull = m_inFlightMesh >= meshLimit;
@@ -199,6 +212,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
 
         if (state == ChunkState::QueuedGen) {
+            continue;
+        }
+
+        if (m_chunkPending && m_chunkPending(coord)) {
             continue;
         }
 
@@ -230,6 +247,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             continue;
         }
 
+        if (!hasAllNeighborsLoaded(coord)) {
+            continue;
+        }
         enqueueMesh(coord, *chunk, MeshRequestKind::Dirty);
         meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
         meshFull = m_inFlightMesh >= meshLimit;
@@ -369,6 +389,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         } else {
             chunk.copyFrom(genResult.blocks);
         }
+        chunk.clearPersistDirty();
         chunk.setWorldGenVersion(genResult.worldGenVersion);
 
         if (m_benchmark) {
@@ -645,6 +666,24 @@ void ChunkStreamer::ensureThreadPool() {
     if (!m_pool || m_pool->threadCount() != desired) {
         m_pool = std::make_unique<detail::ThreadPool>(desired);
     }
+}
+
+bool ChunkStreamer::hasAllNeighborsLoaded(ChunkCoord coord) const {
+    if (!m_chunkManager) {
+        return false;
+    }
+    for (int i = 0; i < DirectionCount; ++i) {
+        Direction dir = static_cast<Direction>(i);
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(dir, dx, dy, dz);
+        ChunkCoord neighbor = coord.offset(dx, dy, dz);
+        if (!m_chunkManager->getChunk(neighbor)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace Rigel::Voxel

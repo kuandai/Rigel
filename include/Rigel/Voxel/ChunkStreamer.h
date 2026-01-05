@@ -12,6 +12,7 @@
 
 #include <array>
 #include <atomic>
+#include <functional>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -35,6 +36,9 @@ public:
         DebugState state;
     };
 
+    using ChunkLoadCallback = std::function<bool(ChunkCoord)>;
+    using ChunkPendingCallback = std::function<bool(ChunkCoord)>;
+
     ChunkStreamer() = default;
     ~ChunkStreamer();
 
@@ -45,6 +49,8 @@ public:
               TextureAtlas* atlas,
               std::shared_ptr<WorldGenerator> generator);
     void setBenchmark(ChunkBenchmarkStats* stats);
+    void setChunkLoader(ChunkLoadCallback loader);
+    void setChunkPendingCallback(ChunkPendingCallback pending);
 
     void update(const glm::vec3& cameraPos);
     void processCompletions();
@@ -101,6 +107,8 @@ private:
     std::shared_ptr<WorldGenerator> m_generator;
     ChunkCache m_cache;
     ChunkBenchmarkStats* m_benchmark = nullptr;
+    ChunkLoadCallback m_chunkLoader;
+    ChunkPendingCallback m_chunkPending;
 
     std::unique_ptr<detail::ThreadPool> m_pool;
     detail::ConcurrentQueue<GenResult> m_genComplete;
@@ -123,6 +131,7 @@ private:
     void enqueueGeneration(ChunkCoord coord);
     void enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind kind);
     void ensureThreadPool();
+    bool hasAllNeighborsLoaded(ChunkCoord coord) const;
 
     ChunkCoord cameraToChunk(const glm::vec3& cameraPos) const;
 };

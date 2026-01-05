@@ -54,6 +54,14 @@ void WorldView::setGenerator(std::shared_ptr<WorldGenerator> generator) {
                     std::move(generator));
 }
 
+void WorldView::setChunkLoader(ChunkStreamer::ChunkLoadCallback loader) {
+    m_streamer.setChunkLoader(std::move(loader));
+}
+
+void WorldView::setChunkPendingCallback(ChunkStreamer::ChunkPendingCallback pending) {
+    m_streamer.setChunkPendingCallback(std::move(pending));
+}
+
 void WorldView::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
     m_streamer.setConfig(config);
     m_renderConfig.renderDistance =

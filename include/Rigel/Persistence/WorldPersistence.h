@@ -19,11 +19,18 @@ void loadWorldFromDisk(Voxel::World& world,
                        Asset::AssetManager& assets,
                        PersistenceService& service,
                        PersistenceContext context,
-                       uint32_t worldGenVersion);
+                       uint32_t worldGenVersion,
+                       SaveScope scope = SaveScope::All);
 
 void saveWorldToDisk(const Voxel::World& world,
                      PersistenceService& service,
                      PersistenceContext context);
+
+bool loadChunkFromDisk(Voxel::World& world,
+                       PersistenceService& service,
+                       PersistenceContext context,
+                       const Voxel::ChunkCoord& coord,
+                       uint32_t worldGenVersion);
 
 } // namespace Persistence
 } // namespace Rigel

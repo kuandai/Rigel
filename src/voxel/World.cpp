@@ -26,6 +26,10 @@ void World::initialize(WorldResources& resources) {
     m_resources = &resources;
     m_chunkManager.setRegistry(&m_resources->registry());
     m_entities.bind(this);
+    persistenceProviders().add(
+        Persistence::kBlockRegistryProviderId,
+        std::make_shared<Persistence::BlockRegistryProvider>(&m_resources->registry())
+    );
 
     m_initialized = true;
     spdlog::debug("Voxel world initialized");

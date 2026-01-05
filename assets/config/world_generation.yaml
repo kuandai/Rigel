@@ -269,10 +269,6 @@ streaming:
   worker_threads: 12
   max_resident_chunks: 0
 
-persistence:
-  cr:
-    lz4: false
-
 generation:
   pipeline:
     - stage: climate_global

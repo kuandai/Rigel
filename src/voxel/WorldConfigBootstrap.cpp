@@ -40,4 +40,23 @@ ConfigProvider makeRenderConfigProvider(Asset::AssetManager& assets,
     return provider;
 }
 
+ConfigProvider makePersistenceConfigProvider(Asset::AssetManager& assets,
+                                             WorldId worldId) {
+    ConfigProvider provider;
+    provider.addSource(
+        std::make_unique<EmbeddedConfigSource>(assets, "raw/persistence_config")
+    );
+    provider.addSource(
+        std::make_unique<FileConfigSource>("config/persistence.yaml")
+    );
+    provider.addSource(
+        std::make_unique<FileConfigSource>("persistence.yaml")
+    );
+    provider.addSource(
+        std::make_unique<FileConfigSource>(
+            "config/worlds/" + std::to_string(worldId) + "/persistence.yaml")
+    );
+    return provider;
+}
+
 } // namespace Rigel::Voxel

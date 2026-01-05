@@ -442,7 +442,12 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->world.worldSet.setPersistenceStorage(std::make_shared<Persistence::FilesystemBackend>());
         m_impl->world.worldSet.setPersistenceRoot(
             Persistence::mainWorldRootPath(m_impl->world.activeWorldId));
-        m_impl->world.worldSet.setPersistencePreferredFormat("cr");
+        Voxel::ConfigProvider persistenceConfigProvider =
+            Voxel::makePersistenceConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
+        Persistence::PersistenceConfig persistenceConfig = persistenceConfigProvider.loadPersistenceConfig();
+        if (!persistenceConfig.format.empty()) {
+            m_impl->world.worldSet.setPersistencePreferredFormat(persistenceConfig.format);
+        }
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
         Input::loadInputBindings(m_impl->assets, m_impl->input);
@@ -461,9 +466,13 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->world.world = &m_impl->world.worldSet.createWorld(m_impl->world.activeWorldId);
         m_impl->world.worldView = &m_impl->world.worldSet.createView(m_impl->world.activeWorldId, m_impl->assets);
 
-        auto crSettings = std::make_shared<Persistence::Backends::CR::CRPersistenceSettings>();
-        crSettings->enableLz4 = config.persistence.cr.lz4;
-        m_impl->world.world->persistenceProviders().add(Persistence::Backends::CR::kCRSettingsProviderId, crSettings);
+        if (const auto* provider = persistenceConfig.findProvider(Persistence::Backends::CR::kCRSettingsProviderId)) {
+            auto crSettings = std::make_shared<Persistence::Backends::CR::CRPersistenceSettings>();
+            crSettings->enableLz4 = provider->getBool("lz4", crSettings->enableLz4);
+            m_impl->world.world->persistenceProviders().add(
+                Persistence::Backends::CR::kCRSettingsProviderId,
+                crSettings);
+        }
 
         auto generator =
             std::make_shared<Voxel::WorldGenerator>(m_impl->world.worldSet.resources().registry());

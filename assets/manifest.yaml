@@ -5,6 +5,8 @@ assets:
       path: config/world_generation.yaml
     render_config:
       path: config/render.yaml
+    persistence_config:
+      path: config/persistence.yaml
   textures:
     entity_debug:
       path: textures/blocks/stone/stone_shale.png

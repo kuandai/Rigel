@@ -147,12 +147,6 @@ struct WorldGenConfig {
         size_t maxResidentChunks = 0;  // 0 = no cap
     };
 
-    struct PersistenceConfig {
-        struct CRConfig {
-            bool lz4 = false;
-        } cr;
-    };
-
     uint32_t seed = 1337;
     std::string solidBlock = "base:debug";
     std::string surfaceBlock = "base:debug";
@@ -164,7 +158,6 @@ struct WorldGenConfig {
     CavesConfig caves;
     StructuresConfig structures;
     StreamConfig stream;
-    PersistenceConfig persistence;
 
     // Stage enable flags keyed by stage name.
     std::unordered_map<std::string, bool> stageEnabled;

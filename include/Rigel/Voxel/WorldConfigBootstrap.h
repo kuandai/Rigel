@@ -14,5 +14,8 @@ ConfigProvider makeWorldConfigProvider(Asset::AssetManager& assets,
 ConfigProvider makeRenderConfigProvider(Asset::AssetManager& assets,
                                         WorldId worldId);
 
+ConfigProvider makePersistenceConfigProvider(Asset::AssetManager& assets,
+                                             WorldId worldId);
+
 } // namespace Voxel
 } // namespace Rigel

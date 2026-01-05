@@ -3,6 +3,8 @@
 #include "RenderConfig.h"
 #include "WorldGenConfig.h"
 
+#include "Rigel/Persistence/PersistenceConfig.h"
+
 #include <Rigel/Asset/AssetManager.h>
 
 #include <memory>
@@ -56,6 +58,7 @@ public:
     void addSource(std::unique_ptr<IConfigSource> source);
     WorldGenConfig loadConfig() const;
     WorldRenderConfig loadRenderConfig() const;
+    Persistence::PersistenceConfig loadPersistenceConfig() const;
 
 private:
     std::vector<std::unique_ptr<IConfigSource>> m_sources;

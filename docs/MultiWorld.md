@@ -114,6 +114,7 @@ Per-world config overlays should be supported by convention:
 
 - `config/worlds/<worldId>/world_generation.yaml`
 - `config/worlds/<worldId>/render.yaml`
+- `config/worlds/<worldId>/persistence.yaml`
 
 Global defaults apply when per-world overrides are absent.
 

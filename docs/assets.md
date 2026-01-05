@@ -64,6 +64,7 @@ via `ResourceRegistry` (or the config provider):
 
 - `config/world_generation.yaml`
 - `config/render.yaml`
+- `config/persistence.yaml`
 
 ### Example B: Loading Binary Data (OpenGL Textures)
 

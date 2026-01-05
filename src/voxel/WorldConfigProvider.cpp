@@ -264,4 +264,16 @@ WorldRenderConfig ConfigProvider::loadRenderConfig() const {
     return config;
 }
 
+Persistence::PersistenceConfig ConfigProvider::loadPersistenceConfig() const {
+    Persistence::PersistenceConfig config;
+    for (const auto& source : m_sources) {
+        auto yaml = source->load();
+        if (!yaml) {
+            continue;
+        }
+        config.applyYaml(source->name().c_str(), *yaml);
+    }
+    return config;
+}
+
 } // namespace Rigel::Voxel

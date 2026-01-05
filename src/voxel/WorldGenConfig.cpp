@@ -311,14 +311,6 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         stream.maxResidentChunks = static_cast<size_t>(resident);
     }
 
-    if (root.has_child("persistence")) {
-        ryml::ConstNodeRef persistenceNode = root["persistence"];
-        if (persistenceNode.has_child("cr")) {
-            ryml::ConstNodeRef crNode = persistenceNode["cr"];
-            persistence.cr.lz4 = Util::readBool(crNode, "lz4", persistence.cr.lz4);
-        }
-    }
-
     if (root.has_child("generation") && root["generation"].has_child("pipeline")) {
         ryml::ConstNodeRef pipeline = root["generation"]["pipeline"];
         bool orderMatches = (pipeline.num_children() == kWorldGenPipelineStages.size());

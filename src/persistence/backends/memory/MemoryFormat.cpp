@@ -1,13 +1,23 @@
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 
 #include "Rigel/Persistence/Storage.h"
+#include "Rigel/Voxel/ChunkCoord.h"
+#include "Rigel/Voxel/Chunk.h"
 
+#include <bit>
+#include <cstdio>
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
+#include <vector>
+
+#include <glm/vec3.hpp>
 
 namespace Rigel::Persistence::Backends::Memory {
 
 namespace {
+
+constexpr int32_t kMemoryRegionSpan = 16;
 
 std::string zoneRoot(const PersistenceContext& context, const std::string& zoneId) {
     return context.rootPath + "/zones/" + zoneId;
@@ -54,6 +64,142 @@ std::string readString(ByteReader& reader) {
     return out;
 }
 
+void writeF32(ByteWriter& writer, float value) {
+    uint32_t bits = std::bit_cast<uint32_t>(value);
+    writer.writeU32(bits);
+}
+
+float readF32(ByteReader& reader) {
+    uint32_t bits = reader.readU32();
+    return std::bit_cast<float>(bits);
+}
+
+void writeU64(ByteWriter& writer, uint64_t value) {
+    writer.writeU32(static_cast<uint32_t>((value >> 32) & 0xFFFFFFFFu));
+    writer.writeU32(static_cast<uint32_t>(value & 0xFFFFFFFFu));
+}
+
+uint64_t readU64(ByteReader& reader) {
+    uint64_t high = static_cast<uint64_t>(reader.readU32());
+    uint64_t low = static_cast<uint64_t>(reader.readU32());
+    return (high << 32) | low;
+}
+
+void writeVec3(ByteWriter& writer, const glm::vec3& value) {
+    writeF32(writer, value.x);
+    writeF32(writer, value.y);
+    writeF32(writer, value.z);
+}
+
+glm::vec3 readVec3(ByteReader& reader) {
+    glm::vec3 out;
+    out.x = readF32(reader);
+    out.y = readF32(reader);
+    out.z = readF32(reader);
+    return out;
+}
+
+void writeBlockState(ByteWriter& writer, const Voxel::BlockState& state) {
+    writer.writeU16(state.id.type);
+    writer.writeU8(state.metadata);
+    writer.writeU8(state.lightLevel);
+}
+
+Voxel::BlockState readBlockState(ByteReader& reader) {
+    Voxel::BlockState state;
+    state.id.type = reader.readU16();
+    state.metadata = reader.readU8();
+    state.lightLevel = reader.readU8();
+    return state;
+}
+
+void writeChunkSpan(ByteWriter& writer, const ChunkSpan& span) {
+    writer.writeI32(span.chunkX);
+    writer.writeI32(span.chunkY);
+    writer.writeI32(span.chunkZ);
+    writer.writeI32(span.offsetX);
+    writer.writeI32(span.offsetY);
+    writer.writeI32(span.offsetZ);
+    writer.writeI32(span.sizeX);
+    writer.writeI32(span.sizeY);
+    writer.writeI32(span.sizeZ);
+}
+
+ChunkSpan readChunkSpan(ByteReader& reader) {
+    ChunkSpan span;
+    span.chunkX = reader.readI32();
+    span.chunkY = reader.readI32();
+    span.chunkZ = reader.readI32();
+    span.offsetX = reader.readI32();
+    span.offsetY = reader.readI32();
+    span.offsetZ = reader.readI32();
+    span.sizeX = reader.readI32();
+    span.sizeY = reader.readI32();
+    span.sizeZ = reader.readI32();
+    return span;
+}
+
+bool parseRegionFilename(const std::string& name, int& rx, int& ry, int& rz) {
+    return std::sscanf(name.c_str(), "region_%d_%d_%d.mem", &rx, &ry, &rz) == 3;
+}
+
+bool parseEntityRegionFilename(const std::string& name, int& rx, int& ry, int& rz) {
+    return std::sscanf(name.c_str(), "entityRegion_%d_%d_%d.mem", &rx, &ry, &rz) == 3;
+}
+
+int32_t floorDiv(int32_t value, int32_t divisor) {
+    int32_t q = value / divisor;
+    int32_t r = value % divisor;
+    if (r < 0) {
+        q -= 1;
+    }
+    return q;
+}
+
+class MemoryRegionLayout final : public RegionLayout {
+public:
+    RegionKey regionForChunk(const std::string& zoneId, Voxel::ChunkCoord coord) const override {
+        return RegionKey{
+            zoneId,
+            floorDiv(coord.x, kMemoryRegionSpan),
+            floorDiv(coord.y, kMemoryRegionSpan),
+            floorDiv(coord.z, kMemoryRegionSpan)
+        };
+    }
+
+    std::vector<ChunkKey> storageKeysForChunk(const std::string& zoneId,
+                                              Voxel::ChunkCoord coord) const override {
+        return {ChunkKey{zoneId, coord.x, coord.y, coord.z}};
+    }
+
+    ChunkSpan spanForStorageKey(const ChunkKey& key) const override {
+        ChunkSpan span;
+        span.chunkX = key.x;
+        span.chunkY = key.y;
+        span.chunkZ = key.z;
+        span.sizeX = Voxel::Chunk::SIZE;
+        span.sizeY = Voxel::Chunk::SIZE;
+        span.sizeZ = Voxel::Chunk::SIZE;
+        return span;
+    }
+
+    std::vector<Voxel::ChunkCoord> chunksForRegion(const RegionKey& key) const override {
+        std::vector<Voxel::ChunkCoord> coords;
+        coords.reserve(kMemoryRegionSpan * kMemoryRegionSpan * kMemoryRegionSpan);
+        int32_t baseX = key.x * kMemoryRegionSpan;
+        int32_t baseY = key.y * kMemoryRegionSpan;
+        int32_t baseZ = key.z * kMemoryRegionSpan;
+        for (int32_t z = 0; z < kMemoryRegionSpan; ++z) {
+            for (int32_t y = 0; y < kMemoryRegionSpan; ++y) {
+                for (int32_t x = 0; x < kMemoryRegionSpan; ++x) {
+                    coords.push_back(Voxel::ChunkCoord{baseX + x, baseY + y, baseZ + z});
+                }
+            }
+        }
+        return coords;
+    }
+};
+
 class MemoryWorldMetadataCodec final : public WorldMetadataCodec {
 public:
     std::string metadataPath(const PersistenceContext& context) const override {
@@ -98,9 +244,10 @@ public:
         writer.writeI32(chunk.key.x);
         writer.writeI32(chunk.key.y);
         writer.writeI32(chunk.key.z);
-        writer.writeU32(static_cast<uint32_t>(chunk.payload.size()));
-        if (!chunk.payload.empty()) {
-            writer.writeBytes(chunk.payload.data(), chunk.payload.size());
+        writeChunkSpan(writer, chunk.data.span);
+        writer.writeU32(static_cast<uint32_t>(chunk.data.blocks.size()));
+        for (const auto& block : chunk.data.blocks) {
+            writeBlockState(writer, block);
         }
     }
 
@@ -110,10 +257,11 @@ public:
         out.key.x = reader.readI32();
         out.key.y = reader.readI32();
         out.key.z = reader.readI32();
-        uint32_t size = reader.readU32();
-        out.payload.resize(size);
-        if (size > 0) {
-            reader.readBytes(out.payload.data(), size);
+        out.data.span = readChunkSpan(reader);
+        uint32_t count = reader.readU32();
+        out.data.blocks.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            out.data.blocks.push_back(readBlockState(reader));
         }
         return out;
     }
@@ -122,19 +270,50 @@ public:
 class MemoryEntityRegionCodec final : public EntityRegionCodec {
 public:
     void write(const EntityRegionSnapshot& region, ByteWriter& writer) override {
-        writer.writeU32(static_cast<uint32_t>(region.payload.size()));
-        if (!region.payload.empty()) {
-            writer.writeBytes(region.payload.data(), region.payload.size());
+        writer.writeU32(static_cast<uint32_t>(region.chunks.size()));
+        for (const auto& chunk : region.chunks) {
+            writer.writeI32(chunk.coord.x);
+            writer.writeI32(chunk.coord.y);
+            writer.writeI32(chunk.coord.z);
+            writer.writeU32(static_cast<uint32_t>(chunk.entities.size()));
+            for (const auto& entity : chunk.entities) {
+                writeString(writer, entity.typeId);
+                writeU64(writer, entity.id.time);
+                writer.writeU32(entity.id.random);
+                writer.writeU32(entity.id.counter);
+                writeVec3(writer, entity.position);
+                writeVec3(writer, entity.velocity);
+                writeVec3(writer, entity.viewDirection);
+                writeString(writer, entity.modelId);
+            }
         }
     }
 
     EntityRegionSnapshot read(ByteReader& reader, const EntityRegionKey& keyHint) override {
         EntityRegionSnapshot out;
         out.key = keyHint;
-        uint32_t size = reader.readU32();
-        out.payload.resize(size);
-        if (size > 0) {
-            reader.readBytes(out.payload.data(), size);
+        uint32_t chunkCount = reader.readU32();
+        out.chunks.reserve(chunkCount);
+        for (uint32_t c = 0; c < chunkCount; ++c) {
+            EntityPersistedChunk chunk;
+            chunk.coord.x = reader.readI32();
+            chunk.coord.y = reader.readI32();
+            chunk.coord.z = reader.readI32();
+            uint32_t entityCount = reader.readU32();
+            chunk.entities.reserve(entityCount);
+            for (uint32_t e = 0; e < entityCount; ++e) {
+                EntityPersistedEntity entity;
+                entity.typeId = readString(reader);
+                entity.id.time = readU64(reader);
+                entity.id.random = reader.readU32();
+                entity.id.counter = reader.readU32();
+                entity.position = readVec3(reader);
+                entity.velocity = readVec3(reader);
+                entity.viewDirection = readVec3(reader);
+                entity.modelId = readString(reader);
+                chunk.entities.push_back(std::move(entity));
+            }
+            out.chunks.push_back(std::move(chunk));
         }
         return out;
     }
@@ -171,6 +350,25 @@ public:
             region.chunks.push_back(m_codec.read(*reader, hint));
         }
         return region;
+    }
+
+    std::vector<RegionKey> listRegions(const std::string& zoneId) override {
+        std::vector<RegionKey> regions;
+        std::string dir = zoneRoot(m_context, zoneId) + "/regions";
+        if (!m_storage->exists(dir)) {
+            return regions;
+        }
+        for (const auto& entry : m_storage->list(dir)) {
+            std::string name = std::filesystem::path(entry).filename().string();
+            int rx = 0;
+            int ry = 0;
+            int rz = 0;
+            if (!parseRegionFilename(name, rx, ry, rz)) {
+                continue;
+            }
+            regions.push_back(RegionKey{zoneId, rx, ry, rz});
+        }
+        return regions;
     }
 
     bool supportsChunkIO() const override {
@@ -219,6 +417,25 @@ public:
         return m_codec.read(*reader, key);
     }
 
+    std::vector<EntityRegionKey> listRegions(const std::string& zoneId) override {
+        std::vector<EntityRegionKey> regions;
+        std::string dir = zoneRoot(m_context, zoneId) + "/entities";
+        if (!m_storage->exists(dir)) {
+            return regions;
+        }
+        for (const auto& entry : m_storage->list(dir)) {
+            std::string name = std::filesystem::path(entry).filename().string();
+            int rx = 0;
+            int ry = 0;
+            int rz = 0;
+            if (!parseEntityRegionFilename(name, rx, ry, rz)) {
+                continue;
+            }
+            regions.push_back(EntityRegionKey{zoneId, rx, ry, rz});
+        }
+        return regions;
+    }
+
 private:
     std::shared_ptr<StorageBackend> m_storage;
     PersistenceContext m_context;
@@ -254,11 +471,16 @@ public:
         return m_entityContainer;
     }
 
+    RegionLayout& regionLayout() override {
+        return m_layout;
+    }
+
 private:
     std::shared_ptr<StorageBackend> m_storage;
     PersistenceContext m_context;
     MemoryWorldMetadataCodec m_worldCodec;
     MemoryZoneMetadataCodec m_zoneCodec;
+    MemoryRegionLayout m_layout;
     MemoryChunkCodec m_chunkCodec;
     MemoryEntityRegionCodec m_entityCodec;
     MemoryChunkContainer m_chunkContainer;

@@ -3,6 +3,7 @@
 #include "Rigel/Entity/EntityModelLoader.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
+#include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/WorldSet.h"
@@ -439,6 +440,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             Persistence::Backends::CR::descriptor(),
             Persistence::Backends::CR::factory(),
             Persistence::Backends::CR::probe());
+        m_impl->world.worldSet.persistenceFormats().registerFormat(
+            Persistence::Backends::Memory::descriptor(),
+            Persistence::Backends::Memory::factory(),
+            Persistence::Backends::Memory::probe());
         m_impl->world.worldSet.setPersistenceStorage(std::make_shared<Persistence::FilesystemBackend>());
         m_impl->world.worldSet.setPersistenceRoot(
             Persistence::mainWorldRootPath(m_impl->world.activeWorldId));

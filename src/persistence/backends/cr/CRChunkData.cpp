@@ -254,6 +254,7 @@ std::vector<ChunkSnapshot> encodeRigelChunk(const Voxel::Chunk& chunk,
                                             const Voxel::ChunkCoord& coord,
                                             const std::string& zoneId) {
     std::vector<ChunkSnapshot> out;
+    (void)registry;
 
     for (int subchunkIndex = 0; subchunkIndex < 8; ++subchunkIndex) {
         std::vector<Voxel::BlockState> blocks;
@@ -280,46 +281,18 @@ std::vector<ChunkSnapshot> encodeRigelChunk(const Voxel::Chunk& chunk,
         ChunkKey crKey = toCRChunk({coord.x, coord.y, coord.z, subchunkIndex});
         crKey.zoneId = zoneId;
 
-        std::unordered_map<uint16_t, uint16_t> paletteIndex;
-        auto palette = buildPalette(blocks, registry, paletteIndex);
-
-        BufferWriter writer;
-        writer.writeI32(crKey.x);
-        writer.writeI32(crKey.y);
-        writer.writeI32(crKey.z);
-
-        if (palette.size() == 1) {
-            writer.writeU8(kBlockSingle);
-            writer.writeString(palette[0]);
-        } else {
-            writer.writeU8(kBlockLayered);
-            writer.writeI32(static_cast<int32_t>(palette.size()));
-            for (const auto& key : palette) {
-                writer.writeString(key);
-            }
-
-            for (int layer = 0; layer < 16; ++layer) {
-                std::array<uint16_t, 256> indices{};
-                for (int z = 0; z < 16; ++z) {
-                    for (int x = 0; x < 16; ++x) {
-                        size_t index = static_cast<size_t>(x + z * 16 + layer * 256);
-                        uint16_t blockId = blocks[index].id.type;
-                        auto it = paletteIndex.find(blockId);
-                        uint16_t paletteId = (it == paletteIndex.end()) ? 0 : it->second;
-                        indices[static_cast<size_t>(x + z * 16)] = paletteId;
-                    }
-                }
-                writeLayer(writer, indices, static_cast<uint16_t>(palette.size()));
-            }
-        }
-
-        writer.writeU8(kSkyNull);
-        writer.writeU8(kBlockLightNull);
-        writer.writeU8(kBlockEntityNull);
-
         ChunkSnapshot snapshot;
         snapshot.key = crKey;
-        snapshot.payload = std::move(writer.data);
+        snapshot.data.span.chunkX = coord.x;
+        snapshot.data.span.chunkY = coord.y;
+        snapshot.data.span.chunkZ = coord.z;
+        snapshot.data.span.offsetX = (subchunkIndex & 1) * 16;
+        snapshot.data.span.offsetY = ((subchunkIndex >> 1) & 1) * 16;
+        snapshot.data.span.offsetZ = ((subchunkIndex >> 2) & 1) * 16;
+        snapshot.data.span.sizeX = 16;
+        snapshot.data.span.sizeY = 16;
+        snapshot.data.span.sizeZ = 16;
+        snapshot.data.blocks = std::move(blocks);
         out.push_back(std::move(snapshot));
     }
 
@@ -331,111 +304,29 @@ void decodeChunkSnapshot(const ChunkSnapshot& snapshot,
                          const Voxel::BlockRegistry& registry,
                          std::optional<uint32_t> worldGenVersion,
                          bool markPersistClean) {
-    BufferReader reader(snapshot.payload);
-    ChunkKey key = snapshot.key;
-    key.x = reader.readI32();
-    key.y = reader.readI32();
-    key.z = reader.readI32();
-
-    auto rigelCoord = toRigelChunk(key);
-    Voxel::ChunkCoord coord{rigelCoord.rigelChunkX, rigelCoord.rigelChunkY, rigelCoord.rigelChunkZ};
+    const ChunkSpan& span = snapshot.data.span;
+    Voxel::ChunkCoord coord{span.chunkX, span.chunkY, span.chunkZ};
     Voxel::Chunk& chunk = manager.getOrCreateChunk(coord);
     if (worldGenVersion) {
         chunk.setWorldGenVersion(*worldGenVersion);
     }
-
-    uint8_t blockType = reader.readU8();
-    std::vector<Voxel::BlockID> paletteIds;
-
-    if (blockType == kBlockNull) {
-        return;
+    const auto& blocks = snapshot.data.blocks;
+    size_t expected = static_cast<size_t>(span.sizeX) *
+        static_cast<size_t>(span.sizeY) *
+        static_cast<size_t>(span.sizeZ);
+    if (blocks.size() != expected) {
+        throw std::runtime_error("CRChunkData: chunk block data size mismatch");
     }
 
-    if (blockType == kBlockSingle) {
-        std::string keyString = reader.readString();
-        auto blockId = registry.findByIdentifier(keyString).value_or(Voxel::BlockRegistry::airId());
-        paletteIds.push_back(blockId);
-        std::array<uint16_t, 256> indices{};
-        indices.fill(0);
-        for (int layer = 0; layer < 16; ++layer) {
-            for (int z = 0; z < 16; ++z) {
-                for (int x = 0; x < 16; ++x) {
-                    auto local = toRigelLocal(x, layer, z, rigelCoord.subchunkIndex);
-                    chunk.setBlock(local.x, local.y, local.z, Voxel::BlockState{blockId}, registry);
-                }
+    for (int y = 0; y < span.sizeY; ++y) {
+        for (int z = 0; z < span.sizeZ; ++z) {
+            for (int x = 0; x < span.sizeX; ++x) {
+                size_t index = static_cast<size_t>(x + z * span.sizeX + y * span.sizeX * span.sizeZ);
+                int localX = span.offsetX + x;
+                int localY = span.offsetY + y;
+                int localZ = span.offsetZ + z;
+                chunk.setBlock(localX, localY, localZ, blocks[index], registry);
             }
-        }
-    } else if (blockType == kBlockLayered) {
-        int32_t paletteSize = reader.readI32();
-        paletteIds.reserve(static_cast<size_t>(paletteSize));
-        for (int32_t i = 0; i < paletteSize; ++i) {
-            std::string id = reader.readString();
-            auto blockId = registry.findByIdentifier(id).value_or(Voxel::BlockRegistry::airId());
-            paletteIds.push_back(blockId);
-        }
-
-        for (int layer = 0; layer < 16; ++layer) {
-            uint8_t layerType = reader.readU8();
-            std::array<uint16_t, 256> indices{};
-            readLayer(reader, layerType, indices);
-            for (int z = 0; z < 16; ++z) {
-                for (int x = 0; x < 16; ++x) {
-                    uint16_t paletteIndex = indices[static_cast<size_t>(x + z * 16)];
-                    Voxel::BlockID blockId = Voxel::BlockRegistry::airId();
-                    if (paletteIndex < paletteIds.size()) {
-                        blockId = paletteIds[paletteIndex];
-                    }
-                    auto local = toRigelLocal(x, layer, z, rigelCoord.subchunkIndex);
-                    chunk.setBlock(local.x, local.y, local.z, Voxel::BlockState{blockId}, registry);
-                }
-            }
-        }
-    } else {
-        throw std::runtime_error("CRChunkData: unknown block data type");
-    }
-
-    uint8_t skylightType = reader.readU8();
-    if (skylightType == 3) {
-        reader.readU8();
-    } else if (skylightType == 2) {
-        for (int layer = 0; layer < 16; ++layer) {
-            uint8_t layerType = reader.readU8();
-            if (layerType == 1) {
-                reader.readU8();
-            } else if (layerType == 2) {
-                std::array<uint8_t, 128> bytes{};
-                reader.readBytes(bytes.data(), bytes.size());
-            }
-        }
-    }
-
-    uint8_t blockLightType = reader.readU8();
-    if (blockLightType == 2) {
-        for (int layer = 0; layer < 16; ++layer) {
-            uint8_t layerType = reader.readU8();
-            if (layerType == 1) {
-                reader.readU8();
-                reader.readU8();
-                reader.readU8();
-            } else if (layerType == 2) {
-                std::array<uint8_t, 512> bytes{};
-                reader.readBytes(bytes.data(), bytes.size());
-            } else if (layerType == 3 || layerType == 4 || layerType == 5) {
-                reader.readU8();
-                reader.readU8();
-                reader.readU8();
-                std::array<uint8_t, 128> bytes{};
-                reader.readBytes(bytes.data(), bytes.size());
-            }
-        }
-    }
-
-    uint8_t blockEntityFlag = reader.readU8();
-    if (blockEntityFlag == 1) {
-        int32_t size = reader.readI32();
-        if (size > 0) {
-            std::vector<uint8_t> payload(static_cast<size_t>(size));
-            reader.readBytes(payload.data(), payload.size());
         }
     }
 

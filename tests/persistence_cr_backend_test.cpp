@@ -7,6 +7,7 @@
 #include "Rigel/Persistence/Backends/CR/CRBin.h"
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
 #include "Rigel/Persistence/Backends/CR/CRLz4.h"
+#include "Rigel/Voxel/Block.h"
 
 #include <filesystem>
 #include "Rigel/Persistence/Storage.h"
@@ -223,22 +224,20 @@ private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
 };
 
-std::vector<uint8_t> makeMinimalChunkPayload(const ChunkKey& key) {
-    std::vector<uint8_t> payload;
-    auto appendI32 = [&](int32_t value) {
-        payload.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
-        payload.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
-        payload.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
-        payload.push_back(static_cast<uint8_t>(value & 0xFF));
-    };
-    appendI32(key.x);
-    appendI32(key.y);
-    appendI32(key.z);
-    payload.push_back(static_cast<uint8_t>(0));
-    payload.push_back(static_cast<uint8_t>(1));
-    payload.push_back(static_cast<uint8_t>(1));
-    payload.push_back(static_cast<uint8_t>(0));
-    return payload;
+ChunkData makeMinimalChunkData(const ChunkKey& key) {
+    auto rigel = toRigelChunk(key);
+    ChunkData data;
+    data.span.chunkX = rigel.rigelChunkX;
+    data.span.chunkY = rigel.rigelChunkY;
+    data.span.chunkZ = rigel.rigelChunkZ;
+    data.span.offsetX = (rigel.subchunkIndex & 1) * 16;
+    data.span.offsetY = ((rigel.subchunkIndex >> 1) & 1) * 16;
+    data.span.offsetZ = ((rigel.subchunkIndex >> 2) & 1) * 16;
+    data.span.sizeX = 16;
+    data.span.sizeY = 16;
+    data.span.sizeZ = 16;
+    data.blocks.assign(16 * 16 * 16, Rigel::Voxel::BlockState{});
+    return data;
 }
 
 const CRBinValue& requireField(const CRBinObject& obj, const std::string& name) {
@@ -319,7 +318,7 @@ TEST_CASE(CRBackend_region_roundtrip_minimal) {
 
     ChunkSnapshot chunk;
     chunk.key = ChunkKey{"zone:default", 0, 0, 0};
-    chunk.payload = makeMinimalChunkPayload(chunk.key);
+    chunk.data = makeMinimalChunkData(chunk.key);
     region.chunks.push_back(chunk);
 
     service.saveRegion(region, context);
@@ -327,7 +326,7 @@ TEST_CASE(CRBackend_region_roundtrip_minimal) {
 
     CHECK_EQ(loaded.chunks.size(), 1u);
     CHECK_EQ(loaded.chunks[0].key, chunk.key);
-    CHECK_EQ(loaded.chunks[0].payload, chunk.payload);
+    CHECK_EQ(loaded.chunks[0].data, chunk.data);
 }
 
 TEST_CASE(CRBackend_world_metadata_roundtrip) {
@@ -377,7 +376,7 @@ TEST_CASE(CRBackend_region_roundtrip_lz4) {
 
     ChunkSnapshot chunk;
     chunk.key = ChunkKey{"zone:default", 1, 0, 0};
-    chunk.payload = makeMinimalChunkPayload(chunk.key);
+    chunk.data = makeMinimalChunkData(chunk.key);
     region.chunks.push_back(chunk);
 
     service.saveRegion(region, context);
@@ -392,7 +391,7 @@ TEST_CASE(CRBackend_region_roundtrip_lz4) {
 
     CHECK_EQ(loaded.chunks.size(), 1u);
     CHECK_EQ(loaded.chunks[0].key, chunk.key);
-    CHECK_EQ(loaded.chunks[0].payload, chunk.payload);
+    CHECK_EQ(loaded.chunks[0].data, chunk.data);
 }
 
 TEST_CASE(CRBin_roundtrip_basic) {
@@ -470,7 +469,7 @@ TEST_CASE(CRBackend_filesystem_region_roundtrip) {
 
     ChunkSnapshot chunk;
     chunk.key = ChunkKey{"zone:default", 2, 0, 0};
-    chunk.payload = makeMinimalChunkPayload(chunk.key);
+    chunk.data = makeMinimalChunkData(chunk.key);
     region.chunks.push_back(chunk);
 
     service.saveRegion(region, context);
@@ -481,5 +480,5 @@ TEST_CASE(CRBackend_filesystem_region_roundtrip) {
     auto loaded = service.loadRegion(region.key, context);
     CHECK_EQ(loaded.chunks.size(), 1u);
     CHECK_EQ(loaded.chunks[0].key, chunk.key);
-    CHECK_EQ(loaded.chunks[0].payload, chunk.payload);
+    CHECK_EQ(loaded.chunks[0].data, chunk.data);
 }

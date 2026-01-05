@@ -4,6 +4,10 @@
 #include <string>
 #include <unordered_map>
 
+namespace Rigel {
+namespace Voxel { class BlockRegistry; }
+}
+
 namespace Rigel::Persistence {
 
 class Provider {
@@ -32,6 +36,20 @@ public:
 
 private:
     std::unordered_map<std::string, std::shared_ptr<Provider>> m_providers;
+};
+
+inline constexpr const char* kBlockRegistryProviderId = "rigel:persistence.block_registry";
+
+class BlockRegistryProvider final : public Provider {
+public:
+    explicit BlockRegistryProvider(const Voxel::BlockRegistry* registry)
+        : m_registry(registry) {
+    }
+
+    const Voxel::BlockRegistry* registry() const { return m_registry; }
+
+private:
+    const Voxel::BlockRegistry* m_registry = nullptr;
 };
 
 } // namespace Rigel::Persistence

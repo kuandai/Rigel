@@ -8,6 +8,8 @@ class PersistenceService {
 public:
     explicit PersistenceService(FormatRegistry& registry);
 
+    std::unique_ptr<PersistenceFormat> openFormat(const PersistenceContext& context) const;
+
     void saveWorld(const WorldSnapshot& snapshot, SaveScope scope, const PersistenceContext& context);
     WorldMetadata loadWorldMetadata(const PersistenceContext& context);
 

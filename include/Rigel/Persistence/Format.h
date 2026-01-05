@@ -2,6 +2,7 @@
 
 #include "Rigel/Persistence/Codecs.h"
 #include "Rigel/Persistence/Containers.h"
+#include "Rigel/Persistence/RegionLayout.h"
 #include "Rigel/Persistence/Types.h"
 
 #include <functional>
@@ -49,6 +50,7 @@ public:
     virtual ZoneMetadataCodec& zoneMetadataCodec() = 0;
     virtual ChunkContainer& chunkContainer() = 0;
     virtual EntityContainer& entityContainer() = 0;
+    virtual RegionLayout& regionLayout() = 0;
 };
 
 using FormatFactory = std::function<std::unique_ptr<PersistenceFormat>(const PersistenceContext&)>;

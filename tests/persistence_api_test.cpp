@@ -3,6 +3,9 @@
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/Storage.h"
+#include "Rigel/Voxel/Block.h"
+
+#include <glm/vec3.hpp>
 
 #include <unordered_map>
 
@@ -254,6 +257,10 @@ public:
     ChunkRegionSnapshot loadRegion(const RegionKey& key) override {
         return ChunkRegionSnapshot{key, {}};
     }
+
+    std::vector<RegionKey> listRegions(const std::string&) override {
+        return {};
+    }
 };
 
 class NullEntityContainer final : public EntityContainer {
@@ -263,6 +270,38 @@ public:
 
     EntityRegionSnapshot loadRegion(const EntityRegionKey& key) override {
         return EntityRegionSnapshot{key, {}};
+    }
+
+    std::vector<EntityRegionKey> listRegions(const std::string&) override {
+        return {};
+    }
+};
+
+class NullRegionLayout final : public RegionLayout {
+public:
+    RegionKey regionForChunk(const std::string& zoneId, Rigel::Voxel::ChunkCoord coord) const override {
+        (void)coord;
+        return RegionKey{zoneId, 0, 0, 0};
+    }
+
+    std::vector<ChunkKey> storageKeysForChunk(const std::string& zoneId,
+                                              Rigel::Voxel::ChunkCoord coord) const override {
+        return {ChunkKey{zoneId, coord.x, coord.y, coord.z}};
+    }
+
+    ChunkSpan spanForStorageKey(const ChunkKey& key) const override {
+        ChunkSpan span;
+        span.chunkX = key.x;
+        span.chunkY = key.y;
+        span.chunkZ = key.z;
+        span.sizeX = 1;
+        span.sizeY = 1;
+        span.sizeZ = 1;
+        return span;
+    }
+
+    std::vector<Rigel::Voxel::ChunkCoord> chunksForRegion(const RegionKey& key) const override {
+        return {Rigel::Voxel::ChunkCoord{key.x, key.y, key.z}};
     }
 };
 
@@ -292,10 +331,15 @@ public:
         return m_entityContainer;
     }
 
+    RegionLayout& regionLayout() override {
+        return m_layout;
+    }
+
 private:
     FormatDescriptor m_descriptor;
     NullWorldMetadataCodec m_worldCodec;
     NullZoneMetadataCodec m_zoneCodec;
+    NullRegionLayout m_layout;
     NullChunkContainer m_chunkContainer;
     NullEntityContainer m_entityContainer;
 };
@@ -363,7 +407,13 @@ TEST_CASE(Persistence_RegionRoundTrip) {
 
     ChunkSnapshot chunk;
     chunk.key = ChunkKey{"zone-main", 1, 2, 3};
-    chunk.payload = {1, 2, 3, 4};
+    chunk.data.span.chunkX = 1;
+    chunk.data.span.chunkY = 2;
+    chunk.data.span.chunkZ = 3;
+    chunk.data.span.sizeX = 1;
+    chunk.data.span.sizeY = 1;
+    chunk.data.span.sizeZ = 1;
+    chunk.data.blocks.push_back(Rigel::Voxel::BlockState{Rigel::Voxel::BlockID{1}, 2, 3});
 
     ChunkRegionSnapshot region;
     region.key = RegionKey{"zone-main", 0, 0, 0};
@@ -390,7 +440,19 @@ TEST_CASE(Persistence_EntityRegionRoundTrip) {
 
     EntityRegionSnapshot entityRegion;
     entityRegion.key = EntityRegionKey{"zone-main", 0, 0, 0};
-    entityRegion.payload = {7, 8, 9};
+    EntityPersistedChunk chunk;
+    chunk.coord = Rigel::Voxel::ChunkCoord{0, 0, 0};
+    EntityPersistedEntity entity;
+    entity.typeId = "rigel:test_entity";
+    entity.id.time = 1;
+    entity.id.random = 2;
+    entity.id.counter = 3;
+    entity.position = glm::vec3(1.0f, 2.0f, 3.0f);
+    entity.velocity = glm::vec3(0.0f);
+    entity.viewDirection = glm::vec3(0.0f, 0.0f, 1.0f);
+    entity.modelId = "models/entities/test";
+    chunk.entities.push_back(entity);
+    entityRegion.chunks.push_back(chunk);
 
     service.saveEntities(entityRegion, context);
 
@@ -415,7 +477,13 @@ TEST_CASE(Persistence_PartialChunkSupport) {
 
     ChunkSnapshot chunk;
     chunk.key = ChunkKey{"zone-main", 5, 6, 7};
-    chunk.payload = {42, 43};
+    chunk.data.span.chunkX = 5;
+    chunk.data.span.chunkY = 6;
+    chunk.data.span.chunkZ = 7;
+    chunk.data.span.sizeX = 1;
+    chunk.data.span.sizeY = 1;
+    chunk.data.span.sizeZ = 1;
+    chunk.data.blocks.push_back(Rigel::Voxel::BlockState{Rigel::Voxel::BlockID{2}, 0, 0});
 
     container.saveChunk(chunk);
     auto loaded = container.loadChunk(chunk.key);
@@ -447,7 +515,19 @@ TEST_CASE(Persistence_UnsupportedEntityPolicy) {
 
     EntityRegionSnapshot entityRegion;
     entityRegion.key = EntityRegionKey{"zone-main", 1, 1, 1};
-    entityRegion.payload = {1};
+    EntityPersistedChunk chunk;
+    chunk.coord = Rigel::Voxel::ChunkCoord{0, 0, 0};
+    EntityPersistedEntity entity;
+    entity.typeId = "rigel:test_entity";
+    entity.id.time = 1;
+    entity.id.random = 2;
+    entity.id.counter = 3;
+    entity.position = glm::vec3(0.0f);
+    entity.velocity = glm::vec3(0.0f);
+    entity.viewDirection = glm::vec3(0.0f, 0.0f, 1.0f);
+    entity.modelId = "models/entities/test";
+    chunk.entities.push_back(entity);
+    entityRegion.chunks.push_back(chunk);
 
     context.policies.unsupportedFeaturePolicy = UnsupportedFeaturePolicy::Fail;
     CHECK_THROWS(service.saveEntities(entityRegion, context));
@@ -455,4 +535,3 @@ TEST_CASE(Persistence_UnsupportedEntityPolicy) {
     context.policies.unsupportedFeaturePolicy = UnsupportedFeaturePolicy::NoOp;
     CHECK_NO_THROW(service.saveEntities(entityRegion, context));
 }
-

@@ -23,6 +23,10 @@ PersistenceService::PersistenceService(FormatRegistry& registry)
     : m_registry(registry) {
 }
 
+std::unique_ptr<PersistenceFormat> PersistenceService::openFormat(const PersistenceContext& context) const {
+    return resolve(context);
+}
+
 std::unique_ptr<PersistenceFormat> PersistenceService::resolve(const PersistenceContext& context) const {
     return m_registry.resolveFormat(context);
 }

@@ -7,6 +7,12 @@ Asset paths start at the root of the `assets/` directory.
 * **Wrong:** `ResourceRegistry::Get("assets/logo.png");`
 * **Correct:** `ResourceRegistry::Get("logo.png");`
 
+## Relationship to AssetManager
+
+`AssetManager` consumes embedded bytes from `ResourceRegistry` when it loads
+manifest entries. The registry handles build-time embedding; the asset system
+handles runtime parsing, loading, and caching.
+
 ## 1. Adding Assets
 
 To add a file to the application:
@@ -80,3 +86,10 @@ unsigned char* img = stbi_load_from_memory(
     &width, &height, &channels, 4
 );
 ```
+
+---
+
+## Related Docs
+
+- `docs/AssetSystem.md`
+- `docs/ConfigurationSystem.md`

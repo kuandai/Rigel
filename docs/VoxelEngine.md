@@ -1,6 +1,6 @@
-# Voxel Engine Design Document
+# Voxel Engine Overview
 
-This document outlines the architecture for a flexible, extensible voxel engine within Rigel. The design prioritizes extensibility for custom block types, animated textures, non-cubic geometry, and performance at scale.
+This document outlines the current voxel engine architecture within Rigel. Sections marked "Planned" describe intended future work and are not implemented yet.
 
 ---
 
@@ -55,7 +55,17 @@ This document outlines the architecture for a flexible, extensible voxel engine 
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Namespace Organization
+### 2.2 World Ownership (Current)
+
+- `WorldSet` owns shared `WorldResources` and houses multiple `World` entries.
+- `WorldResources` contains the shared `BlockRegistry` and `TextureAtlas`.
+- `World` owns authoritative chunk data, entity data, and the active `WorldGenerator`.
+- `WorldView` owns the streaming, meshing, and render state for a `World`.
+
+World data and render state are deliberately split: `World` stores CPU-side data,
+while `WorldView` owns GPU resources like meshes and shaders.
+
+### 2.3 Namespace Organization
 
 ```cpp
 namespace Rigel::Voxel {
@@ -218,6 +228,9 @@ public:
     bool isDirty() const;           // Needs mesh rebuild
     bool isEmpty() const;           // All air, skip rendering
     bool isFullyOpaque() const;     // Optimization for occlusion
+    bool isPersistDirty() const;    // Needs persistence write
+    uint32_t meshRevision() const;  // Mesh revision for stale work
+    uint32_t worldGenVersion() const; // World generator version tag
 
     // Serialization
     std::vector<uint8_t> serialize() const;
@@ -235,13 +248,17 @@ private:
 
     // Cached state
     bool m_dirty = true;
+    bool m_persistDirty = false;
     uint32_t m_nonAirCount = 0;
     uint32_t m_opaqueCount = 0;
+    uint32_t m_meshRevision = 0;
+    uint32_t m_worldGenVersion = 0;
 };
 ```
 
 Chunks allocate 2x2x2 subchunks on demand, so empty space does not reserve a full
-128 KB block array.
+128 KB block array. Each chunk tracks mesh dirtiness, persistence dirtiness, and
+the world-generation version used to create it.
 
 ### 4.2 Chunk Coordinate System
 
@@ -307,15 +324,27 @@ public:
     std::vector<ChunkCoord> getDirtyChunks() const;
     void clearDirtyFlags();
 
+    // Opacity-aware block updates
+    void setRegistry(const BlockRegistry* registry);
+
     // Iteration
     void forEachChunk(std::function<void(ChunkCoord, Chunk&)> fn);
 
 private:
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> m_chunks;
+    const BlockRegistry* m_registry = nullptr;
 };
 ```
 
 Dirty tracking currently scans loaded chunks and collects those with the dirty flag set.
+
+### 4.4 Streaming Overview (Current)
+
+`ChunkStreamer` lives in `WorldView` and drives async generation and meshing.
+It builds a spherical desired set around the camera chunk, schedules background
+generation/meshing work, and unloads chunks outside the configured distance.
+
+See `docs/WorldGeneration.md` for the full streaming state machine and queue behavior.
 
 ---
 
@@ -531,6 +560,8 @@ TextureCoords TextureAtlas::getUVs(TextureHandle handle) const {
 This section documents a future design. The current implementation only renders
 `model == "cube"`; other model definitions are not used by the mesh builder yet.
 
+Status: Planned. No custom model parsing or non-cubic meshing is implemented.
+
 ### 7.1 BlockModel Structure
 
 Custom models define arbitrary geometry per block type:
@@ -706,6 +737,10 @@ bool MeshBuilder::shouldCullFace(
 
 ## 8. Rendering Pipeline
 
+Status: Partial. Layered rendering and transparent sorting exist; the shader
+snippets and frustum culling notes below are illustrative and not a verbatim
+representation of the current implementation.
+
 ### 8.1 Render Order
 
 ```cpp
@@ -810,6 +845,9 @@ void main() {
 
 ### 8.3 Frustum Culling
 
+Status: Planned for voxel chunks. The current renderer only performs distance
+culling for voxel meshes. Entity rendering does its own frustum checks.
+
 Chunks outside the view frustum are skipped entirely:
 
 ```cpp
@@ -842,6 +880,9 @@ m_chunkManager.forEachChunk([&](ChunkCoord coord, Chunk& chunk) {
 ---
 
 ## 9. Performance Optimizations
+
+Status: Partial. Chunk generation/meshing is multithreaded via `ChunkStreamer`;
+other optimizations in this section are planned.
 
 ### 9.1 Chunk LOD (Level of Detail)
 
@@ -1009,6 +1050,8 @@ void ChunkRenderer::sortDrawCalls() {
 
 ## 10. Extension Points
 
+Status: Planned. Interfaces below are design sketches and not implemented.
+
 ### 10.1 Custom Block Behaviors
 
 ```cpp
@@ -1110,6 +1153,8 @@ public:
 
 ## Appendix A: Recommended Implementation Order
 
+Status: Planning guide, not a current roadmap.
+
 1. **Phase 1: Foundation**
    - Block storage and chunk data structures
    - Basic cube mesh generation
@@ -1160,7 +1205,17 @@ public:
 
 ## Appendix C: File Format Recommendations
 
+Status: Proposed formats and parsing examples; not implemented.
+
 All JSON and YAML files are parsed using **rapidyaml**. Since JSON is a valid subset of YAML 1.2, the same parser handles both formats seamlessly.
+
+---
+
+## Related Docs
+
+- `docs/WorldGeneration.md`
+- `docs/RenderingPipeline.md`
+- `docs/EntitySystem.md`
 
 ### Block Registry (JSON)
 

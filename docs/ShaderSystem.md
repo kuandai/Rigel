@@ -1,6 +1,7 @@
-# Shader Loading System Design Document
+# Shader Loading System
 
-This document describes a simple shader loading system for Rigel that compiles GLSL shaders, manages programs, and integrates with the existing asset system.
+This document describes the current shader loading system in Rigel. It compiles
+GLSL shaders, manages programs, and integrates with the asset system.
 
 ---
 
@@ -69,7 +70,8 @@ This document describes a simple shader loading system for Rigel that compiles G
 
 - `ResourceRegistry` - Raw shader source from embedded assets
 - `AssetManager` - Manifest parsing and caching
-- OpenGL 4.1+ - Shader compilation and linking
+- OpenGL 3.3 core - Current runtime context
+- OpenGL 4.3+ - Required for compute shaders (not available in the default runtime)
 
 ---
 
@@ -108,6 +110,9 @@ assets:
         WORKGROUP_SIZE: 8
 ```
 
+Note: the loader supports `compute`, but Rigel requests an OpenGL 3.3 core
+context. Compute shaders require a 4.3+ context to run.
+
 ### 3.3 Shader Inheritance
 
 Create shader variants by inheriting from a base shader:
@@ -134,7 +139,12 @@ assets:
 3. `defines` are merged (child values override conflicts)
 4. Circular inheritance is an error
 
-For detailed inheritance resolution implementation, see `AssetSystem.md` section 6.3.
+For detailed inheritance resolution, see the "Shader-Specific Behavior" section
+in `docs/AssetSystem.md`.
+
+**Fragment Fallback:**
+If a shader entry omits `fragment`, the loader derives one by replacing the
+`.vert` extension with `.frag` in the vertex path.
 
 ---
 
@@ -202,7 +212,7 @@ public:
     /// Compile and link a shader program
     /// @throws ShaderCompileError on compilation failure
     /// @throws ShaderLinkError on linking failure
-    static GLuint compile(const ShaderSource& source);
+    static GLuint compile(const ShaderSource& source, const std::string& shaderId);
 
 private:
     static GLuint compileStage(GLenum type, const std::string& source, const std::string& shaderId);
@@ -250,7 +260,7 @@ public:
             .vertex = vertSrc,
             .fragment = fragSrc,
             .defines = config.defines
-        });
+        }, ctx.id);
 
         return shader;
     }
@@ -262,7 +272,8 @@ private:
 
 The loader handles:
 - Multi-source file loading (vertex, fragment, geometry, compute)
-- Inheritance resolution via `ctx.loadDependency<ShaderAsset>()`
+- Recursive inheritance resolution via manifest entries
+- Fragment fallback to `.frag` based on the vertex path
 - Nested `defines` map extraction
 - Preprocessor define injection
 
@@ -345,8 +356,13 @@ in vec3 a_position;
 
 ### 6.2 Include Directive (Not Yet Supported)
 
-The current shader preprocessor only injects `#version` and manifest `defines`.
+The current shader preprocessor only injects `#version` (defaulting to
+`#version 410 core` if missing) and manifest `defines`.
 `#include` handling is not implemented yet.
+
+Because Rigel requests an OpenGL 3.3 core context, shaders should declare an
+explicit `#version 330 core` (or compatible) line when targeting the default
+runtime. Omitting the version forces `#version 410 core`.
 
 ### 6.3 Preprocessing Implementation
 
@@ -616,3 +632,10 @@ void main() {
     gl_Position = u_viewProjection * vec4(worldPos, 1.0);
 }
 ```
+
+---
+
+## Related Docs
+
+- `docs/AssetSystem.md`
+- `docs/RenderingPipeline.md`

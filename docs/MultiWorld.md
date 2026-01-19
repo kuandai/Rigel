@@ -2,7 +2,8 @@
 
 Status: WorldSet, WorldResources, and WorldView are implemented. The
 application still boots a single default World/WorldView, but multiple Worlds
-can now exist in memory.
+can now exist in memory. GPU cache sharing across multiple renderers is not
+implemented; each renderer maintains its own GPU cache.
 
 This document describes the multi-world architecture that aligns with CR's
 network model while preserving the existing naming scheme:
@@ -10,7 +11,7 @@ network model while preserving the existing naming scheme:
 - A **World** is a single 3D voxel space.
 - A **WorldSet** is a container that holds multiple Worlds.
 
-This is a design+implementation document; networking remains a future layer.
+This document describes what exists today, and calls out planned extensions.
 
 ---
 
@@ -19,7 +20,8 @@ This is a design+implementation document; networking remains a future layer.
 - Support multiple independent voxel spaces in one session.
 - Match CR's model where a session can host multiple world spaces.
 - Keep server-authoritative ownership and client-side rendering boundaries.
-- Allow multiple renderers to view the same World without duplicating meshes.
+- Allow multiple renderers to view the same World without duplicating meshes
+  (CPU meshes can be shared; GPU caches are still per renderer).
 
 ---
 
@@ -75,17 +77,82 @@ struct WorldView {
 - **WorldView** owns CPU meshes and derived state.
 - **Renderer** owns GPU caches only and never owns chunk data.
 
-Renderer cache keys include mesh store identity to avoid collisions:
-
-```
-MeshGpuCache[(MeshStoreId, ChunkCoord, Revision)]
-```
-
-Multiple renderers can render the same WorldView without duplicating meshes.
+CPU meshes live in `WorldMeshStore` and can be referenced by multiple views or
+systems. GPU meshes are cached per `ChunkRenderer`, so separate renderers will
+duplicate GPU buffers today.
 
 ---
 
-## 4. Server vs Client WorldSets
+## 4. Current Implementation
+
+### 4.1 WorldSet API
+
+`WorldSet` manages world entries and shared resources:
+
+- `createWorld(WorldId id)` creates or returns a `World`.
+- `createView(WorldId id, AssetManager& assets)` creates a `WorldView` for a
+  world and initializes render resources.
+- `world(id)` and `view(id)` return existing instances.
+- `removeWorld(id)` destroys the World and its view (if present).
+- `clear()` releases all worlds and resources.
+
+World entries are stored as a `WorldEntry` containing:
+
+```
+struct WorldEntry {
+  World world;
+  std::unique_ptr<WorldView> view;
+};
+```
+
+Only one `WorldView` is stored per world today.
+
+### 4.2 Shared Resources
+
+`WorldResources` are shared across all worlds:
+
+- `BlockRegistry`
+- `TextureAtlas`
+
+Block definitions and textures are global in the current architecture.
+
+### 4.3 World and Entities
+
+Each `World` owns:
+
+- `ChunkManager` (block data)
+- `WorldGenerator`
+- `WorldEntities`
+
+Entity state is per-world and not shared across worlds.
+
+### 4.4 WorldView and Streaming
+
+Each `WorldView` owns:
+
+- `ChunkStreamer` (async generation + meshing)
+- `WorldMeshStore` (CPU meshes)
+- `ChunkRenderer` (GPU cache)
+- Render config and shader handles
+
+`WorldView::setGenerator` binds the streaming pipeline to the world generator.
+
+---
+
+## 5. Persistence Integration
+
+Persistence is scoped per world ID:
+
+- Root path is `saves/world_<id>`.
+- Per-world overrides are loaded from `config/worlds/<id>/...`.
+- `WorldSet::persistenceContext(id)` supplies providers and storage for the
+  active world.
+
+`World` exposes a provider registry to formats (e.g., block registry provider).
+
+---
+
+## 6. Server vs Client WorldSets
 
 ### Server WorldSet
 
@@ -99,7 +166,7 @@ Single-player can run both in-process with a local loopback.
 
 ---
 
-## 5. Streaming and Meshing
+## 7. Streaming and Meshing
 
 - Streaming is per WorldView.
 - Mesh builds are based on replicated data snapshots.
@@ -108,7 +175,7 @@ Single-player can run both in-process with a local loopback.
 
 ---
 
-## 6. Configuration
+## 8. Configuration
 
 Per-world config overlays should be supported by convention:
 
@@ -120,7 +187,7 @@ Global defaults apply when per-world overrides are absent.
 
 ---
 
-## 7. Minimal Integration Path
+## 9. Minimal Integration Path
 
 1) Add WorldId and WorldRegistry in WorldSet.
 2) Create one default World and WorldView.
@@ -130,7 +197,7 @@ Global defaults apply when per-world overrides are absent.
 
 ---
 
-## 8. Future Networking Hooks
+## 10. Future Networking Hooks
 
 Planned replication surface (no protocol binding yet):
 
@@ -140,3 +207,20 @@ World::serializeChunkDelta(WorldId, ChunkCoord)
 ```
 
 These are placeholders for CR-style S2C/C2S pipelines.
+
+---
+
+## 11. Current Limitations
+
+- Only a single `WorldView` is tracked per world.
+- GPU mesh caches are renderer-local (no sharing across views).
+- Application boot path creates only the default world and view.
+
+---
+
+## Related Docs
+
+- `docs/VoxelEngine.md`
+- `docs/WorldGeneration.md`
+- `docs/PersistenceAPI.md`
+- `docs/ConfigurationSystem.md`

@@ -1,424 +1,216 @@
-# World Generation and Chunk Management Design
+# World Generation and Chunk Streaming
 
-This document proposes a robust world generation and chunk management system
-for Rigel, grounded in established voxel engine techniques and the guidance
-captured in `~/artifact.md`. The focus is realistic, climate-driven terrain.
-
----
-
-## 1. Goals
-
-- Deterministic, seed-based world generation across infinite space.
-- Global-scale climate with natural transitions and elevation effects.
-- Stable performance via streaming, caching, and background jobs.
-- Extensible pipeline for caves, structures, and future simulation.
-- Clear separation between generation, storage, meshing, and rendering.
+This document describes the current world generation pipeline and chunk streaming
+system in Rigel. Planned items are called out explicitly.
 
 ---
 
-## 2. Design Principles
+## 1. Overview
 
-- **World-space determinism**: all noise uses global coordinates; no seams.
-- **Chunk-local isolation**: each chunk is generated independently from its
-  world-space inputs and seed, no cross-chunk mutable state.
-- **Thread safety**: generation and meshing are CPU-only and run off-thread;
-  GPU uploads only on the main thread.
-- **Data-driven tuning**: climate and biome parameters live in a configuration
-  file or manifest for iteration.
+- Deterministic, seed-based generation per chunk.
+- Fixed stage order; config can enable or disable stages.
+- Generation and meshing run on background threads.
+- Streaming is driven by `WorldView` and `ChunkStreamer`.
+- Persistence integrates via loader callbacks and chunk dirty flags.
 
 ---
 
-## 3. Chunk Lifecycle and Streaming
+## 2. Generation Pipeline (Fixed Order)
 
-Chunk states (current implementation):
+Stages execute in the order below (see `kWorldGenPipelineStages`):
+
+```
+climate_global
+climate_local
+biome_resolve
+terrain_density
+caves
+surface_rules
+structures
+post_process
+```
+
+Stage order is fixed in code. The config `generation.pipeline` section is used
+to enable or disable stages, not reorder them.
+
+---
+
+## 3. Stage Details
+
+### 3.1 climate_global
+
+- Samples 2D fBm noise for temperature, humidity, and continentalness.
+- Optional latitude bias via `climate.latitude_scale` and `climate.latitude_strength`.
+- Populates `WorldGenContext.climate` for each XZ column.
+
+### 3.2 climate_local
+
+- Samples higher-frequency 2D noise and blends into the global climate.
+- Blend factor is `climate.local_blend` (0 disables this stage).
+
+### 3.3 biome_resolve
+
+- Computes weights from distance to each biome target.
+- Picks primary and secondary biomes plus blend factor.
+- Optional coast band override: `biomes.coast_band` forces a biome within a
+  continentalness range.
+
+### 3.4 terrain_density
+
+- Clears the chunk to air.
+- If a density graph is present, evaluates output `base_density` per voxel.
+- Otherwise uses `terrain.height_noise` and `terrain.density_noise` fallback:
+  `density = density_noise * density_strength + (height - y) * gradient_strength`.
+- Fills solid blocks using `solid_block` (config).
+- Fills water up to `world.sea_level` when the column biome is `sea` or `beach`
+  and the block `base:water[type=source]` is registered.
+- Records the highest solid block per column in `heightMap`.
+
+### 3.5 caves
+
+- Requires a density graph.
+- Evaluates the `caves.density_output` output (default `cave_density`).
+- Carves to air when `density > caves.threshold`.
+
+### 3.6 surface_rules
+
+- Uses `heightMap` to apply surface materials.
+- If the biome defines `surface` layers, those are applied in order.
+- Otherwise uses `surface_block` with `terrain.surface_depth`.
+- Uses sand when `height <= sea_level + 4` and `base:sand` is registered.
+
+### 3.7 structures
+
+- Places simple vertical pillar features from `structures.features`.
+- Chance is driven by 2D noise per column.
+- Optional biome filters limit placement to specific biomes.
+
+### 3.8 post_process
+
+- No-op stage reserved for future post-processing (lighting, ores, etc).
+
+---
+
+## 4. Climate, Biomes, and Density Graph
+
+### 4.1 Climate Fields
+
+Climate samples contain:
+
+- `temperature`
+- `humidity`
+- `continentalness`
+
+Global and local layers are combined additively. `climate.elevation_lapse` is
+defined in config but not used by the current generator.
+
+### 4.2 Biome Blending
+
+Biome weights are computed from the distance to each target in climate space.
+`biomes.blend.blend_power` controls falloff, and `biomes.blend.epsilon` avoids
+division by zero.
+
+### 4.3 Density Graph
+
+`density_graph` defines a directed graph of nodes and named outputs:
+
+- Node types include noise2D, noise3D, add/mul, clamp, spline, climate lookups,
+  and `y` (vertical coordinate).
+- `density_graph.outputs.base_density` drives the base terrain density.
+- `caves.density_output` selects the output used for cave carving.
+
+When a graph is present, 3D noise nodes are sampled using a per-chunk grid
+and trilinear interpolation (fixed step of 4) to reduce cost.
+
+---
+
+## 5. Chunk Streaming and Tasking
+
+### 5.1 State Machine
+
+Chunks transition through the following states:
 
 ```
 Missing -> QueuedGen -> ReadyData -> QueuedMesh -> ReadyMesh
 ```
 
-- **QueuedGen**: enqueued by streamer; priority by distance and view direction.
-- **ReadyData**: chunk exists with block data, needs mesh.
-- **QueuedMesh**: enqueued for CPU mesh build.
-- **ReadyMesh**: mesh uploaded, renderable.
+Empty chunks skip mesh generation and move directly to `ReadyMesh`.
 
-Streaming uses hysteresis: load within distance N, unload beyond N+H.
+### 5.2 Desired Set and Distances
 
----
+- The desired set is a sphere around the camera chunk with radius
+  `streaming.view_distance_chunks`.
+- Entries are sorted by distance, nearest first.
+- Unload uses `streaming.unload_distance_chunks` for hysteresis.
 
-## 4. Core Components
+### 5.3 Background Work and Budgets
 
-### 4.1 ChunkStreamer
+- Generation and meshing run on a thread pool sized by `streaming.worker_threads`.
+- `streaming.gen_queue_limit` and `streaming.mesh_queue_limit` cap in-flight work
+  (`0` means unlimited).
+- Mesh queue capacity reserves roughly 1/4 of the slots for dirty remeshes to
+  keep player edits responsive.
+- `streaming.apply_budget_per_frame` limits how many completed results are
+  applied per frame (`0` means unlimited).
 
-Responsible for:
-- Computing desired chunk set from camera position.
-- Enqueuing load/generate jobs.
-- Scheduling meshing jobs.
-- Evicting chunks beyond memory budget.
+### 5.4 Meshing Constraints
 
-### 4.2 ChunkCache
+- Meshes are only built when all 6 neighboring chunks are loaded to avoid
+  culling seams at chunk borders.
+- Mesh work uses padded block data to sample neighbors and AO.
+- Each chunk has a `meshRevision` so stale results are discarded.
 
-- LRU cache over `ChunkCoord`.
-- Configurable max chunk count.
-- Eviction hook is planned for future persistence.
+### 5.5 Cancellation and Eviction
 
-### 4.3 ChunkStorage (planned)
-
-```cpp
-class IChunkStorage {
-public:
-    virtual ~IChunkStorage() = default;
-    virtual bool has(ChunkCoord coord) const = 0;
-    virtual std::vector<uint8_t> load(ChunkCoord coord) = 0;
-    virtual void save(ChunkCoord coord, const Chunk& chunk) = 0;
-};
-```
-
-Implementations (planned):
-- `DiskChunkStorage` using region-style files, LZ4 compression.
-- `MemoryChunkStorage` for testing.
+- Generation tasks carry cancellation tokens; leaving the desired set cancels
+  work before it is applied.
+- `streaming.max_resident_chunks` enables an LRU eviction pass (via `ChunkCache`).
+- Chunks outside `unload_distance_chunks` are unloaded immediately.
+- If a loaded chunk’s `worldGenVersion` does not match the generator, the chunk
+  is discarded and regenerated.
 
 ---
 
-## 5. Climate-Driven Generation (Global Scale)
+## 6. Persistence Integration
 
-### 5.1 Noise Toolkit
+`ChunkStreamer` supports disk-backed loads via callbacks:
 
-Use the following for realism and variety:
-- **Simplex/OpenSimplex** for base noise (fast, no grid artifacts).
-- **fBm** for multi-octave detail.
-- **Domain warping** for organic landforms.
-- **3D density noise** for caves and overhangs.
+- `ChunkLoadCallback` attempts to load a chunk from persistence.
+- `ChunkPendingCallback` reports whether a load is already in flight.
 
-fBm parameters (typical):
-- lacunarity: 2.0
-- persistence: 0.5
-- octaves: 6-8
+The default loader (`AsyncChunkLoader`) uses the persistence service to fetch
+region data asynchronously, merges chunk spans into loaded chunks, and prefetches
+neighbor regions. If no stored data is found, generation proceeds normally.
 
-### 5.2 Climate Fields (Global First, Local Refine)
-
-Compute climate in two layers:
-
-1) **Global layer** (very low frequency, continent scale)
-2) **Local layer** (higher frequency, regional variation)
-
-Global layer drives the "big picture" climate; local layer adds detail without
-breaking large-scale coherence.
-
-- **Temperature**: base noise + latitude + elevation lapse.
-- **Humidity**: base noise + distance to ocean + orographic effect.
-- **Continentalness**: distance from oceans; defines coasts and inland.
-
-All five parameters are used to pick and blend biomes.
-
-### 5.3 Global Climate Model
-
-Global climate should be coherent over hundreds or thousands of chunks:
-
-- **Latitude**: map world Z to a latitude curve (equator → poles).
-- **Prevailing winds** (planned): configurable wind direction used for rainfall modeling.
-- **Ocean influence**: continentalness computed from low-frequency noise or
-  derived ocean masks.
-- **Orographic lift** (planned): humidity increases on windward slopes.
-- **Temperature lapse**: cooling with altitude.
-
-The model is tunable by global-scale curves and multipliers.
-
-### 5.4 Biome Selection and Blending
-
-Biomes are defined by target values across the 5D climate space.
-For each position:
-
-1. Compute distance to each biome target.
-2. Convert to weight via inverse distance and exponential falloff.
-3. Normalize weights and blend biome parameters (surface blocks, height offsets).
-
-This yields smooth transitions instead of hard borders.
-
-### 5.5 Terrain Height and Density
-
-Use a hybrid heightmap + density field:
-
-```
-baseHeight = heightNoise(x, z)
-density3D = densityNoise(x, y, z)
-finalDensity = density3D + (baseHeight - y) * gradientStrength
-solid if finalDensity > 0
-```
-
-This enables cliffs, overhangs, and floating features while keeping
-large-scale heightmap structure.
-
-### 5.6 Cave Generation
-
-Two layers:
-- **Threshold caves**: 3D noise, carve above threshold (cheese caves).
-- **Worms**: agent-based tunnel carving for long, organic caves.
-
-Optional: noise types for spaghetti vs noodle tunnels.
+Chunk modifications mark `persistDirty`, which allows save logic to skip
+unchanged chunks when persisting data.
 
 ---
 
-## 6. Generation Pipeline
+## 7. Configuration and Overrides
 
-Chunk generation operates on a fixed, data-driven pipeline. Each stage is
-configurable but the stage ordering is fixed for deterministic behavior.
+World generation config is loaded from:
 
-### 6.1 Pipeline Stages (Fixed Order)
+- `assets/config/world_generation.yaml` (embedded as `raw/world_config`)
+- `config/world_generation.yaml`
+- `world_generation.yaml`
+- `config/worlds/<worldId>/world_generation.yaml`
 
-1. **Inputs and Coordinate Prep**
-   - Compute world-space position for each voxel.
-   - Compute chunk-local position and masks for fast access.
+Overlays:
 
-2. **Global Climate Fields**
-   - Sample global-scale climate signals (temperature, humidity,
-     continentalness).
+- `overlays` is a list of `{ path, when }`.
+- `when` references a boolean flag from `flags`.
+- Overlays are resolved using the same config sources.
 
-3. **Local Climate Refinement**
-   - Add local-scale noise variation without breaking global continuity.
+Reserved or not-yet-used fields:
 
-4. **Biome Resolution**
-   - Evaluate biome weights from climate space.
-   - Produce blended biome parameters.
-
-5. **Terrain Height and Base Density**
-   - Compute base height (continentalness curves).
-   - Compute base density from height and 3D noise.
-   - When configured, `density_graph.outputs.base_density` supplies the density.
-
-6. **Caves and Density Carving**
-   - Apply threshold caves and worm tunnels (configurable).
-   - When configured, `density_graph.outputs.cave_density` supplies the carve signal.
-
-7. **Surface Rules**
-   - Apply biome surface materials (topsoil, subsoil, rock strata).
-
-8. **Structures**
-   - Place structures deterministically (trees, boulders).
-
-9. **Post-Process**
-   - Apply optional passes (ore distribution, future lighting).
-
-The pipeline produces a `ChunkBuffer` with final block states.
-
-### 6.2 Data-Driven Stage Configuration
-
-Each stage has a configuration block. The engine uses a strict schema:
-
-```yaml
-generation:
-  pipeline:
-    - stage: climate_global
-      params: climate_global
-    - stage: climate_local
-      params: climate_local
-    - stage: biome_resolve
-      params: biome_resolve
-    - stage: terrain_density
-      params: terrain_density
-    - stage: caves
-      params: caves
-    - stage: surface_rules
-      params: surface_rules
-    - stage: structures
-      params: structures
-    - stage: post_process
-      params: post_process
-```
-
-Pipeline ordering is fixed in code; the config only controls parameters and
-enabled flags. If a pipeline list is provided, it is validated against the
-fixed order and cannot reorder stages.
-
-### 6.3 Declarative Generator Construction
-
-Generators are created declaratively by a registry of stage factories:
-
-- Each stage type registers a factory by name
-  (e.g., `climate_global`, `caves`, `surface_rules`).
-- The generator builder instantiates stages from the config snapshot.
-- Missing stages fall back to defaults; disabled stages are skipped.
-
-This keeps the generator configurable without coupling it to runtime systems.
+- `world.lava_level` (unused in generator)
+- `climate.elevation_lapse` (unused in generator)
 
 ---
 
-## 7. Realistic Climate Rules
+## Related Docs
 
-### 7.1 Temperature
-
-```
-temp = baseTempNoise(x, z)
-temp -= elevation * lapseRate
-temp += latitudeInfluence
-```
-
-- `lapseRate` cools with altitude.
-- Latitude introduces poles/equator.
-
-### 7.2 Humidity
-
-```
-humidity = baseHumidityNoise(x, z)
-humidity -= distanceToOcean * coastalFalloff
-humidity += orographicLift(elevation, windDir)
-```
-
-Orographic lift increases rainfall on windward slopes.
-
-### 7.3 Biome Examples
-
-| Biome | Temp | Humidity | Continentalness | Erosion | Notes |
-|-------|------|----------|-----------------|---------|-------|
-| Tundra | low | low | high | low | Snow, ice |
-| Plains | mid | mid | mid | mid | Grass, gentle hills |
-| Desert | high | low | mid | high | Sand, dunes |
-| Jungle | high | high | low-mid | low | Dense foliage |
-| Mountains | low-mid | mid | high | low | Steep slopes |
-
-Blend these for realistic transitions.
-
----
-
-## 8. Configuration and Tuning
-
-The engine should be tunable without code changes. Use a layered config
-provider that can merge multiple sources (embedded defaults, user overrides,
-mod packs) without restricting runtime behavior.
-
-World generation config is loaded from (in order):
-- `assets/config/world_generation.yaml` (embedded default)
-- `config/world_generation.yaml` (project override)
-- `world_generation.yaml` (working directory override)
-
-Render settings are defined separately and are not part of the world
-generation schema. Render config is loaded from (in order):
-- `assets/config/render.yaml` (embedded default)
-- `config/render.yaml` (project override)
-- `render.yaml` (working directory override)
-
-World generation config defines:
-
-- **World bounds and versioning**:
-  - `world.min_y`, `world.max_y`, `world.sea_level`, `world.lava_level`
-  - `world.version` for regeneration when the pipeline changes
-- **World seed** and world size scaling (meters per block, km per chunk).
-- **Global climate curves**:
-  - latitude → temperature multiplier
-  - continentalness → base height
-- **Noise stack parameters**:
-  - octave count, lacunarity, persistence
-  - domain warp strength, frequency ranges
-- **Biome table**:
-  - target climate values
-  - blending exponent
-  - surface block layers
-  - structure lists and probabilities
-- **Density graph**:
-  - named nodes and outputs (`base_density`, `cave_density`)
-  - node types like noise, add/mul, clamp, spline, and climate lookups
-- **Cave tuning**:
-  - threshold values
-  - worm counts, step sizes, radius ranges
-- **Overlays**:
-  - optional configs merged when `flags` toggle on
-
-Configuration is loaded at startup and may be hot-reloaded when supported by
-the active config source.
-
----
-
-## 9. Chunk Size and Storage
-
-Keep 32x32x32 chunk size for now. The design can evolve to:
-- **Palette compression** in-memory for sparse chunk data.
-- **RLE + LZ4** for disk storage.
-
-Serialization:
-- Region files (32x32 chunk groups).
-- Chunk data: header + compressed block data.
-
----
-
-## 10. Meshing and Rendering Implications
-
-Planned optimizations (from artifact guidance):
-- **Binary greedy meshing** for high throughput.
-- **AO**: 3-neighbor sampling; flip quad diagonal when AO gradients differ.
-- **Face culling** and **frustum culling** before draw.
-
-Mesh build stays off-thread; GPU uploads are main-thread only.
-
----
-
-## 11. Task System
-
-Work queues:
-
-- `LoadQueue`: disk IO.
-- `GenQueue`: climate + terrain generation.
-- `MeshQueue`: MeshBuilder work.
-- `MainThreadQueue`: GPU uploads and chunk state updates.
-
-Use priority queues based on camera distance and direction.
-
----
-
-## 12. Integration with Current Code
-
-### New Classes
-
-- `WorldGenerator`: climate-driven pipeline.
-- `ChunkStreamer`: chunk lifecycle management.
-- `ChunkCache`: LRU + hysteresis.
-- `IChunkStorage`: persistence interface.
-
-### World API Changes
-
-`Voxel::World` owns chunk data and generators:
-- `setGenerator(...)`
-- `setStorage(...)` (planned)
-
-`Voxel::WorldView` owns streaming and mesh updates:
-- `updateStreaming(cameraPos)`
-- `updateMeshes()` called from streamer only when data ready.
-
----
-
-## 13. Milestone Plan
-
-### A. Streaming Skeleton
-- `ChunkStreamer`, `ChunkCache`, basic load/unload radius.
-- In-memory only (no disk IO).
-
-### B. Climate Generator
-- Seeded climate fields.
-- Height + density fill with biome surface rules.
-
-### C. Async Meshing
-- Background mesh build, main-thread upload.
-
-### D. Persistence
-- Region file storage + LZ4 compression.
-- Save on eviction.
-
-### E. Biomes + Structures
-- Biome blending and structure placement.
-
----
-
-## 14. Open Risks
-
-- Tuning climate parameters for realism without heavy simulation.
-- Balancing generation cost with chunk throughput.
-- Avoiding structure duplication across chunk boundaries.
-- Format versioning for future block palette changes.
-
----
-
-## 15. Next Implementation Steps
-
-1. Add `ChunkStreamer` + `ChunkCache` with memory budget and hysteresis.
-2. Add `WorldGenerator` scaffolding with global climate fields + config load.
-3. Implement climate-to-biome mapping with blended transitions.
-4. Add async mesh queue and main-thread upload queue.
-5. Integrate disk storage after stability.
+- `docs/VoxelEngine.md`
+- `docs/PersistenceAPI.md`
+- `docs/ConfigurationSystem.md`

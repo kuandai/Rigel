@@ -64,6 +64,7 @@ struct DebugState {
     std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
     float debugDistance = kDefaultDebugDistance;
     bool overlayEnabled = true;
+    bool profilerOverlayEnabled = false;
 };
 
 void initDebugField(DebugState& debug, Asset::AssetManager& assets);
@@ -77,6 +78,8 @@ void releaseDebugResources(DebugState& debug);
 void recordFrameTime(DebugState& debug, float seconds);
 
 void renderFrameGraph(DebugState& debug);
+
+void renderProfilerOverlay(DebugState& debug, int viewportWidth, int viewportHeight);
 
 void renderDebugField(DebugState& debug,
                       const Voxel::WorldView* worldView,

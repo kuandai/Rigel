@@ -14,7 +14,8 @@ class RigelConan(ConanFile):
         "glfw/3.3.8",
         "rapidyaml/0.10.0",
         "stb/cci.20240531",
-        "glm/cci.20230113"
+        "glm/cci.20230113",
+        "imgui/1.90.7"
     )
 
     # Options for dependencies

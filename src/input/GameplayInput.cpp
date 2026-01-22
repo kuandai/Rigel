@@ -14,6 +14,11 @@
 
 #include <spdlog/spdlog.h>
 
+#if defined(RIGEL_ENABLE_IMGUI)
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -132,7 +137,45 @@ void setCursorCaptured(WindowState& window, bool captured) {
 void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) {
     glfwSetWindowUserPointer(window, &context);
     glfwSetKeyCallback(window, keyCallback);
+    glfwSetCharCallback(window, [](GLFWwindow* cbWindow, unsigned int c) {
+#if defined(RIGEL_ENABLE_IMGUI)
+        if (ImGui::GetCurrentContext()) {
+            ImGui_ImplGlfw_CharCallback(cbWindow, c);
+        }
+#else
+        (void)cbWindow;
+        (void)c;
+#endif
+    });
+    glfwSetMouseButtonCallback(window, [](GLFWwindow* cbWindow, int button, int action, int mods) {
+#if defined(RIGEL_ENABLE_IMGUI)
+        if (ImGui::GetCurrentContext()) {
+            ImGui_ImplGlfw_MouseButtonCallback(cbWindow, button, action, mods);
+        }
+#else
+        (void)cbWindow;
+        (void)button;
+        (void)action;
+        (void)mods;
+#endif
+    });
+    glfwSetScrollCallback(window, [](GLFWwindow* cbWindow, double xoffset, double yoffset) {
+#if defined(RIGEL_ENABLE_IMGUI)
+        if (ImGui::GetCurrentContext()) {
+            ImGui_ImplGlfw_ScrollCallback(cbWindow, xoffset, yoffset);
+        }
+#else
+        (void)cbWindow;
+        (void)xoffset;
+        (void)yoffset;
+#endif
+    });
     glfwSetCursorPosCallback(window, [](GLFWwindow* cbWindow, double xpos, double ypos) {
+#if defined(RIGEL_ENABLE_IMGUI)
+        if (ImGui::GetCurrentContext()) {
+            ImGui_ImplGlfw_CursorPosCallback(cbWindow, xpos, ypos);
+        }
+#endif
         auto* ctx = static_cast<InputCallbackContext*>(glfwGetWindowUserPointer(cbWindow));
         if (!ctx || !ctx->window || !ctx->camera) {
             return;
@@ -192,6 +235,9 @@ void ensureDefaultBindings(InputBindings& bindings) {
     if (!bindings.hasAction("debug_overlay")) {
         bindings.bind("debug_overlay", GLFW_KEY_F1);
     }
+    if (!bindings.hasAction("profiler_overlay")) {
+        bindings.bind("profiler_overlay", GLFW_KEY_F3);
+    }
     if (!bindings.hasAction("move_forward")) {
         bindings.bind("move_forward", GLFW_KEY_W);
     }
@@ -224,6 +270,11 @@ void ensureDefaultBindings(InputBindings& bindings) {
 void attachDebugOverlayListener(InputState& input, bool* overlayEnabled) {
     input.debugOverlayListener.enabled = overlayEnabled;
     input.dispatcher.addListener(&input.debugOverlayListener);
+}
+
+void attachProfilerOverlayListener(InputState& input, bool* overlayEnabled) {
+    input.profilerOverlayListener.enabled = overlayEnabled;
+    input.dispatcher.addListener(&input.profilerOverlayListener);
 }
 
 void updateCamera(const InputState& input, CameraState& camera, float dt) {

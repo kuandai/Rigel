@@ -1,6 +1,7 @@
 #include "Rigel/Render/DebugOverlay.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Core/Profiler.h"
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
@@ -27,6 +28,12 @@ constexpr int kFrameGraphSamples = 180;
 constexpr float kFrameGraphMaxMs = 50.0f;
 constexpr float kFrameGraphHeight = 0.28f;
 constexpr float kFrameGraphBottom = -0.95f;
+constexpr int kProfilerMaxBars = 6;
+constexpr float kProfilerBarHeight = 0.05f;
+constexpr float kProfilerBarGap = 0.01f;
+constexpr float kProfilerLeft = -0.95f;
+constexpr float kProfilerRight = 0.95f;
+constexpr float kProfilerBottom = -0.55f;
 
 constexpr float kCubeVertices[] = {
     // +X
@@ -239,6 +246,113 @@ void renderFrameGraph(DebugState& debug) {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2), nullptr);
     glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
+
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
+void renderProfilerOverlay(DebugState& debug, int viewportWidth, int viewportHeight) {
+    if (!debug.overlayEnabled || !debug.profilerOverlayEnabled || !debug.frameGraph.initialized) {
+        return;
+    }
+
+    (void)viewportWidth;
+    (void)viewportHeight;
+
+    const Core::ProfilerFrame* frame = Core::Profiler::getLastFrame();
+    if (!frame || frame->frameEndNs <= frame->frameStartNs) {
+        return;
+    }
+
+    std::vector<const Core::ProfilerRecord*> depthOne;
+    depthOne.reserve(frame->records.size());
+    for (const auto& record : frame->records) {
+        if (record.depth == 1 && record.endNs > record.startNs) {
+            depthOne.push_back(&record);
+        }
+    }
+
+    const uint16_t targetDepth = depthOne.empty() ? 0 : 1;
+    std::vector<const Core::ProfilerRecord*> records;
+    records.reserve(frame->records.size());
+    for (const auto& record : frame->records) {
+        if (record.depth != targetDepth) {
+            continue;
+        }
+        if (record.endNs <= record.startNs) {
+            continue;
+        }
+        records.push_back(&record);
+    }
+
+    if (records.empty()) {
+        return;
+    }
+
+    std::stable_sort(records.begin(), records.end(),
+                     [](const Core::ProfilerRecord* a, const Core::ProfilerRecord* b) {
+                         return (a->endNs - a->startNs) > (b->endNs - b->startNs);
+                     });
+
+    const uint64_t frameDurationNs = frame->frameEndNs - frame->frameStartNs;
+    const float widthSpan = kProfilerRight - kProfilerLeft;
+    const std::array<glm::vec4, 6> colors = {
+        glm::vec4(0.9f, 0.4f, 0.2f, 0.8f),
+        glm::vec4(0.2f, 0.7f, 0.9f, 0.8f),
+        glm::vec4(0.4f, 0.9f, 0.3f, 0.8f),
+        glm::vec4(0.9f, 0.8f, 0.2f, 0.8f),
+        glm::vec4(0.7f, 0.4f, 0.9f, 0.8f),
+        glm::vec4(0.9f, 0.3f, 0.6f, 0.8f)
+    };
+
+    debug.frameGraph.shader->bind();
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glBindVertexArray(debug.frameGraph.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, debug.frameGraph.vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2), nullptr);
+
+    const size_t barCount = std::min(records.size(), static_cast<size_t>(kProfilerMaxBars));
+    for (size_t i = 0; i < barCount; ++i) {
+        const Core::ProfilerRecord* record = records[i];
+        uint64_t duration = record->endNs - record->startNs;
+        float t = frameDurationNs > 0
+            ? static_cast<float>(duration) / static_cast<float>(frameDurationNs)
+            : 0.0f;
+        t = std::clamp(t, 0.0f, 1.0f);
+
+        float x0 = kProfilerLeft;
+        float x1 = kProfilerLeft + widthSpan * t;
+        float y0 = kProfilerBottom + static_cast<float>(i) * (kProfilerBarHeight + kProfilerBarGap);
+        float y1 = y0 + kProfilerBarHeight;
+
+        glm::vec2 vertices[] = {
+            {x0, y0},
+            {x1, y0},
+            {x1, y1},
+            {x0, y0},
+            {x1, y1},
+            {x0, y1}
+        };
+
+        if (debug.frameGraph.locColor >= 0) {
+            const glm::vec4& color = colors[i % colors.size()];
+            glUniform4fv(debug.frameGraph.locColor, 1, glm::value_ptr(color));
+        }
+
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(sizeof(vertices)),
+                     vertices,
+                     GL_DYNAMIC_DRAW);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
 
     glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);

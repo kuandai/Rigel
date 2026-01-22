@@ -33,12 +33,18 @@ struct TaaConfig {
     float jitterScale = 1.0f;
 };
 
+struct ProfilingConfig {
+    bool enabled = false;
+    bool overlayEnabled = false;
+};
+
 struct WorldRenderConfig {
     float renderDistance = 256.0f;
     glm::vec3 sunDirection = glm::vec3(0.5f, 1.0f, 0.3f);
     float transparentAlpha = 0.5f;
     ShadowConfig shadow;
     TaaConfig taa;
+    ProfilingConfig profiling;
 };
 
 } // namespace Rigel::Voxel

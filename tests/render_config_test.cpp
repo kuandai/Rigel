@@ -50,6 +50,9 @@ render:
     enabled: true
     blend: 0.8
     jitter_scale: 1.5
+  profiling:
+    enabled: true
+    overlay_enabled: true
 )";
 
     ConfigProvider provider;
@@ -77,4 +80,6 @@ render:
     CHECK(config.taa.enabled);
     CHECK_NEAR(config.taa.blend, 0.8f, 0.0001f);
     CHECK_NEAR(config.taa.jitterScale, 1.5f, 0.0001f);
+    CHECK(config.profiling.enabled);
+    CHECK(config.profiling.overlayEnabled);
 }

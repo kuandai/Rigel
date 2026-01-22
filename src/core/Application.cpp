@@ -1,5 +1,6 @@
 #include "Rigel/Application.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Core/Profiler.h"
 #include "Rigel/Entity/EntityModelLoader.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
@@ -14,6 +15,7 @@
 #include "Rigel/Render/DebugOverlay.h"
 #include "Rigel/Voxel/WorldConfigBootstrap.h"
 #include "Rigel/Voxel/WorldSpawn.h"
+#include "Rigel/UI/ImGuiLayer.h"
 #include "Rigel/input/GameplayInput.h"
 #include <spdlog/spdlog.h>
 #include <GL/glew.h>
@@ -419,6 +421,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     // Print OpenGL version
     spdlog::info("OpenGL Version: {}", (char*)glGetString(GL_VERSION));
 
+    if (!UI::init(m_impl->window.window)) {
+        spdlog::warn("ImGui initialization failed");
+    }
+
     // Set initial viewport
     glViewport(0, 0, 800, 600);
 
@@ -462,6 +468,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         Input::loadInputBindings(m_impl->assets, m_impl->input);
         Input::attachDebugOverlayListener(m_impl->input, &m_impl->debug.overlayEnabled);
+        Input::attachProfilerOverlayListener(m_impl->input, &m_impl->debug.profilerOverlayEnabled);
 
         Voxel::ConfigProvider configProvider =
             Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
@@ -831,7 +838,14 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         Voxel::ConfigProvider renderConfigProvider =
             Voxel::makeRenderConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
-        m_impl->world.worldView->renderConfig() = renderConfigProvider.loadRenderConfig();
+        Voxel::WorldRenderConfig renderConfig = renderConfigProvider.loadRenderConfig();
+        const char* profileEnv = std::getenv("RIGEL_PROFILE");
+        if (profileEnv && profileEnv[0] != '\0') {
+            renderConfig.profiling.enabled = (profileEnv[0] != '0');
+        }
+        m_impl->world.worldView->renderConfig() = renderConfig;
+        Core::Profiler::setEnabled(renderConfig.profiling.enabled);
+        m_impl->debug.profilerOverlayEnabled = renderConfig.profiling.overlayEnabled;
         m_impl->world.worldView->setStreamConfig(config.stream);
         if (m_impl->timing.benchmarkEnabled) {
             m_impl->world.worldView->setBenchmark(&m_impl->timing.benchmark);
@@ -876,6 +890,8 @@ Application::~Application() {
 
     if (m_impl && m_impl->window.window) {
         glfwMakeContextCurrent(m_impl->window.window);
+
+        UI::shutdown();
 
         Render::releaseDebugResources(m_impl->debug);
         if (m_impl->render.taa.quadVao != 0) {
@@ -930,101 +946,132 @@ void Application::run() {
         if (deltaTime > kMaxFrameTime) {
             deltaTime = kMaxFrameTime;
         }
-        Render::recordFrameTime(m_impl->debug, deltaTime);
-        Input::keyupdate();
-        m_impl->input.dispatcher.update();
-
-        if (m_impl->world.ready && m_impl->world.world && m_impl->world.worldView) {
-            if (m_impl->window.cursorCaptured &&
-                glfwGetInputMode(m_impl->window.window, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
-                Input::setCursorCaptured(m_impl->window, true);
-            }
-            Input::updateCamera(m_impl->input, m_impl->camera, deltaTime);
-            Input::handleDemoSpawn(m_impl->input, m_impl->assets, *m_impl->world.world, m_impl->camera);
-            Input::handleBlockEdits(m_impl->input,
-                                    m_impl->window,
-                                    m_impl->camera,
-                                    *m_impl->world.world,
-                                    *m_impl->world.worldView,
-                                    m_impl->world.placeBlock);
-
-            int width = 0;
-            int height = 0;
-            glfwGetFramebufferSize(m_impl->window.window, &width, &height);
-            float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-
-            float renderDistance = m_impl->world.worldView->renderConfig().renderDistance;
-            float nearPlane = 0.1f;
-            float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
-            glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, nearPlane, farPlane);
-            glm::mat4 projectionNoJitter = projection;
-            glm::mat4 view = glm::lookAt(
-                m_impl->camera.position,
-                m_impl->camera.target,
-                glm::vec3(0.0f, 1.0f, 0.0f)
-            );
-
-            bool useTaa = m_impl->world.worldView->renderConfig().taa.enabled;
-            if (useTaa) {
-                m_impl->ensureTaaTargets(width, height);
-                useTaa = m_impl->render.taa.initialized && m_impl->render.taa.sceneFbo != 0;
-            } else {
-                m_impl->render.taa.historyValid = false;
+        UI::beginFrame();
+        Core::Profiler::beginFrame();
+        {
+            PROFILE_SCOPE("Frame");
+            {
+                PROFILE_SCOPE("Input");
+                Render::recordFrameTime(m_impl->debug, deltaTime);
+                Input::keyupdate();
+                m_impl->input.dispatcher.update();
             }
 
-            glm::vec2 jitter(0.0f);
-            if (useTaa) {
-                jitter = m_impl->nextJitter(width, height,
-                                            m_impl->world.worldView->renderConfig().taa.jitterScale);
-                projection[2][0] += jitter.x;
-                projection[2][1] += jitter.y;
-            }
+            if (m_impl->world.ready && m_impl->world.world && m_impl->world.worldView) {
+                if (m_impl->window.cursorCaptured &&
+                    glfwGetInputMode(m_impl->window.window, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
+                    Input::setCursorCaptured(m_impl->window, true);
+                }
 
-            glBindFramebuffer(GL_FRAMEBUFFER, useTaa ? m_impl->render.taa.sceneFbo : 0);
-            glViewport(0, 0, width, height);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                {
+                    PROFILE_SCOPE("Simulation");
+                    Input::updateCamera(m_impl->input, m_impl->camera, deltaTime);
+                    Input::handleDemoSpawn(m_impl->input, m_impl->assets, *m_impl->world.world, m_impl->camera);
+                    Input::handleBlockEdits(m_impl->input,
+                                            m_impl->window,
+                                            m_impl->camera,
+                                            *m_impl->world.world,
+                                            *m_impl->world.worldView,
+                                            m_impl->world.placeBlock);
+                    m_impl->world.world->tickEntities(deltaTime);
+                }
 
-            m_impl->world.world->tickEntities(deltaTime);
-            m_impl->world.worldView->updateStreaming(m_impl->camera.position);
-            m_impl->world.worldView->updateMeshes();
-            m_impl->world.worldView->render(view, projection, m_impl->camera.position, nearPlane, farPlane, deltaTime);
+                int width = 0;
+                int height = 0;
+                glfwGetFramebufferSize(m_impl->window.window, &width, &height);
+                float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
 
-            if (useTaa) {
-                Render::renderEntityDebugBoxes(m_impl->debug, m_impl->world.world, view, projection);
-            }
+                float renderDistance = m_impl->world.worldView->renderConfig().renderDistance;
+                float nearPlane = 0.1f;
+                float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
+                glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, nearPlane, farPlane);
+                glm::mat4 projectionNoJitter = projection;
+                glm::mat4 view = glm::lookAt(
+                    m_impl->camera.position,
+                    m_impl->camera.target,
+                    glm::vec3(0.0f, 1.0f, 0.0f)
+                );
 
-            if (useTaa) {
-                glm::mat4 viewProjection = projection * view;
-                glm::mat4 viewProjectionNoJitter = projectionNoJitter * view;
-                glm::mat4 invViewProjection = glm::inverse(viewProjectionNoJitter);
-                glm::vec2 jitterUv = jitter * 0.5f;
-                m_impl->resolveTaa(invViewProjection,
-                                   viewProjectionNoJitter,
-                                   jitterUv,
-                                   m_impl->world.worldView->renderConfig().taa.blend);
+                bool useTaa = m_impl->world.worldView->renderConfig().taa.enabled;
+                if (useTaa) {
+                    m_impl->ensureTaaTargets(width, height);
+                    useTaa = m_impl->render.taa.initialized && m_impl->render.taa.sceneFbo != 0;
+                } else {
+                    m_impl->render.taa.historyValid = false;
+                }
+
+                glm::vec2 jitter(0.0f);
+                if (useTaa) {
+                    jitter = m_impl->nextJitter(width, height,
+                                                m_impl->world.worldView->renderConfig().taa.jitterScale);
+                    projection[2][0] += jitter.x;
+                    projection[2][1] += jitter.y;
+                }
+
+                glBindFramebuffer(GL_FRAMEBUFFER, useTaa ? m_impl->render.taa.sceneFbo : 0);
                 glViewport(0, 0, width, height);
-            }
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            if (!useTaa) {
-                Render::renderEntityDebugBoxes(m_impl->debug, m_impl->world.world, view, projectionNoJitter);
+                {
+                    PROFILE_SCOPE("Streaming");
+                    m_impl->world.worldView->updateStreaming(m_impl->camera.position);
+                    m_impl->world.worldView->updateMeshes();
+                }
+
+                {
+                    PROFILE_SCOPE("Render");
+                    m_impl->world.worldView->render(view, projection, m_impl->camera.position,
+                                                    nearPlane, farPlane, deltaTime);
+
+                    if (useTaa) {
+                        Render::renderEntityDebugBoxes(m_impl->debug, m_impl->world.world, view, projection);
+                    }
+
+                    if (useTaa) {
+                        PROFILE_SCOPE("TAA");
+                        glm::mat4 viewProjection = projection * view;
+                        glm::mat4 viewProjectionNoJitter = projectionNoJitter * view;
+                        glm::mat4 invViewProjection = glm::inverse(viewProjectionNoJitter);
+                        glm::vec2 jitterUv = jitter * 0.5f;
+                        m_impl->resolveTaa(invViewProjection,
+                                           viewProjectionNoJitter,
+                                           jitterUv,
+                                           m_impl->world.worldView->renderConfig().taa.blend);
+                        glViewport(0, 0, width, height);
+                    }
+
+                    if (!useTaa) {
+                        Render::renderEntityDebugBoxes(m_impl->debug, m_impl->world.world,
+                                                       view, projectionNoJitter);
+                    }
+
+                    Render::renderDebugField(m_impl->debug,
+                                             m_impl->world.worldView,
+                                             m_impl->camera.position,
+                                             m_impl->camera.target,
+                                             m_impl->camera.forward,
+                                             width,
+                                             height);
+                    Render::renderFrameGraph(m_impl->debug);
+#if defined(RIGEL_ENABLE_IMGUI)
+                    UI::renderProfilerWindow(m_impl->debug.overlayEnabled &&
+                                             m_impl->debug.profilerOverlayEnabled);
+#else
+                    Render::renderProfilerOverlay(m_impl->debug, width, height);
+#endif
+                }
+            } else {
+                int width = 0;
+                int height = 0;
+                glfwGetFramebufferSize(m_impl->window.window, &width, &height);
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                glViewport(0, 0, width, height);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             }
-            Render::renderDebugField(m_impl->debug,
-                                     m_impl->world.worldView,
-                                     m_impl->camera.position,
-                                     m_impl->camera.target,
-                                     m_impl->camera.forward,
-                                     width,
-                                     height);
-            Render::renderFrameGraph(m_impl->debug);
-        } else {
-            int width = 0;
-            int height = 0;
-            glfwGetFramebufferSize(m_impl->window.window, &width, &height);
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glViewport(0, 0, width, height);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         }
+        Core::Profiler::endFrame();
 
+        UI::endFrame();
         glfwSwapBuffers(m_impl->window.window);
 
         // Exit on ESC

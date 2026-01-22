@@ -3,6 +3,11 @@
 
 #include <spdlog/spdlog.h>
 
+#if defined(RIGEL_ENABLE_IMGUI)
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#endif
+
 namespace Rigel::Input {
 
 // Bitwise and w/ keystate != 0
@@ -36,6 +41,11 @@ bool isKeyRepeating(int keycode) {
 }
 
 void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+#if defined(RIGEL_ENABLE_IMGUI)
+    if (ImGui::GetCurrentContext()) {
+        ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
+    }
+#endif
     if (key < 0 || key > GLFW_KEY_LAST) return;
 
     if (action == GLFW_PRESS) {

@@ -32,6 +32,7 @@ add_library(RigelLib ${SOURCES})
 
 target_compile_definitions(RigelLib PRIVATE
     $<$<CONFIG:Debug>:DEBUG>
+    $<$<CONFIG:Debug>:RIGEL_ENABLE_PROFILER>
 )
 
 target_embed_resources(RigelLib "${CMAKE_CURRENT_SOURCE_DIR}/assets")
@@ -52,6 +53,7 @@ find_package(OpenGL REQUIRED)
 find_package(ryml REQUIRED)
 find_package(stb REQUIRED)
 find_package(glm REQUIRED)
+find_package(imgui QUIET)
 
 target_link_libraries(RigelLib
     PUBLIC
@@ -63,6 +65,11 @@ target_link_libraries(RigelLib
         stb::stb
         glm::glm
 )
+
+if (imgui_FOUND)
+    target_link_libraries(RigelLib PUBLIC imgui::imgui)
+    target_compile_definitions(RigelLib PRIVATE RIGEL_ENABLE_IMGUI IMGUI_IMPL_OPENGL_LOADER_GLEW)
+endif()
 
 if (CMAKE_DL_LIBS)
     target_link_libraries(RigelLib PUBLIC ${CMAKE_DL_LIBS})
@@ -80,6 +87,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 option(RIGEL_BUILD_TESTS "Build Rigel tests" ON)
 if (RIGEL_BUILD_TESTS)
     enable_testing()
+    target_compile_definitions(RigelLib PRIVATE RIGEL_ENABLE_PROFILER)
 
     file(GLOB_RECURSE TEST_SOURCES
         CONFIGURE_DEPENDS
@@ -89,6 +97,7 @@ if (RIGEL_BUILD_TESTS)
     add_executable(Rigel_tests ${TEST_SOURCES})
     target_include_directories(Rigel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(Rigel_tests PRIVATE RigelLib)
+    target_compile_definitions(Rigel_tests PRIVATE RIGEL_ENABLE_PROFILER)
 
     set(TEST_CASE_NAMES "")
     foreach(test_src ${TEST_SOURCES})

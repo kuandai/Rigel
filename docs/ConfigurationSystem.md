@@ -250,7 +250,6 @@ config (`assets/config/render.yaml`) may override them.
 | `render.taa.blend` | float | `0.9` | History blend factor. |
 | `render.taa.jitter_scale` | float | `1.0` | Subpixel jitter scale. |
 | `render.profiling.enabled` | bool | `false` | Enable the per-frame profiler. |
-| `render.profiling.overlay_enabled` | bool | `false` | Show profiler overlay (requires debug overlay). |
 
 Key fields:
 

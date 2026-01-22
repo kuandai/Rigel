@@ -13,11 +13,12 @@ When enabled it draws:
 
 - Chunk streaming field (colored cubes for pipeline state).
 - Frame time graph (ms per frame).
-- Profiler bars (per-frame scope timings, optional toggle).
+- ImGui profiler window (flame graph of per-frame scopes).
 - Entity bounds wireframes.
 
 The overlay is toggled by the `debug_overlay` action (F1 by default).
-The profiler overlay is additionally gated by `profiler_overlay` (F3).
+The profiler window is shown whenever the debug overlay is enabled and ImGui is
+available.
 
 ---
 
@@ -89,15 +90,11 @@ State mapping (from `ChunkStreamer::DebugState`):
 
 ---
 
-## 5. Profiler Overlay
+## 5. Profiler Window (ImGui)
 
-- Toggle action: `profiler_overlay` (F3 by default).
-- Uses the per-frame profiler to draw bars for the slowest top-level scopes
-  from the last frame.
-- Rendering uses the same shader as the frame graph (`shaders/frame_graph`).
-
-The profiler overlay is hidden unless both `debug_overlay` and
-`profiler_overlay` are enabled.
+- The ImGui profiler window displays a flame graph for the last frame.
+- It is only available when ImGui is linked (`imgui` package found).
+- The window appears when the debug overlay is enabled (F1).
 
 ---
 
@@ -126,7 +123,7 @@ TAA, so they are stable.
 
 ## 8. Known Limitations
 
-- No text labels or legend in the overlay; color mapping is implicit.
+- Profiler view requires ImGui and is hidden when ImGui is unavailable.
 - Debug overlay is global and not per-world.
 - Missing shaders disable that overlay component.
 - Entity boxes reflect AABB extents, not exact mesh silhouettes.

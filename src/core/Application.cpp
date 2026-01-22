@@ -468,7 +468,6 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         Input::loadInputBindings(m_impl->assets, m_impl->input);
         Input::attachDebugOverlayListener(m_impl->input, &m_impl->debug.overlayEnabled);
-        Input::attachProfilerOverlayListener(m_impl->input, &m_impl->debug.profilerOverlayEnabled);
 
         Voxel::ConfigProvider configProvider =
             Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
@@ -841,11 +840,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         Voxel::WorldRenderConfig renderConfig = renderConfigProvider.loadRenderConfig();
         const char* profileEnv = std::getenv("RIGEL_PROFILE");
         if (profileEnv && profileEnv[0] != '\0') {
-            renderConfig.profiling.enabled = (profileEnv[0] != '0');
+            renderConfig.profilingEnabled = (profileEnv[0] != '0');
         }
         m_impl->world.worldView->renderConfig() = renderConfig;
-        Core::Profiler::setEnabled(renderConfig.profiling.enabled);
-        m_impl->debug.profilerOverlayEnabled = renderConfig.profiling.overlayEnabled;
+        Core::Profiler::setEnabled(renderConfig.profilingEnabled);
         m_impl->world.worldView->setStreamConfig(config.stream);
         if (m_impl->timing.benchmarkEnabled) {
             m_impl->world.worldView->setBenchmark(&m_impl->timing.benchmark);
@@ -1054,10 +1052,10 @@ void Application::run() {
                                              height);
                     Render::renderFrameGraph(m_impl->debug);
 #if defined(RIGEL_ENABLE_IMGUI)
-                    UI::renderProfilerWindow(m_impl->debug.overlayEnabled &&
-                                             m_impl->debug.profilerOverlayEnabled);
+                    UI::renderProfilerWindow(m_impl->debug.overlayEnabled);
 #else
-                    Render::renderProfilerOverlay(m_impl->debug, width, height);
+                    (void)width;
+                    (void)height;
 #endif
                 }
             } else {

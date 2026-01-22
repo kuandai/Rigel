@@ -15,7 +15,6 @@ assets:
     default:
       bindings:
         debug_overlay: F1
-        profiler_overlay: F3
         move_forward: W
         move_backward: S
         move_left: A

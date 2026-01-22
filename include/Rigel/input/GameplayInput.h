@@ -51,24 +51,10 @@ struct DebugOverlayListener : InputListener {
     }
 };
 
-struct ProfilerOverlayListener : InputListener {
-    bool* enabled = nullptr;
-
-    void onActionReleased(std::string_view action) override {
-        if (!enabled) {
-            return;
-        }
-        if (action == "profiler_overlay") {
-            *enabled = !*enabled;
-        }
-    }
-};
-
 struct InputState {
     std::shared_ptr<InputBindings> bindings;
     InputDispatcher dispatcher;
     DebugOverlayListener debugOverlayListener;
-    ProfilerOverlayListener profilerOverlayListener;
     bool lastLeftDown = false;
     bool lastRightDown = false;
 };
@@ -87,8 +73,6 @@ void loadInputBindings(Asset::AssetManager& assets, InputState& input);
 void ensureDefaultBindings(InputBindings& bindings);
 
 void attachDebugOverlayListener(InputState& input, bool* overlayEnabled);
-
-void attachProfilerOverlayListener(InputState& input, bool* overlayEnabled);
 
 void updateCamera(const InputState& input, CameraState& camera, float dt);
 

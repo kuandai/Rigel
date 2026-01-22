@@ -3,7 +3,6 @@
 #include "Rigel/Core/Profiler.h"
 
 #include <algorithm>
-#include <unordered_map>
 #include <vector>
 
 #if defined(RIGEL_ENABLE_IMGUI)
@@ -96,77 +95,132 @@ void renderProfilerWindow(bool enabled) {
         return;
     }
 
-    bool hasDepthOne = false;
-    for (const auto& record : frame->records) {
-        if (record.depth == 1) {
-            hasDepthOne = true;
-            break;
-        }
-    }
-    const uint16_t targetDepth = hasDepthOne ? 1 : 0;
-
-    std::unordered_map<const char*, uint64_t> durations;
-    durations.reserve(frame->records.size());
-    for (const auto& record : frame->records) {
-        if (record.depth != targetDepth) {
-            continue;
-        }
-        if (record.endNs <= record.startNs || !record.name) {
-            continue;
-        }
-        durations[record.name] += (record.endNs - record.startNs);
-    }
-
-    if (durations.empty()) {
+    if (frame->records.empty()) {
         return;
     }
 
     struct Entry {
         const char* name = nullptr;
-        uint64_t ns = 0;
+        uint64_t startNs = 0;
+        uint64_t endNs = 0;
+        uint16_t depth = 0;
     };
     std::vector<Entry> entries;
-    entries.reserve(durations.size());
-    for (const auto& [name, ns] : durations) {
-        entries.push_back({name, ns});
+    entries.reserve(frame->records.size());
+    uint16_t maxDepth = 0;
+    for (const auto& record : frame->records) {
+        if (!record.name || record.endNs <= record.startNs) {
+            continue;
+        }
+        maxDepth = std::max(maxDepth, record.depth);
+        entries.push_back({record.name, record.startNs, record.endNs, record.depth});
     }
+    if (entries.empty()) {
+        return;
+    }
+
     std::sort(entries.begin(), entries.end(),
-              [](const Entry& a, const Entry& b) { return a.ns > b.ns; });
+              [](const Entry& a, const Entry& b) {
+                  if (a.depth == b.depth) {
+                      return a.startNs < b.startNs;
+                  }
+                  return a.depth < b.depth;
+              });
 
     const uint64_t frameNs = frame->frameEndNs - frame->frameStartNs;
     const float frameMs = static_cast<float>(frameNs) / 1.0e6f;
 
     ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.6f);
-    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize |
-                             ImGuiWindowFlags_NoSavedSettings;
+    ImGui::SetNextWindowSize(ImVec2(560.0f, 260.0f), ImGuiCond_FirstUseEver);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoSavedSettings;
     ImGui::Begin("Profiler", nullptr, flags);
     ImGui::Text("Frame: %.2f ms", frameMs);
+    ImGui::TextUnformatted("Flame graph (depth 0 at bottom)");
     ImGui::Separator();
 
-    if (ImGui::BeginTable("profiler_table", 3,
-                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
-        ImGui::TableSetupColumn("Scope");
-        ImGui::TableSetupColumn("ms", ImGuiTableColumnFlags_WidthFixed);
-        ImGui::TableSetupColumn("%", ImGuiTableColumnFlags_WidthFixed);
-        ImGui::TableHeadersRow();
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    float graphHeight = std::max(120.0f, std::min(240.0f, avail.y));
+    ImVec2 graphSize(avail.x, graphHeight);
+    ImGui::InvisibleButton("flamegraph", graphSize);
+    ImVec2 origin = ImGui::GetItemRectMin();
+    ImVec2 corner = ImGui::GetItemRectMax();
 
-        const size_t maxRows = std::min<size_t>(entries.size(), 12);
-        for (size_t i = 0; i < maxRows; ++i) {
-            const Entry& entry = entries[i];
-            float ms = static_cast<float>(entry.ns) / 1.0e6f;
-            float pct = frameNs > 0 ? (static_cast<float>(entry.ns) / frameNs) * 100.0f : 0.0f;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(origin, corner, IM_COL32(20, 20, 20, 200));
 
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(entry.name);
-            ImGui::TableSetColumnIndex(1);
-            ImGui::Text("%.2f", ms);
-            ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%.1f", pct);
+    const float totalWidth = graphSize.x;
+    const float barHeight = graphSize.y / static_cast<float>(maxDepth + 1);
+    const float barGap = 2.0f;
+
+    struct HitRect {
+        ImVec2 min;
+        ImVec2 max;
+        const char* name;
+        uint64_t ns;
+        uint16_t depth;
+    };
+    std::vector<HitRect> hitRects;
+    hitRects.reserve(entries.size());
+
+    for (const auto& entry : entries) {
+        float startT = frameNs > 0
+            ? static_cast<float>(entry.startNs - frame->frameStartNs) / static_cast<float>(frameNs)
+            : 0.0f;
+        float endT = frameNs > 0
+            ? static_cast<float>(entry.endNs - frame->frameStartNs) / static_cast<float>(frameNs)
+            : 0.0f;
+        startT = std::clamp(startT, 0.0f, 1.0f);
+        endT = std::clamp(endT, 0.0f, 1.0f);
+        if (endT <= startT) {
+            continue;
         }
 
-        ImGui::EndTable();
+        float x0 = origin.x + startT * totalWidth;
+        float x1 = origin.x + endT * totalWidth;
+        float y0 = origin.y + graphSize.y - (static_cast<float>(entry.depth) + 1.0f) * barHeight;
+        float y1 = y0 + barHeight - barGap;
+        if (y1 <= y0 + 1.0f) {
+            continue;
+        }
+
+        uint32_t hash = 2166136261u;
+        for (const char* c = entry.name; c && *c; ++c) {
+            hash ^= static_cast<uint32_t>(*c);
+            hash *= 16777619u;
+        }
+        float hue = static_cast<float>(hash % 360) / 360.0f;
+        ImU32 color = ImColor::HSV(hue, 0.55f, 0.85f, 0.9f);
+        draw->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), color);
+        draw->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(0, 0, 0, 150));
+
+        ImVec2 labelSize = ImGui::CalcTextSize(entry.name);
+        if (labelSize.x + 6.0f < (x1 - x0) && labelSize.y + 2.0f < (y1 - y0)) {
+            draw->AddText(ImVec2(x0 + 3.0f, y0 + 1.0f), IM_COL32(10, 10, 10, 255), entry.name);
+        }
+
+        hitRects.push_back({ImVec2(x0, y0), ImVec2(x1, y1),
+                            entry.name, entry.endNs - entry.startNs, entry.depth});
+    }
+
+    ImVec2 mouse = ImGui::GetIO().MousePos;
+    const HitRect* hovered = nullptr;
+    for (auto it = hitRects.rbegin(); it != hitRects.rend(); ++it) {
+        if (mouse.x >= it->min.x && mouse.x <= it->max.x &&
+            mouse.y >= it->min.y && mouse.y <= it->max.y) {
+            hovered = &(*it);
+            break;
+        }
+    }
+
+    if (hovered) {
+        float ms = static_cast<float>(hovered->ns) / 1.0e6f;
+        float pct = frameNs > 0 ? (static_cast<float>(hovered->ns) / frameNs) * 100.0f : 0.0f;
+        ImGui::BeginTooltip();
+        ImGui::Text("%s", hovered->name);
+        ImGui::Text("Time: %.3f ms (%.2f%%)", ms, pct);
+        ImGui::Text("Depth: %u", static_cast<unsigned int>(hovered->depth));
+        ImGui::EndTooltip();
     }
 
     ImGui::End();

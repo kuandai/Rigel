@@ -235,9 +235,6 @@ void ensureDefaultBindings(InputBindings& bindings) {
     if (!bindings.hasAction("debug_overlay")) {
         bindings.bind("debug_overlay", GLFW_KEY_F1);
     }
-    if (!bindings.hasAction("profiler_overlay")) {
-        bindings.bind("profiler_overlay", GLFW_KEY_F3);
-    }
     if (!bindings.hasAction("move_forward")) {
         bindings.bind("move_forward", GLFW_KEY_W);
     }
@@ -270,11 +267,6 @@ void ensureDefaultBindings(InputBindings& bindings) {
 void attachDebugOverlayListener(InputState& input, bool* overlayEnabled) {
     input.debugOverlayListener.enabled = overlayEnabled;
     input.dispatcher.addListener(&input.debugOverlayListener);
-}
-
-void attachProfilerOverlayListener(InputState& input, bool* overlayEnabled) {
-    input.profilerOverlayListener.enabled = overlayEnabled;
-    input.dispatcher.addListener(&input.profilerOverlayListener);
 }
 
 void updateCamera(const InputState& input, CameraState& camera, float dt) {

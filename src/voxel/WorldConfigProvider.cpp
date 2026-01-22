@@ -116,14 +116,6 @@ void applyTaaConfig(ryml::ConstNodeRef taaNode, TaaConfig& taa) {
     }
 }
 
-void applyProfilingConfig(ryml::ConstNodeRef profilingNode, ProfilingConfig& profiling) {
-    if (!profilingNode.readable()) {
-        return;
-    }
-    profiling.enabled = Util::readBool(profilingNode, "enabled", profiling.enabled);
-    profiling.overlayEnabled = Util::readBool(profilingNode, "overlay_enabled", profiling.overlayEnabled);
-}
-
 void applyRenderYaml(const char* sourceName,
                      const std::string& yaml,
                      WorldRenderConfig& config) {
@@ -155,7 +147,10 @@ void applyRenderYaml(const char* sourceName,
         applyTaaConfig(renderNode["taa"], config.taa);
     }
     if (renderNode.has_child("profiling")) {
-        applyProfilingConfig(renderNode["profiling"], config.profiling);
+        const auto profilingNode = renderNode["profiling"];
+        if (profilingNode.readable()) {
+            config.profilingEnabled = Util::readBool(profilingNode, "enabled", config.profilingEnabled);
+        }
     }
 }
 

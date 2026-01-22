@@ -33,10 +33,6 @@ struct TaaConfig {
     float jitterScale = 1.0f;
 };
 
-struct ProfilingConfig {
-    bool enabled = false;
-    bool overlayEnabled = false;
-};
 
 struct WorldRenderConfig {
     float renderDistance = 256.0f;
@@ -44,7 +40,7 @@ struct WorldRenderConfig {
     float transparentAlpha = 0.5f;
     ShadowConfig shadow;
     TaaConfig taa;
-    ProfilingConfig profiling;
+    bool profilingEnabled = false;
 };
 
 } // namespace Rigel::Voxel

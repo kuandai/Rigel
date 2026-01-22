@@ -21,4 +21,3 @@ render:
     jitter_scale: 1.0
   profiling:
     enabled: false
-    overlay_enabled: false

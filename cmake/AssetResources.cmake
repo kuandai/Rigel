@@ -79,13 +79,14 @@ ${REGISTRY_KEYS}
 };
     ")
 
-    # Create a library target for these resources
-    add_library(${TARGET_NAME}_resources STATIC ${GENERATED_SOURCES})
-    
-    # Allow the main app to find the generated header
+    # Create an object library for these resources to avoid huge archive link lines
+    add_library(${TARGET_NAME}_resources OBJECT ${GENERATED_SOURCES})
+
+    # Allow the main target to find the generated header
     target_include_directories(${TARGET_NAME}_resources INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/include")
-    
-    # Link the resources to your main application
-    target_link_libraries(${TARGET_NAME} PRIVATE ${TARGET_NAME}_resources)
+    target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/include")
+
+    # Link the resource objects into the main target
+    target_sources(${TARGET_NAME} PRIVATE $<TARGET_OBJECTS:${TARGET_NAME}_resources>)
 
 endfunction()

@@ -12,6 +12,10 @@ CMakeUserPresets.json
 conanbuildinfo.*
 conaninfo.txt
 conan.lock
+.conan/
+
+# Assistant metadata
+.claude/
 
 # VSCode settings
 .vscode/

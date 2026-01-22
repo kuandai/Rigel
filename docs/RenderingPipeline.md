@@ -77,7 +77,7 @@ Key fields in `WorldRenderConfig`:
 - `transparentAlpha`
 - `shadow` (see Section 5)
 - `taa` (see Section 6)
-- `profiling` (per-frame profiler toggle)
+- `profilingEnabled` (per-frame profiler toggle; config key `render.profiling.enabled`)
 
 ---
 

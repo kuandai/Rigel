@@ -8,12 +8,6 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type (Debug or Release)" FORCE)
 endif()
 
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/Rigel/version.h.in
-    ${CMAKE_CURRENT_BINARY_DIR}/include/Rigel/version.h
-    @ONLY
-)
-
 file(GLOB_RECURSE SOURCES
     CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
@@ -54,6 +48,36 @@ find_package(ryml REQUIRED)
 find_package(stb REQUIRED)
 find_package(glm REQUIRED)
 find_package(imgui QUIET)
+
+set(RIGEL_OPTIONAL_COMPONENTS_LIST "")
+if (imgui_FOUND)
+    list(APPEND RIGEL_OPTIONAL_COMPONENTS_LIST "imgui")
+endif()
+if (RIGEL_OPTIONAL_COMPONENTS_LIST)
+    list(JOIN RIGEL_OPTIONAL_COMPONENTS_LIST ", " RIGEL_OPTIONAL_COMPONENTS)
+else()
+    set(RIGEL_OPTIONAL_COMPONENTS "none")
+endif()
+
+set(RIGEL_GIT_HASH "")
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    execute_process(
+        COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} rev-parse --short HEAD
+        RESULT_VARIABLE RIGEL_GIT_RESULT
+        OUTPUT_VARIABLE RIGEL_GIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if (NOT RIGEL_GIT_RESULT EQUAL 0)
+        set(RIGEL_GIT_HASH "")
+    endif()
+endif()
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/Rigel/version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/include/Rigel/version.h
+    @ONLY
+)
 
 target_link_libraries(RigelLib
     PUBLIC

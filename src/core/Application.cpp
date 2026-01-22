@@ -39,6 +39,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -382,10 +383,15 @@ struct Application::Impl {
 
 Application::Application() : m_impl(std::make_unique<Impl>()) {
     #ifdef DEBUG
-    spdlog::info("Rigel v{} Developer Preview", RIGEL_VERSION);
+    if (!std::string_view(RIGEL_GIT_HASH).empty()) {
+        spdlog::info("Rigel v{} Developer Preview (git {})", RIGEL_VERSION, RIGEL_GIT_HASH);
+    } else {
+        spdlog::info("Rigel v{} Developer Preview", RIGEL_VERSION);
+    }
     #else
     spdlog::info("Rigel v{}", RIGEL_VERSION);
     #endif
+    spdlog::info("Optional components: {}", RIGEL_OPTIONAL_COMPONENTS);
 
     // Initialize GLFW
     if (!glfwInit()) {

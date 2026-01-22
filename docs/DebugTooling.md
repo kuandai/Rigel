@@ -13,9 +13,11 @@ When enabled it draws:
 
 - Chunk streaming field (colored cubes for pipeline state).
 - Frame time graph (ms per frame).
+- Profiler bars (per-frame scope timings, optional toggle).
 - Entity bounds wireframes.
 
 The overlay is toggled by the `debug_overlay` action (F1 by default).
+The profiler overlay is additionally gated by `profiler_overlay` (F3).
 
 ---
 
@@ -87,7 +89,19 @@ State mapping (from `ChunkStreamer::DebugState`):
 
 ---
 
-## 5. Entity Bounds Overlay
+## 5. Profiler Overlay
+
+- Toggle action: `profiler_overlay` (F3 by default).
+- Uses the per-frame profiler to draw bars for the slowest top-level scopes
+  from the last frame.
+- Rendering uses the same shader as the frame graph (`shaders/frame_graph`).
+
+The profiler overlay is hidden unless both `debug_overlay` and
+`profiler_overlay` are enabled.
+
+---
+
+## 6. Entity Bounds Overlay
 
 - Shader: `shaders/entity_debug`.
 - `renderEntityDebugBoxes` draws a wireframe AABB for every entity.
@@ -101,7 +115,7 @@ TAA, so they are stable.
 
 ---
 
-## 6. Benchmark Logging
+## 7. Benchmark Logging
 
 - `RIGEL_CHUNK_BENCH=1` enables chunk benchmark statistics.
 - When enabled, `Application` prints a summary on exit:
@@ -110,7 +124,7 @@ TAA, so they are stable.
 
 ---
 
-## 7. Known Limitations
+## 8. Known Limitations
 
 - No text labels or legend in the overlay; color mapping is implicit.
 - Debug overlay is global and not per-world.

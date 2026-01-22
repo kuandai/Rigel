@@ -55,16 +55,18 @@ Shutdown persists world state and releases resources.
 
 Per frame:
 1. Poll events and compute `deltaTime` (clamped to max).
-2. Update key state + dispatch action events (`InputDispatcher`).
-3. Update camera and interaction logic.
+2. Begin profiler frame (if enabled).
+3. Update key state + dispatch action events (`InputDispatcher`).
+4. Update camera and interaction logic.
    - Mouse look is applied if the cursor is captured.
    - Block edit raycasts and demo entity spawn occur here.
-4. Tick entities (`World::tickEntities`).
-5. Update chunk streaming (load/gen/mesh decisions).
-6. Apply completed generation + mesh tasks.
-7. Render scene (voxel + entities + debug overlays).
+5. Tick entities (`World::tickEntities`).
+6. Update chunk streaming (load/gen/mesh decisions).
+7. Apply completed generation + mesh tasks.
+8. Render scene (voxel + entities + debug overlays).
    - Shadow maps, TAA, and debug overlays are all handled here.
-8. Swap buffers and check for exit (`exit` action).
+9. Profiler frame ends (`Core::Profiler::endFrame`) before buffer swap.
+10. Swap buffers and check for exit (`exit` action).
 
 ## Phase 3: Shutdown (Application::~Application)
 

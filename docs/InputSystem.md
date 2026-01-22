@@ -58,6 +58,7 @@ assets:
         sprint: LSHIFT
         exit: ESC
         debug_overlay: F1
+        profiler_overlay: F3
         unbound_action: none
 ```
 
@@ -77,6 +78,7 @@ Defaults currently include:
 - `sprint`: LSHIFT
 - `exit`: ESC
 - `debug_overlay`: F1
+- `profiler_overlay`: F3
 - `demo_spawn_entity`: F2
 
 ## Key Parsing Rules

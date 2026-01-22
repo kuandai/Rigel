@@ -249,6 +249,8 @@ config (`assets/config/render.yaml`) may override them.
 | `render.taa.enabled` | bool | `false` | Toggle TAA. |
 | `render.taa.blend` | float | `0.9` | History blend factor. |
 | `render.taa.jitter_scale` | float | `1.0` | Subpixel jitter scale. |
+| `render.profiling.enabled` | bool | `false` | Enable the per-frame profiler. |
+| `render.profiling.overlay_enabled` | bool | `false` | Show profiler overlay (requires debug overlay). |
 
 Key fields:
 
@@ -268,6 +270,9 @@ Values are clamped during load:
 - `shadow.cascades` is clamped to `[1, ShadowConfig::MaxCascades]`.
 - `pcf_radius` and related values are clamped to non-negative.
 - `taa.blend` is clamped to `[0, 1]`.
+
+`RIGEL_PROFILE=1` forces profiling on at runtime, regardless of config. Setting
+`RIGEL_PROFILE=0` forces profiling off.
 
 ---
 

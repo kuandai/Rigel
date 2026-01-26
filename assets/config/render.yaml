@@ -20,4 +20,4 @@ render:
     blend: 0.95
     jitter_scale: 1.0
   profiling:
-    enabled: false
+    enabled: true

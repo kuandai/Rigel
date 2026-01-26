@@ -64,6 +64,7 @@ struct DebugState {
     std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
     float debugDistance = kDefaultDebugDistance;
     bool overlayEnabled = true;
+    bool imguiEnabled = false;
 };
 
 void initDebugField(DebugState& debug, Asset::AssetManager& assets);

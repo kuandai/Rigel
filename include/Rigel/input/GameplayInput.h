@@ -51,10 +51,24 @@ struct DebugOverlayListener : InputListener {
     }
 };
 
+struct ImGuiOverlayListener : InputListener {
+    bool* enabled = nullptr;
+
+    void onActionReleased(std::string_view action) override {
+        if (!enabled) {
+            return;
+        }
+        if (action == "imgui_overlay") {
+            *enabled = !*enabled;
+        }
+    }
+};
+
 struct InputState {
     std::shared_ptr<InputBindings> bindings;
     InputDispatcher dispatcher;
     DebugOverlayListener debugOverlayListener;
+    ImGuiOverlayListener imguiOverlayListener;
     bool lastLeftDown = false;
     bool lastRightDown = false;
 };
@@ -73,6 +87,7 @@ void loadInputBindings(Asset::AssetManager& assets, InputState& input);
 void ensureDefaultBindings(InputBindings& bindings);
 
 void attachDebugOverlayListener(InputState& input, bool* overlayEnabled);
+void attachImGuiOverlayListener(InputState& input, bool* overlayEnabled);
 
 void updateCamera(const InputState& input, CameraState& camera, float dt);
 

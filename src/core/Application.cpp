@@ -476,6 +476,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         Input::loadInputBindings(m_impl->assets, m_impl->input);
         Input::attachDebugOverlayListener(m_impl->input, &m_impl->debug.overlayEnabled);
+        Input::attachImGuiOverlayListener(m_impl->input, &m_impl->debug.imguiEnabled);
 
         Voxel::ConfigProvider configProvider =
             Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
@@ -1060,7 +1061,7 @@ void Application::run() {
                                              height);
                     Render::renderFrameGraph(m_impl->debug);
 #if defined(RIGEL_ENABLE_IMGUI)
-                    UI::renderProfilerWindow(m_impl->debug.overlayEnabled);
+                    UI::renderProfilerWindow(m_impl->debug.imguiEnabled);
 #else
                     (void)width;
                     (void)height;

@@ -235,6 +235,9 @@ void ensureDefaultBindings(InputBindings& bindings) {
     if (!bindings.hasAction("debug_overlay")) {
         bindings.bind("debug_overlay", GLFW_KEY_F1);
     }
+    if (!bindings.hasAction("imgui_overlay")) {
+        bindings.bind("imgui_overlay", GLFW_KEY_F3);
+    }
     if (!bindings.hasAction("move_forward")) {
         bindings.bind("move_forward", GLFW_KEY_W);
     }
@@ -267,6 +270,11 @@ void ensureDefaultBindings(InputBindings& bindings) {
 void attachDebugOverlayListener(InputState& input, bool* overlayEnabled) {
     input.debugOverlayListener.enabled = overlayEnabled;
     input.dispatcher.addListener(&input.debugOverlayListener);
+}
+
+void attachImGuiOverlayListener(InputState& input, bool* overlayEnabled) {
+    input.imguiOverlayListener.enabled = overlayEnabled;
+    input.dispatcher.addListener(&input.imguiOverlayListener);
 }
 
 void updateCamera(const InputState& input, CameraState& camera, float dt) {

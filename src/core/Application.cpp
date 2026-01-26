@@ -427,9 +427,11 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     // Print OpenGL version
     spdlog::info("OpenGL Version: {}", (char*)glGetString(GL_VERSION));
 
+#if defined(RIGEL_ENABLE_IMGUI)
     if (!UI::init(m_impl->window.window)) {
         spdlog::warn("ImGui initialization failed");
     }
+#endif
 
     // Set initial viewport
     glViewport(0, 0, 800, 600);

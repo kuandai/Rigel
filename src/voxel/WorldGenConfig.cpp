@@ -294,6 +294,12 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         }
         stream.meshQueueLimit = static_cast<size_t>(meshLimit);
 
+        stream.updateBudgetPerFrame =
+            Util::readInt(streamNode, "update_budget_per_frame", stream.updateBudgetPerFrame);
+        if (stream.updateBudgetPerFrame < 0) {
+            stream.updateBudgetPerFrame = 0;
+        }
+
         stream.applyBudgetPerFrame = Util::readInt(streamNode, "apply_budget_per_frame", stream.applyBudgetPerFrame);
         if (stream.applyBudgetPerFrame < 0) {
             stream.applyBudgetPerFrame = 0;
@@ -302,6 +308,27 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         stream.workerThreads = Util::readInt(streamNode, "worker_threads", stream.workerThreads);
         if (stream.workerThreads < 0) {
             stream.workerThreads = 0;
+        }
+
+        stream.ioThreads = Util::readInt(streamNode, "io_threads", stream.ioThreads);
+        if (stream.ioThreads < 0) {
+            stream.ioThreads = 0;
+        }
+
+        stream.loadWorkerThreads = Util::readInt(streamNode, "load_worker_threads", stream.loadWorkerThreads);
+        if (stream.loadWorkerThreads < 0) {
+            stream.loadWorkerThreads = 0;
+        }
+
+        stream.loadApplyBudgetPerFrame =
+            Util::readInt(streamNode, "load_apply_budget_per_frame", stream.loadApplyBudgetPerFrame);
+        if (stream.loadApplyBudgetPerFrame < 0) {
+            stream.loadApplyBudgetPerFrame = 0;
+        }
+
+        stream.loadQueueLimit = Util::readInt(streamNode, "load_queue_limit", stream.loadQueueLimit);
+        if (stream.loadQueueLimit < 0) {
+            stream.loadQueueLimit = 0;
         }
 
         int resident = Util::readInt(streamNode, "max_resident_chunks", static_cast<int>(stream.maxResidentChunks));

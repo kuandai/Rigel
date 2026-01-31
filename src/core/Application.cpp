@@ -2,10 +2,10 @@
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Core/Profiler.h"
 #include "Rigel/Entity/EntityModelLoader.h"
+#include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
-#include "Rigel/Persistence/ChunkSpanMerge.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/ChunkTasks.h"
@@ -105,6 +105,7 @@ struct Application::Impl {
         Voxel::WorldId activeWorldId = Voxel::WorldSet::defaultWorldId();
         Voxel::World* world = nullptr;
         Voxel::WorldView* worldView = nullptr;
+        std::shared_ptr<Persistence::AsyncChunkLoader> chunkLoader;
         bool ready = false;
         Voxel::BlockID placeBlock = Voxel::BlockRegistry::airId();
     };
@@ -515,333 +516,41 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             generator->config().world.version,
             Persistence::SaveScope::EntitiesOnly);
 
-        struct RegionKeyHash {
-            size_t operator()(const Persistence::RegionKey& key) const {
-                size_t seed = std::hash<std::string>{}(key.zoneId);
-                size_t hx = std::hash<int32_t>{}(key.x);
-                size_t hy = std::hash<int32_t>{}(key.y);
-                size_t hz = std::hash<int32_t>{}(key.z);
-                seed ^= hx + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-                seed ^= hy + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-                seed ^= hz + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-                return seed;
-            }
-        };
-
-        struct AsyncChunkLoader {
-            struct LoadResult {
-                Persistence::RegionKey key;
-                Persistence::ChunkRegionSnapshot region;
-                bool ok = false;
-            };
-
-            struct RegionEntry {
-                Persistence::ChunkRegionSnapshot region;
-                std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> present;
-            };
-
-            Persistence::PersistenceService* service = nullptr;
-            Persistence::PersistenceContext context;
-            std::unique_ptr<Persistence::PersistenceFormat> format;
-            Voxel::World* world = nullptr;
-            uint32_t worldGenVersion = 0;
-            std::string zoneId = "rigel:default";
-            size_t maxCachedRegions = 8;
-            size_t maxInFlightRegions = 8;
-            int prefetchRadius = 1;
-            std::shared_ptr<Voxel::WorldGenerator> generator;
-            Voxel::detail::ThreadPool pool;
-            Voxel::detail::ConcurrentQueue<LoadResult> completed;
-            std::unordered_map<Persistence::RegionKey, RegionEntry, RegionKeyHash> cache;
-            std::unordered_set<Persistence::RegionKey, RegionKeyHash> inFlight;
-            std::deque<Persistence::RegionKey> lru;
-
-            AsyncChunkLoader(Persistence::PersistenceService& serviceIn,
-                             Persistence::PersistenceContext contextIn,
-                             Voxel::World& worldIn,
-                             uint32_t worldGenVersionIn,
-                             size_t ioThreads,
-                             int viewDistanceChunks,
-                             std::shared_ptr<Voxel::WorldGenerator> generatorIn)
-                : service(&serviceIn),
-                  context(std::move(contextIn)),
-                  world(&worldIn),
-                  worldGenVersion(worldGenVersionIn),
-                  generator(std::move(generatorIn)),
-                  pool(ioThreads) {
-                format = service->openFormat(context);
-                int regionSpan = estimateRegionSpan();
-                if (regionSpan < 1) {
-                    regionSpan = 1;
-                }
-                int radius = viewDistanceChunks / regionSpan;
-                if (radius < 1) {
-                    radius = 1;
-                }
-                if (radius > 2) {
-                    radius = 2;
-                }
-                prefetchRadius = radius;
-            }
-
-            bool load(Voxel::ChunkCoord coord) {
-                if (!format || !world) {
-                    return false;
-                }
-
-                drainCompletions();
-
-                Persistence::RegionKey key =
-                    format->regionLayout().regionForChunk(zoneId, coord);
-                auto cacheIt = cache.find(key);
-                if (cacheIt == cache.end()) {
-                    queueRegionLoad(key);
-                }
-                prefetchNeighbors(key);
-                if (cacheIt == cache.end()) {
-                    return false;
-                }
-
-                if (cacheIt->second.present.find(coord) == cacheIt->second.present.end()) {
-                    return false;
-                }
-
-                touch(key);
-                return applyRegionChunk(cacheIt->second.region, coord);
-            }
-
-            bool isPending(Voxel::ChunkCoord coord) const {
-                if (!format) {
-                    return false;
-                }
-                Persistence::RegionKey key =
-                    format->regionLayout().regionForChunk(zoneId, coord);
-                return cache.find(key) == cache.end();
-            }
-
-        private:
-            int estimateRegionSpan() const {
-                if (!format) {
-                    return 1;
-                }
-                Voxel::ChunkCoord origin{0, 0, 0};
-                Persistence::RegionKey base =
-                    format->regionLayout().regionForChunk(zoneId, origin);
-                constexpr int kMaxSpan = 64;
-                for (int offset = 1; offset <= kMaxSpan; ++offset) {
-                    Voxel::ChunkCoord probe{offset, 0, 0};
-                    Persistence::RegionKey key =
-                        format->regionLayout().regionForChunk(zoneId, probe);
-                    if (!(key == base)) {
-                        return offset;
-                    }
-                }
-                return kMaxSpan;
-            }
-
-            void drainCompletions() {
-                LoadResult result;
-                while (completed.tryPop(result)) {
-                    inFlight.erase(result.key);
-                    if (!result.ok) {
-                        spdlog::warn("Region load failed ({} {} {}), treating as empty",
-                                     result.key.x, result.key.y, result.key.z);
-                        result.region = Persistence::ChunkRegionSnapshot{};
-                        result.region.key = result.key;
-                    }
-                    applyRegionToLoadedChunks(result.region);
-                    cache[result.key] = buildRegionEntry(std::move(result.region));
-                    touch(result.key);
-                    evictIfNeeded();
-                }
-            }
-
-            void queueRegionLoad(const Persistence::RegionKey& key) {
-                if (cache.find(key) != cache.end()) {
-                    return;
-                }
-                if (inFlight.find(key) != inFlight.end()) {
-                    return;
-                }
-                if (maxInFlightRegions > 0 && inFlight.size() >= maxInFlightRegions) {
-                    return;
-                }
-                inFlight.insert(key);
-                Persistence::PersistenceService* servicePtr = service;
-                Persistence::PersistenceContext contextCopy = context;
-                auto job = [this, servicePtr, contextCopy, key]() mutable {
-                    LoadResult result;
-                    result.key = key;
-                    try {
-                        auto jobFormat = servicePtr->openFormat(contextCopy);
-                        result.region = jobFormat->chunkContainer().loadRegion(key);
-                        result.ok = true;
-                    } catch (const std::exception& e) {
-                        spdlog::warn("Async region load failed ({} {} {}): {}",
-                                     key.x, key.y, key.z, e.what());
-                        result.ok = false;
-                    }
-                    completed.push(std::move(result));
-                };
-
-                if (pool.threadCount() > 0) {
-                    pool.enqueue(std::move(job));
-                } else {
-                    job();
-                }
-            }
-
-            bool applyRegionChunk(const Persistence::ChunkRegionSnapshot& region,
-                                  Voxel::ChunkCoord coord) {
-                if (region.chunks.empty()) {
-                    return false;
-                }
-
-                std::vector<const Persistence::ChunkSnapshot*> matches;
-                collectChunkSpans(region, coord, matches);
-
-                if (matches.empty()) {
-                    return false;
-                }
-
-                Voxel::Chunk& chunk = world->chunkManager().getOrCreateChunk(coord);
-                chunk.setWorldGenVersion(worldGenVersion);
-
-                Persistence::ChunkBaseFillFn baseFill;
-                if (generator) {
-                    baseFill = [this, coord](Voxel::Chunk& target,
-                                             const Voxel::BlockRegistry& registry) {
-                        Voxel::ChunkBuffer buffer;
-                        generator->generate(coord, buffer, nullptr);
-                        target.copyFrom(buffer.blocks, registry);
-                        target.clearPersistDirty();
-                    };
-                }
-                auto result = Persistence::mergeChunkSpans(
-                    chunk,
-                    world->blockRegistry(),
-                    matches,
-                    baseFill);
-
-                chunk.clearDirty();
-                chunk.clearPersistDirty();
-                return result.loadedFromDisk;
-            }
-
-            RegionEntry buildRegionEntry(Persistence::ChunkRegionSnapshot region) {
-                RegionEntry entry;
-                entry.region = std::move(region);
-                entry.present.reserve(entry.region.chunks.size());
-                for (const auto& snapshot : entry.region.chunks) {
-                    const Persistence::ChunkSpan& span = snapshot.data.span;
-                    entry.present.insert(Voxel::ChunkCoord{span.chunkX, span.chunkY, span.chunkZ});
-                }
-                return entry;
-            }
-
-            void collectChunkSpans(const Persistence::ChunkRegionSnapshot& region,
-                                   Voxel::ChunkCoord coord,
-                                   std::vector<const Persistence::ChunkSnapshot*>& out) const {
-                out.clear();
-                out.reserve(8);
-                for (const auto& snapshot : region.chunks) {
-                    const Persistence::ChunkSpan& span = snapshot.data.span;
-                    if (span.chunkX != coord.x || span.chunkY != coord.y || span.chunkZ != coord.z) {
-                        continue;
-                    }
-                    out.push_back(&snapshot);
-                }
-            }
-
-            void applyRegionToLoadedChunks(const Persistence::ChunkRegionSnapshot& region) {
-                if (!world) {
-                    return;
-                }
-                std::unordered_map<Voxel::ChunkCoord,
-                                   std::vector<const Persistence::ChunkSnapshot*>,
-                                   Voxel::ChunkCoordHash> grouped;
-                grouped.reserve(region.chunks.size());
-
-                for (const auto& snapshot : region.chunks) {
-                    const Persistence::ChunkSpan& span = snapshot.data.span;
-                    Voxel::ChunkCoord coord{span.chunkX, span.chunkY, span.chunkZ};
-                    grouped[coord].push_back(&snapshot);
-                }
-
-                for (const auto& [coord, spans] : grouped) {
-                    Voxel::Chunk* chunk = world->chunkManager().getChunk(coord);
-                    if (!chunk) {
-                        continue;
-                    }
-                    if (chunk->isPersistDirty()) {
-                        continue;
-                    }
-                    Persistence::mergeChunkSpans(*chunk,
-                                                 world->blockRegistry(),
-                                                 spans,
-                                                 {});
-                    chunk->setWorldGenVersion(worldGenVersion);
-                    chunk->clearPersistDirty();
-                }
-            }
-
-            void prefetchNeighbors(const Persistence::RegionKey& center) {
-                if (prefetchRadius <= 0) {
-                    return;
-                }
-                for (int dz = -prefetchRadius; dz <= prefetchRadius; ++dz) {
-                    for (int dy = -prefetchRadius; dy <= prefetchRadius; ++dy) {
-                        for (int dx = -prefetchRadius; dx <= prefetchRadius; ++dx) {
-                            if (dx == 0 && dy == 0 && dz == 0) {
-                                continue;
-                            }
-                            Persistence::RegionKey neighbor = center;
-                            neighbor.x += dx;
-                            neighbor.y += dy;
-                            neighbor.z += dz;
-                            queueRegionLoad(neighbor);
-                        }
-                    }
-                }
-            }
-
-            void touch(const Persistence::RegionKey& key) {
-                auto it = std::find(lru.begin(), lru.end(), key);
-                if (it != lru.end()) {
-                    lru.erase(it);
-                }
-                lru.push_back(key);
-            }
-
-            void evictIfNeeded() {
-                if (maxCachedRegions == 0) {
-                    return;
-                }
-                while (cache.size() > maxCachedRegions && !lru.empty()) {
-                    Persistence::RegionKey key = lru.front();
-                    lru.pop_front();
-                    cache.erase(key);
-                }
-            }
-        };
-
         uint32_t worldGenVersion = generator->config().world.version;
-        size_t ioThreads = 1;
-        auto chunkLoader = std::make_shared<AsyncChunkLoader>(
+        size_t ioThreads = static_cast<size_t>(std::max(0, config.stream.ioThreads));
+        size_t loadWorkerThreads = static_cast<size_t>(std::max(0, config.stream.loadWorkerThreads));
+        m_impl->world.chunkLoader = std::make_shared<Persistence::AsyncChunkLoader>(
             m_impl->world.worldSet.persistenceService(),
             std::move(persistenceContext),
             *m_impl->world.world,
             worldGenVersion,
             ioThreads,
+            loadWorkerThreads,
             config.stream.viewDistanceChunks,
             generator);
+        if (config.stream.loadQueueLimit >= 0) {
+            m_impl->world.chunkLoader->setLoadQueueLimit(
+                static_cast<size_t>(config.stream.loadQueueLimit));
+        }
         m_impl->world.worldView->setChunkLoader(
-            [chunkLoader](Voxel::ChunkCoord coord) {
-                return chunkLoader->load(coord);
+            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
+                return loader ? loader->request(coord) : false;
             });
         m_impl->world.worldView->setChunkPendingCallback(
-            [chunkLoader](Voxel::ChunkCoord coord) {
-                return chunkLoader->isPending(coord);
+            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
+                return loader ? loader->isPending(coord) : false;
+            });
+        m_impl->world.worldView->setChunkLoadDrain(
+            [loader = m_impl->world.chunkLoader](size_t budget) {
+                if (loader) {
+                    loader->drainCompletions(budget);
+                }
+            });
+        m_impl->world.worldView->setChunkLoadCancel(
+            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
+                if (loader) {
+                    loader->cancel(coord);
+                }
             });
 
         Voxel::ConfigProvider renderConfigProvider =
@@ -1021,8 +730,14 @@ void Application::run() {
 
                 {
                     PROFILE_SCOPE("Streaming");
-                    m_impl->world.worldView->updateStreaming(m_impl->camera.position);
-                    m_impl->world.worldView->updateMeshes();
+                    {
+                        PROFILE_SCOPE("Streaming/Update");
+                        m_impl->world.worldView->updateStreaming(m_impl->camera.position);
+                    }
+                    {
+                        PROFILE_SCOPE("Streaming/Apply");
+                        m_impl->world.worldView->updateMeshes();
+                    }
                 }
 
                 {

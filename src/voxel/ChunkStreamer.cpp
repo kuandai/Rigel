@@ -1,5 +1,6 @@
 #include "Rigel/Voxel/ChunkStreamer.h"
 #include "Rigel/Voxel/MeshBuilder.h"
+#include "Rigel/Core/Profiler.h"
 
 #include <algorithm>
 #include <cmath>
@@ -19,9 +20,13 @@ int distanceSquared(const ChunkCoord& a, const ChunkCoord& b) {
 } // namespace
 
 ChunkStreamer::~ChunkStreamer() {
-    if (m_pool) {
-        m_pool->stop();
-        m_pool.reset();
+    if (m_genPool) {
+        m_genPool->stop();
+        m_genPool.reset();
+    }
+    if (m_meshPool) {
+        m_meshPool->stop();
+        m_meshPool.reset();
     }
 }
 
@@ -60,6 +65,14 @@ void ChunkStreamer::setChunkPendingCallback(ChunkPendingCallback pending) {
     m_chunkPending = std::move(pending);
 }
 
+void ChunkStreamer::setChunkLoadDrain(ChunkLoadDrainCallback drain) {
+    m_chunkLoadDrain = std::move(drain);
+}
+
+void ChunkStreamer::setChunkLoadCancel(ChunkLoadCancelCallback cancel) {
+    m_chunkLoadCancel = std::move(cancel);
+}
+
 void ChunkStreamer::update(const glm::vec3& cameraPos) {
     if (!m_chunkManager || !m_generator || !m_meshStore) {
         return;
@@ -77,6 +90,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_lastUnloadDistance != unloadDistance;
 
     if (rebuildDesired) {
+        PROFILE_SCOPE("Streaming/Update/DesiredBuild");
         std::vector<std::pair<int, ChunkCoord>> desired;
         desired.reserve(static_cast<size_t>(viewDistance * 2 + 1) *
                         static_cast<size_t>(viewDistance * 2 + 1) *
@@ -110,6 +124,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_lastCenter = center;
         m_lastViewDistance = viewDistance;
         m_lastUnloadDistance = unloadDistance;
+        m_updateCursor = 0;
 
         for (auto it = m_states.begin(); it != m_states.end(); ) {
             if ((it->second == ChunkState::QueuedGen || it->second == ChunkState::QueuedMesh) &&
@@ -125,6 +140,17 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 continue;
             }
             ++it;
+        }
+
+        if (m_chunkLoadCancel && !m_loadPending.empty()) {
+            for (auto it = m_loadPending.begin(); it != m_loadPending.end(); ) {
+                if (m_desiredSet.find(*it) == m_desiredSet.end()) {
+                    m_chunkLoadCancel(*it);
+                    it = m_loadPending.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
     }
 
@@ -153,82 +179,116 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     bool meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
     bool meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
 
-    for (const ChunkCoord& coord : m_desired) {
-        if (genFull && meshFullMissing) {
-            break;
-        }
-        m_cache.touch(coord);
+    {
+        PROFILE_SCOPE("Streaming/Update/LoadGen");
+        if (!m_desired.empty()) {
+            size_t budget = (m_config.updateBudgetPerFrame <= 0)
+                ? m_desired.size()
+                : static_cast<size_t>(m_config.updateBudgetPerFrame);
+            size_t processed = 0;
+            size_t index = 0;
+            while (processed < budget && processed < m_desired.size()) {
+                const ChunkCoord& coord = m_desired[index];
+                auto advance = [&]() {
+                    ++processed;
+                    ++index;
+                };
 
-        ChunkState state = ChunkState::Missing;
-        auto stateIt = m_states.find(coord);
-        if (stateIt != m_states.end()) {
-            state = stateIt->second;
-        }
-
-        Chunk* chunk = m_chunkManager->getChunk(coord);
-        if (!chunk && state != ChunkState::QueuedGen && m_chunkLoader) {
-            if (m_chunkLoader(coord)) {
-                chunk = m_chunkManager->getChunk(coord);
-            }
-        }
-        if (chunk) {
-            if (m_generator &&
-                chunk->worldGenVersion() != m_generator->config().world.version) {
-                if (m_meshStore) {
-                    m_meshStore->remove(coord);
+                if (genFull && meshFullMissing) {
+                    break;
                 }
-                m_chunkManager->unloadChunk(coord);
-                m_states.erase(coord);
+
+                ChunkState state = ChunkState::Missing;
+                auto stateIt = m_states.find(coord);
+                if (stateIt != m_states.end()) {
+                    state = stateIt->second;
+                }
+
+                Chunk* chunk = m_chunkManager->getChunk(coord);
+                bool requested = false;
+                if (!chunk && state != ChunkState::QueuedGen && m_chunkLoader) {
+                    requested = m_chunkLoader(coord);
+                    chunk = m_chunkManager->getChunk(coord);
+                }
+
+                if (chunk) {
+                    m_loadPending.erase(coord);
+                    if (m_generator &&
+                        chunk->worldGenVersion() != m_generator->config().world.version) {
+                        if (m_meshStore) {
+                            m_meshStore->remove(coord);
+                        }
+                        m_chunkManager->unloadChunk(coord);
+                        m_states.erase(coord);
+                        if (!genFull) {
+                            enqueueGeneration(coord);
+                            genFull = m_inFlightGen >= genLimit;
+                        }
+                        advance();
+                        continue;
+                    }
+
+                    m_cache.touch(coord);
+                    bool hasMesh = m_meshStore && m_meshStore->contains(coord);
+                    bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+                    if (stateIt == m_states.end() || state == ChunkState::QueuedGen) {
+                        state = isMeshed ? ChunkState::ReadyMesh : ChunkState::ReadyData;
+                        m_states[coord] = state;
+                    }
+
+                    if (chunk->isEmpty()) {
+                        if (m_meshStore) {
+                            m_meshStore->remove(coord);
+                        }
+                        chunk->clearDirty();
+                        m_states[coord] = ChunkState::ReadyMesh;
+                        advance();
+                        continue;
+                    }
+
+                    if (!isMeshed && state != ChunkState::QueuedMesh) {
+                        if (!meshFullMissing && hasAllNeighborsLoaded(coord)) {
+                            enqueueMesh(coord, *chunk, MeshRequestKind::Missing);
+                            meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
+                            meshFull = m_inFlightMesh >= meshLimit;
+                        }
+                    }
+                    advance();
+                    continue;
+                }
+
+                if (state == ChunkState::QueuedGen) {
+                    advance();
+                    continue;
+                }
+
+                if (requested) {
+                    m_loadPending.insert(coord);
+                    advance();
+                    continue;
+                }
+                if (m_chunkPending && m_chunkPending(coord)) {
+                    m_loadPending.insert(coord);
+                    advance();
+                    continue;
+                }
+                m_loadPending.erase(coord);
+
                 if (!genFull) {
                     enqueueGeneration(coord);
                     genFull = m_inFlightGen >= genLimit;
                 }
-                continue;
+                advance();
             }
-            bool hasMesh = m_meshStore && m_meshStore->contains(coord);
-            bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
-            if (stateIt == m_states.end() || state == ChunkState::QueuedGen) {
-                state = isMeshed ? ChunkState::ReadyMesh : ChunkState::ReadyData;
-                m_states[coord] = state;
-            }
-
-            if (chunk->isEmpty()) {
-                if (m_meshStore) {
-                    m_meshStore->remove(coord);
-                }
-                chunk->clearDirty();
-                m_states[coord] = ChunkState::ReadyMesh;
-                continue;
-            }
-
-            if (!isMeshed && state != ChunkState::QueuedMesh) {
-                if (!meshFullMissing && hasAllNeighborsLoaded(coord)) {
-                    enqueueMesh(coord, *chunk, MeshRequestKind::Missing);
-                    meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
-                    meshFull = m_inFlightMesh >= meshLimit;
-                }
-            }
-            continue;
-        }
-
-        if (state == ChunkState::QueuedGen) {
-            continue;
-        }
-
-        if (m_chunkPending && m_chunkPending(coord)) {
-            continue;
-        }
-
-        if (!genFull) {
-            enqueueGeneration(coord);
-            genFull = m_inFlightGen >= genLimit;
         }
     }
 
-    for (const ChunkCoord& coord : m_desired) {
-        if (meshFull || meshFullDirty) {
-            break;
-        }
+    {
+        PROFILE_SCOPE("Streaming/Update/MeshDirty");
+        for (const ChunkCoord& coord : m_desired) {
+            if (meshFull || meshFullDirty) {
+                break;
+            }
 
         ChunkState state = ChunkState::Missing;
         auto stateIt = m_states.find(coord);
@@ -251,11 +311,13 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             continue;
         }
         enqueueMesh(coord, *chunk, MeshRequestKind::Dirty);
-        meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
-        meshFull = m_inFlightMesh >= meshLimit;
+            meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
+            meshFull = m_inFlightMesh >= meshLimit;
+        }
     }
 
     if (rebuildDesired) {
+        PROFILE_SCOPE("Streaming/Update/Evict");
         std::vector<ChunkCoord> toEvict;
         m_chunkManager->forEachChunk([&](ChunkCoord coord, const Chunk&) {
             int distSq = distanceSquared(center, coord);
@@ -275,12 +337,15 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
 
     }
 
-    for (const ChunkCoord& coord : m_cache.evict(m_desiredSet)) {
-        if (m_meshStore) {
-            m_meshStore->remove(coord);
+    {
+        PROFILE_SCOPE("Streaming/Update/CacheEvict");
+        for (const ChunkCoord& coord : m_cache.evict(m_desiredSet)) {
+            if (m_meshStore) {
+                m_meshStore->remove(coord);
+            }
+            m_chunkManager->unloadChunk(coord);
+            m_states.erase(coord);
         }
-        m_chunkManager->unloadChunk(coord);
-        m_states.erase(coord);
     }
 
 }
@@ -298,11 +363,24 @@ void ChunkStreamer::processCompletions() {
         return;
     }
 
+    size_t loadBudget = (m_config.loadApplyBudgetPerFrame <= 0)
+        ? std::numeric_limits<size_t>::max()
+        : static_cast<size_t>(m_config.loadApplyBudgetPerFrame);
+    if (m_chunkLoadDrain) {
+        PROFILE_SCOPE("Streaming/LoadDrain");
+        m_chunkLoadDrain(loadBudget);
+    }
     size_t budget = (m_config.applyBudgetPerFrame <= 0)
         ? std::numeric_limits<size_t>::max()
         : static_cast<size_t>(m_config.applyBudgetPerFrame);
-    applyGenCompletions(budget);
-    applyMeshCompletions(budget);
+    {
+        PROFILE_SCOPE("Streaming/GenApply");
+        applyGenCompletions(budget);
+    }
+    {
+        PROFILE_SCOPE("Streaming/MeshApply");
+        applyMeshCompletions(budget);
+    }
 }
 
 void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out) const {
@@ -342,6 +420,12 @@ void ChunkStreamer::reset() {
     m_cache.setMaxChunks(m_config.maxResidentChunks);
     m_desired.clear();
     m_desiredSet.clear();
+    if (m_chunkLoadCancel) {
+        for (const auto& coord : m_loadPending) {
+            m_chunkLoadCancel(coord);
+        }
+    }
+    m_loadPending.clear();
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
@@ -518,8 +602,8 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
         m_genComplete.push(std::move(result));
     };
 
-    if (m_pool && m_pool->threadCount() > 0) {
-        m_pool->enqueue(std::move(job));
+    if (m_genPool && m_genPool->threadCount() > 0) {
+        m_genPool->enqueue(std::move(job));
     } else {
         job();
     }
@@ -647,8 +731,8 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
         m_meshComplete.push(std::move(result));
     };
 
-    if (m_pool && m_pool->threadCount() > 0) {
-        m_pool->enqueue(std::move(job));
+    if (m_meshPool && m_meshPool->threadCount() > 0) {
+        m_meshPool->enqueue(std::move(job));
     } else {
         job();
     }
@@ -660,11 +744,20 @@ void ChunkStreamer::ensureThreadPool() {
         desired = static_cast<size_t>(m_config.workerThreads);
     }
     if (desired == 0) {
-        m_pool.reset();
+        m_genPool.reset();
+        m_meshPool.reset();
         return;
     }
-    if (!m_pool || m_pool->threadCount() != desired) {
-        m_pool = std::make_unique<detail::ThreadPool>(desired);
+    size_t meshThreads = desired / 2;
+    size_t genThreads = desired - meshThreads;
+    if (meshThreads == 0) {
+        meshThreads = 0;
+    }
+    if (!m_genPool || m_genPool->threadCount() != genThreads) {
+        m_genPool = std::make_unique<detail::ThreadPool>(genThreads);
+    }
+    if (!m_meshPool || m_meshPool->threadCount() != meshThreads) {
+        m_meshPool = std::make_unique<detail::ThreadPool>(meshThreads);
     }
 }
 
@@ -679,9 +772,13 @@ bool ChunkStreamer::hasAllNeighborsLoaded(ChunkCoord coord) const {
         int dz = 0;
         directionOffset(dir, dx, dy, dz);
         ChunkCoord neighbor = coord.offset(dx, dy, dz);
-        if (!m_chunkManager->getChunk(neighbor)) {
-            return false;
+        if (m_chunkManager->getChunk(neighbor)) {
+            continue;
         }
+        if (m_desiredSet.find(neighbor) == m_desiredSet.end()) {
+            continue;
+        }
+        return false;
     }
     return true;
 }

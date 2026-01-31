@@ -62,6 +62,14 @@ void WorldView::setChunkPendingCallback(ChunkStreamer::ChunkPendingCallback pend
     m_streamer.setChunkPendingCallback(std::move(pending));
 }
 
+void WorldView::setChunkLoadDrain(ChunkStreamer::ChunkLoadDrainCallback drain) {
+    m_streamer.setChunkLoadDrain(std::move(drain));
+}
+
+void WorldView::setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel) {
+    m_streamer.setChunkLoadCancel(std::move(cancel));
+}
+
 void WorldView::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
     m_streamer.setConfig(config);
     m_renderConfig.renderDistance =

@@ -265,8 +265,13 @@ streaming:
   unload_distance_chunks: 12 
   gen_queue_limit: 128
   mesh_queue_limit: 128
+  update_budget_per_frame: 4096
   apply_budget_per_frame: 128
   worker_threads: 12
+  io_threads: 2
+  load_worker_threads: 4
+  load_apply_budget_per_frame: 16
+  load_queue_limit: 0
   max_resident_chunks: 0
 
 generation:

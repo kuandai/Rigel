@@ -56,6 +56,8 @@ public:
     void setGenerator(std::shared_ptr<WorldGenerator> generator);
     void setChunkLoader(ChunkStreamer::ChunkLoadCallback loader);
     void setChunkPendingCallback(ChunkStreamer::ChunkPendingCallback pending);
+    void setChunkLoadDrain(ChunkStreamer::ChunkLoadDrainCallback drain);
+    void setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel);
     void setStreamConfig(const WorldGenConfig::StreamConfig& config);
     void setBenchmark(ChunkBenchmarkStats* stats);
 

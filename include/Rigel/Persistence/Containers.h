@@ -16,6 +16,14 @@ public:
     virtual void saveRegion(const ChunkRegionSnapshot& region) = 0;
     virtual ChunkRegionSnapshot loadRegion(const RegionKey& key) = 0;
     virtual std::vector<RegionKey> listRegions(const std::string& zoneId) = 0;
+    virtual bool regionExists(const RegionKey& key) {
+        for (const auto& existing : listRegions(key.zoneId)) {
+            if (existing == key) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     virtual bool supportsChunkIO() const { return false; }
     virtual void saveChunk(const ChunkSnapshot&) {

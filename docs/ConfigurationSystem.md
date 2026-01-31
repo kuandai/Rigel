@@ -149,8 +149,13 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `streaming.unload_distance_chunks` | int | `8` | Unload radius in chunks. |
 | `streaming.gen_queue_limit` | int | `0` | Generation queue cap (0 = unlimited). |
 | `streaming.mesh_queue_limit` | int | `0` | Mesh queue cap (0 = unlimited). |
+| `streaming.update_budget_per_frame` | int | `0` | Desired-set scan budget (0 = unlimited). |
 | `streaming.apply_budget_per_frame` | int | `0` | Apply budget (0 = unlimited). |
 | `streaming.worker_threads` | int | `2` | Gen/mesh thread count. |
+| `streaming.io_threads` | int | `1` | Region IO thread count. |
+| `streaming.load_worker_threads` | int | `2` | Chunk payload build thread count. |
+| `streaming.load_apply_budget_per_frame` | int | `8` | Disk payload apply budget (0 = unlimited). |
+| `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited). |
 | `streaming.max_resident_chunks` | int | `0` | Cache cap (0 = unlimited). |
 | `generation.pipeline[]` | list | - | Stage enable list. |
 | `flags` | map | - | Boolean flags for overlays. |

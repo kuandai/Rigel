@@ -946,6 +946,10 @@ public:
         : m_storage(std::move(storage)), m_context(std::move(context)), m_codec(codec) {
     }
 
+    bool regionExists(const RegionKey& key) override {
+        return m_storage->exists(CRPaths::regionPath(key, m_context));
+    }
+
     void saveRegion(const ChunkRegionSnapshot& region) override {
         auto path = CRPaths::regionPath(region.key, m_context);
         if (region.chunks.empty()) {

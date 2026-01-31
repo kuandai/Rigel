@@ -102,6 +102,7 @@ streaming:
   unload_distance_chunks: 5
   gen_queue_limit: 4
   mesh_queue_limit: 6
+  update_budget_per_frame: 12
   apply_budget_per_frame: 9
   worker_threads: 0
   max_resident_chunks: 100
@@ -151,6 +152,7 @@ generation:
     CHECK_EQ(config.stream.viewDistanceChunks, 3);
     CHECK_EQ(config.stream.genQueueLimit, static_cast<size_t>(4));
     CHECK_EQ(config.stream.meshQueueLimit, static_cast<size_t>(6));
+    CHECK_EQ(config.stream.updateBudgetPerFrame, 12);
     CHECK_EQ(config.stream.applyBudgetPerFrame, 9);
     CHECK_EQ(config.stream.workerThreads, 0);
     CHECK_EQ(config.stream.maxResidentChunks, static_cast<size_t>(100));

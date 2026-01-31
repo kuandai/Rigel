@@ -38,6 +38,8 @@ public:
 
     using ChunkLoadCallback = std::function<bool(ChunkCoord)>;
     using ChunkPendingCallback = std::function<bool(ChunkCoord)>;
+    using ChunkLoadDrainCallback = std::function<void(size_t)>;
+    using ChunkLoadCancelCallback = std::function<void(ChunkCoord)>;
 
     ChunkStreamer() = default;
     ~ChunkStreamer();
@@ -51,6 +53,8 @@ public:
     void setBenchmark(ChunkBenchmarkStats* stats);
     void setChunkLoader(ChunkLoadCallback loader);
     void setChunkPendingCallback(ChunkPendingCallback pending);
+    void setChunkLoadDrain(ChunkLoadDrainCallback drain);
+    void setChunkLoadCancel(ChunkLoadCancelCallback cancel);
 
     void update(const glm::vec3& cameraPos);
     void processCompletions();
@@ -109,11 +113,15 @@ private:
     ChunkBenchmarkStats* m_benchmark = nullptr;
     ChunkLoadCallback m_chunkLoader;
     ChunkPendingCallback m_chunkPending;
+    ChunkLoadDrainCallback m_chunkLoadDrain;
+    ChunkLoadCancelCallback m_chunkLoadCancel;
 
-    std::unique_ptr<detail::ThreadPool> m_pool;
+    std::unique_ptr<detail::ThreadPool> m_genPool;
+    std::unique_ptr<detail::ThreadPool> m_meshPool;
     detail::ConcurrentQueue<GenResult> m_genComplete;
     detail::ConcurrentQueue<MeshResult> m_meshComplete;
     std::unordered_map<ChunkCoord, ChunkState, ChunkCoordHash> m_states;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_loadPending;
     std::unordered_map<ChunkCoord, std::shared_ptr<std::atomic_bool>, ChunkCoordHash> m_genCancel;
     std::unordered_map<ChunkCoord, MeshRequestKind, ChunkCoordHash> m_meshInFlight;
     std::vector<ChunkCoord> m_desired;
@@ -125,6 +133,7 @@ private:
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;
+    size_t m_updateCursor = 0;
 
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);

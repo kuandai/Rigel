@@ -150,8 +150,17 @@ Empty chunks skip mesh generation and move directly to `ReadyMesh`.
   (`0` means unlimited).
 - Mesh queue capacity reserves roughly 1/4 of the slots for dirty remeshes to
   keep player edits responsive.
+- `streaming.update_budget_per_frame` limits how many desired chunks are scanned
+  during the streaming update step (`0` means unlimited).
 - `streaming.apply_budget_per_frame` limits how many completed results are
   applied per frame (`0` means unlimited).
+- Disk load payloads are applied via `streaming.load_apply_budget_per_frame`
+  to prevent IO completions from stalling frames.
+- `streaming.io_threads` controls region IO concurrency, while
+  `streaming.load_worker_threads` controls chunk payload build (decode + base
+  fill) concurrency.
+- `streaming.load_queue_limit` caps pending disk load requests (`0` means
+  unlimited).
 
 ### 5.4 Meshing Constraints
 
@@ -175,12 +184,14 @@ Empty chunks skip mesh generation and move directly to `ReadyMesh`.
 
 `ChunkStreamer` supports disk-backed loads via callbacks:
 
-- `ChunkLoadCallback` attempts to load a chunk from persistence.
+- `ChunkLoadCallback` enqueues a non-blocking request for disk data.
 - `ChunkPendingCallback` reports whether a load is already in flight.
+- `ChunkLoadDrainCallback` applies completed payloads within a per-frame budget.
 
 The default loader (`AsyncChunkLoader`) uses the persistence service to fetch
-region data asynchronously, merges chunk spans into loaded chunks, and prefetches
-neighbor regions. If no stored data is found, generation proceeds normally.
+region data asynchronously, builds chunk payloads off-thread (including base
+fill for partial spans), then applies payloads on the main thread with a budget.
+If no stored data is found, generation proceeds normally.
 
 Chunk modifications mark `persistDirty`, which allows save logic to skip
 unchanged chunks when persisting data.

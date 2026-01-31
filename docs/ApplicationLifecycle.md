@@ -47,7 +47,7 @@ Shutdown persists world state and releases resources.
 8. Load entity data from disk (chunks are lazy-loaded).
    - `loadWorldFromDisk(..., SaveScope::EntitiesOnly)` loads only entities.
 9. Create the async chunk loader (disk IO) and wire it into `WorldView`.
-   - Loader provides chunk data on demand via callbacks.
+   - Loader provides non-blocking requests + budgeted apply callbacks.
 10. Apply render config + stream config.
 11. Snap camera to the first air block, initialize debug overlays, init TAA.
 
@@ -146,30 +146,27 @@ Synchronization:
 
 ### C) Async Chunk IO (disk reads)
 
-**Where**: `AsyncChunkLoader` in `Application` (`src/core/Application.cpp`)
+**Where**: `AsyncChunkLoader` (`src/persistence/AsyncChunkLoader.cpp`)
 
 **How**:
-- `WorldView` calls the loader when a chunk is needed.
-- Loader maps chunk -> region key and schedules region load jobs on a
-  dedicated `detail::ThreadPool`.
-- Each job opens a format instance and reads region data from storage.
-- `LoadResult` is pushed into a `ConcurrentQueue`.
-- `load()` drains completions on the main thread and updates:
-  - Region cache + LRU
-  - Present-chunk set per region
-  - Loaded chunks (if already in memory)
+- `WorldView` calls the loader's request callback when a chunk is needed.
+- The loader maps chunk -> region key and schedules region IO on the IO pool.
+- Region results are cached (LRU) and used to schedule per-chunk payload builds.
+- Payload builds (decode + base fill) run on a worker pool.
+- `ChunkStreamer::processCompletions()` drains payloads on the main thread via
+  `ChunkLoadDrainCallback`, honoring `streaming.load_apply_budget_per_frame`.
 
 **Merge behavior**:
 - When spans exist, `mergeChunkSpans()` overlays disk data into a chunk.
-- For partial spans, a base fill can be generated before overlays.
+- For partial spans, base fill is generated off-thread before overlays.
 - Persist/dirty flags are cleared after disk data is applied.
 
 **Prefetch**:
 - Neighboring regions are queued around the requested region.
 
 **Pending gating**:
-- If a region is not yet cached, the streamer treats its chunks as pending and
-  avoids generating them.
+- If a chunk has a pending disk request, the streamer skips world-gen until the
+  request completes or is canceled.
 
 ### D) World Save / Load
 
@@ -187,8 +184,8 @@ Synchronization:
 - `Voxel::Chunk` and `BlockRegistry` are not thread-safe; treat them as
   main-thread-only objects.
 - Region IO is async, but application of spans is always main-threaded.
-- Thread pool sizes are controlled by `WorldGenConfig::StreamConfig` and
-  the async loader's `ioThreads` setting.
+- Thread pool sizes are controlled by `WorldGenConfig::StreamConfig`
+  (`worker_threads`, `io_threads`, `load_worker_threads`).
 
 ---
 

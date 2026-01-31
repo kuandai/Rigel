@@ -142,8 +142,13 @@ struct WorldGenConfig {
         int unloadDistanceChunks = 8;
         size_t genQueueLimit = 0;
         size_t meshQueueLimit = 0;
+        int updateBudgetPerFrame = 0;
         int applyBudgetPerFrame = 0;
         int workerThreads = 2;
+        int ioThreads = 1;
+        int loadWorkerThreads = 2;
+        int loadApplyBudgetPerFrame = 8;
+        int loadQueueLimit = 0;
         size_t maxResidentChunks = 0;  // 0 = no cap
     };
 

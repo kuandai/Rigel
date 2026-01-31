@@ -325,6 +325,10 @@ public:
         : m_storage(std::move(storage)), m_context(std::move(context)), m_codec(codec) {
     }
 
+    bool regionExists(const RegionKey& key) override {
+        return m_storage->exists(regionPath(m_context, key));
+    }
+
     void saveRegion(const ChunkRegionSnapshot& region) override {
         auto path = regionPath(m_context, region.key);
         m_storage->mkdirs(parentPath(path));

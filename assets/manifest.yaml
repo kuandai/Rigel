@@ -23,7 +23,7 @@ assets:
         move_up: SPACE
         move_down: LCTRL
         sprint: LSHIFT
-        exit: ESC
+        toggle_mouse_capture: TAB
   shaders:
     voxel:
       vertex: shaders/voxel.vert

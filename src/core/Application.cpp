@@ -674,6 +674,9 @@ void Application::run() {
             }
 
             if (m_impl->world.ready && m_impl->world.world && m_impl->world.worldView) {
+                if (m_impl->input.dispatcher.isActionJustPressed("toggle_mouse_capture")) {
+                    Input::setCursorCaptured(m_impl->window, !m_impl->window.cursorCaptured);
+                }
                 if (m_impl->window.cursorCaptured &&
                     glfwGetInputMode(m_impl->window.window, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
                     Input::setCursorCaptured(m_impl->window, true);
@@ -796,10 +799,6 @@ void Application::run() {
         UI::endFrame();
         glfwSwapBuffers(m_impl->window.window);
 
-        // Exit on ESC
-        if (m_impl->input.dispatcher.isActionPressed("exit")) {
-            glfwSetWindowShouldClose(m_impl->window.window, true);
-        }
     }
 
     if (m_impl->timing.benchmarkEnabled) {

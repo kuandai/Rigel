@@ -212,7 +212,9 @@ void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) 
         windowState.windowFocused = focused != 0;
         windowState.pendingTimeReset = true;
         if (focused) {
-            setCursorCaptured(windowState, true);
+            if (windowState.cursorCaptured) {
+                setCursorCaptured(windowState, true);
+            }
         } else {
             windowState.firstMouse = true;
         }
@@ -259,8 +261,8 @@ void ensureDefaultBindings(InputBindings& bindings) {
     if (!bindings.hasAction("sprint")) {
         bindings.bind("sprint", GLFW_KEY_LEFT_SHIFT);
     }
-    if (!bindings.hasAction("exit")) {
-        bindings.bind("exit", GLFW_KEY_ESCAPE);
+    if (!bindings.hasAction("toggle_mouse_capture")) {
+        bindings.bind("toggle_mouse_capture", GLFW_KEY_TAB);
     }
     if (!bindings.hasAction("demo_spawn_entity")) {
         bindings.bind("demo_spawn_entity", GLFW_KEY_F2);

@@ -330,6 +330,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             if (m_meshStore) {
                 m_meshStore->remove(coord);
             }
+            if (Chunk* chunk = m_chunkManager->getChunk(coord)) {
+                chunk->setLoadedFromDisk(false);
+            }
             m_chunkManager->unloadChunk(coord);
             m_cache.erase(coord);
             m_states.erase(coord);
@@ -342,6 +345,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         for (const ChunkCoord& coord : m_cache.evict(m_desiredSet)) {
             if (m_meshStore) {
                 m_meshStore->remove(coord);
+            }
+            if (Chunk* chunk = m_chunkManager->getChunk(coord)) {
+                chunk->setLoadedFromDisk(false);
             }
             m_chunkManager->unloadChunk(coord);
             m_states.erase(coord);
@@ -474,6 +480,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             chunk.copyFrom(genResult.blocks);
         }
         chunk.clearPersistDirty();
+        chunk.setLoadedFromDisk(false);
         chunk.setWorldGenVersion(genResult.worldGenVersion);
 
         if (m_benchmark) {

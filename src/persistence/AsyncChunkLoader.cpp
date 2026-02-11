@@ -205,6 +205,7 @@ bool AsyncChunkLoader::applyPayload(const ChunkPayload& payload) {
     chunk.setWorldGenVersion(payload.worldGenVersion);
     chunk.clearPersistDirty();
     chunk.clearDirty();
+    chunk.setLoadedFromDisk(payload.loadedFromDisk);
 
     for (int i = 0; i < Voxel::DirectionCount; ++i) {
         Voxel::Direction dir = static_cast<Voxel::Direction>(i);

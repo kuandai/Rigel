@@ -132,11 +132,17 @@ public:
     /// Check if chunk needs persistence write
     bool isPersistDirty() const { return m_persistDirty; }
 
+    /// Check if chunk was loaded from persistence
+    bool loadedFromDisk() const { return m_loadedFromDisk; }
+
     /// Clear dirty flag (after mesh rebuild)
     void clearDirty() { m_dirty = false; }
 
     /// Clear persistence dirty flag (after save or load)
     void clearPersistDirty() { m_persistDirty = false; }
+
+    /// Mark whether the chunk data originated from persistence
+    void setLoadedFromDisk(bool loaded) { m_loadedFromDisk = loaded; }
 
     /// Mark chunk as needing mesh rebuild
     void markDirty() {
@@ -213,6 +219,7 @@ private:
     // Cached state
     bool m_dirty = true;
     bool m_persistDirty = false;
+    bool m_loadedFromDisk = false;
     uint32_t m_nonAirCount = 0;
     uint32_t m_opaqueCount = 0;
     uint32_t m_meshRevision = 0;

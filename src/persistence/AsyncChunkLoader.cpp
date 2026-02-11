@@ -283,17 +283,26 @@ void AsyncChunkLoader::queuePayloadBuild(const RegionEntry& entry, Voxel::ChunkC
     if (spanIt == entry.spansByCoord.end()) {
         return;
     }
+    if (!entry.region) {
+        return;
+    }
 
     m_payloadInFlight.insert(coord);
     auto generator = m_generator;
     auto registry = &m_world->blockRegistry();
     std::vector<const ChunkSnapshot*> spans = spanIt->second;
+    std::shared_ptr<ChunkRegionSnapshot> region = entry.region;
 
-    auto job = [this, coord, spans = std::move(spans), generator, registry]() mutable {
+    auto job = [this, coord, spans = std::move(spans), generator, registry, region]() mutable {
         ChunkPayload payload;
         payload.coord = coord;
         payload.worldGenVersion = generator ? generator->config().world.version : 0;
         payload.loadedFromDisk = true;
+        if (!region) {
+            payload.cancelled = true;
+            m_chunkComplete.push(std::move(payload));
+            return;
+        }
 
         Voxel::Chunk temp(coord);
         ChunkBaseFillFn baseFill;

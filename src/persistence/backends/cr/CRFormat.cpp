@@ -1324,6 +1324,7 @@ const FormatDescriptor& descriptor() {
         init.capabilities.supportsRandomAccess = false;
         init.capabilities.supportsEntityRegions = true;
         init.capabilities.supportsVersions = true;
+        init.capabilities.fillMissingChunkSpans = false;
         init.capabilities.metadataFormat = "json";
         init.capabilities.regionIndexType = "byte|short|int";
         init.capabilities.compression = CompressionType::Lz4;

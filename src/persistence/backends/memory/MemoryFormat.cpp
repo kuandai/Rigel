@@ -503,6 +503,7 @@ const FormatDescriptor& descriptor() {
         init.capabilities.supportsRandomAccess = false;
         init.capabilities.supportsEntityRegions = true;
         init.capabilities.supportsVersions = true;
+        init.capabilities.fillMissingChunkSpans = true;
         init.capabilities.metadataFormat = "binary";
         init.capabilities.regionIndexType = "none";
         return init;

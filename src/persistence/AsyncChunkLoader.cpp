@@ -305,15 +305,19 @@ void AsyncChunkLoader::queuePayloadBuild(const RegionEntry& entry, Voxel::ChunkC
         }
 
         Voxel::Chunk temp(coord);
-        ChunkBaseFillFn baseFill;
-        if (generator) {
-            baseFill = [generator, coord](Voxel::Chunk& target, const Voxel::BlockRegistry& reg) {
-                Voxel::ChunkBuffer buffer;
-                generator->generate(coord, buffer, nullptr);
-                target.copyFrom(buffer.blocks, reg);
-                target.clearPersistDirty();
-            };
-        }
+    ChunkBaseFillFn baseFill;
+    bool allowBaseFill = false;
+    if (m_format) {
+        allowBaseFill = m_format->descriptor().capabilities.fillMissingChunkSpans;
+    }
+    if (allowBaseFill && generator) {
+        baseFill = [generator, coord](Voxel::Chunk& target, const Voxel::BlockRegistry& reg) {
+            Voxel::ChunkBuffer buffer;
+            generator->generate(coord, buffer, nullptr);
+            target.copyFrom(buffer.blocks, reg);
+            target.clearPersistDirty();
+        };
+    }
         auto mergeResult = mergeChunkSpans(temp, *registry, spans, baseFill);
         temp.copyBlocks(payload.blocks.blocks);
         payload.empty = temp.isEmpty();

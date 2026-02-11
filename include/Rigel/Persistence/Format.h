@@ -24,6 +24,7 @@ struct FormatCapabilities {
     bool supportsRandomAccess = false;
     bool supportsEntityRegions = true;
     bool supportsVersions = true;
+    bool fillMissingChunkSpans = true;
     std::string metadataFormat = "custom";
     std::string regionIndexType = "int";
 };

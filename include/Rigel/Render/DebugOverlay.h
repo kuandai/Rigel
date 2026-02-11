@@ -20,7 +20,7 @@ constexpr float kDefaultDebugDistance = 8.0f;
 
 struct DebugField {
     GLuint vao = 0;
-    std::array<GLuint, 4> vbos{};
+    std::array<GLuint, 5> vbos{};
     Asset::Handle<Asset::ShaderAsset> shader;
     GLint locViewProjection = -1;
     GLint locFieldOrigin = -1;

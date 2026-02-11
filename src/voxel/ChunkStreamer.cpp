@@ -411,6 +411,13 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out) const {
             default:
                 continue;
         }
+        if (debugState == DebugState::ReadyData && m_chunkManager) {
+            if (Chunk* chunk = m_chunkManager->getChunk(coord)) {
+                if (chunk->loadedFromDisk()) {
+                    debugState = DebugState::LoadedFromDisk;
+                }
+            }
+        }
         out.push_back({coord, debugState});
     }
 }

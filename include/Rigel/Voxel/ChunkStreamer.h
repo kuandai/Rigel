@@ -26,6 +26,7 @@ class ChunkStreamer {
 public:
     enum class DebugState : uint8_t {
         QueuedGen,
+        LoadedFromDisk,
         ReadyData,
         QueuedMesh,
         ReadyMesh

@@ -280,7 +280,7 @@ void renderDebugField(DebugState& debug,
                        Voxel::ChunkStreamer::DebugState,
                        Voxel::ChunkCoordHash> stateMap;
     stateMap.reserve(debug.debugStates.size());
-    std::array<std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash>, 4> occupancy;
+    std::array<std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash>, 5> occupancy;
     for (auto& set : occupancy) {
         set.reserve(debug.debugStates.size());
     }
@@ -299,14 +299,17 @@ void renderDebugField(DebugState& debug,
             case Voxel::ChunkStreamer::DebugState::QueuedGen:
                 occupancy[0].insert(offset);
                 break;
-            case Voxel::ChunkStreamer::DebugState::ReadyData:
+            case Voxel::ChunkStreamer::DebugState::LoadedFromDisk:
                 occupancy[1].insert(offset);
                 break;
-            case Voxel::ChunkStreamer::DebugState::QueuedMesh:
+            case Voxel::ChunkStreamer::DebugState::ReadyData:
                 occupancy[2].insert(offset);
                 break;
-            case Voxel::ChunkStreamer::DebugState::ReadyMesh:
+            case Voxel::ChunkStreamer::DebugState::QueuedMesh:
                 occupancy[3].insert(offset);
+                break;
+            case Voxel::ChunkStreamer::DebugState::ReadyMesh:
+                occupancy[4].insert(offset);
                 break;
         }
     }
@@ -315,9 +318,10 @@ void renderDebugField(DebugState& debug,
         return;
     }
 
-    std::array<std::vector<glm::vec3>, 4> meshVertices;
-    std::array<glm::vec4, 4> colors = {
+    std::array<std::vector<glm::vec3>, 5> meshVertices;
+    std::array<glm::vec4, 5> colors = {
         glm::vec4(1.0f, 0.2f, 0.2f, kDebugAlpha),
+        glm::vec4(0.8f, 0.8f, 0.8f, kDebugAlpha),
         glm::vec4(1.0f, 0.9f, 0.2f, kDebugAlpha),
         glm::vec4(0.2f, 0.8f, 1.0f, kDebugAlpha),
         glm::vec4(0.2f, 1.0f, 0.3f, kDebugAlpha)
@@ -337,14 +341,17 @@ void renderDebugField(DebugState& debug,
             case Voxel::ChunkStreamer::DebugState::QueuedGen:
                 stateIdx = 0;
                 break;
-            case Voxel::ChunkStreamer::DebugState::ReadyData:
+            case Voxel::ChunkStreamer::DebugState::LoadedFromDisk:
                 stateIdx = 1;
                 break;
-            case Voxel::ChunkStreamer::DebugState::QueuedMesh:
+            case Voxel::ChunkStreamer::DebugState::ReadyData:
                 stateIdx = 2;
                 break;
-            case Voxel::ChunkStreamer::DebugState::ReadyMesh:
+            case Voxel::ChunkStreamer::DebugState::QueuedMesh:
                 stateIdx = 3;
+                break;
+            case Voxel::ChunkStreamer::DebugState::ReadyMesh:
+                stateIdx = 4;
                 break;
         }
 

@@ -22,8 +22,11 @@ struct SvoLodTelemetry {
     uint32_t activeCells = 0;
     uint32_t pendingCopies = 0;
     uint32_t pendingApplies = 0;
+    uint32_t pendingUploads = 0;
     uint64_t copiedCells = 0;
     uint64_t appliedCells = 0;
+    uint64_t uploadedCells = 0;
+    uint64_t uploadedBytes = 0;
     uint64_t updateCalls = 0;
 };
 
@@ -47,6 +50,7 @@ public:
 
     void initialize();
     void update(const glm::vec3& cameraPos);
+    void uploadRenderResources();
     void reset();
     void releaseRenderResources();
 
@@ -72,6 +76,13 @@ private:
         uint64_t lastTouchedFrame = 0;
     };
 
+    struct GpuCellRecord {
+        unsigned int nodeBuffer = 0;
+        uint64_t uploadedRevision = 0;
+        uint32_t nodeCount = 0;
+        uint64_t byteSize = 0;
+    };
+
     static SvoLodConfig sanitizeConfig(SvoLodConfig config);
 
     void ensureBuildPool();
@@ -81,6 +92,10 @@ private:
     void enqueueDirtyChunk(ChunkCoord coord);
     void enqueueDirtyCell(const LodCellKey& key);
     void requeueDirtyCell(const LodCellKey& key);
+    void enqueueUploadCell(const LodCellKey& key);
+    void processUploadBudget();
+    void removeUploadCell(const LodCellKey& key);
+    void releaseGpuCell(const LodCellKey& key);
     void updateTelemetry();
     void enforceCellLimit();
     void removeDirtyCell(const LodCellKey& key);
@@ -95,8 +110,11 @@ private:
     detail::ConcurrentQueue<LodBuildOutput> m_buildComplete;
     std::unordered_map<ChunkCoord, uint32_t, ChunkCoordHash> m_knownChunkRevisions;
     std::unordered_map<LodCellKey, CellRecord, LodCellKeyHash> m_cells;
+    std::unordered_map<LodCellKey, GpuCellRecord, LodCellKeyHash> m_gpuCells;
     std::deque<LodCellKey> m_dirtyQueue;
     std::unordered_set<LodCellKey, LodCellKeyHash> m_dirtyQueued;
+    std::deque<LodCellKey> m_uploadQueue;
+    std::unordered_set<LodCellKey, LodCellKeyHash> m_uploadQueued;
     uint64_t m_frameCounter = 0;
 };
 

@@ -1,5 +1,7 @@
 #include "Rigel/Voxel/Lod/SvoLodManager.h"
 
+#include <GL/glew.h>
+
 #include <algorithm>
 #include <limits>
 #include <vector>
@@ -67,7 +69,19 @@ void SvoLodManager::update(const glm::vec3& cameraPos) {
     updateTelemetry();
 }
 
+void SvoLodManager::uploadRenderResources() {
+    if (!m_config.enabled) {
+        updateTelemetry();
+        return;
+    }
+
+    processUploadBudget();
+    updateTelemetry();
+}
+
 void SvoLodManager::reset() {
+    releaseRenderResources();
+
     if (m_buildPool) {
         m_buildPool->stop();
         m_buildPool.reset();
@@ -75,8 +89,11 @@ void SvoLodManager::reset() {
 
     m_knownChunkRevisions.clear();
     m_cells.clear();
+    m_gpuCells.clear();
     m_dirtyQueue.clear();
     m_dirtyQueued.clear();
+    m_uploadQueue.clear();
+    m_uploadQueued.clear();
     m_frameCounter = 0;
 
     LodBuildOutput output;
@@ -87,6 +104,17 @@ void SvoLodManager::reset() {
 }
 
 void SvoLodManager::releaseRenderResources() {
+    for (auto& [key, gpu] : m_gpuCells) {
+        (void)key;
+        if (gpu.nodeBuffer != 0) {
+            GLuint buffer = static_cast<GLuint>(gpu.nodeBuffer);
+            glDeleteBuffers(1, &buffer);
+            gpu.nodeBuffer = 0;
+        }
+    }
+    m_gpuCells.clear();
+    m_uploadQueue.clear();
+    m_uploadQueued.clear();
 }
 
 std::optional<SvoLodManager::CellInfo> SvoLodManager::cellInfo(const LodCellKey& key) const {
@@ -194,6 +222,8 @@ void SvoLodManager::processCopyBudget() {
             cell.rootNode = LodSvoNode::INVALID_INDEX;
             cell.appliedRevision = cell.desiredRevision;
             cell.queuedRevision = 0;
+            removeUploadCell(key);
+            releaseGpuCell(key);
             --budget;
             continue;
         }
@@ -250,6 +280,7 @@ void SvoLodManager::processApplyBudget() {
         cell.nonOpaqueVoxelCount = output.nonOpaqueVoxelCount;
         cell.nodes = std::move(output.nodes);
         cell.rootNode = output.rootNode;
+        enqueueUploadCell(output.key);
         ++m_telemetry.appliedCells;
         --budget;
     }
@@ -280,6 +311,92 @@ void SvoLodManager::requeueDirtyCell(const LodCellKey& key) {
     }
 }
 
+void SvoLodManager::enqueueUploadCell(const LodCellKey& key) {
+    if (m_uploadQueued.insert(key).second) {
+        m_uploadQueue.push_back(key);
+    }
+}
+
+void SvoLodManager::processUploadBudget() {
+    size_t budget = static_cast<size_t>(std::max(1, m_config.lodApplyBudgetPerFrame));
+    while (budget > 0 && !m_uploadQueue.empty()) {
+        LodCellKey key = m_uploadQueue.front();
+        m_uploadQueue.pop_front();
+        m_uploadQueued.erase(key);
+
+        auto cellIt = m_cells.find(key);
+        if (cellIt == m_cells.end()) {
+            releaseGpuCell(key);
+            --budget;
+            continue;
+        }
+
+        CellRecord& cell = cellIt->second;
+        if (cell.state != LodCellState::Ready || cell.appliedRevision == 0) {
+            --budget;
+            continue;
+        }
+
+        GpuCellRecord& gpu = m_gpuCells[key];
+        if (gpu.uploadedRevision == cell.appliedRevision &&
+            gpu.nodeCount == cell.nodeCount &&
+            gpu.nodeBuffer != 0) {
+            --budget;
+            continue;
+        }
+
+        if (cell.nodes.empty()) {
+            releaseGpuCell(key);
+            --budget;
+            continue;
+        }
+
+        if (gpu.nodeBuffer == 0) {
+            GLuint buffer = 0;
+            glGenBuffers(1, &buffer);
+            gpu.nodeBuffer = static_cast<unsigned int>(buffer);
+        }
+
+        const size_t byteSize = cell.nodes.size() * sizeof(LodSvoNode);
+        GLuint nodeBuffer = static_cast<GLuint>(gpu.nodeBuffer);
+        glBindBuffer(GL_ARRAY_BUFFER, nodeBuffer);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(byteSize),
+                     cell.nodes.data(),
+                     GL_STATIC_DRAW);
+
+        gpu.uploadedRevision = cell.appliedRevision;
+        gpu.nodeCount = cell.nodeCount;
+        gpu.byteSize = static_cast<uint64_t>(byteSize);
+        ++m_telemetry.uploadedCells;
+        m_telemetry.uploadedBytes += static_cast<uint64_t>(byteSize);
+        --budget;
+    }
+}
+
+void SvoLodManager::removeUploadCell(const LodCellKey& key) {
+    if (m_uploadQueued.erase(key) == 0) {
+        return;
+    }
+    m_uploadQueue.erase(
+        std::remove(m_uploadQueue.begin(), m_uploadQueue.end(), key),
+        m_uploadQueue.end()
+    );
+}
+
+void SvoLodManager::releaseGpuCell(const LodCellKey& key) {
+    auto it = m_gpuCells.find(key);
+    if (it == m_gpuCells.end()) {
+        return;
+    }
+
+    if (it->second.nodeBuffer != 0) {
+        GLuint buffer = static_cast<GLuint>(it->second.nodeBuffer);
+        glDeleteBuffers(1, &buffer);
+    }
+    m_gpuCells.erase(it);
+}
+
 void SvoLodManager::updateTelemetry() {
     uint32_t active = 0;
     for (const auto& [key, cell] : m_cells) {
@@ -291,6 +408,7 @@ void SvoLodManager::updateTelemetry() {
     m_telemetry.activeCells = active;
     m_telemetry.pendingCopies = static_cast<uint32_t>(m_dirtyQueue.size());
     m_telemetry.pendingApplies = static_cast<uint32_t>(m_buildComplete.size());
+    m_telemetry.pendingUploads = static_cast<uint32_t>(m_uploadQueue.size());
 }
 
 void SvoLodManager::enforceCellLimit() {
@@ -318,6 +436,8 @@ void SvoLodManager::enforceCellLimit() {
             break;
         }
         removeDirtyCell(victim->first);
+        removeUploadCell(victim->first);
+        releaseGpuCell(victim->first);
         m_cells.erase(victim);
     }
 }

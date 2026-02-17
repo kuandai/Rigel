@@ -236,4 +236,6 @@ TEST_CASE(SvoLodManager_BuildsOccupancyMaterialHierarchyPerCell) {
     CHECK(info->nodeCount >= 3u);
     CHECK(info->leafCount >= 2u);
     CHECK(info->mixedNodeCount >= 1u);
+    CHECK(manager.telemetry().pendingUploads >= 1u);
+    CHECK_EQ(manager.telemetry().uploadedCells, 0u);
 }

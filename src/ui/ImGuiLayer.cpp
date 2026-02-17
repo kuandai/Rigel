@@ -305,11 +305,14 @@ void renderProfilerWindow(bool enabled,
         ImGui::Text("Active cells: %u", svoTelemetry->activeCells);
         ImGui::Text("Pending copies: %u", svoTelemetry->pendingCopies);
         ImGui::Text("Pending applies: %u", svoTelemetry->pendingApplies);
+        ImGui::Text("Pending uploads: %u", svoTelemetry->pendingUploads);
         ImGui::Text("Copied cells total: %" PRIu64, svoTelemetry->copiedCells);
         ImGui::Text("Applied cells total: %" PRIu64, svoTelemetry->appliedCells);
+        ImGui::Text("Uploaded cells total: %" PRIu64, svoTelemetry->uploadedCells);
+        ImGui::Text("Uploaded bytes total: %" PRIu64, svoTelemetry->uploadedBytes);
         ImGui::Text("Update calls: %" PRIu64, svoTelemetry->updateCalls);
     }
-    ImGui::TextUnformatted("Not rendering in Sprint 1.");
+    ImGui::TextUnformatted("GPU payload upload is active; far-field LOD draw pass not added yet.");
 
     ImGui::End();
 #else

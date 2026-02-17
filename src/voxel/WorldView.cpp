@@ -114,6 +114,8 @@ void WorldView::render(const glm::mat4& view,
         return;
     }
 
+    m_svoLod.uploadRenderResources();
+
     Entity::EntityRenderContext entityCtx;
     entityCtx.deltaTime = dt;
     entityCtx.frameIndex = ++m_frameCounter;

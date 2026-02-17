@@ -62,7 +62,8 @@ This document outlines the current voxel engine architecture within Rigel. Secti
 - `World` owns authoritative chunk data, entity data, and the active `WorldGenerator`.
 - `WorldView` owns the streaming, meshing, and render state for a `World`.
 - `SvoLodManager` in `WorldView` currently builds revisioned CPU LOD cell
-  hierarchies for telemetry/debug; it does not render far-field geometry yet.
+  hierarchies and uploads node payload buffers; it does not render far-field
+  geometry yet.
 
 World data and render state are deliberately split: `World` stores CPU-side data,
 while `WorldView` owns GPU resources like meshes and shaders.

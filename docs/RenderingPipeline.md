@@ -70,6 +70,8 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
 - The current pass draws opaque proxy cubes and serves as Sprint 3 bootstrap.
 - Under chunk-streaming pressure, `WorldView` throttles SVO update/upload work
   so generation/meshing remains prioritized.
+- The ImGui profiler SVO panel reports per-stage update/upload timings, state
+  counts, and current CPU/GPU LOD cache memory.
 
 ---
 

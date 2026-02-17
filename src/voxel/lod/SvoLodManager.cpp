@@ -4,6 +4,7 @@
 #include <glm/geometric.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <tuple>
 #include <vector>
@@ -162,6 +163,9 @@ void SvoLodManager::initialize() {
 void SvoLodManager::update(const glm::vec3& cameraPos) {
     m_lastCameraPos = cameraPos;
     if (!m_config.enabled) {
+        m_telemetry.scanMicros = 0;
+        m_telemetry.copyMicros = 0;
+        m_telemetry.applyMicros = 0;
         updateTelemetry();
         return;
     }
@@ -169,20 +173,36 @@ void SvoLodManager::update(const glm::vec3& cameraPos) {
     ++m_telemetry.updateCalls;
     ++m_frameCounter;
     ensureBuildPool();
+    const auto scanStart = std::chrono::steady_clock::now();
     scanChunkChanges();
+    const auto scanEnd = std::chrono::steady_clock::now();
     processCopyBudget();
+    const auto copyEnd = std::chrono::steady_clock::now();
     processApplyBudget();
+    const auto applyEnd = std::chrono::steady_clock::now();
     enforceCellLimit();
+    m_telemetry.scanMicros = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(scanEnd - scanStart).count());
+    m_telemetry.copyMicros = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(copyEnd - scanEnd).count());
+    m_telemetry.applyMicros = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(applyEnd - copyEnd).count());
+
     updateTelemetry();
 }
 
 void SvoLodManager::uploadRenderResources() {
     if (!m_config.enabled) {
+        m_telemetry.uploadMicros = 0;
         updateTelemetry();
         return;
     }
 
+    const auto start = std::chrono::steady_clock::now();
     processUploadBudget();
+    const auto end = std::chrono::steady_clock::now();
+    m_telemetry.uploadMicros = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     updateTelemetry();
 }
 
@@ -559,16 +579,58 @@ void SvoLodManager::releaseGpuCell(const LodCellKey& key) {
 
 void SvoLodManager::updateTelemetry() {
     uint32_t active = 0;
+    uint32_t missing = 0;
+    uint32_t queuedBuild = 0;
+    uint32_t building = 0;
+    uint32_t ready = 0;
+    uint32_t stale = 0;
+    uint32_t evicting = 0;
+    uint64_t cpuBytes = 0;
     for (const auto& [key, cell] : m_cells) {
         (void)key;
+        cpuBytes += static_cast<uint64_t>(cell.nodes.size() * sizeof(LodSvoNode));
         if (cell.state != LodCellState::Missing) {
             ++active;
         }
+        switch (cell.state) {
+            case LodCellState::Missing:
+                ++missing;
+                break;
+            case LodCellState::QueuedBuild:
+                ++queuedBuild;
+                break;
+            case LodCellState::Building:
+                ++building;
+                break;
+            case LodCellState::Ready:
+                ++ready;
+                break;
+            case LodCellState::Stale:
+                ++stale;
+                break;
+            case LodCellState::Evicting:
+                ++evicting;
+                break;
+        }
     }
+    uint64_t gpuBytes = 0;
+    for (const auto& [key, gpu] : m_gpuCells) {
+        (void)key;
+        gpuBytes += gpu.byteSize;
+    }
+
     m_telemetry.activeCells = active;
+    m_telemetry.cellsMissing = missing;
+    m_telemetry.cellsQueuedBuild = queuedBuild;
+    m_telemetry.cellsBuilding = building;
+    m_telemetry.cellsReady = ready;
+    m_telemetry.cellsStale = stale;
+    m_telemetry.cellsEvicting = evicting;
     m_telemetry.pendingCopies = static_cast<uint32_t>(m_dirtyQueue.size());
     m_telemetry.pendingApplies = static_cast<uint32_t>(m_buildComplete.size());
     m_telemetry.pendingUploads = static_cast<uint32_t>(m_uploadQueue.size());
+    m_telemetry.cpuBytesCurrent = cpuBytes;
+    m_telemetry.gpuBytesCurrent = gpuBytes;
 }
 
 void SvoLodManager::enforceCellLimit() {

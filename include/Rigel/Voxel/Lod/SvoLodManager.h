@@ -21,9 +21,21 @@ namespace Rigel::Voxel {
 
 struct SvoLodTelemetry {
     uint32_t activeCells = 0;
+    uint32_t cellsMissing = 0;
+    uint32_t cellsQueuedBuild = 0;
+    uint32_t cellsBuilding = 0;
+    uint32_t cellsReady = 0;
+    uint32_t cellsStale = 0;
+    uint32_t cellsEvicting = 0;
     uint32_t pendingCopies = 0;
     uint32_t pendingApplies = 0;
     uint32_t pendingUploads = 0;
+    uint64_t cpuBytesCurrent = 0;
+    uint64_t gpuBytesCurrent = 0;
+    uint64_t scanMicros = 0;
+    uint64_t copyMicros = 0;
+    uint64_t applyMicros = 0;
+    uint64_t uploadMicros = 0;
     uint64_t copiedCells = 0;
     uint64_t appliedCells = 0;
     uint64_t uploadedCells = 0;

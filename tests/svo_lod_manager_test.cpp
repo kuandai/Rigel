@@ -89,6 +89,10 @@ TEST_CASE(SvoLodManager_UpdateStaysInertWhenDisabled) {
     CHECK_EQ(telemetry.copiedCells, 0u);
     CHECK_EQ(telemetry.appliedCells, 0u);
     CHECK_EQ(telemetry.activeCells, 0u);
+    CHECK_EQ(telemetry.scanMicros, 0u);
+    CHECK_EQ(telemetry.copyMicros, 0u);
+    CHECK_EQ(telemetry.applyMicros, 0u);
+    CHECK_EQ(telemetry.uploadMicros, 0u);
 }
 
 TEST_CASE(SvoLodManager_CopyBudgetLimitsPerFrame) {
@@ -243,6 +247,8 @@ TEST_CASE(SvoLodManager_BuildsOccupancyMaterialHierarchyPerCell) {
     CHECK(info->mixedNodeCount >= 1u);
     CHECK(manager.telemetry().pendingUploads >= 1u);
     CHECK_EQ(manager.telemetry().uploadedCells, 0u);
+    CHECK(manager.telemetry().cellsReady >= 1u);
+    CHECK(manager.telemetry().cpuBytesCurrent > 0u);
 }
 
 TEST_CASE(SvoLodManager_CollectOpaqueDrawInstances_ExcludesNonOpaqueLeaves) {

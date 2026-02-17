@@ -303,9 +303,24 @@ void renderProfilerWindow(bool enabled,
     } else {
         ImGui::Text("Enabled: %s", svoConfig->enabled ? "true" : "false");
         ImGui::Text("Active cells: %u", svoTelemetry->activeCells);
+        ImGui::Text("State counts: missing %u, queued %u, building %u, ready %u, stale %u",
+                    svoTelemetry->cellsMissing,
+                    svoTelemetry->cellsQueuedBuild,
+                    svoTelemetry->cellsBuilding,
+                    svoTelemetry->cellsReady,
+                    svoTelemetry->cellsStale);
         ImGui::Text("Pending copies: %u", svoTelemetry->pendingCopies);
         ImGui::Text("Pending applies: %u", svoTelemetry->pendingApplies);
         ImGui::Text("Pending uploads: %u", svoTelemetry->pendingUploads);
+        ImGui::Text("Stage time (us): scan %" PRIu64 ", copy %" PRIu64
+                    ", apply %" PRIu64 ", upload %" PRIu64,
+                    svoTelemetry->scanMicros,
+                    svoTelemetry->copyMicros,
+                    svoTelemetry->applyMicros,
+                    svoTelemetry->uploadMicros);
+        ImGui::Text("Current memory: CPU %.2f MiB, GPU %.2f MiB",
+                    static_cast<double>(svoTelemetry->cpuBytesCurrent) / (1024.0 * 1024.0),
+                    static_cast<double>(svoTelemetry->gpuBytesCurrent) / (1024.0 * 1024.0));
         ImGui::Text("Copied cells total: %" PRIu64, svoTelemetry->copiedCells);
         ImGui::Text("Applied cells total: %" PRIu64, svoTelemetry->appliedCells);
         ImGui::Text("Uploaded cells total: %" PRIu64, svoTelemetry->uploadedCells);

@@ -797,7 +797,11 @@ void Application::run() {
                                              height);
                     Render::renderFrameGraph(m_impl->debug);
 #if defined(RIGEL_ENABLE_IMGUI)
-                    UI::renderProfilerWindow(m_impl->debug.imguiEnabled);
+                    UI::renderProfilerWindow(
+                        m_impl->debug.imguiEnabled,
+                        &m_impl->world.worldView->svoConfig(),
+                        &m_impl->world.worldView->svoTelemetry()
+                    );
 #else
                     (void)width;
                     (void)height;

@@ -1,8 +1,10 @@
 #include "Rigel/UI/ImGuiLayer.h"
 
 #include "Rigel/Core/Profiler.h"
+#include "Rigel/Voxel/Lod/SvoLodManager.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <unordered_map>
 #include <string>
 #include <vector>
@@ -88,7 +90,9 @@ void endFrame() {
 #endif
 }
 
-void renderProfilerWindow(bool enabled) {
+void renderProfilerWindow(bool enabled,
+                          const Rigel::Voxel::SvoLodConfig* svoConfig,
+                          const Rigel::Voxel::SvoLodTelemetry* svoTelemetry) {
 #if defined(RIGEL_ENABLE_IMGUI)
     if (!g_initialized || !enabled) {
         return;
@@ -292,9 +296,26 @@ void renderProfilerWindow(bool enabled) {
         ImGui::EndTooltip();
     }
 
+    ImGui::Separator();
+    ImGui::TextUnformatted("SVO LOD (Preview)");
+    if (!svoConfig || !svoTelemetry) {
+        ImGui::TextUnformatted("No SVO telemetry source attached.");
+    } else {
+        ImGui::Text("Enabled: %s", svoConfig->enabled ? "true" : "false");
+        ImGui::Text("Active cells: %u", svoTelemetry->activeCells);
+        ImGui::Text("Pending copies: %u", svoTelemetry->pendingCopies);
+        ImGui::Text("Pending applies: %u", svoTelemetry->pendingApplies);
+        ImGui::Text("Copied cells total: %" PRIu64, svoTelemetry->copiedCells);
+        ImGui::Text("Applied cells total: %" PRIu64, svoTelemetry->appliedCells);
+        ImGui::Text("Update calls: %" PRIu64, svoTelemetry->updateCalls);
+    }
+    ImGui::TextUnformatted("Not rendering in Sprint 1.");
+
     ImGui::End();
 #else
     (void)enabled;
+    (void)svoConfig;
+    (void)svoTelemetry;
 #endif
 }
 

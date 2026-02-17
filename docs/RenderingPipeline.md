@@ -88,6 +88,7 @@ Key fields in `WorldRenderConfig`:
 - `shadow` (see Section 5)
 - `taa` (see Section 6)
 - `svo` (preview CPU build + GPU upload pipeline with a far opaque bootstrap pass)
+  - `lod_max_cells`, `lod_max_cpu_bytes`, `lod_max_gpu_bytes` bound SVO cache growth.
 - `profilingEnabled` (per-frame profiler toggle; config key `render.profiling.enabled`)
 
 ---

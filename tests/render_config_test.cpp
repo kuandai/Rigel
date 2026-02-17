@@ -56,6 +56,8 @@ render:
     lod_start_radius_chunks: 12
     lod_cell_span_chunks: 6
     lod_max_cells: 2048
+    lod_max_cpu_bytes: 262144
+    lod_max_gpu_bytes: 131072
     lod_copy_budget_per_frame: 11
     lod_apply_budget_per_frame: 7
   profiling:
@@ -92,6 +94,8 @@ render:
     CHECK_EQ(config.svo.lodStartRadiusChunks, 12);
     CHECK_EQ(config.svo.lodCellSpanChunks, 6);
     CHECK_EQ(config.svo.lodMaxCells, 2048);
+    CHECK_EQ(config.svo.lodMaxCpuBytes, 262144);
+    CHECK_EQ(config.svo.lodMaxGpuBytes, 131072);
     CHECK_EQ(config.svo.lodCopyBudgetPerFrame, 11);
     CHECK_EQ(config.svo.lodApplyBudgetPerFrame, 7);
     CHECK(config.profilingEnabled);
@@ -106,6 +110,8 @@ render:
     lod_start_radius_chunks: -4
     lod_cell_span_chunks: 0
     lod_max_cells: -8
+    lod_max_cpu_bytes: -9
+    lod_max_gpu_bytes: -10
     lod_copy_budget_per_frame: -3
     lod_apply_budget_per_frame: -6
 )";
@@ -119,6 +125,8 @@ render:
     CHECK_EQ(config.svo.lodStartRadiusChunks, 0);
     CHECK_EQ(config.svo.lodCellSpanChunks, 1);
     CHECK_EQ(config.svo.lodMaxCells, 0);
+    CHECK_EQ(config.svo.lodMaxCpuBytes, 0);
+    CHECK_EQ(config.svo.lodMaxGpuBytes, 0);
     CHECK_EQ(config.svo.lodCopyBudgetPerFrame, 0);
     CHECK_EQ(config.svo.lodApplyBudgetPerFrame, 0);
 }

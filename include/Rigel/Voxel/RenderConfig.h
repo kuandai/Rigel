@@ -6,6 +6,7 @@
  */
 
 #include <glm/vec3.hpp>
+#include <cstdint>
 
 namespace Rigel::Voxel {
 
@@ -39,6 +40,8 @@ struct SvoLodConfig {
     int lodStartRadiusChunks = 10;
     int lodCellSpanChunks = 8;
     int lodMaxCells = 1024;
+    int64_t lodMaxCpuBytes = 0;
+    int64_t lodMaxGpuBytes = 0;
     int lodCopyBudgetPerFrame = 4;
     int lodApplyBudgetPerFrame = 4;
 };

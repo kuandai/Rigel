@@ -130,6 +130,10 @@ void applySvoConfig(ryml::ConstNodeRef svoNode, SvoLodConfig& svo) {
         svoNode, "lod_cell_span_chunks", svo.lodCellSpanChunks);
     svo.lodMaxCells = Util::readInt(
         svoNode, "lod_max_cells", svo.lodMaxCells);
+    svo.lodMaxCpuBytes = static_cast<int64_t>(Util::readInt(
+        svoNode, "lod_max_cpu_bytes", static_cast<int>(svo.lodMaxCpuBytes)));
+    svo.lodMaxGpuBytes = static_cast<int64_t>(Util::readInt(
+        svoNode, "lod_max_gpu_bytes", static_cast<int>(svo.lodMaxGpuBytes)));
     svo.lodCopyBudgetPerFrame = Util::readInt(
         svoNode, "lod_copy_budget_per_frame", svo.lodCopyBudgetPerFrame);
     svo.lodApplyBudgetPerFrame = Util::readInt(
@@ -146,6 +150,12 @@ void applySvoConfig(ryml::ConstNodeRef svoNode, SvoLodConfig& svo) {
     }
     if (svo.lodMaxCells < 0) {
         svo.lodMaxCells = 0;
+    }
+    if (svo.lodMaxCpuBytes < 0) {
+        svo.lodMaxCpuBytes = 0;
+    }
+    if (svo.lodMaxGpuBytes < 0) {
+        svo.lodMaxGpuBytes = 0;
     }
     if (svo.lodCopyBudgetPerFrame < 0) {
         svo.lodCopyBudgetPerFrame = 0;

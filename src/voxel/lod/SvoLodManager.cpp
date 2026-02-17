@@ -1,9 +1,11 @@
 #include "Rigel/Voxel/Lod/SvoLodManager.h"
 
 #include <GL/glew.h>
+#include <glm/geometric.hpp>
 
 #include <algorithm>
 #include <limits>
+#include <tuple>
 #include <vector>
 
 namespace Rigel::Voxel {
@@ -32,6 +34,17 @@ float distanceSqToAabb(const glm::vec3& point,
         ? (aabbMin.z - point.z)
         : ((point.z > aabbMax.z) ? (point.z - aabbMax.z) : 0.0f);
     return dx * dx + dy * dy + dz * dz;
+}
+
+glm::vec3 cellWorldCenter(const LodCellKey& key,
+                          int spanChunks,
+                          int rootSizeChunks) {
+    constexpr float kChunkWorld = static_cast<float>(Chunk::SIZE);
+    const float baseX = static_cast<float>(key.x * spanChunks) * kChunkWorld;
+    const float baseY = static_cast<float>(key.y * spanChunks) * kChunkWorld;
+    const float baseZ = static_cast<float>(key.z * spanChunks) * kChunkWorld;
+    const float half = static_cast<float>(rootSizeChunks) * kChunkWorld * 0.5f;
+    return glm::vec3(baseX + half, baseY + half, baseZ + half);
 }
 
 void collectOpaqueLeavesRecursive(const std::vector<LodSvoNode>& nodes,
@@ -109,6 +122,12 @@ SvoLodConfig SvoLodManager::sanitizeConfig(SvoLodConfig config) {
     if (config.lodMaxCells < 0) {
         config.lodMaxCells = 0;
     }
+    if (config.lodMaxCpuBytes < 0) {
+        config.lodMaxCpuBytes = 0;
+    }
+    if (config.lodMaxGpuBytes < 0) {
+        config.lodMaxGpuBytes = 0;
+    }
     if (config.lodCopyBudgetPerFrame < 0) {
         config.lodCopyBudgetPerFrame = 0;
     }
@@ -141,7 +160,7 @@ void SvoLodManager::initialize() {
 }
 
 void SvoLodManager::update(const glm::vec3& cameraPos) {
-    (void)cameraPos;
+    m_lastCameraPos = cameraPos;
     if (!m_config.enabled) {
         updateTelemetry();
         return;
@@ -183,6 +202,7 @@ void SvoLodManager::reset() {
     m_uploadQueue.clear();
     m_uploadQueued.clear();
     m_frameCounter = 0;
+    m_lastCameraPos = glm::vec3(0.0f);
 
     LodBuildOutput output;
     while (m_buildComplete.tryPop(output)) {
@@ -552,22 +572,102 @@ void SvoLodManager::updateTelemetry() {
 }
 
 void SvoLodManager::enforceCellLimit() {
-    if (m_config.lodMaxCells <= 0) {
+    const bool enforceCount = (m_config.lodMaxCells > 0);
+    const bool enforceCpu = (m_config.lodMaxCpuBytes > 0);
+    const bool enforceGpu = (m_config.lodMaxGpuBytes > 0);
+    if (!enforceCount && !enforceCpu && !enforceGpu) {
         return;
     }
 
-    const size_t maxCells = static_cast<size_t>(m_config.lodMaxCells);
-    while (m_cells.size() > maxCells) {
-        auto victim = m_cells.end();
-        uint64_t oldestFrame = std::numeric_limits<uint64_t>::max();
+    const int span = std::max(1, m_config.lodCellSpanChunks);
+    const int rootSizeChunks = ceilPow2(span);
+    auto cellBytes = [](const CellRecord& cell) -> uint64_t {
+        return static_cast<uint64_t>(cell.nodes.size() * sizeof(LodSvoNode));
+    };
+    auto scoreForCell = [&](const LodCellKey& key, const CellRecord& cell)
+        -> std::tuple<uint8_t, float, uint64_t> {
+        const glm::vec3 center = cellWorldCenter(key, span, rootSizeChunks);
+        const glm::vec3 delta = center - m_lastCameraPos;
+        const float distanceSq = glm::dot(delta, delta);
+        const uint8_t evictPriority = cell.visibleAsFarLod ? 0u : 1u;
+        const uint64_t ageScore =
+            std::numeric_limits<uint64_t>::max() - cell.lastTouchedFrame;
+        return std::tuple<uint8_t, float, uint64_t>{
+            evictPriority, distanceSq, ageScore
+        };
+    };
+    auto scoreForGpu = [&](const LodCellKey& key) -> std::tuple<uint8_t, float, uint64_t> {
+        auto cellIt = m_cells.find(key);
+        if (cellIt == m_cells.end()) {
+            return std::tuple<uint8_t, float, uint64_t>{
+                0u, std::numeric_limits<float>::max(), 0u
+            };
+        }
+        return scoreForCell(key, cellIt->second);
+    };
 
+    const size_t maxCells = enforceCount
+        ? static_cast<size_t>(m_config.lodMaxCells)
+        : std::numeric_limits<size_t>::max();
+    const uint64_t maxCpuBytes = enforceCpu
+        ? static_cast<uint64_t>(m_config.lodMaxCpuBytes)
+        : std::numeric_limits<uint64_t>::max();
+    const uint64_t maxGpuBytes = enforceGpu
+        ? static_cast<uint64_t>(m_config.lodMaxGpuBytes)
+        : std::numeric_limits<uint64_t>::max();
+
+    uint64_t cpuBytes = 0;
+    for (const auto& [key, cell] : m_cells) {
+        (void)key;
+        cpuBytes += cellBytes(cell);
+    }
+    uint64_t gpuBytes = 0;
+    for (const auto& [key, gpu] : m_gpuCells) {
+        (void)key;
+        gpuBytes += gpu.byteSize;
+    }
+
+    auto overBudget = [&]() {
+        return m_cells.size() > maxCells ||
+               cpuBytes > maxCpuBytes ||
+               gpuBytes > maxGpuBytes;
+    };
+
+    while (overBudget()) {
+        if (gpuBytes > maxGpuBytes && !m_gpuCells.empty()) {
+            auto gpuVictim = m_gpuCells.end();
+            for (auto it = m_gpuCells.begin(); it != m_gpuCells.end(); ++it) {
+                if (gpuVictim == m_gpuCells.end()) {
+                    gpuVictim = it;
+                    continue;
+                }
+                if (scoreForGpu(it->first) > scoreForGpu(gpuVictim->first)) {
+                    gpuVictim = it;
+                }
+            }
+            if (gpuVictim != m_gpuCells.end()) {
+                if (gpuBytes >= gpuVictim->second.byteSize) {
+                    gpuBytes -= gpuVictim->second.byteSize;
+                } else {
+                    gpuBytes = 0;
+                }
+                releaseGpuCell(gpuVictim->first);
+                continue;
+            }
+        }
+
+        auto victim = m_cells.end();
         for (auto it = m_cells.begin(); it != m_cells.end(); ++it) {
             if (it->second.state == LodCellState::Building ||
                 it->second.state == LodCellState::QueuedBuild) {
                 continue;
             }
-            if (it->second.lastTouchedFrame < oldestFrame) {
-                oldestFrame = it->second.lastTouchedFrame;
+            if (victim == m_cells.end()) {
+                victim = it;
+                continue;
+            }
+            if (scoreForCell(it->first, it->second) >
+                scoreForCell(victim->first, victim->second)) {
                 victim = it;
             }
         }
@@ -575,6 +675,22 @@ void SvoLodManager::enforceCellLimit() {
         if (victim == m_cells.end()) {
             break;
         }
+
+        auto gpuIt = m_gpuCells.find(victim->first);
+        if (gpuIt != m_gpuCells.end()) {
+            if (gpuBytes >= gpuIt->second.byteSize) {
+                gpuBytes -= gpuIt->second.byteSize;
+            } else {
+                gpuBytes = 0;
+            }
+        }
+        uint64_t victimCpuBytes = cellBytes(victim->second);
+        if (cpuBytes >= victimCpuBytes) {
+            cpuBytes -= victimCpuBytes;
+        } else {
+            cpuBytes = 0;
+        }
+
         removeDirtyCell(victim->first);
         removeUploadCell(victim->first);
         releaseGpuCell(victim->first);

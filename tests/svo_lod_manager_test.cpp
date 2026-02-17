@@ -53,6 +53,8 @@ TEST_CASE(SvoLodManager_ConfigIsSanitized) {
     config.lodStartRadiusChunks = -7;
     config.lodCellSpanChunks = 0;
     config.lodMaxCells = -11;
+    config.lodMaxCpuBytes = -12;
+    config.lodMaxGpuBytes = -13;
     config.lodCopyBudgetPerFrame = -1;
     config.lodApplyBudgetPerFrame = -2;
 
@@ -64,6 +66,8 @@ TEST_CASE(SvoLodManager_ConfigIsSanitized) {
     CHECK_EQ(effective.lodStartRadiusChunks, 0);
     CHECK_EQ(effective.lodCellSpanChunks, 1);
     CHECK_EQ(effective.lodMaxCells, 0);
+    CHECK_EQ(effective.lodMaxCpuBytes, 0);
+    CHECK_EQ(effective.lodMaxGpuBytes, 0);
     CHECK_EQ(effective.lodCopyBudgetPerFrame, 0);
     CHECK_EQ(effective.lodApplyBudgetPerFrame, 0);
 }
@@ -368,4 +372,103 @@ TEST_CASE(SvoLodManager_CollectOpaqueDrawInstances_UsesHysteresis) {
 
     manager.collectOpaqueDrawInstances(instances, glm::vec3(220.0f, 0.0f, 0.0f), 1024.0f);
     CHECK(instances.empty());
+}
+
+TEST_CASE(SvoLodManager_EvictsFarthestCellsFirstWhenCellBudgetExceeded) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+
+    placeStone(chunkManager, stone, 33, 33, 33);    // chunk x=1 -> cell x=0
+    placeStone(chunkManager, stone, 289, 33, 33);   // chunk x=9 -> cell x=2
+    placeStone(chunkManager, stone, 545, 33, 33);   // chunk x=17 -> cell x=4
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.lodCellSpanChunks = 4;
+    config.lodMaxCells = 3;
+    config.lodCopyBudgetPerFrame = 16;
+    config.lodApplyBudgetPerFrame = 16;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+    manager.update(glm::vec3(0.0f));
+
+    const LodCellKey cellNear = chunkToLodCell({1, 0, 0}, config.lodCellSpanChunks);
+    const LodCellKey cellMid = chunkToLodCell({9, 0, 0}, config.lodCellSpanChunks);
+    const LodCellKey cellFar = chunkToLodCell({17, 0, 0}, config.lodCellSpanChunks);
+
+    CHECK(manager.cellInfo(cellNear).has_value());
+    CHECK(manager.cellInfo(cellMid).has_value());
+    CHECK(manager.cellInfo(cellFar).has_value());
+
+    config.lodMaxCells = 2;
+    manager.setConfig(config);
+    manager.update(glm::vec3(0.0f));
+
+    CHECK(manager.cellInfo(cellNear).has_value());
+    CHECK(manager.cellInfo(cellMid).has_value());
+    CHECK(!manager.cellInfo(cellFar).has_value());
+}
+
+TEST_CASE(SvoLodManager_EvictsByCpuByteBudgetUsingDistanceLruPolicy) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+
+    placeStone(chunkManager, stone, 33, 33, 33);    // chunk x=1 -> cell x=0
+    placeStone(chunkManager, stone, 289, 33, 33);   // chunk x=9 -> cell x=2
+    placeStone(chunkManager, stone, 545, 33, 33);   // chunk x=17 -> cell x=4
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.lodCellSpanChunks = 4;
+    config.lodCopyBudgetPerFrame = 16;
+    config.lodApplyBudgetPerFrame = 16;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+    manager.update(glm::vec3(0.0f));
+
+    const LodCellKey cellNear = chunkToLodCell({1, 0, 0}, config.lodCellSpanChunks);
+    const LodCellKey cellMid = chunkToLodCell({9, 0, 0}, config.lodCellSpanChunks);
+    const LodCellKey cellFar = chunkToLodCell({17, 0, 0}, config.lodCellSpanChunks);
+
+    const auto nearInfo = manager.cellInfo(cellNear);
+    const auto midInfo = manager.cellInfo(cellMid);
+    const auto farInfo = manager.cellInfo(cellFar);
+    CHECK(nearInfo.has_value());
+    CHECK(midInfo.has_value());
+    CHECK(farInfo.has_value());
+
+    const int64_t nearBytes =
+        static_cast<int64_t>(nearInfo->nodeCount) * static_cast<int64_t>(sizeof(LodSvoNode));
+    const int64_t midBytes =
+        static_cast<int64_t>(midInfo->nodeCount) * static_cast<int64_t>(sizeof(LodSvoNode));
+    const int64_t farBytes =
+        static_cast<int64_t>(farInfo->nodeCount) * static_cast<int64_t>(sizeof(LodSvoNode));
+    const int64_t totalBytes = nearBytes + midBytes + farBytes;
+    CHECK(totalBytes > 0);
+    CHECK(farBytes > 0);
+
+    config.lodMaxCells = 0;
+    config.lodMaxCpuBytes = totalBytes - farBytes;
+    manager.setConfig(config);
+    manager.update(glm::vec3(0.0f));
+
+    CHECK(manager.cellInfo(cellNear).has_value());
+    CHECK(manager.cellInfo(cellMid).has_value());
+    CHECK(!manager.cellInfo(cellFar).has_value());
 }

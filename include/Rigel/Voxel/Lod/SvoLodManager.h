@@ -127,6 +127,7 @@ private:
     std::deque<LodCellKey> m_uploadQueue;
     std::unordered_set<LodCellKey, LodCellKeyHash> m_uploadQueued;
     uint64_t m_frameCounter = 0;
+    glm::vec3 m_lastCameraPos{0.0f};
 };
 
 } // namespace Rigel::Voxel

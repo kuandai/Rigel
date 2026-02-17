@@ -631,3 +631,48 @@ TEST_CASE(SvoLodManager_CollectDebugCells_ReportsStateSpanAndVisibility) {
     manager.collectDebugCells(debugCells);
     CHECK(debugCells.empty());
 }
+
+TEST_CASE(SvoLodManager_ResetAndReinitialize_ClearsAndRebuildsState) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+
+    placeStone(chunkManager, stone, 33, 33, 33);
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(1);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.lodCellSpanChunks = 4;
+    config.lodCopyBudgetPerFrame = 16;
+    config.lodApplyBudgetPerFrame = 16;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+    bool hasStateBeforeReset = false;
+    for (int i = 0; i < 20; ++i) {
+        manager.update(glm::vec3(0.0f));
+        if (manager.cellCount() > 0 && manager.telemetry().updateCalls > 0) {
+            hasStateBeforeReset = true;
+            break;
+        }
+    }
+    CHECK(hasStateBeforeReset);
+
+    manager.reset();
+    CHECK_EQ(manager.cellCount(), static_cast<size_t>(0));
+    CHECK_EQ(manager.telemetry().updateCalls, 0u);
+    CHECK_EQ(manager.telemetry().activeCells, 0u);
+
+    manager.initialize();
+    manager.update(glm::vec3(0.0f));
+    CHECK(manager.telemetry().updateCalls >= 1u);
+    CHECK(manager.cellCount() > 0);
+
+    manager.releaseRenderResources();
+    manager.releaseRenderResources();
+}

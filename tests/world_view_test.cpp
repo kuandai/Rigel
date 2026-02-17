@@ -148,3 +148,44 @@ TEST_CASE(WorldView_SvoUpdateIsThrottledWhenChunkStreamingIsOverloaded) {
     CHECK(view.svoTelemetry().updateCalls > 0u);
     CHECK(view.svoTelemetry().updateCalls < 12u);
 }
+
+TEST_CASE(WorldView_SvoClearRelease_IsIdempotentAndReinitializable) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    BlockType stone;
+    stone.identifier = "rigel:stone";
+    stone.isOpaque = true;
+    resources.registry().registerBlock(stone.identifier, stone);
+    auto stoneId = resources.registry().findByIdentifier(stone.identifier);
+    CHECK(stoneId.has_value());
+    if (!stoneId) {
+        return;
+    }
+
+    BlockState state;
+    state.id = *stoneId;
+    world.setBlock(33, 33, 33, state);
+
+    WorldRenderConfig config;
+    config.svo.enabled = true;
+    config.svo.lodCellSpanChunks = 4;
+    config.svo.lodCopyBudgetPerFrame = 8;
+    config.svo.lodApplyBudgetPerFrame = 8;
+    view.setRenderConfig(config);
+
+    view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
+    CHECK(view.svoTelemetry().updateCalls >= 1u);
+
+    view.clear();
+    CHECK_EQ(view.svoTelemetry().updateCalls, 0u);
+    CHECK_EQ(view.svoTelemetry().activeCells, 0u);
+
+    view.releaseRenderResources();
+    view.clear();
+    view.releaseRenderResources();
+
+    view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
+    CHECK(view.svoTelemetry().updateCalls >= 1u);
+}

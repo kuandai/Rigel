@@ -116,6 +116,45 @@ void applyTaaConfig(ryml::ConstNodeRef taaNode, TaaConfig& taa) {
     }
 }
 
+void applySvoConfig(ryml::ConstNodeRef svoNode, SvoLodConfig& svo) {
+    if (!svoNode.readable()) {
+        return;
+    }
+
+    svo.enabled = Util::readBool(svoNode, "enabled", svo.enabled);
+    svo.nearMeshRadiusChunks = Util::readInt(
+        svoNode, "near_mesh_radius_chunks", svo.nearMeshRadiusChunks);
+    svo.lodStartRadiusChunks = Util::readInt(
+        svoNode, "lod_start_radius_chunks", svo.lodStartRadiusChunks);
+    svo.lodCellSpanChunks = Util::readInt(
+        svoNode, "lod_cell_span_chunks", svo.lodCellSpanChunks);
+    svo.lodMaxCells = Util::readInt(
+        svoNode, "lod_max_cells", svo.lodMaxCells);
+    svo.lodCopyBudgetPerFrame = Util::readInt(
+        svoNode, "lod_copy_budget_per_frame", svo.lodCopyBudgetPerFrame);
+    svo.lodApplyBudgetPerFrame = Util::readInt(
+        svoNode, "lod_apply_budget_per_frame", svo.lodApplyBudgetPerFrame);
+
+    if (svo.nearMeshRadiusChunks < 0) {
+        svo.nearMeshRadiusChunks = 0;
+    }
+    if (svo.lodStartRadiusChunks < svo.nearMeshRadiusChunks) {
+        svo.lodStartRadiusChunks = svo.nearMeshRadiusChunks;
+    }
+    if (svo.lodCellSpanChunks < 1) {
+        svo.lodCellSpanChunks = 1;
+    }
+    if (svo.lodMaxCells < 0) {
+        svo.lodMaxCells = 0;
+    }
+    if (svo.lodCopyBudgetPerFrame < 0) {
+        svo.lodCopyBudgetPerFrame = 0;
+    }
+    if (svo.lodApplyBudgetPerFrame < 0) {
+        svo.lodApplyBudgetPerFrame = 0;
+    }
+}
+
 void applyRenderYaml(const char* sourceName,
                      const std::string& yaml,
                      WorldRenderConfig& config) {
@@ -145,6 +184,9 @@ void applyRenderYaml(const char* sourceName,
     }
     if (renderNode.has_child("taa")) {
         applyTaaConfig(renderNode["taa"], config.taa);
+    }
+    if (renderNode.has_child("svo")) {
+        applySvoConfig(renderNode["svo"], config.svo);
     }
     if (renderNode.has_child("profiling")) {
         const auto profilingNode = renderNode["profiling"];

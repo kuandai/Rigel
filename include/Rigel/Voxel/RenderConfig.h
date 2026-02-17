@@ -33,6 +33,16 @@ struct TaaConfig {
     float jitterScale = 1.0f;
 };
 
+struct SvoLodConfig {
+    bool enabled = false;
+    int nearMeshRadiusChunks = 8;
+    int lodStartRadiusChunks = 10;
+    int lodCellSpanChunks = 8;
+    int lodMaxCells = 1024;
+    int lodCopyBudgetPerFrame = 4;
+    int lodApplyBudgetPerFrame = 4;
+};
+
 
 struct WorldRenderConfig {
     float renderDistance = 256.0f;
@@ -40,6 +50,7 @@ struct WorldRenderConfig {
     float transparentAlpha = 0.5f;
     ShadowConfig shadow;
     TaaConfig taa;
+    SvoLodConfig svo;
     bool profilingEnabled = false;
 };
 

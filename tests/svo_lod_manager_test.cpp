@@ -380,6 +380,41 @@ TEST_CASE(SvoLodManager_CollectOpaqueDrawInstances_UsesHysteresis) {
     CHECK(instances.empty());
 }
 
+TEST_CASE(SvoLodManager_CollectOpaqueDrawInstances_ReturnsNoneWhenDisabled) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+
+    placeStone(chunkManager, stone, 289, 33, 33);
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 1;
+    config.lodStartRadiusChunks = 2;
+    config.lodCellSpanChunks = 4;
+    config.lodCopyBudgetPerFrame = 16;
+    config.lodApplyBudgetPerFrame = 16;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+    manager.update(glm::vec3(0.0f));
+
+    std::vector<SvoLodManager::OpaqueDrawInstance> instances;
+    manager.collectOpaqueDrawInstances(instances, glm::vec3(0.0f), 1024.0f);
+    CHECK(!instances.empty());
+
+    config.enabled = false;
+    manager.setConfig(config);
+    manager.collectOpaqueDrawInstances(instances, glm::vec3(0.0f), 1024.0f);
+    CHECK(instances.empty());
+}
+
 TEST_CASE(SvoLodManager_EvictsFarthestCellsFirstWhenCellBudgetExceeded) {
     BlockRegistry registry;
     ChunkManager chunkManager;
@@ -477,6 +512,60 @@ TEST_CASE(SvoLodManager_EvictsByCpuByteBudgetUsingDistanceLruPolicy) {
     CHECK(manager.cellInfo(cellNear).has_value());
     CHECK(manager.cellInfo(cellMid).has_value());
     CHECK(!manager.cellInfo(cellFar).has_value());
+}
+
+TEST_CASE(SvoLodManager_ToggleEnabled_DoesNotMutateChunkDataOrPersistFlag) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+
+    placeStone(chunkManager, stone, 33, 33, 33);
+    ChunkCoord coord = worldToChunk(33, 33, 33);
+    Chunk* chunk = chunkManager.getChunk(coord);
+    CHECK(chunk != nullptr);
+    if (!chunk) {
+        return;
+    }
+    chunk->clearPersistDirty();
+
+    const BlockID beforeId = chunkManager.getBlock(33, 33, 33).id;
+    CHECK_EQ(beforeId, stone);
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.lodCellSpanChunks = 4;
+    config.lodCopyBudgetPerFrame = 16;
+    config.lodApplyBudgetPerFrame = 16;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+    manager.update(glm::vec3(0.0f));
+    CHECK_EQ(chunkManager.getBlock(33, 33, 33).id, beforeId);
+    CHECK(!chunk->isPersistDirty());
+
+    config.enabled = false;
+    manager.setConfig(config);
+    manager.update(glm::vec3(0.0f));
+    CHECK_EQ(chunkManager.getBlock(33, 33, 33).id, beforeId);
+    CHECK(!chunk->isPersistDirty());
+
+    BlockState air;
+    chunkManager.setBlock(33, 33, 33, air);
+    CHECK_EQ(chunkManager.getBlock(33, 33, 33).id, BlockRegistry::airId());
+    CHECK(chunk->isPersistDirty());
+
+    chunk->clearPersistDirty();
+    config.enabled = true;
+    manager.setConfig(config);
+    manager.update(glm::vec3(0.0f));
+    CHECK_EQ(chunkManager.getBlock(33, 33, 33).id, BlockRegistry::airId());
+    CHECK(!chunk->isPersistDirty());
 }
 
 TEST_CASE(SvoLodManager_CollectDebugCells_ReportsStateSpanAndVisibility) {

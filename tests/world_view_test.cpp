@@ -76,3 +76,31 @@ TEST_CASE(WorldView_SvoLifecycleHooksUpdateAndResetTelemetry) {
     view.clear();
     CHECK_EQ(view.svoTelemetry().updateCalls, 0u);
 }
+
+TEST_CASE(WorldView_SvoPipelineBindsChunkManagerDataSource) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    BlockType stone;
+    stone.identifier = "rigel:stone";
+    stone.isOpaque = true;
+    resources.registry().registerBlock(stone.identifier, stone);
+    auto stoneId = resources.registry().findByIdentifier(stone.identifier);
+    CHECK(stoneId.has_value());
+
+    BlockState state;
+    state.id = *stoneId;
+    world.setBlock(1, 1, 1, state);
+
+    WorldRenderConfig config;
+    config.svo.enabled = true;
+    config.svo.lodCellSpanChunks = 4;
+    config.svo.lodCopyBudgetPerFrame = 1;
+    config.svo.lodApplyBudgetPerFrame = 0;
+    view.setRenderConfig(config);
+
+    view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
+    CHECK_EQ(view.svoTelemetry().copiedCells, 1u);
+    CHECK(view.svoTelemetry().activeCells > 0u);
+}

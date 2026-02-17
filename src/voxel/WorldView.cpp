@@ -11,6 +11,9 @@ WorldView::WorldView(World& world, WorldResources& resources)
     , m_resources(&resources)
 {
     m_svoLod.setConfig(m_renderConfig.svo);
+    if (m_world && m_resources) {
+        m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
+    }
 }
 
 void WorldView::setRenderConfig(const WorldRenderConfig& config) {
@@ -45,6 +48,7 @@ void WorldView::initialize(Asset::AssetManager& assets) {
                         &m_resources->registry(),
                         &m_resources->textureAtlas(),
                         m_world->generator());
+        m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
     }
 
     m_svoLod.initialize();
@@ -60,6 +64,7 @@ void WorldView::setGenerator(std::shared_ptr<WorldGenerator> generator) {
                     &m_resources->registry(),
                     &m_resources->textureAtlas(),
                     std::move(generator));
+    m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
 }
 
 void WorldView::setChunkLoader(ChunkStreamer::ChunkLoadCallback loader) {

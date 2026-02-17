@@ -124,7 +124,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_lastCenter = center;
         m_lastViewDistance = viewDistance;
         m_lastUnloadDistance = unloadDistance;
-        m_updateCursor = 0;
+        m_dirtyCursor = 0;
 
         for (auto it = m_states.begin(); it != m_states.end(); ) {
             if ((it->second == ChunkState::QueuedGen || it->second == ChunkState::QueuedMesh) &&
@@ -185,14 +185,12 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             size_t budget = (m_config.updateBudgetPerFrame <= 0)
                 ? m_desired.size()
                 : static_cast<size_t>(m_config.updateBudgetPerFrame);
-            size_t processed = 0;
-            size_t index = 0;
-            while (processed < budget && processed < m_desired.size()) {
-                const ChunkCoord& coord = m_desired[index];
-                auto advance = [&]() {
-                    ++processed;
-                    ++index;
-                };
+            size_t queued = 0;
+            size_t scanned = 0;
+            size_t desiredCount = m_desired.size();
+            while (queued < budget && scanned < desiredCount) {
+                const ChunkCoord& coord = m_desired[scanned];
+                ++scanned;
 
                 if (genFull && meshFullMissing) {
                     break;
@@ -223,8 +221,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                         if (!genFull) {
                             enqueueGeneration(coord);
                             genFull = m_inFlightGen >= genLimit;
+                            ++queued;
                         }
-                        advance();
                         continue;
                     }
 
@@ -242,7 +240,6 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                         }
                         chunk->clearDirty();
                         m_states[coord] = ChunkState::ReadyMesh;
-                        advance();
                         continue;
                     }
 
@@ -253,25 +250,24 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                             enqueueMesh(coord, *chunk, MeshRequestKind::Missing);
                             meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
                             meshFull = m_inFlightMesh >= meshLimit;
+                            ++queued;
                         }
                     }
-                    advance();
                     continue;
                 }
 
                 if (state == ChunkState::QueuedGen) {
-                    advance();
                     continue;
                 }
 
                 if (requested) {
                     m_loadPending.insert(coord);
-                    advance();
+                    ++queued;
                     continue;
                 }
                 if (m_chunkPending && m_chunkPending(coord)) {
                     m_loadPending.insert(coord);
-                    advance();
+                    ++queued;
                     continue;
                 }
                 m_loadPending.erase(coord);
@@ -279,40 +275,50 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 if (!genFull) {
                     enqueueGeneration(coord);
                     genFull = m_inFlightGen >= genLimit;
+                    ++queued;
                 }
-                advance();
             }
         }
     }
 
     {
         PROFILE_SCOPE("Streaming/Update/MeshDirty");
-        for (const ChunkCoord& coord : m_desired) {
+        if (m_dirtyCursor >= m_desired.size()) {
+            m_dirtyCursor = 0;
+        }
+        size_t scanned = 0;
+        while (!m_desired.empty() && scanned < m_desired.size()) {
             if (meshFull || meshFullDirty) {
                 break;
             }
+            const ChunkCoord& coord = m_desired[m_dirtyCursor];
+            ++scanned;
+            ++m_dirtyCursor;
+            if (m_dirtyCursor >= m_desired.size()) {
+                m_dirtyCursor = 0;
+            }
 
-        ChunkState state = ChunkState::Missing;
-        auto stateIt = m_states.find(coord);
-        if (stateIt != m_states.end()) {
-            state = stateIt->second;
-        }
+            ChunkState state = ChunkState::Missing;
+            auto stateIt = m_states.find(coord);
+            if (stateIt != m_states.end()) {
+                state = stateIt->second;
+            }
 
-        Chunk* chunk = m_chunkManager->getChunk(coord);
-        if (!chunk || chunk->isEmpty()) {
-            continue;
-        }
+            Chunk* chunk = m_chunkManager->getChunk(coord);
+            if (!chunk || chunk->isEmpty()) {
+                continue;
+            }
 
-        bool hasMesh = m_meshStore && m_meshStore->contains(coord);
-        bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
-        if (!isMeshed || !chunk->isDirty() || state == ChunkState::QueuedMesh) {
-            continue;
-        }
+            bool hasMesh = m_meshStore && m_meshStore->contains(coord);
+            bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+            if (!isMeshed || !chunk->isDirty() || state == ChunkState::QueuedMesh) {
+                continue;
+            }
 
-        if (!hasAllNeighborsLoaded(coord)) {
-            continue;
-        }
-        enqueueMesh(coord, *chunk, MeshRequestKind::Dirty);
+            if (!hasAllNeighborsLoaded(coord)) {
+                continue;
+            }
+            enqueueMesh(coord, *chunk, MeshRequestKind::Dirty);
             meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
             meshFull = m_inFlightMesh >= meshLimit;
         }
@@ -444,6 +450,7 @@ void ChunkStreamer::reset() {
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
+    m_dirtyCursor = 0;
     for (auto& entry : m_genCancel) {
         entry.second->store(true, std::memory_order_relaxed);
     }

@@ -134,7 +134,7 @@ private:
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;
-    size_t m_updateCursor = 0;
+    size_t m_dirtyCursor = 0;
 
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);

@@ -73,6 +73,10 @@ This document outlines the current voxel engine architecture within Rigel. Secti
   queue pressure, preserving gameplay chunk generation/meshing throughput.
 - Runtime diagnostics expose SVO stage timings, cell-state counts, and current
   CPU/GPU cache memory in the ImGui profiler panel.
+- Runtime control: action `toggle_svo_lod` (default `F6`) hot-toggles
+  `render.svo.enabled`. Disabling clears SVO state; enabling reinitializes it.
+- Guardrail fallback: if SVO initialization fails, `WorldView` logs the failure
+  and continues in chunk-only rendering mode.
 
 World data and render state are deliberately split: `World` stores CPU-side data,
 while `WorldView` owns GPU resources like meshes and shaders.

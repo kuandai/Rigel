@@ -74,6 +74,14 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
   counts, and current CPU/GPU LOD cache memory.
 - The chunk debug field can overlay SVO cell lifecycle states, including
   queued/building/ready/stale/evicting cells.
+- Runtime toggle path:
+  - action `toggle_svo_lod` (default `F6`) flips `render.svo.enabled` at
+    runtime.
+  - disable path clears SVO state/caches; re-enable path reinitializes the SVO
+    pipeline.
+- Fallback behavior:
+  - if SVO initialization throws, `WorldView` logs an error and force-disables
+    SVO for the session, continuing chunk-only rendering.
 
 ---
 
@@ -194,3 +202,4 @@ If TAA is disabled, the history is invalidated each frame.
 - `docs/VoxelEngine.md`
 - `docs/DebugTooling.md`
 - `docs/ConfigurationSystem.md`
+- `docs/SvoLodBenchmarks.md`

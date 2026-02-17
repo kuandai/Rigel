@@ -56,8 +56,9 @@ assets:
         move_up: SPACE
         move_down: LCTRL
         sprint: LSHIFT
-        exit: ESC
         debug_overlay: F1
+        imgui_overlay: F3
+        toggle_svo_lod: F6
         unbound_action: none
 ```
 
@@ -75,8 +76,9 @@ Defaults currently include:
 - `move_up`: SPACE
 - `move_down`: LCTRL
 - `sprint`: LSHIFT
-- `exit`: ESC
 - `debug_overlay`: F1
+- `imgui_overlay`: F3
+- `toggle_svo_lod`: F6
 - `demo_spawn_entity`: F2
 
 ## Key Parsing Rules

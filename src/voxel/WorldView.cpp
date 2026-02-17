@@ -5,6 +5,24 @@
 #include <chrono>
 
 namespace Rigel::Voxel {
+namespace {
+
+void initializeSvoWithFallback(SvoLodManager& svo,
+                               WorldRenderConfig& renderConfig,
+                               const char* contextLabel) {
+    try {
+        svo.initialize();
+    } catch (const std::exception& e) {
+        spdlog::error("SVO LOD initialization failed ({}): {}. Falling back to chunk-only rendering.",
+                      contextLabel ? contextLabel : "unknown",
+                      e.what());
+        renderConfig.svo.enabled = false;
+        svo.setConfig(renderConfig.svo);
+        svo.reset();
+    }
+}
+
+} // namespace
 
 WorldView::WorldView(World& world, WorldResources& resources)
     : m_world(&world)
@@ -17,8 +35,19 @@ WorldView::WorldView(World& world, WorldResources& resources)
 }
 
 void WorldView::setRenderConfig(const WorldRenderConfig& config) {
+    const bool wasEnabled = m_renderConfig.svo.enabled;
     m_renderConfig = config;
     m_svoLod.setConfig(m_renderConfig.svo);
+    const bool isEnabled = m_renderConfig.svo.enabled;
+
+    if (wasEnabled && !isEnabled) {
+        m_svoLod.reset();
+        return;
+    }
+
+    if (!wasEnabled && isEnabled) {
+        initializeSvoWithFallback(m_svoLod, m_renderConfig, "setRenderConfig");
+    }
 }
 
 void WorldView::initialize(Asset::AssetManager& assets) {
@@ -56,7 +85,9 @@ void WorldView::initialize(Asset::AssetManager& assets) {
         m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
     }
 
-    m_svoLod.initialize();
+    if (m_renderConfig.svo.enabled) {
+        initializeSvoWithFallback(m_svoLod, m_renderConfig, "WorldView::initialize");
+    }
     m_initialized = true;
 }
 

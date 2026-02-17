@@ -37,6 +37,49 @@ TEST_CASE(WorldView_SetRenderConfigSyncsSvoConfig) {
     CHECK_EQ(svo.lodApplyBudgetPerFrame, 7);
 }
 
+TEST_CASE(WorldView_SetRenderConfig_ToggleSvoHotReloadResetsAndReenables) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    BlockType stone;
+    stone.identifier = "rigel:stone";
+    stone.isOpaque = true;
+    resources.registry().registerBlock(stone.identifier, stone);
+    auto stoneId = resources.registry().findByIdentifier(stone.identifier);
+    CHECK(stoneId.has_value());
+    if (!stoneId) {
+        return;
+    }
+
+    BlockState state;
+    state.id = *stoneId;
+    world.setBlock(33, 33, 33, state);
+
+    WorldRenderConfig config;
+    config.svo.enabled = true;
+    config.svo.lodCellSpanChunks = 4;
+    config.svo.lodCopyBudgetPerFrame = 8;
+    config.svo.lodApplyBudgetPerFrame = 8;
+    view.setRenderConfig(config);
+
+    view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
+    CHECK(view.svoTelemetry().updateCalls >= 1u);
+
+    config.svo.enabled = false;
+    view.setRenderConfig(config);
+    CHECK(!view.renderConfig().svo.enabled);
+    view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
+    CHECK_EQ(view.svoTelemetry().updateCalls, 0u);
+    CHECK_EQ(view.svoTelemetry().activeCells, 0u);
+
+    config.svo.enabled = true;
+    view.setRenderConfig(config);
+    CHECK(view.renderConfig().svo.enabled);
+    view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
+    CHECK(view.svoTelemetry().updateCalls >= 1u);
+}
+
 TEST_CASE(WorldView_SvoLifecycleHooksUpdateAndResetTelemetry) {
     WorldResources resources;
     World world(resources);

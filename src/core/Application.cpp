@@ -695,6 +695,12 @@ void Application::run() {
                 if (m_impl->input.dispatcher.isActionJustPressed("toggle_mouse_capture")) {
                     Input::setCursorCaptured(m_impl->window, !m_impl->window.cursorCaptured);
                 }
+                if (m_impl->input.dispatcher.isActionJustReleased("toggle_svo_lod")) {
+                    auto renderConfig = m_impl->world.worldView->renderConfig();
+                    renderConfig.svo.enabled = !renderConfig.svo.enabled;
+                    m_impl->world.worldView->setRenderConfig(renderConfig);
+                    spdlog::info("SVO LOD {}", renderConfig.svo.enabled ? "enabled" : "disabled");
+                }
                 if (m_impl->window.cursorCaptured &&
                     glfwGetInputMode(m_impl->window.window, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
                     Input::setCursorCaptured(m_impl->window, true);

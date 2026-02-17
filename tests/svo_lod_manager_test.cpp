@@ -478,3 +478,67 @@ TEST_CASE(SvoLodManager_EvictsByCpuByteBudgetUsingDistanceLruPolicy) {
     CHECK(manager.cellInfo(cellMid).has_value());
     CHECK(!manager.cellInfo(cellFar).has_value());
 }
+
+TEST_CASE(SvoLodManager_CollectDebugCells_ReportsStateSpanAndVisibility) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+
+    placeStone(chunkManager, stone, 289, 33, 33); // chunk x=9 -> cell x=2 for span=4
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 1;
+    config.lodStartRadiusChunks = 2;
+    config.lodCellSpanChunks = 4;
+    config.lodCopyBudgetPerFrame = 16;
+    config.lodApplyBudgetPerFrame = 16;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+    manager.update(glm::vec3(0.0f));
+
+    const LodCellKey expectedKey = chunkToLodCell({9, 0, 0}, config.lodCellSpanChunks);
+
+    std::vector<SvoLodManager::DebugCellState> debugCells;
+    manager.collectDebugCells(debugCells);
+    CHECK(!debugCells.empty());
+
+    bool found = false;
+    for (const auto& cell : debugCells) {
+        if (cell.key != expectedKey) {
+            continue;
+        }
+        found = true;
+        CHECK_EQ(cell.state, LodCellState::Ready);
+        CHECK_EQ(cell.spanChunks, 4);
+        CHECK(!cell.visibleAsFarLod);
+    }
+    CHECK(found);
+
+    std::vector<SvoLodManager::OpaqueDrawInstance> instances;
+    manager.collectOpaqueDrawInstances(instances, glm::vec3(0.0f), 1024.0f);
+    CHECK(!instances.empty());
+
+    manager.collectDebugCells(debugCells);
+    bool visibleFound = false;
+    for (const auto& cell : debugCells) {
+        if (cell.key != expectedKey) {
+            continue;
+        }
+        visibleFound = true;
+        CHECK(cell.visibleAsFarLod);
+    }
+    CHECK(visibleFound);
+
+    config.enabled = false;
+    manager.setConfig(config);
+    manager.collectDebugCells(debugCells);
+    CHECK(debugCells.empty());
+}

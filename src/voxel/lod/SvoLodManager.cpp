@@ -263,6 +263,27 @@ std::optional<SvoLodManager::CellInfo> SvoLodManager::cellInfo(const LodCellKey&
     return info;
 }
 
+void SvoLodManager::collectDebugCells(std::vector<DebugCellState>& out) const {
+    out.clear();
+    if (!m_config.enabled) {
+        return;
+    }
+
+    out.reserve(m_cells.size());
+    const int spanChunks = std::max(1, m_config.lodCellSpanChunks);
+    for (const auto& [key, cell] : m_cells) {
+        if (cell.state == LodCellState::Missing) {
+            continue;
+        }
+        out.push_back(DebugCellState{
+            .key = key,
+            .state = cell.state,
+            .spanChunks = spanChunks,
+            .visibleAsFarLod = cell.visibleAsFarLod
+        });
+    }
+}
+
 void SvoLodManager::collectOpaqueDrawInstances(std::vector<OpaqueDrawInstance>& out,
                                                const glm::vec3& cameraPos,
                                                float renderDistanceWorld) {

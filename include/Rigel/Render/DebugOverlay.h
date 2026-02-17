@@ -2,6 +2,7 @@
 
 #include "Rigel/Asset/Handle.h"
 #include "Rigel/Voxel/ChunkStreamer.h"
+#include "Rigel/Voxel/Lod/SvoLodManager.h"
 
 #include <array>
 #include <cstddef>
@@ -17,10 +18,13 @@ namespace Voxel { class WorldView; class World; }
 namespace Render {
 
 constexpr float kDefaultDebugDistance = 8.0f;
+constexpr size_t kChunkDebugStateBuckets = 5;
+constexpr size_t kSvoDebugStateBuckets = 5;
+constexpr size_t kDebugStateBuckets = kChunkDebugStateBuckets + kSvoDebugStateBuckets;
 
 struct DebugField {
     GLuint vao = 0;
-    std::array<GLuint, 5> vbos{};
+    std::array<GLuint, kDebugStateBuckets> vbos{};
     Asset::Handle<Asset::ShaderAsset> shader;
     GLint locViewProjection = -1;
     GLint locFieldOrigin = -1;
@@ -62,6 +66,7 @@ struct DebugState {
     FrameTimeGraph frameGraph;
     EntityDebug entityDebug;
     std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
+    std::vector<Voxel::SvoLodManager::DebugCellState> svoDebugStates;
     float debugDistance = kDefaultDebugDistance;
     bool overlayEnabled = true;
     bool imguiEnabled = false;

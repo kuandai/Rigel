@@ -72,6 +72,31 @@ constexpr float kCubeVertices[] = {
     -0.5f, -0.5f, -0.5f
 };
 
+struct SvoDebugCellCoord {
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    int span = 1;
+
+    bool operator==(const SvoDebugCellCoord& other) const {
+        return x == other.x && y == other.y && z == other.z && span == other.span;
+    }
+};
+
+struct SvoDebugCellCoordHash {
+    size_t operator()(const SvoDebugCellCoord& key) const noexcept {
+        size_t h = 2166136261u;
+        auto mix = [&h](int value) {
+            h ^= static_cast<size_t>(value) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        };
+        mix(key.x);
+        mix(key.y);
+        mix(key.z);
+        mix(key.span);
+        return h;
+    }
+};
+
 } // namespace
 
 void initDebugField(DebugState& debug, Asset::AssetManager& assets) {
@@ -258,7 +283,8 @@ void renderDebugField(DebugState& debug,
     }
 
     worldView->getChunkDebugStates(debug.debugStates);
-    if (debug.debugStates.empty()) {
+    worldView->getSvoDebugStates(debug.svoDebugStates);
+    if (debug.debugStates.empty() && debug.svoDebugStates.empty()) {
         return;
     }
 
@@ -278,11 +304,22 @@ void renderDebugField(DebugState& debug,
 
     std::unordered_map<Voxel::ChunkCoord,
                        Voxel::ChunkStreamer::DebugState,
-                       Voxel::ChunkCoordHash> stateMap;
-    stateMap.reserve(debug.debugStates.size());
-    std::array<std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash>, 5> occupancy;
-    for (auto& set : occupancy) {
+                       Voxel::ChunkCoordHash> chunkStateMap;
+    chunkStateMap.reserve(debug.debugStates.size());
+    std::array<std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash>, kChunkDebugStateBuckets>
+        chunkOccupancy;
+    for (auto& set : chunkOccupancy) {
         set.reserve(debug.debugStates.size());
+    }
+
+    std::unordered_map<SvoDebugCellCoord,
+                       Voxel::LodCellState,
+                       SvoDebugCellCoordHash> svoStateMap;
+    svoStateMap.reserve(debug.svoDebugStates.size());
+    std::array<std::unordered_set<SvoDebugCellCoord, SvoDebugCellCoordHash>, kSvoDebugStateBuckets>
+        svoOccupancy;
+    for (auto& set : svoOccupancy) {
+        set.reserve(debug.svoDebugStates.size());
     }
 
     for (const auto& entry : debug.debugStates) {
@@ -294,37 +331,86 @@ void renderDebugField(DebugState& debug,
             continue;
         }
         Voxel::ChunkCoord offset{dx, dy, dz};
-        stateMap[offset] = entry.state;
+        chunkStateMap[offset] = entry.state;
         switch (entry.state) {
             case Voxel::ChunkStreamer::DebugState::QueuedGen:
-                occupancy[0].insert(offset);
+                chunkOccupancy[0].insert(offset);
                 break;
             case Voxel::ChunkStreamer::DebugState::LoadedFromDisk:
-                occupancy[1].insert(offset);
+                chunkOccupancy[1].insert(offset);
                 break;
             case Voxel::ChunkStreamer::DebugState::ReadyData:
-                occupancy[2].insert(offset);
+                chunkOccupancy[2].insert(offset);
                 break;
             case Voxel::ChunkStreamer::DebugState::QueuedMesh:
-                occupancy[3].insert(offset);
+                chunkOccupancy[3].insert(offset);
                 break;
             case Voxel::ChunkStreamer::DebugState::ReadyMesh:
-                occupancy[4].insert(offset);
+                chunkOccupancy[4].insert(offset);
                 break;
         }
     }
 
-    if (stateMap.empty()) {
+    for (const auto& entry : debug.svoDebugStates) {
+        const int span = std::max(1, entry.spanChunks);
+        const int minX = entry.key.x * span - centerCoord.x;
+        const int minY = entry.key.y * span - centerCoord.y;
+        const int minZ = entry.key.z * span - centerCoord.z;
+        const int maxX = minX + span;
+        const int maxY = minY + span;
+        const int maxZ = minZ + span;
+        const int maxView = radius + 1;
+        if (maxX < -radius || minX > maxView ||
+            maxY < -radius || minY > maxView ||
+            maxZ < -radius || minZ > maxView) {
+            continue;
+        }
+
+        int stateIdx = -1;
+        switch (entry.state) {
+            case Voxel::LodCellState::QueuedBuild:
+                stateIdx = 0;
+                break;
+            case Voxel::LodCellState::Building:
+                stateIdx = 1;
+                break;
+            case Voxel::LodCellState::Ready:
+                stateIdx = 2;
+                break;
+            case Voxel::LodCellState::Stale:
+                stateIdx = 3;
+                break;
+            case Voxel::LodCellState::Evicting:
+                stateIdx = 4;
+                break;
+            case Voxel::LodCellState::Missing:
+                break;
+        }
+        if (stateIdx < 0) {
+            continue;
+        }
+
+        SvoDebugCellCoord coord{minX, minY, minZ, span};
+        svoStateMap[coord] = entry.state;
+        svoOccupancy[static_cast<size_t>(stateIdx)].insert(coord);
+    }
+
+    if (chunkStateMap.empty() && svoStateMap.empty()) {
         return;
     }
 
-    std::array<std::vector<glm::vec3>, 5> meshVertices;
-    std::array<glm::vec4, 5> colors = {
+    std::array<std::vector<glm::vec3>, kDebugStateBuckets> meshVertices;
+    std::array<glm::vec4, kDebugStateBuckets> colors = {
         glm::vec4(1.0f, 0.2f, 0.2f, kDebugAlpha),
         glm::vec4(0.8f, 0.8f, 0.8f, kDebugAlpha),
         glm::vec4(1.0f, 0.9f, 0.2f, kDebugAlpha),
         glm::vec4(0.2f, 0.8f, 1.0f, kDebugAlpha),
-        glm::vec4(0.2f, 1.0f, 0.3f, kDebugAlpha)
+        glm::vec4(0.2f, 1.0f, 0.3f, kDebugAlpha),
+        glm::vec4(0.95f, 0.35f, 1.0f, 0.22f),
+        glm::vec4(1.0f, 0.55f, 0.2f, 0.22f),
+        glm::vec4(0.35f, 1.0f, 0.55f, 0.22f),
+        glm::vec4(1.0f, 0.4f, 0.2f, 0.22f),
+        glm::vec4(0.7f, 0.4f, 1.0f, 0.22f)
     };
     std::array<std::array<int, 3>, 6> offsets = {{
         { 1, 0, 0},
@@ -335,7 +421,7 @@ void renderDebugField(DebugState& debug,
         { 0, 0,-1}
     }};
 
-    for (const auto& [coord, state] : stateMap) {
+    for (const auto& [coord, state] : chunkStateMap) {
         int stateIdx = 0;
         switch (state) {
             case Voxel::ChunkStreamer::DebugState::QueuedGen:
@@ -361,7 +447,8 @@ void renderDebugField(DebugState& debug,
                 coord.y + offsets[face][1],
                 coord.z + offsets[face][2]
             };
-            if (occupancy[stateIdx].find(neighbor) != occupancy[stateIdx].end()) {
+            if (chunkOccupancy[static_cast<size_t>(stateIdx)].find(neighbor) !=
+                chunkOccupancy[static_cast<size_t>(stateIdx)].end()) {
                 continue;
             }
 
@@ -371,6 +458,59 @@ void renderDebugField(DebugState& debug,
                 float y = kCubeVertices[base + v * 3 + 1] + static_cast<float>(coord.y);
                 float z = kCubeVertices[base + v * 3 + 2] + static_cast<float>(coord.z);
                 meshVertices[stateIdx].push_back(glm::vec3(x, y, z));
+            }
+        }
+    }
+
+    for (const auto& [coord, state] : svoStateMap) {
+        int stateIdx = -1;
+        switch (state) {
+            case Voxel::LodCellState::QueuedBuild:
+                stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 0;
+                break;
+            case Voxel::LodCellState::Building:
+                stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 1;
+                break;
+            case Voxel::LodCellState::Ready:
+                stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 2;
+                break;
+            case Voxel::LodCellState::Stale:
+                stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 3;
+                break;
+            case Voxel::LodCellState::Evicting:
+                stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 4;
+                break;
+            case Voxel::LodCellState::Missing:
+                break;
+        }
+        if (stateIdx < static_cast<int>(kChunkDebugStateBuckets)) {
+            continue;
+        }
+
+        const int span = std::max(1, coord.span);
+        const float spanScale = static_cast<float>(span);
+        const float centerX = static_cast<float>(coord.x) + (spanScale * 0.5f);
+        const float centerY = static_cast<float>(coord.y) + (spanScale * 0.5f);
+        const float centerZ = static_cast<float>(coord.z) + (spanScale * 0.5f);
+        const size_t svoBucket = static_cast<size_t>(stateIdx - static_cast<int>(kChunkDebugStateBuckets));
+
+        for (int face = 0; face < 6; ++face) {
+            SvoDebugCellCoord neighbor{
+                coord.x + offsets[face][0] * span,
+                coord.y + offsets[face][1] * span,
+                coord.z + offsets[face][2] * span,
+                span
+            };
+            if (svoOccupancy[svoBucket].find(neighbor) != svoOccupancy[svoBucket].end()) {
+                continue;
+            }
+
+            size_t base = static_cast<size_t>(face) * 18;
+            for (int v = 0; v < 6; ++v) {
+                float x = kCubeVertices[base + v * 3 + 0] * spanScale + centerX;
+                float y = kCubeVertices[base + v * 3 + 1] * spanScale + centerY;
+                float z = kCubeVertices[base + v * 3 + 2] * spanScale + centerZ;
+                meshVertices[static_cast<size_t>(stateIdx)].push_back(glm::vec3(x, y, z));
             }
         }
     }

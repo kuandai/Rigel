@@ -45,6 +45,13 @@ struct SvoLodTelemetry {
 
 class SvoLodManager {
 public:
+    struct DebugCellState {
+        LodCellKey key{};
+        LodCellState state = LodCellState::Missing;
+        int spanChunks = 1;
+        bool visibleAsFarLod = false;
+    };
+
     struct OpaqueDrawInstance {
         glm::vec3 worldMin{0.0f};
         float worldSize = 0.0f;
@@ -76,6 +83,7 @@ public:
     const SvoLodTelemetry& telemetry() const { return m_telemetry; }
     size_t cellCount() const { return m_cells.size(); }
     std::optional<CellInfo> cellInfo(const LodCellKey& key) const;
+    void collectDebugCells(std::vector<DebugCellState>& out) const;
     void collectOpaqueDrawInstances(std::vector<OpaqueDrawInstance>& out,
                                     const glm::vec3& cameraPos,
                                     float renderDistanceWorld);

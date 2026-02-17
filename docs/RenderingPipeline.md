@@ -30,7 +30,7 @@ before calling `WorldView::render`.
    - Calls `ChunkRenderer::render`.
    - Calls `EntityRenderer::render`.
 5. Optional TAA resolve blends history into the current frame.
-6. Debug overlays render (chunk visualizer, frame graph, entity debug).
+6. Debug overlays render (chunk+SVO state visualizer, frame graph, entity debug).
 
 ---
 
@@ -72,6 +72,8 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
   so generation/meshing remains prioritized.
 - The ImGui profiler SVO panel reports per-stage update/upload timings, state
   counts, and current CPU/GPU LOD cache memory.
+- The chunk debug field can overlay SVO cell lifecycle states, including
+  queued/building/ready/stale/evicting cells.
 
 ---
 

@@ -217,6 +217,10 @@ void WorldView::getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>&
     m_streamer.getDebugStates(out);
 }
 
+void WorldView::getSvoDebugStates(std::vector<SvoLodManager::DebugCellState>& out) const {
+    m_svoLod.collectDebugCells(out);
+}
+
 int WorldView::viewDistanceChunks() const {
     return m_streamer.viewDistanceChunks();
 }

@@ -73,6 +73,7 @@ public:
                 float farPlane,
                 float dt = 0.0f);
     void getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const;
+    void getSvoDebugStates(std::vector<SvoLodManager::DebugCellState>& out) const;
     int viewDistanceChunks() const;
     void rebuildChunkMesh(ChunkCoord coord);
 

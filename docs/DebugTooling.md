@@ -44,6 +44,7 @@ skipped.
 ### 3.1 Data Source
 
 - `WorldView::getChunkDebugStates` exposes `ChunkStreamer` state.
+- `WorldView::getSvoDebugStates` exposes `SvoLodManager` cell states.
 - Only non-missing chunks appear (queued or ready states).
 - The field is centered on the camera chunk and clipped to the current
   `viewDistanceChunks` radius.
@@ -62,12 +63,21 @@ skipped.
 
 ### 3.3 Colors and Meanings
 
-State mapping (from `ChunkStreamer::DebugState`):
+Chunk state mapping (from `ChunkStreamer::DebugState`):
 
 - `QueuedGen` (red): waiting for world generation.
+- `LoadedFromDisk` (light gray): loaded from persistence, awaiting processing.
 - `ReadyData` (yellow): chunk data loaded/generated, mesh not queued.
 - `QueuedMesh` (blue): waiting for mesh build.
 - `ReadyMesh` (green): mesh available.
+
+SVO cell state mapping (from `LodCellState`):
+
+- `QueuedBuild` (magenta): cell queued for LOD build.
+- `Building` (orange): worker build in progress.
+- `Ready` (lime): LOD data ready for far-field rendering.
+- `Stale` (orange-red): cell marked dirty and awaiting rebuild.
+- `Evicting` (violet): selected for cache eviction.
 
 ### 3.4 Rendering Rules
 
@@ -75,6 +85,8 @@ State mapping (from `ChunkStreamer::DebugState`):
 - Per-state meshes are built so faces between same-state neighbors are culled.
 - Faces between different states are not culled (state boundaries remain
   visible).
+- SVO cell overlays use each cell's `spanChunks` so coarse cells render larger
+  than chunk-sized cells.
 - Backface culling is disabled; depth testing is off; alpha blending is on.
 
 ---

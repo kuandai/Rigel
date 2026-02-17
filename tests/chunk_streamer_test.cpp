@@ -164,6 +164,31 @@ TEST_CASE(ChunkStreamer_RespectsQueueLimit) {
     CHECK_EQ(manager.loadedChunkCount(), static_cast<size_t>(2));
 }
 
+TEST_CASE(ChunkStreamer_QueuePressureReportsBacklog) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 1;
+    stream.meshQueueLimit = 1;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    streamer.update(glm::vec3(0.0f));
+    const auto pressure = streamer.queuePressure();
+
+    CHECK(pressure.overloaded);
+    CHECK(pressure.inFlightGeneration > 0 || pressure.queuedGeneration > 0);
+}
+
 TEST_CASE(ChunkStreamer_UpdateBudget_DoesNotStarveOuterChunks) {
     ChunkManager manager;
     BlockRegistry registry;

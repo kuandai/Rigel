@@ -102,7 +102,21 @@ void WorldView::setBenchmark(ChunkBenchmarkStats* stats) {
 
 void WorldView::updateStreaming(const glm::vec3& cameraPos) {
     m_streamer.update(cameraPos);
-    m_svoLod.update(cameraPos);
+    const auto pressure = m_streamer.queuePressure();
+    m_svoStreamingOverloaded = pressure.overloaded;
+
+    if (!m_svoStreamingOverloaded) {
+        m_svoUpdatePressureCountdown = 0;
+        m_svoLod.update(cameraPos);
+        return;
+    }
+
+    if (m_svoUpdatePressureCountdown == 0) {
+        m_svoLod.update(cameraPos);
+        m_svoUpdatePressureCountdown = kSvoPressureUpdateSkipFrames;
+    } else {
+        --m_svoUpdatePressureCountdown;
+    }
 }
 
 void WorldView::updateMeshes() {
@@ -119,7 +133,15 @@ void WorldView::render(const glm::mat4& view,
         return;
     }
 
-    m_svoLod.uploadRenderResources();
+    if (!m_svoStreamingOverloaded) {
+        m_svoUploadPressureCountdown = 0;
+        m_svoLod.uploadRenderResources();
+    } else if (m_svoUploadPressureCountdown == 0) {
+        m_svoLod.uploadRenderResources();
+        m_svoUploadPressureCountdown = kSvoPressureUploadSkipFrames;
+    } else {
+        --m_svoUploadPressureCountdown;
+    }
 
     Entity::EntityRenderContext entityCtx;
     entityCtx.deltaTime = dt;
@@ -338,6 +360,9 @@ void WorldView::clear() {
     m_renderer.clearCache();
     m_streamer.reset();
     m_svoLod.reset();
+    m_svoUpdatePressureCountdown = 0;
+    m_svoUploadPressureCountdown = 0;
+    m_svoStreamingOverloaded = false;
     m_replication.knownChunks.clear();
 }
 

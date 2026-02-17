@@ -37,6 +37,16 @@ public:
         DebugState state;
     };
 
+    struct QueuePressure {
+        size_t inFlightGeneration = 0;
+        size_t inFlightMeshing = 0;
+        size_t queuedGeneration = 0;
+        size_t queuedMeshing = 0;
+        size_t readyForMeshing = 0;
+        size_t pendingLoads = 0;
+        bool overloaded = false;
+    };
+
     using ChunkLoadCallback = std::function<bool(ChunkCoord)>;
     using ChunkPendingCallback = std::function<bool(ChunkCoord)>;
     using ChunkLoadDrainCallback = std::function<void(size_t)>;
@@ -61,6 +71,7 @@ public:
     void processCompletions();
     void reset();
     void getDebugStates(std::vector<DebugChunkState>& out) const;
+    QueuePressure queuePressure() const;
     int viewDistanceChunks() const { return m_config.viewDistanceChunks; }
 
 private:

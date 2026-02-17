@@ -430,6 +430,53 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out) const {
     }
 }
 
+ChunkStreamer::QueuePressure ChunkStreamer::queuePressure() const {
+    QueuePressure pressure;
+    pressure.inFlightGeneration = m_inFlightGen;
+    pressure.inFlightMeshing = m_inFlightMesh;
+    pressure.pendingLoads = m_loadPending.size();
+
+    for (const auto& [coord, state] : m_states) {
+        (void)coord;
+        switch (state) {
+            case ChunkState::QueuedGen:
+                ++pressure.queuedGeneration;
+                break;
+            case ChunkState::QueuedMesh:
+                ++pressure.queuedMeshing;
+                break;
+            case ChunkState::ReadyData:
+                ++pressure.readyForMeshing;
+                break;
+            default:
+                break;
+        }
+    }
+
+    const size_t genLimit = (m_config.genQueueLimit <= 0)
+        ? std::numeric_limits<size_t>::max()
+        : static_cast<size_t>(m_config.genQueueLimit);
+    const size_t meshLimit = (m_config.meshQueueLimit <= 0)
+        ? std::numeric_limits<size_t>::max()
+        : static_cast<size_t>(m_config.meshQueueLimit);
+    const bool genSaturated =
+        genLimit != std::numeric_limits<size_t>::max() &&
+        pressure.inFlightGeneration >= genLimit;
+    const bool meshSaturated =
+        meshLimit != std::numeric_limits<size_t>::max() &&
+        pressure.inFlightMeshing >= meshLimit;
+
+    pressure.overloaded =
+        genSaturated ||
+        meshSaturated ||
+        pressure.pendingLoads > 0 ||
+        pressure.queuedGeneration > 0 ||
+        pressure.readyForMeshing > 0 ||
+        pressure.queuedMeshing > 0;
+
+    return pressure;
+}
+
 void ChunkStreamer::reset() {
     m_states.clear();
     m_inFlightGen = 0;

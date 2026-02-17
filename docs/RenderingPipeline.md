@@ -68,6 +68,8 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
   distance-to-cell bounds against `renderDistance`.
 - `ChunkRenderer` submits those instances through `shaders/svo_lod`.
 - The current pass draws opaque proxy cubes and serves as Sprint 3 bootstrap.
+- Under chunk-streaming pressure, `WorldView` throttles SVO update/upload work
+  so generation/meshing remains prioritized.
 
 ---
 

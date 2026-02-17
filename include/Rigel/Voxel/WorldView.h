@@ -82,6 +82,9 @@ public:
     void releaseRenderResources();
 
 private:
+    static constexpr uint32_t kSvoPressureUpdateSkipFrames = 5;
+    static constexpr uint32_t kSvoPressureUploadSkipFrames = 5;
+
     World* m_world = nullptr;
     WorldResources* m_resources = nullptr;
     MeshBuilder m_meshBuilder;
@@ -98,6 +101,9 @@ private:
     WorldReplicationState m_replication;
     Entity::EntityRenderer m_entityRenderer;
     uint64_t m_frameCounter = 0;
+    uint32_t m_svoUpdatePressureCountdown = 0;
+    uint32_t m_svoUploadPressureCountdown = 0;
+    bool m_svoStreamingOverloaded = false;
     bool m_initialized = false;
 };
 

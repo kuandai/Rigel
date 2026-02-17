@@ -71,7 +71,8 @@ TEST_CASE(WorldView_SvoLifecycleHooksUpdateAndResetTelemetry) {
     view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
     view.updateStreaming(glm::vec3(1.0f, 2.0f, 3.0f));
 
-    CHECK_EQ(view.svoTelemetry().updateCalls, 2u);
+    CHECK(view.svoTelemetry().updateCalls >= 1u);
+    CHECK(view.svoTelemetry().updateCalls <= 2u);
 
     view.clear();
     CHECK_EQ(view.svoTelemetry().updateCalls, 0u);
@@ -103,4 +104,47 @@ TEST_CASE(WorldView_SvoPipelineBindsChunkManagerDataSource) {
     view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
     CHECK_EQ(view.svoTelemetry().copiedCells, 1u);
     CHECK(view.svoTelemetry().activeCells > 0u);
+}
+
+TEST_CASE(WorldView_SvoUpdateIsThrottledWhenChunkStreamingIsOverloaded) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    BlockType solid;
+    solid.identifier = "rigel:stone";
+    resources.registry().registerBlock(solid.identifier, solid);
+
+    BlockType surface;
+    surface.identifier = "rigel:grass";
+    resources.registry().registerBlock(surface.identifier, surface);
+
+    WorldGenConfig genConfig;
+    genConfig.solidBlock = solid.identifier;
+    genConfig.surfaceBlock = surface.identifier;
+    genConfig.stream.viewDistanceChunks = 1;
+    genConfig.stream.unloadDistanceChunks = 1;
+    genConfig.stream.genQueueLimit = 1;
+    genConfig.stream.meshQueueLimit = 1;
+    genConfig.stream.applyBudgetPerFrame = 0;
+    genConfig.stream.workerThreads = 0;
+
+    auto generator = std::make_shared<WorldGenerator>(resources.registry());
+    generator->setConfig(genConfig);
+    world.setGenerator(generator);
+    view.setGenerator(generator);
+    view.setStreamConfig(genConfig.stream);
+
+    WorldRenderConfig config;
+    config.svo.enabled = true;
+    config.svo.lodCopyBudgetPerFrame = 1;
+    config.svo.lodApplyBudgetPerFrame = 1;
+    view.setRenderConfig(config);
+
+    for (int i = 0; i < 12; ++i) {
+        view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
+    }
+
+    CHECK(view.svoTelemetry().updateCalls > 0u);
+    CHECK(view.svoTelemetry().updateCalls < 12u);
 }

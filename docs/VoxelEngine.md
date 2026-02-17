@@ -69,6 +69,8 @@ This document outlines the current voxel engine architecture within Rigel. Secti
   activated beyond the configured LOD start radius.
 - SVO cell residency can be bounded by cell count and optional CPU/GPU byte
   budgets, with eviction based on distance and recency.
+- `WorldView` deprioritizes SVO update/upload work when chunk streaming reports
+  queue pressure, preserving gameplay chunk generation/meshing throughput.
 
 World data and render state are deliberately split: `World` stores CPU-side data,
 while `WorldView` owns GPU resources like meshes and shaders.

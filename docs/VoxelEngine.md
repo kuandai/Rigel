@@ -64,6 +64,9 @@ This document outlines the current voxel engine architecture within Rigel. Secti
 - `SvoLodManager` in `WorldView` currently builds revisioned CPU LOD cell
   hierarchies, uploads node payload buffers, and feeds a preliminary far opaque
   LOD proxy pass.
+- `ChunkRenderer` applies near/far transition bands with hysteresis:
+  near chunk meshes are retained in a near band, while far SVO proxies are
+  activated beyond the configured LOD start radius.
 
 World data and render state are deliberately split: `World` stores CPU-side data,
 while `WorldView` owns GPU resources like meshes and shaders.

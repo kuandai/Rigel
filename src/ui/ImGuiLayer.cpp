@@ -312,7 +312,7 @@ void renderProfilerWindow(bool enabled,
         ImGui::Text("Uploaded bytes total: %" PRIu64, svoTelemetry->uploadedBytes);
         ImGui::Text("Update calls: %" PRIu64, svoTelemetry->updateCalls);
     }
-    ImGui::TextUnformatted("GPU payload upload is active; far-field LOD draw pass not added yet.");
+    ImGui::TextUnformatted("Far-field opaque LOD proxy pass is active (transition-band gated).");
 
     ImGui::End();
 #else

@@ -47,6 +47,8 @@ before calling `WorldView::render`.
 - Distance culling uses `renderDistance` from `WorldRenderConfig`.
 - There is no frustum culling in the current pipeline.
 - Transparent chunks are sorted back-to-front by view depth.
+- With SVO LOD enabled, chunk mesh rendering is near-band gated with
+  hysteresis (`near_mesh_radius_chunks` / `lod_start_radius_chunks`).
 
 ### 3.3 Render Layers
 
@@ -62,6 +64,8 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
 ### 3.4 Far Opaque LOD Pass (Preview)
 
 - `SvoLodManager` emits opaque node-derived draw instances from ready LOD cells.
+- Emission is camera-distance gated and hysteresis-stabilized, and uses
+  distance-to-cell bounds against `renderDistance`.
 - `ChunkRenderer` submits those instances through `shaders/svo_lod`.
 - The current pass draws opaque proxy cubes and serves as Sprint 3 bootstrap.
 

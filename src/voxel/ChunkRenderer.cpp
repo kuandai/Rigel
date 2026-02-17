@@ -104,6 +104,7 @@ ChunkRenderer::GpuMesh& ChunkRenderer::GpuMesh::operator=(GpuMesh&& other) noexc
 void ChunkRenderer::clearCache() {
     m_meshes.clear();
     m_storeVersions.clear();
+    m_nearVisibility.clear();
 }
 
 void ChunkRenderer::releaseResources() {
@@ -244,16 +245,45 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         entries.push_back(RenderEntry{entry.coord, entry.id, distanceSq, viewDepth});
     });
 
+    std::vector<RenderEntry> nearEntries;
+    if (!ctx.config.svo.enabled) {
+        nearEntries = entries;
+        m_nearVisibility.clear();
+    } else {
+        const LodDistanceBands bands = makeLodDistanceBands(ctx.config.svo, renderDistance);
+        std::unordered_set<ChunkCoord, ChunkCoordHash> seen;
+        seen.reserve(entries.size());
+        nearEntries.reserve(entries.size());
+
+        for (const auto& entry : entries) {
+            seen.insert(entry.coord);
+            const bool wasNear = m_nearVisibility[entry.coord];
+            const bool isNear = shouldRenderNearChunk(entry.distanceSq, wasNear, bands);
+            m_nearVisibility[entry.coord] = isNear;
+            if (isNear) {
+                nearEntries.push_back(entry);
+            }
+        }
+
+        for (auto it = m_nearVisibility.begin(); it != m_nearVisibility.end();) {
+            if (seen.find(it->first) == seen.end()) {
+                it = m_nearVisibility.erase(it);
+                continue;
+            }
+            ++it;
+        }
+    }
+
     bool shadowsActive = false;
-    if (!entries.empty()) {
-        shadowsActive = renderShadows(ctx, entries);
+    if (!nearEntries.empty()) {
+        shadowsActive = renderShadows(ctx, nearEntries);
     }
     m_shadowsActive = shadowsActive;
 
     glm::mat4 viewProjection = ctx.viewProjection * ctx.worldTransform;
     glm::vec3 sunDirection = normalizeOrDefault(ctx.config.sunDirection);
 
-    if (!entries.empty()) {
+    if (!nearEntries.empty()) {
         m_shader->bind();
         if (m_locViewProjection >= 0) {
             glUniformMatrix4fv(m_locViewProjection, 1, GL_FALSE, glm::value_ptr(viewProjection));
@@ -337,16 +367,16 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
             glUniform1i(m_locShadowCascadeCount, 0);
         }
 
-        renderPass(RenderLayer::Opaque, entries, ctx);
+        renderPass(RenderLayer::Opaque, nearEntries, ctx);
     }
 
     renderFarLodOpaquePass(ctx);
 
-    if (!entries.empty()) {
+    if (!nearEntries.empty()) {
         m_shader->bind();
-        renderPass(RenderLayer::Cutout, entries, ctx);
-        renderPass(RenderLayer::Transparent, entries, ctx);
-        renderPass(RenderLayer::Emissive, entries, ctx);
+        renderPass(RenderLayer::Cutout, nearEntries, ctx);
+        renderPass(RenderLayer::Transparent, nearEntries, ctx);
+        renderPass(RenderLayer::Emissive, nearEntries, ctx);
     }
 
     glDepthMask(GL_TRUE);
@@ -414,7 +444,7 @@ void ChunkRenderer::renderFarLodOpaquePass(const WorldRenderContext& ctx) {
     }
 
     std::vector<SvoLodManager::OpaqueDrawInstance> instances;
-    ctx.svoLod->collectOpaqueDrawInstances(instances);
+    ctx.svoLod->collectOpaqueDrawInstances(instances, ctx.cameraPos, ctx.config.renderDistance);
     if (instances.empty()) {
         return;
     }

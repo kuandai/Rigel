@@ -13,6 +13,7 @@
 #include "ChunkMesh.h"
 #include "WorldMeshStore.h"
 #include "WorldRenderContext.h"
+#include "Lod/SvoLodTransition.h"
 
 #include <Rigel/Asset/Handle.h>
 #include <Rigel/Asset/Types.h>
@@ -21,6 +22,7 @@
 #include <glm/vec3.hpp>
 #include <array>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <GL/glew.h>
 
@@ -117,6 +119,7 @@ private:
 
     std::unordered_map<MeshId, GpuMeshEntry, MeshIdHash> m_meshes;
     std::unordered_map<uint32_t, uint64_t> m_storeVersions;
+    std::unordered_map<ChunkCoord, bool, ChunkCoordHash> m_nearVisibility;
 
     Asset::Handle<Asset::ShaderAsset> m_shader;
     Asset::Handle<Asset::ShaderAsset> m_lodShader;

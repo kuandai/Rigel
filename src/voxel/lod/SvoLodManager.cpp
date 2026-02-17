@@ -19,6 +19,21 @@ int ceilPow2(int value) {
     return p;
 }
 
+float distanceSqToAabb(const glm::vec3& point,
+                       const glm::vec3& aabbMin,
+                       const glm::vec3& aabbMax) {
+    const float dx = (point.x < aabbMin.x)
+        ? (aabbMin.x - point.x)
+        : ((point.x > aabbMax.x) ? (point.x - aabbMax.x) : 0.0f);
+    const float dy = (point.y < aabbMin.y)
+        ? (aabbMin.y - point.y)
+        : ((point.y > aabbMax.y) ? (point.y - aabbMax.y) : 0.0f);
+    const float dz = (point.z < aabbMin.z)
+        ? (aabbMin.z - point.z)
+        : ((point.z > aabbMax.z) ? (point.z - aabbMax.z) : 0.0f);
+    return dx * dx + dy * dy + dz * dz;
+}
+
 void collectOpaqueLeavesRecursive(const std::vector<LodSvoNode>& nodes,
                                   uint32_t nodeIndex,
                                   int baseChunkX,
@@ -200,6 +215,7 @@ std::optional<SvoLodManager::CellInfo> SvoLodManager::cellInfo(const LodCellKey&
     info.desiredRevision = it->second.desiredRevision;
     info.queuedRevision = it->second.queuedRevision;
     info.appliedRevision = it->second.appliedRevision;
+    info.visibleAsFarLod = it->second.visibleAsFarLod;
     info.sampledChunks = it->second.sampledChunks;
     info.nodeCount = it->second.nodeCount;
     info.leafCount = it->second.leafCount;
@@ -207,20 +223,37 @@ std::optional<SvoLodManager::CellInfo> SvoLodManager::cellInfo(const LodCellKey&
     return info;
 }
 
-void SvoLodManager::collectOpaqueDrawInstances(std::vector<OpaqueDrawInstance>& out) const {
+void SvoLodManager::collectOpaqueDrawInstances(std::vector<OpaqueDrawInstance>& out,
+                                               const glm::vec3& cameraPos,
+                                               float renderDistanceWorld) {
     out.clear();
     if (!m_config.enabled) {
         return;
     }
 
+    const LodDistanceBands bands = makeLodDistanceBands(m_config, renderDistanceWorld);
     const int span = std::max(1, m_config.lodCellSpanChunks);
     const int rootSize = ceilPow2(span);
+    constexpr float kChunkWorld = static_cast<float>(Chunk::SIZE);
+    const float rootWorldSize = static_cast<float>(rootSize) * kChunkWorld;
 
-    for (const auto& [key, cell] : m_cells) {
-        if (cell.state != LodCellState::Ready) {
+    for (auto& [key, cell] : m_cells) {
+        if (cell.state != LodCellState::Ready ||
+            cell.nodes.empty() ||
+            cell.rootNode == LodSvoNode::INVALID_INDEX) {
+            cell.visibleAsFarLod = false;
             continue;
         }
-        if (cell.nodes.empty() || cell.rootNode == LodSvoNode::INVALID_INDEX) {
+
+        const glm::vec3 cellMin(
+            static_cast<float>(key.x * span) * kChunkWorld,
+            static_cast<float>(key.y * span) * kChunkWorld,
+            static_cast<float>(key.z * span) * kChunkWorld
+        );
+        const glm::vec3 cellMax = cellMin + glm::vec3(rootWorldSize);
+        const float distanceSq = distanceSqToAabb(cameraPos, cellMin, cellMax);
+        cell.visibleAsFarLod = shouldRenderFarLod(distanceSq, cell.visibleAsFarLod, bands);
+        if (!cell.visibleAsFarLod) {
             continue;
         }
 

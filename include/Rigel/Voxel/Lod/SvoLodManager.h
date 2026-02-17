@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rigel/Voxel/Lod/SvoLodTypes.h"
+#include "Rigel/Voxel/Lod/SvoLodTransition.h"
 #include "Rigel/Voxel/RenderConfig.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/ChunkManager.h"
@@ -42,6 +43,7 @@ public:
         uint64_t desiredRevision = 0;
         uint64_t queuedRevision = 0;
         uint64_t appliedRevision = 0;
+        bool visibleAsFarLod = false;
         uint32_t sampledChunks = 0;
         uint32_t nodeCount = 0;
         uint32_t leafCount = 0;
@@ -62,7 +64,9 @@ public:
     const SvoLodTelemetry& telemetry() const { return m_telemetry; }
     size_t cellCount() const { return m_cells.size(); }
     std::optional<CellInfo> cellInfo(const LodCellKey& key) const;
-    void collectOpaqueDrawInstances(std::vector<OpaqueDrawInstance>& out) const;
+    void collectOpaqueDrawInstances(std::vector<OpaqueDrawInstance>& out,
+                                    const glm::vec3& cameraPos,
+                                    float renderDistanceWorld);
 
 private:
     struct CellRecord {
@@ -77,6 +81,7 @@ private:
         uint64_t nonAirVoxelCount = 0;
         uint64_t opaqueVoxelCount = 0;
         uint64_t nonOpaqueVoxelCount = 0;
+        bool visibleAsFarLod = false;
         std::vector<LodSvoNode> nodes;
         uint32_t rootNode = LodSvoNode::INVALID_INDEX;
         uint64_t lastTouchedFrame = 0;

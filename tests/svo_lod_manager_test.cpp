@@ -267,7 +267,7 @@ TEST_CASE(SvoLodManager_CollectOpaqueDrawInstances_ExcludesNonOpaqueLeaves) {
     manager.update(glm::vec3(0.0f));
 
     std::vector<SvoLodManager::OpaqueDrawInstance> instances;
-    manager.collectOpaqueDrawInstances(instances);
+    manager.collectOpaqueDrawInstances(instances, glm::vec3(-400.0f, 0.0f, 0.0f), 1024.0f);
     CHECK(!instances.empty());
 
     bool foundStoneChunk = false;
@@ -284,4 +284,88 @@ TEST_CASE(SvoLodManager_CollectOpaqueDrawInstances_ExcludesNonOpaqueLeaves) {
 
     CHECK(foundStoneChunk);
     CHECK(!foundWaterChunk);
+}
+
+TEST_CASE(SvoLodManager_CollectOpaqueDrawInstances_RespectsLodDistanceBands) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+
+    placeStone(chunkManager, stone, 33, 33, 33);   // near cell
+    placeStone(chunkManager, stone, 257, 33, 33);  // far cell
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 1;
+    config.lodStartRadiusChunks = 2;
+    config.lodCellSpanChunks = 4;
+    config.lodCopyBudgetPerFrame = 16;
+    config.lodApplyBudgetPerFrame = 16;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+    manager.update(glm::vec3(0.0f));
+
+    std::vector<SvoLodManager::OpaqueDrawInstance> instances;
+    manager.collectOpaqueDrawInstances(instances, glm::vec3(0.0f), 1024.0f);
+    CHECK(!instances.empty());
+
+    bool foundNear = false;
+    bool foundFar = false;
+    for (const auto& instance : instances) {
+        if (std::abs(instance.worldMin.x - 0.0f) < 0.01f) {
+            foundNear = true;
+        }
+        if (std::abs(instance.worldMin.x - 256.0f) < 0.01f) {
+            foundFar = true;
+        }
+    }
+
+    CHECK(!foundNear);
+    CHECK(foundFar);
+
+    manager.collectOpaqueDrawInstances(instances, glm::vec3(0.0f), 64.0f);
+    CHECK(instances.empty());
+}
+
+TEST_CASE(SvoLodManager_CollectOpaqueDrawInstances_UsesHysteresis) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+
+    placeStone(chunkManager, stone, 257, 33, 33); // cell at x=2 for span=4
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 2;
+    config.lodStartRadiusChunks = 6;
+    config.lodCellSpanChunks = 4;
+    config.lodCopyBudgetPerFrame = 16;
+    config.lodApplyBudgetPerFrame = 16;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+    manager.update(glm::vec3(0.0f));
+
+    std::vector<SvoLodManager::OpaqueDrawInstance> instances;
+    manager.collectOpaqueDrawInstances(instances, glm::vec3(0.0f), 1024.0f);
+    CHECK(!instances.empty());
+
+    manager.collectOpaqueDrawInstances(instances, glm::vec3(120.0f, 0.0f, 0.0f), 1024.0f);
+    CHECK(!instances.empty());
+
+    manager.collectOpaqueDrawInstances(instances, glm::vec3(220.0f, 0.0f, 0.0f), 1024.0f);
+    CHECK(instances.empty());
 }

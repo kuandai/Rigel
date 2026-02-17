@@ -31,7 +31,7 @@ struct WorldRenderContext {
     Asset::Handle<Asset::ShaderAsset> lodShader;
     Asset::Handle<Asset::ShaderAsset> shadowDepthShader;
     Asset::Handle<Asset::ShaderAsset> shadowTransmitShader;
-    const SvoLodManager* svoLod = nullptr;
+    SvoLodManager* svoLod = nullptr;
     IShadowCaster* shadowCaster = nullptr;
     WorldRenderConfig config;
     glm::mat4 view{1.0f};

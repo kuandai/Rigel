@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RenderConfig.h"
+#include "Lod/SvoLodManager.h"
 #include "TextureAtlas.h"
 #include "WorldMeshStore.h"
 
@@ -27,8 +28,10 @@ struct WorldRenderContext {
     const WorldMeshStore* meshes = nullptr;
     const TextureAtlas* atlas = nullptr;
     Asset::Handle<Asset::ShaderAsset> shader;
+    Asset::Handle<Asset::ShaderAsset> lodShader;
     Asset::Handle<Asset::ShaderAsset> shadowDepthShader;
     Asset::Handle<Asset::ShaderAsset> shadowTransmitShader;
+    const SvoLodManager* svoLod = nullptr;
     IShadowCaster* shadowCaster = nullptr;
     WorldRenderConfig config;
     glm::mat4 view{1.0f};

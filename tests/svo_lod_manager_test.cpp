@@ -5,6 +5,7 @@
 #include "Rigel/Voxel/ChunkManager.h"
 #include "Rigel/Voxel/Lod/SvoLodManager.h"
 
+#include <cmath>
 #include <stdexcept>
 
 using namespace Rigel::Voxel;
@@ -238,4 +239,49 @@ TEST_CASE(SvoLodManager_BuildsOccupancyMaterialHierarchyPerCell) {
     CHECK(info->mixedNodeCount >= 1u);
     CHECK(manager.telemetry().pendingUploads >= 1u);
     CHECK_EQ(manager.telemetry().uploadedCells, 0u);
+}
+
+TEST_CASE(SvoLodManager_CollectOpaqueDrawInstances_ExcludesNonOpaqueLeaves) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+    BlockID water = registerWater(registry);
+
+    placeStone(chunkManager, stone, 33, 33, 33); // chunk (1,1,1), opaque
+    placeStone(chunkManager, water, 65, 33, 33); // chunk (2,1,1), non-opaque
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.lodCellSpanChunks = 4;
+    config.lodCopyBudgetPerFrame = 8;
+    config.lodApplyBudgetPerFrame = 8;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+    manager.update(glm::vec3(0.0f));
+
+    std::vector<SvoLodManager::OpaqueDrawInstance> instances;
+    manager.collectOpaqueDrawInstances(instances);
+    CHECK(!instances.empty());
+
+    bool foundStoneChunk = false;
+    bool foundWaterChunk = false;
+    for (const auto& instance : instances) {
+        CHECK(instance.worldSize > 0.0f);
+        if (std::abs(instance.worldMin.x - 32.0f) < 0.01f) {
+            foundStoneChunk = true;
+        }
+        if (std::abs(instance.worldMin.x - 64.0f) < 0.01f) {
+            foundWaterChunk = true;
+        }
+    }
+
+    CHECK(foundStoneChunk);
+    CHECK(!foundWaterChunk);
 }

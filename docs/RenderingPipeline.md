@@ -59,6 +59,12 @@ Each chunk mesh contains layer ranges:
 
 Layer selection is controlled by `u_renderLayer` in the voxel shader.
 
+### 3.4 Far Opaque LOD Pass (Preview)
+
+- `SvoLodManager` emits opaque node-derived draw instances from ready LOD cells.
+- `ChunkRenderer` submits those instances through `shaders/svo_lod`.
+- The current pass draws opaque proxy cubes and serves as Sprint 3 bootstrap.
+
 ---
 
 ## 4. Render Configuration
@@ -77,7 +83,7 @@ Key fields in `WorldRenderConfig`:
 - `transparentAlpha`
 - `shadow` (see Section 5)
 - `taa` (see Section 6)
-- `svo` (preview CPU build + GPU upload pipeline; no far-field draw pass yet)
+- `svo` (preview CPU build + GPU upload pipeline with a far opaque bootstrap pass)
 - `profilingEnabled` (per-frame profiler toggle; config key `render.profiling.enabled`)
 
 ---
@@ -162,8 +168,7 @@ If TAA is disabled, the history is invalidated each frame.
 
 ## 7. Known Limitations
 
-- SVO far-field rendering is not active yet. Current SVO work builds cell
-  hierarchies and uploads payload buffers, but does not issue far-field draws.
+- Far LOD currently renders opaque proxy cubes, not final material-aware LOD geometry.
 - No frustum culling; distance-only culling for voxels.
 - Shadow cascades use a camera-centered cube instead of fitting the frustum.
 - Transparent layer does not receive shadows in the main pass.

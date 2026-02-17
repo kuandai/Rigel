@@ -91,6 +91,7 @@ private:
     SvoLodManager m_svoLod;
     WorldRenderConfig m_renderConfig;
     Asset::Handle<Asset::ShaderAsset> m_shader;
+    Asset::Handle<Asset::ShaderAsset> m_lodShader;
     Asset::Handle<Asset::ShaderAsset> m_shadowDepthShader;
     Asset::Handle<Asset::ShaderAsset> m_shadowTransmitShader;
     ChunkBenchmarkStats* m_benchmark = nullptr;

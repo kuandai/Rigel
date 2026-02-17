@@ -8,6 +8,79 @@
 
 namespace Rigel::Voxel {
 
+namespace {
+
+int ceilPow2(int value) {
+    int v = std::max(1, value);
+    int p = 1;
+    while (p < v) {
+        p <<= 1;
+    }
+    return p;
+}
+
+void collectOpaqueLeavesRecursive(const std::vector<LodSvoNode>& nodes,
+                                  uint32_t nodeIndex,
+                                  int baseChunkX,
+                                  int baseChunkY,
+                                  int baseChunkZ,
+                                  int localX,
+                                  int localY,
+                                  int localZ,
+                                  int nodeSizeChunks,
+                                  std::vector<SvoLodManager::OpaqueDrawInstance>& out) {
+    if (nodeIndex == LodSvoNode::INVALID_INDEX || nodeIndex >= nodes.size()) {
+        return;
+    }
+
+    const LodSvoNode& node = nodes[nodeIndex];
+    if (node.kind == LodNodeKind::Empty) {
+        return;
+    }
+
+    if (node.childMask == 0) {
+        if (node.materialClass == LodMaterialClass::Opaque) {
+            constexpr float kChunkWorld = static_cast<float>(Chunk::SIZE);
+            SvoLodManager::OpaqueDrawInstance instance;
+            instance.worldMin = glm::vec3(
+                static_cast<float>(baseChunkX + localX) * kChunkWorld,
+                static_cast<float>(baseChunkY + localY) * kChunkWorld,
+                static_cast<float>(baseChunkZ + localZ) * kChunkWorld
+            );
+            instance.worldSize = static_cast<float>(nodeSizeChunks) * kChunkWorld;
+            out.push_back(instance);
+        }
+        return;
+    }
+
+    if (nodeSizeChunks <= 1) {
+        return;
+    }
+
+    const int half = nodeSizeChunks / 2;
+    for (int child = 0; child < 8; ++child) {
+        if ((node.childMask & static_cast<uint8_t>(1u << child)) == 0) {
+            continue;
+        }
+
+        const int ox = (child & 1) ? half : 0;
+        const int oy = (child & 2) ? half : 0;
+        const int oz = (child & 4) ? half : 0;
+        collectOpaqueLeavesRecursive(nodes,
+                                     node.children[child],
+                                     baseChunkX,
+                                     baseChunkY,
+                                     baseChunkZ,
+                                     localX + ox,
+                                     localY + oy,
+                                     localZ + oz,
+                                     half,
+                                     out);
+    }
+}
+
+} // namespace
+
 SvoLodConfig SvoLodManager::sanitizeConfig(SvoLodConfig config) {
     if (config.nearMeshRadiusChunks < 0) {
         config.nearMeshRadiusChunks = 0;
@@ -132,6 +205,40 @@ std::optional<SvoLodManager::CellInfo> SvoLodManager::cellInfo(const LodCellKey&
     info.leafCount = it->second.leafCount;
     info.mixedNodeCount = it->second.mixedNodeCount;
     return info;
+}
+
+void SvoLodManager::collectOpaqueDrawInstances(std::vector<OpaqueDrawInstance>& out) const {
+    out.clear();
+    if (!m_config.enabled) {
+        return;
+    }
+
+    const int span = std::max(1, m_config.lodCellSpanChunks);
+    const int rootSize = ceilPow2(span);
+
+    for (const auto& [key, cell] : m_cells) {
+        if (cell.state != LodCellState::Ready) {
+            continue;
+        }
+        if (cell.nodes.empty() || cell.rootNode == LodSvoNode::INVALID_INDEX) {
+            continue;
+        }
+
+        const int baseChunkX = key.x * span;
+        const int baseChunkY = key.y * span;
+        const int baseChunkZ = key.z * span;
+
+        collectOpaqueLeavesRecursive(cell.nodes,
+                                     cell.rootNode,
+                                     baseChunkX,
+                                     baseChunkY,
+                                     baseChunkZ,
+                                     0,
+                                     0,
+                                     0,
+                                     rootSize,
+                                     out);
+    }
 }
 
 void SvoLodManager::ensureBuildPool() {

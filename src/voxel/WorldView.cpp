@@ -34,6 +34,11 @@ void WorldView::initialize(Asset::AssetManager& assets) {
         throw;
     }
     try {
+        m_lodShader = assets.get<Asset::ShaderAsset>("shaders/svo_lod");
+    } catch (const std::exception& e) {
+        spdlog::warn("SVO LOD shader unavailable: {}", e.what());
+    }
+    try {
         m_shadowDepthShader = assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_depth");
         m_shadowTransmitShader = assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_transmit");
     } catch (const std::exception& e) {
@@ -142,8 +147,10 @@ void WorldView::render(const glm::mat4& view,
     ctx.meshes = &m_meshStore;
     ctx.atlas = &m_resources->textureAtlas();
     ctx.shader = m_shader;
+    ctx.lodShader = m_lodShader;
     ctx.shadowDepthShader = m_shadowDepthShader;
     ctx.shadowTransmitShader = m_shadowTransmitShader;
+    ctx.svoLod = &m_svoLod;
     ctx.shadowCaster = m_world ? &shadowCaster : nullptr;
     ctx.config = m_renderConfig;
     ctx.view = view;
@@ -338,6 +345,7 @@ void WorldView::releaseRenderResources() {
     m_renderer.releaseResources();
     m_svoLod.releaseRenderResources();
     m_shader = {};
+    m_lodShader = {};
     m_shadowDepthShader = {};
     m_shadowTransmitShader = {};
 }

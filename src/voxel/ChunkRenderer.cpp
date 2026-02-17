@@ -108,6 +108,7 @@ void ChunkRenderer::clearCache() {
 
 void ChunkRenderer::releaseResources() {
     clearCache();
+    releaseLodResources();
     releaseShadowResources();
 }
 
@@ -181,6 +182,17 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         m_shadowTransmitShader = ctx.shadowTransmitShader;
         cacheShadowUniforms();
     }
+    if (m_lodShader != ctx.lodShader) {
+        m_lodShader = ctx.lodShader;
+        m_lodLocViewProjection = -1;
+        m_lodLocModel = -1;
+        m_lodLocColor = -1;
+        if (m_lodShader) {
+            m_lodLocViewProjection = m_lodShader->uniform("u_viewProjection");
+            m_lodLocModel = m_lodShader->uniform("u_model");
+            m_lodLocColor = m_lodShader->uniform("u_color");
+        }
+    }
     m_atlas = ctx.atlas;
 
     uint32_t storeId = ctx.meshes->storeId();
@@ -232,109 +244,209 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         entries.push_back(RenderEntry{entry.coord, entry.id, distanceSq, viewDepth});
     });
 
-    if (entries.empty()) {
-        glUseProgram(0);
-        return;
+    bool shadowsActive = false;
+    if (!entries.empty()) {
+        shadowsActive = renderShadows(ctx, entries);
     }
-
-    bool shadowsActive = renderShadows(ctx, entries);
     m_shadowsActive = shadowsActive;
 
     glm::mat4 viewProjection = ctx.viewProjection * ctx.worldTransform;
     glm::vec3 sunDirection = normalizeOrDefault(ctx.config.sunDirection);
 
-    m_shader->bind();
-    if (m_locViewProjection >= 0) {
-        glUniformMatrix4fv(m_locViewProjection, 1, GL_FALSE, glm::value_ptr(viewProjection));
-    }
-    if (m_locView >= 0) {
-        glUniformMatrix4fv(m_locView, 1, GL_FALSE, glm::value_ptr(ctx.view));
-    }
-    if (m_locSunDirection >= 0) {
-        glUniform3fv(m_locSunDirection, 1, glm::value_ptr(sunDirection));
-    }
-    GLint locCameraPos = m_shader->uniform("u_cameraPos");
-    if (locCameraPos >= 0) {
-        glUniform3fv(locCameraPos, 1, glm::value_ptr(ctx.cameraPos));
-    }
-    if (m_atlas && m_locTextureAtlas >= 0) {
-        m_atlas->bind(0);
-        glUniform1i(m_locTextureAtlas, 0);
+    if (!entries.empty()) {
+        m_shader->bind();
+        if (m_locViewProjection >= 0) {
+            glUniformMatrix4fv(m_locViewProjection, 1, GL_FALSE, glm::value_ptr(viewProjection));
+        }
+        if (m_locView >= 0) {
+            glUniformMatrix4fv(m_locView, 1, GL_FALSE, glm::value_ptr(ctx.view));
+        }
+        if (m_locSunDirection >= 0) {
+            glUniform3fv(m_locSunDirection, 1, glm::value_ptr(sunDirection));
+        }
+        GLint locCameraPos = m_shader->uniform("u_cameraPos");
+        if (locCameraPos >= 0) {
+            glUniform3fv(locCameraPos, 1, glm::value_ptr(ctx.cameraPos));
+        }
+        if (m_atlas && m_locTextureAtlas >= 0) {
+            m_atlas->bind(0);
+            glUniform1i(m_locTextureAtlas, 0);
+        }
+
+        if (m_locShadowEnabled >= 0) {
+            glUniform1i(m_locShadowEnabled, shadowsActive ? 1 : 0);
+        }
+        if (shadowsActive) {
+            constexpr int kShadowMapUnit = 1;
+            constexpr int kShadowTransmitUnit = 2;
+
+            if (m_locShadowMap >= 0) {
+                glActiveTexture(GL_TEXTURE0 + kShadowMapUnit);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, m_shadowState.depthArray);
+                glUniform1i(m_locShadowMap, kShadowMapUnit);
+            }
+            if (m_locShadowTransmittanceMap >= 0) {
+                glActiveTexture(GL_TEXTURE0 + kShadowTransmitUnit);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, m_shadowState.transmitArray);
+                glUniform1i(m_locShadowTransmittanceMap, kShadowTransmitUnit);
+            }
+            if (m_locShadowMatrices >= 0) {
+                glUniformMatrix4fv(m_locShadowMatrices,
+                                   m_shadowState.cascades,
+                                   GL_FALSE,
+                                   glm::value_ptr(m_shadowState.matrices[0]));
+            }
+            if (m_locShadowSplits >= 0) {
+                glUniform1fv(m_locShadowSplits,
+                             m_shadowState.cascades,
+                             m_shadowState.splits.data());
+            }
+            if (m_locShadowCascadeCount >= 0) {
+                glUniform1i(m_locShadowCascadeCount, m_shadowState.cascades);
+            }
+            if (m_locShadowBias >= 0) {
+                glUniform1f(m_locShadowBias, ctx.config.shadow.bias);
+            }
+            if (m_locShadowNormalBias >= 0) {
+                glUniform1f(m_locShadowNormalBias, ctx.config.shadow.normalBias);
+            }
+            if (m_locShadowPcfNear >= 0) {
+                glUniform1f(m_locShadowPcfNear,
+                            static_cast<float>(ctx.config.shadow.pcfRadiusNear));
+            }
+            if (m_locShadowPcfFar >= 0) {
+                glUniform1f(m_locShadowPcfFar,
+                            static_cast<float>(ctx.config.shadow.pcfRadiusFar));
+            }
+            if (m_locShadowStrength >= 0) {
+                glUniform1f(m_locShadowStrength, ctx.config.shadow.strength);
+            }
+            if (m_locShadowNear >= 0) {
+                glUniform1f(m_locShadowNear, ctx.nearPlane);
+            }
+            if (m_locShadowFadeStart >= 0) {
+                float fadeStart = ctx.config.shadow.maxDistance > 0.0f
+                    ? std::min(ctx.config.shadow.maxDistance, ctx.farPlane)
+                    : ctx.farPlane;
+                glUniform1f(m_locShadowFadeStart, fadeStart);
+            }
+            if (m_locShadowFadePower >= 0) {
+                glUniform1f(m_locShadowFadePower, ctx.config.shadow.fadePower);
+            }
+        } else if (m_locShadowCascadeCount >= 0) {
+            glUniform1i(m_locShadowCascadeCount, 0);
+        }
+
+        renderPass(RenderLayer::Opaque, entries, ctx);
     }
 
-    if (m_locShadowEnabled >= 0) {
-        glUniform1i(m_locShadowEnabled, shadowsActive ? 1 : 0);
-    }
-    if (shadowsActive) {
-        constexpr int kShadowMapUnit = 1;
-        constexpr int kShadowTransmitUnit = 2;
+    renderFarLodOpaquePass(ctx);
 
-        if (m_locShadowMap >= 0) {
-            glActiveTexture(GL_TEXTURE0 + kShadowMapUnit);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, m_shadowState.depthArray);
-            glUniform1i(m_locShadowMap, kShadowMapUnit);
-        }
-        if (m_locShadowTransmittanceMap >= 0) {
-            glActiveTexture(GL_TEXTURE0 + kShadowTransmitUnit);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, m_shadowState.transmitArray);
-            glUniform1i(m_locShadowTransmittanceMap, kShadowTransmitUnit);
-        }
-        if (m_locShadowMatrices >= 0) {
-            glUniformMatrix4fv(m_locShadowMatrices,
-                               m_shadowState.cascades,
-                               GL_FALSE,
-                               glm::value_ptr(m_shadowState.matrices[0]));
-        }
-        if (m_locShadowSplits >= 0) {
-            glUniform1fv(m_locShadowSplits,
-                         m_shadowState.cascades,
-                         m_shadowState.splits.data());
-        }
-        if (m_locShadowCascadeCount >= 0) {
-            glUniform1i(m_locShadowCascadeCount, m_shadowState.cascades);
-        }
-        if (m_locShadowBias >= 0) {
-            glUniform1f(m_locShadowBias, ctx.config.shadow.bias);
-        }
-        if (m_locShadowNormalBias >= 0) {
-            glUniform1f(m_locShadowNormalBias, ctx.config.shadow.normalBias);
-        }
-    if (m_locShadowPcfNear >= 0) {
-        glUniform1f(m_locShadowPcfNear,
-                    static_cast<float>(ctx.config.shadow.pcfRadiusNear));
+    if (!entries.empty()) {
+        m_shader->bind();
+        renderPass(RenderLayer::Cutout, entries, ctx);
+        renderPass(RenderLayer::Transparent, entries, ctx);
+        renderPass(RenderLayer::Emissive, entries, ctx);
     }
-        if (m_locShadowPcfFar >= 0) {
-            glUniform1f(m_locShadowPcfFar,
-                        static_cast<float>(ctx.config.shadow.pcfRadiusFar));
-        }
-        if (m_locShadowStrength >= 0) {
-            glUniform1f(m_locShadowStrength, ctx.config.shadow.strength);
-        }
-        if (m_locShadowNear >= 0) {
-            glUniform1f(m_locShadowNear, ctx.nearPlane);
-        }
-        if (m_locShadowFadeStart >= 0) {
-            float fadeStart = ctx.config.shadow.maxDistance > 0.0f
-                ? std::min(ctx.config.shadow.maxDistance, ctx.farPlane)
-                : ctx.farPlane;
-            glUniform1f(m_locShadowFadeStart, fadeStart);
-        }
-        if (m_locShadowFadePower >= 0) {
-            glUniform1f(m_locShadowFadePower, ctx.config.shadow.fadePower);
-        }
-    } else if (m_locShadowCascadeCount >= 0) {
-        glUniform1i(m_locShadowCascadeCount, 0);
-    }
-
-    renderPass(RenderLayer::Opaque, entries, ctx);
-    renderPass(RenderLayer::Cutout, entries, ctx);
-    renderPass(RenderLayer::Transparent, entries, ctx);
-    renderPass(RenderLayer::Emissive, entries, ctx);
 
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
     glUseProgram(0);
+}
+
+void ChunkRenderer::ensureLodCubeGeometry() {
+    if (m_lodCubeVao != 0) {
+        return;
+    }
+
+    constexpr float vertices[] = {
+        0.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        1.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+        0.0f, 1.0f, 1.0f
+    };
+    constexpr uint32_t indices[] = {
+        0, 2, 1, 0, 3, 2, // -Z
+        4, 5, 6, 4, 6, 7, // +Z
+        0, 1, 5, 0, 5, 4, // -Y
+        2, 3, 7, 2, 7, 6, // +Y
+        1, 2, 6, 1, 6, 5, // +X
+        0, 4, 7, 0, 7, 3  // -X
+    };
+
+    glGenVertexArrays(1, &m_lodCubeVao);
+    glGenBuffers(1, &m_lodCubeVbo);
+    glGenBuffers(1, &m_lodCubeEbo);
+
+    glBindVertexArray(m_lodCubeVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_lodCubeVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_lodCubeEbo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, nullptr);
+    glBindVertexArray(0);
+}
+
+void ChunkRenderer::releaseLodResources() {
+    if (m_lodCubeVao != 0) {
+        glDeleteVertexArrays(1, &m_lodCubeVao);
+        m_lodCubeVao = 0;
+    }
+    if (m_lodCubeVbo != 0) {
+        glDeleteBuffers(1, &m_lodCubeVbo);
+        m_lodCubeVbo = 0;
+    }
+    if (m_lodCubeEbo != 0) {
+        glDeleteBuffers(1, &m_lodCubeEbo);
+        m_lodCubeEbo = 0;
+    }
+}
+
+void ChunkRenderer::renderFarLodOpaquePass(const WorldRenderContext& ctx) {
+    if (!ctx.config.svo.enabled || !ctx.svoLod || !m_lodShader) {
+        return;
+    }
+
+    std::vector<SvoLodManager::OpaqueDrawInstance> instances;
+    ctx.svoLod->collectOpaqueDrawInstances(instances);
+    if (instances.empty()) {
+        return;
+    }
+
+    ensureLodCubeGeometry();
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+
+    m_lodShader->bind();
+    if (m_lodLocViewProjection >= 0) {
+        glm::mat4 vp = ctx.viewProjection * ctx.worldTransform;
+        glUniformMatrix4fv(m_lodLocViewProjection, 1, GL_FALSE, glm::value_ptr(vp));
+    }
+    if (m_lodLocColor >= 0) {
+        glUniform4f(m_lodLocColor, 0.32f, 0.48f, 0.34f, 1.0f);
+    }
+
+    glBindVertexArray(m_lodCubeVao);
+    for (const auto& instance : instances) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), instance.worldMin);
+        model = glm::scale(model, glm::vec3(instance.worldSize));
+        if (m_lodLocModel >= 0) {
+            glUniformMatrix4fv(m_lodLocModel, 1, GL_FALSE, glm::value_ptr(model));
+        }
+        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, nullptr);
+    }
+    glBindVertexArray(0);
 }
 
 ChunkRenderer::ShadowRenderState ChunkRenderer::shadowRenderState() const {

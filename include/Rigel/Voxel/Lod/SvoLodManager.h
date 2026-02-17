@@ -33,7 +33,6 @@ private:
 
     SvoLodConfig m_config;
     SvoLodTelemetry m_telemetry;
-    bool m_initialized = false;
 };
 
 } // namespace Rigel::Voxel

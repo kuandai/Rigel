@@ -570,7 +570,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         if (profileEnv && profileEnv[0] != '\0') {
             renderConfig.profilingEnabled = (profileEnv[0] != '0');
         }
-        m_impl->world.worldView->renderConfig() = renderConfig;
+        m_impl->world.worldView->setRenderConfig(renderConfig);
         Core::Profiler::setEnabled(renderConfig.profilingEnabled);
         m_impl->world.worldView->setStreamConfig(config.stream);
         if (m_impl->timing.benchmarkEnabled) {

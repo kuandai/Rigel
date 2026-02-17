@@ -9,7 +9,14 @@ namespace Rigel::Voxel {
 WorldView::WorldView(World& world, WorldResources& resources)
     : m_world(&world)
     , m_resources(&resources)
-{}
+{
+    m_svoLod.setConfig(m_renderConfig.svo);
+}
+
+void WorldView::setRenderConfig(const WorldRenderConfig& config) {
+    m_renderConfig = config;
+    m_svoLod.setConfig(m_renderConfig.svo);
+}
 
 void WorldView::initialize(Asset::AssetManager& assets) {
     if (m_initialized) {
@@ -40,6 +47,7 @@ void WorldView::initialize(Asset::AssetManager& assets) {
                         m_world->generator());
     }
 
+    m_svoLod.initialize();
     m_initialized = true;
 }
 
@@ -84,6 +92,7 @@ void WorldView::setBenchmark(ChunkBenchmarkStats* stats) {
 
 void WorldView::updateStreaming(const glm::vec3& cameraPos) {
     m_streamer.update(cameraPos);
+    m_svoLod.update(cameraPos);
 }
 
 void WorldView::updateMeshes() {
@@ -314,11 +323,13 @@ void WorldView::clear() {
     m_meshStore.clear();
     m_renderer.clearCache();
     m_streamer.reset();
+    m_svoLod.reset();
     m_replication.knownChunks.clear();
 }
 
 void WorldView::releaseRenderResources() {
     m_renderer.releaseResources();
+    m_svoLod.releaseRenderResources();
     m_shader = {};
     m_shadowDepthShader = {};
     m_shadowTransmitShader = {};

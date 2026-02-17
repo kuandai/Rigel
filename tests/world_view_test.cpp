@@ -1,0 +1,78 @@
+#include "TestFramework.h"
+
+#include "Rigel/Voxel/BlockType.h"
+#include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldGenConfig.h"
+#include "Rigel/Voxel/WorldGenerator.h"
+#include "Rigel/Voxel/WorldResources.h"
+#include "Rigel/Voxel/WorldView.h"
+
+using namespace Rigel::Voxel;
+
+TEST_CASE(WorldView_SetRenderConfigSyncsSvoConfig) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    WorldRenderConfig config;
+    config.svo.enabled = true;
+    config.svo.nearMeshRadiusChunks = 5;
+    config.svo.lodStartRadiusChunks = 9;
+    config.svo.lodCellSpanChunks = 4;
+    config.svo.lodMaxCells = 333;
+    config.svo.lodCopyBudgetPerFrame = 6;
+    config.svo.lodApplyBudgetPerFrame = 7;
+
+    view.setRenderConfig(config);
+
+    const auto& svo = view.svoConfig();
+    CHECK(svo.enabled);
+    CHECK_EQ(svo.nearMeshRadiusChunks, 5);
+    CHECK_EQ(svo.lodStartRadiusChunks, 9);
+    CHECK_EQ(svo.lodCellSpanChunks, 4);
+    CHECK_EQ(svo.lodMaxCells, 333);
+    CHECK_EQ(svo.lodCopyBudgetPerFrame, 6);
+    CHECK_EQ(svo.lodApplyBudgetPerFrame, 7);
+}
+
+TEST_CASE(WorldView_SvoLifecycleHooksUpdateAndResetTelemetry) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    BlockType solid;
+    solid.identifier = "rigel:stone";
+    resources.registry().registerBlock(solid.identifier, solid);
+
+    BlockType surface;
+    surface.identifier = "rigel:grass";
+    resources.registry().registerBlock(surface.identifier, surface);
+
+    WorldGenConfig genConfig;
+    genConfig.solidBlock = solid.identifier;
+    genConfig.surfaceBlock = surface.identifier;
+    genConfig.stream.viewDistanceChunks = 0;
+    genConfig.stream.unloadDistanceChunks = 0;
+    genConfig.stream.genQueueLimit = 0;
+    genConfig.stream.meshQueueLimit = 0;
+    genConfig.stream.applyBudgetPerFrame = 0;
+    genConfig.stream.workerThreads = 0;
+
+    auto generator = std::make_shared<WorldGenerator>(resources.registry());
+    generator->setConfig(genConfig);
+    world.setGenerator(generator);
+    view.setGenerator(generator);
+    view.setStreamConfig(genConfig.stream);
+
+    WorldRenderConfig config;
+    config.svo.enabled = true;
+    view.setRenderConfig(config);
+
+    view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
+    view.updateStreaming(glm::vec3(1.0f, 2.0f, 3.0f));
+
+    CHECK_EQ(view.svoTelemetry().updateCalls, 2u);
+
+    view.clear();
+    CHECK_EQ(view.svoTelemetry().updateCalls, 0u);
+}

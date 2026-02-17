@@ -29,12 +29,11 @@ void SvoLodManager::setConfig(const SvoLodConfig& config) {
 }
 
 void SvoLodManager::initialize() {
-    m_initialized = true;
 }
 
 void SvoLodManager::update(const glm::vec3& cameraPos) {
     (void)cameraPos;
-    if (!m_initialized || !m_config.enabled) {
+    if (!m_config.enabled) {
         return;
     }
     ++m_telemetry.updateCalls;

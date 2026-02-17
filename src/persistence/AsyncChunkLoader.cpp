@@ -69,6 +69,14 @@ void AsyncChunkLoader::setPrefetchRadius(int radius) {
     m_prefetchRadius = radius;
 }
 
+void AsyncChunkLoader::setPrefetchPerRequest(size_t count) {
+    m_prefetchPerRequest = count;
+}
+
+void AsyncChunkLoader::setRegionDrainBudget(size_t budget) {
+    m_regionDrainBudget = budget;
+}
+
 void AsyncChunkLoader::setLoadQueueLimit(size_t maxPending) {
     m_loadQueueLimit = maxPending;
 }
@@ -130,7 +138,14 @@ void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {
 void AsyncChunkLoader::drainCompletions(size_t budget) {
     {
         PROFILE_SCOPE("Streaming/LoadRegionDrain");
-        drainRegionCompletions();
+        size_t regionBudget = m_regionDrainBudget;
+        if (regionBudget == 0) {
+            regionBudget = std::numeric_limits<size_t>::max();
+        }
+        if (budget != std::numeric_limits<size_t>::max()) {
+            regionBudget = std::min(regionBudget, budget);
+        }
+        drainRegionCompletions(regionBudget);
     }
     {
         PROFILE_SCOPE("Streaming/LoadPayloadDrain");
@@ -138,22 +153,29 @@ void AsyncChunkLoader::drainCompletions(size_t budget) {
     }
 }
 
-void AsyncChunkLoader::drainRegionCompletions() {
+void AsyncChunkLoader::drainRegionCompletions(size_t budget) {
+    size_t drained = 0;
     RegionResult result;
-    while (m_regionComplete.tryPop(result)) {
+    while (drained < budget && m_regionComplete.tryPop(result)) {
+        ++drained;
         m_inFlight.erase(result.key);
-        if (result.ok) {
-            RegionPresence& presence = m_regionPresence[result.key];
-            presence.exists = true;
-            presence.nextCheck = std::chrono::steady_clock::time_point{};
-        }
+        auto now = std::chrono::steady_clock::now();
+        RegionPresence& presence = m_regionPresence[result.key];
         if (!result.ok) {
+            presence.exists = false;
+            presence.nextCheck = now + std::chrono::seconds(2);
             spdlog::warn("Region load failed ({} {} {}), treating as empty",
                          result.key.x, result.key.y, result.key.z);
             result.entry.region = std::make_shared<ChunkRegionSnapshot>();
             result.entry.region->key = result.key;
             result.entry.present.clear();
             result.entry.spansByCoord.clear();
+        } else if (result.exists) {
+            presence.exists = true;
+            presence.nextCheck = std::chrono::steady_clock::time_point{};
+        } else {
+            presence.exists = false;
+            presence.nextCheck = now + std::chrono::seconds(2);
         }
         m_cache[result.key] = std::move(result.entry);
         touch(result.key);
@@ -243,6 +265,16 @@ bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key) {
         result.key = key;
         try {
             auto jobFormat = servicePtr->openFormat(contextCopy);
+            result.exists = jobFormat->chunkContainer().regionExists(key);
+            if (!result.exists) {
+                RegionEntry entry;
+                entry.region = std::make_shared<ChunkRegionSnapshot>();
+                entry.region->key = key;
+                result.entry = std::move(entry);
+                result.ok = true;
+                m_regionComplete.push(std::move(result));
+                return;
+            }
             ChunkRegionSnapshot region = jobFormat->chunkContainer().loadRegion(key);
             RegionEntry entry;
             entry.region = std::make_shared<ChunkRegionSnapshot>(std::move(region));
@@ -260,6 +292,7 @@ bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key) {
             spdlog::warn("Async region load failed ({} {} {}): {}",
                          key.x, key.y, key.z, e.what());
             result.ok = false;
+            result.exists = false;
         }
         m_regionComplete.push(std::move(result));
     };
@@ -337,18 +370,45 @@ void AsyncChunkLoader::prefetchNeighbors(const RegionKey& center) {
     if (m_prefetchRadius <= 0) {
         return;
     }
-    for (int dz = -m_prefetchRadius; dz <= m_prefetchRadius; ++dz) {
-        for (int dy = -m_prefetchRadius; dy <= m_prefetchRadius; ++dy) {
-            for (int dx = -m_prefetchRadius; dx <= m_prefetchRadius; ++dx) {
+    struct Candidate {
+        int distSq;
+        int dx;
+        int dy;
+        int dz;
+    };
+    std::vector<Candidate> candidates;
+    int radius = std::max(1, m_prefetchRadius);
+    for (int dz = -radius; dz <= radius; ++dz) {
+        for (int dy = -radius; dy <= radius; ++dy) {
+            for (int dx = -radius; dx <= radius; ++dx) {
                 if (dx == 0 && dy == 0 && dz == 0) {
                     continue;
                 }
-                RegionKey neighbor = center;
-                neighbor.x += dx;
-                neighbor.y += dy;
-                neighbor.z += dz;
-                queueRegionLoad(neighbor);
+                int distSq = dx * dx + dy * dy + dz * dz;
+                candidates.push_back({distSq, dx, dy, dz});
             }
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& a, const Candidate& b) {
+                  return a.distSq < b.distSq;
+              });
+
+    size_t queued = 0;
+    size_t limit = m_prefetchPerRequest;
+    if (limit == 0) {
+        limit = std::numeric_limits<size_t>::max();
+    }
+    for (const Candidate& candidate : candidates) {
+        if (queued >= limit) {
+            break;
+        }
+        RegionKey neighbor = center;
+        neighbor.x += candidate.dx;
+        neighbor.y += candidate.dy;
+        neighbor.z += candidate.dz;
+        if (queueRegionLoad(neighbor)) {
+            ++queued;
         }
     }
 }
@@ -403,16 +463,7 @@ bool AsyncChunkLoader::regionMayExist(const RegionKey& key) {
             return false;
         }
     }
-
-    bool exists = m_format->chunkContainer().regionExists(key);
-    RegionPresence& presence = m_regionPresence[key];
-    presence.exists = exists;
-    if (exists) {
-        presence.nextCheck = std::chrono::steady_clock::time_point{};
-    } else {
-        presence.nextCheck = now + std::chrono::seconds(2);
-    }
-    return exists;
+    return true;
 }
 
 } // namespace Rigel::Persistence

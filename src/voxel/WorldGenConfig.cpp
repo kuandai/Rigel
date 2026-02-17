@@ -326,9 +326,39 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
             stream.loadApplyBudgetPerFrame = 0;
         }
 
+        stream.loadRegionDrainBudget =
+            Util::readInt(streamNode, "load_region_drain_budget", stream.loadRegionDrainBudget);
+        if (stream.loadRegionDrainBudget < 0) {
+            stream.loadRegionDrainBudget = 0;
+        }
+
         stream.loadQueueLimit = Util::readInt(streamNode, "load_queue_limit", stream.loadQueueLimit);
         if (stream.loadQueueLimit < 0) {
             stream.loadQueueLimit = 0;
+        }
+
+        stream.loadMaxCachedRegions =
+            Util::readInt(streamNode, "load_max_cached_regions", stream.loadMaxCachedRegions);
+        if (stream.loadMaxCachedRegions < 0) {
+            stream.loadMaxCachedRegions = 0;
+        }
+
+        stream.loadMaxInFlightRegions =
+            Util::readInt(streamNode, "load_max_inflight_regions", stream.loadMaxInFlightRegions);
+        if (stream.loadMaxInFlightRegions < 0) {
+            stream.loadMaxInFlightRegions = 0;
+        }
+
+        stream.loadPrefetchRadius =
+            Util::readInt(streamNode, "load_prefetch_radius", stream.loadPrefetchRadius);
+        if (stream.loadPrefetchRadius < 0) {
+            stream.loadPrefetchRadius = 0;
+        }
+
+        stream.loadPrefetchPerRequest =
+            Util::readInt(streamNode, "load_prefetch_per_request", stream.loadPrefetchPerRequest);
+        if (stream.loadPrefetchPerRequest < 0) {
+            stream.loadPrefetchPerRequest = 0;
         }
 
         int resident = Util::readInt(streamNode, "max_resident_chunks", static_cast<int>(stream.maxResidentChunks));

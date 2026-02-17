@@ -346,6 +346,9 @@ public:
         ChunkRegionSnapshot region;
         region.key = key;
         auto path = regionPath(m_context, key);
+        if (!m_storage->exists(path)) {
+            return region;
+        }
         auto reader = m_storage->openRead(path);
         uint32_t count = reader->readU32();
         region.chunks.reserve(count);
@@ -416,7 +419,12 @@ public:
     }
 
     EntityRegionSnapshot loadRegion(const EntityRegionKey& key) override {
+        EntityRegionSnapshot empty;
+        empty.key = key;
         auto path = entityRegionPath(m_context, key);
+        if (!m_storage->exists(path)) {
+            return empty;
+        }
         auto reader = m_storage->openRead(path);
         return m_codec.read(*reader, key);
     }

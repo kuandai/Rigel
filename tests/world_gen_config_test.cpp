@@ -104,6 +104,12 @@ streaming:
   mesh_queue_limit: 6
   update_budget_per_frame: 12
   apply_budget_per_frame: 9
+  load_region_drain_budget: 7
+  load_queue_limit: 11
+  load_max_cached_regions: 13
+  load_max_inflight_regions: 15
+  load_prefetch_radius: 2
+  load_prefetch_per_request: 17
   worker_threads: 0
   max_resident_chunks: 100
 generation:
@@ -154,6 +160,12 @@ generation:
     CHECK_EQ(config.stream.meshQueueLimit, static_cast<size_t>(6));
     CHECK_EQ(config.stream.updateBudgetPerFrame, 12);
     CHECK_EQ(config.stream.applyBudgetPerFrame, 9);
+    CHECK_EQ(config.stream.loadRegionDrainBudget, 7);
+    CHECK_EQ(config.stream.loadQueueLimit, 11);
+    CHECK_EQ(config.stream.loadMaxCachedRegions, 13);
+    CHECK_EQ(config.stream.loadMaxInFlightRegions, 15);
+    CHECK_EQ(config.stream.loadPrefetchRadius, 2);
+    CHECK_EQ(config.stream.loadPrefetchPerRequest, 17);
     CHECK_EQ(config.stream.workerThreads, 0);
     CHECK_EQ(config.stream.maxResidentChunks, static_cast<size_t>(100));
     CHECK(!config.isStageEnabled("terrain_density"));

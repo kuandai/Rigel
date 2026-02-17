@@ -148,7 +148,12 @@ struct WorldGenConfig {
         int ioThreads = 1;
         int loadWorkerThreads = 2;
         int loadApplyBudgetPerFrame = 8;
+        int loadRegionDrainBudget = 32;
         int loadQueueLimit = 0;
+        int loadMaxCachedRegions = 8;
+        int loadMaxInFlightRegions = 8;
+        int loadPrefetchRadius = 1;
+        int loadPrefetchPerRequest = 12;
         size_t maxResidentChunks = 0;  // 0 = no cap
     };
 

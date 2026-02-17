@@ -532,6 +532,16 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             m_impl->world.chunkLoader->setLoadQueueLimit(
                 static_cast<size_t>(config.stream.loadQueueLimit));
         }
+        m_impl->world.chunkLoader->setRegionDrainBudget(
+            static_cast<size_t>(std::max(0, config.stream.loadRegionDrainBudget)));
+        m_impl->world.chunkLoader->setMaxCachedRegions(
+            static_cast<size_t>(std::max(0, config.stream.loadMaxCachedRegions)));
+        m_impl->world.chunkLoader->setMaxInFlightRegions(
+            static_cast<size_t>(std::max(0, config.stream.loadMaxInFlightRegions)));
+        m_impl->world.chunkLoader->setPrefetchRadius(
+            std::max(0, config.stream.loadPrefetchRadius));
+        m_impl->world.chunkLoader->setPrefetchPerRequest(
+            static_cast<size_t>(std::max(0, config.stream.loadPrefetchPerRequest)));
         m_impl->world.worldView->setChunkLoader(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
                 return loader ? loader->request(coord) : false;
@@ -616,6 +626,14 @@ Application::~Application() {
         }
         m_impl->releaseTaaTargets();
         m_impl->render.taa.initialized = false;
+
+        if (m_impl->world.worldView) {
+            m_impl->world.worldView->setChunkLoader({});
+            m_impl->world.worldView->setChunkPendingCallback({});
+            m_impl->world.worldView->setChunkLoadDrain({});
+            m_impl->world.worldView->setChunkLoadCancel({});
+        }
+        m_impl->world.chunkLoader.reset();
 
         if (m_impl->world.worldView) {
             m_impl->world.worldView->clear();

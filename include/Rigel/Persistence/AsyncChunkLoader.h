@@ -37,6 +37,8 @@ public:
     void setMaxCachedRegions(size_t maxRegions);
     void setMaxInFlightRegions(size_t maxRegions);
     void setPrefetchRadius(int radius);
+    void setPrefetchPerRequest(size_t count);
+    void setRegionDrainBudget(size_t budget);
     void setLoadQueueLimit(size_t maxPending);
 
 private:
@@ -56,6 +58,7 @@ private:
         RegionKey key;
         RegionEntry entry;
         bool ok = false;
+        bool exists = false;
     };
 
     struct ChunkPayload {
@@ -67,7 +70,7 @@ private:
         bool loadedFromDisk = false;
     };
 
-    void drainRegionCompletions();
+    void drainRegionCompletions(size_t budget);
     void drainPayloadCompletions(size_t budget);
     bool queueRegionLoad(const RegionKey& key);
     void queuePayloadBuild(const RegionEntry& entry, Voxel::ChunkCoord coord);
@@ -89,6 +92,8 @@ private:
     size_t m_maxInFlightRegions = 8;
     size_t m_loadQueueLimit = 0;
     int m_prefetchRadius = 1;
+    size_t m_prefetchPerRequest = 12;
+    size_t m_regionDrainBudget = 32;
 
     std::shared_ptr<Voxel::WorldGenerator> m_generator;
 

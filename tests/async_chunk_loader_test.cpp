@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <optional>
 #include <random>
+#include <thread>
 #include <vector>
 
 using namespace Rigel::Voxel;
@@ -418,4 +419,82 @@ TEST_CASE(AsyncChunkLoader_PartialSpan_BaseFill) {
 
     BlockState outside = loaded->getBlock(Chunk::SIZE - 1, Chunk::SIZE - 1, Chunk::SIZE - 1);
     CHECK(!outside.isAir());
+}
+
+TEST_CASE(AsyncChunkLoader_MissingRegion_UsesNegativeCache) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    MemoryContext ctx;
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        2,
+        generator);
+
+    ChunkCoord missing{123, 4, -77};
+    CHECK(loader.request(missing));
+    CHECK(loader.isPending(missing));
+
+    loader.drainCompletions(8);
+
+    CHECK(!loader.isPending(missing));
+    CHECK(world.chunkManager().getChunk(missing) == nullptr);
+
+    CHECK(!loader.request(missing));
+}
+
+TEST_CASE(AsyncChunkLoader_DestroyWithInFlightJobs) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID testA = registerTestBlock(registry, "rigel:test_destroy_a");
+    BlockID testB = registerTestBlock(registry, "rigel:test_destroy_b");
+    std::vector<BlockID> palette = {BlockRegistry::airId(), testA, testB};
+
+    std::vector<std::pair<ChunkCoord, ChunkData>> payloads;
+    payloads.reserve(16);
+    for (int z = 0; z < 4; ++z) {
+        for (int x = 0; x < 4; ++x) {
+            ChunkCoord coord{x, 0, z};
+            payloads.emplace_back(coord, buildPayload(coord, registry, palette, true, std::nullopt, true));
+        }
+    }
+
+    MemoryContext ctx;
+    saveRegionForPayloads(ctx.service, ctx.context, "rigel:default", payloads);
+
+    {
+        AsyncChunkLoader loader(
+            ctx.service,
+            ctx.context,
+            world,
+            generator->config().world.version,
+            2,
+            2,
+            4,
+            generator);
+
+        for (const auto& entry : payloads) {
+            CHECK(loader.request(entry.first));
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    CHECK(true);
 }

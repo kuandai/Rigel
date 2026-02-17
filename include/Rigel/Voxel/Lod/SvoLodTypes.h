@@ -10,6 +10,8 @@
 
 namespace Rigel::Voxel {
 
+class BlockRegistry;
+
 struct LodCellKey {
     int level = 0;
     int x = 0;
@@ -41,6 +43,37 @@ enum class LodCellState : uint8_t {
     Evicting
 };
 
+enum class LodNodeKind : uint8_t {
+    Empty = 0,
+    Solid = 1,
+    Mixed = 2
+};
+
+enum class LodMaterialClass : uint8_t {
+    None = 0,
+    Opaque = 1,
+    NonOpaque = 2,
+    Mixed = 3
+};
+
+struct LodSvoNode {
+    static constexpr uint32_t INVALID_INDEX = 0xFFFFFFFFu;
+
+    LodNodeKind kind = LodNodeKind::Empty;
+    LodMaterialClass materialClass = LodMaterialClass::None;
+    uint8_t childMask = 0;
+    std::array<uint32_t, 8> children{
+        INVALID_INDEX,
+        INVALID_INDEX,
+        INVALID_INDEX,
+        INVALID_INDEX,
+        INVALID_INDEX,
+        INVALID_INDEX,
+        INVALID_INDEX,
+        INVALID_INDEX
+    };
+};
+
 struct LodChunkSnapshot {
     ChunkCoord coord;
     std::array<BlockState, Chunk::VOLUME> blocks{};
@@ -60,6 +93,11 @@ struct LodBuildOutput {
     uint64_t nonAirVoxelCount = 0;
     uint64_t opaqueVoxelCount = 0;
     uint64_t nonOpaqueVoxelCount = 0;
+    std::vector<LodSvoNode> nodes;
+    uint32_t rootNode = LodSvoNode::INVALID_INDEX;
+    uint32_t nodeCount = 0;
+    uint32_t leafCount = 0;
+    uint32_t mixedNodeCount = 0;
     bool empty = true;
 };
 
@@ -67,5 +105,6 @@ LodCellKey chunkToLodCell(ChunkCoord coord, int spanChunks, int lodLevel = 0);
 std::vector<LodCellKey> touchedLodCellsForChunk(ChunkCoord coord,
                                                  int spanChunks,
                                                  int lodLevel = 0);
+LodBuildOutput buildLodBuildOutput(const LodBuildInput& input, const BlockRegistry* registry);
 
 } // namespace Rigel::Voxel

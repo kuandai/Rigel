@@ -77,6 +77,7 @@ Key fields in `WorldRenderConfig`:
 - `transparentAlpha`
 - `shadow` (see Section 5)
 - `taa` (see Section 6)
+- `svo` (preview CPU build pipeline; no far-field draw pass yet)
 - `profilingEnabled` (per-frame profiler toggle; config key `render.profiling.enabled`)
 
 ---
@@ -161,6 +162,8 @@ If TAA is disabled, the history is invalidated each frame.
 
 ## 7. Known Limitations
 
+- SVO far-field rendering is not active yet. Current SVO work is CPU-side build
+  and telemetry only.
 - No frustum culling; distance-only culling for voxels.
 - Shadow cascades use a camera-centered cube instead of fitting the frustum.
 - Transparent layer does not receive shadows in the main pass.

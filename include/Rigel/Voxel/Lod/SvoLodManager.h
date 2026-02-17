@@ -14,6 +14,7 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace Rigel::Voxel {
 
@@ -34,6 +35,9 @@ public:
         uint64_t queuedRevision = 0;
         uint64_t appliedRevision = 0;
         uint32_t sampledChunks = 0;
+        uint32_t nodeCount = 0;
+        uint32_t leafCount = 0;
+        uint32_t mixedNodeCount = 0;
     };
 
     void setConfig(const SvoLodConfig& config);
@@ -57,14 +61,18 @@ private:
         uint64_t queuedRevision = 0;
         uint64_t appliedRevision = 0;
         uint32_t sampledChunks = 0;
+        uint32_t nodeCount = 0;
+        uint32_t leafCount = 0;
+        uint32_t mixedNodeCount = 0;
         uint64_t nonAirVoxelCount = 0;
         uint64_t opaqueVoxelCount = 0;
         uint64_t nonOpaqueVoxelCount = 0;
+        std::vector<LodSvoNode> nodes;
+        uint32_t rootNode = LodSvoNode::INVALID_INDEX;
         uint64_t lastTouchedFrame = 0;
     };
 
     static SvoLodConfig sanitizeConfig(SvoLodConfig config);
-    static LodBuildOutput buildCell(const LodBuildInput& input, const BlockRegistry* registry);
 
     void ensureBuildPool();
     void scanChunkChanges();
@@ -72,6 +80,7 @@ private:
     void processApplyBudget();
     void enqueueDirtyChunk(ChunkCoord coord);
     void enqueueDirtyCell(const LodCellKey& key);
+    void requeueDirtyCell(const LodCellKey& key);
     void updateTelemetry();
     void enforceCellLimit();
     void removeDirtyCell(const LodCellKey& key);

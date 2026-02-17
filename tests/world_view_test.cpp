@@ -91,7 +91,7 @@ TEST_CASE(WorldView_SvoPipelineBindsChunkManagerDataSource) {
 
     BlockState state;
     state.id = *stoneId;
-    world.setBlock(1, 1, 1, state);
+    world.setBlock(33, 33, 33, state);
 
     WorldRenderConfig config;
     config.svo.enabled = true;

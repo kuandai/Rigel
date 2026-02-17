@@ -28,34 +28,6 @@ SvoLodConfig SvoLodManager::sanitizeConfig(SvoLodConfig config) {
     return config;
 }
 
-LodBuildOutput SvoLodManager::buildCell(const LodBuildInput& input, const BlockRegistry* registry) {
-    LodBuildOutput output;
-    output.key = input.key;
-    output.revision = input.revision;
-    output.sampledChunks = static_cast<uint32_t>(input.chunks.size());
-
-    for (const LodChunkSnapshot& chunk : input.chunks) {
-        for (const BlockState& state : chunk.blocks) {
-            if (state.isAir()) {
-                continue;
-            }
-            ++output.nonAirVoxelCount;
-            bool isOpaque = true;
-            if (registry) {
-                isOpaque = registry->getType(state.id).isOpaque;
-            }
-            if (isOpaque) {
-                ++output.opaqueVoxelCount;
-            } else {
-                ++output.nonOpaqueVoxelCount;
-            }
-        }
-    }
-
-    output.empty = (output.nonAirVoxelCount == 0);
-    return output;
-}
-
 void SvoLodManager::setConfig(const SvoLodConfig& config) {
     m_config = sanitizeConfig(config);
     enforceCellLimit();
@@ -128,6 +100,9 @@ std::optional<SvoLodManager::CellInfo> SvoLodManager::cellInfo(const LodCellKey&
     info.queuedRevision = it->second.queuedRevision;
     info.appliedRevision = it->second.appliedRevision;
     info.sampledChunks = it->second.sampledChunks;
+    info.nodeCount = it->second.nodeCount;
+    info.leafCount = it->second.leafCount;
+    info.mixedNodeCount = it->second.mixedNodeCount;
     return info;
 }
 
@@ -195,8 +170,9 @@ void SvoLodManager::processCopyBudget() {
             (cell.queuedRevision > cell.appliedRevision);
         if (inFlight) {
             if (cell.desiredRevision > cell.queuedRevision) {
-                enqueueDirtyCell(key);
+                requeueDirtyCell(key);
             }
+            --budget;
             continue;
         }
 
@@ -208,9 +184,14 @@ void SvoLodManager::processCopyBudget() {
         if (!input || input->chunks.empty()) {
             cell.state = LodCellState::Missing;
             cell.sampledChunks = 0;
+            cell.nodeCount = 0;
+            cell.leafCount = 0;
+            cell.mixedNodeCount = 0;
             cell.nonAirVoxelCount = 0;
             cell.opaqueVoxelCount = 0;
             cell.nonOpaqueVoxelCount = 0;
+            cell.nodes.clear();
+            cell.rootNode = LodSvoNode::INVALID_INDEX;
             cell.appliedRevision = cell.desiredRevision;
             cell.queuedRevision = 0;
             --budget;
@@ -225,10 +206,10 @@ void SvoLodManager::processCopyBudget() {
         if (m_buildPool && m_buildPool->threadCount() > 0) {
             LodBuildInput asyncInput = std::move(*input);
             m_buildPool->enqueue([this, asyncInput = std::move(asyncInput), registry]() {
-                m_buildComplete.push(buildCell(asyncInput, registry));
+                m_buildComplete.push(buildLodBuildOutput(asyncInput, registry));
             });
         } else {
-            m_buildComplete.push(buildCell(*input, registry));
+            m_buildComplete.push(buildLodBuildOutput(*input, registry));
         }
         cell.state = LodCellState::Building;
         --budget;
@@ -252,7 +233,7 @@ void SvoLodManager::processApplyBudget() {
             cell.queuedRevision = 0;
             cell.state = LodCellState::Stale;
             if (cell.desiredRevision > cell.appliedRevision) {
-                enqueueDirtyCell(output.key);
+                requeueDirtyCell(output.key);
             }
             continue;
         }
@@ -261,9 +242,14 @@ void SvoLodManager::processApplyBudget() {
         cell.queuedRevision = 0;
         cell.state = LodCellState::Ready;
         cell.sampledChunks = output.sampledChunks;
+        cell.nodeCount = output.nodeCount;
+        cell.leafCount = output.leafCount;
+        cell.mixedNodeCount = output.mixedNodeCount;
         cell.nonAirVoxelCount = output.nonAirVoxelCount;
         cell.opaqueVoxelCount = output.opaqueVoxelCount;
         cell.nonOpaqueVoxelCount = output.nonOpaqueVoxelCount;
+        cell.nodes = std::move(output.nodes);
+        cell.rootNode = output.rootNode;
         ++m_telemetry.appliedCells;
         --budget;
     }
@@ -285,6 +271,10 @@ void SvoLodManager::enqueueDirtyCell(const LodCellKey& key) {
         cell.state = LodCellState::Stale;
     }
 
+    requeueDirtyCell(key);
+}
+
+void SvoLodManager::requeueDirtyCell(const LodCellKey& key) {
     if (m_dirtyQueued.insert(key).second) {
         m_dirtyQueue.push_back(key);
     }

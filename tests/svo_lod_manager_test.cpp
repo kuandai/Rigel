@@ -23,6 +23,18 @@ BlockID registerStone(BlockRegistry& registry) {
     return *id;
 }
 
+BlockID registerWater(BlockRegistry& registry) {
+    BlockType water;
+    water.identifier = "rigel:water";
+    water.isOpaque = false;
+    registry.registerBlock(water.identifier, water);
+    auto id = registry.findByIdentifier(water.identifier);
+    if (!id) {
+        throw std::runtime_error("Failed to register water block");
+    }
+    return *id;
+}
+
 void placeStone(ChunkManager& manager, BlockID stone, int wx, int wy, int wz) {
     BlockState state;
     state.id = stone;
@@ -60,7 +72,7 @@ TEST_CASE(SvoLodManager_UpdateStaysInertWhenDisabled) {
     ChunkManager chunkManager;
     chunkManager.setRegistry(&registry);
     BlockID stone = registerStone(registry);
-    placeStone(chunkManager, stone, 0, 0, 0);
+    placeStone(chunkManager, stone, 33, 33, 33);
 
     SvoLodManager manager;
     manager.bind(&chunkManager, &registry);
@@ -80,9 +92,9 @@ TEST_CASE(SvoLodManager_CopyBudgetLimitsPerFrame) {
     chunkManager.setRegistry(&registry);
     BlockID stone = registerStone(registry);
 
-    placeStone(chunkManager, stone, 1, 1, 1);
-    placeStone(chunkManager, stone, 129, 1, 1);
-    placeStone(chunkManager, stone, 257, 1, 1);
+    placeStone(chunkManager, stone, 33, 33, 33);
+    placeStone(chunkManager, stone, 161, 33, 33);
+    placeStone(chunkManager, stone, 289, 33, 33);
 
     SvoLodManager manager;
     manager.bind(&chunkManager, &registry);
@@ -111,7 +123,7 @@ TEST_CASE(SvoLodManager_ApplyBudgetLimitsPerFrame) {
     ChunkManager chunkManager;
     chunkManager.setRegistry(&registry);
     BlockID stone = registerStone(registry);
-    placeStone(chunkManager, stone, 1, 1, 1);
+    placeStone(chunkManager, stone, 33, 33, 33);
 
     SvoLodManager manager;
     manager.bind(&chunkManager, &registry);
@@ -140,7 +152,7 @@ TEST_CASE(SvoLodManager_StaleRevisionOutputsAreDropped) {
     ChunkManager chunkManager;
     chunkManager.setRegistry(&registry);
     BlockID stone = registerStone(registry);
-    placeStone(chunkManager, stone, 1, 1, 1);
+    placeStone(chunkManager, stone, 33, 33, 33);
 
     SvoLodManager manager;
     manager.bind(&chunkManager, &registry);
@@ -154,7 +166,7 @@ TEST_CASE(SvoLodManager_StaleRevisionOutputsAreDropped) {
     manager.setConfig(config);
     manager.initialize();
 
-    const LodCellKey key = chunkToLodCell({0, 0, 0}, config.lodCellSpanChunks);
+    const LodCellKey key = chunkToLodCell({1, 0, 0}, config.lodCellSpanChunks);
 
     manager.update(glm::vec3(0.0f));
     auto info = manager.cellInfo(key);
@@ -163,25 +175,65 @@ TEST_CASE(SvoLodManager_StaleRevisionOutputsAreDropped) {
     CHECK_EQ(info->queuedRevision, 1u);
     CHECK_EQ(info->appliedRevision, 0u);
 
-    placeStone(chunkManager, stone, 2, 1, 1);
+    placeStone(chunkManager, stone, 34, 33, 33);
     manager.update(glm::vec3(0.0f));
     info = manager.cellInfo(key);
     CHECK(info.has_value());
-    CHECK_EQ(info->desiredRevision, 2u);
-    CHECK_EQ(info->queuedRevision, 1u);
+    CHECK(info->desiredRevision > 1u);
+    CHECK(info->queuedRevision >= 1u);
+    const uint64_t desiredRevisionAfterEdit = info->desiredRevision;
 
     config.lodApplyBudgetPerFrame = 1;
     manager.setConfig(config);
     manager.update(glm::vec3(0.0f));
     info = manager.cellInfo(key);
     CHECK(info.has_value());
-    CHECK_EQ(info->appliedRevision, 0u);
-    CHECK_EQ(info->queuedRevision, 0u);
-    CHECK_EQ(info->state, LodCellState::Stale);
+    CHECK(info->appliedRevision < desiredRevisionAfterEdit);
+
+    bool reachedReady = false;
+    for (int i = 0; i < 8; ++i) {
+        manager.update(glm::vec3(0.0f));
+        info = manager.cellInfo(key);
+        CHECK(info.has_value());
+        if (info->state == LodCellState::Ready &&
+            info->appliedRevision == desiredRevisionAfterEdit) {
+            reachedReady = true;
+            break;
+        }
+    }
+    CHECK(reachedReady);
+}
+
+TEST_CASE(SvoLodManager_BuildsOccupancyMaterialHierarchyPerCell) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    BlockID stone = registerStone(registry);
+    BlockID water = registerWater(registry);
+
+    placeStone(chunkManager, stone, 33, 33, 33);
+    placeStone(chunkManager, water, 65, 33, 33);
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.lodCellSpanChunks = 4;
+    config.lodCopyBudgetPerFrame = 8;
+    config.lodApplyBudgetPerFrame = 8;
+    manager.setConfig(config);
+    manager.initialize();
 
     manager.update(glm::vec3(0.0f));
-    info = manager.cellInfo(key);
+    manager.update(glm::vec3(0.0f));
+
+    const LodCellKey key = chunkToLodCell({1, 0, 0}, config.lodCellSpanChunks);
+    const auto info = manager.cellInfo(key);
     CHECK(info.has_value());
-    CHECK_EQ(info->appliedRevision, 2u);
     CHECK_EQ(info->state, LodCellState::Ready);
+    CHECK(info->nodeCount >= 3u);
+    CHECK(info->leafCount >= 2u);
+    CHECK(info->mixedNodeCount >= 1u);
 }

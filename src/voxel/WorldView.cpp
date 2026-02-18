@@ -295,6 +295,7 @@ void WorldView::render(const glm::mat4& view,
     ctx.shadowDepthShader = m_shadowDepthShader;
     ctx.shadowTransmitShader = m_shadowTransmitShader;
     ctx.svoLod = &m_svoLod;
+    ctx.voxelSvoLod = &m_voxelSvoLod;
     ctx.shadowCaster = m_world ? &shadowCaster : nullptr;
     ctx.config = m_renderConfig;
     ctx.view = view;

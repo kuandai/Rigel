@@ -2,6 +2,7 @@
 
 #include "RenderConfig.h"
 #include "Lod/SvoLodManager.h"
+#include "VoxelLod/VoxelSvoLodManager.h"
 #include "TextureAtlas.h"
 #include "WorldMeshStore.h"
 
@@ -32,6 +33,7 @@ struct WorldRenderContext {
     Asset::Handle<Asset::ShaderAsset> shadowDepthShader;
     Asset::Handle<Asset::ShaderAsset> shadowTransmitShader;
     SvoLodManager* svoLod = nullptr;
+    VoxelSvoLodManager* voxelSvoLod = nullptr;
     IShadowCaster* shadowCaster = nullptr;
     WorldRenderConfig config;
     glm::mat4 view{1.0f};

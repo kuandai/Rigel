@@ -103,6 +103,7 @@ ChunkRenderer::GpuMesh& ChunkRenderer::GpuMesh::operator=(GpuMesh&& other) noexc
 
 void ChunkRenderer::clearCache() {
     m_meshes.clear();
+    m_voxelMeshes.clear();
     m_storeVersions.clear();
     m_nearVisibility.clear();
 }
@@ -283,7 +284,8 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     glm::mat4 viewProjection = ctx.viewProjection * ctx.worldTransform;
     glm::vec3 sunDirection = normalizeOrDefault(ctx.config.sunDirection);
 
-    if (!nearEntries.empty()) {
+    const bool needsVoxelPass = !nearEntries.empty() || (ctx.config.svoVoxel.enabled && ctx.voxelSvoLod);
+    if (needsVoxelPass) {
         m_shader->bind();
         if (m_locViewProjection >= 0) {
             glUniformMatrix4fv(m_locViewProjection, 1, GL_FALSE, glm::value_ptr(viewProjection));
@@ -366,13 +368,16 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         } else if (m_locShadowCascadeCount >= 0) {
             glUniform1i(m_locShadowCascadeCount, 0);
         }
+    }
 
+    if (!nearEntries.empty()) {
         renderPass(RenderLayer::Opaque, nearEntries, ctx);
     }
 
+    renderFarVoxelOpaquePass(ctx);
     renderFarLodOpaquePass(ctx);
 
-    if (!nearEntries.empty()) {
+    if (!nearEntries.empty() && needsVoxelPass) {
         m_shader->bind();
         renderPass(RenderLayer::Cutout, nearEntries, ctx);
         renderPass(RenderLayer::Transparent, nearEntries, ctx);
@@ -435,6 +440,123 @@ void ChunkRenderer::releaseLodResources() {
     if (m_lodCubeEbo != 0) {
         glDeleteBuffers(1, &m_lodCubeEbo);
         m_lodCubeEbo = 0;
+    }
+}
+
+void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
+    if (!ctx.config.svoVoxel.enabled || !ctx.voxelSvoLod || !m_shader) {
+        return;
+    }
+
+    std::vector<VoxelSvoLodManager::OpaqueMeshEntry> farEntries;
+    ctx.voxelSvoLod->collectOpaqueMeshes(farEntries);
+
+    std::unordered_set<VoxelPageKey, VoxelPageKeyHash> keep;
+    keep.reserve(farEntries.size());
+
+    const int pageSizeVoxels = std::max(1, ctx.config.svoVoxel.pageSizeVoxels);
+    float farRenderDistance = std::max(0.0f, ctx.config.renderDistance);
+    if (ctx.config.svoVoxel.maxRadiusChunks > 0) {
+        const float svoDistance =
+            (static_cast<float>(ctx.config.svoVoxel.maxRadiusChunks) + 0.5f) *
+            static_cast<float>(Chunk::SIZE);
+        farRenderDistance = std::max(farRenderDistance, svoDistance);
+    }
+    const float farRenderDistanceSq = farRenderDistance * farRenderDistance;
+
+    struct DrawEntry {
+        VoxelPageKey key{};
+        glm::vec3 worldMin{0.0f};
+    };
+    std::vector<DrawEntry> drawEntries;
+    drawEntries.reserve(farEntries.size());
+
+    for (const auto& entry : farEntries) {
+        if (!entry.mesh) {
+            continue;
+        }
+        keep.insert(entry.key);
+
+        glm::vec3 center = entry.worldMin + glm::vec3(static_cast<float>(pageSizeVoxels) * 0.5f);
+        glm::vec3 delta = center - ctx.cameraPos;
+        if (glm::dot(delta, delta) > farRenderDistanceSq) {
+            continue;
+        }
+
+        auto it = m_voxelMeshes.find(entry.key);
+        if (it == m_voxelMeshes.end()) {
+            VoxelGpuMeshEntry gpuEntry;
+            gpuEntry.key = entry.key;
+            gpuEntry.revision = entry.revision;
+            gpuEntry.worldMin = entry.worldMin;
+            uploadMesh(gpuEntry.mesh, *entry.mesh);
+            it = m_voxelMeshes.emplace(entry.key, std::move(gpuEntry)).first;
+        } else if (it->second.revision != entry.revision) {
+            it->second.revision = entry.revision;
+            it->second.worldMin = entry.worldMin;
+            uploadMesh(it->second.mesh, *entry.mesh);
+        } else {
+            it->second.worldMin = entry.worldMin;
+        }
+
+        if (!it->second.mesh.isValid()) {
+            continue;
+        }
+        const auto& opaque = it->second.mesh.layers[static_cast<size_t>(RenderLayer::Opaque)];
+        if (opaque.isEmpty()) {
+            continue;
+        }
+        drawEntries.push_back(DrawEntry{entry.key, entry.worldMin});
+    }
+
+    for (auto it = m_voxelMeshes.begin(); it != m_voxelMeshes.end();) {
+        if (keep.find(it->first) == keep.end()) {
+            it = m_voxelMeshes.erase(it);
+            continue;
+        }
+        ++it;
+    }
+
+    if (drawEntries.empty()) {
+        return;
+    }
+
+    setupLayerState(RenderLayer::Opaque);
+    if (m_locAlphaMultiplier >= 0) {
+        glUniform1f(m_locAlphaMultiplier, 1.0f);
+    }
+    if (m_locAlphaCutoff >= 0) {
+        glUniform1f(m_locAlphaCutoff, 0.0f);
+    }
+    if (m_locRenderLayer >= 0) {
+        glUniform1i(m_locRenderLayer, static_cast<int>(RenderLayer::Opaque));
+    }
+
+    for (const DrawEntry& draw : drawEntries) {
+        auto meshIt = m_voxelMeshes.find(draw.key);
+        if (meshIt == m_voxelMeshes.end()) {
+            continue;
+        }
+        const GpuMesh& mesh = meshIt->second.mesh;
+        if (!mesh.isValid()) {
+            continue;
+        }
+        const auto& range = mesh.layers[static_cast<size_t>(RenderLayer::Opaque)];
+        if (range.isEmpty()) {
+            continue;
+        }
+
+        if (m_locChunkOffset >= 0) {
+            glUniform3fv(m_locChunkOffset, 1, glm::value_ptr(draw.worldMin));
+        }
+        glBindVertexArray(mesh.vao);
+        glDrawElements(
+            GL_TRIANGLES,
+            static_cast<GLsizei>(range.indexCount),
+            GL_UNSIGNED_INT,
+            reinterpret_cast<void*>(static_cast<uintptr_t>(range.indexStart * sizeof(uint32_t)))
+        );
+        glBindVertexArray(0);
     }
 }
 

@@ -117,7 +117,15 @@ private:
         GpuMesh mesh;
     };
 
+    struct VoxelGpuMeshEntry {
+        VoxelPageKey key{};
+        uint64_t revision = 0;
+        glm::vec3 worldMin{0.0f};
+        GpuMesh mesh;
+    };
+
     std::unordered_map<MeshId, GpuMeshEntry, MeshIdHash> m_meshes;
+    std::unordered_map<VoxelPageKey, VoxelGpuMeshEntry, VoxelPageKeyHash> m_voxelMeshes;
     std::unordered_map<uint32_t, uint64_t> m_storeVersions;
     std::unordered_map<ChunkCoord, bool, ChunkCoordHash> m_nearVisibility;
 
@@ -199,6 +207,7 @@ private:
                     const std::vector<RenderEntry>& entries,
                     const WorldRenderContext& ctx);
     void renderFarLodOpaquePass(const WorldRenderContext& ctx);
+    void renderFarVoxelOpaquePass(const WorldRenderContext& ctx);
     void ensureLodCubeGeometry();
     void releaseLodResources();
     void setupLayerState(RenderLayer layer) const;

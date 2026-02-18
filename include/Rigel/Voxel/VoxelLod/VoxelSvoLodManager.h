@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Rigel/Voxel/RenderConfig.h"
+#include "Rigel/Voxel/ChunkMesh.h"
+#include "Rigel/Voxel/TextureAtlas.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/VoxelLod/GeneratorSource.h"
 #include "Rigel/Voxel/VoxelLod/VoxelPageCpu.h"
@@ -65,13 +67,22 @@ struct VoxelSvoPageInfo {
 // module boundary and lifecycle wiring so later sprints can fill in the pipeline.
 class VoxelSvoLodManager {
 public:
+    struct OpaqueMeshEntry {
+        VoxelPageKey key{};
+        uint64_t revision = 0;
+        glm::vec3 worldMin{0.0f};
+        const ChunkMesh* mesh = nullptr;
+    };
+
     void setConfig(const VoxelSvoConfig& config);
     const VoxelSvoConfig& config() const { return m_config; }
 
     void setBuildThreads(size_t threadCount);
     void setChunkGenerator(GeneratorSource::ChunkGenerateCallback generator);
 
-    void bind(const ChunkManager* chunkManager, const BlockRegistry* registry);
+    void bind(const ChunkManager* chunkManager,
+              const BlockRegistry* registry,
+              const TextureAtlas* atlas = nullptr);
 
     void initialize();
     void update(const glm::vec3& cameraPos);
@@ -83,6 +94,7 @@ public:
     size_t pageCount() const;
     std::optional<VoxelSvoPageInfo> pageInfo(const VoxelPageKey& key) const;
     void collectDebugPages(std::vector<std::pair<VoxelPageKey, VoxelSvoPageInfo>>& out) const;
+    void collectOpaqueMeshes(std::vector<OpaqueMeshEntry>& out) const;
 
 private:
     struct PageRecord {
@@ -94,9 +106,13 @@ private:
         uint32_t nodeCount = 0;
         uint16_t leafMinVoxels = 1;
         uint64_t lastTouchedFrame = 0;
+        bool meshQueued = false;
+        uint64_t meshQueuedRevision = 0;
+        uint64_t meshRevision = 0;
         std::shared_ptr<std::atomic_bool> cancel;
         VoxelPageCpu cpu;
         VoxelPageTree tree;
+        ChunkMesh mesh;
     };
 
     struct PageBuildOutput {
@@ -110,12 +126,22 @@ private:
         VoxelPageTree tree;
     };
 
+    struct MeshBuildOutput {
+        VoxelPageKey key{};
+        uint64_t revision = 0;
+        ChunkMesh mesh;
+    };
+
     static VoxelSvoConfig sanitizeConfig(VoxelSvoConfig config);
     void ensureBuildPool();
     void processBuildCompletions();
+    void processMeshCompletions();
     void seedDesiredPages(const glm::vec3& cameraPos);
     void enqueueBuild(const VoxelPageKey& key, uint64_t revision);
+    void enqueueMeshBuilds();
+    bool canMeshPage(const VoxelPageKey& key, uint16_t cellSizeVoxels) const;
     void enforcePageLimit(const glm::vec3& cameraPos);
+    void rebuildFaceTextureLayers();
     PageRecord* findPage(const VoxelPageKey& key);
     const PageRecord* findPage(const VoxelPageKey& key) const;
 
@@ -123,13 +149,16 @@ private:
     VoxelSvoTelemetry m_telemetry{};
     const ChunkManager* m_chunkManager = nullptr;
     const BlockRegistry* m_registry = nullptr;
+    const TextureAtlas* m_atlas = nullptr;
     size_t m_buildThreads = 1;
     GeneratorSource::ChunkGenerateCallback m_chunkGenerator;
     std::unique_ptr<detail::ThreadPool> m_buildPool;
     detail::ConcurrentQueue<PageBuildOutput> m_buildComplete;
+    detail::ConcurrentQueue<MeshBuildOutput> m_meshBuildComplete;
     std::unordered_map<VoxelPageKey, PageRecord, VoxelPageKeyHash> m_pages;
     std::deque<VoxelPageKey> m_buildQueue;
     std::unordered_set<VoxelPageKey, VoxelPageKeyHash> m_buildQueued;
+    std::vector<std::array<uint16_t, DirectionCount>> m_faceTextureLayers;
     uint64_t m_frameCounter = 0;
     glm::vec3 m_lastCameraPos{0.0f};
     bool m_initialized = false;

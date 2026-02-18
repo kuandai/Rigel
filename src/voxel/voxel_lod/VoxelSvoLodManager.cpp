@@ -2,6 +2,11 @@
 
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/Chunk.h"
+#include "Rigel/Voxel/VoxelVertex.h"
+#include "Rigel/Voxel/VoxelLod/VoxelSurfaceExtraction.h"
+#include "Rigel/Voxel/VoxelLod/VoxelSurfaceMesher.h"
+
+#include <glm/geometric.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -63,6 +68,23 @@ VoxelMaterialClass classifyVoxel(const BlockRegistry* registry, VoxelId id) {
         default:
             return VoxelMaterialClass::Opaque;
     }
+}
+
+constexpr std::array<glm::ivec3, 6> kNeighborOffsets = {
+    glm::ivec3(-1, 0, 0),
+    glm::ivec3( 1, 0, 0),
+    glm::ivec3( 0,-1, 0),
+    glm::ivec3( 0, 1, 0),
+    glm::ivec3( 0, 0,-1),
+    glm::ivec3( 0, 0, 1)
+};
+
+glm::vec3 pageWorldMin(const VoxelPageKey& key, int pageSizeVoxels) {
+    return glm::vec3(
+        static_cast<float>(key.x * pageSizeVoxels),
+        static_cast<float>(key.y * pageSizeVoxels),
+        static_cast<float>(key.z * pageSizeVoxels)
+    );
 }
 
 } // namespace
@@ -133,9 +155,13 @@ void VoxelSvoLodManager::setChunkGenerator(GeneratorSource::ChunkGenerateCallbac
     m_chunkGenerator = std::move(generator);
 }
 
-void VoxelSvoLodManager::bind(const ChunkManager* chunkManager, const BlockRegistry* registry) {
+void VoxelSvoLodManager::bind(const ChunkManager* chunkManager,
+                              const BlockRegistry* registry,
+                              const TextureAtlas* atlas) {
     m_chunkManager = chunkManager;
     m_registry = registry;
+    m_atlas = atlas;
+    rebuildFaceTextureLayers();
 }
 
 void VoxelSvoLodManager::initialize() {
@@ -164,6 +190,42 @@ const VoxelSvoLodManager::PageRecord* VoxelSvoLodManager::findPage(const VoxelPa
         return nullptr;
     }
     return &it->second;
+}
+
+void VoxelSvoLodManager::rebuildFaceTextureLayers() {
+    m_faceTextureLayers.clear();
+    if (!m_registry) {
+        return;
+    }
+
+    m_faceTextureLayers.resize(m_registry->size());
+    for (size_t i = 0; i < m_faceTextureLayers.size(); ++i) {
+        m_faceTextureLayers[i].fill(0);
+    }
+
+    if (!m_atlas) {
+        return;
+    }
+
+    for (size_t id = 0; id < m_faceTextureLayers.size(); ++id) {
+        const BlockType& type = m_registry->getType(BlockID{static_cast<uint16_t>(id)});
+        auto& layers = m_faceTextureLayers[id];
+        for (size_t face = 0; face < DirectionCount; ++face) {
+            const Direction dir = static_cast<Direction>(face);
+            const std::string& texture = type.textures.forFace(dir);
+            if (texture.empty()) {
+                layers[face] = 0;
+                continue;
+            }
+            TextureHandle handle = m_atlas->findTexture(texture);
+            if (!handle.isValid()) {
+                layers[face] = 0;
+                continue;
+            }
+            const int layer = m_atlas->getLayer(handle);
+            layers[face] = static_cast<uint16_t>(std::clamp(layer, 0, 65535));
+        }
+    }
 }
 
 void VoxelSvoLodManager::processBuildCompletions() {
@@ -196,6 +258,12 @@ void VoxelSvoLodManager::processBuildCompletions() {
         record->appliedRevision = output.revision;
         record->state = VoxelPageState::ReadyCpu;
         record->cancel.reset();
+        record->meshQueued = false;
+        record->meshQueuedRevision = 0;
+        if (record->meshRevision != output.revision) {
+            record->mesh = ChunkMesh{};
+            record->meshRevision = 0;
+        }
 
         // Lifetime sampling counters.
         if (output.sampledVoxels > 0) {
@@ -208,6 +276,172 @@ void VoxelSvoLodManager::processBuildCompletions() {
 
         // Per-update mip timing (accumulated across applied pages).
         m_telemetry.mipBuildMicros += output.mipBuildMicros;
+    }
+}
+
+bool VoxelSvoLodManager::canMeshPage(const VoxelPageKey& key, uint16_t cellSizeVoxels) const {
+    for (const glm::ivec3& offset : kNeighborOffsets) {
+        VoxelPageKey neighborKey = key;
+        neighborKey.x += offset.x;
+        neighborKey.y += offset.y;
+        neighborKey.z += offset.z;
+        auto it = m_pages.find(neighborKey);
+        if (it == m_pages.end()) {
+            return false;
+        }
+        const PageRecord& neighbor = it->second;
+        if (neighbor.appliedRevision == 0 || neighbor.cpu.dim <= 0) {
+            return false;
+        }
+        if (neighbor.leafMinVoxels != cellSizeVoxels) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void VoxelSvoLodManager::enqueueMeshBuilds() {
+    int budget = std::max(0, m_config.applyBudgetPagesPerFrame);
+    if (budget == 0) {
+        return;
+    }
+
+    struct Candidate {
+        VoxelPageKey key{};
+        float distanceSq = 0.0f;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(m_pages.size());
+
+    const int pageSize = std::max(1, m_config.pageSizeVoxels);
+    for (const auto& [key, record] : m_pages) {
+        if (record.state != VoxelPageState::ReadyCpu) {
+            continue;
+        }
+        if (record.appliedRevision == 0) {
+            continue;
+        }
+        if (record.meshQueued) {
+            continue;
+        }
+        if (record.meshRevision == record.appliedRevision) {
+            continue;
+        }
+        if (!canMeshPage(key, record.leafMinVoxels)) {
+            continue;
+        }
+
+        glm::vec3 center = pageWorldMin(key, pageSize) + glm::vec3(static_cast<float>(pageSize) * 0.5f);
+        glm::vec3 delta = center - m_lastCameraPos;
+        candidates.push_back(Candidate{key, glm::dot(delta, delta)});
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+        return a.distanceSq < b.distanceSq;
+    });
+
+    for (const Candidate& candidate : candidates) {
+        if (budget <= 0) {
+            break;
+        }
+
+        PageRecord* center = findPage(candidate.key);
+        if (!center) {
+            continue;
+        }
+        if (center->meshQueued || center->meshRevision == center->appliedRevision) {
+            continue;
+        }
+
+        const int cellSize = std::max(1, static_cast<int>(center->leafMinVoxels));
+        MacroVoxelGrid centerGrid = buildMacroGridFromPage(center->cpu, cellSize);
+        if (centerGrid.empty()) {
+            center->mesh = ChunkMesh{};
+            center->meshRevision = center->appliedRevision;
+            continue;
+        }
+
+        std::array<MacroVoxelGrid, 6> neighborGrids;
+        bool validNeighbors = true;
+        for (size_t i = 0; i < kNeighborOffsets.size(); ++i) {
+            VoxelPageKey neighborKey = candidate.key;
+            neighborKey.x += kNeighborOffsets[i].x;
+            neighborKey.y += kNeighborOffsets[i].y;
+            neighborKey.z += kNeighborOffsets[i].z;
+            PageRecord* neighbor = findPage(neighborKey);
+            if (!neighbor || neighbor->cpu.dim <= 0 || neighbor->leafMinVoxels != center->leafMinVoxels) {
+                validNeighbors = false;
+                break;
+            }
+            neighborGrids[i] = buildMacroGridFromPage(neighbor->cpu, cellSize);
+            if (neighborGrids[i].empty()) {
+                validNeighbors = false;
+                break;
+            }
+        }
+        if (!validNeighbors) {
+            continue;
+        }
+
+        VoxelPageKey key = candidate.key;
+        const uint64_t revision = center->appliedRevision;
+        center->meshQueued = true;
+        center->meshQueuedRevision = revision;
+
+        const auto faceLayers = m_faceTextureLayers;
+
+        m_buildPool->enqueue([this,
+                              key,
+                              revision,
+                              centerGrid = std::move(centerGrid),
+                              neighborNegX = std::move(neighborGrids[0]),
+                              neighborPosX = std::move(neighborGrids[1]),
+                              neighborNegY = std::move(neighborGrids[2]),
+                              neighborPosY = std::move(neighborGrids[3]),
+                              neighborNegZ = std::move(neighborGrids[4]),
+                              neighborPosZ = std::move(neighborGrids[5]),
+                              cellSize,
+                              faceLayers = std::move(faceLayers)]() mutable {
+            MeshBuildOutput output{};
+            output.key = key;
+            output.revision = revision;
+
+            const MacroVoxelNeighbors workerNeighbors{
+                .negX = &neighborNegX,
+                .posX = &neighborPosX,
+                .negY = &neighborNegY,
+                .posY = &neighborPosY,
+                .negZ = &neighborNegZ,
+                .posZ = &neighborPosZ
+            };
+
+            std::vector<SurfaceQuad> quads;
+            extractSurfaceQuadsGreedy(centerGrid, workerNeighbors, VoxelBoundaryPolicy::OutsideSolid, quads);
+            output.mesh = buildSurfaceMeshFromQuads(quads, cellSize, faceLayers);
+            m_meshBuildComplete.push(std::move(output));
+        });
+
+        --budget;
+    }
+}
+
+void VoxelSvoLodManager::processMeshCompletions() {
+    MeshBuildOutput output;
+    while (m_meshBuildComplete.tryPop(output)) {
+        PageRecord* record = findPage(output.key);
+        if (!record) {
+            continue;
+        }
+        if (!record->meshQueued) {
+            continue;
+        }
+        if (record->meshQueuedRevision != output.revision) {
+            continue;
+        }
+        record->meshQueued = false;
+        record->meshQueuedRevision = 0;
+        record->meshRevision = output.revision;
+        record->mesh = std::move(output.mesh);
     }
 }
 
@@ -444,6 +678,7 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
 
     m_telemetry.mipBuildMicros = 0;
     processBuildCompletions();
+    processMeshCompletions();
     seedDesiredPages(cameraPos);
 
     enforcePageLimit(cameraPos);
@@ -465,6 +700,8 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
         enqueueBuild(key, record->desiredRevision);
         --budget;
     }
+
+    enqueueMeshBuilds();
 
     // Update telemetry (current state).
     m_telemetry.activePages = static_cast<uint32_t>(m_pages.size());
@@ -489,6 +726,8 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
                 ++m_telemetry.pagesReadyCpu;
                 m_telemetry.cpuBytesCurrent += record.cpu.cpuBytes();
                 m_telemetry.cpuBytesCurrent += record.tree.cpuBytes();
+                m_telemetry.cpuBytesCurrent += record.mesh.vertices.size() * sizeof(VoxelVertex);
+                m_telemetry.cpuBytesCurrent += record.mesh.indices.size() * sizeof(uint32_t);
                 if (record.key.level >= 0 && record.key.level < static_cast<int>(m_telemetry.readyCpuPagesPerLevel.size())) {
                     m_telemetry.readyCpuPagesPerLevel[static_cast<size_t>(record.key.level)] += 1;
                     m_telemetry.readyCpuNodesPerLevel[static_cast<size_t>(record.key.level)] += record.tree.nodes.size();
@@ -567,6 +806,27 @@ void VoxelSvoLodManager::collectDebugPages(
         info.nodeCount = record.nodeCount;
         info.leafMinVoxels = record.leafMinVoxels;
         out.push_back({key, info});
+    }
+}
+
+void VoxelSvoLodManager::collectOpaqueMeshes(std::vector<OpaqueMeshEntry>& out) const {
+    out.clear();
+    out.reserve(m_pages.size());
+    const int pageSize = std::max(1, m_config.pageSizeVoxels);
+    for (const auto& [key, record] : m_pages) {
+        if (record.meshRevision == 0 || record.mesh.isEmpty()) {
+            continue;
+        }
+        const auto& opaque = record.mesh.layers[static_cast<size_t>(RenderLayer::Opaque)];
+        if (opaque.isEmpty()) {
+            continue;
+        }
+        OpaqueMeshEntry entry{};
+        entry.key = key;
+        entry.revision = record.meshRevision;
+        entry.worldMin = pageWorldMin(key, pageSize);
+        entry.mesh = &record.mesh;
+        out.push_back(entry);
     }
 }
 

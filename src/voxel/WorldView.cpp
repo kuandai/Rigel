@@ -48,7 +48,9 @@ WorldView::WorldView(World& world, WorldResources& resources)
     if (m_world && m_resources) {
         m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
         configureSvoChunkSampler(m_world->generator());
-        m_voxelSvoLod.bind(&m_world->chunkManager(), &m_resources->registry());
+        m_voxelSvoLod.bind(&m_world->chunkManager(),
+                           &m_resources->registry(),
+                           &m_resources->textureAtlas());
         configureVoxelSvoChunkGenerator(m_world->generator());
     }
 }
@@ -114,7 +116,9 @@ void WorldView::initialize(Asset::AssetManager& assets) {
                         generator);
         m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
         configureSvoChunkSampler(generator);
-        m_voxelSvoLod.bind(&m_world->chunkManager(), &m_resources->registry());
+        m_voxelSvoLod.bind(&m_world->chunkManager(),
+                           &m_resources->registry(),
+                           &m_resources->textureAtlas());
         configureVoxelSvoChunkGenerator(generator);
     }
 

@@ -147,3 +147,67 @@ TEST_CASE(VoxelSvoLodManager_BuildsSinglePageToReadyCpu) {
     CHECK(info->nodeCount > 0u);
     CHECK_EQ(info->leafMinVoxels, static_cast<uint16_t>(4));
 }
+
+TEST_CASE(VoxelSvoLodManager_BuildsCenterPageMeshWhenNeighborsReady) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 2;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 27;
+    config.buildBudgetPagesPerFrame = 16;
+    config.applyBudgetPagesPerFrame = 16;
+    manager.setConfig(config);
+    manager.initialize();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(750);
+    std::vector<VoxelSvoLodManager::OpaqueMeshEntry> meshes;
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        manager.collectOpaqueMeshes(meshes);
+        bool foundCenter = false;
+        for (const auto& entry : meshes) {
+            if (entry.key == VoxelPageKey{0, 0, 0, 0}) {
+                foundCenter = true;
+                break;
+            }
+        }
+        if (foundCenter) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    bool foundCenter = false;
+    for (const auto& entry : meshes) {
+        if (entry.key == VoxelPageKey{0, 0, 0, 0}) {
+            foundCenter = true;
+            CHECK(entry.mesh != nullptr);
+            CHECK(!entry.mesh->isEmpty());
+            CHECK(entry.mesh->layers[static_cast<size_t>(RenderLayer::Opaque)].indexCount > 0);
+            break;
+        }
+    }
+    CHECK(foundCenter);
+}

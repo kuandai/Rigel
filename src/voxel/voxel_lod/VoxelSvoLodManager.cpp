@@ -425,6 +425,8 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
         m_telemetry.pagesBuilding = 0;
         m_telemetry.pagesReadyCpu = 0;
         m_telemetry.pagesUploaded = 0;
+        m_telemetry.readyCpuPagesPerLevel = {};
+        m_telemetry.readyCpuNodesPerLevel = {};
         m_telemetry.bricksSampled = 0;
         m_telemetry.voxelsSampled = 0;
         m_telemetry.loadedHits = 0;
@@ -470,6 +472,8 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
     m_telemetry.pagesBuilding = 0;
     m_telemetry.pagesReadyCpu = 0;
     m_telemetry.pagesUploaded = 0;
+    m_telemetry.readyCpuPagesPerLevel = {};
+    m_telemetry.readyCpuNodesPerLevel = {};
     m_telemetry.cpuBytesCurrent = 0;
 
     for (const auto& [key, record] : m_pages) {
@@ -485,6 +489,10 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
                 ++m_telemetry.pagesReadyCpu;
                 m_telemetry.cpuBytesCurrent += record.cpu.cpuBytes();
                 m_telemetry.cpuBytesCurrent += record.tree.cpuBytes();
+                if (record.key.level >= 0 && record.key.level < static_cast<int>(m_telemetry.readyCpuPagesPerLevel.size())) {
+                    m_telemetry.readyCpuPagesPerLevel[static_cast<size_t>(record.key.level)] += 1;
+                    m_telemetry.readyCpuNodesPerLevel[static_cast<size_t>(record.key.level)] += record.tree.nodes.size();
+                }
                 break;
             default:
                 break;

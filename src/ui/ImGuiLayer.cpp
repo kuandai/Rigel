@@ -355,6 +355,17 @@ void renderProfilerWindow(bool enabled,
         ImGui::Text("Current memory: CPU %.2f MiB, GPU %.2f MiB",
                     static_cast<double>(voxelSvoTelemetry->cpuBytesCurrent) / (1024.0 * 1024.0),
                     static_cast<double>(voxelSvoTelemetry->gpuBytesCurrent) / (1024.0 * 1024.0));
+        if (voxelSvoConfig->levels > 0) {
+            ImGui::TextUnformatted("CPU-ready breakdown (per level):");
+            const int maxLevels = std::min<int>(voxelSvoConfig->levels,
+                                                static_cast<int>(voxelSvoTelemetry->readyCpuPagesPerLevel.size()));
+            for (int level = 0; level < maxLevels; ++level) {
+                ImGui::Text("L%d: pages %u, nodes %" PRIu64,
+                            level,
+                            voxelSvoTelemetry->readyCpuPagesPerLevel[static_cast<size_t>(level)],
+                            voxelSvoTelemetry->readyCpuNodesPerLevel[static_cast<size_t>(level)]);
+            }
+        }
         ImGui::Text("Update calls: %" PRIu64, voxelSvoTelemetry->updateCalls);
         ImGui::Text("Upload calls: %" PRIu64, voxelSvoTelemetry->uploadCalls);
     }

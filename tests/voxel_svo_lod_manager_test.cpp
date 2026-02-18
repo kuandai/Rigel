@@ -65,6 +65,10 @@ TEST_CASE(VoxelSvoLodManager_UpdateStaysInertWhenDisabled) {
     CHECK_EQ(telemetry.pagesBuilding, 0u);
     CHECK_EQ(telemetry.pagesReadyCpu, 0u);
     CHECK_EQ(telemetry.pagesUploaded, 0u);
+    for (size_t i = 0; i < telemetry.readyCpuPagesPerLevel.size(); ++i) {
+        CHECK_EQ(telemetry.readyCpuPagesPerLevel[i], 0u);
+        CHECK_EQ(telemetry.readyCpuNodesPerLevel[i], 0u);
+    }
 }
 
 TEST_CASE(VoxelSvoLodManager_ResetAndReinitialize_IsIdempotent) {

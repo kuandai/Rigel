@@ -7,6 +7,7 @@
 #include "Rigel/Voxel/VoxelLod/VoxelPageTree.h"
 
 #include <glm/vec3.hpp>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -36,6 +37,8 @@ struct VoxelSvoTelemetry {
     uint32_t pagesBuilding = 0;
     uint32_t pagesReadyCpu = 0;
     uint32_t pagesUploaded = 0;
+    std::array<uint32_t, 16> readyCpuPagesPerLevel{};
+    std::array<uint64_t, 16> readyCpuNodesPerLevel{};
     uint64_t cpuBytesCurrent = 0;
     uint64_t gpuBytesCurrent = 0;
 };

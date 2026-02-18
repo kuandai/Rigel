@@ -18,6 +18,7 @@ struct VoxelSvoTelemetry {
     uint64_t loadedHits = 0;
     uint64_t persistenceHits = 0;
     uint64_t generatorHits = 0;
+    uint64_t mipBuildMicros = 0;
     uint32_t activePages = 0;
     uint32_t pagesQueued = 0;
     uint32_t pagesBuilding = 0;

@@ -59,6 +59,7 @@ TEST_CASE(VoxelSvoLodManager_UpdateStaysInertWhenDisabled) {
     CHECK_EQ(telemetry.loadedHits, 0u);
     CHECK_EQ(telemetry.persistenceHits, 0u);
     CHECK_EQ(telemetry.generatorHits, 0u);
+    CHECK_EQ(telemetry.mipBuildMicros, 0u);
     CHECK_EQ(telemetry.activePages, 0u);
     CHECK_EQ(telemetry.pagesQueued, 0u);
     CHECK_EQ(telemetry.pagesBuilding, 0u);

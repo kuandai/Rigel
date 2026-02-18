@@ -351,6 +351,7 @@ void renderProfilerWindow(bool enabled,
                     voxelSvoTelemetry->loadedHits,
                     voxelSvoTelemetry->persistenceHits,
                     voxelSvoTelemetry->generatorHits);
+        ImGui::Text("Mip build time: %" PRIu64 " us", voxelSvoTelemetry->mipBuildMicros);
         ImGui::Text("Current memory: CPU %.2f MiB, GPU %.2f MiB",
                     static_cast<double>(voxelSvoTelemetry->cpuBytesCurrent) / (1024.0 * 1024.0),
                     static_cast<double>(voxelSvoTelemetry->gpuBytesCurrent) / (1024.0 * 1024.0));

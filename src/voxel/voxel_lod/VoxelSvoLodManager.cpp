@@ -92,6 +92,7 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
         m_telemetry.loadedHits = 0;
         m_telemetry.persistenceHits = 0;
         m_telemetry.generatorHits = 0;
+        m_telemetry.mipBuildMicros = 0;
         m_telemetry.cpuBytesCurrent = 0;
         m_telemetry.gpuBytesCurrent = 0;
         return;

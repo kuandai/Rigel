@@ -266,7 +266,7 @@ config (`assets/config/render.yaml`) may override them.
 | `render.svo.lod_max_gpu_bytes` | int | `0` | Max SVO GPU bytes (0 = unlimited). |
 | `render.svo.lod_copy_budget_per_frame` | int | `4` | Copy budget (cells/frame). |
 | `render.svo.lod_apply_budget_per_frame` | int | `4` | Apply budget (cells/frame). |
-| `render.svo_voxel.enabled` | bool | `false` | Enable voxel-base SVO LOD (WIP; no rendering yet). |
+| `render.svo_voxel.enabled` | bool | `false` | Enable voxel-base SVO LOD far rendering path. |
 | `render.svo_voxel.near_mesh_radius_chunks` | int | `8` | Near mesh retention radius (chunks). |
 | `render.svo_voxel.start_radius_chunks` | int | `12` | Voxel SVO start radius (chunks). |
 | `render.svo_voxel.max_radius_chunks` | int | `64` | Voxel SVO max radius (chunks). |
@@ -276,7 +276,7 @@ config (`assets/config/render.yaml`) may override them.
 | `render.svo_voxel.min_leaf_voxels` | int | `1` | Global min leaf size (voxels, power-of-two). |
 | `render.svo_voxel.build_budget_pages_per_frame` | int | `1` | Worker build budget (pages/frame). |
 | `render.svo_voxel.apply_budget_pages_per_frame` | int | `1` | Main-thread apply budget (pages/frame). |
-| `render.svo_voxel.upload_budget_pages_per_frame` | int | `1` | GPU upload budget (pages/frame). |
+| `render.svo_voxel.upload_budget_pages_per_frame` | int | `1` | GPU upload budget (pages/frame, `0` = unlimited). |
 | `render.svo_voxel.max_resident_pages` | int | `512` | Hard cap on resident pages (0 = unlimited). |
 | `render.svo_voxel.max_cpu_bytes` | int | `268435456` | Hard cap on voxel SVO CPU memory. |
 | `render.svo_voxel.max_gpu_bytes` | int | `268435456` | Hard cap on voxel SVO GPU memory. |

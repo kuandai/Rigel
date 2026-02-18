@@ -2,6 +2,7 @@
 
 #include "Rigel/Voxel/VoxelVertex.h"
 #include "Rigel/Voxel/VoxelLod/VoxelLodTransition.h"
+#include "Rigel/Voxel/VoxelLod/VoxelUploadBudget.h"
 
 #include <spdlog/spdlog.h>
 #include <glm/glm.hpp>
@@ -495,6 +496,8 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
     }
     const VoxelLodDistanceBands distanceBands =
         makeVoxelLodDistanceBands(ctx.config.svoVoxel, farRenderDistance);
+    VoxelUploadBudget uploadBudget =
+        beginVoxelUploadBudget(ctx.config.svoVoxel.uploadBudgetPagesPerFrame);
 
     struct DrawEntry {
         VoxelPageKey key{};
@@ -524,6 +527,9 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
 
         auto it = m_voxelMeshes.find(entry.key);
         if (it == m_voxelMeshes.end()) {
+            if (!consumeVoxelUploadBudget(uploadBudget)) {
+                continue;
+            }
             VoxelGpuMeshEntry gpuEntry;
             gpuEntry.key = entry.key;
             gpuEntry.revision = entry.revision;
@@ -531,9 +537,11 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
             uploadMesh(gpuEntry.mesh, *entry.mesh);
             it = m_voxelMeshes.emplace(entry.key, std::move(gpuEntry)).first;
         } else if (it->second.revision != entry.revision) {
-            it->second.revision = entry.revision;
             it->second.worldMin = entry.worldMin;
-            uploadMesh(it->second.mesh, *entry.mesh);
+            if (consumeVoxelUploadBudget(uploadBudget)) {
+                it->second.revision = entry.revision;
+                uploadMesh(it->second.mesh, *entry.mesh);
+            }
         } else {
             it->second.worldMin = entry.worldMin;
         }

@@ -48,4 +48,3 @@ TEST_CASE(VoxelSurfaceExtraction_InternalCavityProducesInternalSurfaces) {
 
 } // namespace
 } // namespace Rigel::Voxel
-

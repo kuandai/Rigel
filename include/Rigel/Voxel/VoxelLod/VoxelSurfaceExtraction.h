@@ -57,4 +57,10 @@ void extractSurfaceQuads(const MacroVoxelGrid& grid,
                          VoxelBoundaryPolicy boundaryPolicy,
                          std::vector<SurfaceQuad>& out);
 
+// Same as extractSurfaceQuads(), but performs per-plane greedy merging so coplanar
+// adjacent faces of the same material collapse into larger quads.
+void extractSurfaceQuadsGreedy(const MacroVoxelGrid& grid,
+                               VoxelBoundaryPolicy boundaryPolicy,
+                               std::vector<SurfaceQuad>& out);
+
 } // namespace Rigel::Voxel

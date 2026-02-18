@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -45,6 +46,9 @@ struct SvoLodTelemetry {
 
 class SvoLodManager {
 public:
+    using ChunkSampleCallback = std::function<bool(ChunkCoord,
+                                                   std::array<BlockState, Chunk::VOLUME>&)>;
+
     struct DebugCellState {
         LodCellKey key{};
         LodCellState state = LodCellState::Missing;
@@ -72,6 +76,7 @@ public:
     void setConfig(const SvoLodConfig& config);
     const SvoLodConfig& config() const { return m_config; }
     void setBuildThreads(size_t threadCount);
+    void setChunkSampler(ChunkSampleCallback sampler);
     void bind(const ChunkManager* chunkManager, const BlockRegistry* registry);
 
     void initialize();
@@ -102,6 +107,7 @@ private:
         uint64_t opaqueVoxelCount = 0;
         uint64_t nonOpaqueVoxelCount = 0;
         bool visibleAsFarLod = false;
+        bool autonomousRequested = false;
         std::vector<LodSvoNode> nodes;
         uint32_t rootNode = LodSvoNode::INVALID_INDEX;
         uint64_t lastTouchedFrame = 0;
@@ -117,6 +123,7 @@ private:
     static SvoLodConfig sanitizeConfig(SvoLodConfig config);
 
     void ensureBuildPool();
+    void seedDesiredCells(const glm::vec3& cameraPos);
     void scanChunkChanges();
     void processCopyBudget();
     void processApplyBudget();
@@ -130,10 +137,13 @@ private:
     void updateTelemetry();
     void enforceCellLimit();
     void removeDirtyCell(const LodCellKey& key);
-    std::optional<LodBuildInput> makeBuildInput(const LodCellKey& key, uint64_t revision) const;
+    std::optional<LodBuildInput> makeBuildInput(const LodCellKey& key,
+                                                uint64_t revision,
+                                                bool includeMissingChunks) const;
 
     SvoLodConfig m_config;
     SvoLodTelemetry m_telemetry;
+    ChunkSampleCallback m_chunkSampler;
     const ChunkManager* m_chunkManager = nullptr;
     const BlockRegistry* m_registry = nullptr;
     size_t m_buildThreads = 1;

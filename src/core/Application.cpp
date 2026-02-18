@@ -724,7 +724,14 @@ void Application::run() {
                 glfwGetFramebufferSize(m_impl->window.window, &width, &height);
                 float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
 
-                float renderDistance = m_impl->world.worldView->renderConfig().renderDistance;
+                const auto renderConfig = m_impl->world.worldView->renderConfig();
+                float renderDistance = renderConfig.renderDistance;
+                if (renderConfig.svo.enabled && renderConfig.svo.lodViewDistanceChunks > 0) {
+                    const float svoRenderDistance =
+                        (static_cast<float>(renderConfig.svo.lodViewDistanceChunks) + 0.5f) *
+                        static_cast<float>(Voxel::Chunk::SIZE);
+                    renderDistance = std::max(renderDistance, svoRenderDistance);
+                }
                 float nearPlane = 0.1f;
                 float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
                 glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, nearPlane, farPlane);

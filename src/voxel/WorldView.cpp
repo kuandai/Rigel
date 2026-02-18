@@ -31,6 +31,7 @@ WorldView::WorldView(World& world, WorldResources& resources)
     m_svoLod.setConfig(m_renderConfig.svo);
     if (m_world && m_resources) {
         m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
+        configureSvoChunkSampler(m_world->generator());
     }
 }
 
@@ -77,12 +78,14 @@ void WorldView::initialize(Asset::AssetManager& assets) {
     m_entityRenderer.initialize(assets);
 
     if (m_world && m_resources) {
+        auto generator = m_world->generator();
         m_streamer.bind(&m_world->chunkManager(),
                         &m_meshStore,
                         &m_resources->registry(),
                         &m_resources->textureAtlas(),
-                        m_world->generator());
+                        generator);
         m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
+        configureSvoChunkSampler(generator);
     }
 
     if (m_renderConfig.svo.enabled) {
@@ -95,12 +98,36 @@ void WorldView::setGenerator(std::shared_ptr<WorldGenerator> generator) {
     if (!m_world || !m_resources) {
         return;
     }
+    auto generatorRef = generator;
     m_streamer.bind(&m_world->chunkManager(),
                     &m_meshStore,
                     &m_resources->registry(),
                     &m_resources->textureAtlas(),
                     std::move(generator));
     m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
+    configureSvoChunkSampler(generatorRef);
+}
+
+void WorldView::configureSvoChunkSampler(const std::shared_ptr<WorldGenerator>& generator) {
+    if (!generator) {
+        m_svoLod.setChunkSampler({});
+        return;
+    }
+
+    std::weak_ptr<WorldGenerator> weakGenerator = generator;
+    m_svoLod.setChunkSampler(
+        [weakGenerator](ChunkCoord coord, std::array<BlockState, Chunk::VOLUME>& out) -> bool {
+            auto locked = weakGenerator.lock();
+            if (!locked) {
+                return false;
+            }
+
+            ChunkBuffer buffer;
+            locked->generate(coord, buffer, nullptr);
+            out = std::move(buffer.blocks);
+            return true;
+        }
+    );
 }
 
 void WorldView::setChunkLoader(ChunkStreamer::ChunkLoadCallback loader) {

@@ -1,6 +1,7 @@
 #include "Rigel/Voxel/WorldConfigProvider.h"
 
 #include "Rigel/Asset/Types.h"
+#include "Rigel/Voxel/Chunk.h"
 #include "ResourceRegistry.h"
 #include "Rigel/Util/Yaml.h"
 
@@ -126,8 +127,12 @@ void applySvoConfig(ryml::ConstNodeRef svoNode, SvoLodConfig& svo) {
         svoNode, "near_mesh_radius_chunks", svo.nearMeshRadiusChunks);
     svo.lodStartRadiusChunks = Util::readInt(
         svoNode, "lod_start_radius_chunks", svo.lodStartRadiusChunks);
+    svo.lodViewDistanceChunks = Util::readInt(
+        svoNode, "lod_view_distance_chunks", svo.lodViewDistanceChunks);
     svo.lodCellSpanChunks = Util::readInt(
         svoNode, "lod_cell_span_chunks", svo.lodCellSpanChunks);
+    svo.lodChunkSampleStep = Util::readInt(
+        svoNode, "lod_chunk_sample_step", svo.lodChunkSampleStep);
     svo.lodMaxCells = Util::readInt(
         svoNode, "lod_max_cells", svo.lodMaxCells);
     svo.lodMaxCpuBytes = static_cast<int64_t>(Util::readInt(
@@ -145,8 +150,19 @@ void applySvoConfig(ryml::ConstNodeRef svoNode, SvoLodConfig& svo) {
     if (svo.lodStartRadiusChunks < svo.nearMeshRadiusChunks) {
         svo.lodStartRadiusChunks = svo.nearMeshRadiusChunks;
     }
+    if (svo.lodViewDistanceChunks < 0) {
+        svo.lodViewDistanceChunks = 0;
+    } else if (svo.lodViewDistanceChunks > 0 &&
+               svo.lodViewDistanceChunks < svo.lodStartRadiusChunks) {
+        svo.lodViewDistanceChunks = svo.lodStartRadiusChunks;
+    }
     if (svo.lodCellSpanChunks < 1) {
         svo.lodCellSpanChunks = 1;
+    }
+    if (svo.lodChunkSampleStep < 1) {
+        svo.lodChunkSampleStep = 1;
+    } else if (svo.lodChunkSampleStep > Chunk::SIZE) {
+        svo.lodChunkSampleStep = Chunk::SIZE;
     }
     if (svo.lodMaxCells < 0) {
         svo.lodMaxCells = 0;

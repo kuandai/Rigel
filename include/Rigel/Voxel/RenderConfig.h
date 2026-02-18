@@ -38,7 +38,9 @@ struct SvoLodConfig {
     bool enabled = false;
     int nearMeshRadiusChunks = 8;
     int lodStartRadiusChunks = 10;
+    int lodViewDistanceChunks = 0;
     int lodCellSpanChunks = 8;
+    int lodChunkSampleStep = 1;
     int lodMaxCells = 1024;
     int64_t lodMaxCpuBytes = 0;
     int64_t lodMaxGpuBytes = 0;

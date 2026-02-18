@@ -20,7 +20,9 @@ TEST_CASE(WorldView_SetRenderConfigSyncsSvoConfig) {
     config.svo.enabled = true;
     config.svo.nearMeshRadiusChunks = 5;
     config.svo.lodStartRadiusChunks = 9;
+    config.svo.lodViewDistanceChunks = 24;
     config.svo.lodCellSpanChunks = 4;
+    config.svo.lodChunkSampleStep = 3;
     config.svo.lodMaxCells = 333;
     config.svo.lodCopyBudgetPerFrame = 6;
     config.svo.lodApplyBudgetPerFrame = 7;
@@ -31,7 +33,9 @@ TEST_CASE(WorldView_SetRenderConfigSyncsSvoConfig) {
     CHECK(svo.enabled);
     CHECK_EQ(svo.nearMeshRadiusChunks, 5);
     CHECK_EQ(svo.lodStartRadiusChunks, 9);
+    CHECK_EQ(svo.lodViewDistanceChunks, 24);
     CHECK_EQ(svo.lodCellSpanChunks, 4);
+    CHECK_EQ(svo.lodChunkSampleStep, 3);
     CHECK_EQ(svo.lodMaxCells, 333);
     CHECK_EQ(svo.lodCopyBudgetPerFrame, 6);
     CHECK_EQ(svo.lodApplyBudgetPerFrame, 7);

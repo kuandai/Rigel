@@ -443,8 +443,16 @@ void ChunkRenderer::renderFarLodOpaquePass(const WorldRenderContext& ctx) {
         return;
     }
 
+    float lodRenderDistance = std::max(0.0f, ctx.config.renderDistance);
+    if (ctx.config.svo.lodViewDistanceChunks > 0) {
+        const float svoDistance =
+            (static_cast<float>(ctx.config.svo.lodViewDistanceChunks) + 0.5f) *
+            static_cast<float>(Chunk::SIZE);
+        lodRenderDistance = std::max(lodRenderDistance, svoDistance);
+    }
+
     std::vector<SvoLodManager::OpaqueDrawInstance> instances;
-    ctx.svoLod->collectOpaqueDrawInstances(instances, ctx.cameraPos, ctx.config.renderDistance);
+    ctx.svoLod->collectOpaqueDrawInstances(instances, ctx.cameraPos, lodRenderDistance);
     if (instances.empty()) {
         return;
     }

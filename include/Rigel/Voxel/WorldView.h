@@ -86,6 +86,8 @@ private:
     static constexpr uint32_t kSvoPressureUpdateSkipFrames = 5;
     static constexpr uint32_t kSvoPressureUploadSkipFrames = 5;
 
+    void configureSvoChunkSampler(const std::shared_ptr<WorldGenerator>& generator);
+
     World* m_world = nullptr;
     WorldResources* m_resources = nullptr;
     MeshBuilder m_meshBuilder;

@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 
 using namespace Rigel::Voxel;
@@ -54,7 +55,9 @@ render:
     enabled: true
     near_mesh_radius_chunks: 9
     lod_start_radius_chunks: 12
+    lod_view_distance_chunks: 30
     lod_cell_span_chunks: 6
+    lod_chunk_sample_step: 3
     lod_max_cells: 2048
     lod_max_cpu_bytes: 262144
     lod_max_gpu_bytes: 131072
@@ -92,7 +95,9 @@ render:
     CHECK(config.svo.enabled);
     CHECK_EQ(config.svo.nearMeshRadiusChunks, 9);
     CHECK_EQ(config.svo.lodStartRadiusChunks, 12);
+    CHECK_EQ(config.svo.lodViewDistanceChunks, 30);
     CHECK_EQ(config.svo.lodCellSpanChunks, 6);
+    CHECK_EQ(config.svo.lodChunkSampleStep, 3);
     CHECK_EQ(config.svo.lodMaxCells, 2048);
     CHECK_EQ(config.svo.lodMaxCpuBytes, 262144);
     CHECK_EQ(config.svo.lodMaxGpuBytes, 131072);
@@ -108,7 +113,9 @@ render:
     enabled: true
     near_mesh_radius_chunks: -2
     lod_start_radius_chunks: -4
+    lod_view_distance_chunks: -8
     lod_cell_span_chunks: 0
+    lod_chunk_sample_step: 999
     lod_max_cells: -8
     lod_max_cpu_bytes: -9
     lod_max_gpu_bytes: -10
@@ -123,7 +130,9 @@ render:
     CHECK(config.svo.enabled);
     CHECK_EQ(config.svo.nearMeshRadiusChunks, 0);
     CHECK_EQ(config.svo.lodStartRadiusChunks, 0);
+    CHECK_EQ(config.svo.lodViewDistanceChunks, 0);
     CHECK_EQ(config.svo.lodCellSpanChunks, 1);
+    CHECK_EQ(config.svo.lodChunkSampleStep, Chunk::SIZE);
     CHECK_EQ(config.svo.lodMaxCells, 0);
     CHECK_EQ(config.svo.lodMaxCpuBytes, 0);
     CHECK_EQ(config.svo.lodMaxGpuBytes, 0);

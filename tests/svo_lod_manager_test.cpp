@@ -51,7 +51,9 @@ TEST_CASE(SvoLodManager_ConfigIsSanitized) {
     config.enabled = true;
     config.nearMeshRadiusChunks = -3;
     config.lodStartRadiusChunks = -7;
+    config.lodViewDistanceChunks = -9;
     config.lodCellSpanChunks = 0;
+    config.lodChunkSampleStep = 999;
     config.lodMaxCells = -11;
     config.lodMaxCpuBytes = -12;
     config.lodMaxGpuBytes = -13;
@@ -64,7 +66,9 @@ TEST_CASE(SvoLodManager_ConfigIsSanitized) {
     CHECK(effective.enabled);
     CHECK_EQ(effective.nearMeshRadiusChunks, 0);
     CHECK_EQ(effective.lodStartRadiusChunks, 0);
+    CHECK_EQ(effective.lodViewDistanceChunks, 0);
     CHECK_EQ(effective.lodCellSpanChunks, 1);
+    CHECK_EQ(effective.lodChunkSampleStep, Chunk::SIZE);
     CHECK_EQ(effective.lodMaxCells, 0);
     CHECK_EQ(effective.lodMaxCpuBytes, 0);
     CHECK_EQ(effective.lodMaxGpuBytes, 0);
@@ -93,6 +97,48 @@ TEST_CASE(SvoLodManager_UpdateStaysInertWhenDisabled) {
     CHECK_EQ(telemetry.copyMicros, 0u);
     CHECK_EQ(telemetry.applyMicros, 0u);
     CHECK_EQ(telemetry.uploadMicros, 0u);
+}
+
+TEST_CASE(SvoLodManager_UsesChunkSamplerForMissingChunks) {
+    BlockRegistry registry;
+    ChunkManager chunkManager;
+    chunkManager.setRegistry(&registry);
+    const BlockID stone = registerStone(registry);
+
+    SvoLodManager manager;
+    manager.bind(&chunkManager, &registry);
+    manager.setBuildThreads(0);
+    manager.setChunkSampler(
+        [stone](ChunkCoord, std::array<BlockState, Chunk::VOLUME>& out) -> bool {
+            for (auto& state : out) {
+                state = BlockState{};
+            }
+            out[0].id = stone;
+            return true;
+        }
+    );
+
+    SvoLodConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.lodStartRadiusChunks = 0;
+    config.lodViewDistanceChunks = 1;
+    config.lodCellSpanChunks = 1;
+    config.lodCopyBudgetPerFrame = 256;
+    config.lodApplyBudgetPerFrame = 256;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+
+    const auto centerCell = manager.cellInfo(LodCellKey{0, 0, 0, 0});
+    CHECK(centerCell.has_value());
+    if (!centerCell) {
+        return;
+    }
+    CHECK_EQ(centerCell->state, LodCellState::Ready);
+    CHECK(centerCell->sampledChunks > 0u);
+    CHECK(centerCell->nodeCount > 0u);
 }
 
 TEST_CASE(SvoLodManager_CopyBudgetLimitsPerFrame) {

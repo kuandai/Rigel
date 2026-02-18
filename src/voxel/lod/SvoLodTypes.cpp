@@ -48,28 +48,39 @@ size_t gridIndex(int x, int y, int z, int dim) {
 
 ChunkClass classifyChunk(const LodChunkSnapshot& chunk,
                          LodBuildOutput& output,
-                         const BlockRegistry* registry) {
+                         const BlockRegistry* registry,
+                         int chunkSampleStep) {
     uint32_t nonAir = 0;
     uint32_t opaque = 0;
     uint32_t nonOpaque = 0;
 
-    for (const BlockState& state : chunk.blocks) {
-        if (state.isAir()) {
-            continue;
-        }
-        ++nonAir;
-        ++output.nonAirVoxelCount;
+    const int step = std::clamp(chunkSampleStep, 1, Chunk::SIZE);
+    for (int z = 0; z < Chunk::SIZE; z += step) {
+        for (int y = 0; y < Chunk::SIZE; y += step) {
+            for (int x = 0; x < Chunk::SIZE; x += step) {
+                const size_t index = static_cast<size_t>(x) +
+                    static_cast<size_t>(y) * static_cast<size_t>(Chunk::SIZE) +
+                    static_cast<size_t>(z) * static_cast<size_t>(Chunk::SIZE) *
+                    static_cast<size_t>(Chunk::SIZE);
+                const BlockState& state = chunk.blocks[index];
+                if (state.isAir()) {
+                    continue;
+                }
+                ++nonAir;
+                ++output.nonAirVoxelCount;
 
-        bool isOpaque = true;
-        if (registry) {
-            isOpaque = registry->getType(state.id).isOpaque;
-        }
-        if (isOpaque) {
-            ++opaque;
-            ++output.opaqueVoxelCount;
-        } else {
-            ++nonOpaque;
-            ++output.nonOpaqueVoxelCount;
+                bool isOpaque = true;
+                if (registry) {
+                    isOpaque = registry->getType(state.id).isOpaque;
+                }
+                if (isOpaque) {
+                    ++opaque;
+                    ++output.opaqueVoxelCount;
+                } else {
+                    ++nonOpaque;
+                    ++output.nonOpaqueVoxelCount;
+                }
+            }
         }
     }
 
@@ -274,7 +285,9 @@ std::vector<LodCellKey> touchedLodCellsForChunk(ChunkCoord coord, int spanChunks
     return out;
 }
 
-LodBuildOutput buildLodBuildOutput(const LodBuildInput& input, const BlockRegistry* registry) {
+LodBuildOutput buildLodBuildOutput(const LodBuildInput& input,
+                                   const BlockRegistry* registry,
+                                   int chunkSampleStep) {
     LodBuildOutput output;
     output.key = input.key;
     output.revision = input.revision;
@@ -297,7 +310,7 @@ LodBuildOutput buildLodBuildOutput(const LodBuildInput& input, const BlockRegist
         if (lx < 0 || ly < 0 || lz < 0 || lx >= span || ly >= span || lz >= span) {
             continue;
         }
-        grid[gridIndex(lx, ly, lz, dim)] = classifyChunk(chunk, output, registry);
+        grid[gridIndex(lx, ly, lz, dim)] = classifyChunk(chunk, output, registry, chunkSampleStep);
     }
 
     output.nodes.reserve(static_cast<size_t>(dim) * static_cast<size_t>(dim) *

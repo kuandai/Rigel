@@ -84,6 +84,7 @@ struct LodBuildInput {
     uint64_t revision = 0;
     int spanChunks = 1;
     std::vector<LodChunkSnapshot> chunks;
+    std::vector<ChunkCoord> missingCoords;
 };
 
 struct LodBuildOutput {
@@ -105,6 +106,8 @@ LodCellKey chunkToLodCell(ChunkCoord coord, int spanChunks, int lodLevel = 0);
 std::vector<LodCellKey> touchedLodCellsForChunk(ChunkCoord coord,
                                                  int spanChunks,
                                                  int lodLevel = 0);
-LodBuildOutput buildLodBuildOutput(const LodBuildInput& input, const BlockRegistry* registry);
+LodBuildOutput buildLodBuildOutput(const LodBuildInput& input,
+                                   const BlockRegistry* registry,
+                                   int chunkSampleStep = 1);
 
 } // namespace Rigel::Voxel

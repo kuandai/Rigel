@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <tuple>
 #include <vector>
@@ -34,6 +35,21 @@ float distanceSqToAabb(const glm::vec3& point,
     const float dz = (point.z < aabbMin.z)
         ? (aabbMin.z - point.z)
         : ((point.z > aabbMax.z) ? (point.z - aabbMax.z) : 0.0f);
+    return dx * dx + dy * dy + dz * dz;
+}
+
+float distanceSqToChunkAabb(const glm::vec3& chunkPoint,
+                            const glm::vec3& chunkAabbMin,
+                            const glm::vec3& chunkAabbMax) {
+    const float dx = (chunkPoint.x < chunkAabbMin.x)
+        ? (chunkAabbMin.x - chunkPoint.x)
+        : ((chunkPoint.x > chunkAabbMax.x) ? (chunkPoint.x - chunkAabbMax.x) : 0.0f);
+    const float dy = (chunkPoint.y < chunkAabbMin.y)
+        ? (chunkAabbMin.y - chunkPoint.y)
+        : ((chunkPoint.y > chunkAabbMax.y) ? (chunkPoint.y - chunkAabbMax.y) : 0.0f);
+    const float dz = (chunkPoint.z < chunkAabbMin.z)
+        ? (chunkAabbMin.z - chunkPoint.z)
+        : ((chunkPoint.z > chunkAabbMax.z) ? (chunkPoint.z - chunkAabbMax.z) : 0.0f);
     return dx * dx + dy * dy + dz * dz;
 }
 
@@ -117,8 +133,19 @@ SvoLodConfig SvoLodManager::sanitizeConfig(SvoLodConfig config) {
     if (config.lodStartRadiusChunks < config.nearMeshRadiusChunks) {
         config.lodStartRadiusChunks = config.nearMeshRadiusChunks;
     }
+    if (config.lodViewDistanceChunks < 0) {
+        config.lodViewDistanceChunks = 0;
+    } else if (config.lodViewDistanceChunks > 0 &&
+               config.lodViewDistanceChunks < config.lodStartRadiusChunks) {
+        config.lodViewDistanceChunks = config.lodStartRadiusChunks;
+    }
     if (config.lodCellSpanChunks < 1) {
         config.lodCellSpanChunks = 1;
+    }
+    if (config.lodChunkSampleStep < 1) {
+        config.lodChunkSampleStep = 1;
+    } else if (config.lodChunkSampleStep > Chunk::SIZE) {
+        config.lodChunkSampleStep = Chunk::SIZE;
     }
     if (config.lodMaxCells < 0) {
         config.lodMaxCells = 0;
@@ -151,6 +178,10 @@ void SvoLodManager::setBuildThreads(size_t threadCount) {
     }
 }
 
+void SvoLodManager::setChunkSampler(ChunkSampleCallback sampler) {
+    m_chunkSampler = std::move(sampler);
+}
+
 void SvoLodManager::bind(const ChunkManager* chunkManager, const BlockRegistry* registry) {
     m_chunkManager = chunkManager;
     m_registry = registry;
@@ -174,6 +205,7 @@ void SvoLodManager::update(const glm::vec3& cameraPos) {
     ++m_frameCounter;
     ensureBuildPool();
     const auto scanStart = std::chrono::steady_clock::now();
+    seedDesiredCells(cameraPos);
     scanChunkChanges();
     const auto scanEnd = std::chrono::steady_clock::now();
     processCopyBudget();
@@ -352,6 +384,60 @@ void SvoLodManager::ensureBuildPool() {
     }
 }
 
+void SvoLodManager::seedDesiredCells(const glm::vec3& cameraPos) {
+    const int lodRadiusChunks = std::max(0, m_config.lodViewDistanceChunks);
+    if (lodRadiusChunks <= 0) {
+        return;
+    }
+
+    const int span = std::max(1, m_config.lodCellSpanChunks);
+    const ChunkCoord centerChunk = worldToChunk(
+        static_cast<int>(std::floor(cameraPos.x)),
+        static_cast<int>(std::floor(cameraPos.y)),
+        static_cast<int>(std::floor(cameraPos.z))
+    );
+    const LodCellKey centerCell = chunkToLodCell(centerChunk, span);
+    const int cellRadius = (lodRadiusChunks + span - 1) / span + 1;
+    const float radiusSq = static_cast<float>(lodRadiusChunks * lodRadiusChunks);
+    const glm::vec3 cameraChunk(
+        cameraPos.x / static_cast<float>(Chunk::SIZE),
+        cameraPos.y / static_cast<float>(Chunk::SIZE),
+        cameraPos.z / static_cast<float>(Chunk::SIZE)
+    );
+
+    for (int z = -cellRadius; z <= cellRadius; ++z) {
+        for (int y = -cellRadius; y <= cellRadius; ++y) {
+            for (int x = -cellRadius; x <= cellRadius; ++x) {
+                LodCellKey key{
+                    centerCell.level,
+                    centerCell.x + x,
+                    centerCell.y + y,
+                    centerCell.z + z
+                };
+                glm::vec3 cellMin(
+                    static_cast<float>(key.x * span),
+                    static_cast<float>(key.y * span),
+                    static_cast<float>(key.z * span)
+                );
+                glm::vec3 cellMax = cellMin + glm::vec3(static_cast<float>(span));
+                if (distanceSqToChunkAabb(cameraChunk, cellMin, cellMax) > radiusSq) {
+                    continue;
+                }
+
+                auto [it, inserted] = m_cells.emplace(key, CellRecord{});
+                it->second.lastTouchedFrame = m_frameCounter;
+                it->second.autonomousRequested = true;
+                if (inserted ||
+                    (it->second.desiredRevision == 0 &&
+                     it->second.queuedRevision == 0 &&
+                     it->second.appliedRevision == 0)) {
+                    enqueueDirtyCell(key);
+                }
+            }
+        }
+    }
+}
+
 void SvoLodManager::scanChunkChanges() {
     if (!m_chunkManager) {
         return;
@@ -409,8 +495,14 @@ void SvoLodManager::processCopyBudget() {
             continue;
         }
 
-        std::optional<LodBuildInput> input = makeBuildInput(key, cell.desiredRevision);
-        if (!input || input->chunks.empty()) {
+        const bool includeMissingChunks =
+            cell.autonomousRequested && m_config.lodViewDistanceChunks > 0;
+        std::optional<LodBuildInput> input = makeBuildInput(
+            key,
+            cell.desiredRevision,
+            includeMissingChunks
+        );
+        if (!input || (input->chunks.empty() && input->missingCoords.empty())) {
             cell.state = LodCellState::Missing;
             cell.sampledChunks = 0;
             cell.nodeCount = 0;
@@ -434,13 +526,46 @@ void SvoLodManager::processCopyBudget() {
         ++m_telemetry.copiedCells;
 
         BlockRegistry const* registry = m_registry;
+        auto chunkSampler = m_chunkSampler;
+        const int chunkSampleStep = m_config.lodChunkSampleStep;
         if (m_buildPool && m_buildPool->threadCount() > 0) {
             LodBuildInput asyncInput = std::move(*input);
-            m_buildPool->enqueue([this, asyncInput = std::move(asyncInput), registry]() {
-                m_buildComplete.push(buildLodBuildOutput(asyncInput, registry));
+            m_buildPool->enqueue(
+                [this,
+                 asyncInput = std::move(asyncInput),
+                 registry,
+                 chunkSampler = std::move(chunkSampler),
+                 chunkSampleStep]() mutable {
+                    if (chunkSampler && !asyncInput.missingCoords.empty()) {
+                        asyncInput.chunks.reserve(
+                            asyncInput.chunks.size() + asyncInput.missingCoords.size());
+                        for (ChunkCoord coord : asyncInput.missingCoords) {
+                            LodChunkSnapshot snapshot;
+                            snapshot.coord = coord;
+                            if (!chunkSampler(coord, snapshot.blocks)) {
+                                continue;
+                            }
+                            asyncInput.chunks.push_back(std::move(snapshot));
+                        }
+                        asyncInput.missingCoords.clear();
+                    }
+                    m_buildComplete.push(buildLodBuildOutput(asyncInput, registry, chunkSampleStep));
             });
         } else {
-            m_buildComplete.push(buildLodBuildOutput(*input, registry));
+            LodBuildInput syncInput = std::move(*input);
+            if (chunkSampler && !syncInput.missingCoords.empty()) {
+                syncInput.chunks.reserve(syncInput.chunks.size() + syncInput.missingCoords.size());
+                for (ChunkCoord coord : syncInput.missingCoords) {
+                    LodChunkSnapshot snapshot;
+                    snapshot.coord = coord;
+                    if (!chunkSampler(coord, snapshot.blocks)) {
+                        continue;
+                    }
+                    syncInput.chunks.push_back(std::move(snapshot));
+                }
+                syncInput.missingCoords.clear();
+            }
+            m_buildComplete.push(buildLodBuildOutput(syncInput, registry, chunkSampleStep));
         }
         cell.state = LodCellState::Building;
         --budget;
@@ -792,7 +917,8 @@ void SvoLodManager::removeDirtyCell(const LodCellKey& key) {
 }
 
 std::optional<LodBuildInput> SvoLodManager::makeBuildInput(const LodCellKey& key,
-                                                           uint64_t revision) const {
+                                                           uint64_t revision,
+                                                           bool includeMissingChunks) const {
     if (!m_chunkManager) {
         return std::nullopt;
     }
@@ -814,6 +940,9 @@ std::optional<LodBuildInput> SvoLodManager::makeBuildInput(const LodCellKey& key
                 ChunkCoord coord{baseX + dx, baseY + dy, baseZ + dz};
                 const Chunk* chunk = m_chunkManager->getChunk(coord);
                 if (!chunk) {
+                    if (includeMissingChunks && m_chunkSampler) {
+                        input.missingCoords.push_back(coord);
+                    }
                     continue;
                 }
 

@@ -93,6 +93,8 @@ Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distan
   - voxel-page CPU build + adaptive tree + surface extraction,
   - neighbor-aware far mesh generation for opaque pages,
   - far opaque rendering through the voxel shader path.
+- Page lifecycle currently exposed in telemetry:
+  - `QueuedSample` -> `Sampling` -> `ReadyCpu` -> `Meshing` -> `ReadyMesh`.
 - Transition behavior:
   - near chunk rendering is distance-gated using `near_mesh_radius_chunks`,
   - far voxel pages are distance-gated and dither-faded in the

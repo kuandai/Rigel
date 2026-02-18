@@ -48,8 +48,11 @@ struct VoxelSvoTelemetry {
 enum class VoxelPageState : uint8_t {
     Missing = 0,
     QueuedSample,
-    BuildingCpu,
-    ReadyCpu
+    Sampling,
+    ReadyCpu,
+    QueuedMesh,
+    Meshing,
+    ReadyMesh
 };
 
 struct VoxelSvoPageInfo {

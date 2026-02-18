@@ -256,13 +256,15 @@ void VoxelSvoLodManager::processBuildCompletions() {
         record->nodeCount = static_cast<uint32_t>(record->tree.nodes.size());
         record->leafMinVoxels = output.leafMinVoxels;
         record->appliedRevision = output.revision;
-        record->state = VoxelPageState::ReadyCpu;
         record->cancel.reset();
         record->meshQueued = false;
         record->meshQueuedRevision = 0;
         if (record->meshRevision != output.revision) {
             record->mesh = ChunkMesh{};
             record->meshRevision = 0;
+            record->state = VoxelPageState::ReadyCpu;
+        } else {
+            record->state = VoxelPageState::ReadyMesh;
         }
 
         // Lifetime sampling counters.
@@ -358,6 +360,7 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
         if (centerGrid.empty()) {
             center->mesh = ChunkMesh{};
             center->meshRevision = center->appliedRevision;
+            center->state = VoxelPageState::ReadyMesh;
             continue;
         }
 
@@ -387,6 +390,7 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
         const uint64_t revision = center->appliedRevision;
         center->meshQueued = true;
         center->meshQueuedRevision = revision;
+        center->state = VoxelPageState::QueuedMesh;
 
         const auto faceLayers = m_faceTextureLayers;
 
@@ -420,6 +424,7 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
             output.mesh = buildSurfaceMeshFromQuads(quads, cellSize, faceLayers);
             m_meshBuildComplete.push(std::move(output));
         });
+        center->state = VoxelPageState::Meshing;
 
         --budget;
     }
@@ -442,6 +447,7 @@ void VoxelSvoLodManager::processMeshCompletions() {
         record->meshQueuedRevision = 0;
         record->meshRevision = output.revision;
         record->mesh = std::move(output.mesh);
+        record->state = VoxelPageState::ReadyMesh;
     }
 }
 
@@ -553,7 +559,7 @@ void VoxelSvoLodManager::enqueueBuild(const VoxelPageKey& key, uint64_t revision
         return;
     }
 
-    record->state = VoxelPageState::BuildingCpu;
+    record->state = VoxelPageState::Sampling;
     record->queuedRevision = revision;
     record->cancel = std::make_shared<std::atomic_bool>(false);
 
@@ -717,9 +723,11 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
         (void)key;
         switch (record.state) {
             case VoxelPageState::QueuedSample:
+            case VoxelPageState::QueuedMesh:
                 ++m_telemetry.pagesQueued;
                 break;
-            case VoxelPageState::BuildingCpu:
+            case VoxelPageState::Sampling:
+            case VoxelPageState::Meshing:
                 ++m_telemetry.pagesBuilding;
                 break;
             case VoxelPageState::ReadyCpu:
@@ -731,6 +739,19 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
                 if (record.key.level >= 0 && record.key.level < static_cast<int>(m_telemetry.readyCpuPagesPerLevel.size())) {
                     m_telemetry.readyCpuPagesPerLevel[static_cast<size_t>(record.key.level)] += 1;
                     m_telemetry.readyCpuNodesPerLevel[static_cast<size_t>(record.key.level)] += record.tree.nodes.size();
+                }
+                break;
+            case VoxelPageState::ReadyMesh:
+                ++m_telemetry.pagesUploaded;
+                m_telemetry.cpuBytesCurrent += record.cpu.cpuBytes();
+                m_telemetry.cpuBytesCurrent += record.tree.cpuBytes();
+                m_telemetry.cpuBytesCurrent += record.mesh.vertices.size() * sizeof(VoxelVertex);
+                m_telemetry.cpuBytesCurrent += record.mesh.indices.size() * sizeof(uint32_t);
+                if (record.key.level >= 0 &&
+                    record.key.level < static_cast<int>(m_telemetry.readyCpuPagesPerLevel.size())) {
+                    m_telemetry.readyCpuPagesPerLevel[static_cast<size_t>(record.key.level)] += 1;
+                    m_telemetry.readyCpuNodesPerLevel[static_cast<size_t>(record.key.level)] +=
+                        record.tree.nodes.size();
                 }
                 break;
             default:
@@ -814,6 +835,9 @@ void VoxelSvoLodManager::collectOpaqueMeshes(std::vector<OpaqueMeshEntry>& out) 
     out.reserve(m_pages.size());
     const int pageSize = std::max(1, m_config.pageSizeVoxels);
     for (const auto& [key, record] : m_pages) {
+        if (record.state != VoxelPageState::ReadyMesh) {
+            continue;
+        }
         if (record.meshRevision == 0 || record.mesh.isEmpty()) {
             continue;
         }

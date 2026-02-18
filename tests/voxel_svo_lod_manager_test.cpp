@@ -210,4 +210,10 @@ TEST_CASE(VoxelSvoLodManager_BuildsCenterPageMeshWhenNeighborsReady) {
         }
     }
     CHECK(foundCenter);
+    CHECK(manager.telemetry().pagesUploaded > 0u);
+    auto centerInfo = manager.pageInfo(VoxelPageKey{0, 0, 0, 0});
+    CHECK(centerInfo.has_value());
+    if (centerInfo) {
+        CHECK_EQ(centerInfo->state, VoxelPageState::ReadyMesh);
+    }
 }

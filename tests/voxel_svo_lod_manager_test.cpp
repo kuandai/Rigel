@@ -2,6 +2,9 @@
 
 #include "Rigel/Voxel/VoxelLod/VoxelSvoLodManager.h"
 
+#include <chrono>
+#include <thread>
+
 using namespace Rigel::Voxel;
 
 TEST_CASE(VoxelSvoLodManager_ConfigIsSanitized) {
@@ -112,6 +115,7 @@ TEST_CASE(VoxelSvoLodManager_BuildsSinglePageToReadyCpu) {
 
     VoxelSvoConfig config;
     config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
     config.startRadiusChunks = 0;
     config.maxRadiusChunks = 0;
     config.levels = 1;
@@ -123,12 +127,13 @@ TEST_CASE(VoxelSvoLodManager_BuildsSinglePageToReadyCpu) {
 
     manager.initialize();
 
-    // Allow async build to complete.
-    for (int i = 0; i < 200; ++i) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    while (std::chrono::steady_clock::now() < deadline) {
         manager.update(glm::vec3(0.0f));
         if (manager.telemetry().pagesReadyCpu >= 1u) {
             break;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     CHECK_EQ(manager.telemetry().activePages, 1u);

@@ -264,6 +264,50 @@ TEST_CASE(WorldView_SvoUpdateIsThrottledWhenChunkStreamingIsOverloaded) {
     CHECK(view.svoTelemetry().updateCalls < 12u);
 }
 
+TEST_CASE(WorldView_VoxelSvoUpdateIsThrottledWhenChunkStreamingIsOverloaded) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    BlockType solid;
+    solid.identifier = "rigel:stone";
+    resources.registry().registerBlock(solid.identifier, solid);
+
+    BlockType surface;
+    surface.identifier = "rigel:grass";
+    resources.registry().registerBlock(surface.identifier, surface);
+
+    WorldGenConfig genConfig;
+    genConfig.solidBlock = solid.identifier;
+    genConfig.surfaceBlock = surface.identifier;
+    genConfig.stream.viewDistanceChunks = 1;
+    genConfig.stream.unloadDistanceChunks = 1;
+    genConfig.stream.genQueueLimit = 1;
+    genConfig.stream.meshQueueLimit = 1;
+    genConfig.stream.applyBudgetPerFrame = 0;
+    genConfig.stream.workerThreads = 0;
+
+    auto generator = std::make_shared<WorldGenerator>(resources.registry());
+    generator->setConfig(genConfig);
+    world.setGenerator(generator);
+    view.setGenerator(generator);
+    view.setStreamConfig(genConfig.stream);
+
+    WorldRenderConfig config;
+    config.svoVoxel.enabled = true;
+    config.svoVoxel.maxResidentPages = 64;
+    config.svoVoxel.buildBudgetPagesPerFrame = 1;
+    config.svoVoxel.applyBudgetPagesPerFrame = 1;
+    view.setRenderConfig(config);
+
+    for (int i = 0; i < 12; ++i) {
+        view.updateStreaming(glm::vec3(0.0f, 0.0f, 0.0f));
+    }
+
+    CHECK(view.svoVoxelTelemetry().updateCalls > 0u);
+    CHECK(view.svoVoxelTelemetry().updateCalls < 12u);
+}
+
 TEST_CASE(WorldView_SvoClearRelease_IsIdempotentAndReinitializable) {
     WorldResources resources;
     World world(resources);

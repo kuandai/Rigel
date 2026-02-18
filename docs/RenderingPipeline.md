@@ -97,6 +97,8 @@ Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distan
   - near chunk rendering is distance-gated using `near_mesh_radius_chunks`,
   - far voxel pages are distance-gated and dither-faded in the
     `transition_band_chunks` overlap region to reduce pop-in.
+- Under chunk-streaming pressure, `WorldView` throttles voxel SVO update/upload
+  cadence so chunk generation/meshing remains prioritized.
 - Like the existing SVO preview, the voxel SVO system is a **derived cache** owned
   by `WorldView`. It is not authoritative world data.
 

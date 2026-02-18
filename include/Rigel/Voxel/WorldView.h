@@ -88,6 +88,8 @@ public:
 private:
     static constexpr uint32_t kSvoPressureUpdateSkipFrames = 5;
     static constexpr uint32_t kSvoPressureUploadSkipFrames = 5;
+    static constexpr uint32_t kVoxelSvoPressureUpdateSkipFrames = 5;
+    static constexpr uint32_t kVoxelSvoPressureUploadSkipFrames = 5;
 
     void configureSvoChunkSampler(const std::shared_ptr<WorldGenerator>& generator);
     void configureVoxelSvoChunkGenerator(const std::shared_ptr<WorldGenerator>& generator);
@@ -111,6 +113,8 @@ private:
     uint64_t m_frameCounter = 0;
     uint32_t m_svoUpdatePressureCountdown = 0;
     uint32_t m_svoUploadPressureCountdown = 0;
+    uint32_t m_voxelSvoUpdatePressureCountdown = 0;
+    uint32_t m_voxelSvoUploadPressureCountdown = 0;
     bool m_svoStreamingOverloaded = false;
     bool m_initialized = false;
 };

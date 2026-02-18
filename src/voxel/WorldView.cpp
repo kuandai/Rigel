@@ -235,8 +235,15 @@ void WorldView::updateStreaming(const glm::vec3& cameraPos) {
         --m_svoUpdatePressureCountdown;
     }
 
-    // Skeleton path; future sprints will apply the same pressure throttling and budgets.
-    m_voxelSvoLod.update(cameraPos);
+    if (!m_svoStreamingOverloaded) {
+        m_voxelSvoUpdatePressureCountdown = 0;
+        m_voxelSvoLod.update(cameraPos);
+    } else if (m_voxelSvoUpdatePressureCountdown == 0) {
+        m_voxelSvoLod.update(cameraPos);
+        m_voxelSvoUpdatePressureCountdown = kVoxelSvoPressureUpdateSkipFrames;
+    } else {
+        --m_voxelSvoUpdatePressureCountdown;
+    }
 }
 
 void WorldView::updateMeshes() {
@@ -263,7 +270,15 @@ void WorldView::render(const glm::mat4& view,
         --m_svoUploadPressureCountdown;
     }
 
-    m_voxelSvoLod.uploadRenderResources();
+    if (!m_svoStreamingOverloaded) {
+        m_voxelSvoUploadPressureCountdown = 0;
+        m_voxelSvoLod.uploadRenderResources();
+    } else if (m_voxelSvoUploadPressureCountdown == 0) {
+        m_voxelSvoLod.uploadRenderResources();
+        m_voxelSvoUploadPressureCountdown = kVoxelSvoPressureUploadSkipFrames;
+    } else {
+        --m_voxelSvoUploadPressureCountdown;
+    }
 
     Entity::EntityRenderContext entityCtx;
     entityCtx.deltaTime = dt;

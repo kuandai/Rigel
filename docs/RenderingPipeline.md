@@ -83,6 +83,17 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
   - if SVO initialization throws, `WorldView` logs an error and force-disables
     SVO for the session, continuing chunk-only rendering.
 
+### 3.5 Voxel SVO LOD (WIP)
+
+Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distant-Horizons style):
+
+- The module boundary is `VoxelSvoLodManager` in `WorldView` and is configured via
+  `render.svo_voxel.*`.
+- In the current state, this system is **scaffolded only** (lifecycle + telemetry),
+  and does not generate far geometry yet.
+- Like the existing SVO preview, the voxel SVO system is a **derived cache** owned
+  by `WorldView`. It is not authoritative world data.
+
 ---
 
 ## 4. Render Configuration

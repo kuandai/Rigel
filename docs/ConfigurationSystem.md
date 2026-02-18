@@ -255,6 +255,31 @@ config (`assets/config/render.yaml`) may override them.
 | `render.taa.blend` | float | `0.9` | History blend factor. |
 | `render.taa.jitter_scale` | float | `1.0` | Subpixel jitter scale. |
 | `render.profiling.enabled` | bool | `false` | Enable the per-frame profiler. |
+| `render.svo.enabled` | bool | `false` | Enable chunk-occupancy SVO LOD (preview). |
+| `render.svo.near_mesh_radius_chunks` | int | `8` | Near mesh retention radius (chunks). |
+| `render.svo.lod_start_radius_chunks` | int | `10` | Far SVO activation radius (chunks). |
+| `render.svo.lod_view_distance_chunks` | int | `0` | Far SVO desired view distance (chunks, 0 = off). |
+| `render.svo.lod_cell_span_chunks` | int | `8` | SVO cell span (chunks). |
+| `render.svo.lod_chunk_sample_step` | int | `1` | Sampling stride inside each chunk (voxels). |
+| `render.svo.lod_max_cells` | int | `1024` | Max resident SVO cells (0 = unlimited). |
+| `render.svo.lod_max_cpu_bytes` | int | `0` | Max SVO CPU bytes (0 = unlimited). |
+| `render.svo.lod_max_gpu_bytes` | int | `0` | Max SVO GPU bytes (0 = unlimited). |
+| `render.svo.lod_copy_budget_per_frame` | int | `4` | Copy budget (cells/frame). |
+| `render.svo.lod_apply_budget_per_frame` | int | `4` | Apply budget (cells/frame). |
+| `render.svo_voxel.enabled` | bool | `false` | Enable voxel-base SVO LOD (WIP; no rendering yet). |
+| `render.svo_voxel.near_mesh_radius_chunks` | int | `8` | Near mesh retention radius (chunks). |
+| `render.svo_voxel.start_radius_chunks` | int | `12` | Voxel SVO start radius (chunks). |
+| `render.svo_voxel.max_radius_chunks` | int | `64` | Voxel SVO max radius (chunks). |
+| `render.svo_voxel.transition_band_chunks` | int | `2` | Overlap band between near and far rendering (chunks). |
+| `render.svo_voxel.levels` | int | `4` | Clipmap level count. |
+| `render.svo_voxel.page_size_voxels` | int | `64` | Level-0 page edge size (voxels, power-of-two). |
+| `render.svo_voxel.min_leaf_voxels` | int | `1` | Global min leaf size (voxels, power-of-two). |
+| `render.svo_voxel.build_budget_pages_per_frame` | int | `1` | Worker build budget (pages/frame). |
+| `render.svo_voxel.apply_budget_pages_per_frame` | int | `1` | Main-thread apply budget (pages/frame). |
+| `render.svo_voxel.upload_budget_pages_per_frame` | int | `1` | GPU upload budget (pages/frame). |
+| `render.svo_voxel.max_resident_pages` | int | `512` | Hard cap on resident pages (0 = unlimited). |
+| `render.svo_voxel.max_cpu_bytes` | int | `268435456` | Hard cap on voxel SVO CPU memory. |
+| `render.svo_voxel.max_gpu_bytes` | int | `268435456` | Hard cap on voxel SVO GPU memory. |
 
 Key fields:
 
@@ -268,12 +293,29 @@ Key fields:
   - `transparent_scale`, `strength`, `fade_power`
 - `taa`:
   - `enabled`, `blend`, `jitter_scale`
+- `svo`:
+  - `enabled`
+  - `near_mesh_radius_chunks`, `lod_start_radius_chunks`, `lod_view_distance_chunks`
+  - `lod_cell_span_chunks`, `lod_chunk_sample_step`
+  - `lod_max_cells`, `lod_max_cpu_bytes`, `lod_max_gpu_bytes`
+  - `lod_copy_budget_per_frame`, `lod_apply_budget_per_frame`
+- `svo_voxel` (WIP):
+  - `enabled`
+  - `near_mesh_radius_chunks`, `start_radius_chunks`, `max_radius_chunks`, `transition_band_chunks`
+  - `levels`, `page_size_voxels`, `min_leaf_voxels`
+  - `build_budget_pages_per_frame`, `apply_budget_pages_per_frame`, `upload_budget_pages_per_frame`
+  - `max_resident_pages`, `max_cpu_bytes`, `max_gpu_bytes`
 
 Values are clamped during load:
 
 - `shadow.cascades` is clamped to `[1, ShadowConfig::MaxCascades]`.
 - `pcf_radius` and related values are clamped to non-negative.
 - `taa.blend` is clamped to `[0, 1]`.
+- `svo.lod_cell_span_chunks` is clamped to at least `1`.
+- `svo.lod_view_distance_chunks` is clamped to `0` or `>= lod_start_radius_chunks`.
+- `svo.lod_chunk_sample_step` is clamped to `[1, Chunk::SIZE]`.
+- `svo_voxel.page_size_voxels` is coerced to a power-of-two and clamped to `[8, 256]`.
+- `svo_voxel.min_leaf_voxels` is coerced to a power-of-two and clamped to `<= page_size_voxels`.
 
 `RIGEL_PROFILE=1` forces profiling on at runtime, regardless of config. Setting
 `RIGEL_PROFILE=0` forces profiling off.

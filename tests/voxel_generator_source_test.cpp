@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <random>
+#include <thread>
 
 namespace Rigel::Voxel {
 namespace {
@@ -136,6 +137,41 @@ TEST_CASE(VoxelGeneratorSource_CancelledTokenReturnsCancelled) {
     CHECK_EQ(source.sampleBrick(desc, out, &cancelled), BrickSampleStatus::Cancelled);
 }
 
+TEST_CASE(VoxelGeneratorSource_ConcurrentCancelDoesNotDeadlock) {
+    std::atomic_bool cancelled(false);
+    std::atomic_bool entered(false);
+
+    GeneratorSource source([&](ChunkCoord,
+                               std::array<BlockState, Chunk::VOLUME>& out,
+                               const std::atomic_bool* cancelPtr) {
+        entered.store(true, std::memory_order_relaxed);
+        while (cancelPtr && !cancelPtr->load(std::memory_order_relaxed)) {
+            std::this_thread::yield();
+        }
+        out.fill(makeBlock(1));
+    });
+
+    BrickSampleDesc desc;
+    desc.worldMinVoxel = {0, 0, 0};
+    desc.brickDimsVoxels = {32, 32, 32};
+    desc.stepVoxels = 1;
+    CHECK(desc.isValid());
+
+    std::vector<VoxelId> out(desc.outVoxelCount(), 0);
+    BrickSampleStatus status = BrickSampleStatus::Miss;
+
+    std::thread worker([&]() {
+        status = source.sampleBrick(desc, out, &cancelled);
+    });
+
+    while (!entered.load(std::memory_order_relaxed)) {
+        std::this_thread::yield();
+    }
+    cancelled.store(true, std::memory_order_relaxed);
+    worker.join();
+
+    CHECK_EQ(status, BrickSampleStatus::Cancelled);
+}
+
 } // namespace
 } // namespace Rigel::Voxel
-

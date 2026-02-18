@@ -58,7 +58,6 @@ assets:
         sprint: LSHIFT
         debug_overlay: F1
         imgui_overlay: F3
-        toggle_svo_lod: F6
         unbound_action: none
 ```
 
@@ -78,7 +77,6 @@ Defaults currently include:
 - `sprint`: LSHIFT
 - `debug_overlay`: F1
 - `imgui_overlay`: F3
-- `toggle_svo_lod`: F6
 - `demo_spawn_entity`: F2
 
 ## Key Parsing Rules

@@ -22,7 +22,7 @@ implementation and how the systems fit together.
 
 - `docs/WorldGeneration.md` (pipeline, streaming, overlays)
 - `docs/RenderingPipeline.md` (voxel rendering, TAA, shadows)
-- `docs/SvoLodBenchmarks.md` (chunk-only vs hybrid SVO comparison sheet)
+- `docs/VoxelSvoBenchmarks.md` (chunk-only vs voxel-SVO comparison sheet)
 - `docs/ShaderSystem.md` (shader assets, compilation, defines)
 - `docs/VoxelEngine.md` (block and chunk structures)
 

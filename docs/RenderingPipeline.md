@@ -47,8 +47,8 @@ before calling `WorldView::render`.
 - Distance culling uses `renderDistance` from `WorldRenderConfig`.
 - There is no frustum culling in the current pipeline.
 - Transparent chunks are sorted back-to-front by view depth.
-- With SVO LOD enabled, chunk mesh rendering is near-band gated with
-  hysteresis (`near_mesh_radius_chunks` / `lod_start_radius_chunks`).
+- With voxel SVO enabled, chunk mesh rendering is near-band gated with
+  hysteresis (`near_mesh_radius_chunks` / `start_radius_chunks`).
 
 ### 3.3 Render Layers
 
@@ -61,29 +61,7 @@ Each chunk mesh contains layer ranges:
 
 Layer selection is controlled by `u_renderLayer` in the voxel shader.
 
-### 3.4 Far Opaque LOD Pass (Preview)
-
-- `SvoLodManager` emits opaque node-derived draw instances from ready LOD cells.
-- Emission is camera-distance gated and hysteresis-stabilized, and uses
-  distance-to-cell bounds against `renderDistance`.
-- `ChunkRenderer` submits those instances through `shaders/svo_lod`.
-- The current pass draws opaque proxy cubes and serves as Sprint 3 bootstrap.
-- Under chunk-streaming pressure, `WorldView` throttles SVO update/upload work
-  so generation/meshing remains prioritized.
-- The ImGui profiler SVO panel reports per-stage update/upload timings, state
-  counts, and current CPU/GPU LOD cache memory.
-- The chunk debug field can overlay SVO cell lifecycle states, including
-  queued/building/ready/stale/evicting cells.
-- Runtime toggle path:
-  - action `toggle_svo_lod` (default `F6`) flips `render.svo.enabled` at
-    runtime.
-  - disable path clears SVO state/caches; re-enable path reinitializes the SVO
-    pipeline.
-- Fallback behavior:
-  - if SVO initialization throws, `WorldView` logs an error and force-disables
-    SVO for the session, continuing chunk-only rendering.
-
-### 3.5 Voxel SVO LOD (WIP)
+### 3.4 Voxel SVO LOD
 
 Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distant-Horizons style):
 
@@ -129,8 +107,7 @@ Key fields in `WorldRenderConfig`:
 - `transparentAlpha`
 - `shadow` (see Section 5)
 - `taa` (see Section 6)
-- `svo` (preview CPU build + GPU upload pipeline with a far opaque bootstrap pass)
-  - `lod_max_cells`, `lod_max_cpu_bytes`, `lod_max_gpu_bytes` bound SVO cache growth.
+- `svo_voxel` (voxel-base far LOD cache with hard page/CPU/GPU caps)
 - `profilingEnabled` (per-frame profiler toggle; config key `render.profiling.enabled`)
 
 ---
@@ -215,7 +192,6 @@ If TAA is disabled, the history is invalidated each frame.
 
 ## 7. Known Limitations
 
-- Legacy `render.svo` far LOD currently renders opaque proxy cubes.
 - Voxel SVO far LOD currently supports opaque surfaces only (no far transparent path).
 - No frustum culling; distance-only culling for voxels.
 - Shadow cascades use a camera-centered cube instead of fitting the frustum.
@@ -231,4 +207,4 @@ If TAA is disabled, the history is invalidated each frame.
 - `docs/VoxelEngine.md`
 - `docs/DebugTooling.md`
 - `docs/ConfigurationSystem.md`
-- `docs/SvoLodBenchmarks.md`
+- `docs/VoxelSvoBenchmarks.md`

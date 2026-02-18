@@ -61,26 +61,17 @@ This document outlines the current voxel engine architecture within Rigel. Secti
 - `WorldResources` contains the shared `BlockRegistry` and `TextureAtlas`.
 - `World` owns authoritative chunk data, entity data, and the active `WorldGenerator`.
 - `WorldView` owns the streaming, meshing, and render state for a `World`.
-- `SvoLodManager` in `WorldView` currently builds revisioned CPU LOD cell
-  hierarchies, uploads node payload buffers, and feeds a preliminary far opaque
-  LOD proxy pass.
 - `VoxelSvoLodManager` in `WorldView` is the new voxel-base far LOD system
-  (WIP). It is currently scaffolded (config/lifecycle/telemetry) and does not
-  generate far geometry yet. The intent is to replace the chunk-occupancy
-  proxies with coarse far surface meshes derived from voxel sampling.
+  that builds coarse far meshes from sampled voxel pages.
 - `ChunkRenderer` applies near/far transition bands with hysteresis:
-  near chunk meshes are retained in a near band, while far SVO proxies are
-  activated beyond the configured LOD start radius.
-- SVO cell residency can be bounded by cell count and optional CPU/GPU byte
-  budgets, with eviction based on distance and recency.
-- `WorldView` deprioritizes SVO update/upload work when chunk streaming reports
+  near chunk meshes are retained in a near band, while far voxel-SVO meshes are
+  activated beyond the configured start radius.
+- Voxel-SVO page residency is bounded by hard page/CPU/GPU caps, with eviction
+  based on distance and recency.
+- `WorldView` deprioritizes voxel-SVO update/upload work when chunk streaming reports
   queue pressure, preserving gameplay chunk generation/meshing throughput.
-- Runtime diagnostics expose SVO stage timings, cell-state counts, and current
+- Runtime diagnostics expose voxel-SVO timings, page-state counts, and current
   CPU/GPU cache memory in the ImGui profiler panel.
-- Runtime control: action `toggle_svo_lod` (default `F6`) hot-toggles
-  `render.svo.enabled`. Disabling clears SVO state; enabling reinitializes it.
-- Guardrail fallback: if SVO initialization fails, `WorldView` logs the failure
-  and continues in chunk-only rendering mode.
 
 World data and render state are deliberately split: `World` stores CPU-side data,
 while `WorldView` owns GPU resources like meshes and shaders.

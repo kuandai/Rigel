@@ -44,7 +44,7 @@ skipped.
 ### 3.1 Data Source
 
 - `WorldView::getChunkDebugStates` exposes `ChunkStreamer` state.
-- `WorldView::getSvoDebugStates` exposes `SvoLodManager` cell states.
+- `WorldView::getVoxelSvoDebugPages` exposes `VoxelSvoLodManager` page states.
 - Only non-missing chunks appear (queued or ready states).
 - The field is centered on the camera chunk and clipped to the current
   `viewDistanceChunks` radius.
@@ -71,13 +71,13 @@ Chunk state mapping (from `ChunkStreamer::DebugState`):
 - `QueuedMesh` (blue): waiting for mesh build.
 - `ReadyMesh` (green): mesh available.
 
-SVO cell state mapping (from `LodCellState`):
+Voxel-SVO page state mapping (from `VoxelPageState`):
 
-- `QueuedBuild` (magenta): cell queued for LOD build.
-- `Building` (orange): worker build in progress.
-- `Ready` (lime): LOD data ready for far-field rendering.
-- `Stale` (orange-red): cell marked dirty and awaiting rebuild.
-- `Evicting` (violet): selected for cache eviction.
+- `QueuedSample` (magenta): page queued for sampling.
+- `Sampling` (orange): worker sampling/build in progress.
+- `ReadyCpu` (cyan): CPU page/tree ready.
+- `Meshing` (blue): far-mesh build in progress.
+- `ReadyMesh` (lime): far mesh ready.
 
 ### 3.4 Rendering Rules
 
@@ -85,8 +85,8 @@ SVO cell state mapping (from `LodCellState`):
 - Per-state meshes are built so faces between same-state neighbors are culled.
 - Faces between different states are not culled (state boundaries remain
   visible).
-- SVO cell overlays use each cell's `spanChunks` so coarse cells render larger
-  than chunk-sized cells.
+- Voxel-SVO overlays derive page span from `page_size_voxels` and page `level`,
+  so coarse pages render larger than chunk-sized pages.
 - Backface culling is disabled; depth testing is off; alpha blending is on.
 
 ---

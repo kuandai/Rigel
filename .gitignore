@@ -1,5 +1,8 @@
 # CMake build directories
 build/
+build-*/
+build_cov/
+cmake-build-*/
 CMakeFiles/
 .cmake/
 CMakeCache.txt
@@ -7,6 +10,7 @@ cmake_install.cmake
 Makefile
 build.ninja
 CMakeUserPresets.json
+compile_commands.json
 
 # Conan files
 conanbuildinfo.*
@@ -41,3 +45,6 @@ conan.lock
 
 # Binary assets
 assets/textures/
+
+# Runtime artifacts
+saves/

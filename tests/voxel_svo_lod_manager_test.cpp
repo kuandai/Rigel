@@ -89,3 +89,56 @@ TEST_CASE(VoxelSvoLodManager_ResetAndReinitialize_IsIdempotent) {
     CHECK_NO_THROW(manager.update(glm::vec3(1.0f)));
     CHECK(manager.telemetry().updateCalls > 0u);
 }
+
+TEST_CASE(VoxelSvoLodManager_BuildsSinglePageToReadyCpu) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    const bool solid = worldY < 8;
+                    BlockState state;
+                    state.id.type = solid ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 0;
+    config.levels = 1;
+    config.pageSizeVoxels = 8;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 1;
+    config.buildBudgetPagesPerFrame = 1;
+    manager.setConfig(config);
+
+    manager.initialize();
+
+    // Allow async build to complete.
+    for (int i = 0; i < 200; ++i) {
+        manager.update(glm::vec3(0.0f));
+        if (manager.telemetry().pagesReadyCpu >= 1u) {
+            break;
+        }
+    }
+
+    CHECK_EQ(manager.telemetry().activePages, 1u);
+    CHECK_EQ(manager.telemetry().pagesReadyCpu, 1u);
+    CHECK_EQ(manager.telemetry().readyCpuPagesPerLevel[0], 1u);
+    CHECK(manager.telemetry().readyCpuNodesPerLevel[0] > 0u);
+
+    auto info = manager.pageInfo(VoxelPageKey{0, 0, 0, 0});
+    CHECK(info.has_value());
+    CHECK_EQ(info->state, VoxelPageState::ReadyCpu);
+    CHECK(info->nodeCount > 0u);
+    CHECK_EQ(info->leafMinVoxels, static_cast<uint16_t>(4));
+}

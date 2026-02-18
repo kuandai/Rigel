@@ -48,6 +48,31 @@ struct SvoLodConfig {
     int lodApplyBudgetPerFrame = 4;
 };
 
+struct VoxelSvoConfig {
+    bool enabled = false;
+
+    // Chunk radii: voxel SVO starts outside near mesh radius.
+    int nearMeshRadiusChunks = 8;
+    int startRadiusChunks = 12;
+    int maxRadiusChunks = 64;
+    int transitionBandChunks = 2;
+
+    // Clipmap layout / page representation.
+    int levels = 4;
+    int pageSizeVoxels = 64;   // Level 0 page dimensions (power of two).
+    int minLeafVoxels = 1;     // MVP: global min leaf size (power of two).
+
+    // Budgets (pages per frame).
+    int buildBudgetPagesPerFrame = 1;
+    int applyBudgetPagesPerFrame = 1;
+    int uploadBudgetPagesPerFrame = 1;
+
+    // Hard caps.
+    int maxResidentPages = 512;
+    int64_t maxCpuBytes = 256 * 1024 * 1024;
+    int64_t maxGpuBytes = 256 * 1024 * 1024;
+};
+
 
 struct WorldRenderConfig {
     float renderDistance = 256.0f;
@@ -56,6 +81,7 @@ struct WorldRenderConfig {
     ShadowConfig shadow;
     TaaConfig taa;
     SvoLodConfig svo;
+    VoxelSvoConfig svoVoxel;
     bool profilingEnabled = false;
 };
 

@@ -8,6 +8,7 @@
 #include <glm/vec3.hpp>
 #include <ryml.hpp>
 #include <ryml_std.hpp>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -36,6 +37,15 @@ std::string stripAssetsPrefix(std::string_view path) {
         return std::string(path.substr(kAssetsPrefix.size()));
     }
     return std::string(path);
+}
+
+int ceilPow2(int value) {
+    int v = std::max(1, value);
+    int p = 1;
+    while (p < v) {
+        p <<= 1;
+    }
+    return p;
 }
 
 bool readVec3(ryml::ConstNodeRef node, const char* key, glm::vec3& value) {
@@ -181,6 +191,86 @@ void applySvoConfig(ryml::ConstNodeRef svoNode, SvoLodConfig& svo) {
     }
 }
 
+void applyVoxelSvoConfig(ryml::ConstNodeRef svoNode, VoxelSvoConfig& svo) {
+    if (!svoNode.readable()) {
+        return;
+    }
+
+    svo.enabled = Util::readBool(svoNode, "enabled", svo.enabled);
+    svo.nearMeshRadiusChunks = Util::readInt(
+        svoNode, "near_mesh_radius_chunks", svo.nearMeshRadiusChunks);
+    svo.startRadiusChunks = Util::readInt(
+        svoNode, "start_radius_chunks", svo.startRadiusChunks);
+    svo.maxRadiusChunks = Util::readInt(
+        svoNode, "max_radius_chunks", svo.maxRadiusChunks);
+    svo.transitionBandChunks = Util::readInt(
+        svoNode, "transition_band_chunks", svo.transitionBandChunks);
+
+    svo.levels = Util::readInt(svoNode, "levels", svo.levels);
+    svo.pageSizeVoxels = Util::readInt(svoNode, "page_size_voxels", svo.pageSizeVoxels);
+    svo.minLeafVoxels = Util::readInt(svoNode, "min_leaf_voxels", svo.minLeafVoxels);
+
+    svo.buildBudgetPagesPerFrame = Util::readInt(
+        svoNode, "build_budget_pages_per_frame", svo.buildBudgetPagesPerFrame);
+    svo.applyBudgetPagesPerFrame = Util::readInt(
+        svoNode, "apply_budget_pages_per_frame", svo.applyBudgetPagesPerFrame);
+    svo.uploadBudgetPagesPerFrame = Util::readInt(
+        svoNode, "upload_budget_pages_per_frame", svo.uploadBudgetPagesPerFrame);
+
+    svo.maxResidentPages = Util::readInt(svoNode, "max_resident_pages", svo.maxResidentPages);
+    svo.maxCpuBytes = static_cast<int64_t>(Util::readInt(
+        svoNode, "max_cpu_bytes", static_cast<int>(svo.maxCpuBytes)));
+    svo.maxGpuBytes = static_cast<int64_t>(Util::readInt(
+        svoNode, "max_gpu_bytes", static_cast<int>(svo.maxGpuBytes)));
+
+    if (svo.nearMeshRadiusChunks < 0) {
+        svo.nearMeshRadiusChunks = 0;
+    }
+    if (svo.startRadiusChunks < svo.nearMeshRadiusChunks) {
+        svo.startRadiusChunks = svo.nearMeshRadiusChunks;
+    }
+    if (svo.maxRadiusChunks < svo.startRadiusChunks) {
+        svo.maxRadiusChunks = svo.startRadiusChunks;
+    }
+    if (svo.transitionBandChunks < 0) {
+        svo.transitionBandChunks = 0;
+    }
+
+    if (svo.levels < 1) {
+        svo.levels = 1;
+    } else if (svo.levels > 16) {
+        svo.levels = 16;
+    }
+
+    // These are intentionally coerced to powers of two for predictable paging.
+    svo.pageSizeVoxels = ceilPow2(std::max(8, svo.pageSizeVoxels));
+    svo.pageSizeVoxels = std::clamp(svo.pageSizeVoxels, 8, 256);
+
+    svo.minLeafVoxels = ceilPow2(std::max(1, svo.minLeafVoxels));
+    if (svo.minLeafVoxels > svo.pageSizeVoxels) {
+        svo.minLeafVoxels = svo.pageSizeVoxels;
+    }
+
+    if (svo.buildBudgetPagesPerFrame < 0) {
+        svo.buildBudgetPagesPerFrame = 0;
+    }
+    if (svo.applyBudgetPagesPerFrame < 0) {
+        svo.applyBudgetPagesPerFrame = 0;
+    }
+    if (svo.uploadBudgetPagesPerFrame < 0) {
+        svo.uploadBudgetPagesPerFrame = 0;
+    }
+    if (svo.maxResidentPages < 0) {
+        svo.maxResidentPages = 0;
+    }
+    if (svo.maxCpuBytes < 0) {
+        svo.maxCpuBytes = 0;
+    }
+    if (svo.maxGpuBytes < 0) {
+        svo.maxGpuBytes = 0;
+    }
+}
+
 void applyRenderYaml(const char* sourceName,
                      const std::string& yaml,
                      WorldRenderConfig& config) {
@@ -213,6 +303,9 @@ void applyRenderYaml(const char* sourceName,
     }
     if (renderNode.has_child("svo")) {
         applySvoConfig(renderNode["svo"], config.svo);
+    }
+    if (renderNode.has_child("svo_voxel")) {
+        applyVoxelSvoConfig(renderNode["svo_voxel"], config.svoVoxel);
     }
     if (renderNode.has_child("profiling")) {
         const auto profilingNode = renderNode["profiling"];

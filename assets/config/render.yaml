@@ -29,5 +29,20 @@ render:
     lod_max_cells: 1024
     lod_copy_budget_per_frame: 4
     lod_apply_budget_per_frame: 4
+  svo_voxel:
+    enabled: false
+    near_mesh_radius_chunks: 8
+    start_radius_chunks: 12
+    max_radius_chunks: 64
+    transition_band_chunks: 2
+    levels: 4
+    page_size_voxels: 64
+    min_leaf_voxels: 1
+    build_budget_pages_per_frame: 1
+    apply_budget_pages_per_frame: 1
+    upload_budget_pages_per_frame: 1
+    max_resident_pages: 512
+    max_cpu_bytes: 268435456
+    max_gpu_bytes: 268435456
   profiling:
     enabled: true

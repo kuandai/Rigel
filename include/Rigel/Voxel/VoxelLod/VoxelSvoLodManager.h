@@ -150,6 +150,8 @@ private:
     bool canMeshPage(const VoxelPageKey& key, uint16_t cellSizeVoxels) const;
     void enforcePageLimit(const glm::vec3& cameraPos);
     void rebuildFaceTextureLayers();
+    static uint64_t estimatePageCpuBytes(const PageRecord& record);
+    static uint64_t estimatePageGpuBytes(const PageRecord& record);
     PageRecord* findPage(const VoxelPageKey& key);
     const PageRecord* findPage(const VoxelPageKey& key) const;
 

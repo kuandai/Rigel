@@ -91,6 +91,23 @@ glm::vec3 pageWorldMin(const VoxelPageKey& key, int pageSizeVoxels) {
 
 } // namespace
 
+uint64_t VoxelSvoLodManager::estimatePageCpuBytes(const PageRecord& record) {
+    uint64_t bytes = 0;
+    bytes += record.cpu.cpuBytes();
+    bytes += record.tree.cpuBytes();
+    bytes += record.mesh.vertices.size() * sizeof(VoxelVertex);
+    bytes += record.mesh.indices.size() * sizeof(uint32_t);
+    return bytes;
+}
+
+uint64_t VoxelSvoLodManager::estimatePageGpuBytes(const PageRecord& record) {
+    if (record.state != VoxelPageState::ReadyMesh) {
+        return 0;
+    }
+    return record.mesh.vertices.size() * sizeof(VoxelVertex) +
+        record.mesh.indices.size() * sizeof(uint32_t);
+}
+
 VoxelSvoConfig VoxelSvoLodManager::sanitizeConfig(VoxelSvoConfig config) {
     if (config.nearMeshRadiusChunks < 0) {
         config.nearMeshRadiusChunks = 0;
@@ -644,47 +661,90 @@ void VoxelSvoLodManager::enqueueBuild(const VoxelPageKey& key, uint64_t revision
 }
 
 void VoxelSvoLodManager::enforcePageLimit(const glm::vec3& cameraPos) {
-    const int maxResident = std::max(0, m_config.maxResidentPages);
-    if (maxResident <= 0 || m_pages.size() <= static_cast<size_t>(maxResident)) {
+    const size_t maxResident = static_cast<size_t>(std::max(0, m_config.maxResidentPages));
+    const uint64_t maxCpuBytes = static_cast<uint64_t>(std::max<int64_t>(0, m_config.maxCpuBytes));
+    const uint64_t maxGpuBytes = static_cast<uint64_t>(std::max<int64_t>(0, m_config.maxGpuBytes));
+
+    if ((maxResident == 0 && maxCpuBytes == 0 && maxGpuBytes == 0) || m_pages.empty()) {
+        return;
+    }
+
+    uint64_t totalCpuBytes = 0;
+    uint64_t totalGpuBytes = 0;
+    for (const auto& [key, record] : m_pages) {
+        (void)key;
+        totalCpuBytes += estimatePageCpuBytes(record);
+        totalGpuBytes += estimatePageGpuBytes(record);
+    }
+
+    auto overLimits = [&]() {
+        const bool overResident = (maxResident > 0) && (m_pages.size() > maxResident);
+        const bool overCpu = (maxCpuBytes > 0) && (totalCpuBytes > maxCpuBytes);
+        const bool overGpu = (maxGpuBytes > 0) && (totalGpuBytes > maxGpuBytes);
+        return overResident || overCpu || overGpu;
+    };
+
+    if (!overLimits()) {
         return;
     }
 
     const glm::ivec3 cameraVoxel = floorToVoxel(cameraPos);
-    const int pageSize = m_config.pageSizeVoxels;
+    const int pageSize = std::max(1, m_config.pageSizeVoxels);
 
     struct Entry {
         VoxelPageKey key{};
+        uint64_t lastTouchedFrame = 0;
         float distSq = 0.0f;
+        bool inFlight = false;
     };
     std::vector<Entry> entries;
     entries.reserve(m_pages.size());
     for (const auto& [key, record] : m_pages) {
-        (void)record;
         glm::vec3 pageCenter = glm::vec3(
             static_cast<float>(key.x * pageSize + pageSize / 2),
             static_cast<float>(key.y * pageSize + pageSize / 2),
             static_cast<float>(key.z * pageSize + pageSize / 2)
         );
         glm::vec3 delta = pageCenter - glm::vec3(cameraVoxel);
-        float distSq = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-        entries.push_back(Entry{key, distSq});
+        const bool inFlight =
+            record.state == VoxelPageState::QueuedSample ||
+            record.state == VoxelPageState::Sampling ||
+            record.state == VoxelPageState::QueuedMesh ||
+            record.state == VoxelPageState::Meshing;
+        entries.push_back(Entry{
+            key,
+            record.lastTouchedFrame,
+            glm::dot(delta, delta),
+            inFlight
+        });
     }
 
     std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
-        return a.distSq < b.distSq;
+        if (a.inFlight != b.inFlight) {
+            return !a.inFlight && b.inFlight;
+        }
+        if (a.lastTouchedFrame != b.lastTouchedFrame) {
+            return a.lastTouchedFrame < b.lastTouchedFrame;
+        }
+        return a.distSq > b.distSq;
     });
 
-    while (m_pages.size() > static_cast<size_t>(maxResident) && !entries.empty()) {
-        VoxelPageKey key = entries.back().key;
-        entries.pop_back();
-        auto it = m_pages.find(key);
+    for (const Entry& entry : entries) {
+        if (!overLimits()) {
+            break;
+        }
+
+        auto it = m_pages.find(entry.key);
         if (it == m_pages.end()) {
             continue;
         }
+
+        totalCpuBytes -= estimatePageCpuBytes(it->second);
+        totalGpuBytes -= estimatePageGpuBytes(it->second);
         if (it->second.cancel) {
             it->second.cancel->store(true, std::memory_order_relaxed);
         }
-        m_buildQueued.erase(key);
+        m_buildQueued.erase(entry.key);
         m_pages.erase(it);
     }
 }
@@ -750,6 +810,7 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
     m_telemetry.readyCpuPagesPerLevel = {};
     m_telemetry.readyCpuNodesPerLevel = {};
     m_telemetry.cpuBytesCurrent = 0;
+    m_telemetry.gpuBytesCurrent = 0;
 
     for (const auto& [key, record] : m_pages) {
         (void)key;
@@ -764,10 +825,8 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
                 break;
             case VoxelPageState::ReadyCpu:
                 ++m_telemetry.pagesReadyCpu;
-                m_telemetry.cpuBytesCurrent += record.cpu.cpuBytes();
-                m_telemetry.cpuBytesCurrent += record.tree.cpuBytes();
-                m_telemetry.cpuBytesCurrent += record.mesh.vertices.size() * sizeof(VoxelVertex);
-                m_telemetry.cpuBytesCurrent += record.mesh.indices.size() * sizeof(uint32_t);
+                m_telemetry.cpuBytesCurrent += estimatePageCpuBytes(record);
+                m_telemetry.gpuBytesCurrent += estimatePageGpuBytes(record);
                 if (record.key.level >= 0 && record.key.level < static_cast<int>(m_telemetry.readyCpuPagesPerLevel.size())) {
                     m_telemetry.readyCpuPagesPerLevel[static_cast<size_t>(record.key.level)] += 1;
                     m_telemetry.readyCpuNodesPerLevel[static_cast<size_t>(record.key.level)] += record.tree.nodes.size();
@@ -775,10 +834,8 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
                 break;
             case VoxelPageState::ReadyMesh:
                 ++m_telemetry.pagesUploaded;
-                m_telemetry.cpuBytesCurrent += record.cpu.cpuBytes();
-                m_telemetry.cpuBytesCurrent += record.tree.cpuBytes();
-                m_telemetry.cpuBytesCurrent += record.mesh.vertices.size() * sizeof(VoxelVertex);
-                m_telemetry.cpuBytesCurrent += record.mesh.indices.size() * sizeof(uint32_t);
+                m_telemetry.cpuBytesCurrent += estimatePageCpuBytes(record);
+                m_telemetry.gpuBytesCurrent += estimatePageGpuBytes(record);
                 if (record.key.level >= 0 &&
                     record.key.level < static_cast<int>(m_telemetry.readyCpuPagesPerLevel.size())) {
                     m_telemetry.readyCpuPagesPerLevel[static_cast<size_t>(record.key.level)] += 1;

@@ -217,3 +217,134 @@ TEST_CASE(VoxelSvoLodManager_BuildsCenterPageMeshWhenNeighborsReady) {
         CHECK_EQ(centerInfo->state, VoxelPageState::ReadyMesh);
     }
 }
+
+TEST_CASE(VoxelSvoLodManager_EnforcesCpuByteBudget) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 2;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 64;
+    config.buildBudgetPagesPerFrame = 16;
+    config.applyBudgetPagesPerFrame = 16;
+    config.maxCpuBytes = 0;
+    manager.setConfig(config);
+    manager.initialize();
+
+    bool builtEnough = false;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        const auto& telemetry = manager.telemetry();
+        if (telemetry.activePages >= 6u && telemetry.cpuBytesCurrent > 0u) {
+            builtEnough = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(builtEnough);
+    CHECK(manager.telemetry().cpuBytesCurrent > 0u);
+
+    VoxelSvoConfig clamped = manager.config();
+    clamped.maxCpuBytes = static_cast<int64_t>(std::max<uint64_t>(1u, manager.telemetry().cpuBytesCurrent / 4u));
+    manager.setConfig(clamped);
+
+    bool enforced = false;
+    deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        if (manager.telemetry().cpuBytesCurrent <= static_cast<uint64_t>(clamped.maxCpuBytes)) {
+            enforced = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(enforced);
+    CHECK(manager.telemetry().cpuBytesCurrent <= static_cast<uint64_t>(clamped.maxCpuBytes));
+}
+
+TEST_CASE(VoxelSvoLodManager_EnforcesGpuByteBudget) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 2;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 64;
+    config.buildBudgetPagesPerFrame = 16;
+    config.applyBudgetPagesPerFrame = 16;
+    config.maxGpuBytes = 0;
+    manager.setConfig(config);
+    manager.initialize();
+
+    bool builtMeshes = false;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        if (manager.telemetry().gpuBytesCurrent > 0u) {
+            builtMeshes = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(builtMeshes);
+    CHECK(manager.telemetry().gpuBytesCurrent > 0u);
+
+    VoxelSvoConfig clamped = manager.config();
+    clamped.maxGpuBytes = static_cast<int64_t>(std::max<uint64_t>(1u, manager.telemetry().gpuBytesCurrent / 4u));
+    manager.setConfig(clamped);
+
+    bool enforced = false;
+    deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        if (manager.telemetry().gpuBytesCurrent <= static_cast<uint64_t>(clamped.maxGpuBytes)) {
+            enforced = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(enforced);
+    CHECK(manager.telemetry().gpuBytesCurrent <= static_cast<uint64_t>(clamped.maxGpuBytes));
+}

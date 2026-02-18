@@ -89,8 +89,14 @@ Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distan
 
 - The module boundary is `VoxelSvoLodManager` in `WorldView` and is configured via
   `render.svo_voxel.*`.
-- In the current state, this system is **scaffolded only** (lifecycle + telemetry),
-  and does not generate far geometry yet.
+- The current state includes:
+  - voxel-page CPU build + adaptive tree + surface extraction,
+  - neighbor-aware far mesh generation for opaque pages,
+  - far opaque rendering through the voxel shader path.
+- Transition behavior:
+  - near chunk rendering is distance-gated using `near_mesh_radius_chunks`,
+  - far voxel pages are distance-gated and dither-faded in the
+    `transition_band_chunks` overlap region to reduce pop-in.
 - Like the existing SVO preview, the voxel SVO system is a **derived cache** owned
   by `WorldView`. It is not authoritative world data.
 
@@ -198,7 +204,8 @@ If TAA is disabled, the history is invalidated each frame.
 
 ## 7. Known Limitations
 
-- Far LOD currently renders opaque proxy cubes, not final material-aware LOD geometry.
+- Legacy `render.svo` far LOD currently renders opaque proxy cubes.
+- Voxel SVO far LOD currently supports opaque surfaces only (no far transparent path).
 - No frustum culling; distance-only culling for voxels.
 - Shadow cascades use a camera-centered cube instead of fitting the frustum.
 - Transparent layer does not receive shadows in the main pass.

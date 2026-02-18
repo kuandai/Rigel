@@ -1,6 +1,7 @@
 #include "Rigel/Voxel/ChunkRenderer.h"
 
 #include "Rigel/Voxel/VoxelVertex.h"
+#include "Rigel/Voxel/VoxelLod/VoxelLodTransition.h"
 
 #include <spdlog/spdlog.h>
 #include <glm/glm.hpp>
@@ -106,6 +107,7 @@ void ChunkRenderer::clearCache() {
     m_voxelMeshes.clear();
     m_storeVersions.clear();
     m_nearVisibility.clear();
+    m_voxelNearVisibility.clear();
 }
 
 void ChunkRenderer::releaseResources() {
@@ -248,8 +250,36 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
 
     std::vector<RenderEntry> nearEntries;
     if (!ctx.config.svo.enabled) {
-        nearEntries = entries;
-        m_nearVisibility.clear();
+        if (!ctx.config.svoVoxel.enabled) {
+            nearEntries = entries;
+            m_nearVisibility.clear();
+            m_voxelNearVisibility.clear();
+        } else {
+            const VoxelLodDistanceBands bands =
+                makeVoxelLodDistanceBands(ctx.config.svoVoxel, renderDistance);
+            std::unordered_set<ChunkCoord, ChunkCoordHash> seen;
+            seen.reserve(entries.size());
+            nearEntries.reserve(entries.size());
+
+            for (const auto& entry : entries) {
+                seen.insert(entry.coord);
+                const bool wasNear = m_voxelNearVisibility[entry.coord];
+                const bool isNear = shouldRenderNearVoxel(entry.distanceSq, wasNear, bands);
+                m_voxelNearVisibility[entry.coord] = isNear;
+                if (isNear) {
+                    nearEntries.push_back(entry);
+                }
+            }
+
+            for (auto it = m_voxelNearVisibility.begin(); it != m_voxelNearVisibility.end();) {
+                if (seen.find(it->first) == seen.end()) {
+                    it = m_voxelNearVisibility.erase(it);
+                    continue;
+                }
+                ++it;
+            }
+            m_nearVisibility.clear();
+        }
     } else {
         const LodDistanceBands bands = makeLodDistanceBands(ctx.config.svo, renderDistance);
         std::unordered_set<ChunkCoord, ChunkCoordHash> seen;
@@ -273,6 +303,7 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
             }
             ++it;
         }
+        m_voxelNearVisibility.clear();
     }
 
     bool shadowsActive = false;
@@ -462,11 +493,13 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
             static_cast<float>(Chunk::SIZE);
         farRenderDistance = std::max(farRenderDistance, svoDistance);
     }
-    const float farRenderDistanceSq = farRenderDistance * farRenderDistance;
+    const VoxelLodDistanceBands distanceBands =
+        makeVoxelLodDistanceBands(ctx.config.svoVoxel, farRenderDistance);
 
     struct DrawEntry {
         VoxelPageKey key{};
         glm::vec3 worldMin{0.0f};
+        float fade = 1.0f;
     };
     std::vector<DrawEntry> drawEntries;
     drawEntries.reserve(farEntries.size());
@@ -479,7 +512,13 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
 
         glm::vec3 center = entry.worldMin + glm::vec3(static_cast<float>(pageSizeVoxels) * 0.5f);
         glm::vec3 delta = center - ctx.cameraPos;
-        if (glm::dot(delta, delta) > farRenderDistanceSq) {
+        const float distanceSq = glm::dot(delta, delta);
+        if (!shouldRenderFarVoxel(distanceSq, distanceBands)) {
+            continue;
+        }
+        const float distance = std::sqrt(std::max(0.0f, distanceSq));
+        const float fade = computeFarVoxelFade(distance, distanceBands);
+        if (fade <= 0.0f) {
             continue;
         }
 
@@ -506,7 +545,7 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
         if (opaque.isEmpty()) {
             continue;
         }
-        drawEntries.push_back(DrawEntry{entry.key, entry.worldMin});
+        drawEntries.push_back(DrawEntry{entry.key, entry.worldMin, fade});
     }
 
     for (auto it = m_voxelMeshes.begin(); it != m_voxelMeshes.end();) {
@@ -531,6 +570,9 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
     if (m_locRenderLayer >= 0) {
         glUniform1i(m_locRenderLayer, static_cast<int>(RenderLayer::Opaque));
     }
+    if (m_locFarDitherFade >= 0) {
+        glUniform1f(m_locFarDitherFade, 1.0f);
+    }
 
     for (const DrawEntry& draw : drawEntries) {
         auto meshIt = m_voxelMeshes.find(draw.key);
@@ -548,6 +590,9 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
 
         if (m_locChunkOffset >= 0) {
             glUniform3fv(m_locChunkOffset, 1, glm::value_ptr(draw.worldMin));
+        }
+        if (m_locFarDitherFade >= 0) {
+            glUniform1f(m_locFarDitherFade, draw.fade);
         }
         glBindVertexArray(mesh.vao);
         glDrawElements(
@@ -633,6 +678,7 @@ void ChunkRenderer::cacheUniformLocations() {
     m_locSunDirection = m_shader->uniform("u_sunDirection");
     m_locAlphaMultiplier = m_shader->uniform("u_alphaMultiplier");
     m_locAlphaCutoff = m_shader->uniform("u_alphaCutoff");
+    m_locFarDitherFade = m_shader->uniform("u_farDitherFade");
     m_locRenderLayer = m_shader->uniform("u_renderLayer");
     m_locShadowEnabled = m_shader->uniform("u_shadowEnabled");
     m_locShadowMap = m_shader->uniform("u_shadowMap");
@@ -697,6 +743,9 @@ void ChunkRenderer::renderPass(RenderLayer layer,
     }
     if (m_locRenderLayer >= 0) {
         glUniform1i(m_locRenderLayer, static_cast<int>(layer));
+    }
+    if (m_locFarDitherFade >= 0) {
+        glUniform1f(m_locFarDitherFade, 1.0f);
     }
 
     auto drawEntry = [&](const RenderEntry& entry) {

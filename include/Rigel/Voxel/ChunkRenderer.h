@@ -128,6 +128,7 @@ private:
     std::unordered_map<VoxelPageKey, VoxelGpuMeshEntry, VoxelPageKeyHash> m_voxelMeshes;
     std::unordered_map<uint32_t, uint64_t> m_storeVersions;
     std::unordered_map<ChunkCoord, bool, ChunkCoordHash> m_nearVisibility;
+    std::unordered_map<ChunkCoord, bool, ChunkCoordHash> m_voxelNearVisibility;
 
     Asset::Handle<Asset::ShaderAsset> m_shader;
     Asset::Handle<Asset::ShaderAsset> m_lodShader;
@@ -144,6 +145,7 @@ private:
     GLint m_locAlphaCutoff = -1;
     GLint m_locView = -1;
     GLint m_locRenderLayer = -1;
+    GLint m_locFarDitherFade = -1;
     GLint m_locShadowEnabled = -1;
     GLint m_locShadowMap = -1;
     GLint m_locShadowTransmittanceMap = -1;

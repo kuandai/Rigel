@@ -13,6 +13,7 @@ uniform sampler2DArray u_textureAtlas;
 uniform vec3 u_sunDirection;
 uniform float u_alphaMultiplier;
 uniform float u_alphaCutoff;
+uniform float u_farDitherFade;
 uniform int u_renderLayer; // 0=opaque, 1=cutout, 2=transparent, 3=emissive
 uniform int u_shadowEnabled;
 uniform sampler2DArray u_shadowMap;
@@ -114,6 +115,14 @@ void main() {
     // Alpha test for cutout materials
     if (alpha < u_alphaCutoff) {
         discard;
+    }
+    float ditherFade = clamp(u_farDitherFade, 0.0, 1.0);
+    if (ditherFade < 0.9999) {
+        vec2 pixel = floor(gl_FragCoord.xy);
+        float noise = fract(sin(dot(pixel, vec2(12.9898, 78.233))) * 43758.5453);
+        if (noise > ditherFade) {
+            discard;
+        }
     }
 
     // Simple directional lighting

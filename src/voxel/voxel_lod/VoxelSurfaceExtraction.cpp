@@ -1,6 +1,7 @@
 #include "Rigel/Voxel/VoxelLod/VoxelSurfaceExtraction.h"
 
 #include <algorithm>
+#include <optional>
 
 namespace Rigel::Voxel {
 namespace {
@@ -15,146 +16,12 @@ bool isSolid(VoxelId id) {
     return id != kVoxelAir;
 }
 
-} // namespace
-
-MacroVoxelGrid buildMacroGridFromPage(const VoxelPageCpu& page, int cellSizeVoxels) {
-    MacroVoxelGrid out{};
-    if (page.dim <= 0 || page.mips.empty()) {
-        return out;
-    }
-
-    const int clampedCell = std::max(1, cellSizeVoxels);
-    if ((page.dim % clampedCell) != 0) {
-        return out;
-    }
-
-    int mip = 0;
-    int s = clampedCell;
-    while (s > 1) {
-        if ((s & 1) != 0) {
-            return out;
-        }
-        s >>= 1;
-        ++mip;
-    }
-
-    if (mip < 0 || mip >= static_cast<int>(page.mips.levels.size())) {
-        return out;
-    }
-
-    const VoxelMipLevel& level = page.mips.levels[mip];
-    if (level.empty()) {
-        return out;
-    }
-
-    out.dims = glm::ivec3(level.dim);
-    out.cellSizeVoxels = clampedCell;
-    out.cells.resize(level.cells.size(), kVoxelAir);
-    for (size_t i = 0; i < level.cells.size(); ++i) {
-        out.cells[i] = VoxelMipLevel::value(level.cells[i]);
-    }
-    return out;
-}
-
-void extractSurfaceQuads(const MacroVoxelGrid& grid,
-                         VoxelBoundaryPolicy boundaryPolicy,
-                         std::vector<SurfaceQuad>& out) {
+template <typename SampleFn>
+void extractSurfaceQuadsGreedyImpl(const glm::ivec3& dims, SampleFn sample, std::vector<SurfaceQuad>& out) {
     out.clear();
-    if (grid.empty()) {
+    if (dims.x <= 0 || dims.y <= 0 || dims.z <= 0) {
         return;
     }
-
-    const glm::ivec3 dims = grid.dims;
-    auto sample = [&](int x, int y, int z) -> VoxelId {
-        if (x < 0 || y < 0 || z < 0 || x >= dims.x || y >= dims.y || z >= dims.z) {
-            return boundaryPolicy == VoxelBoundaryPolicy::OutsideEmpty ? kVoxelAir : static_cast<VoxelId>(1);
-        }
-        return grid.cells[gridIndex(x, y, z, dims)];
-    };
-
-    // Emit one quad per macro cell face (greedy merge is a later stage).
-    for (int z = 0; z < dims.z; ++z) {
-        for (int y = 0; y < dims.y; ++y) {
-            for (int x = 0; x < dims.x; ++x) {
-                const VoxelId id = sample(x, y, z);
-                if (!isSolid(id)) {
-                    continue;
-                }
-
-                // +X
-                if (!isSolid(sample(x + 1, y, z))) {
-                    out.push_back(SurfaceQuad{
-                        .normal = Direction::PosX,
-                        .cellMin = glm::ivec3(x, y, z),
-                        .span = glm::ivec2(1, 1),
-                        .material = id
-                    });
-                }
-                // -X
-                if (!isSolid(sample(x - 1, y, z))) {
-                    out.push_back(SurfaceQuad{
-                        .normal = Direction::NegX,
-                        .cellMin = glm::ivec3(x, y, z),
-                        .span = glm::ivec2(1, 1),
-                        .material = id
-                    });
-                }
-                // +Y
-                if (!isSolid(sample(x, y + 1, z))) {
-                    out.push_back(SurfaceQuad{
-                        .normal = Direction::PosY,
-                        .cellMin = glm::ivec3(x, y, z),
-                        .span = glm::ivec2(1, 1),
-                        .material = id
-                    });
-                }
-                // -Y
-                if (!isSolid(sample(x, y - 1, z))) {
-                    out.push_back(SurfaceQuad{
-                        .normal = Direction::NegY,
-                        .cellMin = glm::ivec3(x, y, z),
-                        .span = glm::ivec2(1, 1),
-                        .material = id
-                    });
-                }
-                // +Z
-                if (!isSolid(sample(x, y, z + 1))) {
-                    out.push_back(SurfaceQuad{
-                        .normal = Direction::PosZ,
-                        .cellMin = glm::ivec3(x, y, z),
-                        .span = glm::ivec2(1, 1),
-                        .material = id
-                    });
-                }
-                // -Z
-                if (!isSolid(sample(x, y, z - 1))) {
-                    out.push_back(SurfaceQuad{
-                        .normal = Direction::NegZ,
-                        .cellMin = glm::ivec3(x, y, z),
-                        .span = glm::ivec2(1, 1),
-                        .material = id
-                    });
-                }
-            }
-        }
-    }
-}
-
-void extractSurfaceQuadsGreedy(const MacroVoxelGrid& grid,
-                               VoxelBoundaryPolicy boundaryPolicy,
-                               std::vector<SurfaceQuad>& out) {
-    out.clear();
-    if (grid.empty()) {
-        return;
-    }
-
-    const glm::ivec3 dims = grid.dims;
-    auto sample = [&](int x, int y, int z) -> VoxelId {
-        if (x < 0 || y < 0 || z < 0 || x >= dims.x || y >= dims.y || z >= dims.z) {
-            return boundaryPolicy == VoxelBoundaryPolicy::OutsideEmpty ? kVoxelAir : static_cast<VoxelId>(1);
-        }
-        return grid.cells[gridIndex(x, y, z, dims)];
-    };
 
     auto greedy2d = [&](int width,
                         int height,
@@ -320,6 +187,234 @@ void extractSurfaceQuadsGreedy(const MacroVoxelGrid& grid,
             });
         });
     }
+}
+
+} // namespace
+
+MacroVoxelGrid buildMacroGridFromPage(const VoxelPageCpu& page, int cellSizeVoxels) {
+    MacroVoxelGrid out{};
+    if (page.dim <= 0 || page.mips.empty()) {
+        return out;
+    }
+
+    const int clampedCell = std::max(1, cellSizeVoxels);
+    if ((page.dim % clampedCell) != 0) {
+        return out;
+    }
+
+    int mip = 0;
+    int s = clampedCell;
+    while (s > 1) {
+        if ((s & 1) != 0) {
+            return out;
+        }
+        s >>= 1;
+        ++mip;
+    }
+
+    if (mip < 0 || mip >= static_cast<int>(page.mips.levels.size())) {
+        return out;
+    }
+
+    const VoxelMipLevel& level = page.mips.levels[mip];
+    if (level.empty()) {
+        return out;
+    }
+
+    out.dims = glm::ivec3(level.dim);
+    out.cellSizeVoxels = clampedCell;
+    out.cells.resize(level.cells.size(), kVoxelAir);
+    for (size_t i = 0; i < level.cells.size(); ++i) {
+        out.cells[i] = VoxelMipLevel::value(level.cells[i]);
+    }
+    return out;
+}
+
+void extractSurfaceQuads(const MacroVoxelGrid& grid,
+                         VoxelBoundaryPolicy boundaryPolicy,
+                         std::vector<SurfaceQuad>& out) {
+    out.clear();
+    if (grid.empty()) {
+        return;
+    }
+
+    const glm::ivec3 dims = grid.dims;
+    auto sample = [&](int x, int y, int z) -> VoxelId {
+        if (x < 0 || y < 0 || z < 0 || x >= dims.x || y >= dims.y || z >= dims.z) {
+            return boundaryPolicy == VoxelBoundaryPolicy::OutsideEmpty ? kVoxelAir : static_cast<VoxelId>(1);
+        }
+        return grid.cells[gridIndex(x, y, z, dims)];
+    };
+
+    // Emit one quad per macro cell face (greedy merge is a later stage).
+    for (int z = 0; z < dims.z; ++z) {
+        for (int y = 0; y < dims.y; ++y) {
+            for (int x = 0; x < dims.x; ++x) {
+                const VoxelId id = sample(x, y, z);
+                if (!isSolid(id)) {
+                    continue;
+                }
+
+                // +X
+                if (!isSolid(sample(x + 1, y, z))) {
+                    out.push_back(SurfaceQuad{
+                        .normal = Direction::PosX,
+                        .cellMin = glm::ivec3(x, y, z),
+                        .span = glm::ivec2(1, 1),
+                        .material = id
+                    });
+                }
+                // -X
+                if (!isSolid(sample(x - 1, y, z))) {
+                    out.push_back(SurfaceQuad{
+                        .normal = Direction::NegX,
+                        .cellMin = glm::ivec3(x, y, z),
+                        .span = glm::ivec2(1, 1),
+                        .material = id
+                    });
+                }
+                // +Y
+                if (!isSolid(sample(x, y + 1, z))) {
+                    out.push_back(SurfaceQuad{
+                        .normal = Direction::PosY,
+                        .cellMin = glm::ivec3(x, y, z),
+                        .span = glm::ivec2(1, 1),
+                        .material = id
+                    });
+                }
+                // -Y
+                if (!isSolid(sample(x, y - 1, z))) {
+                    out.push_back(SurfaceQuad{
+                        .normal = Direction::NegY,
+                        .cellMin = glm::ivec3(x, y, z),
+                        .span = glm::ivec2(1, 1),
+                        .material = id
+                    });
+                }
+                // +Z
+                if (!isSolid(sample(x, y, z + 1))) {
+                    out.push_back(SurfaceQuad{
+                        .normal = Direction::PosZ,
+                        .cellMin = glm::ivec3(x, y, z),
+                        .span = glm::ivec2(1, 1),
+                        .material = id
+                    });
+                }
+                // -Z
+                if (!isSolid(sample(x, y, z - 1))) {
+                    out.push_back(SurfaceQuad{
+                        .normal = Direction::NegZ,
+                        .cellMin = glm::ivec3(x, y, z),
+                        .span = glm::ivec2(1, 1),
+                        .material = id
+                    });
+                }
+            }
+        }
+    }
+}
+
+void extractSurfaceQuadsGreedy(const MacroVoxelGrid& grid,
+                               VoxelBoundaryPolicy boundaryPolicy,
+                               std::vector<SurfaceQuad>& out) {
+    if (grid.empty()) {
+        out.clear();
+        return;
+    }
+
+    const glm::ivec3 dims = grid.dims;
+    auto sample = [&](int x, int y, int z) -> VoxelId {
+        if (x < 0 || y < 0 || z < 0 || x >= dims.x || y >= dims.y || z >= dims.z) {
+            return boundaryPolicy == VoxelBoundaryPolicy::OutsideEmpty ? kVoxelAir : static_cast<VoxelId>(1);
+        }
+        return grid.cells[gridIndex(x, y, z, dims)];
+    };
+
+    extractSurfaceQuadsGreedyImpl(dims, sample, out);
+}
+
+void extractSurfaceQuadsGreedy(const MacroVoxelGrid& grid,
+                               const MacroVoxelNeighbors& neighbors,
+                               VoxelBoundaryPolicy boundaryPolicy,
+                               std::vector<SurfaceQuad>& out) {
+    if (grid.empty()) {
+        out.clear();
+        return;
+    }
+
+    const glm::ivec3 dims = grid.dims;
+
+    auto sampleNeighbor = [&](const MacroVoxelGrid* neighbor, int x, int y, int z) -> std::optional<VoxelId> {
+        if (!neighbor || neighbor->dims != dims) {
+            return std::nullopt;
+        }
+        if (x < 0 || y < 0 || z < 0 || x >= dims.x || y >= dims.y || z >= dims.z) {
+            return std::nullopt;
+        }
+        return neighbor->cells[gridIndex(x, y, z, dims)];
+    };
+
+    auto outsideValue = [&]() -> VoxelId {
+        return boundaryPolicy == VoxelBoundaryPolicy::OutsideEmpty ? kVoxelAir : static_cast<VoxelId>(1);
+    };
+
+    auto sample = [&](int x, int y, int z) -> VoxelId {
+        if (x >= 0 && y >= 0 && z >= 0 && x < dims.x && y < dims.y && z < dims.z) {
+            return grid.cells[gridIndex(x, y, z, dims)];
+        }
+
+        const bool yOk = (y >= 0 && y < dims.y);
+        const bool zOk = (z >= 0 && z < dims.z);
+        if (yOk && zOk) {
+            if (x == -1) {
+                if (auto v = sampleNeighbor(neighbors.negX, dims.x - 1, y, z)) {
+                    return *v;
+                }
+                return outsideValue();
+            }
+            if (x == dims.x) {
+                if (auto v = sampleNeighbor(neighbors.posX, 0, y, z)) {
+                    return *v;
+                }
+                return outsideValue();
+            }
+        }
+
+        const bool xOk = (x >= 0 && x < dims.x);
+        if (xOk && zOk) {
+            if (y == -1) {
+                if (auto v = sampleNeighbor(neighbors.negY, x, dims.y - 1, z)) {
+                    return *v;
+                }
+                return outsideValue();
+            }
+            if (y == dims.y) {
+                if (auto v = sampleNeighbor(neighbors.posY, x, 0, z)) {
+                    return *v;
+                }
+                return outsideValue();
+            }
+        }
+
+        if (xOk && yOk) {
+            if (z == -1) {
+                if (auto v = sampleNeighbor(neighbors.negZ, x, y, dims.z - 1)) {
+                    return *v;
+                }
+                return outsideValue();
+            }
+            if (z == dims.z) {
+                if (auto v = sampleNeighbor(neighbors.posZ, x, y, 0)) {
+                    return *v;
+                }
+                return outsideValue();
+            }
+        }
+
+        return outsideValue();
+    };
+
+    extractSurfaceQuadsGreedyImpl(dims, sample, out);
 }
 
 } // namespace Rigel::Voxel

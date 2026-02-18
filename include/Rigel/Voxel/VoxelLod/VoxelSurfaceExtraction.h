@@ -42,6 +42,15 @@ struct SurfaceQuad {
     VoxelId material = kVoxelAir;
 };
 
+struct MacroVoxelNeighbors {
+    const MacroVoxelGrid* negX = nullptr;
+    const MacroVoxelGrid* posX = nullptr;
+    const MacroVoxelGrid* negY = nullptr;
+    const MacroVoxelGrid* posY = nullptr;
+    const MacroVoxelGrid* negZ = nullptr;
+    const MacroVoxelGrid* posZ = nullptr;
+};
+
 // Build a macro-voxel grid from a page mip pyramid.
 //
 // The output grid has dimensions (page.dim / cellSizeVoxels)^3 and one VoxelId per macro cell.
@@ -60,6 +69,16 @@ void extractSurfaceQuads(const MacroVoxelGrid& grid,
 // Same as extractSurfaceQuads(), but performs per-plane greedy merging so coplanar
 // adjacent faces of the same material collapse into larger quads.
 void extractSurfaceQuadsGreedy(const MacroVoxelGrid& grid,
+                               VoxelBoundaryPolicy boundaryPolicy,
+                               std::vector<SurfaceQuad>& out);
+
+// Greedy surface extraction with a 6-neighbor cross for boundary sampling.
+//
+// This avoids double-faces between adjacent grids by sampling neighbor macro cells
+// when a face query crosses the grid boundary. Missing neighbors are treated as
+// either air or solid based on `boundaryPolicy`.
+void extractSurfaceQuadsGreedy(const MacroVoxelGrid& grid,
+                               const MacroVoxelNeighbors& neighbors,
                                VoxelBoundaryPolicy boundaryPolicy,
                                std::vector<SurfaceQuad>& out);
 

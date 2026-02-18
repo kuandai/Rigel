@@ -3,7 +3,6 @@
 #include "ChunkBenchmark.h"
 #include "ChunkRenderer.h"
 #include "ChunkStreamer.h"
-#include "Lod/SvoLodManager.h"
 #include "VoxelLod/VoxelSvoLodManager.h"
 #include "VoxelLod/VoxelSource.h"
 #include "MeshBuilder.h"
@@ -52,8 +51,6 @@ public:
 
     void setRenderConfig(const WorldRenderConfig& config);
     const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
-    const SvoLodConfig& svoConfig() const { return m_svoLod.config(); }
-    const SvoLodTelemetry& svoTelemetry() const { return m_svoLod.telemetry(); }
     const VoxelSvoConfig& svoVoxelConfig() const { return m_voxelSvoLod.config(); }
     const VoxelSvoTelemetry& svoVoxelTelemetry() const { return m_voxelSvoLod.telemetry(); }
 
@@ -79,7 +76,7 @@ public:
                 float farPlane,
                 float dt = 0.0f);
     void getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const;
-    void getSvoDebugStates(std::vector<SvoLodManager::DebugCellState>& out) const;
+    void getVoxelSvoDebugPages(std::vector<std::pair<VoxelPageKey, VoxelSvoPageInfo>>& out) const;
     int viewDistanceChunks() const;
     void rebuildChunkMesh(ChunkCoord coord);
 
@@ -89,12 +86,9 @@ public:
     void releaseRenderResources();
 
 private:
-    static constexpr uint32_t kSvoPressureUpdateSkipFrames = 5;
-    static constexpr uint32_t kSvoPressureUploadSkipFrames = 5;
     static constexpr uint32_t kVoxelSvoPressureUpdateSkipFrames = 5;
     static constexpr uint32_t kVoxelSvoPressureUploadSkipFrames = 5;
 
-    void configureSvoChunkSampler(const std::shared_ptr<WorldGenerator>& generator);
     void configureVoxelSvoChunkGenerator(const std::shared_ptr<WorldGenerator>& generator);
 
     World* m_world = nullptr;
@@ -103,19 +97,15 @@ private:
     ChunkRenderer m_renderer;
     WorldMeshStore m_meshStore;
     ChunkStreamer m_streamer;
-    SvoLodManager m_svoLod;
     VoxelSvoLodManager m_voxelSvoLod;
     WorldRenderConfig m_renderConfig;
     Asset::Handle<Asset::ShaderAsset> m_shader;
-    Asset::Handle<Asset::ShaderAsset> m_lodShader;
     Asset::Handle<Asset::ShaderAsset> m_shadowDepthShader;
     Asset::Handle<Asset::ShaderAsset> m_shadowTransmitShader;
     ChunkBenchmarkStats* m_benchmark = nullptr;
     WorldReplicationState m_replication;
     Entity::EntityRenderer m_entityRenderer;
     uint64_t m_frameCounter = 0;
-    uint32_t m_svoUpdatePressureCountdown = 0;
-    uint32_t m_svoUploadPressureCountdown = 0;
     uint32_t m_voxelSvoUpdatePressureCountdown = 0;
     uint32_t m_voxelSvoUploadPressureCountdown = 0;
     bool m_svoStreamingOverloaded = false;

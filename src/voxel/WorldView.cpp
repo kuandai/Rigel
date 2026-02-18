@@ -7,21 +7,6 @@
 namespace Rigel::Voxel {
 namespace {
 
-void initializeSvoWithFallback(SvoLodManager& svo,
-                               WorldRenderConfig& renderConfig,
-                               const char* contextLabel) {
-    try {
-        svo.initialize();
-    } catch (const std::exception& e) {
-        spdlog::error("SVO LOD initialization failed ({}): {}. Falling back to chunk-only rendering.",
-                      contextLabel ? contextLabel : "unknown",
-                      e.what());
-        renderConfig.svo.enabled = false;
-        svo.setConfig(renderConfig.svo);
-        svo.reset();
-    }
-}
-
 void initializeVoxelSvoWithFallback(VoxelSvoLodManager& lod,
                                     WorldRenderConfig& renderConfig,
                                     const char* contextLabel) {
@@ -43,11 +28,8 @@ WorldView::WorldView(World& world, WorldResources& resources)
     : m_world(&world)
     , m_resources(&resources)
 {
-    m_svoLod.setConfig(m_renderConfig.svo);
     m_voxelSvoLod.setConfig(m_renderConfig.svoVoxel);
     if (m_world && m_resources) {
-        m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
-        configureSvoChunkSampler(m_world->generator());
         m_voxelSvoLod.bind(&m_world->chunkManager(),
                            &m_resources->registry(),
                            &m_resources->textureAtlas());
@@ -56,21 +38,10 @@ WorldView::WorldView(World& world, WorldResources& resources)
 }
 
 void WorldView::setRenderConfig(const WorldRenderConfig& config) {
-    const bool wasEnabled = m_renderConfig.svo.enabled;
     const bool wasVoxelEnabled = m_renderConfig.svoVoxel.enabled;
     m_renderConfig = config;
-    m_svoLod.setConfig(m_renderConfig.svo);
     m_voxelSvoLod.setConfig(m_renderConfig.svoVoxel);
-    const bool isEnabled = m_renderConfig.svo.enabled;
     const bool isVoxelEnabled = m_renderConfig.svoVoxel.enabled;
-
-    if (wasEnabled && !isEnabled) {
-        m_svoLod.reset();
-    }
-
-    if (!wasEnabled && isEnabled) {
-        initializeSvoWithFallback(m_svoLod, m_renderConfig, "setRenderConfig");
-    }
 
     if (wasVoxelEnabled && !isVoxelEnabled) {
         m_voxelSvoLod.reset();
@@ -94,11 +65,6 @@ void WorldView::initialize(Asset::AssetManager& assets) {
         throw;
     }
     try {
-        m_lodShader = assets.get<Asset::ShaderAsset>("shaders/svo_lod");
-    } catch (const std::exception& e) {
-        spdlog::warn("SVO LOD shader unavailable: {}", e.what());
-    }
-    try {
         m_shadowDepthShader = assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_depth");
         m_shadowTransmitShader = assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_transmit");
     } catch (const std::exception& e) {
@@ -114,17 +80,12 @@ void WorldView::initialize(Asset::AssetManager& assets) {
                         &m_resources->registry(),
                         &m_resources->textureAtlas(),
                         generator);
-        m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
-        configureSvoChunkSampler(generator);
         m_voxelSvoLod.bind(&m_world->chunkManager(),
                            &m_resources->registry(),
                            &m_resources->textureAtlas());
         configureVoxelSvoChunkGenerator(generator);
     }
 
-    if (m_renderConfig.svo.enabled) {
-        initializeSvoWithFallback(m_svoLod, m_renderConfig, "WorldView::initialize");
-    }
     if (m_renderConfig.svoVoxel.enabled) {
         initializeVoxelSvoWithFallback(m_voxelSvoLod, m_renderConfig, "WorldView::initialize");
     }
@@ -141,31 +102,7 @@ void WorldView::setGenerator(std::shared_ptr<WorldGenerator> generator) {
                     &m_resources->registry(),
                     &m_resources->textureAtlas(),
                     std::move(generator));
-    m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
-    configureSvoChunkSampler(generatorRef);
     configureVoxelSvoChunkGenerator(generatorRef);
-}
-
-void WorldView::configureSvoChunkSampler(const std::shared_ptr<WorldGenerator>& generator) {
-    if (!generator) {
-        m_svoLod.setChunkSampler({});
-        return;
-    }
-
-    std::weak_ptr<WorldGenerator> weakGenerator = generator;
-    m_svoLod.setChunkSampler(
-        [weakGenerator](ChunkCoord coord, std::array<BlockState, Chunk::VOLUME>& out) -> bool {
-            auto locked = weakGenerator.lock();
-            if (!locked) {
-                return false;
-            }
-
-            ChunkBuffer buffer;
-            locked->generate(coord, buffer, nullptr);
-            out = std::move(buffer.blocks);
-            return true;
-        }
-    );
 }
 
 void WorldView::configureVoxelSvoChunkGenerator(const std::shared_ptr<WorldGenerator>& generator) {
@@ -234,16 +171,6 @@ void WorldView::updateStreaming(const glm::vec3& cameraPos) {
     m_svoStreamingOverloaded = pressure.overloaded;
 
     if (!m_svoStreamingOverloaded) {
-        m_svoUpdatePressureCountdown = 0;
-        m_svoLod.update(cameraPos);
-    } else if (m_svoUpdatePressureCountdown == 0) {
-        m_svoLod.update(cameraPos);
-        m_svoUpdatePressureCountdown = kSvoPressureUpdateSkipFrames;
-    } else {
-        --m_svoUpdatePressureCountdown;
-    }
-
-    if (!m_svoStreamingOverloaded) {
         m_voxelSvoUpdatePressureCountdown = 0;
         m_voxelSvoLod.update(cameraPos);
     } else if (m_voxelSvoUpdatePressureCountdown == 0) {
@@ -266,16 +193,6 @@ void WorldView::render(const glm::mat4& view,
                        float dt) {
     if (!m_resources) {
         return;
-    }
-
-    if (!m_svoStreamingOverloaded) {
-        m_svoUploadPressureCountdown = 0;
-        m_svoLod.uploadRenderResources();
-    } else if (m_svoUploadPressureCountdown == 0) {
-        m_svoLod.uploadRenderResources();
-        m_svoUploadPressureCountdown = kSvoPressureUploadSkipFrames;
-    } else {
-        --m_svoUploadPressureCountdown;
     }
 
     if (!m_svoStreamingOverloaded) {
@@ -314,10 +231,8 @@ void WorldView::render(const glm::mat4& view,
     ctx.meshes = &m_meshStore;
     ctx.atlas = &m_resources->textureAtlas();
     ctx.shader = m_shader;
-    ctx.lodShader = m_lodShader;
     ctx.shadowDepthShader = m_shadowDepthShader;
     ctx.shadowTransmitShader = m_shadowTransmitShader;
-    ctx.svoLod = &m_svoLod;
     ctx.voxelSvoLod = &m_voxelSvoLod;
     ctx.shadowCaster = m_world ? &shadowCaster : nullptr;
     ctx.config = m_renderConfig;
@@ -363,8 +278,9 @@ void WorldView::getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>&
     m_streamer.getDebugStates(out);
 }
 
-void WorldView::getSvoDebugStates(std::vector<SvoLodManager::DebugCellState>& out) const {
-    m_svoLod.collectDebugCells(out);
+void WorldView::getVoxelSvoDebugPages(
+    std::vector<std::pair<VoxelPageKey, VoxelSvoPageInfo>>& out) const {
+    m_voxelSvoLod.collectDebugPages(out);
 }
 
 int WorldView::viewDistanceChunks() const {
@@ -513,20 +429,15 @@ void WorldView::clear() {
     m_meshStore.clear();
     m_renderer.clearCache();
     m_streamer.reset();
-    m_svoLod.reset();
     m_voxelSvoLod.reset();
-    m_svoUpdatePressureCountdown = 0;
-    m_svoUploadPressureCountdown = 0;
     m_svoStreamingOverloaded = false;
     m_replication.knownChunks.clear();
 }
 
 void WorldView::releaseRenderResources() {
     m_renderer.releaseResources();
-    m_svoLod.releaseRenderResources();
     m_voxelSvoLod.releaseRenderResources();
     m_shader = {};
-    m_lodShader = {};
     m_shadowDepthShader = {};
     m_shadowTransmitShader = {};
 }

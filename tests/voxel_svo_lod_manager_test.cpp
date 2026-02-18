@@ -2,10 +2,62 @@
 
 #include "Rigel/Voxel/VoxelLod/VoxelSvoLodManager.h"
 
+#include <atomic>
 #include <chrono>
 #include <thread>
 
 using namespace Rigel::Voxel;
+
+namespace {
+
+class TogglePatternSource final : public IVoxelSource {
+public:
+    enum class Mode : int {
+        AllAir = 0,
+        Checkerboard = 1
+    };
+
+    void setMode(Mode mode) {
+        m_mode.store(static_cast<int>(mode), std::memory_order_relaxed);
+    }
+
+    BrickSampleStatus sampleBrick(const BrickSampleDesc& desc,
+                                  std::span<VoxelId> out,
+                                  const std::atomic_bool* cancel = nullptr) const override {
+        if (!desc.isValid() || out.size() != desc.outVoxelCount()) {
+            return BrickSampleStatus::Miss;
+        }
+
+        const glm::ivec3 dims = desc.outDims();
+        const int mode = m_mode.load(std::memory_order_relaxed);
+        size_t idx = 0;
+        for (int z = 0; z < dims.z; ++z) {
+            for (int y = 0; y < dims.y; ++y) {
+                for (int x = 0; x < dims.x; ++x) {
+                    if (cancel && cancel->load(std::memory_order_relaxed)) {
+                        return BrickSampleStatus::Cancelled;
+                    }
+                    if (mode == static_cast<int>(Mode::AllAir)) {
+                        out[idx++] = kVoxelAir;
+                        continue;
+                    }
+
+                    const int wx = desc.worldMinVoxel.x + x * desc.stepVoxels;
+                    const int wy = desc.worldMinVoxel.y + y * desc.stepVoxels;
+                    const int wz = desc.worldMinVoxel.z + z * desc.stepVoxels;
+                    const bool solid = ((wx ^ wy ^ wz) & 1) != 0;
+                    out[idx++] = solid ? static_cast<VoxelId>(5) : kVoxelAir;
+                }
+            }
+        }
+        return BrickSampleStatus::Hit;
+    }
+
+private:
+    std::atomic<int> m_mode{static_cast<int>(Mode::AllAir)};
+};
+
+} // namespace
 
 TEST_CASE(VoxelSvoLodManager_ConfigIsSanitized) {
     VoxelSvoLodManager manager;
@@ -415,4 +467,109 @@ TEST_CASE(VoxelSvoLodManager_InvalidateChunkBumpsRevisionAndRequeuesPage) {
     }
 
     CHECK(rebuiltRevision > firstRevision);
+}
+
+TEST_CASE(VoxelSvoLodManager_ResetCancelsInFlightBuildJobs) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        outBlocks.fill(BlockState{});
+        for (int i = 0; i < 100; ++i) {
+            if (cancel && cancel->load(std::memory_order_relaxed)) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 0;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 1;
+    config.buildBudgetPagesPerFrame = 1;
+    config.applyBudgetPagesPerFrame = 0;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f)); // schedules a build
+    CHECK(manager.pageCount() > 0);
+
+    // Must not crash/hang with an in-flight worker job.
+    CHECK_NO_THROW(manager.reset());
+
+    // Manager should be reusable after reset.
+    CHECK_NO_THROW(manager.initialize());
+    CHECK_NO_THROW(manager.update(glm::vec3(0.0f)));
+    CHECK(manager.telemetry().updateCalls > 0u);
+}
+
+TEST_CASE(VoxelSvoLodManager_PersistenceSource_InvalidationRebuildsFromUpdatedData) {
+    auto source = std::make_shared<TogglePatternSource>();
+
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool*) {
+        outBlocks.fill(BlockState{}); // fallback is all-air; persistence source must supply data.
+    });
+    manager.setPersistenceSource(source);
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 0;
+    config.levels = 1;
+    config.pageSizeVoxels = 8;
+    config.minLeafVoxels = 1;
+    config.maxResidentPages = 1;
+    config.buildBudgetPagesPerFrame = 1;
+    config.applyBudgetPagesPerFrame = 0;
+    manager.setConfig(config);
+    manager.initialize();
+
+    uint64_t firstRevision = 0;
+    uint32_t firstNodeCount = 0;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        auto info = manager.pageInfo(VoxelPageKey{0, 0, 0, 0});
+        if (info && info->state == VoxelPageState::ReadyCpu && info->appliedRevision > 0) {
+            firstRevision = info->appliedRevision;
+            firstNodeCount = info->nodeCount;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(firstRevision > 0);
+    CHECK_EQ(firstNodeCount, static_cast<uint32_t>(1)); // all-air collapses to one node
+    CHECK(manager.telemetry().persistenceHits > 0u);
+
+    source->setMode(TogglePatternSource::Mode::Checkerboard);
+    manager.invalidateChunk(ChunkCoord{0, 0, 0});
+
+    uint64_t secondRevision = 0;
+    uint32_t secondNodeCount = 0;
+    deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(900);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        auto info = manager.pageInfo(VoxelPageKey{0, 0, 0, 0});
+        if (info && info->state == VoxelPageState::ReadyCpu && info->appliedRevision > firstRevision) {
+            secondRevision = info->appliedRevision;
+            secondNodeCount = info->nodeCount;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    CHECK(secondRevision > firstRevision);
+    CHECK(secondNodeCount > firstNodeCount);
 }

@@ -264,9 +264,6 @@ void ensureDefaultBindings(InputBindings& bindings) {
     if (!bindings.hasAction("toggle_mouse_capture")) {
         bindings.bind("toggle_mouse_capture", GLFW_KEY_TAB);
     }
-    if (!bindings.hasAction("toggle_svo_lod")) {
-        bindings.bind("toggle_svo_lod", GLFW_KEY_F6);
-    }
     if (!bindings.hasAction("demo_spawn_entity")) {
         bindings.bind("demo_spawn_entity", GLFW_KEY_F2);
     }

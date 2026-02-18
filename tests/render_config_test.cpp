@@ -51,18 +51,6 @@ render:
     enabled: true
     blend: 0.8
     jitter_scale: 1.5
-  svo:
-    enabled: true
-    near_mesh_radius_chunks: 9
-    lod_start_radius_chunks: 12
-    lod_view_distance_chunks: 30
-    lod_cell_span_chunks: 6
-    lod_chunk_sample_step: 3
-    lod_max_cells: 2048
-    lod_max_cpu_bytes: 262144
-    lod_max_gpu_bytes: 131072
-    lod_copy_budget_per_frame: 11
-    lod_apply_budget_per_frame: 7
   svo_voxel:
     enabled: true
     near_mesh_radius_chunks: 7
@@ -107,17 +95,6 @@ render:
     CHECK(config.taa.enabled);
     CHECK_NEAR(config.taa.blend, 0.8f, 0.0001f);
     CHECK_NEAR(config.taa.jitterScale, 1.5f, 0.0001f);
-    CHECK(config.svo.enabled);
-    CHECK_EQ(config.svo.nearMeshRadiusChunks, 9);
-    CHECK_EQ(config.svo.lodStartRadiusChunks, 12);
-    CHECK_EQ(config.svo.lodViewDistanceChunks, 30);
-    CHECK_EQ(config.svo.lodCellSpanChunks, 6);
-    CHECK_EQ(config.svo.lodChunkSampleStep, 3);
-    CHECK_EQ(config.svo.lodMaxCells, 2048);
-    CHECK_EQ(config.svo.lodMaxCpuBytes, 262144);
-    CHECK_EQ(config.svo.lodMaxGpuBytes, 131072);
-    CHECK_EQ(config.svo.lodCopyBudgetPerFrame, 11);
-    CHECK_EQ(config.svo.lodApplyBudgetPerFrame, 7);
     CHECK(config.svoVoxel.enabled);
     CHECK_EQ(config.svoVoxel.nearMeshRadiusChunks, 7);
     CHECK_EQ(config.svoVoxel.startRadiusChunks, 11);
@@ -133,40 +110,6 @@ render:
     CHECK_EQ(config.svoVoxel.maxCpuBytes, static_cast<int64_t>(123456));
     CHECK_EQ(config.svoVoxel.maxGpuBytes, static_cast<int64_t>(654321));
     CHECK(config.profilingEnabled);
-}
-
-TEST_CASE(RenderConfig_SvoClampsInvalidValues) {
-    const std::string yaml = R"(
-render:
-  svo:
-    enabled: true
-    near_mesh_radius_chunks: -2
-    lod_start_radius_chunks: -4
-    lod_view_distance_chunks: -8
-    lod_cell_span_chunks: 0
-    lod_chunk_sample_step: 999
-    lod_max_cells: -8
-    lod_max_cpu_bytes: -9
-    lod_max_gpu_bytes: -10
-    lod_copy_budget_per_frame: -3
-    lod_apply_budget_per_frame: -6
-)";
-
-    ConfigProvider provider;
-    provider.addSource(std::make_unique<StringConfigSource>(yaml));
-    WorldRenderConfig config = provider.loadRenderConfig();
-
-    CHECK(config.svo.enabled);
-    CHECK_EQ(config.svo.nearMeshRadiusChunks, 0);
-    CHECK_EQ(config.svo.lodStartRadiusChunks, 0);
-    CHECK_EQ(config.svo.lodViewDistanceChunks, 0);
-    CHECK_EQ(config.svo.lodCellSpanChunks, 1);
-    CHECK_EQ(config.svo.lodChunkSampleStep, Chunk::SIZE);
-    CHECK_EQ(config.svo.lodMaxCells, 0);
-    CHECK_EQ(config.svo.lodMaxCpuBytes, 0);
-    CHECK_EQ(config.svo.lodMaxGpuBytes, 0);
-    CHECK_EQ(config.svo.lodCopyBudgetPerFrame, 0);
-    CHECK_EQ(config.svo.lodApplyBudgetPerFrame, 0);
 }
 
 TEST_CASE(RenderConfig_SvoVoxelClampsInvalidValues) {

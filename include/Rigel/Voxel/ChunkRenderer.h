@@ -13,7 +13,6 @@
 #include "ChunkMesh.h"
 #include "WorldMeshStore.h"
 #include "WorldRenderContext.h"
-#include "Lod/SvoLodTransition.h"
 
 #include <Rigel/Asset/Handle.h>
 #include <Rigel/Asset/Types.h>
@@ -127,11 +126,9 @@ private:
     std::unordered_map<MeshId, GpuMeshEntry, MeshIdHash> m_meshes;
     std::unordered_map<VoxelPageKey, VoxelGpuMeshEntry, VoxelPageKeyHash> m_voxelMeshes;
     std::unordered_map<uint32_t, uint64_t> m_storeVersions;
-    std::unordered_map<ChunkCoord, bool, ChunkCoordHash> m_nearVisibility;
     std::unordered_map<ChunkCoord, bool, ChunkCoordHash> m_voxelNearVisibility;
 
     Asset::Handle<Asset::ShaderAsset> m_shader;
-    Asset::Handle<Asset::ShaderAsset> m_lodShader;
     Asset::Handle<Asset::ShaderAsset> m_shadowDepthShader;
     Asset::Handle<Asset::ShaderAsset> m_shadowTransmitShader;
     const TextureAtlas* m_atlas = nullptr;
@@ -160,14 +157,6 @@ private:
     GLint m_locShadowPcfNear = -1;
     GLint m_locShadowPcfFar = -1;
     GLint m_locShadowFadePower = -1;
-
-    GLint m_lodLocViewProjection = -1;
-    GLint m_lodLocModel = -1;
-    GLint m_lodLocColor = -1;
-
-    GLuint m_lodCubeVao = 0;
-    GLuint m_lodCubeVbo = 0;
-    GLuint m_lodCubeEbo = 0;
 
     struct ShadowUniforms {
         GLint lightViewProjection = -1;
@@ -208,10 +197,7 @@ private:
     void renderPass(RenderLayer layer,
                     const std::vector<RenderEntry>& entries,
                     const WorldRenderContext& ctx);
-    void renderFarLodOpaquePass(const WorldRenderContext& ctx);
     void renderFarVoxelOpaquePass(const WorldRenderContext& ctx);
-    void ensureLodCubeGeometry();
-    void releaseLodResources();
     void setupLayerState(RenderLayer layer) const;
     void releaseShadowResources();
     bool ensureShadowResources(const ShadowConfig& config);

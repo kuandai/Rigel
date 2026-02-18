@@ -28,9 +28,6 @@ assets:
     voxel:
       vertex: shaders/voxel.vert
       fragment: shaders/voxel.frag
-    svo_lod:
-      vertex: shaders/svo_lod.vert
-      fragment: shaders/svo_lod.frag
     entity:
       vertex: shaders/entity.vert
       fragment: shaders/entity.frag

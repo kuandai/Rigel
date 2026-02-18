@@ -1,7 +1,6 @@
 #include "Rigel/Voxel/WorldConfigProvider.h"
 
 #include "Rigel/Asset/Types.h"
-#include "Rigel/Voxel/Chunk.h"
 #include "ResourceRegistry.h"
 #include "Rigel/Util/Yaml.h"
 
@@ -127,70 +126,6 @@ void applyTaaConfig(ryml::ConstNodeRef taaNode, TaaConfig& taa) {
     }
 }
 
-void applySvoConfig(ryml::ConstNodeRef svoNode, SvoLodConfig& svo) {
-    if (!svoNode.readable()) {
-        return;
-    }
-
-    svo.enabled = Util::readBool(svoNode, "enabled", svo.enabled);
-    svo.nearMeshRadiusChunks = Util::readInt(
-        svoNode, "near_mesh_radius_chunks", svo.nearMeshRadiusChunks);
-    svo.lodStartRadiusChunks = Util::readInt(
-        svoNode, "lod_start_radius_chunks", svo.lodStartRadiusChunks);
-    svo.lodViewDistanceChunks = Util::readInt(
-        svoNode, "lod_view_distance_chunks", svo.lodViewDistanceChunks);
-    svo.lodCellSpanChunks = Util::readInt(
-        svoNode, "lod_cell_span_chunks", svo.lodCellSpanChunks);
-    svo.lodChunkSampleStep = Util::readInt(
-        svoNode, "lod_chunk_sample_step", svo.lodChunkSampleStep);
-    svo.lodMaxCells = Util::readInt(
-        svoNode, "lod_max_cells", svo.lodMaxCells);
-    svo.lodMaxCpuBytes = static_cast<int64_t>(Util::readInt(
-        svoNode, "lod_max_cpu_bytes", static_cast<int>(svo.lodMaxCpuBytes)));
-    svo.lodMaxGpuBytes = static_cast<int64_t>(Util::readInt(
-        svoNode, "lod_max_gpu_bytes", static_cast<int>(svo.lodMaxGpuBytes)));
-    svo.lodCopyBudgetPerFrame = Util::readInt(
-        svoNode, "lod_copy_budget_per_frame", svo.lodCopyBudgetPerFrame);
-    svo.lodApplyBudgetPerFrame = Util::readInt(
-        svoNode, "lod_apply_budget_per_frame", svo.lodApplyBudgetPerFrame);
-
-    if (svo.nearMeshRadiusChunks < 0) {
-        svo.nearMeshRadiusChunks = 0;
-    }
-    if (svo.lodStartRadiusChunks < svo.nearMeshRadiusChunks) {
-        svo.lodStartRadiusChunks = svo.nearMeshRadiusChunks;
-    }
-    if (svo.lodViewDistanceChunks < 0) {
-        svo.lodViewDistanceChunks = 0;
-    } else if (svo.lodViewDistanceChunks > 0 &&
-               svo.lodViewDistanceChunks < svo.lodStartRadiusChunks) {
-        svo.lodViewDistanceChunks = svo.lodStartRadiusChunks;
-    }
-    if (svo.lodCellSpanChunks < 1) {
-        svo.lodCellSpanChunks = 1;
-    }
-    if (svo.lodChunkSampleStep < 1) {
-        svo.lodChunkSampleStep = 1;
-    } else if (svo.lodChunkSampleStep > Chunk::SIZE) {
-        svo.lodChunkSampleStep = Chunk::SIZE;
-    }
-    if (svo.lodMaxCells < 0) {
-        svo.lodMaxCells = 0;
-    }
-    if (svo.lodMaxCpuBytes < 0) {
-        svo.lodMaxCpuBytes = 0;
-    }
-    if (svo.lodMaxGpuBytes < 0) {
-        svo.lodMaxGpuBytes = 0;
-    }
-    if (svo.lodCopyBudgetPerFrame < 0) {
-        svo.lodCopyBudgetPerFrame = 0;
-    }
-    if (svo.lodApplyBudgetPerFrame < 0) {
-        svo.lodApplyBudgetPerFrame = 0;
-    }
-}
-
 void applyVoxelSvoConfig(ryml::ConstNodeRef svoNode, VoxelSvoConfig& svo) {
     if (!svoNode.readable()) {
         return;
@@ -300,9 +235,6 @@ void applyRenderYaml(const char* sourceName,
     }
     if (renderNode.has_child("taa")) {
         applyTaaConfig(renderNode["taa"], config.taa);
-    }
-    if (renderNode.has_child("svo")) {
-        applySvoConfig(renderNode["svo"], config.svo);
     }
     if (renderNode.has_child("svo_voxel")) {
         applyVoxelSvoConfig(renderNode["svo_voxel"], config.svoVoxel);

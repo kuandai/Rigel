@@ -107,13 +107,11 @@ void ChunkRenderer::clearCache() {
     m_meshes.clear();
     m_voxelMeshes.clear();
     m_storeVersions.clear();
-    m_nearVisibility.clear();
     m_voxelNearVisibility.clear();
 }
 
 void ChunkRenderer::releaseResources() {
     clearCache();
-    releaseLodResources();
     releaseShadowResources();
 }
 
@@ -187,17 +185,6 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         m_shadowTransmitShader = ctx.shadowTransmitShader;
         cacheShadowUniforms();
     }
-    if (m_lodShader != ctx.lodShader) {
-        m_lodShader = ctx.lodShader;
-        m_lodLocViewProjection = -1;
-        m_lodLocModel = -1;
-        m_lodLocColor = -1;
-        if (m_lodShader) {
-            m_lodLocViewProjection = m_lodShader->uniform("u_viewProjection");
-            m_lodLocModel = m_lodShader->uniform("u_model");
-            m_lodLocColor = m_lodShader->uniform("u_color");
-        }
-    }
     m_atlas = ctx.atlas;
 
     uint32_t storeId = ctx.meshes->storeId();
@@ -250,61 +237,33 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     });
 
     std::vector<RenderEntry> nearEntries;
-    if (!ctx.config.svo.enabled) {
-        if (!ctx.config.svoVoxel.enabled) {
-            nearEntries = entries;
-            m_nearVisibility.clear();
-            m_voxelNearVisibility.clear();
-        } else {
-            const VoxelLodDistanceBands bands =
-                makeVoxelLodDistanceBands(ctx.config.svoVoxel, renderDistance);
-            std::unordered_set<ChunkCoord, ChunkCoordHash> seen;
-            seen.reserve(entries.size());
-            nearEntries.reserve(entries.size());
-
-            for (const auto& entry : entries) {
-                seen.insert(entry.coord);
-                const bool wasNear = m_voxelNearVisibility[entry.coord];
-                const bool isNear = shouldRenderNearVoxel(entry.distanceSq, wasNear, bands);
-                m_voxelNearVisibility[entry.coord] = isNear;
-                if (isNear) {
-                    nearEntries.push_back(entry);
-                }
-            }
-
-            for (auto it = m_voxelNearVisibility.begin(); it != m_voxelNearVisibility.end();) {
-                if (seen.find(it->first) == seen.end()) {
-                    it = m_voxelNearVisibility.erase(it);
-                    continue;
-                }
-                ++it;
-            }
-            m_nearVisibility.clear();
-        }
+    if (!ctx.config.svoVoxel.enabled) {
+        nearEntries = entries;
+        m_voxelNearVisibility.clear();
     } else {
-        const LodDistanceBands bands = makeLodDistanceBands(ctx.config.svo, renderDistance);
+        const VoxelLodDistanceBands bands =
+            makeVoxelLodDistanceBands(ctx.config.svoVoxel, renderDistance);
         std::unordered_set<ChunkCoord, ChunkCoordHash> seen;
         seen.reserve(entries.size());
         nearEntries.reserve(entries.size());
 
         for (const auto& entry : entries) {
             seen.insert(entry.coord);
-            const bool wasNear = m_nearVisibility[entry.coord];
-            const bool isNear = shouldRenderNearChunk(entry.distanceSq, wasNear, bands);
-            m_nearVisibility[entry.coord] = isNear;
+            const bool wasNear = m_voxelNearVisibility[entry.coord];
+            const bool isNear = shouldRenderNearVoxel(entry.distanceSq, wasNear, bands);
+            m_voxelNearVisibility[entry.coord] = isNear;
             if (isNear) {
                 nearEntries.push_back(entry);
             }
         }
 
-        for (auto it = m_nearVisibility.begin(); it != m_nearVisibility.end();) {
+        for (auto it = m_voxelNearVisibility.begin(); it != m_voxelNearVisibility.end();) {
             if (seen.find(it->first) == seen.end()) {
-                it = m_nearVisibility.erase(it);
+                it = m_voxelNearVisibility.erase(it);
                 continue;
             }
             ++it;
         }
-        m_voxelNearVisibility.clear();
     }
 
     bool shadowsActive = false;
@@ -407,7 +366,6 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     }
 
     renderFarVoxelOpaquePass(ctx);
-    renderFarLodOpaquePass(ctx);
 
     if (!nearEntries.empty() && needsVoxelPass) {
         m_shader->bind();
@@ -420,59 +378,6 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
     glUseProgram(0);
-}
-
-void ChunkRenderer::ensureLodCubeGeometry() {
-    if (m_lodCubeVao != 0) {
-        return;
-    }
-
-    constexpr float vertices[] = {
-        0.0f, 0.0f, 0.0f,
-        1.0f, 0.0f, 0.0f,
-        1.0f, 1.0f, 0.0f,
-        0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 1.0f,
-        1.0f, 0.0f, 1.0f,
-        1.0f, 1.0f, 1.0f,
-        0.0f, 1.0f, 1.0f
-    };
-    constexpr uint32_t indices[] = {
-        0, 2, 1, 0, 3, 2, // -Z
-        4, 5, 6, 4, 6, 7, // +Z
-        0, 1, 5, 0, 5, 4, // -Y
-        2, 3, 7, 2, 7, 6, // +Y
-        1, 2, 6, 1, 6, 5, // +X
-        0, 4, 7, 0, 7, 3  // -X
-    };
-
-    glGenVertexArrays(1, &m_lodCubeVao);
-    glGenBuffers(1, &m_lodCubeVbo);
-    glGenBuffers(1, &m_lodCubeEbo);
-
-    glBindVertexArray(m_lodCubeVao);
-    glBindBuffer(GL_ARRAY_BUFFER, m_lodCubeVbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_lodCubeEbo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, nullptr);
-    glBindVertexArray(0);
-}
-
-void ChunkRenderer::releaseLodResources() {
-    if (m_lodCubeVao != 0) {
-        glDeleteVertexArrays(1, &m_lodCubeVao);
-        m_lodCubeVao = 0;
-    }
-    if (m_lodCubeVbo != 0) {
-        glDeleteBuffers(1, &m_lodCubeVbo);
-        m_lodCubeVbo = 0;
-    }
-    if (m_lodCubeEbo != 0) {
-        glDeleteBuffers(1, &m_lodCubeEbo);
-        m_lodCubeEbo = 0;
-    }
 }
 
 void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
@@ -611,55 +516,6 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
         );
         glBindVertexArray(0);
     }
-}
-
-void ChunkRenderer::renderFarLodOpaquePass(const WorldRenderContext& ctx) {
-    if (!ctx.config.svo.enabled || !ctx.svoLod || !m_lodShader) {
-        return;
-    }
-
-    float lodRenderDistance = std::max(0.0f, ctx.config.renderDistance);
-    if (ctx.config.svo.lodViewDistanceChunks > 0) {
-        const float svoDistance =
-            (static_cast<float>(ctx.config.svo.lodViewDistanceChunks) + 0.5f) *
-            static_cast<float>(Chunk::SIZE);
-        lodRenderDistance = std::max(lodRenderDistance, svoDistance);
-    }
-
-    std::vector<SvoLodManager::OpaqueDrawInstance> instances;
-    ctx.svoLod->collectOpaqueDrawInstances(instances, ctx.cameraPos, lodRenderDistance);
-    if (instances.empty()) {
-        return;
-    }
-
-    ensureLodCubeGeometry();
-
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
-    glDisable(GL_BLEND);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-    glFrontFace(GL_CCW);
-
-    m_lodShader->bind();
-    if (m_lodLocViewProjection >= 0) {
-        glm::mat4 vp = ctx.viewProjection * ctx.worldTransform;
-        glUniformMatrix4fv(m_lodLocViewProjection, 1, GL_FALSE, glm::value_ptr(vp));
-    }
-    if (m_lodLocColor >= 0) {
-        glUniform4f(m_lodLocColor, 0.32f, 0.48f, 0.34f, 1.0f);
-    }
-
-    glBindVertexArray(m_lodCubeVao);
-    for (const auto& instance : instances) {
-        glm::mat4 model = glm::translate(glm::mat4(1.0f), instance.worldMin);
-        model = glm::scale(model, glm::vec3(instance.worldSize));
-        if (m_lodLocModel >= 0) {
-            glUniformMatrix4fv(m_lodLocModel, 1, GL_FALSE, glm::value_ptr(model));
-        }
-        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, nullptr);
-    }
-    glBindVertexArray(0);
 }
 
 ChunkRenderer::ShadowRenderState ChunkRenderer::shadowRenderState() const {

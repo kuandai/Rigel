@@ -1,7 +1,6 @@
 #include "Rigel/UI/ImGuiLayer.h"
 
 #include "Rigel/Core/Profiler.h"
-#include "Rigel/Voxel/Lod/SvoLodManager.h"
 #include "Rigel/Voxel/VoxelLod/VoxelSvoLodManager.h"
 
 #include <algorithm>
@@ -92,8 +91,6 @@ void endFrame() {
 }
 
 void renderProfilerWindow(bool enabled,
-                          const Rigel::Voxel::SvoLodConfig* svoConfig,
-                          const Rigel::Voxel::SvoLodTelemetry* svoTelemetry,
                           const Rigel::Voxel::VoxelSvoConfig* voxelSvoConfig,
                           const Rigel::Voxel::VoxelSvoTelemetry* voxelSvoTelemetry) {
 #if defined(RIGEL_ENABLE_IMGUI)
@@ -300,39 +297,6 @@ void renderProfilerWindow(bool enabled,
     }
 
     ImGui::Separator();
-    ImGui::TextUnformatted("SVO LOD (Preview)");
-    if (!svoConfig || !svoTelemetry) {
-        ImGui::TextUnformatted("No SVO telemetry source attached.");
-    } else {
-        ImGui::Text("Enabled: %s", svoConfig->enabled ? "true" : "false");
-        ImGui::Text("Active cells: %u", svoTelemetry->activeCells);
-        ImGui::Text("State counts: missing %u, queued %u, building %u, ready %u, stale %u",
-                    svoTelemetry->cellsMissing,
-                    svoTelemetry->cellsQueuedBuild,
-                    svoTelemetry->cellsBuilding,
-                    svoTelemetry->cellsReady,
-                    svoTelemetry->cellsStale);
-        ImGui::Text("Pending copies: %u", svoTelemetry->pendingCopies);
-        ImGui::Text("Pending applies: %u", svoTelemetry->pendingApplies);
-        ImGui::Text("Pending uploads: %u", svoTelemetry->pendingUploads);
-        ImGui::Text("Stage time (us): scan %" PRIu64 ", copy %" PRIu64
-                    ", apply %" PRIu64 ", upload %" PRIu64,
-                    svoTelemetry->scanMicros,
-                    svoTelemetry->copyMicros,
-                    svoTelemetry->applyMicros,
-                    svoTelemetry->uploadMicros);
-        ImGui::Text("Current memory: CPU %.2f MiB, GPU %.2f MiB",
-                    static_cast<double>(svoTelemetry->cpuBytesCurrent) / (1024.0 * 1024.0),
-                    static_cast<double>(svoTelemetry->gpuBytesCurrent) / (1024.0 * 1024.0));
-        ImGui::Text("Copied cells total: %" PRIu64, svoTelemetry->copiedCells);
-        ImGui::Text("Applied cells total: %" PRIu64, svoTelemetry->appliedCells);
-        ImGui::Text("Uploaded cells total: %" PRIu64, svoTelemetry->uploadedCells);
-        ImGui::Text("Uploaded bytes total: %" PRIu64, svoTelemetry->uploadedBytes);
-        ImGui::Text("Update calls: %" PRIu64, svoTelemetry->updateCalls);
-    }
-    ImGui::TextUnformatted("Far-field opaque LOD proxy pass is active (transition-band gated).");
-
-    ImGui::Separator();
     ImGui::TextUnformatted("Voxel SVO LOD (WIP)");
     if (!voxelSvoConfig || !voxelSvoTelemetry) {
         ImGui::TextUnformatted("No voxel SVO telemetry source attached.");
@@ -373,8 +337,6 @@ void renderProfilerWindow(bool enabled,
     ImGui::End();
 #else
     (void)enabled;
-    (void)svoConfig;
-    (void)svoTelemetry;
     (void)voxelSvoConfig;
     (void)voxelSvoTelemetry;
 #endif

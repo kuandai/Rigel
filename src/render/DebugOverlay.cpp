@@ -77,9 +77,11 @@ struct SvoDebugCellCoord {
     int y = 0;
     int z = 0;
     int span = 1;
+    int level = 0;
 
     bool operator==(const SvoDebugCellCoord& other) const {
-        return x == other.x && y == other.y && z == other.z && span == other.span;
+        return x == other.x && y == other.y && z == other.z &&
+               span == other.span && level == other.level;
     }
 };
 
@@ -93,6 +95,7 @@ struct SvoDebugCellCoordHash {
         mix(key.y);
         mix(key.z);
         mix(key.span);
+        mix(key.level);
         return h;
     }
 };
@@ -283,8 +286,8 @@ void renderDebugField(DebugState& debug,
     }
 
     worldView->getChunkDebugStates(debug.debugStates);
-    worldView->getSvoDebugStates(debug.svoDebugStates);
-    if (debug.debugStates.empty() && debug.svoDebugStates.empty()) {
+    worldView->getVoxelSvoDebugPages(debug.svoDebugPages);
+    if (debug.debugStates.empty() && debug.svoDebugPages.empty()) {
         return;
     }
 
@@ -313,13 +316,13 @@ void renderDebugField(DebugState& debug,
     }
 
     std::unordered_map<SvoDebugCellCoord,
-                       Voxel::LodCellState,
+                       Voxel::VoxelPageState,
                        SvoDebugCellCoordHash> svoStateMap;
-    svoStateMap.reserve(debug.svoDebugStates.size());
-    std::array<std::unordered_set<SvoDebugCellCoord, SvoDebugCellCoordHash>, kSvoDebugStateBuckets>
+    svoStateMap.reserve(debug.svoDebugPages.size());
+    std::array<std::unordered_set<SvoDebugCellCoord, SvoDebugCellCoordHash>, kVoxelSvoDebugStateBuckets>
         svoOccupancy;
     for (auto& set : svoOccupancy) {
-        set.reserve(debug.svoDebugStates.size());
+        set.reserve(debug.svoDebugPages.size());
     }
 
     for (const auto& entry : debug.debugStates) {
@@ -351,11 +354,15 @@ void renderDebugField(DebugState& debug,
         }
     }
 
-    for (const auto& entry : debug.svoDebugStates) {
-        const int span = std::max(1, entry.spanChunks);
-        const int minX = entry.key.x * span - centerCoord.x;
-        const int minY = entry.key.y * span - centerCoord.y;
-        const int minZ = entry.key.z * span - centerCoord.z;
+    const int pageSizeVoxels = std::max(1, worldView->svoVoxelConfig().pageSizeVoxels);
+    const int pageSizeChunksBase = std::max(1, pageSizeVoxels / Voxel::Chunk::SIZE);
+    for (const auto& [key, info] : debug.svoDebugPages) {
+        const int level = std::max(0, key.level);
+        const int levelScale = (level >= 30) ? (1 << 30) : (1 << level);
+        const int span = std::max(1, pageSizeChunksBase * levelScale);
+        const int minX = key.x * span - centerCoord.x;
+        const int minY = key.y * span - centerCoord.y;
+        const int minZ = key.z * span - centerCoord.z;
         const int maxX = minX + span;
         const int maxY = minY + span;
         const int maxZ = minZ + span;
@@ -367,31 +374,31 @@ void renderDebugField(DebugState& debug,
         }
 
         int stateIdx = -1;
-        switch (entry.state) {
-            case Voxel::LodCellState::QueuedBuild:
+        switch (info.state) {
+            case Voxel::VoxelPageState::QueuedSample:
                 stateIdx = 0;
                 break;
-            case Voxel::LodCellState::Building:
+            case Voxel::VoxelPageState::Sampling:
                 stateIdx = 1;
                 break;
-            case Voxel::LodCellState::Ready:
+            case Voxel::VoxelPageState::ReadyCpu:
                 stateIdx = 2;
                 break;
-            case Voxel::LodCellState::Stale:
+            case Voxel::VoxelPageState::Meshing:
                 stateIdx = 3;
                 break;
-            case Voxel::LodCellState::Evicting:
+            case Voxel::VoxelPageState::ReadyMesh:
                 stateIdx = 4;
                 break;
-            case Voxel::LodCellState::Missing:
+            case Voxel::VoxelPageState::Missing:
                 break;
         }
         if (stateIdx < 0) {
             continue;
         }
 
-        SvoDebugCellCoord coord{minX, minY, minZ, span};
-        svoStateMap[coord] = entry.state;
+        SvoDebugCellCoord coord{minX, minY, minZ, span, level};
+        svoStateMap[coord] = info.state;
         svoOccupancy[static_cast<size_t>(stateIdx)].insert(coord);
     }
 
@@ -408,9 +415,9 @@ void renderDebugField(DebugState& debug,
         glm::vec4(0.2f, 1.0f, 0.3f, kDebugAlpha),
         glm::vec4(0.95f, 0.35f, 1.0f, 0.22f),
         glm::vec4(1.0f, 0.55f, 0.2f, 0.22f),
-        glm::vec4(0.35f, 1.0f, 0.55f, 0.22f),
-        glm::vec4(1.0f, 0.4f, 0.2f, 0.22f),
-        glm::vec4(0.7f, 0.4f, 1.0f, 0.22f)
+        glm::vec4(0.2f, 0.9f, 0.9f, 0.22f),
+        glm::vec4(0.35f, 0.65f, 1.0f, 0.22f),
+        glm::vec4(0.35f, 1.0f, 0.55f, 0.22f)
     };
     std::array<std::array<int, 3>, 6> offsets = {{
         { 1, 0, 0},
@@ -465,22 +472,22 @@ void renderDebugField(DebugState& debug,
     for (const auto& [coord, state] : svoStateMap) {
         int stateIdx = -1;
         switch (state) {
-            case Voxel::LodCellState::QueuedBuild:
+            case Voxel::VoxelPageState::QueuedSample:
                 stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 0;
                 break;
-            case Voxel::LodCellState::Building:
+            case Voxel::VoxelPageState::Sampling:
                 stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 1;
                 break;
-            case Voxel::LodCellState::Ready:
+            case Voxel::VoxelPageState::ReadyCpu:
                 stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 2;
                 break;
-            case Voxel::LodCellState::Stale:
+            case Voxel::VoxelPageState::Meshing:
                 stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 3;
                 break;
-            case Voxel::LodCellState::Evicting:
+            case Voxel::VoxelPageState::ReadyMesh:
                 stateIdx = static_cast<int>(kChunkDebugStateBuckets) + 4;
                 break;
-            case Voxel::LodCellState::Missing:
+            case Voxel::VoxelPageState::Missing:
                 break;
         }
         if (stateIdx < static_cast<int>(kChunkDebugStateBuckets)) {
@@ -499,7 +506,8 @@ void renderDebugField(DebugState& debug,
                 coord.x + offsets[face][0] * span,
                 coord.y + offsets[face][1] * span,
                 coord.z + offsets[face][2] * span,
-                span
+                span,
+                coord.level
             };
             if (svoOccupancy[svoBucket].find(neighbor) != svoOccupancy[svoBucket].end()) {
                 continue;

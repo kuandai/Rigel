@@ -713,12 +713,6 @@ void Application::run() {
                 if (m_impl->input.dispatcher.isActionJustPressed("toggle_mouse_capture")) {
                     Input::setCursorCaptured(m_impl->window, !m_impl->window.cursorCaptured);
                 }
-                if (m_impl->input.dispatcher.isActionJustReleased("toggle_svo_lod")) {
-                    auto renderConfig = m_impl->world.worldView->renderConfig();
-                    renderConfig.svo.enabled = !renderConfig.svo.enabled;
-                    m_impl->world.worldView->setRenderConfig(renderConfig);
-                    spdlog::info("SVO LOD {}", renderConfig.svo.enabled ? "enabled" : "disabled");
-                }
                 if (m_impl->window.cursorCaptured &&
                     glfwGetInputMode(m_impl->window.window, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
                     Input::setCursorCaptured(m_impl->window, true);
@@ -744,12 +738,6 @@ void Application::run() {
 
                 const auto renderConfig = m_impl->world.worldView->renderConfig();
                 float renderDistance = renderConfig.renderDistance;
-                if (renderConfig.svo.enabled && renderConfig.svo.lodViewDistanceChunks > 0) {
-                    const float svoRenderDistance =
-                        (static_cast<float>(renderConfig.svo.lodViewDistanceChunks) + 0.5f) *
-                        static_cast<float>(Voxel::Chunk::SIZE);
-                    renderDistance = std::max(renderDistance, svoRenderDistance);
-                }
                 float nearPlane = 0.1f;
                 float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
                 glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, nearPlane, farPlane);
@@ -830,8 +818,6 @@ void Application::run() {
 #if defined(RIGEL_ENABLE_IMGUI)
                     UI::renderProfilerWindow(
                         m_impl->debug.imguiEnabled,
-                        &m_impl->world.worldView->svoConfig(),
-                        &m_impl->world.worldView->svoTelemetry(),
                         &m_impl->world.worldView->svoVoxelConfig(),
                         &m_impl->world.worldView->svoVoxelTelemetry()
                     );

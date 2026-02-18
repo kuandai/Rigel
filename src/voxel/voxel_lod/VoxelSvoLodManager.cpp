@@ -3,8 +3,10 @@
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/VoxelVertex.h"
+#include "Rigel/Voxel/VoxelLod/LoadedChunkSource.h"
 #include "Rigel/Voxel/VoxelLod/VoxelSurfaceExtraction.h"
 #include "Rigel/Voxel/VoxelLod/VoxelSurfaceMesher.h"
+#include "Rigel/Voxel/VoxelLod/VoxelSourceChain.h"
 
 #include <glm/geometric.hpp>
 
@@ -155,6 +157,10 @@ void VoxelSvoLodManager::setChunkGenerator(GeneratorSource::ChunkGenerateCallbac
     m_chunkGenerator = std::move(generator);
 }
 
+void VoxelSvoLodManager::setPersistenceSource(std::shared_ptr<const IVoxelSource> source) {
+    m_persistenceSource = std::move(source);
+}
+
 void VoxelSvoLodManager::bind(const ChunkManager* chunkManager,
                               const BlockRegistry* registry,
                               const TextureAtlas* atlas) {
@@ -271,9 +277,9 @@ void VoxelSvoLodManager::processBuildCompletions() {
         if (output.sampledVoxels > 0) {
             ++m_telemetry.bricksSampled;
             m_telemetry.voxelsSampled += output.sampledVoxels;
-            if (output.sampleStatus == BrickSampleStatus::Hit) {
-                m_telemetry.generatorHits += output.sampledVoxels;
-            }
+            m_telemetry.loadedHits += output.loadedHits;
+            m_telemetry.persistenceHits += output.persistenceHits;
+            m_telemetry.generatorHits += output.generatorHits;
         }
 
         // Per-update mip timing (accumulated across applied pages).
@@ -567,9 +573,30 @@ void VoxelSvoLodManager::enqueueBuild(const VoxelPageKey& key, uint64_t revision
     const int minLeaf = std::max(1, m_config.minLeafVoxels);
     const BlockRegistry* registry = m_registry;
     GeneratorSource::ChunkGenerateCallback generator = m_chunkGenerator;
+    std::shared_ptr<const IVoxelSource> persistenceSource = m_persistenceSource;
     std::shared_ptr<std::atomic_bool> cancel = record->cancel;
 
-    m_buildPool->enqueue([this, key, revision, pageSize, minLeaf, registry, generator, cancel]() {
+    BrickSampleDesc desc;
+    desc.worldMinVoxel = glm::ivec3(key.x * pageSize, key.y * pageSize, key.z * pageSize);
+    desc.brickDimsVoxels = glm::ivec3(pageSize);
+    desc.stepVoxels = 1;
+
+    std::vector<LoadedChunkSource::ChunkSnapshot> loadedSnapshots;
+    if (m_chunkManager) {
+        loadedSnapshots = LoadedChunkSource::snapshotForBrick(*m_chunkManager, desc);
+    }
+
+    m_buildPool->enqueue([this,
+                          key,
+                          revision,
+                          pageSize,
+                          minLeaf,
+                          registry,
+                          generator,
+                          persistenceSource = std::move(persistenceSource),
+                          cancel,
+                          desc,
+                          loadedSnapshots = std::move(loadedSnapshots)]() {
         PageBuildOutput output{};
         output.key = key;
         output.revision = revision;
@@ -581,15 +608,20 @@ void VoxelSvoLodManager::enqueueBuild(const VoxelPageKey& key, uint64_t revision
             return;
         }
 
-        BrickSampleDesc desc;
-        desc.worldMinVoxel = glm::ivec3(key.x * pageSize, key.y * pageSize, key.z * pageSize);
-        desc.brickDimsVoxels = glm::ivec3(pageSize);
-        desc.stepVoxels = 1;
-
         std::vector<VoxelId> l0(desc.outVoxelCount(), kVoxelAir);
-        GeneratorSource source(generator);
-        output.sampleStatus = source.sampleBrick(desc, l0, cancel.get());
+        LoadedChunkSource loaded(std::move(loadedSnapshots));
+        GeneratorSource generated(generator);
+        VoxelSourceChain chain;
+        chain.setLoaded(&loaded);
+        chain.setPersistence(persistenceSource.get());
+        chain.setGenerator(&generated);
+
+        output.sampleStatus = chain.sampleBrick(desc, l0, cancel.get());
         output.sampledVoxels = l0.size();
+        const auto& chainTelemetry = chain.telemetry();
+        output.loadedHits = chainTelemetry.loadedHits * output.sampledVoxels;
+        output.persistenceHits = chainTelemetry.persistenceHits * output.sampledVoxels;
+        output.generatorHits = chainTelemetry.generatorHits * output.sampledVoxels;
 
         if (output.sampleStatus == BrickSampleStatus::Cancelled) {
             m_buildComplete.push(std::move(output));

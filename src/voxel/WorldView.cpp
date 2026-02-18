@@ -208,6 +208,10 @@ void WorldView::setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel
     m_streamer.setChunkLoadCancel(std::move(cancel));
 }
 
+void WorldView::setVoxelPersistenceSource(std::shared_ptr<const IVoxelSource> source) {
+    m_voxelSvoLod.setPersistenceSource(std::move(source));
+}
+
 void WorldView::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
     m_streamer.setConfig(config);
     m_renderConfig.renderDistance =

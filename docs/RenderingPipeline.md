@@ -92,7 +92,9 @@ Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distan
 - The current state includes:
   - voxel-page CPU build + adaptive tree + surface extraction,
   - neighbor-aware far mesh generation for opaque pages,
-  - far opaque rendering through the voxel shader path.
+  - far opaque rendering through the voxel shader path,
+  - source-chain sampling (`loaded -> persistence -> generator`) for worker
+    page builds.
 - Page lifecycle currently exposed in telemetry:
   - `QueuedSample` -> `Sampling` -> `ReadyCpu` -> `Meshing` -> `ReadyMesh`.
 - Transition behavior:
@@ -101,6 +103,11 @@ Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distan
     `transition_band_chunks` overlap region to reduce pop-in.
 - Under chunk-streaming pressure, `WorldView` throttles voxel SVO update/upload
   cadence so chunk generation/meshing remains prioritized.
+- Persistence sampling details:
+  - `PersistenceSource` reads region payloads through `PersistenceService` and
+    caches decoded region/chunk data with hard caps.
+  - missing region/chunk data returns `Miss` (never implicit air), allowing
+    controlled fallback to generation.
 - Like the existing SVO preview, the voxel SVO system is a **derived cache** owned
   by `WorldView`. It is not authoritative world data.
 

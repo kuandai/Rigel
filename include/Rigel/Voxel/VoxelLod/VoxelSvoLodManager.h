@@ -5,6 +5,7 @@
 #include "Rigel/Voxel/TextureAtlas.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/VoxelLod/GeneratorSource.h"
+#include "Rigel/Voxel/VoxelLod/VoxelSource.h"
 #include "Rigel/Voxel/VoxelLod/VoxelPageCpu.h"
 #include "Rigel/Voxel/VoxelLod/VoxelPageTree.h"
 
@@ -82,6 +83,7 @@ public:
 
     void setBuildThreads(size_t threadCount);
     void setChunkGenerator(GeneratorSource::ChunkGenerateCallback generator);
+    void setPersistenceSource(std::shared_ptr<const IVoxelSource> source);
 
     void bind(const ChunkManager* chunkManager,
               const BlockRegistry* registry,
@@ -124,6 +126,9 @@ private:
         uint16_t leafMinVoxels = 1;
         BrickSampleStatus sampleStatus = BrickSampleStatus::Miss;
         size_t sampledVoxels = 0;
+        uint64_t loadedHits = 0;
+        uint64_t persistenceHits = 0;
+        uint64_t generatorHits = 0;
         uint64_t mipBuildMicros = 0;
         VoxelPageCpu cpu;
         VoxelPageTree tree;
@@ -155,6 +160,7 @@ private:
     const TextureAtlas* m_atlas = nullptr;
     size_t m_buildThreads = 1;
     GeneratorSource::ChunkGenerateCallback m_chunkGenerator;
+    std::shared_ptr<const IVoxelSource> m_persistenceSource;
     std::unique_ptr<detail::ThreadPool> m_buildPool;
     detail::ConcurrentQueue<PageBuildOutput> m_buildComplete;
     detail::ConcurrentQueue<MeshBuildOutput> m_meshBuildComplete;

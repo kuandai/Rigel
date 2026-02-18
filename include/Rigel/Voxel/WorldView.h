@@ -5,6 +5,7 @@
 #include "ChunkStreamer.h"
 #include "Lod/SvoLodManager.h"
 #include "VoxelLod/VoxelSvoLodManager.h"
+#include "VoxelLod/VoxelSource.h"
 #include "MeshBuilder.h"
 #include "World.h"
 #include "WorldGenConfig.h"
@@ -64,6 +65,7 @@ public:
     void setChunkPendingCallback(ChunkStreamer::ChunkPendingCallback pending);
     void setChunkLoadDrain(ChunkStreamer::ChunkLoadDrainCallback drain);
     void setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel);
+    void setVoxelPersistenceSource(std::shared_ptr<const IVoxelSource> source);
     void setStreamConfig(const WorldGenConfig::StreamConfig& config);
     void setBenchmark(ChunkBenchmarkStats* stats);
 

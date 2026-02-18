@@ -9,6 +9,7 @@
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/ChunkTasks.h"
+#include "Rigel/Voxel/VoxelLod/PersistenceSource.h"
 #include "Rigel/Voxel/WorldSet.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 #include "Rigel/Persistence/WorldPersistence.h"
@@ -562,6 +563,17 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
                     loader->cancel(coord);
                 }
             });
+        auto persistenceSource = std::make_shared<Voxel::PersistenceSource>(
+            &m_impl->world.worldSet.persistenceService(),
+            m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId));
+        const size_t cachedRegions =
+            static_cast<size_t>(std::max(1, config.stream.loadMaxCachedRegions));
+        const size_t cachedChunksPerRegion =
+            static_cast<size_t>(Voxel::Chunk::SIZE);
+        persistenceSource->setCacheLimits(
+            cachedRegions,
+            cachedRegions * cachedChunksPerRegion);
+        m_impl->world.worldView->setVoxelPersistenceSource(std::move(persistenceSource));
 
         Voxel::ConfigProvider renderConfigProvider =
             Voxel::makeRenderConfigProvider(m_impl->assets, m_impl->world.activeWorldId);

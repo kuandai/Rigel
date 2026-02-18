@@ -22,6 +22,21 @@ void initializeSvoWithFallback(SvoLodManager& svo,
     }
 }
 
+void initializeVoxelSvoWithFallback(VoxelSvoLodManager& lod,
+                                    WorldRenderConfig& renderConfig,
+                                    const char* contextLabel) {
+    try {
+        lod.initialize();
+    } catch (const std::exception& e) {
+        spdlog::error("Voxel SVO LOD initialization failed ({}): {}. Disabling render.svo_voxel.",
+                      contextLabel ? contextLabel : "unknown",
+                      e.what());
+        renderConfig.svoVoxel.enabled = false;
+        lod.setConfig(renderConfig.svoVoxel);
+        lod.reset();
+    }
+}
+
 } // namespace
 
 WorldView::WorldView(World& world, WorldResources& resources)
@@ -29,25 +44,37 @@ WorldView::WorldView(World& world, WorldResources& resources)
     , m_resources(&resources)
 {
     m_svoLod.setConfig(m_renderConfig.svo);
+    m_voxelSvoLod.setConfig(m_renderConfig.svoVoxel);
     if (m_world && m_resources) {
         m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
         configureSvoChunkSampler(m_world->generator());
+        m_voxelSvoLod.bind(&m_world->chunkManager(), &m_resources->registry());
     }
 }
 
 void WorldView::setRenderConfig(const WorldRenderConfig& config) {
     const bool wasEnabled = m_renderConfig.svo.enabled;
+    const bool wasVoxelEnabled = m_renderConfig.svoVoxel.enabled;
     m_renderConfig = config;
     m_svoLod.setConfig(m_renderConfig.svo);
+    m_voxelSvoLod.setConfig(m_renderConfig.svoVoxel);
     const bool isEnabled = m_renderConfig.svo.enabled;
+    const bool isVoxelEnabled = m_renderConfig.svoVoxel.enabled;
 
     if (wasEnabled && !isEnabled) {
         m_svoLod.reset();
-        return;
     }
 
     if (!wasEnabled && isEnabled) {
         initializeSvoWithFallback(m_svoLod, m_renderConfig, "setRenderConfig");
+    }
+
+    if (wasVoxelEnabled && !isVoxelEnabled) {
+        m_voxelSvoLod.reset();
+    }
+
+    if (!wasVoxelEnabled && isVoxelEnabled) {
+        initializeVoxelSvoWithFallback(m_voxelSvoLod, m_renderConfig, "setRenderConfig");
     }
 }
 
@@ -86,10 +113,14 @@ void WorldView::initialize(Asset::AssetManager& assets) {
                         generator);
         m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
         configureSvoChunkSampler(generator);
+        m_voxelSvoLod.bind(&m_world->chunkManager(), &m_resources->registry());
     }
 
     if (m_renderConfig.svo.enabled) {
         initializeSvoWithFallback(m_svoLod, m_renderConfig, "WorldView::initialize");
+    }
+    if (m_renderConfig.svoVoxel.enabled) {
+        initializeVoxelSvoWithFallback(m_voxelSvoLod, m_renderConfig, "WorldView::initialize");
     }
     m_initialized = true;
 }
@@ -166,15 +197,15 @@ void WorldView::updateStreaming(const glm::vec3& cameraPos) {
     if (!m_svoStreamingOverloaded) {
         m_svoUpdatePressureCountdown = 0;
         m_svoLod.update(cameraPos);
-        return;
-    }
-
-    if (m_svoUpdatePressureCountdown == 0) {
+    } else if (m_svoUpdatePressureCountdown == 0) {
         m_svoLod.update(cameraPos);
         m_svoUpdatePressureCountdown = kSvoPressureUpdateSkipFrames;
     } else {
         --m_svoUpdatePressureCountdown;
     }
+
+    // Skeleton path; future sprints will apply the same pressure throttling and budgets.
+    m_voxelSvoLod.update(cameraPos);
 }
 
 void WorldView::updateMeshes() {
@@ -200,6 +231,8 @@ void WorldView::render(const glm::mat4& view,
     } else {
         --m_svoUploadPressureCountdown;
     }
+
+    m_voxelSvoLod.uploadRenderResources();
 
     Entity::EntityRenderContext entityCtx;
     entityCtx.deltaTime = dt;
@@ -422,6 +455,7 @@ void WorldView::clear() {
     m_renderer.clearCache();
     m_streamer.reset();
     m_svoLod.reset();
+    m_voxelSvoLod.reset();
     m_svoUpdatePressureCountdown = 0;
     m_svoUploadPressureCountdown = 0;
     m_svoStreamingOverloaded = false;
@@ -431,6 +465,7 @@ void WorldView::clear() {
 void WorldView::releaseRenderResources() {
     m_renderer.releaseResources();
     m_svoLod.releaseRenderResources();
+    m_voxelSvoLod.releaseRenderResources();
     m_shader = {};
     m_lodShader = {};
     m_shadowDepthShader = {};

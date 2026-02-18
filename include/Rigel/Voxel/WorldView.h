@@ -4,6 +4,7 @@
 #include "ChunkRenderer.h"
 #include "ChunkStreamer.h"
 #include "Lod/SvoLodManager.h"
+#include "VoxelLod/VoxelSvoLodManager.h"
 #include "MeshBuilder.h"
 #include "World.h"
 #include "WorldGenConfig.h"
@@ -52,6 +53,8 @@ public:
     const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
     const SvoLodConfig& svoConfig() const { return m_svoLod.config(); }
     const SvoLodTelemetry& svoTelemetry() const { return m_svoLod.telemetry(); }
+    const VoxelSvoConfig& svoVoxelConfig() const { return m_voxelSvoLod.config(); }
+    const VoxelSvoTelemetry& svoVoxelTelemetry() const { return m_voxelSvoLod.telemetry(); }
 
     WorldReplicationState& replicationState() { return m_replication; }
     const WorldReplicationState& replicationState() const { return m_replication; }
@@ -95,6 +98,7 @@ private:
     WorldMeshStore m_meshStore;
     ChunkStreamer m_streamer;
     SvoLodManager m_svoLod;
+    VoxelSvoLodManager m_voxelSvoLod;
     WorldRenderConfig m_renderConfig;
     Asset::Handle<Asset::ShaderAsset> m_shader;
     Asset::Handle<Asset::ShaderAsset> m_lodShader;

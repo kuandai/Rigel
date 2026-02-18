@@ -13,6 +13,11 @@ class BlockRegistry;
 struct VoxelSvoTelemetry {
     uint64_t updateCalls = 0;
     uint64_t uploadCalls = 0;
+    uint64_t bricksSampled = 0;
+    uint64_t voxelsSampled = 0;
+    uint64_t loadedHits = 0;
+    uint64_t persistenceHits = 0;
+    uint64_t generatorHits = 0;
     uint32_t activePages = 0;
     uint32_t pagesQueued = 0;
     uint32_t pagesBuilding = 0;
@@ -53,4 +58,3 @@ private:
 };
 
 } // namespace Rigel::Voxel
-

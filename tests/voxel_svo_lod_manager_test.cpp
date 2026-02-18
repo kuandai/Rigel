@@ -54,6 +54,11 @@ TEST_CASE(VoxelSvoLodManager_UpdateStaysInertWhenDisabled) {
     const auto& telemetry = manager.telemetry();
     CHECK_EQ(telemetry.updateCalls, 0u);
     CHECK_EQ(telemetry.uploadCalls, 0u);
+    CHECK_EQ(telemetry.bricksSampled, 0u);
+    CHECK_EQ(telemetry.voxelsSampled, 0u);
+    CHECK_EQ(telemetry.loadedHits, 0u);
+    CHECK_EQ(telemetry.persistenceHits, 0u);
+    CHECK_EQ(telemetry.generatorHits, 0u);
     CHECK_EQ(telemetry.activePages, 0u);
     CHECK_EQ(telemetry.pagesQueued, 0u);
     CHECK_EQ(telemetry.pagesBuilding, 0u);
@@ -79,4 +84,3 @@ TEST_CASE(VoxelSvoLodManager_ResetAndReinitialize_IsIdempotent) {
     CHECK_NO_THROW(manager.update(glm::vec3(1.0f)));
     CHECK(manager.telemetry().updateCalls > 0u);
 }
-

@@ -344,6 +344,13 @@ void renderProfilerWindow(bool enabled,
                     voxelSvoTelemetry->pagesBuilding,
                     voxelSvoTelemetry->pagesReadyCpu,
                     voxelSvoTelemetry->pagesUploaded);
+        ImGui::Text("Bricks: sampled %" PRIu64 ", voxels %" PRIu64,
+                    voxelSvoTelemetry->bricksSampled,
+                    voxelSvoTelemetry->voxelsSampled);
+        ImGui::Text("Source hits: loaded %" PRIu64 ", persistence %" PRIu64 ", generator %" PRIu64,
+                    voxelSvoTelemetry->loadedHits,
+                    voxelSvoTelemetry->persistenceHits,
+                    voxelSvoTelemetry->generatorHits);
         ImGui::Text("Current memory: CPU %.2f MiB, GPU %.2f MiB",
                     static_cast<double>(voxelSvoTelemetry->cpuBytesCurrent) / (1024.0 * 1024.0),
                     static_cast<double>(voxelSvoTelemetry->gpuBytesCurrent) / (1024.0 * 1024.0));

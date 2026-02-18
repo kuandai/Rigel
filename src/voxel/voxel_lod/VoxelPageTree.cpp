@@ -119,8 +119,13 @@ VoxelPageTree buildVoxelPageTree(const VoxelPageCpu& page,
         }
 
         const int half = size / 2;
-        uint32_t nodeIndex = makeMixed();
-        VoxelSvoNode& node = out.nodes[nodeIndex];
+        uint8_t childMask = 0;
+        std::array<uint32_t, 8> children = {
+            VoxelSvoNode::kInvalidChild, VoxelSvoNode::kInvalidChild,
+            VoxelSvoNode::kInvalidChild, VoxelSvoNode::kInvalidChild,
+            VoxelSvoNode::kInvalidChild, VoxelSvoNode::kInvalidChild,
+            VoxelSvoNode::kInvalidChild, VoxelSvoNode::kInvalidChild
+        };
 
         for (int child = 0; child < 8; ++child) {
             const int dx = (child & 1) ? half : 0;
@@ -131,20 +136,21 @@ VoxelPageTree buildVoxelPageTree(const VoxelPageCpu& page,
             if (childIndexNode == VoxelSvoNode::kInvalidChild) {
                 continue;
             }
-            node.childMask |= static_cast<uint8_t>(1u << child);
-            node.children[child] = childIndexNode;
+            childMask |= static_cast<uint8_t>(1u << child);
+            children[child] = childIndexNode;
         }
 
-        if (node.childMask == 0) {
-            // If all children were empty, collapse to empty for stability.
-            out.nodes[nodeIndex] = {};
-            out.nodes.pop_back();
+        if (childMask == 0) {
             if (isRoot) {
                 return makeLeaf(VoxelSvoNodeKind::Empty, 0, static_cast<uint16_t>(size));
             }
             return VoxelSvoNode::kInvalidChild;
         }
 
+        uint32_t nodeIndex = makeMixed();
+        VoxelSvoNode& node = out.nodes[nodeIndex];
+        node.childMask = childMask;
+        node.children = children;
         return nodeIndex;
     };
 
@@ -156,4 +162,3 @@ VoxelPageTree buildVoxelPageTree(const VoxelPageCpu& page,
 }
 
 } // namespace Rigel::Voxel
-

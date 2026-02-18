@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -19,6 +20,8 @@ namespace Rigel::Persistence {
 
 class AsyncChunkLoader {
 public:
+    using ChunkAppliedCallback = std::function<void(Voxel::ChunkCoord)>;
+
     AsyncChunkLoader(PersistenceService& service,
                      PersistenceContext context,
                      Voxel::World& world,
@@ -40,6 +43,7 @@ public:
     void setPrefetchPerRequest(size_t count);
     void setRegionDrainBudget(size_t budget);
     void setLoadQueueLimit(size_t maxPending);
+    void setChunkAppliedCallback(ChunkAppliedCallback callback);
 
 private:
     struct RegionKeyHash {
@@ -116,6 +120,7 @@ private:
         std::chrono::steady_clock::time_point nextCheck{};
     };
     std::unordered_map<RegionKey, RegionPresence, RegionKeyHash> m_regionPresence;
+    ChunkAppliedCallback m_chunkAppliedCallback;
 };
 
 } // namespace Rigel::Persistence

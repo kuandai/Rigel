@@ -563,6 +563,12 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
                     loader->cancel(coord);
                 }
             });
+        m_impl->world.chunkLoader->setChunkAppliedCallback(
+            [this](Voxel::ChunkCoord coord) {
+                if (m_impl && m_impl->world.worldView) {
+                    m_impl->world.worldView->invalidateVoxelSvoChunk(coord);
+                }
+            });
         auto persistenceSource = std::make_shared<Voxel::PersistenceSource>(
             &m_impl->world.worldSet.persistenceService(),
             m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId));

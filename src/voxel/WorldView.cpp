@@ -212,6 +212,10 @@ void WorldView::setVoxelPersistenceSource(std::shared_ptr<const IVoxelSource> so
     m_voxelSvoLod.setPersistenceSource(std::move(source));
 }
 
+void WorldView::invalidateVoxelSvoChunk(ChunkCoord coord) {
+    m_voxelSvoLod.invalidateChunk(coord);
+}
+
 void WorldView::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
     m_streamer.setConfig(config);
     m_renderConfig.renderDistance =
@@ -375,6 +379,10 @@ void WorldView::rebuildChunkMesh(ChunkCoord coord) {
     Chunk* chunk = m_world->chunkManager().getChunk(coord);
     if (!chunk) {
         return;
+    }
+
+    if (chunk->isPersistDirty() || chunk->loadedFromDisk()) {
+        m_voxelSvoLod.invalidateChunk(coord);
     }
 
     auto start = std::chrono::steady_clock::now();

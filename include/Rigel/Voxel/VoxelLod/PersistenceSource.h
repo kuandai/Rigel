@@ -34,6 +34,7 @@ public:
     BrickSampleStatus sampleBrick(const BrickSampleDesc& desc,
                                   std::span<VoxelId> out,
                                   const std::atomic_bool* cancel = nullptr) const override;
+    void invalidateChunk(ChunkCoord coord) const override;
 
 private:
     struct CachedRegion {

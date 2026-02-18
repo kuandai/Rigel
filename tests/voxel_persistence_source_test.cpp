@@ -10,6 +10,7 @@
 #include "Rigel/Voxel/VoxelLod/VoxelSourceChain.h"
 
 #include <filesystem>
+#include <chrono>
 #include <random>
 
 using namespace Rigel;
@@ -223,5 +224,55 @@ TEST_CASE(VoxelPersistenceSource_LoadedSourceOverridesPersistedData) {
     for (VoxelId id : sampled) {
         CHECK_EQ(id, toVoxelId(BlockID{9}));
     }
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE(VoxelPersistenceSource_InvalidateChunkRefreshesCachedPayload) {
+    Persistence::FormatRegistry registry;
+    auto service = makeService(registry);
+
+    auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("rigel_voxel_persist_source_invalidate_" + std::to_string(now));
+    std::filesystem::create_directories(root);
+
+    const auto context = makeContext(root);
+    const std::string zoneId = "rigel:test_zone";
+    const ChunkCoord coord{2, 0, -2};
+
+    Chunk oldChunk(coord);
+    oldChunk.fill(BlockState{BlockID{3}});
+    saveChunkToMemoryFormat(service, context, zoneId, oldChunk);
+
+    PersistenceSource source(&service, context, zoneId);
+    source.setCacheLimits(8, 64);
+
+    BrickSampleDesc desc;
+    desc.worldMinVoxel = glm::ivec3(coord.x * Chunk::SIZE, coord.y * Chunk::SIZE, coord.z * Chunk::SIZE);
+    desc.brickDimsVoxels = glm::ivec3(Chunk::SIZE);
+    desc.stepVoxels = 1;
+    std::vector<VoxelId> sampled(desc.outVoxelCount(), kVoxelAir);
+
+    CHECK_EQ(source.sampleBrick(desc, sampled), BrickSampleStatus::Hit);
+    for (VoxelId id : sampled) {
+        CHECK_EQ(id, toVoxelId(BlockID{3}));
+    }
+
+    Chunk newChunk(coord);
+    newChunk.fill(BlockState{BlockID{7}});
+    saveChunkToMemoryFormat(service, context, zoneId, newChunk);
+
+    // Without invalidation the cached payload still serves the old value.
+    CHECK_EQ(source.sampleBrick(desc, sampled), BrickSampleStatus::Hit);
+    for (VoxelId id : sampled) {
+        CHECK_EQ(id, toVoxelId(BlockID{3}));
+    }
+
+    source.invalidateChunk(coord);
+    CHECK_EQ(source.sampleBrick(desc, sampled), BrickSampleStatus::Hit);
+    for (VoxelId id : sampled) {
+        CHECK_EQ(id, toVoxelId(BlockID{7}));
+    }
+
     std::filesystem::remove_all(root);
 }

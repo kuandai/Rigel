@@ -178,6 +178,56 @@ void VoxelSvoLodManager::setPersistenceSource(std::shared_ptr<const IVoxelSource
     m_persistenceSource = std::move(source);
 }
 
+void VoxelSvoLodManager::invalidateChunk(ChunkCoord coord) {
+    if (m_persistenceSource) {
+        m_persistenceSource->invalidateChunk(coord);
+    }
+
+    const int pageSize = std::max(1, m_config.pageSizeVoxels);
+    const int worldMinX = coord.x * Chunk::SIZE;
+    const int worldMinY = coord.y * Chunk::SIZE;
+    const int worldMinZ = coord.z * Chunk::SIZE;
+    const int worldMaxX = worldMinX + Chunk::SIZE - 1;
+    const int worldMaxY = worldMinY + Chunk::SIZE - 1;
+    const int worldMaxZ = worldMinZ + Chunk::SIZE - 1;
+
+    const int px0 = floorDiv(worldMinX, pageSize);
+    const int py0 = floorDiv(worldMinY, pageSize);
+    const int pz0 = floorDiv(worldMinZ, pageSize);
+    const int px1 = floorDiv(worldMaxX, pageSize);
+    const int py1 = floorDiv(worldMaxY, pageSize);
+    const int pz1 = floorDiv(worldMaxZ, pageSize);
+
+    for (int pz = pz0; pz <= pz1; ++pz) {
+        for (int py = py0; py <= py1; ++py) {
+            for (int px = px0; px <= px1; ++px) {
+                VoxelPageKey key{0, px, py, pz};
+                auto it = m_pages.find(key);
+                if (it == m_pages.end()) {
+                    continue;
+                }
+
+                PageRecord& record = it->second;
+                uint64_t nextRevision = std::max(record.desiredRevision, record.appliedRevision);
+                record.desiredRevision = nextRevision + 1;
+                record.lastTouchedFrame = m_frameCounter;
+                record.state = VoxelPageState::QueuedSample;
+                record.meshQueued = false;
+                record.meshQueuedRevision = 0;
+                record.queuedRevision = 0;
+                if (record.cancel) {
+                    record.cancel->store(true, std::memory_order_relaxed);
+                    record.cancel.reset();
+                }
+
+                if (m_buildQueued.insert(key).second) {
+                    m_buildQueue.push_front(key);
+                }
+            }
+        }
+    }
+}
+
 void VoxelSvoLodManager::bind(const ChunkManager* chunkManager,
                               const BlockRegistry* registry,
                               const TextureAtlas* atlas) {

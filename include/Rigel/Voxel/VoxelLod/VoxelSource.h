@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rigel/Voxel/Block.h"
+#include "Rigel/Voxel/ChunkCoord.h"
 
 #include <glm/vec3.hpp>
 
@@ -79,7 +80,9 @@ public:
     virtual BrickSampleStatus sampleBrick(const BrickSampleDesc& desc,
                                           std::span<VoxelId> out,
                                           const std::atomic_bool* cancel = nullptr) const = 0;
+
+    // Optional cache invalidation hook for sources backed by mutable state.
+    virtual void invalidateChunk(ChunkCoord) const {}
 };
 
 } // namespace Rigel::Voxel
-

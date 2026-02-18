@@ -348,3 +348,71 @@ TEST_CASE(VoxelSvoLodManager_EnforcesGpuByteBudget) {
     CHECK(enforced);
     CHECK(manager.telemetry().gpuBytesCurrent <= static_cast<uint64_t>(clamped.maxGpuBytes));
 }
+
+TEST_CASE(VoxelSvoLodManager_InvalidateChunkBumpsRevisionAndRequeuesPage) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 0;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 1;
+    config.buildBudgetPagesPerFrame = 1;
+    config.applyBudgetPagesPerFrame = 1;
+    manager.setConfig(config);
+    manager.initialize();
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
+    uint64_t firstRevision = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        auto info = manager.pageInfo(VoxelPageKey{0, 0, 0, 0});
+        if (info && info->appliedRevision > 0) {
+            firstRevision = info->appliedRevision;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(firstRevision > 0);
+
+    manager.invalidateChunk(ChunkCoord{0, 0, 0});
+    auto queuedInfo = manager.pageInfo(VoxelPageKey{0, 0, 0, 0});
+    CHECK(queuedInfo.has_value());
+    if (queuedInfo) {
+        CHECK_EQ(queuedInfo->state, VoxelPageState::QueuedSample);
+    }
+
+    uint64_t rebuiltRevision = 0;
+    deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        auto info = manager.pageInfo(VoxelPageKey{0, 0, 0, 0});
+        if (info && info->appliedRevision > firstRevision) {
+            rebuiltRevision = info->appliedRevision;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    CHECK(rebuiltRevision > firstRevision);
+}

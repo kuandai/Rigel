@@ -66,6 +66,7 @@ public:
     void setChunkLoadDrain(ChunkStreamer::ChunkLoadDrainCallback drain);
     void setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel);
     void setVoxelPersistenceSource(std::shared_ptr<const IVoxelSource> source);
+    void invalidateVoxelSvoChunk(ChunkCoord coord);
     void setStreamConfig(const WorldGenConfig::StreamConfig& config);
     void setBenchmark(ChunkBenchmarkStats* stats);
 

@@ -243,6 +243,48 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK(!loader.isPending(coord));
 }
 
+TEST_CASE(AsyncChunkLoader_Request_InvokesChunkAppliedCallback) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID testA = registerTestBlock(registry, "rigel:test_callback_a");
+    std::vector<BlockID> palette = {BlockRegistry::airId(), testA};
+
+    ChunkCoord coord{7, 0, 0};
+    ChunkData payload = buildPayload(coord, registry, palette, false, std::nullopt, false);
+
+    MemoryContext ctx;
+    saveRegionForPayload(ctx.service, ctx.context, "rigel:default", coord, payload);
+
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+
+    std::vector<ChunkCoord> applied;
+    loader.setChunkAppliedCallback([&applied](ChunkCoord appliedCoord) {
+        applied.push_back(appliedCoord);
+    });
+
+    CHECK(loader.request(coord));
+    loader.drainCompletions(1);
+
+    CHECK_EQ(applied.size(), static_cast<size_t>(1));
+    if (!applied.empty()) {
+        CHECK_EQ(applied.front(), coord);
+    }
+}
+
 TEST_CASE(AsyncChunkLoader_Request_Completes_Random) {
     WorldResources resources;
     World world;

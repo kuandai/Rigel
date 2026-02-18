@@ -81,6 +81,10 @@ void AsyncChunkLoader::setLoadQueueLimit(size_t maxPending) {
     m_loadQueueLimit = maxPending;
 }
 
+void AsyncChunkLoader::setChunkAppliedCallback(ChunkAppliedCallback callback) {
+    m_chunkAppliedCallback = std::move(callback);
+}
+
 bool AsyncChunkLoader::request(Voxel::ChunkCoord coord) {
     if (!m_format || !m_world) {
         return false;
@@ -240,6 +244,10 @@ bool AsyncChunkLoader::applyPayload(const ChunkPayload& payload) {
         if (neighbor) {
             neighbor->markDirty();
         }
+    }
+
+    if (m_chunkAppliedCallback) {
+        m_chunkAppliedCallback(payload.coord);
     }
 
     return true;

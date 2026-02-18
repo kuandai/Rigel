@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rigel/Voxel/RenderConfig.h"
+#include "Rigel/Voxel/ChunkCoord.h"
 #include "Rigel/Voxel/ChunkMesh.h"
 #include "Rigel/Voxel/TextureAtlas.h"
 #include "Rigel/Voxel/ChunkTasks.h"
@@ -84,6 +85,7 @@ public:
     void setBuildThreads(size_t threadCount);
     void setChunkGenerator(GeneratorSource::ChunkGenerateCallback generator);
     void setPersistenceSource(std::shared_ptr<const IVoxelSource> source);
+    void invalidateChunk(ChunkCoord coord);
 
     void bind(const ChunkManager* chunkManager,
               const BlockRegistry* registry,

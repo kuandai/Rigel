@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 
 namespace Rigel::Voxel {
 namespace {
@@ -52,6 +53,26 @@ PersistenceSource::PersistenceSource(Persistence::PersistenceService* service,
 void PersistenceSource::setCacheLimits(size_t maxCachedRegions, size_t maxCachedChunks) {
     m_maxCachedRegions = std::max<size_t>(1, maxCachedRegions);
     m_maxCachedChunks = std::max<size_t>(1, maxCachedChunks);
+}
+
+void PersistenceSource::invalidateChunk(ChunkCoord coord) const {
+    if (!m_service || !m_context.storage) {
+        return;
+    }
+
+    try {
+        auto format = m_service->openFormat(m_context);
+        Persistence::RegionLayout& layout = format->regionLayout();
+        const Persistence::RegionKey regionKey = layout.regionForChunk(m_zoneId, coord);
+        const std::string regionKeyString = regionCacheKey(regionKey);
+
+        std::scoped_lock lock(m_cacheMutex);
+        m_chunkCache.erase(coord);
+        m_regionCache.erase(regionKeyString);
+    } catch (const std::exception&) {
+        std::scoped_lock lock(m_cacheMutex);
+        m_chunkCache.erase(coord);
+    }
 }
 
 BrickSampleStatus PersistenceSource::sampleBrick(const BrickSampleDesc& desc,

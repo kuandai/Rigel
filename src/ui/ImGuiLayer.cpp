@@ -2,6 +2,7 @@
 
 #include "Rigel/Core/Profiler.h"
 #include "Rigel/Voxel/Lod/SvoLodManager.h"
+#include "Rigel/Voxel/VoxelLod/VoxelSvoLodManager.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -92,7 +93,9 @@ void endFrame() {
 
 void renderProfilerWindow(bool enabled,
                           const Rigel::Voxel::SvoLodConfig* svoConfig,
-                          const Rigel::Voxel::SvoLodTelemetry* svoTelemetry) {
+                          const Rigel::Voxel::SvoLodTelemetry* svoTelemetry,
+                          const Rigel::Voxel::VoxelSvoConfig* voxelSvoConfig,
+                          const Rigel::Voxel::VoxelSvoTelemetry* voxelSvoTelemetry) {
 #if defined(RIGEL_ENABLE_IMGUI)
     if (!g_initialized || !enabled) {
         return;
@@ -329,11 +332,32 @@ void renderProfilerWindow(bool enabled,
     }
     ImGui::TextUnformatted("Far-field opaque LOD proxy pass is active (transition-band gated).");
 
+    ImGui::Separator();
+    ImGui::TextUnformatted("Voxel SVO LOD (WIP)");
+    if (!voxelSvoConfig || !voxelSvoTelemetry) {
+        ImGui::TextUnformatted("No voxel SVO telemetry source attached.");
+    } else {
+        ImGui::Text("Enabled: %s", voxelSvoConfig->enabled ? "true" : "false");
+        ImGui::Text("Pages: active %u, queued %u, building %u, cpu-ready %u, uploaded %u",
+                    voxelSvoTelemetry->activePages,
+                    voxelSvoTelemetry->pagesQueued,
+                    voxelSvoTelemetry->pagesBuilding,
+                    voxelSvoTelemetry->pagesReadyCpu,
+                    voxelSvoTelemetry->pagesUploaded);
+        ImGui::Text("Current memory: CPU %.2f MiB, GPU %.2f MiB",
+                    static_cast<double>(voxelSvoTelemetry->cpuBytesCurrent) / (1024.0 * 1024.0),
+                    static_cast<double>(voxelSvoTelemetry->gpuBytesCurrent) / (1024.0 * 1024.0));
+        ImGui::Text("Update calls: %" PRIu64, voxelSvoTelemetry->updateCalls);
+        ImGui::Text("Upload calls: %" PRIu64, voxelSvoTelemetry->uploadCalls);
+    }
+
     ImGui::End();
 #else
     (void)enabled;
     (void)svoConfig;
     (void)svoTelemetry;
+    (void)voxelSvoConfig;
+    (void)voxelSvoTelemetry;
 #endif
 }
 

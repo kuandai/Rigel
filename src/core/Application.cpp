@@ -813,7 +813,9 @@ void Application::run() {
                     UI::renderProfilerWindow(
                         m_impl->debug.imguiEnabled,
                         &m_impl->world.worldView->svoConfig(),
-                        &m_impl->world.worldView->svoTelemetry()
+                        &m_impl->world.worldView->svoTelemetry(),
+                        &m_impl->world.worldView->svoVoxelConfig(),
+                        &m_impl->world.worldView->svoVoxelTelemetry()
                     );
 #else
                     (void)width;

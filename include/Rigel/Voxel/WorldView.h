@@ -90,6 +90,7 @@ private:
     static constexpr uint32_t kSvoPressureUploadSkipFrames = 5;
 
     void configureSvoChunkSampler(const std::shared_ptr<WorldGenerator>& generator);
+    void configureVoxelSvoChunkGenerator(const std::shared_ptr<WorldGenerator>& generator);
 
     World* m_world = nullptr;
     WorldResources* m_resources = nullptr;

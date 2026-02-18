@@ -17,6 +17,22 @@ struct VoxelPageKey {
     bool operator==(const VoxelPageKey&) const = default;
 };
 
+struct VoxelPageKeyHash {
+    size_t operator()(const VoxelPageKey& key) const noexcept {
+        // Simple integer hash combining 4 signed coordinates.
+        uint64_t h = 1469598103934665603ull;
+        auto mix = [&](uint64_t v) {
+            h ^= v;
+            h *= 1099511628211ull;
+        };
+        mix(static_cast<uint32_t>(key.level));
+        mix(static_cast<uint32_t>(key.x));
+        mix(static_cast<uint32_t>(key.y));
+        mix(static_cast<uint32_t>(key.z));
+        return static_cast<size_t>(h);
+    }
+};
+
 // CPU representation for a voxel page (page-sized brick + mip pyramid).
 struct VoxelPageCpu {
     VoxelPageKey key{};
@@ -44,4 +60,3 @@ VoxelPageCpu buildVoxelPageCpu(const VoxelPageKey& key,
                                int dim);
 
 } // namespace Rigel::Voxel
-

@@ -49,6 +49,7 @@ WorldView::WorldView(World& world, WorldResources& resources)
         m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
         configureSvoChunkSampler(m_world->generator());
         m_voxelSvoLod.bind(&m_world->chunkManager(), &m_resources->registry());
+        configureVoxelSvoChunkGenerator(m_world->generator());
     }
 }
 
@@ -114,6 +115,7 @@ void WorldView::initialize(Asset::AssetManager& assets) {
         m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
         configureSvoChunkSampler(generator);
         m_voxelSvoLod.bind(&m_world->chunkManager(), &m_resources->registry());
+        configureVoxelSvoChunkGenerator(generator);
     }
 
     if (m_renderConfig.svo.enabled) {
@@ -137,6 +139,7 @@ void WorldView::setGenerator(std::shared_ptr<WorldGenerator> generator) {
                     std::move(generator));
     m_svoLod.bind(&m_world->chunkManager(), &m_resources->registry());
     configureSvoChunkSampler(generatorRef);
+    configureVoxelSvoChunkGenerator(generatorRef);
 }
 
 void WorldView::configureSvoChunkSampler(const std::shared_ptr<WorldGenerator>& generator) {
@@ -157,6 +160,30 @@ void WorldView::configureSvoChunkSampler(const std::shared_ptr<WorldGenerator>& 
             locked->generate(coord, buffer, nullptr);
             out = std::move(buffer.blocks);
             return true;
+        }
+    );
+}
+
+void WorldView::configureVoxelSvoChunkGenerator(const std::shared_ptr<WorldGenerator>& generator) {
+    if (!generator) {
+        m_voxelSvoLod.setChunkGenerator({});
+        return;
+    }
+
+    std::weak_ptr<WorldGenerator> weakGenerator = generator;
+    m_voxelSvoLod.setChunkGenerator(
+        [weakGenerator](ChunkCoord coord,
+                        std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                        const std::atomic_bool* cancel) {
+            auto locked = weakGenerator.lock();
+            if (!locked) {
+                outBlocks.fill(BlockState{});
+                return;
+            }
+
+            ChunkBuffer buffer;
+            locked->generate(coord, buffer, cancel);
+            outBlocks = std::move(buffer.blocks);
         }
     );
 }

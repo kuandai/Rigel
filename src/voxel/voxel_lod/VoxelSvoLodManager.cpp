@@ -375,7 +375,12 @@ void VoxelSvoLodManager::processBuildCompletions() {
     }
 }
 
-bool VoxelSvoLodManager::canMeshPage(const VoxelPageKey& key, uint16_t cellSizeVoxels) const {
+bool VoxelSvoLodManager::canMeshPage(const VoxelPageKey& key,
+                                     uint16_t cellSizeVoxels,
+                                     bool* outMissingNeighbors,
+                                     bool* outLeafMismatch) const {
+    bool missingNeighbors = false;
+    bool leafMismatch = false;
     for (const glm::ivec3& offset : kNeighborOffsets) {
         VoxelPageKey neighborKey = key;
         neighborKey.x += offset.x;
@@ -383,17 +388,25 @@ bool VoxelSvoLodManager::canMeshPage(const VoxelPageKey& key, uint16_t cellSizeV
         neighborKey.z += offset.z;
         auto it = m_pages.find(neighborKey);
         if (it == m_pages.end()) {
-            return false;
+            missingNeighbors = true;
+            continue;
         }
         const PageRecord& neighbor = it->second;
         if (neighbor.appliedRevision == 0 || neighbor.cpu.dim <= 0) {
-            return false;
+            missingNeighbors = true;
+            continue;
         }
         if (neighbor.leafMinVoxels != cellSizeVoxels) {
-            return false;
+            leafMismatch = true;
         }
     }
-    return true;
+    if (outMissingNeighbors) {
+        *outMissingNeighbors = missingNeighbors;
+    }
+    if (outLeafMismatch) {
+        *outLeafMismatch = leafMismatch;
+    }
+    return !missingNeighbors && !leafMismatch;
 }
 
 void VoxelSvoLodManager::enqueueMeshBuilds() {
@@ -426,7 +439,15 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
         if (record.meshRevision == record.appliedRevision) {
             continue;
         }
-        if (!canMeshPage(key, record.leafMinVoxels)) {
+        bool missingNeighbors = false;
+        bool leafMismatch = false;
+        if (!canMeshPage(key, record.leafMinVoxels, &missingNeighbors, &leafMismatch)) {
+            if (missingNeighbors) {
+                ++m_telemetry.meshBlockedMissingNeighbors;
+            }
+            if (leafMismatch) {
+                ++m_telemetry.meshBlockedLeafMismatch;
+            }
             queueMissingNeighborsForMesh(key);
             continue;
         }
@@ -888,6 +909,8 @@ void VoxelSvoLodManager::enforcePageLimit(const glm::vec3& cameraPos) {
     struct Entry {
         VoxelPageKey key{};
         uint8_t priority = 0;
+        bool desiredBuild = false;
+        bool desiredVisible = false;
         uint64_t lastTouchedFrame = 0;
         float distSq = 0.0f;
     };
@@ -903,6 +926,8 @@ void VoxelSvoLodManager::enforcePageLimit(const glm::vec3& cameraPos) {
         entries.push_back(Entry{
             key,
             evictionPriority(record.state),
+            record.desiredBuild,
+            record.desiredVisible,
             record.lastTouchedFrame,
             glm::dot(delta, delta)
         });
@@ -912,29 +937,66 @@ void VoxelSvoLodManager::enforcePageLimit(const glm::vec3& cameraPos) {
         if (a.priority != b.priority) {
             return a.priority < b.priority;
         }
+        if (a.desiredBuild != b.desiredBuild) {
+            return !a.desiredBuild && b.desiredBuild;
+        }
         if (a.lastTouchedFrame != b.lastTouchedFrame) {
             return a.lastTouchedFrame < b.lastTouchedFrame;
         }
         return a.distSq > b.distSq;
     });
 
-    for (const Entry& entry : entries) {
-        if (!overLimits()) {
-            break;
+    auto accountEviction = [this](VoxelPageState state) {
+        switch (state) {
+            case VoxelPageState::Missing:
+                ++m_telemetry.evictedMissing;
+                break;
+            case VoxelPageState::QueuedSample:
+            case VoxelPageState::QueuedMesh:
+            case VoxelPageState::Sampling:
+            case VoxelPageState::Meshing:
+                ++m_telemetry.evictedQueued;
+                break;
+            case VoxelPageState::ReadyCpu:
+                ++m_telemetry.evictedReadyCpu;
+                break;
+            case VoxelPageState::ReadyMesh:
+                ++m_telemetry.evictedReadyMesh;
+                break;
+            default:
+                break;
         }
+    };
 
-        auto it = m_pages.find(entry.key);
-        if (it == m_pages.end()) {
-            continue;
-        }
+    auto evictPass = [&](bool includeDesiredVisible) {
+        for (const Entry& entry : entries) {
+            if (!overLimits()) {
+                break;
+            }
+            if (!includeDesiredVisible && entry.desiredVisible) {
+                continue;
+            }
 
-        totalCpuBytes -= estimatePageCpuBytes(it->second);
-        totalGpuBytes -= estimatePageGpuBytes(it->second);
-        if (it->second.cancel) {
-            it->second.cancel->store(true, std::memory_order_relaxed);
+            auto it = m_pages.find(entry.key);
+            if (it == m_pages.end()) {
+                continue;
+            }
+
+            totalCpuBytes -= estimatePageCpuBytes(it->second);
+            totalGpuBytes -= estimatePageGpuBytes(it->second);
+            if (it->second.cancel) {
+                it->second.cancel->store(true, std::memory_order_relaxed);
+            }
+            accountEviction(it->second.state);
+            m_buildQueued.erase(entry.key);
+            m_pages.erase(it);
         }
-        m_buildQueued.erase(entry.key);
-        m_pages.erase(it);
+    };
+
+    // Hard guard: do not evict desired-visible pages unless still over budget.
+    evictPass(false);
+    if (overLimits()) {
+        evictPass(true);
     }
 }
 
@@ -946,6 +1008,15 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
         m_telemetry.pagesBuilding = 0;
         m_telemetry.pagesReadyCpu = 0;
         m_telemetry.pagesUploaded = 0;
+        m_telemetry.evictedMissing = 0;
+        m_telemetry.evictedQueued = 0;
+        m_telemetry.evictedReadyCpu = 0;
+        m_telemetry.evictedReadyMesh = 0;
+        m_telemetry.meshBlockedMissingNeighbors = 0;
+        m_telemetry.meshBlockedLeafMismatch = 0;
+        m_telemetry.desiredVisibleCount = 0;
+        m_telemetry.desiredBuildCount = 0;
+        m_telemetry.visibleReadyMeshCount = 0;
         m_telemetry.readyCpuPagesPerLevel = {};
         m_telemetry.readyCpuNodesPerLevel = {};
         m_telemetry.bricksSampled = 0;
@@ -964,6 +1035,12 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
     ensureBuildPool();
 
     m_telemetry.mipBuildMicros = 0;
+    m_telemetry.evictedMissing = 0;
+    m_telemetry.evictedQueued = 0;
+    m_telemetry.evictedReadyCpu = 0;
+    m_telemetry.evictedReadyMesh = 0;
+    m_telemetry.meshBlockedMissingNeighbors = 0;
+    m_telemetry.meshBlockedLeafMismatch = 0;
     processBuildCompletions();
     processMeshCompletions();
     seedDesiredPages(cameraPos);
@@ -996,6 +1073,9 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
     m_telemetry.pagesBuilding = 0;
     m_telemetry.pagesReadyCpu = 0;
     m_telemetry.pagesUploaded = 0;
+    m_telemetry.desiredVisibleCount = 0;
+    m_telemetry.desiredBuildCount = 0;
+    m_telemetry.visibleReadyMeshCount = 0;
     m_telemetry.readyCpuPagesPerLevel = {};
     m_telemetry.readyCpuNodesPerLevel = {};
     m_telemetry.cpuBytesCurrent = 0;
@@ -1003,6 +1083,13 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
 
     for (const auto& [key, record] : m_pages) {
         (void)key;
+        if (record.desiredVisible) {
+            ++m_telemetry.desiredVisibleCount;
+        }
+        if (record.desiredBuild) {
+            ++m_telemetry.desiredBuildCount;
+        }
+
         switch (record.state) {
             case VoxelPageState::QueuedSample:
             case VoxelPageState::QueuedMesh:
@@ -1023,6 +1110,9 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
                 break;
             case VoxelPageState::ReadyMesh:
                 ++m_telemetry.pagesUploaded;
+                if (record.desiredVisible) {
+                    ++m_telemetry.visibleReadyMeshCount;
+                }
                 m_telemetry.cpuBytesCurrent += estimatePageCpuBytes(record);
                 m_telemetry.gpuBytesCurrent += estimatePageGpuBytes(record);
                 if (record.key.level >= 0 &&

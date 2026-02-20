@@ -308,6 +308,18 @@ void renderProfilerWindow(bool enabled,
                     voxelSvoTelemetry->pagesBuilding,
                     voxelSvoTelemetry->pagesReadyCpu,
                     voxelSvoTelemetry->pagesUploaded);
+        ImGui::Text("Desired sets: visible %u, build %u, visible-ready-mesh %u",
+                    voxelSvoTelemetry->desiredVisibleCount,
+                    voxelSvoTelemetry->desiredBuildCount,
+                    voxelSvoTelemetry->visibleReadyMeshCount);
+        ImGui::Text("Evictions: missing %u, queued %u, ready-cpu %u, ready-mesh %u",
+                    voxelSvoTelemetry->evictedMissing,
+                    voxelSvoTelemetry->evictedQueued,
+                    voxelSvoTelemetry->evictedReadyCpu,
+                    voxelSvoTelemetry->evictedReadyMesh);
+        ImGui::Text("Mesh blocked: missing-neighbors %u, leaf-mismatch %u",
+                    voxelSvoTelemetry->meshBlockedMissingNeighbors,
+                    voxelSvoTelemetry->meshBlockedLeafMismatch);
         ImGui::Text("Bricks: sampled %" PRIu64 ", voxels %" PRIu64,
                     voxelSvoTelemetry->bricksSampled,
                     voxelSvoTelemetry->voxelsSampled);

@@ -41,6 +41,15 @@ struct VoxelSvoTelemetry {
     uint32_t pagesBuilding = 0;
     uint32_t pagesReadyCpu = 0;
     uint32_t pagesUploaded = 0;
+    uint32_t evictedMissing = 0;
+    uint32_t evictedQueued = 0;
+    uint32_t evictedReadyCpu = 0;
+    uint32_t evictedReadyMesh = 0;
+    uint32_t meshBlockedMissingNeighbors = 0;
+    uint32_t meshBlockedLeafMismatch = 0;
+    uint32_t desiredVisibleCount = 0;
+    uint32_t desiredBuildCount = 0;
+    uint32_t visibleReadyMeshCount = 0;
     std::array<uint32_t, 16> readyCpuPagesPerLevel{};
     std::array<uint64_t, 16> readyCpuNodesPerLevel{};
     uint64_t cpuBytesCurrent = 0;
@@ -153,7 +162,10 @@ private:
     void seedDesiredPages(const glm::vec3& cameraPos);
     void enqueueBuild(const VoxelPageKey& key, uint64_t revision);
     void enqueueMeshBuilds();
-    bool canMeshPage(const VoxelPageKey& key, uint16_t cellSizeVoxels) const;
+    bool canMeshPage(const VoxelPageKey& key,
+                     uint16_t cellSizeVoxels,
+                     bool* outMissingNeighbors = nullptr,
+                     bool* outLeafMismatch = nullptr) const;
     void queueMissingNeighborsForMesh(const VoxelPageKey& key);
     void enforcePageLimit(const glm::vec3& cameraPos);
     void rebuildFaceTextureLayers();

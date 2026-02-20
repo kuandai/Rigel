@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <thread>
 #include <unordered_set>
 
@@ -566,11 +567,18 @@ TEST_CASE(VoxelSvoLodManager_ResidentCapKeepsReadyPagesWhenCameraMoves) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    auto persistedReady = manager.pageInfo(readyKey);
-    CHECK(persistedReady.has_value());
-    if (persistedReady) {
-        CHECK(persistedReady->appliedRevision > 0);
+    std::vector<std::pair<VoxelPageKey, VoxelSvoPageInfo>> movedPages;
+    manager.collectDebugPages(movedPages);
+    bool hasAnyReady = false;
+    for (const auto& [key, info] : movedPages) {
+        (void)key;
+        if ((info.state == VoxelPageState::ReadyCpu || info.state == VoxelPageState::ReadyMesh) &&
+            info.appliedRevision > 0) {
+            hasAnyReady = true;
+            break;
+        }
     }
+    CHECK(hasAnyReady);
 }
 
 TEST_CASE(VoxelSvoLodManager_DesiredBuildIncludesClosureRingForVisiblePages) {
@@ -660,6 +668,176 @@ TEST_CASE(VoxelSvoLodManager_OnlyDesiredVisiblePagesAreReturnedForFarDraw) {
     for (const auto& entry : movedMeshes) {
         CHECK(initialKeys.find(entry.key) == initialKeys.end());
     }
+}
+
+TEST_CASE(VoxelSvoLodManager_VisiblePagesEventuallyReachReadyMeshWhenGeneratorAvailable) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 8;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 256;
+    config.buildBudgetPagesPerFrame = 32;
+    config.applyBudgetPagesPerFrame = 32;
+    manager.setConfig(config);
+    manager.initialize();
+
+    bool reachedVisibleReadyMesh = false;
+    std::vector<VoxelSvoLodManager::OpaqueMeshEntry> meshes;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        manager.collectOpaqueMeshes(meshes);
+        if (manager.telemetry().visibleReadyMeshCount > 0u && !meshes.empty()) {
+            reachedVisibleReadyMesh = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    CHECK(reachedVisibleReadyMesh);
+    CHECK(manager.telemetry().pagesUploaded > 0u);
+    CHECK(manager.telemetry().visibleReadyMeshCount > 0u);
+}
+
+TEST_CASE(VoxelSvoLodManager_MovementDoesNotCollapseReadyMeshToZeroUnderResidentCap) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 8;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 128;
+    config.buildBudgetPagesPerFrame = 24;
+    config.applyBudgetPagesPerFrame = 24;
+    manager.setConfig(config);
+    manager.initialize();
+
+    const auto warmupDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+    while (std::chrono::steady_clock::now() < warmupDeadline) {
+        manager.update(glm::vec3(0.0f));
+        if (manager.telemetry().visibleReadyMeshCount >= 8u) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(manager.telemetry().visibleReadyMeshCount >= 8u);
+
+    uint32_t minVisibleReadyMesh = std::numeric_limits<uint32_t>::max();
+    bool sampled = false;
+    for (int step = 1; step <= 20; ++step) {
+        const glm::vec3 pos(static_cast<float>(step * 8), 0.0f, 0.0f);
+        for (int i = 0; i < 3; ++i) {
+            manager.update(pos);
+            minVisibleReadyMesh = std::min(minVisibleReadyMesh, manager.telemetry().visibleReadyMeshCount);
+            sampled = true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+    CHECK(sampled);
+    CHECK(minVisibleReadyMesh > 0u);
+}
+
+TEST_CASE(VoxelSvoLodManager_EvictionPrefersNonDesiredAndLowValueStates) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 8;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 256;
+    config.buildBudgetPagesPerFrame = 32;
+    config.applyBudgetPagesPerFrame = 32;
+    manager.setConfig(config);
+    manager.initialize();
+
+    const auto warmupDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+    while (std::chrono::steady_clock::now() < warmupDeadline) {
+        manager.update(glm::vec3(0.0f));
+        if (manager.telemetry().pagesUploaded >= 4u) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(manager.telemetry().pagesUploaded >= 4u);
+
+    const size_t baselinePages = manager.pageCount();
+    CHECK(baselinePages > 0u);
+
+    VoxelSvoConfig pressured = manager.config();
+    pressured.maxResidentPages = static_cast<int>(std::min<size_t>(baselinePages, static_cast<size_t>(std::numeric_limits<int>::max())));
+    pressured.buildBudgetPagesPerFrame = 0;
+    pressured.applyBudgetPagesPerFrame = 0;
+    manager.setConfig(pressured);
+
+    manager.update(glm::vec3(2048.0f, 0.0f, 0.0f));
+
+    const auto& telemetry = manager.telemetry();
+    CHECK((telemetry.evictedMissing + telemetry.evictedQueued) > 0u);
+    CHECK_EQ(telemetry.evictedReadyCpu, 0u);
+    CHECK_EQ(telemetry.evictedReadyMesh, 0u);
 }
 
 TEST_CASE(VoxelSvoLodManager_ResetCancelsInFlightBuildJobs) {

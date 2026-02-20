@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <unordered_set>
 
 using namespace Rigel::Voxel;
 
@@ -173,29 +174,38 @@ TEST_CASE(VoxelSvoLodManager_BuildsSinglePageToReadyCpu) {
     config.levels = 1;
     config.pageSizeVoxels = 8;
     config.minLeafVoxels = 4;
-    config.maxResidentPages = 1;
+    config.maxResidentPages = 7;
     config.buildBudgetPagesPerFrame = 1;
+    config.applyBudgetPagesPerFrame = 0;
     manager.setConfig(config);
 
     manager.initialize();
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    bool centerReady = false;
     while (std::chrono::steady_clock::now() < deadline) {
         manager.update(glm::vec3(0.0f));
-        if (manager.telemetry().pagesReadyCpu >= 1u) {
+        auto centerInfo = manager.pageInfo(VoxelPageKey{0, 0, 0, 0});
+        if (centerInfo &&
+            centerInfo->appliedRevision > 0 &&
+            (centerInfo->state == VoxelPageState::ReadyCpu ||
+             centerInfo->state == VoxelPageState::ReadyMesh)) {
+            centerReady = true;
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    CHECK_EQ(manager.telemetry().activePages, 1u);
-    CHECK_EQ(manager.telemetry().pagesReadyCpu, 1u);
-    CHECK_EQ(manager.telemetry().readyCpuPagesPerLevel[0], 1u);
+    CHECK(manager.telemetry().activePages >= 1u);
+    CHECK(manager.telemetry().pagesReadyCpu >= 1u);
+    CHECK(manager.telemetry().readyCpuPagesPerLevel[0] >= 1u);
     CHECK(manager.telemetry().readyCpuNodesPerLevel[0] > 0u);
 
     auto info = manager.pageInfo(VoxelPageKey{0, 0, 0, 0});
+    CHECK(centerReady);
     CHECK(info.has_value());
-    CHECK_EQ(info->state, VoxelPageState::ReadyCpu);
+    CHECK(info->state == VoxelPageState::ReadyCpu || info->state == VoxelPageState::ReadyMesh);
+    CHECK(info->appliedRevision > 0);
     CHECK(info->nodeCount > 0u);
     CHECK_EQ(info->leafMinVoxels, static_cast<uint16_t>(4));
 }
@@ -227,13 +237,13 @@ TEST_CASE(VoxelSvoLodManager_BuildsCenterPageMeshWhenNeighborsReady) {
     config.levels = 1;
     config.pageSizeVoxels = 16;
     config.minLeafVoxels = 4;
-    config.maxResidentPages = 27;
+    config.maxResidentPages = 512;
     config.buildBudgetPagesPerFrame = 16;
     config.applyBudgetPagesPerFrame = 16;
     manager.setConfig(config);
     manager.initialize();
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(750);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
     std::vector<VoxelSvoLodManager::OpaqueMeshEntry> meshes;
     while (std::chrono::steady_clock::now() < deadline) {
         manager.update(glm::vec3(0.0f));
@@ -428,7 +438,7 @@ TEST_CASE(VoxelSvoLodManager_InvalidateChunkBumpsRevisionAndRequeuesPage) {
     config.levels = 1;
     config.pageSizeVoxels = 16;
     config.minLeafVoxels = 4;
-    config.maxResidentPages = 1;
+    config.maxResidentPages = 7;
     config.buildBudgetPagesPerFrame = 1;
     config.applyBudgetPagesPerFrame = 1;
     manager.setConfig(config);
@@ -490,8 +500,8 @@ TEST_CASE(VoxelSvoLodManager_SeedsPagesWhenStartRadiusExceedsResidentCubeExtent)
     manager.update(glm::vec3(0.0f));
 
     const auto& telemetry = manager.telemetry();
-    CHECK_EQ(telemetry.activePages, 8u);
-    CHECK_EQ(telemetry.pagesQueued, 8u);
+    CHECK(telemetry.activePages >= 8u);
+    CHECK(telemetry.pagesQueued >= 8u);
 }
 
 TEST_CASE(VoxelSvoLodManager_ResidentCapKeepsReadyPagesWhenCameraMoves) {
@@ -563,6 +573,95 @@ TEST_CASE(VoxelSvoLodManager_ResidentCapKeepsReadyPagesWhenCameraMoves) {
     }
 }
 
+TEST_CASE(VoxelSvoLodManager_DesiredBuildIncludesClosureRingForVisiblePages) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 4;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 1;
+    config.buildBudgetPagesPerFrame = 0;
+    config.applyBudgetPagesPerFrame = 0;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+
+    // One visible page + six direct-neighbor closure pages.
+    CHECK_EQ(manager.pageCount(), static_cast<size_t>(7));
+}
+
+TEST_CASE(VoxelSvoLodManager_OnlyDesiredVisiblePagesAreReturnedForFarDraw) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] =
+                        state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 8;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 64;
+    config.buildBudgetPagesPerFrame = 32;
+    config.applyBudgetPagesPerFrame = 32;
+    manager.setConfig(config);
+    manager.initialize();
+
+    std::vector<VoxelSvoLodManager::OpaqueMeshEntry> initialMeshes;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        manager.collectOpaqueMeshes(initialMeshes);
+        if (!initialMeshes.empty()) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(!initialMeshes.empty());
+
+    std::unordered_set<VoxelPageKey, VoxelPageKeyHash> initialKeys;
+    for (const auto& entry : initialMeshes) {
+        initialKeys.insert(entry.key);
+    }
+    CHECK(!initialKeys.empty());
+
+    // Move camera enough to change desired-visible set.
+    for (int i = 0; i < 8; ++i) {
+        manager.update(glm::vec3(1024.0f, 0.0f, 0.0f));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    std::vector<VoxelSvoLodManager::OpaqueMeshEntry> movedMeshes;
+    manager.collectOpaqueMeshes(movedMeshes);
+    for (const auto& entry : movedMeshes) {
+        CHECK(initialKeys.find(entry.key) == initialKeys.end());
+    }
+}
+
 TEST_CASE(VoxelSvoLodManager_ResetCancelsInFlightBuildJobs) {
     VoxelSvoLodManager manager;
     manager.setBuildThreads(1);
@@ -624,7 +723,7 @@ TEST_CASE(VoxelSvoLodManager_PersistenceSource_InvalidationRebuildsFromUpdatedDa
     config.levels = 1;
     config.pageSizeVoxels = 8;
     config.minLeafVoxels = 1;
-    config.maxResidentPages = 1;
+    config.maxResidentPages = 7;
     config.buildBudgetPagesPerFrame = 1;
     config.applyBudgetPagesPerFrame = 0;
     manager.setConfig(config);

@@ -411,6 +411,9 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
 
     const int pageSize = std::max(1, m_config.pageSizeVoxels);
     for (const auto& [key, record] : m_pages) {
+        if (!record.desiredVisible) {
+            continue;
+        }
         if (record.state != VoxelPageState::ReadyCpu) {
             continue;
         }
@@ -424,6 +427,7 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
             continue;
         }
         if (!canMeshPage(key, record.leafMinVoxels)) {
+            queueMissingNeighborsForMesh(key);
             continue;
         }
 
@@ -521,6 +525,40 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
         center->state = VoxelPageState::Meshing;
 
         --budget;
+    }
+}
+
+void VoxelSvoLodManager::queueMissingNeighborsForMesh(const VoxelPageKey& key) {
+    for (const glm::ivec3& offset : kNeighborOffsets) {
+        VoxelPageKey neighborKey = key;
+        neighborKey.x += offset.x;
+        neighborKey.y += offset.y;
+        neighborKey.z += offset.z;
+
+        auto it = m_pages.find(neighborKey);
+        if (it == m_pages.end()) {
+            PageRecord record{};
+            record.key = neighborKey;
+            record.state = VoxelPageState::Missing;
+            record.desiredRevision = 1;
+            record.lastTouchedFrame = m_frameCounter;
+            record.lastBuildFrame = m_frameCounter;
+            record.leafMinVoxels = static_cast<uint16_t>(std::max(1, m_config.minLeafVoxels));
+            record.desiredBuild = true;
+            it = m_pages.emplace(neighborKey, std::move(record)).first;
+        } else {
+            it->second.desiredBuild = true;
+            it->second.lastTouchedFrame = m_frameCounter;
+            it->second.lastBuildFrame = m_frameCounter;
+        }
+
+        PageRecord& record = it->second;
+        if (record.state == VoxelPageState::Missing &&
+            m_buildQueued.find(neighborKey) == m_buildQueued.end()) {
+            record.state = VoxelPageState::QueuedSample;
+            m_buildQueue.push_front(neighborKey);
+            m_buildQueued.insert(neighborKey);
+        }
     }
 }
 
@@ -629,9 +667,77 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
         return a.distanceSq < b.distanceSq;
     });
 
-    const size_t desiredCount = std::min(static_cast<size_t>(maxResident), candidates.size());
-    for (size_t i = 0; i < desiredCount; ++i) {
-        const Candidate& candidate = candidates[i];
+    std::unordered_set<VoxelPageKey, VoxelPageKeyHash> desiredVisible;
+    std::unordered_set<VoxelPageKey, VoxelPageKeyHash> desiredBuild;
+    desiredVisible.reserve(static_cast<size_t>(maxResident));
+    desiredBuild.reserve(static_cast<size_t>(maxResident) * 2);
+
+    const size_t desiredVisibleCount = std::min(static_cast<size_t>(maxResident), candidates.size());
+    for (size_t i = 0; i < desiredVisibleCount; ++i) {
+        desiredVisible.insert(candidates[i].key);
+        desiredBuild.insert(candidates[i].key);
+    }
+
+    std::unordered_set<VoxelPageKey, VoxelPageKeyHash> closureCritical;
+    closureCritical.reserve(desiredVisible.size() * 6);
+    for (const VoxelPageKey& visibleKey : desiredVisible) {
+        for (const glm::ivec3& offset : kNeighborOffsets) {
+            VoxelPageKey neighbor = visibleKey;
+            neighbor.x += offset.x;
+            neighbor.y += offset.y;
+            neighbor.z += offset.z;
+            desiredBuild.insert(neighbor);
+            if (desiredVisible.find(neighbor) == desiredVisible.end()) {
+                closureCritical.insert(neighbor);
+            }
+        }
+    }
+
+    for (auto& [key, record] : m_pages) {
+        (void)key;
+        record.desiredVisible = false;
+        record.desiredBuild = false;
+    }
+
+    auto distanceSqFor = [pageSize, cameraVoxel](const VoxelPageKey& key) {
+        glm::vec3 pageCenter = glm::vec3(
+            static_cast<float>(key.x * pageSize + pageSize / 2),
+            static_cast<float>(key.y * pageSize + pageSize / 2),
+            static_cast<float>(key.z * pageSize + pageSize / 2)
+        );
+        glm::vec3 delta = pageCenter - glm::vec3(cameraVoxel);
+        return glm::dot(delta, delta);
+    };
+
+    struct QueueCandidate {
+        VoxelPageKey key{};
+        int priority = 2;
+        float distanceSq = 0.0f;
+    };
+    std::vector<QueueCandidate> queueCandidates;
+    queueCandidates.reserve(desiredBuild.size());
+    for (const VoxelPageKey& key : desiredBuild) {
+        int priority = 2;
+        if (closureCritical.find(key) != closureCritical.end()) {
+            priority = 0;
+        } else if (desiredVisible.find(key) != desiredVisible.end()) {
+            priority = 1;
+        }
+        queueCandidates.push_back(QueueCandidate{
+            key,
+            priority,
+            distanceSqFor(key)
+        });
+    }
+    std::sort(queueCandidates.begin(), queueCandidates.end(), [](const QueueCandidate& a,
+                                                                 const QueueCandidate& b) {
+        if (a.priority != b.priority) {
+            return a.priority < b.priority;
+        }
+        return a.distanceSq < b.distanceSq;
+    });
+
+    for (const QueueCandidate& candidate : queueCandidates) {
         auto it = m_pages.find(candidate.key);
         if (it == m_pages.end()) {
             PageRecord record{};
@@ -640,12 +746,18 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
             record.desiredRevision = 1;
             record.lastTouchedFrame = m_frameCounter;
             record.leafMinVoxels = static_cast<uint16_t>(std::max(1, m_config.minLeafVoxels));
-            m_pages.emplace(candidate.key, std::move(record));
-        } else {
-            it->second.lastTouchedFrame = m_frameCounter;
+            it = m_pages.emplace(candidate.key, std::move(record)).first;
         }
 
-        PageRecord& record = m_pages[candidate.key];
+        PageRecord& record = it->second;
+        record.lastTouchedFrame = m_frameCounter;
+        record.desiredBuild = true;
+        record.lastBuildFrame = m_frameCounter;
+        if (desiredVisible.find(candidate.key) != desiredVisible.end()) {
+            record.desiredVisible = true;
+            record.lastVisibleFrame = m_frameCounter;
+        }
+
         if (record.state == VoxelPageState::Missing &&
             m_buildQueued.find(candidate.key) == m_buildQueued.end()) {
             record.state = VoxelPageState::QueuedSample;
@@ -1001,6 +1113,9 @@ void VoxelSvoLodManager::collectOpaqueMeshes(std::vector<OpaqueMeshEntry>& out) 
     out.reserve(m_pages.size());
     const int pageSize = std::max(1, m_config.pageSizeVoxels);
     for (const auto& [key, record] : m_pages) {
+        if (!record.desiredVisible) {
+            continue;
+        }
         if (record.state != VoxelPageState::ReadyMesh) {
             continue;
         }

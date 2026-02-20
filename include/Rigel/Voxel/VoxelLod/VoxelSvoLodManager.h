@@ -154,6 +154,7 @@ private:
     void enqueueBuild(const VoxelPageKey& key, uint64_t revision);
     void enqueueMeshBuilds();
     bool canMeshPage(const VoxelPageKey& key, uint16_t cellSizeVoxels) const;
+    void queueMissingNeighborsForMesh(const VoxelPageKey& key);
     void enforcePageLimit(const glm::vec3& cameraPos);
     void rebuildFaceTextureLayers();
     static uint64_t estimatePageCpuBytes(const PageRecord& record);

@@ -469,6 +469,100 @@ TEST_CASE(VoxelSvoLodManager_InvalidateChunkBumpsRevisionAndRequeuesPage) {
     CHECK(rebuiltRevision > firstRevision);
 }
 
+TEST_CASE(VoxelSvoLodManager_SeedsPagesWhenStartRadiusExceedsResidentCubeExtent) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 8;
+    config.startRadiusChunks = 12;
+    config.maxRadiusChunks = 64;
+    config.levels = 1;
+    config.pageSizeVoxels = 64;
+    config.minLeafVoxels = 1;
+    config.maxResidentPages = 8;
+    config.buildBudgetPagesPerFrame = 0; // verify pure seeding, independent of worker execution
+    config.applyBudgetPagesPerFrame = 0;
+    manager.setConfig(config);
+    manager.initialize();
+
+    manager.update(glm::vec3(0.0f));
+
+    const auto& telemetry = manager.telemetry();
+    CHECK_EQ(telemetry.activePages, 8u);
+    CHECK_EQ(telemetry.pagesQueued, 8u);
+}
+
+TEST_CASE(VoxelSvoLodManager_ResidentCapKeepsReadyPagesWhenCameraMoves) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] =
+                        state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 1; // ensure >1 desired candidate under low resident cap
+    config.maxRadiusChunks = 16;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 2;
+    config.buildBudgetPagesPerFrame = 1;
+    config.applyBudgetPagesPerFrame = 0;
+    manager.setConfig(config);
+    manager.initialize();
+
+    VoxelPageKey readyKey{};
+    bool foundReady = false;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+    std::vector<std::pair<VoxelPageKey, VoxelSvoPageInfo>> pages;
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        manager.collectDebugPages(pages);
+        for (const auto& [key, info] : pages) {
+            if ((info.state == VoxelPageState::ReadyCpu || info.state == VoxelPageState::ReadyMesh) &&
+                info.appliedRevision > 0) {
+                readyKey = key;
+                foundReady = true;
+                break;
+            }
+        }
+        if (foundReady) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(foundReady);
+
+    // Move far enough to seed a different desired set while the resident cap is saturated.
+    for (int i = 0; i < 6; ++i) {
+        manager.update(glm::vec3(1024.0f, 0.0f, 0.0f));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    auto persistedReady = manager.pageInfo(readyKey);
+    CHECK(persistedReady.has_value());
+    if (persistedReady) {
+        CHECK(persistedReady->appliedRevision > 0);
+    }
+}
+
 TEST_CASE(VoxelSvoLodManager_ResetCancelsInFlightBuildJobs) {
     VoxelSvoLodManager manager;
     manager.setBuildThreads(1);

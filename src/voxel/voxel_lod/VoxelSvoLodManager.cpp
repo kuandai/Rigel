@@ -89,6 +89,27 @@ glm::vec3 pageWorldMin(const VoxelPageKey& key, int pageSizeVoxels) {
     );
 }
 
+uint8_t evictionPriority(VoxelPageState state) {
+    switch (state) {
+        case VoxelPageState::Missing:
+            return 0;
+        case VoxelPageState::QueuedSample:
+            return 1;
+        case VoxelPageState::QueuedMesh:
+            return 2;
+        case VoxelPageState::ReadyCpu:
+            return 3;
+        case VoxelPageState::ReadyMesh:
+            return 4;
+        case VoxelPageState::Sampling:
+            return 5;
+        case VoxelPageState::Meshing:
+            return 6;
+        default:
+            return 7;
+    }
+}
+
 } // namespace
 
 uint64_t VoxelSvoLodManager::estimatePageCpuBytes(const PageRecord& record) {
@@ -554,9 +575,18 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
         return static_cast<int64_t>(side) * side * side;
     };
 
-    int radiusPages = 0;
-    while (cubeCount(radiusPages + 1) <= static_cast<int64_t>(maxResident)) {
-        ++radiusPages;
+    const int radiusPagesFromStart = static_cast<int>(std::ceil(
+        static_cast<float>(startRadiusVoxels) / static_cast<float>(pageSize)));
+    const int radiusPagesFromMax = std::max(0, static_cast<int>(std::ceil(
+        static_cast<float>(maxRadiusVoxels) / static_cast<float>(pageSize))));
+
+    int radiusPagesFromResident = 0;
+    while (cubeCount(radiusPagesFromResident + 1) <= static_cast<int64_t>(maxResident)) {
+        ++radiusPagesFromResident;
+    }
+    int radiusPages = std::max(radiusPagesFromResident, radiusPagesFromStart);
+    if (maxRadiusVoxels > 0) {
+        radiusPages = std::min(radiusPages, radiusPagesFromMax);
     }
 
     struct Candidate {
@@ -599,7 +629,9 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
         return a.distanceSq < b.distanceSq;
     });
 
-    for (const Candidate& candidate : candidates) {
+    const size_t desiredCount = std::min(static_cast<size_t>(maxResident), candidates.size());
+    for (size_t i = 0; i < desiredCount; ++i) {
+        const Candidate& candidate = candidates[i];
         auto it = m_pages.find(candidate.key);
         if (it == m_pages.end()) {
             PageRecord record{};
@@ -743,9 +775,9 @@ void VoxelSvoLodManager::enforcePageLimit(const glm::vec3& cameraPos) {
 
     struct Entry {
         VoxelPageKey key{};
+        uint8_t priority = 0;
         uint64_t lastTouchedFrame = 0;
         float distSq = 0.0f;
-        bool inFlight = false;
     };
     std::vector<Entry> entries;
     entries.reserve(m_pages.size());
@@ -756,22 +788,17 @@ void VoxelSvoLodManager::enforcePageLimit(const glm::vec3& cameraPos) {
             static_cast<float>(key.z * pageSize + pageSize / 2)
         );
         glm::vec3 delta = pageCenter - glm::vec3(cameraVoxel);
-        const bool inFlight =
-            record.state == VoxelPageState::QueuedSample ||
-            record.state == VoxelPageState::Sampling ||
-            record.state == VoxelPageState::QueuedMesh ||
-            record.state == VoxelPageState::Meshing;
         entries.push_back(Entry{
             key,
+            evictionPriority(record.state),
             record.lastTouchedFrame,
-            glm::dot(delta, delta),
-            inFlight
+            glm::dot(delta, delta)
         });
     }
 
     std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
-        if (a.inFlight != b.inFlight) {
-            return !a.inFlight && b.inFlight;
+        if (a.priority != b.priority) {
+            return a.priority < b.priority;
         }
         if (a.lastTouchedFrame != b.lastTouchedFrame) {
             return a.lastTouchedFrame < b.lastTouchedFrame;

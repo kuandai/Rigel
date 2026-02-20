@@ -563,12 +563,11 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
                     loader->cancel(coord);
                 }
             });
-        m_impl->world.chunkLoader->setChunkAppliedCallback(
-            [this](Voxel::ChunkCoord coord) {
-                if (m_impl && m_impl->world.worldView) {
-                    m_impl->world.worldView->invalidateVoxelSvoChunk(coord);
-                }
-            });
+        // Do not invalidate voxel-SVO pages for ordinary chunk streaming applies.
+        // Stream-populated chunks already come from the same persistence/generator sources
+        // the voxel-SVO sampler reads, and invalidating here causes continuous churn while
+        // the stream is filling. Runtime voxel edits still invalidate explicitly.
+        m_impl->world.chunkLoader->setChunkAppliedCallback({});
         auto persistenceSource = std::make_shared<Voxel::PersistenceSource>(
             &m_impl->world.worldSet.persistenceService(),
             m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId));
@@ -738,6 +737,12 @@ void Application::run() {
 
                 const auto renderConfig = m_impl->world.worldView->renderConfig();
                 float renderDistance = renderConfig.renderDistance;
+                if (renderConfig.svoVoxel.enabled && renderConfig.svoVoxel.maxRadiusChunks > 0) {
+                    const float svoDistance =
+                        (static_cast<float>(renderConfig.svoVoxel.maxRadiusChunks) + 0.5f) *
+                        static_cast<float>(Voxel::Chunk::SIZE);
+                    renderDistance = std::max(renderDistance, svoDistance);
+                }
                 float nearPlane = 0.1f;
                 float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
                 glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, nearPlane, farPlane);

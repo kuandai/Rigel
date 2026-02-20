@@ -113,6 +113,10 @@ private:
         uint32_t nodeCount = 0;
         uint16_t leafMinVoxels = 1;
         uint64_t lastTouchedFrame = 0;
+        uint64_t lastVisibleFrame = 0;
+        uint64_t lastBuildFrame = 0;
+        bool desiredVisible = false;
+        bool desiredBuild = false;
         bool meshQueued = false;
         uint64_t meshQueuedRevision = 0;
         uint64_t meshRevision = 0;
@@ -173,6 +177,9 @@ private:
     std::unordered_set<VoxelPageKey, VoxelPageKeyHash> m_buildQueued;
     std::vector<std::array<uint16_t, DirectionCount>> m_faceTextureLayers;
     uint64_t m_frameCounter = 0;
+    glm::ivec3 m_lastSeedAnchor{0};
+    bool m_hasSeedAnchor = false;
+    uint32_t m_seedHoldFrames = 0;
     glm::vec3 m_lastCameraPos{0.0f};
     bool m_initialized = false;
 };

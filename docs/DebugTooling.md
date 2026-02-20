@@ -107,6 +107,13 @@ Voxel-SVO page state mapping (from `VoxelPageState`):
 - The ImGui profiler window displays a flame graph for the last frame.
 - It is only available when ImGui is linked (`imgui` package found).
 - The window appears when the debug overlay is enabled (F1).
+- The voxel-SVO panel includes live counters for:
+  - desired sets (`desiredVisibleCount`, `desiredBuildCount`),
+  - visible far coverage (`visibleReadyMeshCount`),
+  - eviction classes (`evictedMissing`, `evictedQueued`, `evictedReadyCpu`,
+    `evictedReadyMesh`),
+  - mesh-block reasons (`meshBlockedMissingNeighbors`,
+    `meshBlockedLeafMismatch`).
 
 ---
 

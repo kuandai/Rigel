@@ -840,6 +840,182 @@ TEST_CASE(VoxelSvoLodManager_EvictionPrefersNonDesiredAndLowValueStates) {
     CHECK_EQ(telemetry.evictedReadyMesh, 0u);
 }
 
+TEST_CASE(VoxelSvoLodManager_StationaryReadyMeshStaysNonZeroAfterWarmup) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 8;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 128;
+    config.buildBudgetPagesPerFrame = 24;
+    config.applyBudgetPagesPerFrame = 24;
+    manager.setConfig(config);
+    manager.initialize();
+
+    const auto warmupDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+    while (std::chrono::steady_clock::now() < warmupDeadline) {
+        manager.update(glm::vec3(0.0f));
+        if (manager.telemetry().visibleReadyMeshCount >= 8u) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(manager.telemetry().visibleReadyMeshCount >= 8u);
+
+    uint32_t minVisibleReady = std::numeric_limits<uint32_t>::max();
+    for (int frame = 0; frame < 90; ++frame) {
+        manager.update(glm::vec3(0.0f));
+        minVisibleReady = std::min(minVisibleReady, manager.telemetry().visibleReadyMeshCount);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(minVisibleReady > 0u);
+}
+
+TEST_CASE(VoxelSvoLodManager_FastMovementDegradationIsBounded) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 8;
+    config.levels = 1;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 128;
+    config.buildBudgetPagesPerFrame = 32;
+    config.applyBudgetPagesPerFrame = 32;
+    manager.setConfig(config);
+    manager.initialize();
+
+    const auto warmupDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+    while (std::chrono::steady_clock::now() < warmupDeadline) {
+        manager.update(glm::vec3(0.0f));
+        if (manager.telemetry().visibleReadyMeshCount >= 8u) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(manager.telemetry().visibleReadyMeshCount >= 8u);
+
+    int consecutiveZeroFrames = 0;
+    int maxConsecutiveZeroFrames = 0;
+    for (int step = 0; step < 20; ++step) {
+        const glm::vec3 pos = (step % 2 == 0)
+            ? glm::vec3(0.0f, 0.0f, 0.0f)
+            : glm::vec3(2048.0f, 0.0f, 0.0f);
+        for (int i = 0; i < 4; ++i) {
+            manager.update(pos);
+            if (manager.telemetry().visibleReadyMeshCount == 0u) {
+                ++consecutiveZeroFrames;
+                maxConsecutiveZeroFrames = std::max(maxConsecutiveZeroFrames, consecutiveZeroFrames);
+            } else {
+                consecutiveZeroFrames = 0;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    CHECK(maxConsecutiveZeroFrames <= 12);
+    CHECK(manager.telemetry().desiredVisibleCount > 0u);
+}
+
+TEST_CASE(VoxelSvoLodManager_Level1SeedingActivatesBeyondLevel0Band) {
+    VoxelSvoLodManager manager;
+    manager.setBuildThreads(1);
+    manager.setChunkGenerator([](ChunkCoord coord,
+                                 std::array<BlockState, Chunk::VOLUME>& outBlocks,
+                                 const std::atomic_bool* cancel) {
+        (void)cancel;
+        for (int z = 0; z < Chunk::SIZE; ++z) {
+            for (int y = 0; y < Chunk::SIZE; ++y) {
+                const int worldY = coord.y * Chunk::SIZE + y;
+                for (int x = 0; x < Chunk::SIZE; ++x) {
+                    BlockState state;
+                    state.id.type = (worldY < 8) ? 1 : 0;
+                    outBlocks[static_cast<size_t>(x + y * Chunk::SIZE + z * Chunk::SIZE * Chunk::SIZE)] = state;
+                }
+            }
+        }
+    });
+
+    VoxelSvoConfig config;
+    config.enabled = true;
+    config.nearMeshRadiusChunks = 0;
+    config.startRadiusChunks = 0;
+    config.maxRadiusChunks = 16;
+    config.levels = 2;
+    config.pageSizeVoxels = 16;
+    config.minLeafVoxels = 4;
+    config.maxResidentPages = 160;
+    config.buildBudgetPagesPerFrame = 32;
+    config.applyBudgetPagesPerFrame = 32;
+    manager.setConfig(config);
+    manager.initialize();
+
+    bool sawLevel1 = false;
+    bool sawLevel1ReadyMesh = false;
+    std::vector<std::pair<VoxelPageKey, VoxelSvoPageInfo>> pages;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+    while (std::chrono::steady_clock::now() < deadline) {
+        manager.update(glm::vec3(0.0f));
+        manager.collectDebugPages(pages);
+        for (const auto& [key, info] : pages) {
+            if (key.level != 1) {
+                continue;
+            }
+            sawLevel1 = true;
+            if (info.state == VoxelPageState::ReadyMesh && info.appliedRevision > 0) {
+                sawLevel1ReadyMesh = true;
+                break;
+            }
+        }
+        if (sawLevel1 && sawLevel1ReadyMesh) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    CHECK(sawLevel1);
+    CHECK(sawLevel1ReadyMesh);
+}
+
 TEST_CASE(VoxelSvoLodManager_ResetCancelsInFlightBuildJobs) {
     VoxelSvoLodManager manager;
     manager.setBuildThreads(1);

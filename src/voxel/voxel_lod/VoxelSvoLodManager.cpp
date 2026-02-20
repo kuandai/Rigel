@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 
 namespace Rigel::Voxel {
 namespace {
@@ -81,11 +82,23 @@ constexpr std::array<glm::ivec3, 6> kNeighborOffsets = {
     glm::ivec3( 0, 0, 1)
 };
 
+int pageScaleForLevel(int level) {
+    const int clamped = std::clamp(level, 0, 15);
+    return 1 << clamped;
+}
+
+int pageSpanVoxels(const VoxelPageKey& key, int pageSizeVoxels) {
+    const int64_t span = static_cast<int64_t>(std::max(1, pageSizeVoxels)) *
+        static_cast<int64_t>(pageScaleForLevel(key.level));
+    return static_cast<int>(std::clamp<int64_t>(span, 1, std::numeric_limits<int>::max()));
+}
+
 glm::vec3 pageWorldMin(const VoxelPageKey& key, int pageSizeVoxels) {
+    const int span = pageSpanVoxels(key, pageSizeVoxels);
     return glm::vec3(
-        static_cast<float>(key.x * pageSizeVoxels),
-        static_cast<float>(key.y * pageSizeVoxels),
-        static_cast<float>(key.z * pageSizeVoxels)
+        static_cast<float>(key.x * span),
+        static_cast<float>(key.y * span),
+        static_cast<float>(key.z * span)
     );
 }
 
@@ -452,7 +465,8 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
             continue;
         }
 
-        glm::vec3 center = pageWorldMin(key, pageSize) + glm::vec3(static_cast<float>(pageSize) * 0.5f);
+        const int span = pageSpanVoxels(key, pageSize);
+        glm::vec3 center = pageWorldMin(key, pageSize) + glm::vec3(static_cast<float>(span) * 0.5f);
         glm::vec3 delta = center - m_lastCameraPos;
         candidates.push_back(Candidate{key, glm::dot(delta, delta)});
     }
@@ -474,8 +488,10 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
             continue;
         }
 
-        const int cellSize = std::max(1, static_cast<int>(center->leafMinVoxels));
-        MacroVoxelGrid centerGrid = buildMacroGridFromPage(center->cpu, cellSize);
+        const int levelScale = pageScaleForLevel(candidate.key.level);
+        const int sampleCellSize = std::max(1, static_cast<int>(center->leafMinVoxels));
+        const int worldCellSize = sampleCellSize * levelScale;
+        MacroVoxelGrid centerGrid = buildMacroGridFromPage(center->cpu, sampleCellSize);
         if (centerGrid.empty()) {
             center->mesh = ChunkMesh{};
             center->meshRevision = center->appliedRevision;
@@ -495,7 +511,7 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
                 validNeighbors = false;
                 break;
             }
-            neighborGrids[i] = buildMacroGridFromPage(neighbor->cpu, cellSize);
+            neighborGrids[i] = buildMacroGridFromPage(neighbor->cpu, sampleCellSize);
             if (neighborGrids[i].empty()) {
                 validNeighbors = false;
                 break;
@@ -523,7 +539,7 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
                               neighborPosY = std::move(neighborGrids[3]),
                               neighborNegZ = std::move(neighborGrids[4]),
                               neighborPosZ = std::move(neighborGrids[5]),
-                              cellSize,
+                              worldCellSize,
                               faceLayers = std::move(faceLayers)]() mutable {
             MeshBuildOutput output{};
             output.key = key;
@@ -540,7 +556,7 @@ void VoxelSvoLodManager::enqueueMeshBuilds() {
 
             std::vector<SurfaceQuad> quads;
             extractSurfaceQuadsGreedy(centerGrid, workerNeighbors, VoxelBoundaryPolicy::OutsideSolid, quads);
-            output.mesh = buildSurfaceMeshFromQuads(quads, cellSize, faceLayers);
+            output.mesh = buildSurfaceMeshFromQuads(quads, worldCellSize, faceLayers);
             m_meshBuildComplete.push(std::move(output));
         });
         center->state = VoxelPageState::Meshing;
@@ -619,84 +635,138 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
         return;
     }
 
-    // Sprint 4 MVP: seed only level 0 pages.
-    const int level = 0;
     const int startRadiusVoxels = std::max(0, m_config.startRadiusChunks) * Chunk::SIZE;
-    const int maxRadiusVoxels = std::max(0, m_config.maxRadiusChunks) * Chunk::SIZE;
+    int maxRadiusVoxels = std::max(0, m_config.maxRadiusChunks) * Chunk::SIZE;
+    const int levelCount = std::clamp(m_config.levels, 1, 16);
+    if (levelCount > 1 && maxRadiusVoxels <= 0) {
+        maxRadiusVoxels = std::max(startRadiusVoxels + pageSize * 16, pageSize * 32);
+    }
+    const int l0MaxRadiusVoxels = (levelCount > 1 && maxRadiusVoxels > 0)
+        ? std::max(startRadiusVoxels, maxRadiusVoxels / 2)
+        : maxRadiusVoxels;
 
     const glm::ivec3 cameraVoxel = floorToVoxel(cameraPos);
-    const int baseX = floorDiv(cameraVoxel.x, pageSize);
-    const int baseY = floorDiv(cameraVoxel.y, pageSize);
-    const int baseZ = floorDiv(cameraVoxel.z, pageSize);
 
     auto cubeCount = [](int radius) -> int64_t {
         const int side = radius * 2 + 1;
         return static_cast<int64_t>(side) * side * side;
     };
 
-    const int radiusPagesFromStart = static_cast<int>(std::ceil(
-        static_cast<float>(startRadiusVoxels) / static_cast<float>(pageSize)));
-    const int radiusPagesFromMax = std::max(0, static_cast<int>(std::ceil(
-        static_cast<float>(maxRadiusVoxels) / static_cast<float>(pageSize))));
-
-    int radiusPagesFromResident = 0;
-    while (cubeCount(radiusPagesFromResident + 1) <= static_cast<int64_t>(maxResident)) {
-        ++radiusPagesFromResident;
-    }
-    int radiusPages = std::max(radiusPagesFromResident, radiusPagesFromStart);
-    if (maxRadiusVoxels > 0) {
-        radiusPages = std::min(radiusPages, radiusPagesFromMax);
-    }
-
     struct Candidate {
         VoxelPageKey key{};
         float distanceSq = 0.0f;
     };
-    std::vector<Candidate> candidates;
-    candidates.reserve(static_cast<size_t>(cubeCount(radiusPages)));
+    std::array<std::vector<Candidate>, 2> levelCandidates;
 
-    for (int dz = -radiusPages; dz <= radiusPages; ++dz) {
-        for (int dy = -radiusPages; dy <= radiusPages; ++dy) {
-            for (int dx = -radiusPages; dx <= radiusPages; ++dx) {
-                VoxelPageKey key{};
-                key.level = level;
-                key.x = baseX + dx;
-                key.y = baseY + dy;
-                key.z = baseZ + dz;
+    auto collectLevelCandidates = [&](int level, int bandStartVoxels, int bandMaxVoxels) {
+        if (level < 0 || level >= 2) {
+            return;
+        }
+        if (bandMaxVoxels > 0 && bandStartVoxels >= bandMaxVoxels) {
+            return;
+        }
 
-                const glm::vec3 pageCenter = glm::vec3(
-                    static_cast<float>(key.x * pageSize + pageSize / 2),
-                    static_cast<float>(key.y * pageSize + pageSize / 2),
-                    static_cast<float>(key.z * pageSize + pageSize / 2)
-                );
-                const glm::vec3 delta = pageCenter - glm::vec3(cameraVoxel);
-                const float distSq = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-                const float dist = std::sqrt(std::max(0.0f, distSq));
-                if (dist < static_cast<float>(startRadiusVoxels)) {
-                    continue;
+        VoxelPageKey levelKey{};
+        levelKey.level = level;
+        const int levelPageSpan = pageSpanVoxels(levelKey, pageSize);
+        const int baseX = floorDiv(cameraVoxel.x, levelPageSpan);
+        const int baseY = floorDiv(cameraVoxel.y, levelPageSpan);
+        const int baseZ = floorDiv(cameraVoxel.z, levelPageSpan);
+
+        const int radiusPagesFromStart = static_cast<int>(std::ceil(
+            static_cast<float>(std::max(0, bandStartVoxels)) / static_cast<float>(levelPageSpan)));
+        const int radiusPagesFromMax = std::max(0, static_cast<int>(std::ceil(
+            static_cast<float>(std::max(0, bandMaxVoxels)) / static_cast<float>(levelPageSpan))));
+
+        int radiusPagesFromResident = 0;
+        while (cubeCount(radiusPagesFromResident + 1) <= static_cast<int64_t>(maxResident)) {
+            ++radiusPagesFromResident;
+        }
+        int radiusPages = std::max(radiusPagesFromResident, radiusPagesFromStart);
+        if (bandMaxVoxels > 0) {
+            radiusPages = std::min(radiusPages, radiusPagesFromMax);
+        }
+
+        std::vector<Candidate>& candidates = levelCandidates[static_cast<size_t>(level)];
+        candidates.reserve(candidates.size() + static_cast<size_t>(cubeCount(radiusPages)));
+
+        for (int dz = -radiusPages; dz <= radiusPages; ++dz) {
+            for (int dy = -radiusPages; dy <= radiusPages; ++dy) {
+                for (int dx = -radiusPages; dx <= radiusPages; ++dx) {
+                    VoxelPageKey key{};
+                    key.level = level;
+                    key.x = baseX + dx;
+                    key.y = baseY + dy;
+                    key.z = baseZ + dz;
+
+                    const glm::vec3 pageCenter =
+                        pageWorldMin(key, pageSize) + glm::vec3(static_cast<float>(levelPageSpan) * 0.5f);
+                    const glm::vec3 delta = pageCenter - glm::vec3(cameraVoxel);
+                    const float distSq = glm::dot(delta, delta);
+                    const float dist = std::sqrt(std::max(0.0f, distSq));
+                    if (dist < static_cast<float>(bandStartVoxels)) {
+                        continue;
+                    }
+                    if (bandMaxVoxels > 0 && dist > static_cast<float>(bandMaxVoxels)) {
+                        continue;
+                    }
+
+                    candidates.push_back(Candidate{key, distSq});
                 }
-                if (maxRadiusVoxels > 0 && dist > static_cast<float>(maxRadiusVoxels)) {
-                    continue;
-                }
-
-                candidates.push_back(Candidate{key, distSq});
             }
         }
-    }
 
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
-        return a.distanceSq < b.distanceSq;
-    });
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+            return a.distanceSq < b.distanceSq;
+        });
+    };
+
+    collectLevelCandidates(0, startRadiusVoxels, l0MaxRadiusVoxels > 0 ? l0MaxRadiusVoxels : maxRadiusVoxels);
+    if (levelCount > 1) {
+        collectLevelCandidates(1, std::max(startRadiusVoxels, l0MaxRadiusVoxels), maxRadiusVoxels);
+    }
 
     std::unordered_set<VoxelPageKey, VoxelPageKeyHash> desiredVisible;
     std::unordered_set<VoxelPageKey, VoxelPageKeyHash> desiredBuild;
     desiredVisible.reserve(static_cast<size_t>(maxResident));
     desiredBuild.reserve(static_cast<size_t>(maxResident) * 2);
 
-    const size_t desiredVisibleCount = std::min(static_cast<size_t>(maxResident), candidates.size());
-    for (size_t i = 0; i < desiredVisibleCount; ++i) {
-        desiredVisible.insert(candidates[i].key);
-        desiredBuild.insert(candidates[i].key);
+    const size_t visibleBudget = static_cast<size_t>(maxResident);
+    const auto& l0Candidates = levelCandidates[0];
+    const auto& l1Candidates = levelCandidates[1];
+    size_t l1Target = 0;
+    if (levelCount > 1 && visibleBudget > 1 && !l1Candidates.empty()) {
+        l1Target = std::max<size_t>(1, visibleBudget / 4);
+        l1Target = std::min(l1Target, l1Candidates.size());
+    }
+    size_t l0Target = std::min(visibleBudget - l1Target, l0Candidates.size());
+
+    size_t l0Index = 0;
+    size_t l1Index = 0;
+    for (; l0Index < l0Target; ++l0Index) {
+        desiredVisible.insert(l0Candidates[l0Index].key);
+        desiredBuild.insert(l0Candidates[l0Index].key);
+    }
+    for (; l1Index < l1Target; ++l1Index) {
+        desiredVisible.insert(l1Candidates[l1Index].key);
+        desiredBuild.insert(l1Candidates[l1Index].key);
+    }
+
+    while (desiredVisible.size() < visibleBudget &&
+           (l0Index < l0Candidates.size() || l1Index < l1Candidates.size())) {
+        if (l0Index < l0Candidates.size()) {
+            desiredVisible.insert(l0Candidates[l0Index].key);
+            desiredBuild.insert(l0Candidates[l0Index].key);
+            ++l0Index;
+            if (desiredVisible.size() >= visibleBudget) {
+                break;
+            }
+        }
+        if (l1Index < l1Candidates.size()) {
+            desiredVisible.insert(l1Candidates[l1Index].key);
+            desiredBuild.insert(l1Candidates[l1Index].key);
+            ++l1Index;
+        }
     }
 
     std::unordered_set<VoxelPageKey, VoxelPageKeyHash> closureCritical;
@@ -721,11 +791,8 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
     }
 
     auto distanceSqFor = [pageSize, cameraVoxel](const VoxelPageKey& key) {
-        glm::vec3 pageCenter = glm::vec3(
-            static_cast<float>(key.x * pageSize + pageSize / 2),
-            static_cast<float>(key.y * pageSize + pageSize / 2),
-            static_cast<float>(key.z * pageSize + pageSize / 2)
-        );
+        const int span = pageSpanVoxels(key, pageSize);
+        glm::vec3 pageCenter = pageWorldMin(key, pageSize) + glm::vec3(static_cast<float>(span) * 0.5f);
         glm::vec3 delta = pageCenter - glm::vec3(cameraVoxel);
         return glm::dot(delta, delta);
     };
@@ -802,6 +869,8 @@ void VoxelSvoLodManager::enqueueBuild(const VoxelPageKey& key, uint64_t revision
     record->cancel = std::make_shared<std::atomic_bool>(false);
 
     const int pageSize = m_config.pageSizeVoxels;
+    const int pageScale = pageScaleForLevel(key.level);
+    const int pageSpan = pageSpanVoxels(key, pageSize);
     const int minLeaf = std::max(1, m_config.minLeafVoxels);
     const BlockRegistry* registry = m_registry;
     GeneratorSource::ChunkGenerateCallback generator = m_chunkGenerator;
@@ -809,9 +878,9 @@ void VoxelSvoLodManager::enqueueBuild(const VoxelPageKey& key, uint64_t revision
     std::shared_ptr<std::atomic_bool> cancel = record->cancel;
 
     BrickSampleDesc desc;
-    desc.worldMinVoxel = glm::ivec3(key.x * pageSize, key.y * pageSize, key.z * pageSize);
-    desc.brickDimsVoxels = glm::ivec3(pageSize);
-    desc.stepVoxels = 1;
+    desc.worldMinVoxel = glm::ivec3(key.x * pageSpan, key.y * pageSpan, key.z * pageSpan);
+    desc.brickDimsVoxels = glm::ivec3(pageSpan);
+    desc.stepVoxels = pageScale;
 
     std::vector<LoadedChunkSource::ChunkSnapshot> loadedSnapshots;
     if (m_chunkManager) {
@@ -917,10 +986,11 @@ void VoxelSvoLodManager::enforcePageLimit(const glm::vec3& cameraPos) {
     std::vector<Entry> entries;
     entries.reserve(m_pages.size());
     for (const auto& [key, record] : m_pages) {
+        const int span = pageSpanVoxels(key, pageSize);
         glm::vec3 pageCenter = glm::vec3(
-            static_cast<float>(key.x * pageSize + pageSize / 2),
-            static_cast<float>(key.y * pageSize + pageSize / 2),
-            static_cast<float>(key.z * pageSize + pageSize / 2)
+            static_cast<float>(key.x * span + span / 2),
+            static_cast<float>(key.y * span + span / 2),
+            static_cast<float>(key.z * span + span / 2)
         );
         glm::vec3 delta = pageCenter - glm::vec3(cameraVoxel);
         entries.push_back(Entry{

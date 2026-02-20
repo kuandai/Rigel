@@ -75,6 +75,17 @@ Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distan
     page builds.
 - Page lifecycle currently exposed in telemetry:
   - `QueuedSample` -> `Sampling` -> `ReadyCpu` -> `Meshing` -> `ReadyMesh`.
+- Desired-set behavior:
+  - each update computes `desiredVisible` (draw set) and `desiredBuild`
+    (draw set + 6-neighbor closure ring),
+  - far meshing is attempted only for `desiredVisible` pages with complete closure,
+  - blocked meshes are diagnosed via `meshBlockedMissingNeighbors` and
+    `meshBlockedLeafMismatch`.
+- Multi-level seeding (current rollout state):
+  - L0 and L1 are active; L2+ remain disabled pending stability tuning,
+  - L0 uses the inner half of `max_radius_chunks`,
+  - L1 seeds outside the L0 band up to `max_radius_chunks`,
+  - visible-page budget reserves ~25% for L1 so coarse far pages are not starved.
 - Transition behavior:
   - near chunk rendering is distance-gated using `near_mesh_radius_chunks`,
   - far voxel pages are distance-gated and dither-faded in the
@@ -88,6 +99,19 @@ Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distan
     controlled fallback to generation.
 - Like the existing SVO preview, the voxel SVO system is a **derived cache** owned
   by `WorldView`. It is not authoritative world data.
+
+Tuning guidance for stable behavior:
+
+- Increase `max_resident_pages` first if `desiredBuildCount` is consistently much
+  larger than `desiredVisibleCount`.
+- Increase `build_budget_pages_per_frame` when
+  `meshBlockedMissingNeighbors` stays high.
+- Increase `apply_budget_pages_per_frame` when `visibleReadyMeshCount` stays low
+  despite healthy build throughput.
+- Use eviction counters to confirm pressure mode:
+  - `evictedMissing`/`evictedQueued` rising is expected under movement churn,
+  - persistent `evictedReadyMesh` indicates resident/page or memory caps are too
+    aggressive.
 
 ---
 

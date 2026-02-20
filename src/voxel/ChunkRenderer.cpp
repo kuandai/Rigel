@@ -392,6 +392,10 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
     keep.reserve(farEntries.size());
 
     const int pageSizeVoxels = std::max(1, ctx.config.svoVoxel.pageSizeVoxels);
+    auto pageSpanVoxels = [pageSizeVoxels](int level) {
+        const int clamped = std::clamp(level, 0, 15);
+        return pageSizeVoxels * (1 << clamped);
+    };
     float farRenderDistance = std::max(0.0f, ctx.config.renderDistance);
     if (ctx.config.svoVoxel.maxRadiusChunks > 0) {
         const float svoDistance =
@@ -418,7 +422,8 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
         }
         keep.insert(entry.key);
 
-        glm::vec3 center = entry.worldMin + glm::vec3(static_cast<float>(pageSizeVoxels) * 0.5f);
+        const int span = pageSpanVoxels(entry.key.level);
+        glm::vec3 center = entry.worldMin + glm::vec3(static_cast<float>(span) * 0.5f);
         glm::vec3 delta = center - ctx.cameraPos;
         const float distanceSq = glm::dot(delta, delta);
         if (!shouldRenderFarVoxel(distanceSq, distanceBands)) {

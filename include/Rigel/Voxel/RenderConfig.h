@@ -37,9 +37,10 @@ struct TaaConfig {
 struct VoxelSvoConfig {
     bool enabled = false;
 
-    // Chunk radii: voxel SVO starts outside near mesh radius.
+    // Chunk radii:
+    // - nearMeshRadiusChunks controls near-terrain fade crossover only.
+    // - maxRadiusChunks controls SVO build/render extent.
     int nearMeshRadiusChunks = 8;
-    int startRadiusChunks = 12;
     int maxRadiusChunks = 64;
     int transitionBandChunks = 2;
 

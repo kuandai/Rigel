@@ -257,7 +257,6 @@ config (`assets/config/render.yaml`) may override them.
 | `render.profiling.enabled` | bool | `false` | Enable the per-frame profiler. |
 | `render.svo_voxel.enabled` | bool | `false` | Enable voxel-base SVO LOD far rendering path. |
 | `render.svo_voxel.near_mesh_radius_chunks` | int | `8` | Near mesh retention radius (chunks). |
-| `render.svo_voxel.start_radius_chunks` | int | `12` | Voxel SVO start radius (chunks). |
 | `render.svo_voxel.max_radius_chunks` | int | `64` | Voxel SVO max radius (chunks). |
 | `render.svo_voxel.transition_band_chunks` | int | `2` | Overlap band between near and far rendering (chunks). |
 | `render.svo_voxel.levels` | int | `4` | Clipmap level count. |
@@ -284,7 +283,7 @@ Key fields:
   - `enabled`, `blend`, `jitter_scale`
 - `svo_voxel` (WIP):
   - `enabled`
-  - `near_mesh_radius_chunks`, `start_radius_chunks`, `max_radius_chunks`, `transition_band_chunks`
+  - `near_mesh_radius_chunks`, `max_radius_chunks`, `transition_band_chunks`
   - `levels`, `page_size_voxels`, `min_leaf_voxels`
   - `build_budget_pages_per_frame`, `apply_budget_pages_per_frame`, `upload_budget_pages_per_frame`
   - `max_resident_pages`, `max_cpu_bytes`, `max_gpu_bytes`

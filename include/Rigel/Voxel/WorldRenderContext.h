@@ -40,6 +40,7 @@ struct WorldRenderContext {
     float nearPlane = 0.1f;
     float farPlane = 1000.0f;
     glm::mat4 worldTransform{1.0f};
+    bool renderNearTerrain = true;
 };
 
 } // namespace Rigel::Voxel

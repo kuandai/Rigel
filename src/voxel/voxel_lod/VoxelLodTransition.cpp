@@ -12,13 +12,11 @@ VoxelLodDistanceBands makeVoxelLodDistanceBands(const VoxelSvoConfig& config,
 
     const float chunkWorld = static_cast<float>(Chunk::SIZE);
     const float nearRadius = static_cast<float>(std::max(0, config.nearMeshRadiusChunks)) * chunkWorld;
-    const float startRadius = static_cast<float>(
-        std::max(config.startRadiusChunks, config.nearMeshRadiusChunks)) * chunkWorld;
     const float transitionBand = static_cast<float>(std::max(0, config.transitionBandChunks)) * chunkWorld;
 
     bands.nearRadiusWorld = nearRadius;
-    bands.farFadeStartWorld = std::max(nearRadius, startRadius - transitionBand);
-    bands.farFadeEndWorld = std::max(bands.farFadeStartWorld, startRadius + transitionBand);
+    bands.farFadeStartWorld = std::max(0.0f, nearRadius - transitionBand);
+    bands.farFadeEndWorld = std::max(bands.farFadeStartWorld, nearRadius + transitionBand);
     bands.renderDistanceWorld = std::max(0.0f, renderDistanceWorld);
     return bands;
 }

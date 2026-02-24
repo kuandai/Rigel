@@ -65,7 +65,7 @@ This document outlines the current voxel engine architecture within Rigel. Secti
   that builds coarse far meshes from sampled voxel pages.
 - `ChunkRenderer` applies near/far transition bands with hysteresis:
   near chunk meshes are retained in a near band, while far voxel-SVO meshes are
-  activated beyond the configured start radius.
+  blended in across the configured near radius transition band.
 - Voxel-SVO page residency is bounded by hard page/CPU/GPU caps, with eviction
   based on distance and recency.
 - `WorldView` deprioritizes voxel-SVO update/upload work when chunk streaming reports

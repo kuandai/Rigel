@@ -134,8 +134,6 @@ void applyVoxelSvoConfig(ryml::ConstNodeRef svoNode, VoxelSvoConfig& svo) {
     svo.enabled = Util::readBool(svoNode, "enabled", svo.enabled);
     svo.nearMeshRadiusChunks = Util::readInt(
         svoNode, "near_mesh_radius_chunks", svo.nearMeshRadiusChunks);
-    svo.startRadiusChunks = Util::readInt(
-        svoNode, "start_radius_chunks", svo.startRadiusChunks);
     svo.maxRadiusChunks = Util::readInt(
         svoNode, "max_radius_chunks", svo.maxRadiusChunks);
     svo.transitionBandChunks = Util::readInt(
@@ -161,11 +159,8 @@ void applyVoxelSvoConfig(ryml::ConstNodeRef svoNode, VoxelSvoConfig& svo) {
     if (svo.nearMeshRadiusChunks < 0) {
         svo.nearMeshRadiusChunks = 0;
     }
-    if (svo.startRadiusChunks < svo.nearMeshRadiusChunks) {
-        svo.startRadiusChunks = svo.nearMeshRadiusChunks;
-    }
-    if (svo.maxRadiusChunks < svo.startRadiusChunks) {
-        svo.maxRadiusChunks = svo.startRadiusChunks;
+    if (svo.maxRadiusChunks < svo.nearMeshRadiusChunks) {
+        svo.maxRadiusChunks = svo.nearMeshRadiusChunks;
     }
     if (svo.transitionBandChunks < 0) {
         svo.transitionBandChunks = 0;

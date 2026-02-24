@@ -10,24 +10,22 @@ TEST_CASE(VoxelLodTransition_BandsScaleWithChunkSize) {
     VoxelSvoConfig config{};
     config.enabled = true;
     config.nearMeshRadiusChunks = 8;
-    config.startRadiusChunks = 12;
     config.transitionBandChunks = 2;
 
     const VoxelLodDistanceBands bands = makeVoxelLodDistanceBands(config, 1024.0f);
     CHECK_EQ(static_cast<int>(bands.nearRadiusWorld), 256);
-    CHECK_EQ(static_cast<int>(bands.farFadeStartWorld), 320);
-    CHECK_EQ(static_cast<int>(bands.farFadeEndWorld), 448);
+    CHECK_EQ(static_cast<int>(bands.farFadeStartWorld), 192);
+    CHECK_EQ(static_cast<int>(bands.farFadeEndWorld), 320);
 }
 
 TEST_CASE(VoxelLodTransition_NearVisibilityAvoidsDeadZoneAndUsesHoldBand) {
     VoxelSvoConfig config{};
     config.enabled = true;
     config.nearMeshRadiusChunks = 8;
-    config.startRadiusChunks = 12;
     config.transitionBandChunks = 2;
 
     const VoxelLodDistanceBands bands = makeVoxelLodDistanceBands(config, 2000.0f);
-    const float nearEnter = bands.farFadeStartWorld;
+    const float nearEnter = bands.nearRadiusWorld;
     const float nearExit = bands.farFadeEndWorld;
 
     CHECK(shouldRenderNearVoxel((nearEnter - 1.0f) * (nearEnter - 1.0f), false, bands));
@@ -40,7 +38,6 @@ TEST_CASE(VoxelLodTransition_FarFadeAndDistanceGateAreConsistent) {
     VoxelSvoConfig config{};
     config.enabled = true;
     config.nearMeshRadiusChunks = 8;
-    config.startRadiusChunks = 12;
     config.transitionBandChunks = 2;
 
     const VoxelLodDistanceBands bands = makeVoxelLodDistanceBands(config, 500.0f);

@@ -53,6 +53,8 @@ public:
     const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
     const VoxelSvoConfig& svoVoxelConfig() const { return m_voxelSvoLod.config(); }
     const VoxelSvoTelemetry& svoVoxelTelemetry() const { return m_voxelSvoLod.telemetry(); }
+    void setNearTerrainRenderingEnabled(bool enabled) { m_renderNearTerrainEnabled = enabled; }
+    bool nearTerrainRenderingEnabled() const { return m_renderNearTerrainEnabled; }
 
     WorldReplicationState& replicationState() { return m_replication; }
     const WorldReplicationState& replicationState() const { return m_replication; }
@@ -109,6 +111,7 @@ private:
     uint32_t m_voxelSvoUpdatePressureCountdown = 0;
     uint32_t m_voxelSvoUploadPressureCountdown = 0;
     bool m_svoStreamingOverloaded = false;
+    bool m_renderNearTerrainEnabled = true;
     bool m_initialized = false;
 };
 

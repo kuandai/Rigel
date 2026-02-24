@@ -54,7 +54,6 @@ render:
   svo_voxel:
     enabled: true
     near_mesh_radius_chunks: 7
-    start_radius_chunks: 11
     max_radius_chunks: 48
     transition_band_chunks: 3
     levels: 5
@@ -97,7 +96,6 @@ render:
     CHECK_NEAR(config.taa.jitterScale, 1.5f, 0.0001f);
     CHECK(config.svoVoxel.enabled);
     CHECK_EQ(config.svoVoxel.nearMeshRadiusChunks, 7);
-    CHECK_EQ(config.svoVoxel.startRadiusChunks, 11);
     CHECK_EQ(config.svoVoxel.maxRadiusChunks, 48);
     CHECK_EQ(config.svoVoxel.transitionBandChunks, 3);
     CHECK_EQ(config.svoVoxel.levels, 5);
@@ -118,7 +116,6 @@ render:
   svo_voxel:
     enabled: true
     near_mesh_radius_chunks: -1
-    start_radius_chunks: -2
     max_radius_chunks: -3
     transition_band_chunks: -4
     levels: 0
@@ -138,7 +135,6 @@ render:
 
     CHECK(config.svoVoxel.enabled);
     CHECK_EQ(config.svoVoxel.nearMeshRadiusChunks, 0);
-    CHECK_EQ(config.svoVoxel.startRadiusChunks, 0);
     CHECK_EQ(config.svoVoxel.maxRadiusChunks, 0);
     CHECK_EQ(config.svoVoxel.transitionBandChunks, 0);
     CHECK_EQ(config.svoVoxel.levels, 1);

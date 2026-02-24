@@ -17,7 +17,6 @@ TEST_CASE(WorldView_SetRenderConfigSyncsSvoVoxelConfig) {
     WorldRenderConfig config;
     config.svoVoxel.enabled = true;
     config.svoVoxel.nearMeshRadiusChunks = 6;
-    config.svoVoxel.startRadiusChunks = 10;
     config.svoVoxel.maxRadiusChunks = 40;
     config.svoVoxel.transitionBandChunks = 3;
     config.svoVoxel.levels = 3;
@@ -35,7 +34,6 @@ TEST_CASE(WorldView_SetRenderConfigSyncsSvoVoxelConfig) {
     const auto& svo = view.svoVoxelConfig();
     CHECK(svo.enabled);
     CHECK_EQ(svo.nearMeshRadiusChunks, 6);
-    CHECK_EQ(svo.startRadiusChunks, 10);
     CHECK_EQ(svo.maxRadiusChunks, 40);
     CHECK_EQ(svo.transitionBandChunks, 3);
     CHECK_EQ(svo.levels, 3);
@@ -47,6 +45,18 @@ TEST_CASE(WorldView_SetRenderConfigSyncsSvoVoxelConfig) {
     CHECK_EQ(svo.maxResidentPages, 777);
     CHECK_EQ(svo.maxCpuBytes, static_cast<int64_t>(1234));
     CHECK_EQ(svo.maxGpuBytes, static_cast<int64_t>(5678));
+}
+
+TEST_CASE(WorldView_NearTerrainRenderToggle_DefaultOnAndMutable) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    CHECK(view.nearTerrainRenderingEnabled());
+    view.setNearTerrainRenderingEnabled(false);
+    CHECK(!view.nearTerrainRenderingEnabled());
+    view.setNearTerrainRenderingEnabled(true);
+    CHECK(view.nearTerrainRenderingEnabled());
 }
 
 TEST_CASE(WorldView_SetRenderConfig_ToggleSvoVoxelHotReloadResetsAndReenables) {

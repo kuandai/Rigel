@@ -243,6 +243,7 @@ void WorldView::render(const glm::mat4& view,
     ctx.nearPlane = nearPlane;
     ctx.farPlane = farPlane;
     ctx.worldTransform = glm::mat4(1.0f);
+    ctx.renderNearTerrain = m_renderNearTerrainEnabled;
     m_renderer.render(ctx);
 
     if (m_world) {

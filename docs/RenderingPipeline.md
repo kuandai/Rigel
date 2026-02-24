@@ -48,7 +48,7 @@ before calling `WorldView::render`.
 - There is no frustum culling in the current pipeline.
 - Transparent chunks are sorted back-to-front by view depth.
 - With voxel SVO enabled, chunk mesh rendering is near-band gated with
-  hysteresis (`near_mesh_radius_chunks` / `start_radius_chunks`).
+  hysteresis (`near_mesh_radius_chunks` and `transition_band_chunks`).
 
 ### 3.3 Render Layers
 

@@ -712,6 +712,11 @@ void Application::run() {
                 if (m_impl->input.dispatcher.isActionJustPressed("toggle_mouse_capture")) {
                     Input::setCursorCaptured(m_impl->window, !m_impl->window.cursorCaptured);
                 }
+                if (m_impl->input.dispatcher.isActionJustPressed("debug_toggle_near_terrain")) {
+                    const bool enabled = !m_impl->world.worldView->nearTerrainRenderingEnabled();
+                    m_impl->world.worldView->setNearTerrainRenderingEnabled(enabled);
+                    spdlog::info("Debug near terrain rendering: {}", enabled ? "enabled" : "disabled");
+                }
                 if (m_impl->window.cursorCaptured &&
                     glfwGetInputMode(m_impl->window.window, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
                     Input::setCursorCaptured(m_impl->window, true);

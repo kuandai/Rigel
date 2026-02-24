@@ -237,7 +237,9 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     });
 
     std::vector<RenderEntry> nearEntries;
-    if (!ctx.config.svoVoxel.enabled) {
+    if (!ctx.renderNearTerrain) {
+        m_voxelNearVisibility.clear();
+    } else if (!ctx.config.svoVoxel.enabled) {
         nearEntries = entries;
         m_voxelNearVisibility.clear();
     } else {
@@ -405,6 +407,11 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
     }
     const VoxelLodDistanceBands distanceBands =
         makeVoxelLodDistanceBands(ctx.config.svoVoxel, farRenderDistance);
+    VoxelLodDistanceBands farDistanceBands = distanceBands;
+    if (!ctx.renderNearTerrain) {
+        farDistanceBands.farFadeStartWorld = 0.0f;
+        farDistanceBands.farFadeEndWorld = 0.0f;
+    }
     VoxelUploadBudget uploadBudget =
         beginVoxelUploadBudget(ctx.config.svoVoxel.uploadBudgetPagesPerFrame);
 
@@ -426,11 +433,11 @@ void ChunkRenderer::renderFarVoxelOpaquePass(const WorldRenderContext& ctx) {
         glm::vec3 center = entry.worldMin + glm::vec3(static_cast<float>(span) * 0.5f);
         glm::vec3 delta = center - ctx.cameraPos;
         const float distanceSq = glm::dot(delta, delta);
-        if (!shouldRenderFarVoxel(distanceSq, distanceBands)) {
+        if (!shouldRenderFarVoxel(distanceSq, farDistanceBands)) {
             continue;
         }
         const float distance = std::sqrt(std::max(0.0f, distanceSq));
-        const float fade = computeFarVoxelFade(distance, distanceBands);
+        const float fade = computeFarVoxelFade(distance, farDistanceBands);
         if (fade <= 0.0f) {
             continue;
         }

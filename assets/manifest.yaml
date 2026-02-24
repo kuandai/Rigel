@@ -16,6 +16,7 @@ assets:
       bindings:
         debug_overlay: F1
         imgui_overlay: F3
+        debug_toggle_near_terrain: F4
         move_forward: W
         move_backward: S
         move_left: A

@@ -240,6 +240,9 @@ void ensureDefaultBindings(InputBindings& bindings) {
     if (!bindings.hasAction("imgui_overlay")) {
         bindings.bind("imgui_overlay", GLFW_KEY_F3);
     }
+    if (!bindings.hasAction("debug_toggle_near_terrain")) {
+        bindings.bind("debug_toggle_near_terrain", GLFW_KEY_F4);
+    }
     if (!bindings.hasAction("move_forward")) {
         bindings.bind("move_forward", GLFW_KEY_W);
     }

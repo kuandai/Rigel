@@ -48,6 +48,16 @@ glm::ivec3 floorToVoxel(const glm::vec3& world) {
     );
 }
 
+glm::ivec3 snapToChunkOriginVoxel(const glm::vec3& world) {
+    const glm::ivec3 voxel = floorToVoxel(world);
+    const ChunkCoord chunk = worldToChunk(voxel.x, voxel.y, voxel.z);
+    return glm::ivec3(
+        chunk.x * Chunk::SIZE,
+        chunk.y * Chunk::SIZE,
+        chunk.z * Chunk::SIZE
+    );
+}
+
 uint64_t clampU64Micros(int64_t value) {
     if (value <= 0) {
         return 0;
@@ -87,6 +97,19 @@ int pageScaleForLevel(int level) {
     return 1 << clamped;
 }
 
+bool voxelPageKeyLess(const VoxelPageKey& a, const VoxelPageKey& b) {
+    if (a.level != b.level) {
+        return a.level < b.level;
+    }
+    if (a.y != b.y) {
+        return a.y < b.y;
+    }
+    if (a.z != b.z) {
+        return a.z < b.z;
+    }
+    return a.x < b.x;
+}
+
 int pageSpanVoxels(const VoxelPageKey& key, int pageSizeVoxels) {
     const int64_t span = static_cast<int64_t>(std::max(1, pageSizeVoxels)) *
         static_cast<int64_t>(pageScaleForLevel(key.level));
@@ -123,7 +146,31 @@ uint8_t evictionPriority(VoxelPageState state) {
     }
 }
 
+uint64_t estimateResidentCpuBytesPerPage(int pageSizeVoxels) {
+    const int dim = std::max(1, pageSizeVoxels);
+    uint64_t l0Cells = static_cast<uint64_t>(dim) * static_cast<uint64_t>(dim) *
+        static_cast<uint64_t>(dim);
+    uint64_t mipCells = 0;
+    int mipDim = dim;
+    while (mipDim > 1) {
+        mipDim /= 2;
+        mipCells += static_cast<uint64_t>(mipDim) * static_cast<uint64_t>(mipDim) *
+            static_cast<uint64_t>(mipDim);
+    }
+
+    const uint64_t l0Bytes = l0Cells * sizeof(VoxelId);
+    const uint64_t mipBytes = mipCells * sizeof(uint32_t);
+    const uint64_t base = l0Bytes + mipBytes;
+    // Conservative overhead for page tree + mesh metadata during steady-state residency.
+    const uint64_t overhead = base / 2;
+    return std::max<uint64_t>(1, base + overhead);
+}
+
 } // namespace
+
+VoxelSvoLodManager::~VoxelSvoLodManager() {
+    reset();
+}
 
 uint64_t VoxelSvoLodManager::estimatePageCpuBytes(const PageRecord& record) {
     uint64_t bytes = 0;
@@ -146,11 +193,8 @@ VoxelSvoConfig VoxelSvoLodManager::sanitizeConfig(VoxelSvoConfig config) {
     if (config.nearMeshRadiusChunks < 0) {
         config.nearMeshRadiusChunks = 0;
     }
-    if (config.startRadiusChunks < config.nearMeshRadiusChunks) {
-        config.startRadiusChunks = config.nearMeshRadiusChunks;
-    }
-    if (config.maxRadiusChunks < config.startRadiusChunks) {
-        config.maxRadiusChunks = config.startRadiusChunks;
+    if (config.maxRadiusChunks < config.nearMeshRadiusChunks) {
+        config.maxRadiusChunks = config.nearMeshRadiusChunks;
     }
     if (config.transitionBandChunks < 0) {
         config.transitionBandChunks = 0;
@@ -630,22 +674,32 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
         return;
     }
 
-    const int maxResident = std::max(0, m_config.maxResidentPages);
-    if (maxResident == 0) {
+    size_t residentBudget = static_cast<size_t>(std::max(0, m_config.maxResidentPages));
+    if (residentBudget == 0) {
         return;
     }
+    if (m_config.maxCpuBytes > 0) {
+        const uint64_t perPageEstimate = estimateResidentCpuBytesPerPage(pageSize);
+        const size_t cpuBudgetPages = static_cast<size_t>(
+            static_cast<uint64_t>(m_config.maxCpuBytes) / perPageEstimate);
+        residentBudget = std::min(residentBudget, std::max<size_t>(1, cpuBudgetPages));
+    }
+    if (residentBudget == 0) {
+        return;
+    }
+    const int maxResident = static_cast<int>(
+        std::min<size_t>(residentBudget, static_cast<size_t>(std::numeric_limits<int>::max())));
 
-    const int startRadiusVoxels = std::max(0, m_config.startRadiusChunks) * Chunk::SIZE;
     int maxRadiusVoxels = std::max(0, m_config.maxRadiusChunks) * Chunk::SIZE;
     const int levelCount = std::clamp(m_config.levels, 1, 16);
     if (levelCount > 1 && maxRadiusVoxels <= 0) {
-        maxRadiusVoxels = std::max(startRadiusVoxels + pageSize * 16, pageSize * 32);
+        maxRadiusVoxels = std::max(pageSize * 16, pageSize * 32);
     }
     const int l0MaxRadiusVoxels = (levelCount > 1 && maxRadiusVoxels > 0)
-        ? std::max(startRadiusVoxels, maxRadiusVoxels / 2)
+        ? std::max(Chunk::SIZE, maxRadiusVoxels / 2)
         : maxRadiusVoxels;
 
-    const glm::ivec3 cameraVoxel = floorToVoxel(cameraPos);
+    const glm::ivec3 cameraVoxel = snapToChunkOriginVoxel(cameraPos);
 
     auto cubeCount = [](int radius) -> int64_t {
         const int side = radius * 2 + 1;
@@ -717,13 +771,16 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
         }
 
         std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
-            return a.distanceSq < b.distanceSq;
+            if (a.distanceSq != b.distanceSq) {
+                return a.distanceSq < b.distanceSq;
+            }
+            return voxelPageKeyLess(a.key, b.key);
         });
     };
 
-    collectLevelCandidates(0, startRadiusVoxels, l0MaxRadiusVoxels > 0 ? l0MaxRadiusVoxels : maxRadiusVoxels);
+    collectLevelCandidates(0, 0, l0MaxRadiusVoxels > 0 ? l0MaxRadiusVoxels : maxRadiusVoxels);
     if (levelCount > 1) {
-        collectLevelCandidates(1, std::max(startRadiusVoxels, l0MaxRadiusVoxels), maxRadiusVoxels);
+        collectLevelCandidates(1, std::max(0, l0MaxRadiusVoxels), maxRadiusVoxels);
     }
 
     std::unordered_set<VoxelPageKey, VoxelPageKeyHash> desiredVisible;
@@ -731,55 +788,94 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
     desiredVisible.reserve(static_cast<size_t>(maxResident));
     desiredBuild.reserve(static_cast<size_t>(maxResident) * 2);
 
-    const size_t visibleBudget = static_cast<size_t>(maxResident);
-    const auto& l0Candidates = levelCandidates[0];
-    const auto& l1Candidates = levelCandidates[1];
-    size_t l1Target = 0;
-    if (levelCount > 1 && visibleBudget > 1 && !l1Candidates.empty()) {
-        l1Target = std::max<size_t>(1, visibleBudget / 4);
-        l1Target = std::min(l1Target, l1Candidates.size());
-    }
-    size_t l0Target = std::min(visibleBudget - l1Target, l0Candidates.size());
-
-    size_t l0Index = 0;
-    size_t l1Index = 0;
-    for (; l0Index < l0Target; ++l0Index) {
-        desiredVisible.insert(l0Candidates[l0Index].key);
-        desiredBuild.insert(l0Candidates[l0Index].key);
-    }
-    for (; l1Index < l1Target; ++l1Index) {
-        desiredVisible.insert(l1Candidates[l1Index].key);
-        desiredBuild.insert(l1Candidates[l1Index].key);
-    }
-
-    while (desiredVisible.size() < visibleBudget &&
-           (l0Index < l0Candidates.size() || l1Index < l1Candidates.size())) {
-        if (l0Index < l0Candidates.size()) {
-            desiredVisible.insert(l0Candidates[l0Index].key);
-            desiredBuild.insert(l0Candidates[l0Index].key);
-            ++l0Index;
-            if (desiredVisible.size() >= visibleBudget) {
-                break;
-            }
-        }
-        if (l1Index < l1Candidates.size()) {
-            desiredVisible.insert(l1Candidates[l1Index].key);
-            desiredBuild.insert(l1Candidates[l1Index].key);
-            ++l1Index;
-        }
-    }
+    const size_t residentBudgetFinal = static_cast<size_t>(maxResident);
+    std::vector<Candidate> visibleCandidates;
+    visibleCandidates.reserve(levelCandidates[0].size() + levelCandidates[1].size());
+    visibleCandidates.insert(visibleCandidates.end(),
+                             levelCandidates[0].begin(),
+                             levelCandidates[0].end());
+    visibleCandidates.insert(visibleCandidates.end(),
+                             levelCandidates[1].begin(),
+                             levelCandidates[1].end());
+    std::sort(visibleCandidates.begin(), visibleCandidates.end(),
+              [](const Candidate& a, const Candidate& b) {
+                  if (a.distanceSq != b.distanceSq) {
+                      return a.distanceSq < b.distanceSq;
+                  }
+                  return voxelPageKeyLess(a.key, b.key);
+              });
 
     std::unordered_set<VoxelPageKey, VoxelPageKeyHash> closureCritical;
-    closureCritical.reserve(desiredVisible.size() * 6);
-    for (const VoxelPageKey& visibleKey : desiredVisible) {
-        for (const glm::ivec3& offset : kNeighborOffsets) {
+    closureCritical.reserve(residentBudgetFinal * 2);
+
+    auto tryInsertVisibleWithClosure = [&](const VoxelPageKey& visibleKey) {
+        if (desiredVisible.find(visibleKey) != desiredVisible.end()) {
+            return true;
+        }
+        const bool alreadyInBuild = desiredBuild.find(visibleKey) != desiredBuild.end();
+
+        std::array<VoxelPageKey, 6> neighbors{};
+        size_t newEntries = alreadyInBuild ? 0u : 1u; // visible page itself (if not already closure)
+        for (size_t i = 0; i < kNeighborOffsets.size(); ++i) {
             VoxelPageKey neighbor = visibleKey;
-            neighbor.x += offset.x;
-            neighbor.y += offset.y;
-            neighbor.z += offset.z;
-            desiredBuild.insert(neighbor);
+            neighbor.x += kNeighborOffsets[i].x;
+            neighbor.y += kNeighborOffsets[i].y;
+            neighbor.z += kNeighborOffsets[i].z;
+            neighbors[i] = neighbor;
+            if (desiredBuild.find(neighbor) == desiredBuild.end() &&
+                desiredVisible.find(neighbor) == desiredVisible.end()) {
+                ++newEntries;
+            }
+        }
+
+        if (desiredBuild.size() + newEntries > residentBudgetFinal) {
+            return false;
+        }
+
+        desiredVisible.insert(visibleKey);
+        desiredBuild.insert(visibleKey);
+        for (const VoxelPageKey& neighbor : neighbors) {
             if (desiredVisible.find(neighbor) == desiredVisible.end()) {
+                desiredBuild.insert(neighbor);
                 closureCritical.insert(neighbor);
+            }
+        }
+        return true;
+    };
+
+    if (residentBudgetFinal < (kNeighborOffsets.size() + 1)) {
+        const size_t selected = std::min(residentBudgetFinal, visibleCandidates.size());
+        for (size_t i = 0; i < selected; ++i) {
+            desiredVisible.insert(visibleCandidates[i].key);
+            desiredBuild.insert(visibleCandidates[i].key);
+        }
+    } else {
+        if (levelCount > 1) {
+            size_t l0Index = 0;
+            size_t l1Index = 0;
+            const auto& l0 = levelCandidates[0];
+            const auto& l1 = levelCandidates[1];
+
+            while (desiredBuild.size() < residentBudgetFinal &&
+                   (l0Index < l0.size() || l1Index < l1.size())) {
+                if (l0Index < l0.size()) {
+                    (void)tryInsertVisibleWithClosure(l0[l0Index].key);
+                    ++l0Index;
+                }
+                if (desiredBuild.size() >= residentBudgetFinal) {
+                    break;
+                }
+                if (l1Index < l1.size()) {
+                    (void)tryInsertVisibleWithClosure(l1[l1Index].key);
+                    ++l1Index;
+                }
+            }
+        } else {
+            for (const Candidate& candidate : visibleCandidates) {
+                (void)tryInsertVisibleWithClosure(candidate.key);
+                if (desiredBuild.size() >= residentBudgetFinal) {
+                    break;
+                }
             }
         }
     }
@@ -819,10 +915,13 @@ void VoxelSvoLodManager::seedDesiredPages(const glm::vec3& cameraPos) {
     }
     std::sort(queueCandidates.begin(), queueCandidates.end(), [](const QueueCandidate& a,
                                                                  const QueueCandidate& b) {
+        if (a.distanceSq != b.distanceSq) {
+            return a.distanceSq < b.distanceSq;
+        }
         if (a.priority != b.priority) {
             return a.priority < b.priority;
         }
-        return a.distanceSq < b.distanceSq;
+        return voxelPageKeyLess(a.key, b.key);
     });
 
     for (const QueueCandidate& candidate : queueCandidates) {
@@ -972,7 +1071,7 @@ void VoxelSvoLodManager::enforcePageLimit(const glm::vec3& cameraPos) {
         return;
     }
 
-    const glm::ivec3 cameraVoxel = floorToVoxel(cameraPos);
+    const glm::ivec3 cameraVoxel = snapToChunkOriginVoxel(cameraPos);
     const int pageSize = std::max(1, m_config.pageSizeVoxels);
 
     struct Entry {
@@ -1116,6 +1215,53 @@ void VoxelSvoLodManager::update(const glm::vec3& cameraPos) {
     seedDesiredPages(cameraPos);
 
     enforcePageLimit(cameraPos);
+
+    // Rebuild queued-sample order every frame from current desired pages so
+    // sampling remains strictly center-out even after camera movement.
+    const glm::ivec3 cameraVoxel = snapToChunkOriginVoxel(cameraPos);
+    const int pageSize = std::max(1, m_config.pageSizeVoxels);
+    struct SampleQueueEntry {
+        VoxelPageKey key{};
+        int priority = 1;
+        float distanceSq = 0.0f;
+    };
+    std::vector<SampleQueueEntry> sampleQueue;
+    sampleQueue.reserve(m_pages.size());
+    for (auto& [key, record] : m_pages) {
+        if (record.state != VoxelPageState::QueuedSample) {
+            continue;
+        }
+        if (!record.desiredBuild) {
+            record.state = VoxelPageState::Missing;
+            continue;
+        }
+        const int span = pageSpanVoxels(key, pageSize);
+        const glm::vec3 pageCenter =
+            pageWorldMin(key, pageSize) + glm::vec3(static_cast<float>(span) * 0.5f);
+        const glm::vec3 delta = pageCenter - glm::vec3(cameraVoxel);
+        sampleQueue.push_back(SampleQueueEntry{
+            key,
+            record.desiredVisible ? 0 : 1,
+            glm::dot(delta, delta)
+        });
+    }
+    std::sort(sampleQueue.begin(), sampleQueue.end(), [](const SampleQueueEntry& a,
+                                                         const SampleQueueEntry& b) {
+        if (a.distanceSq != b.distanceSq) {
+            return a.distanceSq < b.distanceSq;
+        }
+        if (a.priority != b.priority) {
+            return a.priority < b.priority;
+        }
+        return voxelPageKeyLess(a.key, b.key);
+    });
+    m_buildQueue.clear();
+    m_buildQueued.clear();
+    m_buildQueue.resize(sampleQueue.size());
+    for (size_t i = 0; i < sampleQueue.size(); ++i) {
+        m_buildQueue[i] = sampleQueue[i].key;
+        m_buildQueued.insert(sampleQueue[i].key);
+    }
 
     // Enqueue new builds (budgeted).
     int budget = std::max(0, m_config.buildBudgetPagesPerFrame);

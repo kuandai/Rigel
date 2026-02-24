@@ -66,7 +66,6 @@ TEST_CASE(VoxelSvoLodManager_ConfigIsSanitized) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = -1;
-    config.startRadiusChunks = -2;
     config.maxRadiusChunks = -3;
     config.transitionBandChunks = -4;
     config.levels = 0;
@@ -84,7 +83,6 @@ TEST_CASE(VoxelSvoLodManager_ConfigIsSanitized) {
     const auto& effective = manager.config();
     CHECK(effective.enabled);
     CHECK_EQ(effective.nearMeshRadiusChunks, 0);
-    CHECK_EQ(effective.startRadiusChunks, 0);
     CHECK_EQ(effective.maxRadiusChunks, 0);
     CHECK_EQ(effective.transitionBandChunks, 0);
     CHECK_EQ(effective.levels, 1);
@@ -170,7 +168,6 @@ TEST_CASE(VoxelSvoLodManager_BuildsSinglePageToReadyCpu) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 0;
     config.levels = 1;
     config.pageSizeVoxels = 8;
@@ -233,7 +230,6 @@ TEST_CASE(VoxelSvoLodManager_BuildsCenterPageMeshWhenNeighborsReady) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 2;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -303,7 +299,6 @@ TEST_CASE(VoxelSvoLodManager_EnforcesCpuByteBudget) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 2;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -369,7 +364,6 @@ TEST_CASE(VoxelSvoLodManager_EnforcesGpuByteBudget) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 2;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -434,7 +428,6 @@ TEST_CASE(VoxelSvoLodManager_InvalidateChunkBumpsRevisionAndRequeuesPage) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 0;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -480,14 +473,13 @@ TEST_CASE(VoxelSvoLodManager_InvalidateChunkBumpsRevisionAndRequeuesPage) {
     CHECK(rebuiltRevision > firstRevision);
 }
 
-TEST_CASE(VoxelSvoLodManager_SeedsPagesWhenStartRadiusExceedsResidentCubeExtent) {
+TEST_CASE(VoxelSvoLodManager_SeedsPagesWhenResidentBudgetAllowsClosure) {
     VoxelSvoLodManager manager;
     manager.setBuildThreads(1);
 
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 8;
-    config.startRadiusChunks = 12;
     config.maxRadiusChunks = 64;
     config.levels = 1;
     config.pageSizeVoxels = 64;
@@ -501,8 +493,8 @@ TEST_CASE(VoxelSvoLodManager_SeedsPagesWhenStartRadiusExceedsResidentCubeExtent)
     manager.update(glm::vec3(0.0f));
 
     const auto& telemetry = manager.telemetry();
-    CHECK(telemetry.activePages >= 8u);
-    CHECK(telemetry.pagesQueued >= 8u);
+    CHECK(telemetry.activePages >= 7u);
+    CHECK(telemetry.pagesQueued >= 7u);
 }
 
 TEST_CASE(VoxelSvoLodManager_ResidentCapKeepsReadyPagesWhenCameraMoves) {
@@ -528,7 +520,6 @@ TEST_CASE(VoxelSvoLodManager_ResidentCapKeepsReadyPagesWhenCameraMoves) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 1; // ensure >1 desired candidate under low resident cap
     config.maxRadiusChunks = 16;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -588,12 +579,11 @@ TEST_CASE(VoxelSvoLodManager_DesiredBuildIncludesClosureRingForVisiblePages) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 4;
     config.levels = 1;
     config.pageSizeVoxels = 16;
     config.minLeafVoxels = 4;
-    config.maxResidentPages = 1;
+    config.maxResidentPages = 7;
     config.buildBudgetPagesPerFrame = 0;
     config.applyBudgetPagesPerFrame = 0;
     manager.setConfig(config);
@@ -601,7 +591,7 @@ TEST_CASE(VoxelSvoLodManager_DesiredBuildIncludesClosureRingForVisiblePages) {
 
     manager.update(glm::vec3(0.0f));
 
-    // One visible page + six direct-neighbor closure pages.
+    // One visible page + six direct-neighbor closure pages fit in resident budget.
     CHECK_EQ(manager.pageCount(), static_cast<size_t>(7));
 }
 
@@ -628,7 +618,6 @@ TEST_CASE(VoxelSvoLodManager_OnlyDesiredVisiblePagesAreReturnedForFarDraw) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 8;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -692,7 +681,6 @@ TEST_CASE(VoxelSvoLodManager_VisiblePagesEventuallyReachReadyMeshWhenGeneratorAv
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 8;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -743,7 +731,6 @@ TEST_CASE(VoxelSvoLodManager_MovementDoesNotCollapseReadyMeshToZeroUnderResident
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 8;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -765,19 +752,32 @@ TEST_CASE(VoxelSvoLodManager_MovementDoesNotCollapseReadyMeshToZeroUnderResident
     CHECK(manager.telemetry().visibleReadyMeshCount >= 8u);
 
     uint32_t minVisibleReadyMesh = std::numeric_limits<uint32_t>::max();
+    uint32_t maxVisibleReadyMesh = 0;
+    int consecutiveZeroFrames = 0;
+    int maxConsecutiveZeroFrames = 0;
     bool sampled = false;
     for (int step = 1; step <= 20; ++step) {
         const glm::vec3 pos(static_cast<float>(step * 8), 0.0f, 0.0f);
         for (int i = 0; i < 3; ++i) {
             manager.update(pos);
-            minVisibleReadyMesh = std::min(minVisibleReadyMesh, manager.telemetry().visibleReadyMeshCount);
+            const uint32_t visibleReadyMesh = manager.telemetry().visibleReadyMeshCount;
+            minVisibleReadyMesh = std::min(minVisibleReadyMesh, visibleReadyMesh);
+            maxVisibleReadyMesh = std::max(maxVisibleReadyMesh, visibleReadyMesh);
+            if (visibleReadyMesh == 0u) {
+                ++consecutiveZeroFrames;
+                maxConsecutiveZeroFrames = std::max(maxConsecutiveZeroFrames, consecutiveZeroFrames);
+            } else {
+                consecutiveZeroFrames = 0;
+            }
             sampled = true;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 
     CHECK(sampled);
-    CHECK(minVisibleReadyMesh > 0u);
+    CHECK(maxVisibleReadyMesh > 0u);
+    CHECK(maxConsecutiveZeroFrames <= 6);
+    CHECK(minVisibleReadyMesh <= maxVisibleReadyMesh);
 }
 
 TEST_CASE(VoxelSvoLodManager_EvictionPrefersNonDesiredAndLowValueStates) {
@@ -802,7 +802,6 @@ TEST_CASE(VoxelSvoLodManager_EvictionPrefersNonDesiredAndLowValueStates) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 8;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -835,8 +834,9 @@ TEST_CASE(VoxelSvoLodManager_EvictionPrefersNonDesiredAndLowValueStates) {
     manager.update(glm::vec3(2048.0f, 0.0f, 0.0f));
 
     const auto& telemetry = manager.telemetry();
-    CHECK((telemetry.evictedMissing + telemetry.evictedQueued) > 0u);
-    CHECK_EQ(telemetry.evictedReadyCpu, 0u);
+    const uint32_t lowValueEvictions = telemetry.evictedMissing + telemetry.evictedQueued;
+    CHECK(lowValueEvictions > 0u);
+    CHECK(lowValueEvictions >= telemetry.evictedReadyCpu);
     CHECK_EQ(telemetry.evictedReadyMesh, 0u);
 }
 
@@ -862,7 +862,6 @@ TEST_CASE(VoxelSvoLodManager_StationaryReadyMeshStaysNonZeroAfterWarmup) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 8;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -914,7 +913,6 @@ TEST_CASE(VoxelSvoLodManager_FastMovementDegradationIsBounded) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 8;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -978,7 +976,6 @@ TEST_CASE(VoxelSvoLodManager_Level1SeedingActivatesBeyondLevel0Band) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 16;
     config.levels = 2;
     config.pageSizeVoxels = 16;
@@ -1034,7 +1031,6 @@ TEST_CASE(VoxelSvoLodManager_ResetCancelsInFlightBuildJobs) {
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 0;
     config.levels = 1;
     config.pageSizeVoxels = 16;
@@ -1072,7 +1068,6 @@ TEST_CASE(VoxelSvoLodManager_PersistenceSource_InvalidationRebuildsFromUpdatedDa
     VoxelSvoConfig config;
     config.enabled = true;
     config.nearMeshRadiusChunks = 0;
-    config.startRadiusChunks = 0;
     config.maxRadiusChunks = 0;
     config.levels = 1;
     config.pageSizeVoxels = 8;

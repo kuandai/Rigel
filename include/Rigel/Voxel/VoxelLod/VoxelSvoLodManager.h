@@ -81,6 +81,8 @@ struct VoxelSvoPageInfo {
 // module boundary and lifecycle wiring so later sprints can fill in the pipeline.
 class VoxelSvoLodManager {
 public:
+    ~VoxelSvoLodManager();
+
     struct OpaqueMeshEntry {
         VoxelPageKey key{};
         uint64_t revision = 0;

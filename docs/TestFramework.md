@@ -40,8 +40,31 @@ cmake -S . -B build -DRIGEL_BUILD_TESTS=OFF
 When enabled, CMake adds:
 
 - `Rigel_tests` (test executable)
+- `coverage` (only when `RIGEL_ENABLE_COVERAGE=ON`)
 
-### 2.3 Running Tests
+### 2.3 Coverage Target
+
+Coverage is controlled by:
+
+- `RIGEL_ENABLE_COVERAGE` (default `OFF`)
+
+Enable and run:
+
+```bash
+cmake -S . -B build -DRIGEL_BUILD_TESTS=ON -DRIGEL_ENABLE_COVERAGE=ON
+cmake --build build --target coverage
+```
+
+Requirements:
+
+- GNU toolchain (`--coverage`/gcov-compatible output)
+- `lcov` and `genhtml` available in `PATH`
+
+Output:
+
+- HTML report at `build/coverage_html/index.html`
+
+### 2.4 Running Tests
 
 Typical commands:
 

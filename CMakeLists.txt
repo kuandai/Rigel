@@ -8,6 +8,24 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type (Debug or Release)" FORCE)
 endif()
 
+option(RIGEL_ENABLE_COVERAGE "Enable coverage instrumentation and coverage target" OFF)
+
+set(RIGEL_COVERAGE_SUPPORTED OFF)
+if (RIGEL_ENABLE_COVERAGE)
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(RIGEL_COVERAGE_SUPPORTED ON)
+    else()
+        message(WARNING
+            "RIGEL_ENABLE_COVERAGE is ON, but compiler '${CMAKE_CXX_COMPILER_ID}' is not supported "
+            "by the built-in coverage target (GNU/gcov + lcov expected).")
+    endif()
+endif()
+
+function(rigel_enable_coverage target_name)
+    target_compile_options(${target_name} PRIVATE -O0 -g --coverage)
+    target_link_options(${target_name} PRIVATE --coverage)
+endfunction()
+
 file(GLOB_RECURSE SOURCES
     CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
@@ -23,6 +41,10 @@ list(REMOVE_ITEM SOURCES
 include(cmake/AssetResources.cmake)
 
 add_library(RigelLib ${SOURCES})
+
+if (RIGEL_COVERAGE_SUPPORTED)
+    rigel_enable_coverage(RigelLib)
+endif()
 
 target_compile_definitions(RigelLib PRIVATE
     $<$<CONFIG:Debug>:DEBUG>
@@ -169,6 +191,9 @@ if (RIGEL_BUILD_TESTS)
     target_include_directories(Rigel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(Rigel_tests PRIVATE RigelLib)
     target_compile_definitions(Rigel_tests PRIVATE RIGEL_ENABLE_PROFILER)
+    if (RIGEL_COVERAGE_SUPPORTED)
+        rigel_enable_coverage(Rigel_tests)
+    endif()
 
     set(TEST_CASE_NAMES "")
     foreach(test_src ${TEST_SOURCES})
@@ -184,4 +209,52 @@ if (RIGEL_BUILD_TESTS)
     foreach(test_name ${TEST_CASE_NAMES})
         add_test(NAME Rigel_${test_name} COMMAND Rigel_tests --filter ${test_name})
     endforeach()
+
+    if (RIGEL_ENABLE_COVERAGE)
+        find_program(RIGEL_LCOV_EXECUTABLE lcov)
+        find_program(RIGEL_GENHTML_EXECUTABLE genhtml)
+
+        if (NOT RIGEL_COVERAGE_SUPPORTED)
+            add_custom_target(coverage
+                COMMAND ${CMAKE_COMMAND} -E echo
+                    "Coverage target requires GNU compiler with gcov-compatible coverage output."
+                COMMAND ${CMAKE_COMMAND} -E false
+                COMMENT "Coverage is unsupported with current compiler"
+            )
+        elseif (NOT RIGEL_LCOV_EXECUTABLE OR NOT RIGEL_GENHTML_EXECUTABLE)
+            add_custom_target(coverage
+                COMMAND ${CMAKE_COMMAND} -E echo
+                    "Coverage target requires 'lcov' and 'genhtml' in PATH."
+                COMMAND ${CMAKE_COMMAND} -E false
+                COMMENT "Coverage tools missing"
+            )
+        else()
+            set(RIGEL_COVERAGE_BASE_INFO "${CMAKE_BINARY_DIR}/coverage.base.info")
+            set(RIGEL_COVERAGE_TEST_INFO "${CMAKE_BINARY_DIR}/coverage.test.info")
+            set(RIGEL_COVERAGE_INFO "${CMAKE_BINARY_DIR}/coverage.info")
+            set(RIGEL_COVERAGE_FILTERED_INFO "${CMAKE_BINARY_DIR}/coverage.filtered.info")
+            set(RIGEL_COVERAGE_HTML_DIR "${CMAKE_BINARY_DIR}/coverage_html")
+
+            add_custom_target(coverage
+                COMMAND ${RIGEL_LCOV_EXECUTABLE} --directory ${CMAKE_BINARY_DIR} --zerocounters
+                COMMAND ${RIGEL_LCOV_EXECUTABLE} --directory ${CMAKE_BINARY_DIR} --capture --initial --output-file ${RIGEL_COVERAGE_BASE_INFO}
+                COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+                COMMAND ${RIGEL_LCOV_EXECUTABLE} --directory ${CMAKE_BINARY_DIR} --capture --output-file ${RIGEL_COVERAGE_TEST_INFO}
+                COMMAND ${RIGEL_LCOV_EXECUTABLE} --add-tracefile ${RIGEL_COVERAGE_BASE_INFO} --add-tracefile ${RIGEL_COVERAGE_TEST_INFO} --output-file ${RIGEL_COVERAGE_INFO}
+                COMMAND ${RIGEL_LCOV_EXECUTABLE} --ignore-errors unused --remove ${RIGEL_COVERAGE_INFO} '/usr/*' '*/.conan/*' '*/.conan2/*' '*/build/*' '*/tests/*' --output-file ${RIGEL_COVERAGE_FILTERED_INFO}
+                COMMAND ${RIGEL_GENHTML_EXECUTABLE} --branch-coverage --output-directory ${RIGEL_COVERAGE_HTML_DIR} ${RIGEL_COVERAGE_FILTERED_INFO}
+                DEPENDS Rigel_tests
+                WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+                USES_TERMINAL
+                COMMENT "Generating test coverage report in ${RIGEL_COVERAGE_HTML_DIR}"
+            )
+        endif()
+    endif()
+elseif (RIGEL_ENABLE_COVERAGE)
+    add_custom_target(coverage
+        COMMAND ${CMAKE_COMMAND} -E echo
+            "Coverage target requires RIGEL_BUILD_TESTS=ON."
+        COMMAND ${CMAKE_COMMAND} -E false
+        COMMENT "Coverage is unavailable without tests"
+    )
 endif()

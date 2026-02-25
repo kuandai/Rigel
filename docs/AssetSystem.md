@@ -51,7 +51,8 @@ assets:
 ```
 
 Manifest constraints in the current implementation:
-- Only a single manifest file is loaded (`manifest.yaml`).
+- `AssetManager::loadManifest()` can be called multiple times; entries are
+  merged and later declarations override earlier IDs.
 - `imports:` is not implemented.
 - All `path` values refer to embedded assets.
 

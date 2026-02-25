@@ -11,7 +11,8 @@ the same world seed and camera path.
 4. Record:
    - frame time average and p95
    - chunk streaming frame cost (`Streaming/*`)
-   - voxel-SVO stage costs (sample/build/mesh/upload)
+   - voxel-SVO telemetry currently exposed in runtime UI:
+     sampled bricks/voxels, `mipBuildMicros`, update call count, upload call count
    - CPU/GPU memory deltas
 
 ## Runs
@@ -26,4 +27,7 @@ the same world seed and camera path.
 - Voxel-SVO mode is considered a win when far-field coverage improves without
   increasing p95 frame spikes in streaming-heavy movement.
 - Regressions should be investigated by comparing `Streaming/*` profiler scopes
-  against voxel-SVO stage costs and memory budget settings.
+  against voxel-SVO telemetry and memory budget settings.
+- Per-stage SVO profiler scopes (`sample/build/mesh/upload`) are a future
+  instrumentation task; they are not currently emitted as dedicated profiler
+  scopes.

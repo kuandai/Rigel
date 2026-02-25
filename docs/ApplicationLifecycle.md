@@ -66,7 +66,8 @@ Per frame:
 8. Render scene (voxel + entities + debug overlays).
    - Shadow maps, TAA, and debug overlays are all handled here.
 9. Profiler frame ends (`Core::Profiler::endFrame`) before buffer swap.
-10. Swap buffers and check for exit (`exit` action).
+10. End ImGui frame + swap buffers.
+11. Loop continues until `glfwWindowShouldClose(window)` becomes true.
 
 ## Phase 3: Shutdown (Application::~Application)
 
@@ -110,7 +111,7 @@ Synchronization:
   (`applyGenCompletions`).
 
 **Queueing rules**:
-- Queue size is capped by `stream.gen_queue_limit` (0 = unlimited).
+- Queue size is capped by `streaming.gen_queue_limit` (0 = unlimited).
 - Chunks outside the desired set are cancelled (token flipped).
 
 **Cancellation**:
@@ -134,11 +135,15 @@ Synchronization:
 - Main thread applies mesh results in `processCompletions()`.
 
 **Queueing rules**:
-- Queue size is capped by `stream.mesh_queue_limit` (0 = unlimited).
+- Queue size is capped by `streaming.mesh_queue_limit` (0 = unlimited).
 - A portion of the queue is reserved for dirty remeshes.
 
 **Neighbor gating**:
-- Meshing is skipped until all 6 neighbors are loaded (`hasAllNeighborsLoaded`).
+- Missing-mesh work is normally gated on full 6-neighbor closure
+  (`hasAllNeighborsLoaded`).
+- Persisted chunks (`chunk->loadedFromDisk()`) are allowed to enqueue missing
+  meshes without full neighbor closure.
+- Dirty remeshes still require all 6 neighbors.
 
 **Thread-safety**:
 - Worker threads operate on copied block data only.

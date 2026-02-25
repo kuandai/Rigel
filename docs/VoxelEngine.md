@@ -19,6 +19,20 @@ This document outlines the current voxel engine architecture within Rigel. Secti
 
 ---
 
+## Status Map
+
+Use this as a trust guide while reading:
+
+- Sections `2-6` are primarily current implementation, with sub-sections
+  explicitly marked when planned.
+- Sections `7` and `10` are design-oriented and mostly planned.
+- Section `8` summarizes current renderer wiring; see
+  `docs/RenderingPipeline.md` for authoritative frame flow details.
+- Section `9` mixes implemented optimizations and planned ideas. Sub-section
+  labels are authoritative.
+
+---
+
 ## 1. Design Goals
 
 | Priority | Goal |

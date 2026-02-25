@@ -58,6 +58,8 @@ assets:
         sprint: LSHIFT
         debug_overlay: F1
         imgui_overlay: F3
+        debug_toggle_near_terrain: F4
+        toggle_mouse_capture: TAB
         unbound_action: none
 ```
 
@@ -77,6 +79,8 @@ Defaults currently include:
 - `sprint`: LSHIFT
 - `debug_overlay`: F1
 - `imgui_overlay`: F3
+- `debug_toggle_near_terrain`: F4
+- `toggle_mouse_capture`: TAB
 - `demo_spawn_entity`: F2
 
 ## Key Parsing Rules

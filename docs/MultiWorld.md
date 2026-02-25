@@ -1,9 +1,9 @@
 # Multi-World System
 
-Status: WorldSet, WorldResources, and WorldView are implemented. The
-application still boots a single default World/WorldView, but multiple Worlds
-can now exist in memory. GPU cache sharing across multiple renderers is not
-implemented; each renderer maintains its own GPU cache.
+Status: Partially implemented. `WorldSet`, `WorldResources`, and per-world
+`WorldView` ownership are implemented. The application still boots a single
+default World/WorldView path. Conceptual networked/server-client sections in
+this document are design targets, not runtime behavior.
 
 This document describes the multi-world architecture that aligns with CR's
 network model while preserving the existing naming scheme:
@@ -94,7 +94,9 @@ duplicate GPU buffers today.
   world and initializes render resources.
 - `world(id)` and `view(id)` return existing instances.
 - `removeWorld(id)` destroys the World and its view (if present).
-- `clear()` releases all worlds and resources.
+- `clear()` clears all world entries (`m_worlds.clear()`).
+  Shared resources remain owned by `WorldSet::resources()` and are released
+  separately (for example `releaseRenderResources()` in application shutdown).
 
 World entries are stored as a `WorldEntry` containing:
 
@@ -143,7 +145,10 @@ Each `WorldView` owns:
 
 Persistence is scoped per world ID:
 
-- Root path is `saves/world_<id>`.
+- `WorldSet::persistenceContext(id)` uses the currently configured
+  `WorldSet::m_persistenceRoot`.
+- In the current app wiring, that root is set during bootstrap from the active
+  world ID (for example via `mainWorldRootPath(activeWorldId)`).
 - Per-world overrides are loaded from `config/worlds/<id>/...`.
 - `WorldSet::persistenceContext(id)` supplies providers and storage for the
   active world.
@@ -152,7 +157,7 @@ Persistence is scoped per world ID:
 
 ---
 
-## 6. Server vs Client WorldSets
+## 6. Server vs Client WorldSets (Planned Design)
 
 ### Server WorldSet
 
@@ -197,7 +202,7 @@ Global defaults apply when per-world overrides are absent.
 
 ---
 
-## 10. Future Networking Hooks
+## 10. Future Networking Hooks (Planned Design)
 
 Planned replication surface (no protocol binding yet):
 

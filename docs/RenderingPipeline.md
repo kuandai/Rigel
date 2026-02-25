@@ -24,13 +24,13 @@ before calling `WorldView::render`.
 
 1. Application builds `view` and `projection` matrices.
 2. Optional TAA jitter is applied to the projection.
-3. Scene renders to the TAA scene FBO (if enabled) or the default framebuffer.
-4. `WorldView`:
-   - Updates chunk streaming and meshes.
-   - Calls `ChunkRenderer::render`.
-   - Calls `EntityRenderer::render`.
-5. Optional TAA resolve blends history into the current frame.
-6. Debug overlays render (chunk+SVO state visualizer, frame graph, entity debug).
+3. Scene target is bound (TAA scene FBO if enabled, otherwise default framebuffer).
+4. `worldView->updateStreaming(cameraPosition)` runs.
+5. `worldView->updateMeshes()` applies completed streaming/meshing work.
+6. `worldView->render(view, projection, cameraPos, nearPlane, farPlane, dt)` draws
+   voxel and entity scene content.
+7. Optional TAA resolve blends history into the current frame.
+8. Debug overlays render (chunk+SVO state visualizer, frame graph, entity debug).
 
 ---
 
@@ -85,7 +85,8 @@ Rigel is in the process of migrating to a voxel-base far LOD system (Voxy/Distan
   - L0 and L1 are active; L2+ remain disabled pending stability tuning,
   - L0 uses the inner half of `max_radius_chunks`,
   - L1 seeds outside the L0 band up to `max_radius_chunks`,
-  - visible-page budget reserves ~25% for L1 so coarse far pages are not starved.
+  - candidate selection interleaves L0 and L1 entries (no fixed percentage
+    quota), then applies closure-constrained desired-set selection.
 - Transition behavior:
   - near chunk rendering is distance-gated using `near_mesh_radius_chunks`,
   - far voxel pages are distance-gated and dither-faded in the

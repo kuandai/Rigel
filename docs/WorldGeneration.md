@@ -59,7 +59,7 @@ to enable or disable stages, not reorder them.
 
 - Clears the chunk to air.
 - If a density graph is present, evaluates output `base_density` per voxel.
-- Otherwise uses `terrain.height_noise` and `terrain.density_noise` fallback:
+- Otherwise uses `terrain.noise` and `terrain.density_noise` fallback:
   `density = density_noise * density_strength + (height - y) * gradient_strength`.
 - Fills solid blocks using `solid_block` (config).
 - Fills water up to `world.sea_level` when the column biome is `sea` or `beach`
@@ -164,8 +164,11 @@ Empty chunks skip mesh generation and move directly to `ReadyMesh`.
 
 ### 5.4 Meshing Constraints
 
-- Meshes are only built when all 6 neighboring chunks are loaded to avoid
-  culling seams at chunk borders.
+- Missing-mesh builds normally require all 6 neighboring chunks to be loaded
+  (`hasAllNeighborsLoaded`) to avoid culling seams at chunk borders.
+- Exception: chunks that were loaded from disk (`chunk->loadedFromDisk()`) are
+  allowed to enqueue a missing mesh without full neighbor closure.
+- Dirty remeshes still require all 6 neighbors.
 - Mesh work uses padded block data to sample neighbors and AO.
 - Each chunk has a `meshRevision` so stale results are discarded.
 
@@ -192,6 +195,15 @@ The default loader (`AsyncChunkLoader`) uses the persistence service to fetch
 region data asynchronously, builds chunk payloads off-thread (including base
 fill for partial spans), then applies payloads on the main thread with a budget.
 If no stored data is found, generation proceeds normally.
+
+`AsyncChunkLoader` also maintains a region-existence negative cache:
+
+- If a region read reports missing/not-found, the loader records `exists=false`
+  and defers another existence probe for about 2 seconds.
+- While the backoff window is active, new chunk requests in that region skip
+  expensive `regionExists` checks and fall through to generation.
+- A successful region read flips the cache entry back to `exists=true` and
+  clears the deferred probe timestamp.
 
 Chunk modifications mark `persistDirty`, which allows save logic to skip
 unchanged chunks when persisting data.

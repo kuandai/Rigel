@@ -16,9 +16,9 @@ When enabled it draws:
 - ImGui profiler window (flame graph of per-frame scopes).
 - Entity bounds wireframes.
 
-The overlay is toggled by the `debug_overlay` action (F1 by default).
-The profiler window is shown whenever the debug overlay is enabled and ImGui is
-available.
+The debug overlay is toggled by the `debug_overlay` action (F1 by default).
+ImGui profiler visibility is controlled separately by the `imgui_overlay`
+action (F3 by default), which toggles `DebugState::imguiEnabled`.
 
 ---
 
@@ -27,7 +27,9 @@ available.
 - `Render::DebugState` holds all overlay state (`DebugField`, `FrameTimeGraph`,
   `EntityDebug`).
 - `Input::DebugOverlayListener` toggles `DebugState::overlayEnabled` on action
-  release.
+  release (`debug_overlay` / F1 by default).
+- `Input::ImGuiOverlayListener` toggles `DebugState::imguiEnabled` on action
+  release (`imgui_overlay` / F3 by default).
 - `Application` calls:
   - `Render::initDebugField`
   - `Render::initFrameGraph`
@@ -106,7 +108,8 @@ Voxel-SVO page state mapping (from `VoxelPageState`):
 
 - The ImGui profiler window displays a flame graph for the last frame.
 - It is only available when ImGui is linked (`imgui` package found).
-- The window appears when the debug overlay is enabled (F1).
+- The window appears when `imgui_overlay` is enabled (F3), independent of
+  `debug_overlay` (F1).
 - The voxel-SVO panel includes live counters for:
   - desired sets (`desiredVisibleCount`, `desiredBuildCount`),
   - visible far coverage (`visibleReadyMeshCount`),

@@ -143,7 +143,7 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `caves.enabled` | bool | `true` | Enables cave carving. |
 | `caves.density_output` | string | `cave_density` | Density output name. |
 | `caves.threshold` | float | `0.5` | Density threshold. |
-| `caves.sample_step` | int | `4` | Step size for carving. |
+| `caves.sample_step` | int | `4` | Parsed, but cave carving currently uses a fixed 4-step density sampling path (placeholder for future tuning). |
 | `structures.features[]` | list | - | Simple feature definitions. |
 | `streaming.view_distance_chunks` | int | `6` | Render/stream radius in chunks. |
 | `streaming.unload_distance_chunks` | int | `8` | Unload radius in chunks. |
@@ -155,7 +155,12 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `streaming.io_threads` | int | `1` | Region IO thread count. |
 | `streaming.load_worker_threads` | int | `2` | Chunk payload build thread count. |
 | `streaming.load_apply_budget_per_frame` | int | `8` | Disk payload apply budget (0 = unlimited). |
+| `streaming.load_region_drain_budget` | int | `32` | Region completion drain budget per update (0 = unlimited). |
 | `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited). |
+| `streaming.load_max_cached_regions` | int | `8` | Max cached decoded regions (0 = unlimited). |
+| `streaming.load_max_inflight_regions` | int | `8` | Max concurrent region read jobs (0 = unlimited). |
+| `streaming.load_prefetch_radius` | int | `1` | Neighbor-region prefetch radius in region coordinates. |
+| `streaming.load_prefetch_per_request` | int | `12` | Max prefetch region jobs queued per direct request (0 = unlimited). |
 | `streaming.max_resident_chunks` | int | `0` | Cache cap (0 = unlimited). |
 | `generation.pipeline[]` | list | - | Stage enable list. |
 | `flags` | map | - | Boolean flags for overlays. |
@@ -359,6 +364,8 @@ These files are optional and only override fields they define.
 - There is no schema validation beyond basic clamping.
 - World generation overlays are the only supported overlay mechanism.
 - Input bindings are configured through the asset manifest, not this system.
+- Some parsed knobs are placeholders and not fully consumed by runtime logic
+  yet (for example `caves.sample_step`).
 
 ---
 

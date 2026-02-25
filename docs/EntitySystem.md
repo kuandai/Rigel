@@ -61,8 +61,9 @@ Entities are indexed into spatial buckets for persistence:
 - `EntityChunk` holds pointers to entities within a chunk.
 - `WorldEntities::updateEntityChunk` keeps an entity in the correct bucket.
 
-`EntityRegion` keeps active and inactive chunks to allow serialization without
-forcing every chunk to stay loaded.
+`EntityRegion` has active and inactive chunk maps, but current runtime flow
+only uses active chunks. `deactivateChunk(...)` exists but is not currently
+invoked by `WorldEntities` update/persistence paths.
 
 ---
 

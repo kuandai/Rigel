@@ -137,7 +137,8 @@ assets:
 1. Child inherits all properties from parent
 2. Explicit properties in child override parent
 3. `defines` are merged (child values override conflicts)
-4. Circular inheritance is an error
+4. Circular inheritance is **not** currently detected automatically; manifests
+   must avoid cycles.
 
 For detailed inheritance resolution, see the "Shader-Specific Behavior" section
 in `docs/AssetSystem.md`.
@@ -406,53 +407,13 @@ std::string ShaderCompiler::preprocess(
 
 ### 7.1 Exception Types
 
-```cpp
-namespace Rigel::Asset {
+Current shader exceptions are:
 
-/// Base class for shader errors
-class ShaderError : public AssetLoadError {
-public:
-    ShaderError(const std::string& id, const std::string& message)
-        : AssetLoadError(id, message) {}
-};
+- `AssetLoadError` (base loading error type).
+- `ShaderCompileError : AssetLoadError`.
+- `ShaderLinkError : AssetLoadError`.
 
-/// Shader compilation failed
-class ShaderCompileError : public ShaderError {
-public:
-    ShaderCompileError(const std::string& id,
-                       GLenum stage,
-                       const std::string& log)
-        : ShaderError(id, formatMessage(stage, log))
-        , m_stage(stage)
-        , m_log(log)
-    {}
-
-    GLenum stage() const { return m_stage; }
-    const std::string& log() const { return m_log; }
-
-private:
-    GLenum m_stage;
-    std::string m_log;
-
-    static std::string formatMessage(GLenum stage, const std::string& log);
-};
-
-/// Shader program linking failed
-class ShaderLinkError : public ShaderError {
-public:
-    ShaderLinkError(const std::string& id, const std::string& log)
-        : ShaderError(id, "Link failed: " + log)
-        , m_log(log)
-    {}
-
-    const std::string& log() const { return m_log; }
-
-private:
-    std::string m_log;
-};
-
-} // namespace Rigel::Asset
-```
+There is no intermediate `ShaderError` base class in the current codebase.
 
 ### 7.2 Error Logging
 
@@ -542,6 +503,9 @@ glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
 ## Appendix A: File Structure
 
+Appendices in this document are illustrative examples and not an authoritative
+listing of all shipped shader assets.
+
 ```
 include/Rigel/Asset/
 ├── Types.h          # Add ShaderAsset struct
@@ -565,6 +529,9 @@ assets/shaders/
 ---
 
 ## Appendix B: Sample Shader Files
+
+These snippets are examples for loader/compiler usage and may not match the
+exact runtime shader files shipped in `assets/`.
 
 ### basic.vert
 

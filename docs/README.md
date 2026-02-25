@@ -1,8 +1,9 @@
 # Rigel Documentation
 
 Rigel is a voxel engine prototype focused on world generation, chunk streaming,
-rendering, and persistence. This documentation describes the current
-implementation and how the systems fit together.
+rendering, and persistence. The docs mix current implementation details and
+forward-looking design notes; sections labeled `planned` are not yet runtime
+behavior.
 
 ## Where to Start
 
@@ -56,6 +57,14 @@ implementation and how the systems fit together.
 
 ## Scope and Status
 
-The project is in active development. Documentation reflects the current
-implementation; sections labeled "planned" in individual docs are not yet
-implemented.
+The project is in active development.
+
+Authoritative runtime references (implementation-first):
+
+- `docs/ApplicationLifecycle.md`
+- `docs/WorldGeneration.md`
+- `docs/RenderingPipeline.md`
+- `docs/InputSystem.md`
+- `docs/PersistenceAPI.md`
+
+Other pages may include planned architecture and future hooks.

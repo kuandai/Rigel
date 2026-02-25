@@ -70,7 +70,10 @@ LZ4 compression is optional and controlled by the provider
 - Skylight and blocklight data are read but currently written as null.
 - Block entity data is skipped (flagged as null).
 
-If the block registry provider is missing, chunk decode/encode fails.
+If the block registry provider is missing:
+
+- Decode tolerates it by mapping blocks to air/unknown fallback IDs.
+- Encode fails with a missing block registry error.
 
 ### 1.6 Entity Regions
 

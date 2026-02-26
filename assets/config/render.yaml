@@ -1,6 +1,6 @@
 render:
   sun_direction: [0.5, 1.0, 0.3]
-  transparent_alpha: 0.5
+  transparent_alpha: 1.0
   shadow:
     enabled: true
     cascades: 3

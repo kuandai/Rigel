@@ -242,7 +242,7 @@ config (`assets/config/render.yaml`) may override them.
 | --- | --- | --- | --- |
 | `render.render_distance` | float | `256.0` | Distance culling for chunks. |
 | `render.sun_direction` | vec3 | `[0.5, 1.0, 0.3]` | Directional light vector. |
-| `render.transparent_alpha` | float | `0.5` | Alpha for transparent pass. |
+| `render.transparent_alpha` | float | `1.0` | Multiplier applied to transparent texture alpha. |
 | `render.shadow.enabled` | bool | `false` | Toggle cascaded shadows. |
 | `render.shadow.cascades` | int | `3` | Clamped to `[1,4]`. |
 | `render.shadow.map_size` | int | `1024` | Shadow map resolution. |

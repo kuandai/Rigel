@@ -60,6 +60,9 @@ target_include_directories(RigelLib
 )
 
 add_executable(${PROJECT_NAME} src/main.cpp)
+if (RIGEL_COVERAGE_SUPPORTED)
+    rigel_enable_coverage(${PROJECT_NAME})
+endif()
 
 # Conan 2 generates these configs in build folder
 find_package(spdlog REQUIRED)

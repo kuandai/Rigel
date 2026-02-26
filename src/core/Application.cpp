@@ -1,5 +1,6 @@
 #include "Rigel/Application.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Core/DebugBlockCatalog.h"
 #include "Rigel/Core/Profiler.h"
 #include "Rigel/Entity/EntityModelLoader.h"
 #include "Rigel/Persistence/AsyncChunkLoader.h"
@@ -63,6 +64,45 @@ float halton(uint32_t index, uint32_t base) {
     return result;
 }
 
+void setCameraView(Input::CameraState& camera,
+                   const glm::vec3& position,
+                   const glm::vec3& target) {
+    camera.position = position;
+    camera.target = target;
+
+    glm::vec3 forward = target - position;
+    const float forwardLen = glm::length(forward);
+    if (forwardLen <= 1e-6f) {
+        forward = glm::vec3(0.0f, -0.3f, -1.0f);
+    } else {
+        forward /= forwardLen;
+    }
+
+    const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+    glm::vec3 right = glm::cross(forward, worldUp);
+    if (glm::length(right) <= 1e-6f) {
+        right = glm::vec3(1.0f, 0.0f, 0.0f);
+    } else {
+        right = glm::normalize(right);
+    }
+    glm::vec3 up = glm::normalize(glm::cross(right, forward));
+
+    camera.forward = forward;
+    camera.right = right;
+    camera.up = up;
+    camera.yaw = glm::degrees(std::atan2(forward.z, forward.x));
+    camera.pitch = glm::degrees(std::asin(glm::clamp(forward.y, -1.0f, 1.0f)));
+}
+
+void populateDebugBlockCatalog(Voxel::World& world,
+                               Voxel::WorldView& worldView,
+                               const Core::DebugBlockCatalogPlan& plan) {
+    Core::applyDebugBlockCatalogPlacements(world, plan.placements);
+    for (const auto& coord : plan.remeshChunks) {
+        worldView.rebuildChunkMesh(coord);
+    }
+}
+
 } // namespace
 
 struct Application::Impl {
@@ -107,6 +147,7 @@ struct Application::Impl {
         Voxel::World* world = nullptr;
         Voxel::WorldView* worldView = nullptr;
         std::shared_ptr<Persistence::AsyncChunkLoader> chunkLoader;
+        bool debugBlockCatalogEnabled = false;
         bool ready = false;
         Voxel::BlockID placeBlock = Voxel::BlockRegistry::airId();
     };
@@ -451,6 +492,12 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->timing.benchmarkEnabled = true;
         spdlog::info("Chunk benchmark enabled");
     }
+    const char* catalogEnv = std::getenv("RIGEL_DEBUG_BLOCK_CATALOG");
+    m_impl->world.debugBlockCatalogEnabled = Core::isDebugBlockCatalogEnabled(catalogEnv);
+    if (m_impl->world.debugBlockCatalogEnabled) {
+        spdlog::info("Debug block catalog mode enabled (RIGEL_DEBUG_BLOCK_CATALOG)");
+        spdlog::info("Debug block catalog mode: world streaming disabled");
+    }
 
     try {
         m_impl->assets.loadManifest("manifest.yaml");
@@ -509,76 +556,94 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         Persistence::PersistenceContext persistenceContext =
             m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId);
-        Persistence::loadWorldFromDisk(
-            *m_impl->world.world,
-            m_impl->assets,
-            m_impl->world.worldSet.persistenceService(),
-            persistenceContext,
-            generator->config().world.version,
-            Persistence::SaveScope::EntitiesOnly);
+        if (Core::shouldLoadWorldFromDisk(m_impl->world.debugBlockCatalogEnabled)) {
+            Persistence::loadWorldFromDisk(
+                *m_impl->world.world,
+                m_impl->assets,
+                m_impl->world.worldSet.persistenceService(),
+                persistenceContext,
+                generator->config().world.version,
+                Persistence::SaveScope::EntitiesOnly);
+        } else {
+            spdlog::info("Debug block catalog mode: skipping world load from disk");
+        }
 
         uint32_t worldGenVersion = generator->config().world.version;
-        size_t ioThreads = static_cast<size_t>(std::max(0, config.stream.ioThreads));
-        size_t loadWorkerThreads = static_cast<size_t>(std::max(0, config.stream.loadWorkerThreads));
-        m_impl->world.chunkLoader = std::make_shared<Persistence::AsyncChunkLoader>(
-            m_impl->world.worldSet.persistenceService(),
-            std::move(persistenceContext),
-            *m_impl->world.world,
-            worldGenVersion,
-            ioThreads,
-            loadWorkerThreads,
-            config.stream.viewDistanceChunks,
-            generator);
-        if (config.stream.loadQueueLimit >= 0) {
-            m_impl->world.chunkLoader->setLoadQueueLimit(
-                static_cast<size_t>(config.stream.loadQueueLimit));
+        if (Core::shouldCreateChunkLoader(m_impl->world.debugBlockCatalogEnabled)) {
+            size_t ioThreads = static_cast<size_t>(std::max(0, config.stream.ioThreads));
+            size_t loadWorkerThreads =
+                static_cast<size_t>(std::max(0, config.stream.loadWorkerThreads));
+            m_impl->world.chunkLoader = std::make_shared<Persistence::AsyncChunkLoader>(
+                m_impl->world.worldSet.persistenceService(),
+                std::move(persistenceContext),
+                *m_impl->world.world,
+                worldGenVersion,
+                ioThreads,
+                loadWorkerThreads,
+                config.stream.viewDistanceChunks,
+                generator);
+            if (config.stream.loadQueueLimit >= 0) {
+                m_impl->world.chunkLoader->setLoadQueueLimit(
+                    static_cast<size_t>(config.stream.loadQueueLimit));
+            }
+            m_impl->world.chunkLoader->setRegionDrainBudget(
+                static_cast<size_t>(std::max(0, config.stream.loadRegionDrainBudget)));
+            m_impl->world.chunkLoader->setMaxCachedRegions(
+                static_cast<size_t>(std::max(0, config.stream.loadMaxCachedRegions)));
+            m_impl->world.chunkLoader->setMaxInFlightRegions(
+                static_cast<size_t>(std::max(0, config.stream.loadMaxInFlightRegions)));
+            m_impl->world.chunkLoader->setPrefetchRadius(
+                std::max(0, config.stream.loadPrefetchRadius));
+            m_impl->world.chunkLoader->setPrefetchPerRequest(
+                static_cast<size_t>(std::max(0, config.stream.loadPrefetchPerRequest)));
+            m_impl->world.worldView->setChunkLoader(
+                [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
+                    return loader ? loader->request(coord) : false;
+                });
+            m_impl->world.worldView->setChunkPendingCallback(
+                [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
+                    return loader ? loader->isPending(coord) : false;
+                });
+            m_impl->world.worldView->setChunkLoadDrain(
+                [loader = m_impl->world.chunkLoader](size_t budget) {
+                    if (loader) {
+                        loader->drainCompletions(budget);
+                    }
+                });
+            m_impl->world.worldView->setChunkLoadCancel(
+                [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
+                    if (loader) {
+                        loader->cancel(coord);
+                    }
+                });
+            // Do not invalidate voxel-SVO pages for ordinary chunk streaming applies.
+            // Stream-populated chunks already come from the same persistence/generator sources
+            // the voxel-SVO sampler reads, and invalidating here causes continuous churn while
+            // the stream is filling. Runtime voxel edits still invalidate explicitly.
+            m_impl->world.chunkLoader->setChunkAppliedCallback({});
+        } else {
+            spdlog::info("Debug block catalog mode: skipping async persistence chunk loader");
+            m_impl->world.worldView->setChunkLoader({});
+            m_impl->world.worldView->setChunkPendingCallback({});
+            m_impl->world.worldView->setChunkLoadDrain({});
+            m_impl->world.worldView->setChunkLoadCancel({});
         }
-        m_impl->world.chunkLoader->setRegionDrainBudget(
-            static_cast<size_t>(std::max(0, config.stream.loadRegionDrainBudget)));
-        m_impl->world.chunkLoader->setMaxCachedRegions(
-            static_cast<size_t>(std::max(0, config.stream.loadMaxCachedRegions)));
-        m_impl->world.chunkLoader->setMaxInFlightRegions(
-            static_cast<size_t>(std::max(0, config.stream.loadMaxInFlightRegions)));
-        m_impl->world.chunkLoader->setPrefetchRadius(
-            std::max(0, config.stream.loadPrefetchRadius));
-        m_impl->world.chunkLoader->setPrefetchPerRequest(
-            static_cast<size_t>(std::max(0, config.stream.loadPrefetchPerRequest)));
-        m_impl->world.worldView->setChunkLoader(
-            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
-                return loader ? loader->request(coord) : false;
-            });
-        m_impl->world.worldView->setChunkPendingCallback(
-            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
-                return loader ? loader->isPending(coord) : false;
-            });
-        m_impl->world.worldView->setChunkLoadDrain(
-            [loader = m_impl->world.chunkLoader](size_t budget) {
-                if (loader) {
-                    loader->drainCompletions(budget);
-                }
-            });
-        m_impl->world.worldView->setChunkLoadCancel(
-            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
-                if (loader) {
-                    loader->cancel(coord);
-                }
-            });
-        // Do not invalidate voxel-SVO pages for ordinary chunk streaming applies.
-        // Stream-populated chunks already come from the same persistence/generator sources
-        // the voxel-SVO sampler reads, and invalidating here causes continuous churn while
-        // the stream is filling. Runtime voxel edits still invalidate explicitly.
-        m_impl->world.chunkLoader->setChunkAppliedCallback({});
-        auto persistenceSource = std::make_shared<Voxel::PersistenceSource>(
-            &m_impl->world.worldSet.persistenceService(),
-            m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId));
-        const size_t cachedRegions =
-            static_cast<size_t>(std::max(1, config.stream.loadMaxCachedRegions));
-        const size_t cachedChunksPerRegion =
-            static_cast<size_t>(Voxel::Chunk::SIZE);
-        persistenceSource->setCacheLimits(
-            cachedRegions,
-            cachedRegions * cachedChunksPerRegion);
-        m_impl->world.worldView->setVoxelPersistenceSource(std::move(persistenceSource));
+        if (Core::shouldWireVoxelPersistenceSource(m_impl->world.debugBlockCatalogEnabled)) {
+            auto persistenceSource = std::make_shared<Voxel::PersistenceSource>(
+                &m_impl->world.worldSet.persistenceService(),
+                m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId));
+            const size_t cachedRegions =
+                static_cast<size_t>(std::max(1, config.stream.loadMaxCachedRegions));
+            const size_t cachedChunksPerRegion =
+                static_cast<size_t>(Voxel::Chunk::SIZE);
+            persistenceSource->setCacheLimits(
+                cachedRegions,
+                cachedRegions * cachedChunksPerRegion);
+            m_impl->world.worldView->setVoxelPersistenceSource(std::move(persistenceSource));
+        } else {
+            spdlog::info("Debug block catalog mode: skipping voxel persistence source wiring");
+            m_impl->world.worldView->setVoxelPersistenceSource({});
+        }
 
         Voxel::ConfigProvider renderConfigProvider =
             Voxel::makeRenderConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
@@ -604,10 +669,21 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             m_impl->world.placeBlock = Voxel::BlockID{1};
         }
 
-        int spawnX = static_cast<int>(std::floor(m_impl->camera.position.x));
-        int spawnZ = static_cast<int>(std::floor(m_impl->camera.position.z));
-        int spawnY = Voxel::findFirstAirY(*generator, config, spawnX, spawnZ);
-        m_impl->camera.position.y = static_cast<float>(spawnY) + 0.5f;
+        if (m_impl->world.debugBlockCatalogEnabled) {
+            Core::DebugBlockCatalogPlan catalogPlan =
+                Core::buildDebugBlockCatalogPlan(m_impl->world.world->blockRegistry());
+            populateDebugBlockCatalog(*m_impl->world.world, *m_impl->world.worldView, catalogPlan);
+            setCameraView(m_impl->camera, catalogPlan.cameraPosition, catalogPlan.cameraTarget);
+            spdlog::info("Debug block catalog populated: {} blocks, {} rows x {} cols",
+                         catalogPlan.layout.blockCount,
+                         catalogPlan.layout.rows,
+                         catalogPlan.layout.columns);
+        } else {
+            int spawnX = static_cast<int>(std::floor(m_impl->camera.position.x));
+            int spawnZ = static_cast<int>(std::floor(m_impl->camera.position.z));
+            int spawnY = Voxel::findFirstAirY(*generator, config, spawnX, spawnZ);
+            m_impl->camera.position.y = static_cast<float>(spawnY) + 0.5f;
+        }
 
         Render::initDebugField(m_impl->debug, m_impl->assets);
         Render::initFrameGraph(m_impl->debug, m_impl->assets);
@@ -620,7 +696,8 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 }
 
 Application::~Application() {
-    if (m_impl && m_impl->world.ready && m_impl->world.world) {
+    if (m_impl && m_impl->world.ready && m_impl->world.world &&
+        Core::shouldSaveWorldToDisk(m_impl->world.debugBlockCatalogEnabled)) {
         try {
             Persistence::saveWorldToDisk(
                 *m_impl->world.world,
@@ -629,6 +706,9 @@ Application::~Application() {
         } catch (const std::exception& e) {
             spdlog::error("World save failed: {}", e.what());
         }
+    } else if (m_impl && m_impl->world.ready && m_impl->world.world &&
+               m_impl->world.debugBlockCatalogEnabled) {
+        spdlog::info("Debug block catalog mode: skipping world save to disk");
     }
 
     if (m_impl && m_impl->window.window) {
@@ -725,13 +805,23 @@ void Application::run() {
                 {
                     PROFILE_SCOPE("Simulation");
                     Input::updateCamera(m_impl->input, m_impl->camera, deltaTime);
-                    Input::handleDemoSpawn(m_impl->input, m_impl->assets, *m_impl->world.world, m_impl->camera);
-                    Input::handleBlockEdits(m_impl->input,
-                                            m_impl->window,
-                                            m_impl->camera,
-                                            *m_impl->world.world,
-                                            *m_impl->world.worldView,
-                                            m_impl->world.placeBlock);
+                    if (Core::shouldHandleDemoSpawn(m_impl->world.debugBlockCatalogEnabled)) {
+                        Input::handleDemoSpawn(
+                            m_impl->input, m_impl->assets, *m_impl->world.world, m_impl->camera);
+                    }
+                    if (Core::shouldHandleBlockEdits(m_impl->world.debugBlockCatalogEnabled)) {
+                        Input::handleBlockEdits(m_impl->input,
+                                                m_impl->window,
+                                                m_impl->camera,
+                                                *m_impl->world.world,
+                                                *m_impl->world.worldView,
+                                                m_impl->world.placeBlock);
+                    } else {
+                        m_impl->input.lastLeftDown =
+                            glfwGetMouseButton(m_impl->window.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                        m_impl->input.lastRightDown =
+                            glfwGetMouseButton(m_impl->window.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+                    }
                     m_impl->world.world->tickEntities(deltaTime);
                 }
 
@@ -778,7 +868,7 @@ void Application::run() {
                 glViewport(0, 0, width, height);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-                {
+                if (Core::shouldRunWorldStreaming(m_impl->world.debugBlockCatalogEnabled)) {
                     PROFILE_SCOPE("Streaming");
                     {
                         PROFILE_SCOPE("Streaming/Update");

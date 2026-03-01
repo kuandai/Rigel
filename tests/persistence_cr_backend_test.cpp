@@ -7,10 +7,14 @@
 #include "Rigel/Persistence/Backends/CR/CRBin.h"
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
 #include "Rigel/Persistence/Backends/CR/CRLz4.h"
+#include "Rigel/Persistence/Providers.h"
 #include "Rigel/Voxel/Block.h"
+#include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/BlockType.h"
 
 #include <filesystem>
 #include <algorithm>
+#include <cstddef>
 #include "Rigel/Persistence/Storage.h"
 
 #include <unordered_map>
@@ -241,6 +245,71 @@ ChunkData makeMinimalChunkData(const ChunkKey& key) {
     return data;
 }
 
+void fillChunkData(ChunkData& data, Rigel::Voxel::BlockID a, Rigel::Voxel::BlockID b) {
+    for (size_t i = 0; i < data.blocks.size(); ++i) {
+        data.blocks[i].id = (i % 3 == 0) ? a : b;
+    }
+}
+
+Rigel::Voxel::BlockID registerOpaqueBlock(Rigel::Voxel::BlockRegistry& registry,
+                                          const std::string& identifier) {
+    Rigel::Voxel::BlockType block;
+    block.identifier = identifier;
+    block.isOpaque = true;
+    block.isSolid = true;
+    return registry.registerBlock(identifier, std::move(block));
+}
+
+std::shared_ptr<ProviderRegistry> makeBlockProviders(const Rigel::Voxel::BlockRegistry& registry,
+                                                     const std::string& placeholder = {}) {
+    auto providers = std::make_shared<ProviderRegistry>();
+    auto blockProvider = std::make_shared<BlockRegistryProvider>(&registry);
+    if (!placeholder.empty()) {
+        blockProvider->setPlaceholderIdentifier(placeholder);
+    }
+    providers->add(kBlockRegistryProviderId, blockProvider);
+    return providers;
+}
+
+void rewriteIdentifierInRegion(InMemoryStorageBackend& storage,
+                               const std::string& path,
+                               const std::string& from,
+                               const std::string& to) {
+    if (from.size() != to.size()) {
+        throw std::runtime_error("rewriteIdentifierInRegion: identifier lengths must match");
+    }
+    auto reader = storage.openRead(path);
+    std::vector<uint8_t> bytes(reader->size());
+    reader->seek(0);
+    if (!bytes.empty()) {
+        reader->readBytes(bytes.data(), bytes.size());
+    }
+
+    const std::vector<uint8_t> fromBytes(from.begin(), from.end());
+    const std::vector<uint8_t> toBytes(to.begin(), to.end());
+    bool replaced = false;
+    if (bytes.size() >= fromBytes.size() && !fromBytes.empty()) {
+        for (size_t i = 0; i <= bytes.size() - fromBytes.size(); ++i) {
+            auto it = bytes.begin() + static_cast<std::ptrdiff_t>(i);
+            if (std::equal(fromBytes.begin(), fromBytes.end(), it)) {
+                std::copy(toBytes.begin(), toBytes.end(), it);
+                replaced = true;
+                break;
+            }
+        }
+    }
+    if (!replaced) {
+        throw std::runtime_error("rewriteIdentifierInRegion: source identifier not found in payload");
+    }
+
+    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    if (!bytes.empty()) {
+        session->writer().writeBytes(bytes.data(), bytes.size());
+    }
+    session->writer().flush();
+    session->commit();
+}
+
 const CRBinValue& requireField(const CRBinObject& obj, const std::string& name) {
     auto it = obj.fields.find(name);
     if (it == obj.fields.end()) {
@@ -344,12 +413,154 @@ TEST_CASE(CRBackend_world_metadata_roundtrip) {
     WorldSnapshot world;
     world.metadata.worldId = "demo";
     world.metadata.displayName = "Demo World";
+    world.metadata.defaultZoneId = "base:earth";
 
     service.saveWorld(world, SaveScope::MetadataOnly, context);
     auto loaded = service.loadWorldMetadata(context);
 
     CHECK_EQ(loaded.worldId, "demo");
     CHECK_EQ(loaded.displayName, "Demo World");
+    CHECK_EQ(loaded.defaultZoneId, "base:earth");
+}
+
+TEST_CASE(CRBackend_region_roundtrip_non_air_with_identity_provider) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::BlockRegistry registry;
+    Rigel::Voxel::BlockID stoneId = registerOpaqueBlock(registry, "base:stone_shale");
+    Rigel::Voxel::BlockID dirtId = registerOpaqueBlock(registry, "base:dirt");
+
+    FormatRegistry formatRegistry;
+    formatRegistry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(formatRegistry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/non_air";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = makeBlockProviders(registry);
+
+    ChunkRegionSnapshot region;
+    region.key = RegionKey{"base:earth", 0, 0, 0};
+
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{"base:earth", 0, 0, 0};
+    chunk.data = makeMinimalChunkData(chunk.key);
+    fillChunkData(chunk.data, stoneId, dirtId);
+    region.chunks.push_back(chunk);
+
+    service.saveRegion(region, context);
+    auto loaded = service.loadRegion(region.key, context);
+
+    CHECK_EQ(loaded.chunks.size(), static_cast<size_t>(1));
+    CHECK_EQ(loaded.chunks[0].key, chunk.key);
+    CHECK_EQ(loaded.chunks[0].data, chunk.data);
+}
+
+TEST_CASE(CRBackend_unknown_block_policy_fail_throws) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::BlockRegistry registry;
+    Rigel::Voxel::BlockID knownId = registerOpaqueBlock(registry, "base:known_block");
+
+    FormatRegistry formatRegistry;
+    formatRegistry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(formatRegistry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/unknown_fail";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = makeBlockProviders(registry);
+    context.policies.unknownBlockPolicy = UnknownIdPolicy::Fail;
+
+    RegionKey regionKey{"base:earth", 0, 0, 0};
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{"base:earth", 0, 0, 0};
+    chunk.data = makeMinimalChunkData(chunk.key);
+    fillChunkData(chunk.data, knownId, knownId);
+    ChunkRegionSnapshot region{regionKey, {chunk}};
+    service.saveRegion(region, context);
+    rewriteIdentifierInRegion(
+        *storage,
+        CRPaths::regionPath(regionKey, context),
+        "base:known_block",
+        "base:ghost_block");
+
+    CHECK_THROWS(service.loadRegion(regionKey, context));
+}
+
+TEST_CASE(CRBackend_unknown_block_policy_placeholder_uses_placeholder) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::BlockRegistry registry;
+    Rigel::Voxel::BlockID knownId = registerOpaqueBlock(registry, "base:known_block");
+    Rigel::Voxel::BlockID placeholder = registerOpaqueBlock(registry, "base:placeholder");
+
+    FormatRegistry formatRegistry;
+    formatRegistry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(formatRegistry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/unknown_placeholder";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = makeBlockProviders(registry, "base:placeholder");
+    context.policies.unknownBlockPolicy = UnknownIdPolicy::Placeholder;
+
+    RegionKey regionKey{"base:earth", 0, 0, 0};
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{"base:earth", 0, 0, 0};
+    chunk.data = makeMinimalChunkData(chunk.key);
+    fillChunkData(chunk.data, knownId, knownId);
+    ChunkRegionSnapshot region{regionKey, {chunk}};
+    service.saveRegion(region, context);
+    rewriteIdentifierInRegion(
+        *storage,
+        CRPaths::regionPath(regionKey, context),
+        "base:known_block",
+        "base:ghost_block");
+
+    auto loaded = service.loadRegion(regionKey, context);
+    CHECK_EQ(loaded.chunks.size(), static_cast<size_t>(1));
+    CHECK_EQ(loaded.chunks[0].data.blocks.size(), static_cast<size_t>(16 * 16 * 16));
+    for (const auto& state : loaded.chunks[0].data.blocks) {
+        CHECK_EQ(state.id, placeholder);
+    }
+}
+
+TEST_CASE(CRBackend_unknown_block_policy_skip_maps_to_air) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::BlockRegistry registry;
+    Rigel::Voxel::BlockID knownId = registerOpaqueBlock(registry, "base:known_block");
+
+    FormatRegistry formatRegistry;
+    formatRegistry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(formatRegistry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/unknown_skip";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = makeBlockProviders(registry);
+    context.policies.unknownBlockPolicy = UnknownIdPolicy::Skip;
+
+    RegionKey regionKey{"base:earth", 0, 0, 0};
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{"base:earth", 0, 0, 0};
+    chunk.data = makeMinimalChunkData(chunk.key);
+    fillChunkData(chunk.data, knownId, knownId);
+    ChunkRegionSnapshot region{regionKey, {chunk}};
+    service.saveRegion(region, context);
+    rewriteIdentifierInRegion(
+        *storage,
+        CRPaths::regionPath(regionKey, context),
+        "base:known_block",
+        "base:ghost_block");
+
+    auto loaded = service.loadRegion(regionKey, context);
+    CHECK_EQ(loaded.chunks.size(), static_cast<size_t>(1));
+    CHECK_EQ(loaded.chunks[0].data.blocks.size(), static_cast<size_t>(16 * 16 * 16));
+    for (const auto& state : loaded.chunks[0].data.blocks) {
+        CHECK(state.isAir());
+    }
 }
 
 TEST_CASE(CRBackend_region_roundtrip_lz4) {

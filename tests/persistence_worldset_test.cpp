@@ -53,11 +53,12 @@ TEST_CASE(WorldSet_PersistenceContextIncludesProviders) {
     worldSet.setPersistenceRoot("root");
     worldSet.setPersistenceStorage(std::make_shared<DummyStorage>());
     worldSet.setPersistencePreferredFormat("memory");
+    worldSet.setPersistenceZoneId("base:earth");
 
     auto ctx = worldSet.persistenceContext(world.id());
     CHECK_EQ(ctx.rootPath, std::string("root"));
     CHECK_EQ(ctx.preferredFormat, std::string("memory"));
+    CHECK_EQ(ctx.zoneId, std::string("base:earth"));
     CHECK(ctx.providers != nullptr);
     CHECK(ctx.providers->findAs<DummyProvider>("dummy") == provider);
 }
-

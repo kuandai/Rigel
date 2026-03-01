@@ -58,14 +58,6 @@ struct ItemDefIR {
     ExtensionMap extensions;
 };
 
-struct AssetGraphIR {
-    std::vector<BlockDefIR> blocks;
-    std::vector<ModelRefIR> models;
-    std::vector<MaterialRefIR> materials;
-    std::vector<EntityDefIR> entities;
-    std::vector<ItemDefIR> items;
-};
-
 enum class ValidationSeverity {
     Error,
     Warning
@@ -77,6 +69,23 @@ struct ValidationIssue {
     std::string identifier;
     std::string field;
     std::string message;
+};
+
+struct IdentifierAliasIR {
+    std::string domain;
+    std::string canonicalIdentifier;
+    std::string externalIdentifier;
+    std::string sourcePath;
+};
+
+struct AssetGraphIR {
+    std::vector<BlockDefIR> blocks;
+    std::vector<ModelRefIR> models;
+    std::vector<MaterialRefIR> materials;
+    std::vector<EntityDefIR> entities;
+    std::vector<ItemDefIR> items;
+    std::vector<IdentifierAliasIR> aliases;
+    std::vector<ValidationIssue> compilerDiagnostics;
 };
 
 AssetGraphIR compileRigelEmbedded();

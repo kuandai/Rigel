@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Rigel::Asset::IR {
 
@@ -211,6 +212,567 @@ void sortByIdentifier(std::vector<T>& values) {
     });
 }
 
+struct OrderedParams {
+    std::vector<std::pair<std::string, std::string>> ordered;
+    std::unordered_map<std::string, size_t> lookup;
+};
+
+void setParam(OrderedParams& params, const std::string& key, const std::string& value) {
+    if (key.empty()) {
+        return;
+    }
+    auto it = params.lookup.find(key);
+    if (it != params.lookup.end()) {
+        params.ordered[it->second].second = value;
+        return;
+    }
+    params.lookup.emplace(key, params.ordered.size());
+    params.ordered.emplace_back(key, value);
+}
+
+OrderedParams parseParamString(const std::string& stateKey) {
+    OrderedParams out;
+    if (stateKey.empty()) {
+        return out;
+    }
+    size_t start = 0;
+    while (start < stateKey.size()) {
+        size_t comma = stateKey.find(',', start);
+        std::string_view part(stateKey.data() + start,
+                              (comma == std::string::npos) ? stateKey.size() - start : comma - start);
+        size_t eq = part.find('=');
+        if (eq != std::string_view::npos && eq > 0 && eq + 1 < part.size()) {
+            setParam(out,
+                     std::string(part.substr(0, eq)),
+                     std::string(part.substr(eq + 1)));
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    return out;
+}
+
+OrderedParams parseParamsNode(ryml::ConstNodeRef node) {
+    OrderedParams out;
+    if (!node.readable() || !node.is_map()) {
+        return out;
+    }
+    for (ryml::ConstNodeRef child : node.children()) {
+        if (!child.has_key() || !child.has_val()) {
+            continue;
+        }
+        std::string key(child.key().data(), child.key().size());
+        std::string value;
+        child >> value;
+        setParam(out, key, value);
+    }
+    return out;
+}
+
+std::string paramsToString(const OrderedParams& params, bool canonicalOrder) {
+    std::vector<std::pair<std::string, std::string>> entries = params.ordered;
+    if (canonicalOrder) {
+        std::sort(entries.begin(), entries.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+    }
+    std::string out;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i > 0) {
+            out += ",";
+        }
+        out += entries[i].first;
+        out += "=";
+        out += entries[i].second;
+    }
+    return out;
+}
+
+std::string withParams(const std::string& rootId, const std::string& params) {
+    if (params.empty()) {
+        return rootId;
+    }
+    return rootId + "[" + params + "]";
+}
+
+std::string stripJsonCommentsAndTrailingCommas(const std::string& text) {
+    std::string noComments;
+    noComments.reserve(text.size());
+
+    bool inString = false;
+    bool escaping = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (inString) {
+            noComments.push_back(c);
+            if (escaping) {
+                escaping = false;
+            } else if (c == '\\') {
+                escaping = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (c == '"') {
+            inString = true;
+            noComments.push_back(c);
+            continue;
+        }
+
+        if (c == '/' && i + 1 < text.size()) {
+            if (text[i + 1] == '/') {
+                i += 2;
+                while (i < text.size() && text[i] != '\n') {
+                    ++i;
+                }
+                if (i < text.size()) {
+                    noComments.push_back(text[i]);
+                }
+                continue;
+            }
+            if (text[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < text.size() && !(text[i] == '*' && text[i + 1] == '/')) {
+                    ++i;
+                }
+                ++i;
+                continue;
+            }
+        }
+
+        noComments.push_back(c);
+    }
+
+    std::string out;
+    out.reserve(noComments.size());
+    inString = false;
+    escaping = false;
+    for (size_t i = 0; i < noComments.size(); ++i) {
+        char c = noComments[i];
+        if (inString) {
+            out.push_back(c);
+            if (escaping) {
+                escaping = false;
+            } else if (c == '\\') {
+                escaping = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (c == '"') {
+            inString = true;
+            out.push_back(c);
+            continue;
+        }
+
+        if (c == ',') {
+            size_t j = i + 1;
+            while (j < noComments.size() &&
+                   std::isspace(static_cast<unsigned char>(noComments[j])) != 0) {
+                ++j;
+            }
+            if (j < noComments.size() &&
+                (noComments[j] == '}' || noComments[j] == ']')) {
+                continue;
+            }
+        }
+
+        out.push_back(c);
+    }
+    return out;
+}
+
+ryml::Tree parseLenientJson(const std::filesystem::path& path, const std::string& text) {
+    std::string sanitized = stripJsonCommentsAndTrailingCommas(text);
+    return ryml::parse_in_arena(
+        ryml::to_csubstr(path.generic_string().c_str()),
+        ryml::to_csubstr(sanitized.c_str())
+    );
+}
+
+std::optional<ryml::ConstNodeRef> getChildNode(ryml::ConstNodeRef primary,
+                                                ryml::ConstNodeRef fallback,
+                                                const char* key) {
+    const ryml::csubstr k = ryml::to_csubstr(key);
+    if (primary.readable() && primary.has_child(k)) {
+        return primary[k];
+    }
+    if (fallback.readable() && fallback.has_child(k)) {
+        return fallback[k];
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> parseBoolNode(ryml::ConstNodeRef node) {
+    if (!node.readable() || !node.has_val()) {
+        return std::nullopt;
+    }
+    std::string value;
+    node >> value;
+    if (value == "true" || value == "1" || value == "yes") {
+        return true;
+    }
+    if (value == "false" || value == "0" || value == "no") {
+        return false;
+    }
+    return std::nullopt;
+}
+
+std::optional<int> parseIntNode(ryml::ConstNodeRef node) {
+    if (!node.readable() || !node.has_val()) {
+        return std::nullopt;
+    }
+    std::string value;
+    node >> value;
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::vector<std::string> parseStringListNode(ryml::ConstNodeRef node) {
+    std::vector<std::string> out;
+    if (!node.readable() || !node.is_seq()) {
+        return out;
+    }
+    for (ryml::ConstNodeRef child : node.children()) {
+        if (!child.has_val()) {
+            continue;
+        }
+        std::string value;
+        child >> value;
+        if (!value.empty()) {
+            out.push_back(value);
+        }
+    }
+    return out;
+}
+
+std::string nodeScalarToString(ryml::ConstNodeRef node) {
+    if (!node.readable() || !node.has_val()) {
+        return {};
+    }
+    std::string value;
+    node >> value;
+    return value;
+}
+
+struct CRGeneratorDefinition {
+    std::string identifier;
+    std::string sourcePath;
+    OrderedParams params;
+    std::vector<std::string> includes;
+    std::optional<std::string> modelName;
+    std::optional<bool> isOpaque;
+    std::optional<bool> isSolid;
+    std::optional<uint8_t> lightAttenuation;
+    std::optional<std::string> renderLayer;
+    std::vector<std::string> nestedStateGenerators;
+    ExtensionMap extensions;
+};
+
+bool hasGeneratorConcreteState(const CRGeneratorDefinition& def) {
+    return !def.params.ordered.empty() ||
+           def.modelName.has_value() ||
+           def.isOpaque.has_value() ||
+           def.isSolid.has_value() ||
+           def.lightAttenuation.has_value() ||
+           def.renderLayer.has_value() ||
+           !def.extensions.empty();
+}
+
+void collectGenerators(const std::filesystem::path& baseRoot,
+                       std::unordered_map<std::string, CRGeneratorDefinition>& out,
+                       std::vector<ValidationIssue>& diagnostics) {
+    std::vector<std::filesystem::path> files;
+    collectFilesystemPaths(baseRoot / "block_state_generators", files, {".json"});
+    for (const auto& file : files) {
+        const std::string sourcePath = relativeOrAbsolute(file, baseRoot);
+        std::string text = readFileText(file);
+        ryml::Tree tree;
+        try {
+            tree = parseLenientJson(file, text);
+        } catch (const std::exception& e) {
+            diagnostics.push_back(ValidationIssue{
+                .severity = ValidationSeverity::Warning,
+                .sourcePath = sourcePath,
+                .identifier = "",
+                .field = "block_state_generators",
+                .message = std::string("Failed to parse generator file: ") + e.what()
+            });
+            continue;
+        }
+        ryml::ConstNodeRef root = tree.rootref();
+        if (!root.has_child("generators")) {
+            continue;
+        }
+        ryml::ConstNodeRef generatorsNode = root["generators"];
+        if (!generatorsNode.is_seq()) {
+            continue;
+        }
+        for (ryml::ConstNodeRef entry : generatorsNode.children()) {
+            if (!entry.is_map()) {
+                continue;
+            }
+            auto idOpt = nodeString(entry, "stringId");
+            if (!idOpt || idOpt->empty()) {
+                diagnostics.push_back(ValidationIssue{
+                    .severity = ValidationSeverity::Warning,
+                    .sourcePath = sourcePath,
+                    .identifier = "",
+                    .field = "generator.stringId",
+                    .message = "Generator entry missing stringId"
+                });
+                continue;
+            }
+
+            CRGeneratorDefinition def;
+            def.identifier = *idOpt;
+            def.sourcePath = sourcePath;
+
+            if (entry.has_child("include")) {
+                def.includes = parseStringListNode(entry["include"]);
+            }
+            if (entry.has_child("params")) {
+                def.params = parseParamsNode(entry["params"]);
+            }
+            if (auto model = nodeString(entry, "modelName")) {
+                def.modelName = *model;
+            }
+
+            if (entry.has_child("overrides")) {
+                ryml::ConstNodeRef overrides = entry["overrides"];
+                if (auto model = nodeString(overrides, "modelName")) {
+                    def.modelName = *model;
+                }
+                if (auto node = getChildNode(overrides, ryml::ConstNodeRef(), "isOpaque")) {
+                    if (auto parsed = parseBoolNode(*node)) {
+                        def.isOpaque = *parsed;
+                    }
+                }
+                if (auto node = getChildNode(overrides, ryml::ConstNodeRef(), "isSolid")) {
+                    if (auto parsed = parseBoolNode(*node)) {
+                        def.isSolid = *parsed;
+                    }
+                }
+                if (!def.isSolid.has_value()) {
+                    if (auto node = getChildNode(overrides, ryml::ConstNodeRef(), "walkThrough")) {
+                        if (auto parsed = parseBoolNode(*node)) {
+                            def.isSolid = !(*parsed);
+                        }
+                    }
+                }
+                if (auto node = getChildNode(overrides, ryml::ConstNodeRef(), "lightAttenuation")) {
+                    if (auto parsed = parseIntNode(*node)) {
+                        if (*parsed >= 0 && *parsed <= 255) {
+                            def.lightAttenuation = static_cast<uint8_t>(*parsed);
+                        }
+                    }
+                }
+                if (auto layer = nodeString(overrides, "renderLayer")) {
+                    def.renderLayer = *layer;
+                }
+                if (overrides.has_child("stateGenerators")) {
+                    def.nestedStateGenerators = parseStringListNode(overrides["stateGenerators"]);
+                }
+
+                static const std::set<std::string> knownOverrideFields = {
+                    "modelName", "isOpaque", "isSolid", "walkThrough", "lightAttenuation",
+                    "renderLayer", "stateGenerators"
+                };
+                for (ryml::ConstNodeRef child : overrides.children()) {
+                    std::string key(child.key().data(), child.key().size());
+                    if (knownOverrideFields.find(key) != knownOverrideFields.end()) {
+                        continue;
+                    }
+                    if (child.has_val()) {
+                        std::string value;
+                        child >> value;
+                        def.extensions["override." + key] = value;
+                    }
+                }
+            }
+
+            auto [it, inserted] = out.emplace(def.identifier, std::move(def));
+            if (!inserted) {
+                diagnostics.push_back(ValidationIssue{
+                    .severity = ValidationSeverity::Warning,
+                    .sourcePath = sourcePath,
+                    .identifier = *idOpt,
+                    .field = "generator.stringId",
+                    .message = "Duplicate generator identifier; keeping first definition from " + it->second.sourcePath
+                });
+            }
+        }
+    }
+}
+
+struct CRStateTemplate {
+    BlockStateIR state;
+    OrderedParams params;
+    std::vector<std::string> stateGenerators;
+};
+
+void applyGenerator(const CRGeneratorDefinition& def, CRStateTemplate& state) {
+    for (const auto& [key, value] : def.params.ordered) {
+        setParam(state.params, key, value);
+    }
+    if (def.modelName) {
+        state.state.model = *def.modelName;
+    }
+    if (def.isOpaque) {
+        state.state.isOpaque = *def.isOpaque;
+    }
+    if (def.isSolid) {
+        state.state.isSolid = *def.isSolid;
+    }
+    if (def.lightAttenuation) {
+        state.state.lightAttenuation = *def.lightAttenuation;
+    }
+    if (def.renderLayer) {
+        state.state.renderLayer = *def.renderLayer;
+    }
+    for (const auto& [key, value] : def.extensions) {
+        state.state.extensions["cr.generator." + key] = value;
+    }
+    if (!def.nestedStateGenerators.empty()) {
+        state.stateGenerators.insert(state.stateGenerators.end(),
+                                     def.nestedStateGenerators.begin(),
+                                     def.nestedStateGenerators.end());
+    }
+}
+
+void expandStateWithGenerator(const std::string& generatorId,
+                              const CRStateTemplate& input,
+                              const std::unordered_map<std::string, CRGeneratorDefinition>& generators,
+                              std::vector<CRStateTemplate>& out,
+                              std::vector<ValidationIssue>& diagnostics,
+                              std::unordered_set<std::string>& recursionStack,
+                              const std::string& sourcePath,
+                              const std::string& blockId) {
+    auto it = generators.find(generatorId);
+    if (it == generators.end()) {
+        diagnostics.push_back(ValidationIssue{
+            .severity = ValidationSeverity::Warning,
+            .sourcePath = sourcePath,
+            .identifier = blockId,
+            .field = "stateGenerators",
+            .message = "Unsupported generator '" + generatorId + "'"
+        });
+        return;
+    }
+
+    if (!recursionStack.insert(generatorId).second) {
+        diagnostics.push_back(ValidationIssue{
+            .severity = ValidationSeverity::Warning,
+            .sourcePath = sourcePath,
+            .identifier = blockId,
+            .field = "stateGenerators",
+            .message = "Generator include cycle detected at '" + generatorId + "'"
+        });
+        return;
+    }
+
+    const CRGeneratorDefinition& def = it->second;
+    CRStateTemplate current = input;
+    applyGenerator(def, current);
+
+    if (hasGeneratorConcreteState(def)) {
+        out.push_back(current);
+    }
+    if (def.includes.empty() && !hasGeneratorConcreteState(def)) {
+        diagnostics.push_back(ValidationIssue{
+            .severity = ValidationSeverity::Warning,
+            .sourcePath = def.sourcePath,
+            .identifier = generatorId,
+            .field = "include",
+            .message = "Generator has no concrete state changes and no include entries"
+        });
+    }
+
+    for (const std::string& includeId : def.includes) {
+        expandStateWithGenerator(includeId,
+                                 current,
+                                 generators,
+                                 out,
+                                 diagnostics,
+                                 recursionStack,
+                                 sourcePath,
+                                 blockId);
+    }
+
+    recursionStack.erase(generatorId);
+}
+
+std::vector<std::string> mergedStateGenerators(ryml::ConstNodeRef defaultProps,
+                                               ryml::ConstNodeRef stateProps) {
+    std::vector<std::string> out;
+    if (defaultProps.readable() && defaultProps.has_child("stateGenerators")) {
+        auto defaults = parseStringListNode(defaultProps["stateGenerators"]);
+        out.insert(out.end(), defaults.begin(), defaults.end());
+    }
+    if (stateProps.readable() && stateProps.has_child("stateGenerators")) {
+        auto state = parseStringListNode(stateProps["stateGenerators"]);
+        out.insert(out.end(), state.begin(), state.end());
+    }
+    return out;
+}
+
+void registerExpandedState(const std::string& rootId,
+                           const std::string& sourcePath,
+                           CRStateTemplate candidate,
+                           std::unordered_map<std::string, BlockStateIR>& canonicalStates,
+                           std::vector<IdentifierAliasIR>& aliases,
+                           std::vector<ValidationIssue>& diagnostics) {
+    const std::string canonicalParams = paramsToString(candidate.params, true);
+    const std::string externalParams = paramsToString(candidate.params, false);
+    const std::string canonicalId = withParams(rootId, canonicalParams);
+    const std::string externalId = withParams(rootId, externalParams);
+    candidate.state.identifier = canonicalId;
+    candidate.state.rootIdentifier = rootId;
+    candidate.state.sourcePath = sourcePath;
+    candidate.state.extensions["source_format"] = "cr";
+    candidate.state.extensions["cr.external_identifier"] = externalId;
+    if (candidate.state.renderLayer.empty()) {
+        candidate.state.renderLayer = candidate.state.isOpaque ? "opaque" : "transparent";
+    }
+
+    auto it = canonicalStates.find(canonicalId);
+    if (it != canonicalStates.end()) {
+        const bool same = it->second.model == candidate.state.model &&
+                          it->second.renderLayer == candidate.state.renderLayer &&
+                          it->second.isOpaque == candidate.state.isOpaque &&
+                          it->second.isSolid == candidate.state.isSolid &&
+                          it->second.lightAttenuation == candidate.state.lightAttenuation;
+        if (!same) {
+            diagnostics.push_back(ValidationIssue{
+                .severity = ValidationSeverity::Warning,
+                .sourcePath = sourcePath,
+                .identifier = canonicalId,
+                .field = "blockStates/stateGenerators",
+                .message = "Conflicting overrides collapsed into the same canonical state identifier"
+            });
+        }
+        return;
+    }
+    canonicalStates.emplace(canonicalId, std::move(candidate.state));
+
+    if (canonicalId != externalId) {
+        aliases.push_back(IdentifierAliasIR{
+            .domain = "block",
+            .canonicalIdentifier = canonicalId,
+            .externalIdentifier = externalId,
+            .sourcePath = sourcePath
+        });
+    }
+}
+
 } // namespace
 
 AssetGraphIR compileRigelEmbedded() {
@@ -336,44 +898,217 @@ AssetGraphIR compileCRFilesystem(const std::filesystem::path& root) {
         baseRoot = root / "base";
     }
 
+    std::unordered_map<std::string, CRGeneratorDefinition> generators;
+    collectGenerators(baseRoot, generators, graph.compilerDiagnostics);
+
     std::vector<std::filesystem::path> blockFiles;
     collectFilesystemPaths(baseRoot / "blocks", blockFiles, {".json"});
-    std::unordered_map<std::string, size_t> rootToIndex;
     for (const auto& file : blockFiles) {
-        std::string text = readFileText(file);
-        std::vector<std::string> ids = extractStringIds(text);
-        if (ids.empty()) {
-            ids.push_back("base:" + file.stem().string());
+        const std::string sourcePath = relativeOrAbsolute(file, baseRoot);
+        std::string text;
+        try {
+            text = readFileText(file);
+        } catch (const std::exception& e) {
+            graph.compilerDiagnostics.push_back(ValidationIssue{
+                .severity = ValidationSeverity::Warning,
+                .sourcePath = sourcePath,
+                .identifier = "",
+                .field = "read",
+                .message = std::string("Failed to read block file: ") + e.what()
+            });
+            continue;
         }
-        for (const std::string& id : ids) {
+        ryml::Tree tree;
+        try {
+            tree = parseLenientJson(file, text);
+        } catch (const std::exception& e) {
+            graph.compilerDiagnostics.push_back(ValidationIssue{
+                .severity = ValidationSeverity::Warning,
+                .sourcePath = sourcePath,
+                .identifier = "",
+                .field = "parse",
+                .message = std::string("Failed to parse block file: ") + e.what()
+            });
+            continue;
+        }
+
+        ryml::ConstNodeRef rootNode = tree.rootref();
+        std::string rootId = nodeString(rootNode, "stringId").value_or("");
+        if (rootId.empty()) {
+            rootId = "base:" + file.stem().string();
+            graph.compilerDiagnostics.push_back(ValidationIssue{
+                .severity = ValidationSeverity::Warning,
+                .sourcePath = sourcePath,
+                .identifier = rootId,
+                .field = "stringId",
+                .message = "Block missing stringId; using filename fallback"
+            });
+        }
+
+        ryml::ConstNodeRef defaultParamsNode =
+            rootNode.has_child("defaultParams") ? rootNode["defaultParams"] : ryml::ConstNodeRef();
+        ryml::ConstNodeRef defaultPropsNode =
+            rootNode.has_child("defaultProperties") ? rootNode["defaultProperties"] : ryml::ConstNodeRef();
+
+        OrderedParams defaultParams = parseParamsNode(defaultParamsNode);
+
+        BlockDefIR blockDef;
+        blockDef.rootIdentifier = rootId;
+        blockDef.sourcePath = sourcePath;
+        blockDef.extensions["source_format"] = "cr";
+
+        std::unordered_map<std::string, BlockStateIR> canonicalStates;
+        std::vector<std::pair<std::string, ryml::ConstNodeRef>> stateEntries;
+
+        if (rootNode.has_child("blockStates")) {
+            ryml::ConstNodeRef blockStatesNode = rootNode["blockStates"];
+            for (ryml::ConstNodeRef stateNode : blockStatesNode.children()) {
+                std::string stateKey(stateNode.key().data(), stateNode.key().size());
+                stateEntries.emplace_back(stateKey, stateNode);
+            }
+            std::sort(stateEntries.begin(),
+                      stateEntries.end(),
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
+        } else {
+            graph.compilerDiagnostics.push_back(ValidationIssue{
+                .severity = ValidationSeverity::Warning,
+                .sourcePath = sourcePath,
+                .identifier = rootId,
+                .field = "blockStates",
+                .message = "Block has no blockStates map; generating implicit default state"
+            });
+            stateEntries.emplace_back("", ryml::ConstNodeRef());
+        }
+
+        for (const auto& [stateKey, stateNode] : stateEntries) {
+            OrderedParams params = defaultParams;
+            OrderedParams parsedStateParams = parseParamString(stateKey);
+            for (const auto& [key, value] : parsedStateParams.ordered) {
+                setParam(params, key, value);
+            }
+
             BlockStateIR state;
-            state.identifier = id;
-            state.rootIdentifier = stripVariantSuffix(id);
-            state.sourcePath = relativeOrAbsolute(file, baseRoot);
+            state.rootIdentifier = rootId;
+            state.sourcePath = sourcePath;
+            state.model = "cube";
+            state.renderLayer = "opaque";
+            state.isOpaque = true;
+            state.isSolid = true;
+            state.cullSameType = false;
+            state.emittedLight = 0;
+            state.lightAttenuation = 15;
             state.extensions["source_format"] = "cr";
 
-            auto it = rootToIndex.find(state.rootIdentifier);
-            if (it == rootToIndex.end()) {
-                BlockDefIR def;
-                def.rootIdentifier = state.rootIdentifier;
-                def.sourcePath = state.sourcePath;
-                def.states.push_back(std::move(state));
-                graph.blocks.push_back(std::move(def));
-                rootToIndex.emplace(graph.blocks.back().rootIdentifier, graph.blocks.size() - 1);
-            } else {
-                graph.blocks[it->second].states.push_back(std::move(state));
+            if (auto model = getChildNode(stateNode, defaultPropsNode, "modelName")) {
+                std::string modelName = nodeScalarToString(*model);
+                if (!modelName.empty()) {
+                    state.model = modelName;
+                }
+            }
+            if (auto layer = getChildNode(stateNode, defaultPropsNode, "renderLayer")) {
+                std::string renderLayer = nodeScalarToString(*layer);
+                if (!renderLayer.empty()) {
+                    state.renderLayer = renderLayer;
+                }
+            }
+            if (auto opaque = getChildNode(stateNode, defaultPropsNode, "isOpaque")) {
+                if (auto parsed = parseBoolNode(*opaque)) {
+                    state.isOpaque = *parsed;
+                }
+            }
+            if (auto solid = getChildNode(stateNode, defaultPropsNode, "isSolid")) {
+                if (auto parsed = parseBoolNode(*solid)) {
+                    state.isSolid = *parsed;
+                }
+            } else if (auto walkThrough = getChildNode(stateNode, defaultPropsNode, "walkThrough")) {
+                if (auto parsed = parseBoolNode(*walkThrough)) {
+                    state.isSolid = !(*parsed);
+                }
+            }
+            if (auto attenuation = getChildNode(stateNode, defaultPropsNode, "lightAttenuation")) {
+                if (auto parsed = parseIntNode(*attenuation)) {
+                    if (*parsed >= 0 && *parsed <= 255) {
+                        state.lightAttenuation = static_cast<uint8_t>(*parsed);
+                    }
+                }
+            }
+            if (!state.isOpaque && state.renderLayer == "opaque") {
+                state.renderLayer = "transparent";
+            }
+
+            CRStateTemplate baseTemplate;
+            baseTemplate.state = state;
+            baseTemplate.params = params;
+            baseTemplate.stateGenerators = mergedStateGenerators(defaultPropsNode, stateNode);
+
+            registerExpandedState(rootId,
+                                  sourcePath,
+                                  baseTemplate,
+                                  canonicalStates,
+                                  graph.aliases,
+                                  graph.compilerDiagnostics);
+
+            for (const std::string& generatorId : baseTemplate.stateGenerators) {
+                std::vector<CRStateTemplate> expanded;
+                std::unordered_set<std::string> recursionStack;
+                expandStateWithGenerator(generatorId,
+                                         baseTemplate,
+                                         generators,
+                                         expanded,
+                                         graph.compilerDiagnostics,
+                                         recursionStack,
+                                         sourcePath,
+                                         rootId);
+                for (auto& variant : expanded) {
+                    registerExpandedState(rootId,
+                                          sourcePath,
+                                          std::move(variant),
+                                          canonicalStates,
+                                          graph.aliases,
+                                          graph.compilerDiagnostics);
+                }
             }
         }
+
+        for (auto& [id, state] : canonicalStates) {
+            blockDef.states.push_back(std::move(state));
+        }
+        std::sort(blockDef.states.begin(), blockDef.states.end(),
+                  [](const BlockStateIR& a, const BlockStateIR& b) {
+                      return a.identifier < b.identifier;
+                  });
+        graph.blocks.push_back(std::move(blockDef));
     }
 
     std::sort(graph.blocks.begin(), graph.blocks.end(), [](const BlockDefIR& a, const BlockDefIR& b) {
         return a.rootIdentifier < b.rootIdentifier;
     });
-    for (auto& block : graph.blocks) {
-        std::sort(block.states.begin(), block.states.end(), [](const BlockStateIR& a, const BlockStateIR& b) {
-            return a.identifier < b.identifier;
-        });
-    }
+    std::sort(graph.aliases.begin(), graph.aliases.end(), [](const IdentifierAliasIR& a, const IdentifierAliasIR& b) {
+        if (a.domain != b.domain) {
+            return a.domain < b.domain;
+        }
+        if (a.canonicalIdentifier != b.canonicalIdentifier) {
+            return a.canonicalIdentifier < b.canonicalIdentifier;
+        }
+        if (a.externalIdentifier != b.externalIdentifier) {
+            return a.externalIdentifier < b.externalIdentifier;
+        }
+        return a.sourcePath < b.sourcePath;
+    });
+    std::sort(graph.compilerDiagnostics.begin(),
+              graph.compilerDiagnostics.end(),
+              [](const ValidationIssue& a, const ValidationIssue& b) {
+                  if (a.sourcePath != b.sourcePath) {
+                      return a.sourcePath < b.sourcePath;
+                  }
+                  if (a.identifier != b.identifier) {
+                      return a.identifier < b.identifier;
+                  }
+                  if (a.field != b.field) {
+                      return a.field < b.field;
+                  }
+                  return a.message < b.message;
+              });
 
     std::vector<std::filesystem::path> files;
     collectFilesystemPaths(baseRoot / "models", files, {".json", ".yaml", ".yml"});
@@ -405,7 +1140,7 @@ AssetGraphIR compileCRFilesystem(const std::filesystem::path& root) {
 }
 
 std::vector<ValidationIssue> validate(const AssetGraphIR& graph) {
-    std::vector<ValidationIssue> issues;
+    std::vector<ValidationIssue> issues = graph.compilerDiagnostics;
 
     auto add = [&](ValidationSeverity severity,
                    std::string sourcePath,
@@ -480,8 +1215,47 @@ std::vector<ValidationIssue> validate(const AssetGraphIR& graph) {
     checkDuplicateSimpleIds(graph.entities, "entity.identifier");
     checkDuplicateSimpleIds(graph.items, "item.identifier");
 
+    std::unordered_map<std::string, std::string> externalToCanonical;
+    std::unordered_map<std::string, std::string> canonicalToExternal;
+    for (const auto& alias : graph.aliases) {
+        if (alias.domain.empty()) {
+            add(ValidationSeverity::Error,
+                alias.sourcePath,
+                alias.canonicalIdentifier,
+                "aliases.domain",
+                "Alias domain is empty");
+            continue;
+        }
+        if (alias.canonicalIdentifier.empty() || alias.externalIdentifier.empty()) {
+            add(ValidationSeverity::Error,
+                alias.sourcePath,
+                alias.canonicalIdentifier,
+                "aliases.identifier",
+                "Alias canonical/external identifier cannot be empty");
+            continue;
+        }
+
+        const std::string externalKey = alias.domain + "|" + alias.externalIdentifier;
+        const std::string canonicalKey = alias.domain + "|" + alias.canonicalIdentifier;
+        auto [extIt, extInserted] = externalToCanonical.emplace(externalKey, alias.canonicalIdentifier);
+        if (!extInserted && extIt->second != alias.canonicalIdentifier) {
+            add(ValidationSeverity::Error,
+                alias.sourcePath,
+                alias.externalIdentifier,
+                "aliases.external",
+                "External identifier maps to multiple canonical identifiers");
+        }
+        auto [canonIt, canonInserted] = canonicalToExternal.emplace(canonicalKey, alias.externalIdentifier);
+        if (!canonInserted && canonIt->second != alias.externalIdentifier) {
+            add(ValidationSeverity::Error,
+                alias.sourcePath,
+                alias.canonicalIdentifier,
+                "aliases.canonical",
+                "Canonical identifier maps to multiple external identifiers");
+        }
+    }
+
     return issues;
 }
 
 } // namespace Rigel::Asset::IR
-

@@ -45,6 +45,34 @@ bool contains(const std::vector<std::string>& values, const std::string& value) 
     return false;
 }
 
+bool hasIssue(const std::vector<ValidationIssue>& issues,
+              ValidationSeverity severity,
+              const std::string& field,
+              const std::string& needle) {
+    for (const auto& issue : issues) {
+        if (issue.severity != severity || issue.field != field) {
+            continue;
+        }
+        if (issue.message.find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasAlias(const AssetGraphIR& graph,
+              const std::string& canonicalId,
+              const std::string& externalId) {
+    for (const auto& alias : graph.aliases) {
+        if (alias.domain == "block" &&
+            alias.canonicalIdentifier == canonicalId &&
+            alias.externalIdentifier == externalId) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 TEST_CASE(AssetIR_CompileRigelEmbedded_ProducesBlocks) {
@@ -95,24 +123,64 @@ TEST_CASE(AssetIR_Validate_DetectsDuplicateBlockStateIdentifier) {
     CHECK(sawDuplicate);
 }
 
-TEST_CASE(AssetIR_CompileCRFilesystem_CollectsStringIdsAndFallbacks) {
+TEST_CASE(AssetIR_CompileCRFilesystem_ParsesStateExpansionAndGenerators) {
     const std::filesystem::path root = makeTempDir("cr");
     try {
         writeTextFile(root / "base" / "blocks" / "alpha.json", R"({
-  "stringId": "base:alpha[type=full]"
+  "stringId": "base:alpha",
+  "defaultParams": {
+    "kind": "solid",
+    "axis": "y"
+  },
+  "defaultProperties": {
+    "modelName": "base:models/default_alpha.json",
+    "stateGenerators": ["base:rotate_axis"]
+  },
+  "blockStates": {
+    "kind=solid": {},
+    "kind=glass": {
+      "isOpaque": false,
+      "stateGenerators": ["base:missing_generator"]
+    }
+  }
 })");
-        writeTextFile(root / "base" / "blocks" / "fallback.json", R"({
-  "noStringId": true
+        writeTextFile(root / "base" / "block_state_generators" / "rotate_axis.json", R"({
+  "generators": [
+    {
+      "stringId": "base:rotate_axis",
+      "include": ["base:rotate_axis_x"]
+    },
+    {
+      "stringId": "base:rotate_axis_x",
+      "params": {"axis": "x"},
+      "overrides": {
+        "modelName": "base:models/alpha_rotated.json",
+        "isOpaque": false
+      }
+    }
+  ]
 })");
         writeTextFile(root / "base" / "models" / "entities" / "thing.json", "{}");
         writeTextFile(root / "base" / "items" / "item_one.json", "{}");
 
         AssetGraphIR graph = compileCRFilesystem(root);
+        auto issues = validate(graph);
         auto ids = collectStateIds(graph);
-        CHECK(contains(ids, "base:alpha[type=full]"));
-        CHECK(contains(ids, "base:fallback"));
+        CHECK_EQ(graph.blocks.size(), 1u);
+        CHECK_EQ(ids.size(), 4u);
+        CHECK(contains(ids, "base:alpha[axis=x,kind=solid]"));
+        CHECK(contains(ids, "base:alpha[axis=y,kind=glass]"));
+        CHECK(contains(ids, "base:alpha[axis=y,kind=solid]"));
+        CHECK(contains(ids, "base:alpha[axis=x,kind=glass]"));
         CHECK(!graph.models.empty());
         CHECK(!graph.items.empty());
+        CHECK(hasAlias(graph,
+                       "base:alpha[axis=x,kind=solid]",
+                       "base:alpha[kind=solid,axis=x]"));
+        CHECK(hasIssue(issues,
+                       ValidationSeverity::Warning,
+                       "stateGenerators",
+                       "Unsupported generator"));
     } catch (...) {
         std::filesystem::remove_all(root);
         throw;
@@ -120,3 +188,25 @@ TEST_CASE(AssetIR_CompileCRFilesystem_CollectsStringIdsAndFallbacks) {
     std::filesystem::remove_all(root);
 }
 
+TEST_CASE(AssetIR_CompileCRFilesystem_DeterministicExpansionAndAliases) {
+    const std::filesystem::path root = makeTempDir("cr_deterministic");
+    try {
+        writeTextFile(root / "base" / "blocks" / "beta.json", R"({
+  "stringId": "base:beta",
+  "defaultParams": { "zeta": "0", "alpha": "1" },
+  "blockStates": { "zeta=2": {} }
+})");
+        AssetGraphIR first = compileCRFilesystem(root);
+        AssetGraphIR second = compileCRFilesystem(root);
+        CHECK_EQ(collectStateIds(first), collectStateIds(second));
+        CHECK_EQ(first.aliases.size(), second.aliases.size());
+        for (size_t i = 0; i < first.aliases.size(); ++i) {
+            CHECK_EQ(first.aliases[i].canonicalIdentifier, second.aliases[i].canonicalIdentifier);
+            CHECK_EQ(first.aliases[i].externalIdentifier, second.aliases[i].externalIdentifier);
+        }
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}

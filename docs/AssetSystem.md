@@ -15,11 +15,28 @@ The asset system is built around `AssetManager` and an embedded asset registry:
 
 Block definitions additionally flow through a canonical intermediate
 representation (IR) before runtime registration:
-- Source-specific compilers (`Rigel` embedded YAML, `CR` filesystem JSON stub)
+- Source-specific compilers (`Rigel` embedded YAML, `CR` filesystem JSON)
   emit `AssetGraphIR`.
 - Validation runs on IR and reports source path + identifier + field details.
 - Runtime block registration consumes IR state entries, preserving deterministic
   ordering and centralized validation behavior.
+
+### CR Block IR Compiler
+
+The CR compiler path (`compileCRFilesystem`) now performs real block-state
+expansion instead of only scanning `stringId` values:
+- Parses CR block JSON from `base/blocks/**.json` with lenient handling
+  (comments + trailing commas tolerated).
+- Applies `defaultParams` and `blockStates` keys to produce expanded state IDs.
+- Reads generator definitions from `base/block_state_generators/**.json` and
+  expands supported `stateGenerators` include chains.
+- Applies per-state and generator overrides for fields used by Rigel runtime
+  (`modelName`, `isOpaque`, `isSolid`/`walkThrough`, `lightAttenuation`,
+  `renderLayer`).
+- Emits deterministic canonical state identifiers (sorted param keys) and
+  preserves CR-facing external ordering through reversible alias entries.
+- Emits compile diagnostics for unsupported generators, generator include
+  cycles, conflicting canonical collisions, and malformed files.
 
 ## Data Sources
 

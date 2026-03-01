@@ -160,6 +160,8 @@ TEST_CASE(AssetIR_CompileCRFilesystem_ParsesStateExpansionAndGenerators) {
     }
   ]
 })");
+        writeTextFile(root / "base" / "models" / "default_alpha.json", "{}");
+        writeTextFile(root / "base" / "models" / "alpha_rotated.json", "{}");
         writeTextFile(root / "base" / "models" / "entities" / "thing.json", "{}");
         writeTextFile(root / "base" / "items" / "item_one.json", "{}");
 
@@ -186,6 +188,143 @@ TEST_CASE(AssetIR_CompileCRFilesystem_ParsesStateExpansionAndGenerators) {
         throw;
     }
     std::filesystem::remove_all(root);
+}
+
+TEST_CASE(AssetIR_Validate_ReportsUnresolvedModelAndTextureRefs) {
+    AssetGraphIR graph;
+    graph.models.push_back(ModelRefIR{"models/blocks/existing.json", "models/blocks/existing.json", {}});
+    graph.textures.push_back(TextureRefIR{"textures/blocks/existing.png", "textures/blocks/existing.png", {}});
+
+    BlockDefIR block;
+    block.rootIdentifier = "base:test";
+    block.sourcePath = "blocks/test.json";
+    BlockStateIR state;
+    state.identifier = "base:test";
+    state.rootIdentifier = "base:test";
+    state.sourcePath = block.sourcePath;
+    state.model = "base:models/blocks/missing.json";
+    state.textures["default"] = "base:textures/blocks/missing.png";
+    block.states.push_back(std::move(state));
+    graph.blocks.push_back(std::move(block));
+
+    auto issues = validate(graph);
+    CHECK(hasIssue(issues, ValidationSeverity::Error, "model", "Unresolved model reference"));
+    CHECK(hasIssue(issues, ValidationSeverity::Warning, "textures.default", "Unresolved texture reference"));
+}
+
+TEST_CASE(AssetIR_Validate_AcceptsNormalizedNamespacedRefs) {
+    AssetGraphIR graph;
+    graph.models.push_back(ModelRefIR{"models/blocks/example.json", "models/blocks/example.json", {}});
+    graph.textures.push_back(TextureRefIR{"textures/blocks/example.png", "textures/blocks/example.png", {}});
+
+    BlockDefIR block;
+    block.rootIdentifier = "base:test";
+    block.sourcePath = "blocks/test.json";
+    BlockStateIR state;
+    state.identifier = "base:test";
+    state.rootIdentifier = "base:test";
+    state.sourcePath = block.sourcePath;
+    state.model = "base:models/blocks/example.json";
+    state.textures["default"] = "base:textures/blocks/example.png";
+    block.states.push_back(std::move(state));
+    graph.blocks.push_back(std::move(block));
+
+    auto issues = validate(graph);
+    CHECK(!hasIssue(issues, ValidationSeverity::Error, "model", "Unresolved model reference"));
+    CHECK(!hasIssue(issues, ValidationSeverity::Warning, "textures.default", "Unresolved texture reference"));
+}
+
+TEST_CASE(AssetIR_Validate_ReportsRenderLayerFlagMismatch) {
+    AssetGraphIR graph;
+
+    BlockDefIR block;
+    block.rootIdentifier = "base:test";
+    block.sourcePath = "blocks/test.json";
+
+    BlockStateIR opaqueMismatch;
+    opaqueMismatch.identifier = "base:test[mode=a]";
+    opaqueMismatch.rootIdentifier = "base:test";
+    opaqueMismatch.sourcePath = block.sourcePath;
+    opaqueMismatch.renderLayer = "opaque";
+    opaqueMismatch.isOpaque = false;
+
+    BlockStateIR transparentMismatch;
+    transparentMismatch.identifier = "base:test[mode=b]";
+    transparentMismatch.rootIdentifier = "base:test";
+    transparentMismatch.sourcePath = block.sourcePath;
+    transparentMismatch.renderLayer = "transparent";
+    transparentMismatch.isOpaque = true;
+
+    block.states.push_back(std::move(opaqueMismatch));
+    block.states.push_back(std::move(transparentMismatch));
+    graph.blocks.push_back(std::move(block));
+
+    auto issues = validate(graph);
+    CHECK(hasIssue(issues, ValidationSeverity::Warning, "renderLayer", "Opaque render layer with non-opaque"));
+    CHECK(hasIssue(issues, ValidationSeverity::Warning, "renderLayer", "Transparent/cutout render layer with opaque"));
+}
+
+TEST_CASE(AssetIR_CompileCRFilesystem_NormalizesModelRefsAndRenderLayer) {
+    const std::filesystem::path root = makeTempDir("cr_normalize");
+    try {
+        writeTextFile(root / "base" / "blocks" / "gamma.json", R"({
+  "stringId": "base:gamma",
+  "defaultProperties": {
+    "modelName": "./base:models/blocks/gamma.json",
+    "renderLayer": "CuToUt",
+    "isOpaque": false
+  },
+  "blockStates": {
+    "state=default": {}
+  }
+})");
+        writeTextFile(root / "base" / "models" / "blocks" / "gamma.json", "{}");
+
+        AssetGraphIR graph = compileCRFilesystem(root);
+        CHECK_EQ(graph.blocks.size(), 1u);
+        CHECK_EQ(graph.blocks.front().states.size(), 1u);
+        const BlockStateIR& state = graph.blocks.front().states.front();
+        CHECK_EQ(state.model, "models/blocks/gamma.json");
+        CHECK_EQ(state.renderLayer, "cutout");
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE(AssetIR_CompileCRFilesystem_CollectsTexturesDeterministically) {
+    const std::filesystem::path root = makeTempDir("cr_textures");
+    try {
+        writeTextFile(root / "base" / "blocks" / "delta.json", R"({
+  "stringId": "base:delta",
+  "blockStates": { "state=default": {} }
+})");
+        writeTextFile(root / "base" / "textures" / "blocks" / "b.png", "");
+        writeTextFile(root / "base" / "textures" / "blocks" / "a.png", "");
+
+        AssetGraphIR graph = compileCRFilesystem(root);
+        CHECK_EQ(graph.textures.size(), 2u);
+        CHECK_EQ(graph.textures[0].identifier, "textures/blocks/a.png");
+        CHECK_EQ(graph.textures[1].identifier, "textures/blocks/b.png");
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE(AssetIR_Validate_RigelEmbedded_HasNoCriticalModelResolutionErrors) {
+    AssetGraphIR graph = compileRigelEmbedded();
+    const auto issues = validate(graph);
+    bool hasCriticalModelError = false;
+    for (const auto& issue : issues) {
+        if (issue.severity == ValidationSeverity::Error && issue.field == "model") {
+            hasCriticalModelError = true;
+            break;
+        }
+    }
+    CHECK(!hasCriticalModelError);
 }
 
 TEST_CASE(AssetIR_CompileCRFilesystem_DeterministicExpansionAndAliases) {

@@ -38,6 +38,55 @@ bool hasAnySuffix(std::string_view value, std::initializer_list<std::string_view
     return false;
 }
 
+std::string toLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+bool isBuiltinBlockModel(std::string_view model) {
+    return model == "cube" || model == "cross" || model == "slab";
+}
+
+std::string normalizeAssetReference(const std::string& raw) {
+    std::string out = raw;
+    if (out.empty()) {
+        return out;
+    }
+    std::replace(out.begin(), out.end(), '\\', '/');
+    while (startsWith(out, "./")) {
+        out.erase(0, 2);
+    }
+    while (!out.empty() && out.front() == '/') {
+        out.erase(out.begin());
+    }
+    size_t namespaceSep = out.find(':');
+    if (namespaceSep != std::string::npos && namespaceSep + 1 < out.size()) {
+        out = out.substr(namespaceSep + 1);
+    }
+    return out;
+}
+
+std::string normalizeModelReference(const std::string& model) {
+    if (model.empty()) {
+        return "cube";
+    }
+    std::string lowered = toLower(model);
+    if (isBuiltinBlockModel(lowered)) {
+        return lowered;
+    }
+    return normalizeAssetReference(model);
+}
+
+std::string normalizeRenderLayer(const std::string& layer, bool isOpaque) {
+    std::string lowered = toLower(layer);
+    if (lowered.empty()) {
+        return isOpaque ? "opaque" : "transparent";
+    }
+    return lowered;
+}
+
 std::string stripVariantSuffix(const std::string& id) {
     size_t bracketPos = id.find('[');
     if (bracketPos == std::string::npos) {
@@ -737,11 +786,13 @@ void registerExpandedState(const std::string& rootId,
     candidate.state.identifier = canonicalId;
     candidate.state.rootIdentifier = rootId;
     candidate.state.sourcePath = sourcePath;
+    candidate.state.model = normalizeModelReference(candidate.state.model);
+    for (auto& [_, textureRef] : candidate.state.textures) {
+        textureRef = normalizeAssetReference(textureRef);
+    }
     candidate.state.extensions["source_format"] = "cr";
     candidate.state.extensions["cr.external_identifier"] = externalId;
-    if (candidate.state.renderLayer.empty()) {
-        candidate.state.renderLayer = candidate.state.isOpaque ? "opaque" : "transparent";
-    }
+    candidate.state.renderLayer = normalizeRenderLayer(candidate.state.renderLayer, candidate.state.isOpaque);
 
     auto it = canonicalStates.find(canonicalId);
     if (it != canonicalStates.end()) {
@@ -845,9 +896,12 @@ AssetGraphIR compileRigelEmbedded() {
                 std::string key(texNode.key().data(), texNode.key().size());
                 std::string value;
                 texNode >> value;
-                state.textures[key] = value;
+                state.textures[key] = normalizeAssetReference(value);
             }
         }
+
+        state.model = normalizeModelReference(state.model);
+        state.renderLayer = normalizeRenderLayer(state.renderLayer, state.isOpaque);
 
         auto it = rootToIndex.find(state.rootIdentifier);
         if (it == rootToIndex.end()) {
@@ -872,18 +926,22 @@ AssetGraphIR compileRigelEmbedded() {
     });
 
     for (std::string_view path : ResourceRegistry::Paths()) {
-        if (startsWith(path, "models/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
+        if (startsWith(path, "models/entities/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
+            graph.entities.push_back(EntityDefIR{std::string(path), std::string(path), {}});
+        } else if (startsWith(path, "models/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
             graph.models.push_back(ModelRefIR{std::string(path), std::string(path), {}});
         } else if (startsWith(path, "materials/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
             graph.materials.push_back(MaterialRefIR{std::string(path), std::string(path), {}});
-        } else if (startsWith(path, "models/entities/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
-            graph.entities.push_back(EntityDefIR{std::string(path), std::string(path), {}});
+        } else if (startsWith(path, "textures/") &&
+                   hasAnySuffix(path, {".png", ".bmp", ".jpg", ".jpeg", ".tga"})) {
+            graph.textures.push_back(TextureRefIR{std::string(path), std::string(path), {}});
         } else if (startsWith(path, "items/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
             graph.items.push_back(ItemDefIR{std::string(path), std::string(path), {}});
         }
     }
     sortByIdentifier(graph.models);
     sortByIdentifier(graph.materials);
+    sortByIdentifier(graph.textures);
     sortByIdentifier(graph.entities);
     sortByIdentifier(graph.items);
 
@@ -1121,6 +1179,11 @@ AssetGraphIR compileCRFilesystem(const std::filesystem::path& root) {
         std::string id = relativeOrAbsolute(file, baseRoot);
         graph.materials.push_back(MaterialRefIR{id, id, {{"source_format", "cr"}}});
     }
+    collectFilesystemPaths(baseRoot / "textures", files, {".png", ".bmp", ".jpg", ".jpeg", ".tga"});
+    for (const auto& file : files) {
+        std::string id = relativeOrAbsolute(file, baseRoot);
+        graph.textures.push_back(TextureRefIR{id, id, {{"source_format", "cr"}}});
+    }
     collectFilesystemPaths(baseRoot / "entities", files, {".json", ".yaml", ".yml"});
     for (const auto& file : files) {
         std::string id = relativeOrAbsolute(file, baseRoot);
@@ -1133,6 +1196,7 @@ AssetGraphIR compileCRFilesystem(const std::filesystem::path& root) {
     }
     sortByIdentifier(graph.models);
     sortByIdentifier(graph.materials);
+    sortByIdentifier(graph.textures);
     sortByIdentifier(graph.entities);
     sortByIdentifier(graph.items);
 
@@ -1212,8 +1276,67 @@ std::vector<ValidationIssue> validate(const AssetGraphIR& graph) {
 
     checkDuplicateSimpleIds(graph.models, "model.identifier");
     checkDuplicateSimpleIds(graph.materials, "material.identifier");
+    checkDuplicateSimpleIds(graph.textures, "texture.identifier");
     checkDuplicateSimpleIds(graph.entities, "entity.identifier");
     checkDuplicateSimpleIds(graph.items, "item.identifier");
+
+    std::unordered_set<std::string> availableModels;
+    availableModels.reserve(graph.models.size());
+    for (const auto& model : graph.models) {
+        availableModels.insert(normalizeAssetReference(model.identifier));
+    }
+
+    std::unordered_set<std::string> availableTextures;
+    availableTextures.reserve(graph.textures.size());
+    for (const auto& texture : graph.textures) {
+        availableTextures.insert(normalizeAssetReference(texture.identifier));
+    }
+
+    for (const auto& block : graph.blocks) {
+        for (const auto& state : block.states) {
+            const std::string normalizedModel = normalizeModelReference(state.model);
+            if (!normalizedModel.empty() &&
+                !isBuiltinBlockModel(normalizedModel) &&
+                availableModels.find(normalizedModel) == availableModels.end()) {
+                add(ValidationSeverity::Error,
+                    state.sourcePath,
+                    state.identifier,
+                    "model",
+                    "Unresolved model reference '" + state.model +
+                        "' (normalized to '" + normalizedModel + "')");
+            }
+
+            if (state.renderLayer == "opaque" && !state.isOpaque) {
+                add(ValidationSeverity::Warning,
+                    state.sourcePath,
+                    state.identifier,
+                    "renderLayer",
+                    "Opaque render layer with non-opaque block flags may cause unexpected sorting");
+            }
+            if ((state.renderLayer == "transparent" || state.renderLayer == "cutout") && state.isOpaque) {
+                add(ValidationSeverity::Warning,
+                    state.sourcePath,
+                    state.identifier,
+                    "renderLayer",
+                    "Transparent/cutout render layer with opaque block flags may cause culling mismatches");
+            }
+
+            for (const auto& [face, textureRefRaw] : state.textures) {
+                const std::string textureRef = normalizeAssetReference(textureRefRaw);
+                if (textureRef.empty()) {
+                    continue;
+                }
+                if (availableTextures.find(textureRef) == availableTextures.end()) {
+                    add(ValidationSeverity::Warning,
+                        state.sourcePath,
+                        state.identifier,
+                        "textures." + face,
+                        "Unresolved texture reference '" + textureRefRaw +
+                            "' (normalized to '" + textureRef + "')");
+                }
+            }
+        }
+    }
 
     std::unordered_map<std::string, std::string> externalToCanonical;
     std::unordered_map<std::string, std::string> canonicalToExternal;

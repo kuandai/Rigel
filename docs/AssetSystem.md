@@ -20,6 +20,13 @@ representation (IR) before runtime registration:
 - Validation runs on IR and reports source path + identifier + field details.
 - Runtime block registration consumes IR state entries, preserving deterministic
   ordering and centralized validation behavior.
+- Block-state model references are normalized before registration:
+  - built-ins (`cube`, `cross`, `slab`) are lowercased
+  - namespace prefixes are stripped from asset paths
+  - `./` and leading `/` path prefixes are removed
+- Render-layer values are normalized to lowercase and default by opacity:
+  - `opaque` when `isOpaque == true`
+  - `transparent` when `isOpaque == false`
 
 ### CR Block IR Compiler
 
@@ -37,6 +44,8 @@ expansion instead of only scanning `stringId` values:
   preserves CR-facing external ordering through reversible alias entries.
 - Emits compile diagnostics for unsupported generators, generator include
   cycles, conflicting canonical collisions, and malformed files.
+- Inventories `models`, `materials`, and `textures` with deterministic sort
+  order to support stable validation and audits.
 
 ## Data Sources
 
@@ -150,6 +159,30 @@ The asset system throws typed exceptions:
 - `ShaderCompileError` / `ShaderLinkError`: GLSL compilation/link failures.
 
 Most loader errors are fatal at call-site and should be handled by the caller.
+
+## Block Texture Channel Fallbacks
+
+When registering block states from IR, texture assignment follows this order:
+
+- Uniform texture:
+  - `all`
+  - else `default`
+  - else `albedo`
+  - else `diffuse`
+- Top/bottom/sides triplet:
+  - `top`, `bottom`, and (`sides` or `side`)
+- Per-face override keys:
+  - `north`, `south`, `east`, `west`, `up`, `down`
+
+Missing texture files are logged as warnings and do not abort registration of
+other block states.
+
+## IR Validation Severity Policy
+
+- Unresolved model references are validation `Error`s.
+- Unresolved texture references are validation `Warning`s.
+- Render-layer and opacity mismatches are validation `Warning`s because they
+  are legal but often indicate sorting/culling mistakes in authored content.
 
 ## Asset Audit Tool
 

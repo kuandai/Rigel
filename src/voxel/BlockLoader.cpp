@@ -4,18 +4,36 @@
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <string_view>
 #include <unordered_map>
 
 namespace Rigel::Voxel {
 
 namespace {
 
+void tryAddTexture(TextureAtlas& atlas,
+                   const std::string& texturePath,
+                   const std::string& stateIdentifier) {
+    if (texturePath.empty()) {
+        return;
+    }
+    try {
+        atlas.addTextureFromResource(texturePath);
+    } catch (const std::exception& e) {
+        spdlog::warn("BlockLoader: failed to register texture '{}' for '{}': {}",
+                     texturePath,
+                     stateIdentifier,
+                     e.what());
+    }
+}
+
 FaceTextures parseTexturesFromIR(const std::unordered_map<std::string, std::string>& textures,
-                                 TextureAtlas& atlas) {
+                                 TextureAtlas& atlas,
+                                 const std::string& stateIdentifier) {
     FaceTextures out;
 
-    auto get = [&](const char* key) -> const std::string* {
-        auto it = textures.find(key);
+    auto get = [&](std::string_view key) -> const std::string* {
+        auto it = textures.find(std::string(key));
         if (it == textures.end()) {
             return nullptr;
         }
@@ -25,23 +43,32 @@ FaceTextures parseTexturesFromIR(const std::unordered_map<std::string, std::stri
         return &it->second;
     };
 
-    if (const std::string* all = get("all")) {
-        atlas.addTextureFromResource(*all);
+    auto getFirst = [&](std::initializer_list<std::string_view> keys) -> const std::string* {
+        for (std::string_view key : keys) {
+            if (const std::string* value = get(key)) {
+                return value;
+            }
+        }
+        return nullptr;
+    };
+
+    if (const std::string* all = getFirst({"all"})) {
+        tryAddTexture(atlas, *all, stateIdentifier);
         return FaceTextures::uniform(*all);
     }
 
     const std::string* top = get("top");
     const std::string* bottom = get("bottom");
-    const std::string* sides = get("sides");
+    const std::string* sides = getFirst({"sides", "side"});
     if (top && bottom && sides) {
-        atlas.addTextureFromResource(*top);
-        atlas.addTextureFromResource(*bottom);
-        atlas.addTextureFromResource(*sides);
+        tryAddTexture(atlas, *top, stateIdentifier);
+        tryAddTexture(atlas, *bottom, stateIdentifier);
+        tryAddTexture(atlas, *sides, stateIdentifier);
         return FaceTextures::topBottomSides(*top, *bottom, *sides);
     }
 
-    if (const std::string* def = get("default")) {
-        atlas.addTextureFromResource(*def);
+    if (const std::string* def = getFirst({"default", "albedo", "diffuse"})) {
+        tryAddTexture(atlas, *def, stateIdentifier);
         out = FaceTextures::uniform(*def);
     }
 
@@ -55,7 +82,7 @@ FaceTextures parseTexturesFromIR(const std::unordered_map<std::string, std::stri
     }};
     for (const auto& [key, direction] : perFace) {
         if (const std::string* tex = get(key)) {
-            atlas.addTextureFromResource(*tex);
+            tryAddTexture(atlas, *tex, stateIdentifier);
             out.faces[static_cast<size_t>(direction)] = *tex;
         }
     }
@@ -114,7 +141,7 @@ size_t BlockLoader::loadFromManifest(
                 type.cullSameType = state.cullSameType;
                 type.emittedLight = state.emittedLight;
                 type.lightAttenuation = state.lightAttenuation;
-                type.textures = parseTexturesFromIR(state.textures, atlas);
+                type.textures = parseTexturesFromIR(state.textures, atlas, state.identifier);
 
                 BlockID id = registry.registerBlock(type.identifier, std::move(type));
                 spdlog::debug("Registered block '{}' from '{}' with ID {}",

@@ -22,6 +22,12 @@ struct MaterialRefIR {
     ExtensionMap extensions;
 };
 
+struct TextureRefIR {
+    std::string identifier;
+    std::string sourcePath;
+    ExtensionMap extensions;
+};
+
 struct BlockStateIR {
     std::string identifier;
     std::string rootIdentifier;
@@ -82,6 +88,7 @@ struct AssetGraphIR {
     std::vector<BlockDefIR> blocks;
     std::vector<ModelRefIR> models;
     std::vector<MaterialRefIR> materials;
+    std::vector<TextureRefIR> textures;
     std::vector<EntityDefIR> entities;
     std::vector<ItemDefIR> items;
     std::vector<IdentifierAliasIR> aliases;

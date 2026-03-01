@@ -10,6 +10,7 @@
 #include "Rigel/Voxel/Block.h"
 
 #include <filesystem>
+#include <algorithm>
 #include "Rigel/Persistence/Storage.h"
 
 #include <unordered_map>

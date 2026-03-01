@@ -2,6 +2,7 @@
 
 #include "Rigel/Persistence/Backends/CR/CRChunkMapping.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <stdexcept>

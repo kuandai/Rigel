@@ -73,6 +73,28 @@ bool hasAlias(const AssetGraphIR& graph,
     return false;
 }
 
+const EntityDefIR* findEntityDef(const AssetGraphIR& graph, const std::string& id) {
+    for (const auto& entity : graph.entities) {
+        if (entity.identifier == id) {
+            return &entity;
+        }
+    }
+    return nullptr;
+}
+
+const ItemDefIR* findItemDef(const AssetGraphIR& graph, const std::string& id) {
+    for (const auto& item : graph.items) {
+        if (item.identifier == id) {
+            return &item;
+        }
+    }
+    return nullptr;
+}
+
+bool hasExtensionKey(const ExtensionMap& extensions, const std::string& key) {
+    return extensions.find(key) != extensions.end();
+}
+
 } // namespace
 
 TEST_CASE(AssetIR_CompileRigelEmbedded_ProducesBlocks) {
@@ -382,4 +404,117 @@ TEST_CASE(AssetIR_CompileCRFilesystem_DeterministicExpansionAndAliases) {
         throw;
     }
     std::filesystem::remove_all(root);
+}
+
+TEST_CASE(AssetIR_CompileCRFilesystem_ParsesEntityDefinitionsAndResolvesHints) {
+    const std::filesystem::path root = makeTempDir("cr_entities");
+    try {
+        writeTextFile(root / "base" / "blocks" / "alpha.json", R"({
+  "stringId": "base:alpha",
+  "blockStates": { "state=default": {} }
+})");
+        writeTextFile(root / "base" / "mobs" / "interceptor.json", R"({
+  "entityTypeId": "base:entity_interceptor",
+  "components": [
+    { "id": "base:sound", "cry": "base:test" }
+  ]
+})");
+        writeTextFile(root / "base" / "models" / "entities" / "model_interceptor.json", R"({
+  "id": "model_interceptor",
+  "lighting": "unlit",
+  "render_offset": [1.0, 2.0, 3.0],
+  "hitbox": {
+    "min": [-0.5, 0.0, -0.5],
+    "max": [0.5, 1.0, 0.5]
+  }
+})");
+        writeTextFile(root / "base" / "animations" / "entities" / "interceptor.animation.json", R"({
+  "id": "interceptor"
+})");
+
+        AssetGraphIR graph = compileCRFilesystem(root);
+        CHECK(!graph.entities.empty());
+
+        const EntityDefIR* mob = findEntityDef(graph, "base:entity_interceptor");
+        CHECK(mob != nullptr);
+        CHECK_EQ(mob->modelRef, "models/entities/model_interceptor.json");
+        CHECK_EQ(mob->animationRef, "animations/entities/interceptor.animation.json");
+        CHECK(hasExtensionKey(mob->extensions, "components[0].id"));
+        CHECK(hasExtensionKey(mob->extensions, "components[0].cry"));
+
+        const EntityDefIR* model = findEntityDef(graph, "model_interceptor");
+        CHECK(model != nullptr);
+        CHECK_EQ(model->renderMode, "unlit");
+        CHECK(model->renderOffset.has_value());
+        CHECK(model->hitboxMin.has_value());
+        CHECK(model->hitboxMax.has_value());
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE(AssetIR_CompileCRFilesystem_ParsesItemDefinitionsAndPreservesUnknownFields) {
+    const std::filesystem::path root = makeTempDir("cr_items");
+    try {
+        writeTextFile(root / "base" / "blocks" / "alpha.json", R"({
+  "stringId": "base:alpha",
+  "blockStates": { "state=default": {} }
+})");
+        writeTextFile(root / "base" / "items" / "tool.json", R"({
+  "id": "base:tool",
+  "itemProperties": {
+    "texture": "textures/items/tool.png",
+    "modelType": "base:item3D",
+    "durability": 42
+  },
+  "customRootFlag": true
+})");
+        writeTextFile(root / "base" / "textures" / "items" / "tool.png", "");
+
+        AssetGraphIR graph = compileCRFilesystem(root);
+        const ItemDefIR* item = findItemDef(graph, "base:tool");
+        CHECK(item != nullptr);
+        CHECK_EQ(item->textureRef, "textures/items/tool.png");
+        CHECK_EQ(item->renderMode, "base:item3d");
+        CHECK(hasExtensionKey(item->extensions, "itemProperties.durability"));
+        CHECK(hasExtensionKey(item->extensions, "customRootFlag"));
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE(AssetIR_SummarizeValidationIssues_CountsAndLimitsSamples) {
+    std::vector<ValidationIssue> issues;
+    issues.push_back(ValidationIssue{
+        .severity = ValidationSeverity::Warning,
+        .sourcePath = "b/source.json",
+        .identifier = "base:b",
+        .field = "field_b",
+        .message = "warning b"
+    });
+    issues.push_back(ValidationIssue{
+        .severity = ValidationSeverity::Error,
+        .sourcePath = "a/source.json",
+        .identifier = "base:a",
+        .field = "field_a",
+        .message = "error a"
+    });
+    issues.push_back(ValidationIssue{
+        .severity = ValidationSeverity::Warning,
+        .sourcePath = "c/source.json",
+        .identifier = "base:c",
+        .field = "field_c",
+        .message = "warning c"
+    });
+
+    const ValidationSummary summary = summarizeValidationIssues(issues, 2);
+    CHECK_EQ(summary.errorCount, 1u);
+    CHECK_EQ(summary.warningCount, 2u);
+    CHECK_EQ(summary.samples.size(), 2u);
+    CHECK_EQ(summary.samples[0].severity, ValidationSeverity::Error);
+    CHECK_EQ(summary.samples[0].identifier, "base:a");
 }

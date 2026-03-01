@@ -95,7 +95,8 @@ public:
     size_t loadFromManifest(
         Asset::AssetManager& assets,
         BlockRegistry& registry,
-        TextureAtlas& atlas
+        TextureAtlas& atlas,
+        Asset::IR::AssetGraphIR* outGraph = nullptr
     );
 
     /**

@@ -98,7 +98,8 @@ FaceTextures parseTexturesFromIR(const std::unordered_map<std::string, std::stri
 size_t BlockLoader::loadFromManifest(
     Asset::AssetManager& assets,
     BlockRegistry& registry,
-    TextureAtlas& atlas
+    TextureAtlas& atlas,
+    Asset::IR::AssetGraphIR* outGraph
 ) {
     (void)assets;
 
@@ -106,7 +107,14 @@ size_t BlockLoader::loadFromManifest(
 
     Asset::IR::AssetGraphIR graph = Asset::IR::compileRigelEmbedded();
     const auto issues = Asset::IR::validate(graph);
-    for (const auto& issue : issues) {
+    const auto summary = Asset::IR::summarizeValidationIssues(issues, 24);
+    if (summary.errorCount > 0 || summary.warningCount > 0) {
+        spdlog::warn("Block IR validation reported {} errors and {} warnings (showing up to {} samples)",
+                     summary.errorCount,
+                     summary.warningCount,
+                     summary.samples.size());
+    }
+    for (const auto& issue : summary.samples) {
         if (issue.severity == Asset::IR::ValidationSeverity::Error) {
             spdlog::error("Block IR validation error [{}] {} (id='{}', field='{}')",
                           issue.sourcePath,
@@ -120,6 +128,14 @@ size_t BlockLoader::loadFromManifest(
                          issue.identifier,
                          issue.field);
         }
+    }
+    if (issues.size() > summary.samples.size()) {
+        spdlog::warn("Block IR validation: {} additional diagnostics omitted",
+                     issues.size() - summary.samples.size());
+    }
+
+    if (outGraph) {
+        *outGraph = graph;
     }
 
     return loadFromAssetGraph(graph, registry, atlas);

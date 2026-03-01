@@ -49,6 +49,40 @@ expansion instead of only scanning `stringId` values:
 - Inventories `models`, `materials`, and `textures` with deterministic sort
   order to support stable validation and audits.
 
+### CR Entity + Item IR Compiler
+
+`compileCRFilesystem` also ingests entity and item definitions into IR:
+
+- Entity sources:
+  - `base/entities/**`
+  - `base/mobs/**`
+  - `base/models/entities/**` (fallback entity IDs)
+- Item sources:
+  - `base/items/**`
+- Both JSON and YAML are accepted with the same lenient parser path used by
+  CR block ingestion.
+
+Entity fields currently mapped into IR:
+
+- identifier (`id`, `identifier`, `stringId`, `entityTypeId`, or path fallback)
+- model reference (`modelRef`, `modelId`, `modelName`, `model`, render map fallbacks)
+- animation reference (`animationRef`, `animationSet`, `animation_set`,
+  `animationId`, `animation`)
+- render mode (`renderMode` / `lighting`)
+- optional `renderOffset`
+- optional hitbox (`min`/`max`)
+
+Item fields currently mapped into IR:
+
+- identifier (`id`, `identifier`, `stringId`, or path fallback)
+- model reference (`modelRef`, `modelId`, `modelName`, `model`)
+- texture reference (`textureRef`, `texture`, `icon`)
+- render mode (`renderMode`, `modelType`)
+- `itemProperties` fallback extraction for model/texture/render keys
+
+Unknown/source-specific fields are preserved in IR extension metadata instead
+of being discarded.
+
 ## Data Sources
 
 ### Embedded Resources (ResourceRegistry)
@@ -162,6 +196,11 @@ The asset system throws typed exceptions:
 
 Most loader errors are fatal at call-site and should be handled by the caller.
 
+IR validation diagnostics are summarized at startup with:
+- total error/warning counts
+- top-N sampled issues (with source path, identifier, and field)
+- omitted diagnostic count when the full set is larger than the sample limit
+
 ## Block Texture Channel Fallbacks
 
 When registering block states from IR, texture assignment follows this order:
@@ -199,6 +238,34 @@ Runtime `BlockRegistry` identity is deterministic:
   schema-relevant fields in runtime ID order.
 - Snapshot hash excludes transient runtime payloads (for example `customData`)
   so it remains stable for equivalent content.
+
+Entity and item runtime registries follow the same contract:
+
+- `EntityTypeRegistry` and `ItemDefinitionRegistry` are built from IR in sorted
+  identifier order.
+- Duplicate identifiers are diagnosed and skipped deterministically.
+- Snapshot hashes are emitted for deterministic parity checks.
+
+## CR Field Support Matrix
+
+Current support is intentionally scoped to fields required for runtime
+registration, rendering selection, and persistence identity continuity.
+
+| Category | Supported fields (current) | Behavior |
+|----------|-----------------------------|----------|
+| Blocks | `stringId`, `defaultParams`, `defaultProperties`, `blockStates`, `stateGenerators` (subset), `modelName`, `renderLayer`, `isOpaque`, `isSolid`, `walkThrough`, `lightAttenuation` | Expanded deterministically into canonical state IDs + alias map. |
+| Entities | `id`/`identifier`/`stringId`/`entityTypeId`, model refs, animation refs, `renderMode`/`lighting`, `renderOffset`, `hitbox` | Parsed to IR entity definitions; unknown fields preserved in extensions. |
+| Items | `id`/`identifier`/`stringId`, model refs, texture refs, `renderMode`/`modelType`, `itemProperties` model/texture/render fields | Parsed to IR item definitions; unknown fields preserved in extensions. |
+
+## Unsupported/Partial CR Behavior
+
+- Block generators are partial: unsupported generators emit diagnostics and are
+  not expanded.
+- Unknown/extra CR fields are preserved in IR extensions but not interpreted by
+  runtime registration unless explicitly mapped.
+- Entity/item runtime behavior still depends on existing Rigel runtime systems
+  (factory/render/persistence); IR ingestion alone does not add new gameplay
+  semantics.
 
 ## Asset Audit Tool
 
@@ -255,6 +322,21 @@ Loaders receive:
 - No manifest imports or dependency resolution beyond manual loader calls.
 - No hot reload.
 - No filesystem override for embedded assets; changes require a rebuild.
+- CR parser coverage is schema-subset based, not full spec-complete.
+- Unsupported CR generators/properties are surfaced via diagnostics, not silent
+  behavior changes.
+
+## Troubleshooting Parity Failures
+
+- Symptom: blocks/entities/items silently missing after compile.
+  - Check validation output for duplicate identifiers and unresolved refs.
+  - Run `--asset-audit` to compare inventories against CR dump source.
+- Symptom: CR states differ run-to-run.
+  - Verify deterministic expansion tests and snapshot hash tests are passing.
+  - Ensure source file traversal order is sorted in compiler paths.
+- Symptom: persistence round-trip drops unknown IDs.
+  - Verify `UnknownIdPolicy` settings and associated policy tests.
+  - Confirm identity provider wiring is present in persistence context.
 
 ---
 

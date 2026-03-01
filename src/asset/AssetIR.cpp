@@ -512,6 +512,417 @@ std::string nodeScalarToString(ryml::ConstNodeRef node) {
     return value;
 }
 
+bool readVec3ArrayNode(ryml::ConstNodeRef node, std::array<float, 3>& out) {
+    if (!node.readable() || !node.is_seq() || node.num_children() < 3) {
+        return false;
+    }
+    try {
+        node[0] >> out[0];
+        node[1] >> out[1];
+        node[2] >> out[2];
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool readVec3MapNode(ryml::ConstNodeRef node, std::array<float, 3>& out) {
+    if (!node.readable() || !node.is_map()) {
+        return false;
+    }
+    if (!node.has_child("x") || !node.has_child("y") || !node.has_child("z")) {
+        return false;
+    }
+    try {
+        node["x"] >> out[0];
+        node["y"] >> out[1];
+        node["z"] >> out[2];
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void collectUnknownFieldsRecursive(ryml::ConstNodeRef node,
+                                   const std::string& prefix,
+                                   ExtensionMap& out) {
+    if (!node.readable() || prefix.empty()) {
+        return;
+    }
+
+    if (node.is_seq()) {
+        size_t index = 0;
+        for (ryml::ConstNodeRef child : node.children()) {
+            const std::string childKey = prefix + "[" + std::to_string(index) + "]";
+            if (child.has_val() && !child.has_children()) {
+                out[childKey] = nodeScalarToString(child);
+            } else {
+                collectUnknownFieldsRecursive(child, childKey, out);
+            }
+            ++index;
+        }
+        return;
+    }
+
+    if (node.is_map()) {
+        for (ryml::ConstNodeRef child : node.children()) {
+            if (!child.has_key()) {
+                continue;
+            }
+            std::string key(child.key().data(), child.key().size());
+            if (key.empty()) {
+                continue;
+            }
+            const std::string childKey = prefix + "." + key;
+            if (child.has_val() && !child.has_children()) {
+                out[childKey] = nodeScalarToString(child);
+            } else {
+                collectUnknownFieldsRecursive(child, childKey, out);
+            }
+        }
+        return;
+    }
+
+    if (node.has_val()) {
+        out[prefix] = nodeScalarToString(node);
+    }
+}
+
+void collectUnknownRootFields(ryml::ConstNodeRef root,
+                              const std::unordered_set<std::string>& knownFields,
+                              ExtensionMap& out) {
+    if (!root.readable() || !root.is_map()) {
+        return;
+    }
+    for (ryml::ConstNodeRef child : root.children()) {
+        if (!child.has_key()) {
+            continue;
+        }
+        std::string key(child.key().data(), child.key().size());
+        if (key.empty() || knownFields.find(key) != knownFields.end()) {
+            continue;
+        }
+        if (child.has_val() && !child.has_children()) {
+            out[key] = nodeScalarToString(child);
+        } else {
+            collectUnknownFieldsRecursive(child, key, out);
+        }
+    }
+}
+
+std::string fallbackEntityIdFromPath(const std::string& sourcePath) {
+    std::string id = sourcePath;
+    if (startsWith(id, "models/entities/")) {
+        id.erase(0, std::string("models/entities/").size());
+    } else if (startsWith(id, "entities/")) {
+        id.erase(0, std::string("entities/").size());
+    } else if (startsWith(id, "mobs/")) {
+        id.erase(0, std::string("mobs/").size());
+    }
+    if (endsWith(id, ".json")) {
+        id.erase(id.size() - 5);
+    } else if (endsWith(id, ".yaml")) {
+        id.erase(id.size() - 5);
+    } else if (endsWith(id, ".yml")) {
+        id.erase(id.size() - 4);
+    }
+    return id;
+}
+
+std::string fallbackItemIdFromPath(const std::string& sourcePath) {
+    std::string id = sourcePath;
+    if (startsWith(id, "items/")) {
+        id.erase(0, std::string("items/").size());
+    }
+    if (endsWith(id, ".json")) {
+        id.erase(id.size() - 5);
+    } else if (endsWith(id, ".yaml")) {
+        id.erase(id.size() - 5);
+    } else if (endsWith(id, ".yml")) {
+        id.erase(id.size() - 4);
+    }
+    return id;
+}
+
+void setEntityHitbox(ryml::ConstNodeRef root, EntityDefIR& def) {
+    if (!root.readable() || !root.has_child("hitbox")) {
+        return;
+    }
+    ryml::ConstNodeRef hitbox = root["hitbox"];
+    if (!hitbox.readable() || !hitbox.is_map()) {
+        return;
+    }
+    std::array<float, 3> minVec{};
+    std::array<float, 3> maxVec{};
+    if (hitbox.has_child("min") && readVec3ArrayNode(hitbox["min"], minVec)) {
+        def.hitboxMin = minVec;
+    }
+    if (hitbox.has_child("max") && readVec3ArrayNode(hitbox["max"], maxVec)) {
+        def.hitboxMax = maxVec;
+    }
+}
+
+void setEntityRenderOffset(ryml::ConstNodeRef root, EntityDefIR& def) {
+    if (!root.readable()) {
+        return;
+    }
+    if (root.has_child("render_offset")) {
+        std::array<float, 3> vec{};
+        if (readVec3ArrayNode(root["render_offset"], vec) ||
+            readVec3MapNode(root["render_offset"], vec)) {
+            def.renderOffset = vec;
+            return;
+        }
+    }
+    if (root.has_child("renderOffset")) {
+        std::array<float, 3> vec{};
+        if (readVec3ArrayNode(root["renderOffset"], vec) ||
+            readVec3MapNode(root["renderOffset"], vec)) {
+            def.renderOffset = vec;
+            return;
+        }
+    }
+}
+
+EntityDefIR parseEntityDefinition(ryml::ConstNodeRef root,
+                                  const std::string& sourcePath,
+                                  const std::string& sourceFormat,
+                                  std::string defaultModelRef = {}) {
+    EntityDefIR def;
+    def.sourcePath = sourcePath;
+    def.extensions["source_format"] = sourceFormat;
+
+    if (auto v = nodeString(root, "id")) {
+        def.identifier = *v;
+    } else if (auto v = nodeString(root, "identifier")) {
+        def.identifier = *v;
+    } else if (auto v = nodeString(root, "stringId")) {
+        def.identifier = *v;
+    } else if (auto v = nodeString(root, "entityTypeId")) {
+        def.identifier = *v;
+    } else {
+        def.identifier = fallbackEntityIdFromPath(sourcePath);
+    }
+
+    if (auto v = nodeString(root, "modelRef")) {
+        def.modelRef = *v;
+    } else if (auto v = nodeString(root, "modelId")) {
+        def.modelRef = *v;
+    } else if (auto v = nodeString(root, "modelName")) {
+        def.modelRef = *v;
+    } else if (auto v = nodeString(root, "model")) {
+        def.modelRef = *v;
+    }
+    if (def.modelRef.empty() && root.has_child("render") && root["render"].is_map()) {
+        ryml::ConstNodeRef render = root["render"];
+        if (auto v = nodeString(render, "modelRef")) {
+            def.modelRef = *v;
+        } else if (auto v = nodeString(render, "modelId")) {
+            def.modelRef = *v;
+        } else if (auto v = nodeString(render, "modelName")) {
+            def.modelRef = *v;
+        } else if (auto v = nodeString(render, "model")) {
+            def.modelRef = *v;
+        }
+    }
+    if (def.modelRef.empty()) {
+        def.modelRef = std::move(defaultModelRef);
+    }
+    def.modelRef = normalizeAssetReference(def.modelRef);
+
+    if (auto v = nodeString(root, "animationRef")) {
+        def.animationRef = *v;
+    } else if (auto v = nodeString(root, "animationSet")) {
+        def.animationRef = *v;
+    } else if (auto v = nodeString(root, "animation_set")) {
+        def.animationRef = *v;
+    } else if (auto v = nodeString(root, "animationId")) {
+        def.animationRef = *v;
+    } else if (auto v = nodeString(root, "animation")) {
+        def.animationRef = *v;
+    }
+    def.animationRef = normalizeAssetReference(def.animationRef);
+
+    if (auto v = nodeString(root, "renderMode")) {
+        def.renderMode = *v;
+    } else if (auto v = nodeString(root, "lighting")) {
+        def.renderMode = *v;
+    }
+    def.renderMode = toLower(def.renderMode);
+
+    setEntityRenderOffset(root, def);
+    setEntityHitbox(root, def);
+
+    static const std::unordered_set<std::string> knownFields = {
+        "id", "identifier", "stringId", "entityTypeId",
+        "modelRef", "modelId", "modelName", "model",
+        "animationRef", "animationSet", "animation_set", "animationId", "animation",
+        "renderMode", "lighting", "render_offset", "renderOffset", "hitbox", "render"
+    };
+    collectUnknownRootFields(root, knownFields, def.extensions);
+
+    return def;
+}
+
+ItemDefIR parseItemDefinition(ryml::ConstNodeRef root,
+                              const std::string& sourcePath,
+                              const std::string& sourceFormat) {
+    ItemDefIR def;
+    def.sourcePath = sourcePath;
+    def.extensions["source_format"] = sourceFormat;
+
+    if (auto v = nodeString(root, "id")) {
+        def.identifier = *v;
+    } else if (auto v = nodeString(root, "identifier")) {
+        def.identifier = *v;
+    } else if (auto v = nodeString(root, "stringId")) {
+        def.identifier = *v;
+    } else {
+        def.identifier = fallbackItemIdFromPath(sourcePath);
+    }
+
+    if (auto v = nodeString(root, "modelRef")) {
+        def.modelRef = *v;
+    } else if (auto v = nodeString(root, "modelId")) {
+        def.modelRef = *v;
+    } else if (auto v = nodeString(root, "modelName")) {
+        def.modelRef = *v;
+    } else if (auto v = nodeString(root, "model")) {
+        def.modelRef = *v;
+    }
+    if (auto v = nodeString(root, "textureRef")) {
+        def.textureRef = *v;
+    } else if (auto v = nodeString(root, "texture")) {
+        def.textureRef = *v;
+    } else if (auto v = nodeString(root, "icon")) {
+        def.textureRef = *v;
+    }
+    if (auto v = nodeString(root, "renderMode")) {
+        def.renderMode = *v;
+    } else if (auto v = nodeString(root, "modelType")) {
+        def.renderMode = *v;
+    }
+
+    if (root.has_child("itemProperties") && root["itemProperties"].is_map()) {
+        ryml::ConstNodeRef props = root["itemProperties"];
+        if (def.modelRef.empty()) {
+            if (auto v = nodeString(props, "modelType")) {
+                def.modelRef = *v;
+            } else if (auto v = nodeString(props, "modelRef")) {
+                def.modelRef = *v;
+            } else if (auto v = nodeString(props, "modelId")) {
+                def.modelRef = *v;
+            } else if (auto v = nodeString(props, "model")) {
+                def.modelRef = *v;
+            }
+        }
+        if (def.textureRef.empty()) {
+            if (auto v = nodeString(props, "textureRef")) {
+                def.textureRef = *v;
+            } else if (auto v = nodeString(props, "texture")) {
+                def.textureRef = *v;
+            } else if (auto v = nodeString(props, "icon")) {
+                def.textureRef = *v;
+            }
+        }
+        if (def.renderMode.empty()) {
+            if (auto v = nodeString(props, "renderMode")) {
+                def.renderMode = *v;
+            } else if (auto v = nodeString(props, "modelType")) {
+                def.renderMode = *v;
+            }
+        }
+    }
+
+    def.modelRef = normalizeAssetReference(def.modelRef);
+    def.textureRef = normalizeAssetReference(def.textureRef);
+    def.renderMode = toLower(def.renderMode);
+
+    static const std::unordered_set<std::string> knownRootFields = {
+        "id", "identifier", "stringId",
+        "modelRef", "modelId", "modelName", "model",
+        "textureRef", "texture", "icon", "renderMode", "modelType",
+        "itemProperties"
+    };
+    collectUnknownRootFields(root, knownRootFields, def.extensions);
+
+    if (root.has_child("itemProperties") && root["itemProperties"].is_map()) {
+        static const std::unordered_set<std::string> knownPropsFields = {
+            "modelRef", "modelId", "model", "modelType",
+            "textureRef", "texture", "icon", "renderMode"
+        };
+        ExtensionMap propertyUnknowns;
+        collectUnknownRootFields(root["itemProperties"], knownPropsFields, propertyUnknowns);
+        for (const auto& [key, value] : propertyUnknowns) {
+            def.extensions["itemProperties." + key] = value;
+        }
+    }
+
+    return def;
+}
+
+void sortValidationIssues(std::vector<ValidationIssue>& issues) {
+    std::sort(issues.begin(),
+              issues.end(),
+              [](const ValidationIssue& a, const ValidationIssue& b) {
+                  if (a.sourcePath != b.sourcePath) {
+                      return a.sourcePath < b.sourcePath;
+                  }
+                  if (a.identifier != b.identifier) {
+                      return a.identifier < b.identifier;
+                  }
+                  if (a.field != b.field) {
+                      return a.field < b.field;
+                  }
+                  return a.message < b.message;
+              });
+}
+
+template <typename DefT>
+void pushUniqueDef(std::vector<DefT>& defs,
+                   DefT def,
+                   std::vector<ValidationIssue>& diagnostics,
+                   const char* fieldName) {
+    auto duplicate = std::find_if(defs.begin(), defs.end(), [&](const DefT& existing) {
+        return existing.identifier == def.identifier;
+    });
+    if (duplicate != defs.end()) {
+        diagnostics.push_back(ValidationIssue{
+            .severity = ValidationSeverity::Warning,
+            .sourcePath = def.sourcePath,
+            .identifier = def.identifier,
+            .field = fieldName,
+            .message = "Duplicate identifier; keeping first definition from " + duplicate->sourcePath
+        });
+        return;
+    }
+    defs.push_back(std::move(def));
+}
+
+bool parseTextDocument(const std::string& sourcePath,
+                       const std::string& text,
+                       ryml::Tree& outTree,
+                       std::string* error = nullptr) {
+    try {
+        const std::filesystem::path sourceFsPath(sourcePath);
+        if (hasAnySuffix(sourcePath, {".json"})) {
+            outTree = parseLenientJson(sourceFsPath, text);
+        } else {
+            std::string fileLabel = sourceFsPath.generic_string();
+            outTree = ryml::parse_in_arena(
+                ryml::to_csubstr(fileLabel.c_str()),
+                ryml::to_csubstr(text.c_str())
+            );
+        }
+        return true;
+    } catch (const std::exception& e) {
+        if (error) {
+            *error = e.what();
+        }
+        return false;
+    }
+}
+
 struct CRGeneratorDefinition {
     std::string identifier;
     std::string sourcePath;
@@ -925,18 +1336,79 @@ AssetGraphIR compileRigelEmbedded() {
         return a.rootIdentifier < b.rootIdentifier;
     });
 
-    for (std::string_view path : ResourceRegistry::Paths()) {
+    for (std::string_view pathView : ResourceRegistry::Paths()) {
+        std::string path(pathView);
         if (startsWith(path, "models/entities/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
-            graph.entities.push_back(EntityDefIR{std::string(path), std::string(path), {}});
+            try {
+                auto data = ResourceRegistry::Get(path);
+                std::string text(data.data(), data.size());
+                ryml::Tree tree;
+                std::string parseError;
+                if (!parseTextDocument(path, text, tree, &parseError)) {
+                    graph.compilerDiagnostics.push_back(ValidationIssue{
+                        .severity = ValidationSeverity::Warning,
+                        .sourcePath = path,
+                        .identifier = "",
+                        .field = "entity.parse",
+                        .message = "Failed to parse embedded entity/model file: " + parseError
+                    });
+                } else {
+                    EntityDefIR def = parseEntityDefinition(
+                        tree.rootref(),
+                        path,
+                        "rigel",
+                        normalizeAssetReference(path));
+                    pushUniqueDef(graph.entities,
+                                  std::move(def),
+                                  graph.compilerDiagnostics,
+                                  "entity.identifier");
+                }
+            } catch (const std::exception& e) {
+                graph.compilerDiagnostics.push_back(ValidationIssue{
+                    .severity = ValidationSeverity::Warning,
+                    .sourcePath = path,
+                    .identifier = "",
+                    .field = "entity.read",
+                    .message = std::string("Failed to read embedded entity/model file: ") + e.what()
+                });
+            }
         } else if (startsWith(path, "models/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
-            graph.models.push_back(ModelRefIR{std::string(path), std::string(path), {}});
+            graph.models.push_back(ModelRefIR{path, path, {}});
         } else if (startsWith(path, "materials/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
-            graph.materials.push_back(MaterialRefIR{std::string(path), std::string(path), {}});
+            graph.materials.push_back(MaterialRefIR{path, path, {}});
         } else if (startsWith(path, "textures/") &&
                    hasAnySuffix(path, {".png", ".bmp", ".jpg", ".jpeg", ".tga"})) {
-            graph.textures.push_back(TextureRefIR{std::string(path), std::string(path), {}});
+            graph.textures.push_back(TextureRefIR{path, path, {}});
         } else if (startsWith(path, "items/") && hasAnySuffix(path, {".json", ".yaml", ".yml"})) {
-            graph.items.push_back(ItemDefIR{std::string(path), std::string(path), {}});
+            try {
+                auto data = ResourceRegistry::Get(path);
+                std::string text(data.data(), data.size());
+                ryml::Tree tree;
+                std::string parseError;
+                if (!parseTextDocument(path, text, tree, &parseError)) {
+                    graph.compilerDiagnostics.push_back(ValidationIssue{
+                        .severity = ValidationSeverity::Warning,
+                        .sourcePath = path,
+                        .identifier = "",
+                        .field = "item.parse",
+                        .message = "Failed to parse embedded item file: " + parseError
+                    });
+                } else {
+                    ItemDefIR def = parseItemDefinition(tree.rootref(), path, "rigel");
+                    pushUniqueDef(graph.items,
+                                  std::move(def),
+                                  graph.compilerDiagnostics,
+                                  "item.identifier");
+                }
+            } catch (const std::exception& e) {
+                graph.compilerDiagnostics.push_back(ValidationIssue{
+                    .severity = ValidationSeverity::Warning,
+                    .sourcePath = path,
+                    .identifier = "",
+                    .field = "item.read",
+                    .message = std::string("Failed to read embedded item file: ") + e.what()
+                });
+            }
         }
     }
     sortByIdentifier(graph.models);
@@ -1153,26 +1625,16 @@ AssetGraphIR compileCRFilesystem(const std::filesystem::path& root) {
         }
         return a.sourcePath < b.sourcePath;
     });
-    std::sort(graph.compilerDiagnostics.begin(),
-              graph.compilerDiagnostics.end(),
-              [](const ValidationIssue& a, const ValidationIssue& b) {
-                  if (a.sourcePath != b.sourcePath) {
-                      return a.sourcePath < b.sourcePath;
-                  }
-                  if (a.identifier != b.identifier) {
-                      return a.identifier < b.identifier;
-                  }
-                  if (a.field != b.field) {
-                      return a.field < b.field;
-                  }
-                  return a.message < b.message;
-              });
+    sortValidationIssues(graph.compilerDiagnostics);
 
     std::vector<std::filesystem::path> files;
+    std::unordered_set<std::string> modelIds;
+    std::unordered_set<std::string> animationIds;
     collectFilesystemPaths(baseRoot / "models", files, {".json", ".yaml", ".yml"});
     for (const auto& file : files) {
         std::string id = relativeOrAbsolute(file, baseRoot);
         graph.models.push_back(ModelRefIR{id, id, {{"source_format", "cr"}}});
+        modelIds.insert(normalizeAssetReference(id));
     }
     collectFilesystemPaths(baseRoot / "materials", files, {".json", ".yaml", ".yml"});
     for (const auto& file : files) {
@@ -1184,21 +1646,158 @@ AssetGraphIR compileCRFilesystem(const std::filesystem::path& root) {
         std::string id = relativeOrAbsolute(file, baseRoot);
         graph.textures.push_back(TextureRefIR{id, id, {{"source_format", "cr"}}});
     }
-    collectFilesystemPaths(baseRoot / "entities", files, {".json", ".yaml", ".yml"});
+    collectFilesystemPaths(baseRoot / "animations" / "entities", files, {".json", ".yaml", ".yml"});
     for (const auto& file : files) {
-        std::string id = relativeOrAbsolute(file, baseRoot);
-        graph.entities.push_back(EntityDefIR{id, id, {{"source_format", "cr"}}});
+        animationIds.insert(normalizeAssetReference(relativeOrAbsolute(file, baseRoot)));
     }
+
+    auto readTree = [&](const std::filesystem::path& file,
+                        ryml::Tree& tree,
+                        std::string& sourcePath) -> bool {
+        sourcePath = relativeOrAbsolute(file, baseRoot);
+        std::string text;
+        try {
+            text = readFileText(file);
+        } catch (const std::exception& e) {
+            graph.compilerDiagnostics.push_back(ValidationIssue{
+                .severity = ValidationSeverity::Warning,
+                .sourcePath = sourcePath,
+                .identifier = "",
+                .field = "read",
+                .message = std::string("Failed to read file: ") + e.what()
+            });
+            return false;
+        }
+
+        std::string parseError;
+        if (!parseTextDocument(sourcePath, text, tree, &parseError)) {
+            graph.compilerDiagnostics.push_back(ValidationIssue{
+                .severity = ValidationSeverity::Warning,
+                .sourcePath = sourcePath,
+                .identifier = "",
+                .field = "parse",
+                .message = "Failed to parse file: " + parseError
+            });
+            return false;
+        }
+        return true;
+    };
+
+    auto ingestEntities = [&](const std::filesystem::path& dir,
+                              bool fallbackModelToPath) {
+        collectFilesystemPaths(baseRoot / dir, files, {".json", ".yaml", ".yml"});
+        for (const auto& file : files) {
+            std::string sourcePath;
+            ryml::Tree tree;
+            if (!readTree(file, tree, sourcePath)) {
+                continue;
+            }
+            EntityDefIR def = parseEntityDefinition(
+                tree.rootref(),
+                sourcePath,
+                "cr",
+                fallbackModelToPath ? normalizeAssetReference(sourcePath) : std::string{});
+
+            pushUniqueDef(graph.entities,
+                          std::move(def),
+                          graph.compilerDiagnostics,
+                          "entity.identifier");
+        }
+    };
+
+    ingestEntities("entities", false);
+    ingestEntities("mobs", false);
+    ingestEntities(std::filesystem::path("models") / "entities", true);
+
+    auto tryResolveEntityDefaults = [&](EntityDefIR& def) {
+        auto markResolved = [&](const std::string& modelCandidate,
+                                const std::string& animationCandidate) -> bool {
+            const std::string normalizedModel = normalizeAssetReference(modelCandidate);
+            const std::string normalizedAnim = normalizeAssetReference(animationCandidate);
+            if (!normalizedModel.empty() &&
+                modelIds.find(normalizedModel) != modelIds.end() &&
+                !normalizedAnim.empty() &&
+                animationIds.find(normalizedAnim) != animationIds.end()) {
+                if (def.modelRef.empty()) {
+                    def.modelRef = normalizedModel;
+                }
+                if (def.animationRef.empty()) {
+                    def.animationRef = normalizedAnim;
+                }
+                return true;
+            }
+            return false;
+        };
+
+        std::string token = def.identifier;
+        size_t sep = token.find(':');
+        if (sep != std::string::npos && sep + 1 < token.size()) {
+            token = token.substr(sep + 1);
+        }
+        if (startsWith(token, "entity_")) {
+            token.erase(0, std::string("entity_").size());
+        }
+        if (token.empty()) {
+            token = std::filesystem::path(def.sourcePath).stem().string();
+        }
+
+        std::vector<std::string> modelCandidates;
+        modelCandidates.push_back(token);
+        if (startsWith(token, "model_")) {
+            modelCandidates.push_back(token.substr(std::string("model_").size()));
+        } else {
+            modelCandidates.push_back("model_" + token);
+        }
+
+        std::vector<std::string> animationCandidates;
+        animationCandidates.push_back(token);
+        if (startsWith(token, "model_")) {
+            animationCandidates.push_back(token.substr(std::string("model_").size()));
+        } else {
+            animationCandidates.push_back("model_" + token);
+        }
+
+        for (const auto& modelCandidate : modelCandidates) {
+            for (const auto& animCandidate : animationCandidates) {
+                if (markResolved(
+                        "models/entities/" + modelCandidate + ".json",
+                        "animations/entities/" + animCandidate + ".animation.json")) {
+                    return;
+                }
+                if (markResolved(
+                        "models/entities/" + modelCandidate + ".yaml",
+                        "animations/entities/" + animCandidate + ".yaml")) {
+                    return;
+                }
+            }
+        }
+    };
+
+    for (auto& def : graph.entities) {
+        if (def.modelRef.empty() || def.animationRef.empty()) {
+            tryResolveEntityDefaults(def);
+        }
+    }
+
     collectFilesystemPaths(baseRoot / "items", files, {".json", ".yaml", ".yml"});
     for (const auto& file : files) {
-        std::string id = relativeOrAbsolute(file, baseRoot);
-        graph.items.push_back(ItemDefIR{id, id, {{"source_format", "cr"}}});
+        std::string sourcePath;
+        ryml::Tree tree;
+        if (!readTree(file, tree, sourcePath)) {
+            continue;
+        }
+        ItemDefIR def = parseItemDefinition(tree.rootref(), sourcePath, "cr");
+        pushUniqueDef(graph.items,
+                      std::move(def),
+                      graph.compilerDiagnostics,
+                      "item.identifier");
     }
     sortByIdentifier(graph.models);
     sortByIdentifier(graph.materials);
     sortByIdentifier(graph.textures);
     sortByIdentifier(graph.entities);
     sortByIdentifier(graph.items);
+    sortValidationIssues(graph.compilerDiagnostics);
 
     return graph;
 }
@@ -1338,6 +1937,79 @@ std::vector<ValidationIssue> validate(const AssetGraphIR& graph) {
         }
     }
 
+    auto isKnownItemModelType = [](const std::string& modelType) {
+        return modelType == "base:item3d" ||
+               modelType == "base:item2d" ||
+               modelType == "base:itemthing" ||
+               modelType == "item3d" ||
+               modelType == "item2d" ||
+               modelType == "itemthing";
+    };
+
+    auto looksLikePathReference = [](const std::string& value) {
+        return value.find('/') != std::string::npos ||
+               value.find(".json") != std::string::npos ||
+               value.find(".yaml") != std::string::npos ||
+               value.find(".yml") != std::string::npos;
+    };
+
+    for (const auto& entity : graph.entities) {
+        if (!entity.modelRef.empty()) {
+            const std::string normalizedModel = normalizeAssetReference(entity.modelRef);
+            if (!normalizedModel.empty() &&
+                availableModels.find(normalizedModel) == availableModels.end()) {
+                add(ValidationSeverity::Warning,
+                    entity.sourcePath,
+                    entity.identifier,
+                    "entity.modelRef",
+                    "Unresolved entity model reference '" + entity.modelRef +
+                        "' (normalized to '" + normalizedModel + "')");
+            }
+        }
+        if (entity.hitboxMin.has_value() != entity.hitboxMax.has_value()) {
+            add(ValidationSeverity::Warning,
+                entity.sourcePath,
+                entity.identifier,
+                "entity.hitbox",
+                "Hitbox requires both min and max vectors");
+        }
+    }
+
+    for (const auto& item : graph.items) {
+        if (!item.textureRef.empty()) {
+            const std::string normalizedTexture = normalizeAssetReference(item.textureRef);
+            if (!normalizedTexture.empty() &&
+                availableTextures.find(normalizedTexture) == availableTextures.end()) {
+                add(ValidationSeverity::Warning,
+                    item.sourcePath,
+                    item.identifier,
+                    "item.textureRef",
+                    "Unresolved item texture reference '" + item.textureRef +
+                        "' (normalized to '" + normalizedTexture + "')");
+            }
+        }
+        if (!item.modelRef.empty()) {
+            const std::string normalizedModel = normalizeAssetReference(item.modelRef);
+            if (looksLikePathReference(item.modelRef) &&
+                !normalizedModel.empty() &&
+                availableModels.find(normalizedModel) == availableModels.end()) {
+                add(ValidationSeverity::Warning,
+                    item.sourcePath,
+                    item.identifier,
+                    "item.modelRef",
+                    "Unresolved item model reference '" + item.modelRef +
+                        "' (normalized to '" + normalizedModel + "')");
+            } else if (!looksLikePathReference(item.modelRef) &&
+                       !isKnownItemModelType(toLower(item.modelRef))) {
+                add(ValidationSeverity::Warning,
+                    item.sourcePath,
+                    item.identifier,
+                    "item.modelRef",
+                    "Unknown item model type '" + item.modelRef + "'");
+            }
+        }
+    }
+
     std::unordered_map<std::string, std::string> externalToCanonical;
     std::unordered_map<std::string, std::string> canonicalToExternal;
     for (const auto& alias : graph.aliases) {
@@ -1379,6 +2051,47 @@ std::vector<ValidationIssue> validate(const AssetGraphIR& graph) {
     }
 
     return issues;
+}
+
+ValidationSummary summarizeValidationIssues(const std::vector<ValidationIssue>& issues,
+                                           size_t sampleLimit) {
+    ValidationSummary summary;
+    for (const auto& issue : issues) {
+        if (issue.severity == ValidationSeverity::Error) {
+            ++summary.errorCount;
+        } else {
+            ++summary.warningCount;
+        }
+    }
+
+    if (sampleLimit == 0 || issues.empty()) {
+        return summary;
+    }
+
+    std::vector<ValidationIssue> sorted = issues;
+    std::sort(sorted.begin(),
+              sorted.end(),
+              [](const ValidationIssue& a, const ValidationIssue& b) {
+                  if (a.severity != b.severity) {
+                      return a.severity == ValidationSeverity::Error;
+                  }
+                  if (a.sourcePath != b.sourcePath) {
+                      return a.sourcePath < b.sourcePath;
+                  }
+                  if (a.identifier != b.identifier) {
+                      return a.identifier < b.identifier;
+                  }
+                  if (a.field != b.field) {
+                      return a.field < b.field;
+                  }
+                  return a.message < b.message;
+              });
+
+    if (sampleLimit > sorted.size()) {
+        sampleLimit = sorted.size();
+    }
+    summary.samples.assign(sorted.begin(), sorted.begin() + sampleLimit);
+    return summary;
 }
 
 } // namespace Rigel::Asset::IR

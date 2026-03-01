@@ -13,6 +13,8 @@ Entities are runtime objects with physics, rendering, and persistence hooks:
 - `WorldEntities` owns all entities in a `Voxel::World`.
 - `EntityRenderer` renders entities and handles shadow casting.
 - `EntityModelAsset` describes meshes, textures, animations, and hitboxes.
+- `Asset::EntityTypeRegistry` stores deterministic entity definition metadata
+  compiled from asset IR.
 
 ---
 
@@ -107,6 +109,11 @@ Shadows use a separate render path that writes into the voxel shadow cascades.
 - `bones` with cube geometry
 - `animation_set` and `default_animation`
 
+Entity definition metadata from the IR pipeline is loaded separately from model
+assets and includes identifier/model/animation/render fields plus preserved
+source-specific extension metadata. Runtime code can query this metadata via
+`WorldResources::entityTypes()`.
+
 ### 5.2 Model Format (YAML/JSON)
 
 Models are loaded via the `entity_models` asset category. Each model file can
@@ -173,6 +180,10 @@ When loading:
 - `EntityFactory` is used to instantiate known types.
 - Unknown types fall back to a generic `Entity` with the type ID.
 - Position, velocity, view direction, and model ID are restored.
+
+Persistence stores string `typeId` + `modelId` directly in entity payloads.
+These values remain compatible with IR-registered entity definitions because
+definition registries are deterministic across runs.
 
 ---
 

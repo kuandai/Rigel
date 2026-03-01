@@ -1,9 +1,12 @@
 #include "TestFramework.h"
 
+#include "Rigel/Asset/AssetIR.h"
+#include "Rigel/Asset/DefinitionRegistry.h"
 #include "Rigel/Entity/EntityPersistence.h"
 
 using namespace Rigel::Entity;
 using Rigel::Voxel::ChunkCoord;
+namespace AssetIR = Rigel::Asset::IR;
 
 TEST_CASE(EntityPersistence_RoundTrip) {
     constexpr float kEpsilon = 1.0e-5f;
@@ -67,4 +70,44 @@ TEST_CASE(EntityPersistence_RoundTrip) {
     CHECK_NEAR(decoded[1].entities[0].viewDirection.y, b.viewDirection.y, kEpsilon);
     CHECK_NEAR(decoded[1].entities[0].viewDirection.z, b.viewDirection.z, kEpsilon);
     CHECK(decoded[1].entities[0].modelId == b.modelId);
+}
+
+TEST_CASE(EntityPersistence_RoundTrip_CompatibleWithEntityDefinitionRegistryIds) {
+    AssetIR::AssetGraphIR graph;
+
+    AssetIR::EntityDefIR interceptor;
+    interceptor.identifier = "base:entity_interceptor";
+    interceptor.sourcePath = "base/mobs/interceptor.json";
+    interceptor.modelRef = "models/entities/model_interceptor.json";
+    interceptor.animationRef = "animations/entities/interceptor.animation.json";
+    graph.entities.push_back(interceptor);
+
+    Rigel::Asset::EntityTypeRegistry entityTypes;
+    Rigel::Asset::ItemDefinitionRegistry itemDefs;
+    Rigel::Asset::buildDefinitionRegistriesFromAssetGraph(graph, entityTypes, itemDefs);
+
+    const auto* interceptorDef = entityTypes.find("base:entity_interceptor");
+    CHECK(interceptorDef != nullptr);
+    CHECK_EQ(interceptorDef->modelRef, "models/entities/model_interceptor.json");
+
+    EntityPersistedEntity entity;
+    entity.typeId = interceptorDef->identifier;
+    entity.modelId = interceptorDef->modelRef;
+    entity.id = EntityId{11u, 22u, 33u};
+    entity.position = glm::vec3(4.0f, 8.0f, 12.0f);
+    entity.velocity = glm::vec3(0.5f, 0.0f, -0.5f);
+    entity.viewDirection = glm::vec3(0.0f, 0.0f, -1.0f);
+
+    EntityPersistedChunk chunk;
+    chunk.coord = ChunkCoord{0, 1, 2};
+    chunk.entities.push_back(entity);
+
+    std::vector<uint8_t> payload = encodeEntityRegionPayload({chunk});
+    std::vector<EntityPersistedChunk> decoded;
+    CHECK(decodeEntityRegionPayload(payload, decoded));
+    CHECK_EQ(decoded.size(), 1u);
+    CHECK_EQ(decoded[0].entities.size(), 1u);
+    CHECK_EQ(decoded[0].entities[0].typeId, interceptorDef->identifier);
+    CHECK_EQ(decoded[0].entities[0].modelId, interceptorDef->modelRef);
+    CHECK(entityTypes.find(decoded[0].entities[0].typeId) != nullptr);
 }

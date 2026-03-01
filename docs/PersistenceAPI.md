@@ -55,6 +55,7 @@ are used by the service.
 - `rootPath`: base directory for saves.
 - `preferredFormat`: format ID hint (e.g. `"cr"`).
 - `manifestPath`: optional metadata file location.
+- `zoneId`: optional explicit zone override for all world/chunk/entity operations.
 - `policies`: behavior for unknown IDs or unsupported features.
 - `storage`: `StorageBackend` instance (filesystem or custom).
 - `providers`: `ProviderRegistry` for passing runtime data (e.g. block registry).
@@ -181,13 +182,18 @@ Core APIs:
 
 Current behavior:
 
-- The default zone ID is `rigel:default`.
+- Zone resolution is deterministic:
+  - `PersistenceContext.zoneId` override (if set)
+  - world metadata `defaultZoneId` (if readable)
+  - fallback `rigel:default`
 - The world root path is `saves/world_<worldId>`.
 - Only chunks marked `isPersistDirty()` are saved.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,
   and all-air spans are skipped.
 - Entities are serialized into entity regions if the format supports them.
 - Entities tagged `EntityTags::NoSaveInChunks` are skipped.
+- CR backend block identity mapping uses a provider contract
+  (`BlockIdentityProvider`) rather than direct global registry assumptions.
 
 ---
 

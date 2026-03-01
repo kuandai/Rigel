@@ -319,12 +319,14 @@ config (`assets/config/persistence.yaml`) may override them.
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `persistence.format` | string | `cr` | Preferred format ID. |
+| `persistence.zone_id` | string | `` | Optional zone override; when unset, metadata-driven zone resolution is used. |
 | `persistence.providers` | map | - | Provider options by ID. |
 | `persistence.providers.rigel:persistence.cr.lz4` | bool | `false` | CR backend compression. |
 
 Key fields:
 
 - `format`: preferred format ID (default `cr`).
+- `zone_id`: optional zone override.
 - `providers`: map of provider ID -> options.
 
 Provider options are stored as strings. Consumers interpret them as needed
@@ -333,6 +335,7 @@ Provider options are stored as strings. Consumers interpret them as needed
 ```yaml
 persistence:
   format: cr
+  zone_id: base:earth
   providers:
     rigel:persistence.cr:
       lz4: false

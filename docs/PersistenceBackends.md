@@ -65,15 +65,20 @@ LZ4 compression is optional and controlled by the provider
 
 `CRChunkCodec` encodes a single 16x16x16 subchunk:
 
-- Uses a palette of block identifiers (from the `BlockRegistry` provider).
+- Uses a palette of external block identifiers from a
+  `BlockIdentityProvider` (`rigel:persistence.block_registry`).
 - Encodes block layers using compact representations (byte/short/nibble/bit).
 - Skylight and blocklight data are read but currently written as null.
 - Block entity data is skipped (flagged as null).
 
-If the block registry provider is missing:
+Unknown identifier behavior is policy-driven via `PersistenceContext.policies`:
 
-- Decode tolerates it by mapping blocks to air/unknown fallback IDs.
-- Encode fails with a missing block registry error.
+- `Fail`: throw on decode/encode unknown ID mappings.
+- `Placeholder`: map to provider placeholder block.
+- `Skip`: map unknowns to air.
+
+If the block identity provider is missing, CR backend logs warnings and can
+only safely process all-air chunk payloads.
 
 ### 1.6 Entity Regions
 

@@ -99,31 +99,6 @@ public:
 
 private:
     /**
-     * @brief Parse a single block type from manifest config.
-     *
-     * @param id The block identifier (e.g., "stone")
-     * @param config The block config node to parse
-     * @param ns The manifest namespace (e.g., "rigel")
-     * @param atlas The texture atlas for texture loading
-     *
-     * @return Parsed BlockType
-     */
-    BlockType parseBlockType(
-        const std::string& id,
-        ryml::ConstNodeRef config,
-        const std::string& ns,
-        TextureAtlas& atlas
-    );
-
-    /**
-     * @brief Parse face textures from config.
-     */
-    FaceTextures parseTextures(
-        ryml::ConstNodeRef config,
-        TextureAtlas& atlas
-    );
-
-    /**
      * @brief Parse render layer from string.
      */
     RenderLayer parseRenderLayer(const std::string& str);

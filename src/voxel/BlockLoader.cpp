@@ -1,235 +1,51 @@
 #include "Rigel/Voxel/BlockLoader.h"
-#include "Rigel/Util/Ryml.h"
-#include "ResourceRegistry.h"
+#include "Rigel/Asset/AssetIR.h"
 
 #include <spdlog/spdlog.h>
-#include <ryml.hpp>
-#include <ryml_std.hpp>
 
-#include <algorithm>
-#include <string_view>
-#include <vector>
+#include <array>
+#include <unordered_map>
 
 namespace Rigel::Voxel {
 
 namespace {
-    ryml::Tree loadBlockConfigTree(const std::string& path) {
-        auto data = ResourceRegistry::Get(path);
-        return ryml::parse_in_arena(
-            ryml::to_csubstr(path.c_str()),
-            ryml::csubstr(data.data(), data.size())
-        );
-    }
 
-    bool startsWith(std::string_view value, std::string_view prefix) {
-        return value.size() >= prefix.size() &&
-               value.compare(0, prefix.size(), prefix) == 0;
-    }
+FaceTextures parseTexturesFromIR(const std::unordered_map<std::string, std::string>& textures,
+                                 TextureAtlas& atlas) {
+    FaceTextures out;
 
-    bool endsWith(std::string_view value, std::string_view suffix) {
-        return value.size() >= suffix.size() &&
-               value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
-    }
-
-    std::string blockNameFromPath(const std::string& path) {
-        static constexpr std::string_view kPrefix = "blocks/";
-        static constexpr std::string_view kSuffix = ".yaml";
-        std::string_view view(path);
-        if (startsWith(view, kPrefix)) {
-            view.remove_prefix(kPrefix.size());
+    auto get = [&](const char* key) -> const std::string* {
+        auto it = textures.find(key);
+        if (it == textures.end()) {
+            return nullptr;
         }
-        if (endsWith(view, kSuffix)) {
-            view.remove_suffix(kSuffix.size());
+        if (it->second.empty()) {
+            return nullptr;
         }
-        return std::string(view);
+        return &it->second;
+    };
+
+    if (const std::string* all = get("all")) {
+        atlas.addTextureFromResource(*all);
+        return FaceTextures::uniform(*all);
     }
 
-    // Helper to read optional string from config
-    std::optional<std::string> getOptionalString(ryml::ConstNodeRef node, const char* key) {
-        if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {
-            return std::nullopt;
-        }
-        std::string value;
-        node[ryml::to_csubstr(key)] >> value;
-        return value;
+    const std::string* top = get("top");
+    const std::string* bottom = get("bottom");
+    const std::string* sides = get("sides");
+    if (top && bottom && sides) {
+        atlas.addTextureFromResource(*top);
+        atlas.addTextureFromResource(*bottom);
+        atlas.addTextureFromResource(*sides);
+        return FaceTextures::topBottomSides(*top, *bottom, *sides);
     }
 
-    // Helper to read optional bool from config
-    std::optional<bool> getOptionalBool(ryml::ConstNodeRef node, const char* key) {
-        if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {
-            return std::nullopt;
-        }
-        std::string value;
-        node[ryml::to_csubstr(key)] >> value;
-        return value == "true" || value == "yes" || value == "1";
-    }
-}
-
-size_t BlockLoader::loadFromManifest(
-    Asset::AssetManager& assets,
-    BlockRegistry& registry,
-    TextureAtlas& atlas
-) {
-    size_t count = 0;
-    const std::string& ns = assets.ns();
-
-    spdlog::info("Loading block definitions from blocks directory...");
-
-    std::vector<std::string> blockPaths;
-    for (std::string_view path : ResourceRegistry::Paths()) {
-        if (!startsWith(path, "blocks/") || !endsWith(path, ".yaml")) {
-            continue;
-        }
-        blockPaths.emplace_back(path);
-    }
-    std::sort(blockPaths.begin(), blockPaths.end());
-
-    for (const auto& path : blockPaths) {
-        try {
-            ryml::Tree blockTree = loadBlockConfigTree(path);
-            ryml::ConstNodeRef config = blockTree.rootref();
-            std::string name = blockNameFromPath(path);
-            BlockType blockType = parseBlockType(name, config, ns, atlas);
-
-            std::string identifier = blockType.identifier;
-            if (registry.hasIdentifier(identifier)) {
-                spdlog::warn("Skipping duplicate block identifier '{}'", identifier);
-                continue;
-            }
-            BlockID id = registry.registerBlock(identifier, std::move(blockType));
-            spdlog::debug("Registered block '{}' from '{}' with ID {}", name, path, id.type);
-
-            ++count;
-        } catch (const std::exception& e) {
-            spdlog::error("Failed to load block from '{}': {}", path, e.what());
-        }
+    if (const std::string* def = get("default")) {
+        atlas.addTextureFromResource(*def);
+        out = FaceTextures::uniform(*def);
     }
 
-    spdlog::info("Loaded {} block definitions", count);
-    return count;
-}
-
-BlockType BlockLoader::parseBlockType(
-    const std::string& name,
-    ryml::ConstNodeRef config,
-    const std::string& ns,
-    TextureAtlas& atlas
-) {
-    BlockType type;
-
-    // Build fully qualified identifier (namespace:name)
-    if (auto explicitId = getOptionalString(config, "id")) {
-        type.identifier = *explicitId;
-    } else if (auto explicitId = getOptionalString(config, "identifier")) {
-        type.identifier = *explicitId;
-    } else if (auto explicitName = getOptionalString(config, "name")) {
-        type.identifier = *explicitName;
-    } else {
-        type.identifier = ns.empty() ? name : ns + ":" + name;
-    }
-
-    if (type.identifier.find(':') == std::string::npos && !ns.empty()) {
-        type.identifier = ns + ":" + type.identifier;
-    }
-
-    // Parse model (default: "cube")
-    if (auto model = getOptionalString(config, "model")) {
-        type.model = *model;
-    }
-
-    // Parse boolean properties
-    if (auto opaque = getOptionalBool(config, "opaque")) {
-        type.isOpaque = *opaque;
-    }
-
-    if (auto solid = getOptionalBool(config, "solid")) {
-        type.isSolid = *solid;
-    }
-
-    if (auto cullSameType = getOptionalBool(config, "cull_same_type")) {
-        type.cullSameType = *cullSameType;
-    }
-
-    // Parse render layer
-    if (auto layer = getOptionalString(config, "layer")) {
-        type.layer = parseRenderLayer(*layer);
-    }
-
-    // Parse lighting properties
-    if (auto emit = getOptionalString(config, "emits_light")) {
-        try {
-            type.emittedLight = static_cast<uint8_t>(std::stoi(*emit));
-        } catch (...) {
-            type.emittedLight = 0;
-        }
-    }
-
-    if (auto atten = getOptionalString(config, "light_attenuation")) {
-        try {
-            type.lightAttenuation = static_cast<uint8_t>(std::stoi(*atten));
-        } catch (...) {
-            type.lightAttenuation = 15;
-        }
-    }
-
-    // Parse textures
-    if (config.has_child("textures")) {
-        type.textures = parseTextures(config["textures"], atlas);
-    }
-
-    return type;
-}
-
-FaceTextures BlockLoader::parseTextures(
-    ryml::ConstNodeRef config,
-    TextureAtlas& atlas
-) {
-    FaceTextures textures;
-
-    // Check for "all" first (uniform texture)
-    if (config.has_child("all")) {
-        std::string path;
-        config["all"] >> path;
-
-        // Add to atlas and store path
-        atlas.addTextureFromResource(path);
-        textures = FaceTextures::uniform(path);
-
-        return textures;
-    }
-
-    // Check for top/bottom/sides pattern
-    std::optional<std::string> topPath, bottomPath, sidesPath;
-
-    if (config.has_child("top")) {
-        std::string path;
-        config["top"] >> path;
-        topPath = path;
-        atlas.addTextureFromResource(path);
-    }
-
-    if (config.has_child("bottom")) {
-        std::string path;
-        config["bottom"] >> path;
-        bottomPath = path;
-        atlas.addTextureFromResource(path);
-    }
-
-    if (config.has_child("sides")) {
-        std::string path;
-        config["sides"] >> path;
-        sidesPath = path;
-        atlas.addTextureFromResource(path);
-    }
-
-    // If we have top/bottom/sides pattern
-    if (topPath && bottomPath && sidesPath) {
-        textures = FaceTextures::topBottomSides(*topPath, *bottomPath, *sidesPath);
-        return textures;
-    }
-
-    // Otherwise, try individual face textures
-    const std::array<std::pair<const char*, Direction>, 6> faceKeys = {{
+    const std::array<std::pair<const char*, Direction>, 6> perFace = {{
         {"pos_x", Direction::PosX},
         {"neg_x", Direction::NegX},
         {"pos_y", Direction::PosY},
@@ -237,26 +53,86 @@ FaceTextures BlockLoader::parseTextures(
         {"pos_z", Direction::PosZ},
         {"neg_z", Direction::NegZ}
     }};
-
-    // Start with default empty paths
-    std::string defaultPath;
-    if (config.has_child("default")) {
-        config["default"] >> defaultPath;
-        atlas.addTextureFromResource(defaultPath);
-        textures = FaceTextures::uniform(defaultPath);
-    }
-
-    // Override individual faces
-    for (const auto& [key, dir] : faceKeys) {
-        if (config.has_child(ryml::to_csubstr(key))) {
-            std::string path;
-            config[ryml::to_csubstr(key)] >> path;
-            atlas.addTextureFromResource(path);
-            textures.faces[static_cast<size_t>(dir)] = path;
+    for (const auto& [key, direction] : perFace) {
+        if (const std::string* tex = get(key)) {
+            atlas.addTextureFromResource(*tex);
+            out.faces[static_cast<size_t>(direction)] = *tex;
         }
     }
 
-    return textures;
+    return out;
+}
+
+} // namespace
+
+size_t BlockLoader::loadFromManifest(
+    Asset::AssetManager& assets,
+    BlockRegistry& registry,
+    TextureAtlas& atlas
+) {
+    (void)assets;
+    size_t count = 0;
+
+    spdlog::info("Loading block definitions from blocks directory...");
+
+    Asset::IR::AssetGraphIR graph = Asset::IR::compileRigelEmbedded();
+    const auto issues = Asset::IR::validate(graph);
+    for (const auto& issue : issues) {
+        if (issue.severity == Asset::IR::ValidationSeverity::Error) {
+            spdlog::error("Block IR validation error [{}] {} (id='{}', field='{}')",
+                          issue.sourcePath,
+                          issue.message,
+                          issue.identifier,
+                          issue.field);
+        } else {
+            spdlog::warn("Block IR validation warning [{}] {} (id='{}', field='{}')",
+                         issue.sourcePath,
+                         issue.message,
+                         issue.identifier,
+                         issue.field);
+        }
+    }
+
+    for (const auto& block : graph.blocks) {
+        for (const auto& state : block.states) {
+            try {
+                if (state.identifier.empty()) {
+                    spdlog::error("Skipping block state with empty identifier from '{}'", state.sourcePath);
+                    continue;
+                }
+                if (registry.hasIdentifier(state.identifier)) {
+                    spdlog::warn("Skipping duplicate block identifier '{}'", state.identifier);
+                    continue;
+                }
+
+                BlockType type;
+                type.identifier = state.identifier;
+                type.model = state.model;
+                type.layer = parseRenderLayer(state.renderLayer);
+                type.isOpaque = state.isOpaque;
+                type.isSolid = state.isSolid;
+                type.cullSameType = state.cullSameType;
+                type.emittedLight = state.emittedLight;
+                type.lightAttenuation = state.lightAttenuation;
+                type.textures = parseTexturesFromIR(state.textures, atlas);
+
+                BlockID id = registry.registerBlock(type.identifier, std::move(type));
+                spdlog::debug("Registered block '{}' from '{}' with ID {}",
+                              state.identifier,
+                              state.sourcePath,
+                              id.type);
+                ++count;
+            } catch (const std::exception& e) {
+                spdlog::error("Failed to register block '{}' from '{}': {}",
+                              state.identifier,
+                              state.sourcePath,
+                              e.what());
+            }
+        }
+    }
+
+    spdlog::info("Loaded {} block definitions", count);
+    return count;
 }
 
 RenderLayer BlockLoader::parseRenderLayer(const std::string& str) {

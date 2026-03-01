@@ -13,6 +13,14 @@ The asset system is built around `AssetManager` and an embedded asset registry:
 - Loaders are registered per asset category (`textures`, `shaders`, etc.).
 - The system is main-thread only and not thread-safe.
 
+Block definitions additionally flow through a canonical intermediate
+representation (IR) before runtime registration:
+- Source-specific compilers (`Rigel` embedded YAML, `CR` filesystem JSON stub)
+  emit `AssetGraphIR`.
+- Validation runs on IR and reports source path + identifier + field details.
+- Runtime block registration consumes IR state entries, preserving deterministic
+  ordering and centralized validation behavior.
+
 ## Data Sources
 
 ### Embedded Resources (ResourceRegistry)

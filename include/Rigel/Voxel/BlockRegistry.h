@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <optional>
 #include <stdexcept>
+#include <cstdint>
 
 namespace Rigel::Voxel {
 
@@ -97,6 +98,14 @@ public:
     auto end() const { return m_types.end(); }
     size_t size() const { return m_types.size(); }
     /// @}
+
+    /**
+     * @brief Compute deterministic snapshot hash of registry identity data.
+     *
+     * The hash includes stable schema-relevant block fields in ID order and
+     * excludes transient/runtime-only payloads (`customData`).
+     */
+    uint64_t snapshotHash() const;
 
     /**
      * @brief Get the air block ID (always 0).

@@ -46,7 +46,7 @@ std::string toLower(std::string value) {
 }
 
 bool isBuiltinBlockModel(std::string_view model) {
-    return model == "cube" || model == "cross" || model == "slab";
+    return model == "cube" || model == "cross" || model == "slab" || model == "none";
 }
 
 std::string normalizeAssetReference(const std::string& raw) {

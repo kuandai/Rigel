@@ -4,8 +4,11 @@
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <algorithm>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
+#include <vector>
 
 namespace Rigel::Voxel {
 
@@ -98,7 +101,6 @@ size_t BlockLoader::loadFromManifest(
     TextureAtlas& atlas
 ) {
     (void)assets;
-    size_t count = 0;
 
     spdlog::info("Loading block definitions from blocks directory...");
 
@@ -120,41 +122,67 @@ size_t BlockLoader::loadFromManifest(
         }
     }
 
+    return loadFromAssetGraph(graph, registry, atlas);
+}
+
+size_t BlockLoader::loadFromAssetGraph(
+    const Asset::IR::AssetGraphIR& graph,
+    BlockRegistry& registry,
+    TextureAtlas& atlas
+) {
+    struct StateRef {
+        const Asset::IR::BlockStateIR* state = nullptr;
+    };
+
+    std::vector<StateRef> orderedStates;
+    orderedStates.reserve(graph.blocks.size() * 2);
     for (const auto& block : graph.blocks) {
         for (const auto& state : block.states) {
-            try {
-                if (state.identifier.empty()) {
-                    spdlog::error("Skipping block state with empty identifier from '{}'", state.sourcePath);
-                    continue;
-                }
-                if (registry.hasIdentifier(state.identifier)) {
-                    spdlog::warn("Skipping duplicate block identifier '{}'", state.identifier);
-                    continue;
-                }
+            orderedStates.push_back(StateRef{&state});
+        }
+    }
 
-                BlockType type;
-                type.identifier = state.identifier;
-                type.model = state.model;
-                type.layer = parseRenderLayer(state.renderLayer);
-                type.isOpaque = state.isOpaque;
-                type.isSolid = state.isSolid;
-                type.cullSameType = state.cullSameType;
-                type.emittedLight = state.emittedLight;
-                type.lightAttenuation = state.lightAttenuation;
-                type.textures = parseTexturesFromIR(state.textures, atlas, state.identifier);
+    std::sort(orderedStates.begin(), orderedStates.end(), [](const StateRef& a, const StateRef& b) {
+        return std::tie(a.state->rootIdentifier, a.state->identifier, a.state->sourcePath) <
+               std::tie(b.state->rootIdentifier, b.state->identifier, b.state->sourcePath);
+    });
 
-                BlockID id = registry.registerBlock(type.identifier, std::move(type));
-                spdlog::debug("Registered block '{}' from '{}' with ID {}",
-                              state.identifier,
-                              state.sourcePath,
-                              id.type);
-                ++count;
-            } catch (const std::exception& e) {
-                spdlog::error("Failed to register block '{}' from '{}': {}",
-                              state.identifier,
-                              state.sourcePath,
-                              e.what());
+    size_t count = 0;
+    for (const auto& ref : orderedStates) {
+        const auto& state = *ref.state;
+        try {
+            if (state.identifier.empty()) {
+                spdlog::error("Skipping block state with empty identifier from '{}'", state.sourcePath);
+                continue;
             }
+            if (registry.hasIdentifier(state.identifier)) {
+                spdlog::warn("Skipping duplicate block identifier '{}'", state.identifier);
+                continue;
+            }
+
+            BlockType type;
+            type.identifier = state.identifier;
+            type.model = state.model;
+            type.layer = parseRenderLayer(state.renderLayer);
+            type.isOpaque = state.isOpaque;
+            type.isSolid = state.isSolid;
+            type.cullSameType = state.cullSameType;
+            type.emittedLight = state.emittedLight;
+            type.lightAttenuation = state.lightAttenuation;
+            type.textures = parseTexturesFromIR(state.textures, atlas, state.identifier);
+
+            const std::string registeredIdentifier = type.identifier;
+            BlockID id = registry.registerBlock(registeredIdentifier, std::move(type));
+            spdlog::debug("Registered block '{}' from '{}' with ID {}",
+                          state.identifier,
+                          state.sourcePath,
+                          id.type);
+            ++count;
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to register block '{}' from '{}': {}",
+                          state.identifier,
+                          state.sourcePath,
+                          e.what());
         }
     }
 

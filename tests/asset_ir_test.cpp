@@ -327,6 +327,40 @@ TEST_CASE(AssetIR_Validate_RigelEmbedded_HasNoCriticalModelResolutionErrors) {
     CHECK(!hasCriticalModelError);
 }
 
+TEST_CASE(AssetIR_Validate_DetectsAliasCollisionRules) {
+    AssetGraphIR graph;
+    graph.aliases.push_back(IdentifierAliasIR{
+        .domain = "block",
+        .canonicalIdentifier = "base:a",
+        .externalIdentifier = "base:dup",
+        .sourcePath = "blocks/a.json"
+    });
+    graph.aliases.push_back(IdentifierAliasIR{
+        .domain = "block",
+        .canonicalIdentifier = "base:b",
+        .externalIdentifier = "base:dup",
+        .sourcePath = "blocks/b.json"
+    });
+    graph.aliases.push_back(IdentifierAliasIR{
+        .domain = "block",
+        .canonicalIdentifier = "base:single",
+        .externalIdentifier = "base:ext_a",
+        .sourcePath = "blocks/c.json"
+    });
+    graph.aliases.push_back(IdentifierAliasIR{
+        .domain = "block",
+        .canonicalIdentifier = "base:single",
+        .externalIdentifier = "base:ext_b",
+        .sourcePath = "blocks/d.json"
+    });
+
+    const auto issues = validate(graph);
+    CHECK(hasIssue(issues, ValidationSeverity::Error, "aliases.external",
+                   "External identifier maps to multiple canonical identifiers"));
+    CHECK(hasIssue(issues, ValidationSeverity::Error, "aliases.canonical",
+                   "Canonical identifier maps to multiple external identifiers"));
+}
+
 TEST_CASE(AssetIR_CompileCRFilesystem_DeterministicExpansionAndAliases) {
     const std::filesystem::path root = makeTempDir("cr_deterministic");
     try {

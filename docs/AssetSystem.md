@@ -24,6 +24,8 @@ representation (IR) before runtime registration:
   - built-ins (`cube`, `cross`, `slab`) are lowercased
   - namespace prefixes are stripped from asset paths
   - `./` and leading `/` path prefixes are removed
+- Block-state registration is sorted by (`rootIdentifier`, `state.identifier`,
+  `sourcePath`) before assigning runtime IDs.
 - Render-layer values are normalized to lowercase and default by opacity:
   - `opaque` when `isOpaque == true`
   - `transparent` when `isOpaque == false`
@@ -183,6 +185,20 @@ other block states.
 - Unresolved texture references are validation `Warning`s.
 - Render-layer and opacity mismatches are validation `Warning`s because they
   are legal but often indicate sorting/culling mistakes in authored content.
+- Alias mapping collisions are validation `Error`s:
+  - one external ID mapping to multiple canonical IDs
+  - one canonical ID mapping to multiple external IDs
+
+## Registry Determinism Contract
+
+Runtime `BlockRegistry` identity is deterministic:
+
+- Runtime ID assignment follows sorted block-state registration order, not
+  filesystem traversal order.
+- `BlockRegistry::snapshotHash()` computes a deterministic hash over
+  schema-relevant fields in runtime ID order.
+- Snapshot hash excludes transient runtime payloads (for example `customData`)
+  so it remains stable for equivalent content.
 
 ## Asset Audit Tool
 

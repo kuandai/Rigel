@@ -19,6 +19,7 @@ void WorldResources::initialize(Asset::AssetManager& assets) {
             m_textureAtlas.upload();
         }
         spdlog::info("Loaded {} block types (registry size {})", loaded, m_registry.size());
+        spdlog::info("Block registry snapshot hash: {:016x}", m_registry.snapshotHash());
         spdlog::info("Texture atlas entries: {}", m_textureAtlas.textureCount());
     } catch (const std::exception& e) {
         spdlog::error("Failed to load blocks: {}", e.what());

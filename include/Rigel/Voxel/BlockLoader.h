@@ -11,6 +11,7 @@
 
 #include "BlockRegistry.h"
 #include "TextureAtlas.h"
+#include "Rigel/Asset/AssetIR.h"
 #include "Rigel/Util/Ryml.h"
 
 #include <Rigel/Asset/AssetManager.h>
@@ -93,6 +94,20 @@ public:
      */
     size_t loadFromManifest(
         Asset::AssetManager& assets,
+        BlockRegistry& registry,
+        TextureAtlas& atlas
+    );
+
+    /**
+     * @brief Register blocks from a precompiled IR graph.
+     *
+     * Registration order is canonicalized (root/state identifier sort) to keep
+     * runtime BlockID assignment deterministic across traversal differences.
+     *
+     * @return Number of block states successfully registered
+     */
+    size_t loadFromAssetGraph(
+        const Asset::IR::AssetGraphIR& graph,
         BlockRegistry& registry,
         TextureAtlas& atlas
     );

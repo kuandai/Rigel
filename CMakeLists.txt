@@ -210,8 +210,110 @@ if (RIGEL_BUILD_TESTS)
     list(REMOVE_DUPLICATES TEST_CASE_NAMES)
 
     foreach(test_name ${TEST_CASE_NAMES})
-        add_test(NAME Rigel_${test_name} COMMAND Rigel_tests --filter ${test_name})
+        set(ctest_name Rigel_${test_name})
+        add_test(NAME ${ctest_name} COMMAND Rigel_tests --filter ${test_name})
+
+        set(test_labels unit)
+
+        if (test_name MATCHES "^AssetIR_|^AssetDefinitionRegistry_|^AssetAudit_")
+            list(APPEND test_labels asset_ir compat)
+        endif()
+
+        if (test_name MATCHES "CompileCRFilesystem|^CRBackend_|^CRBin_|^CRPaths_|^CRChunkMapping_|_CR_")
+            list(APPEND test_labels cr_fixture compat)
+        endif()
+
+        if (test_name MATCHES "CompileRigelEmbedded|^BlockLoader_|^WorldGenerator_|_MemoryFormat$")
+            list(APPEND test_labels non_cr_fixture)
+        endif()
+
+        if (test_name MATCHES "Deterministic|Determinism|SnapshotHash|StableForIdenticalContent")
+            list(APPEND test_labels determinism)
+        endif()
+
+        if (test_name MATCHES "unknown_block_policy|UnknownIdPolicy")
+            list(APPEND test_labels unknown_id_policy)
+        endif()
+
+        if (test_name MATCHES "RoundTrip|roundtrip|round_trip|WorldSaveLoad")
+            list(APPEND test_labels roundtrip)
+        endif()
+
+        if (test_name MATCHES "^AssetAudit_")
+            list(APPEND test_labels audit_diff_threshold compat)
+        endif()
+
+        list(REMOVE_DUPLICATES test_labels)
+        set_tests_properties(${ctest_name} PROPERTIES LABELS "${test_labels}")
     endforeach()
+
+    add_custom_target(test_compat
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L compat
+        DEPENDS Rigel_tests
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running compatibility test suite"
+    )
+
+    add_custom_target(test_cr_fixture
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L cr_fixture
+        DEPENDS Rigel_tests
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running CR fixture compatibility suite"
+    )
+
+    add_custom_target(test_non_cr_fixture
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L non_cr_fixture
+        DEPENDS Rigel_tests
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running non-CR core fixture suite"
+    )
+
+    add_custom_target(test_determinism
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L determinism
+        DEPENDS Rigel_tests
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running determinism test suite"
+    )
+
+    add_custom_target(test_unknown_id_policy
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L unknown_id_policy
+        DEPENDS Rigel_tests
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running unknown-ID policy suite"
+    )
+
+    add_custom_target(test_roundtrip
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L roundtrip
+        DEPENDS Rigel_tests
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running persistence round-trip suite"
+    )
+
+    add_custom_target(test_audit_threshold
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L audit_diff_threshold
+        DEPENDS Rigel_tests
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running asset-audit threshold checks"
+    )
+
+    add_custom_target(ci_parity
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L compat
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L determinism
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L unknown_id_policy
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L roundtrip
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L audit_diff_threshold
+        DEPENDS Rigel_tests
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running parity CI gate suites"
+    )
 
     if (RIGEL_ENABLE_COVERAGE)
         find_program(RIGEL_LCOV_EXECUTABLE lcov)

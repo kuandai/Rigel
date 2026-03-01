@@ -41,6 +41,15 @@ When enabled, CMake adds:
 
 - `Rigel_tests` (test executable)
 - `coverage` (only when `RIGEL_ENABLE_COVERAGE=ON`)
+- parity gate helper targets:
+  - `test_compat`
+  - `test_cr_fixture`
+  - `test_non_cr_fixture`
+  - `test_determinism`
+  - `test_unknown_id_policy`
+  - `test_roundtrip`
+  - `test_audit_threshold`
+  - `ci_parity`
 
 ### 2.3 Coverage Target
 
@@ -110,6 +119,33 @@ Run a single test via CTest:
 ```bash
 ctest --test-dir build -R Rigel_WorldConfigProvider_FileSource
 ```
+
+Run by label:
+
+```bash
+ctest --test-dir build --output-on-failure -L compat
+ctest --test-dir build --output-on-failure -L cr_fixture
+ctest --test-dir build --output-on-failure -L non_cr_fixture
+ctest --test-dir build --output-on-failure -L determinism
+ctest --test-dir build --output-on-failure -L unknown_id_policy
+ctest --test-dir build --output-on-failure -L roundtrip
+```
+
+Run the full parity CI gate set:
+
+```bash
+cmake --build build --target ci_parity
+```
+
+Current label intent:
+
+- `compat`: CR/Rigel compatibility and asset parity tests.
+- `cr_fixture`: tests that explicitly rely on CR-format fixtures/paths.
+- `non_cr_fixture`: minimal core fixture tests independent of CR content.
+- `determinism`: ordering/hash/reproducibility checks.
+- `unknown_id_policy`: persistence unknown-ID policy matrix checks.
+- `roundtrip`: encode/decode and load/save data-loss guards.
+- `audit_diff_threshold`: asset-audit diff regression checks.
 
 ---
 

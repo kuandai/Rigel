@@ -10,11 +10,31 @@
 #include <algorithm>
 #include <chrono>
 #include <deque>
+#include <exception>
 #include <limits>
 
 #include <spdlog/spdlog.h>
 
 namespace Rigel::Persistence {
+namespace {
+
+constexpr const char* kDefaultZoneId = "rigel:default";
+
+std::string resolveZoneId(PersistenceService& service, const PersistenceContext& context) {
+    if (!context.zoneId.empty()) {
+        return context.zoneId;
+    }
+    try {
+        WorldMetadata metadata = service.loadWorldMetadata(context);
+        if (!metadata.defaultZoneId.empty()) {
+            return metadata.defaultZoneId;
+        }
+    } catch (const std::exception&) {
+    }
+    return kDefaultZoneId;
+}
+
+} // namespace
 
 size_t AsyncChunkLoader::RegionKeyHash::operator()(const RegionKey& key) const {
     size_t seed = std::hash<std::string>{}(key.zoneId);
@@ -42,6 +62,10 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
       m_generator(std::move(generator)),
       m_ioPool(ioThreads),
       m_workerPool(workerThreads) {
+    m_zoneId = resolveZoneId(service, m_context);
+    if (m_context.zoneId.empty()) {
+        m_context.zoneId = m_zoneId;
+    }
     m_format = m_service->openFormat(m_context);
     int regionSpan = estimateRegionSpan();
     if (regionSpan < 1) {

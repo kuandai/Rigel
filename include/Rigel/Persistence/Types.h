@@ -20,9 +20,12 @@ class ProviderRegistry;
 struct WorldMetadata {
     std::string worldId;
     std::string displayName;
+    std::string defaultZoneId;
 
     bool operator==(const WorldMetadata& other) const {
-        return worldId == other.worldId && displayName == other.displayName;
+        return worldId == other.worldId &&
+            displayName == other.displayName &&
+            defaultZoneId == other.defaultZoneId;
     }
 };
 
@@ -215,6 +218,7 @@ struct PersistenceContext {
     std::string rootPath;
     std::string preferredFormat;
     std::string manifestPath;
+    std::string zoneId;
     PersistencePolicies policies{};
     std::shared_ptr<StorageBackend> storage;
     std::shared_ptr<ProviderRegistry> providers;

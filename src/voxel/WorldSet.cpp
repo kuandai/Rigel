@@ -94,6 +94,7 @@ Persistence::PersistenceContext WorldSet::persistenceContext(WorldId id) const {
     Persistence::PersistenceContext ctx;
     ctx.rootPath = m_persistenceRoot;
     ctx.preferredFormat = m_persistencePreferredFormat;
+    ctx.zoneId = m_persistenceZoneId;
     ctx.policies = m_persistencePolicies;
     ctx.storage = m_persistenceStorage;
     ctx.providers = target.persistenceProvidersHandle();

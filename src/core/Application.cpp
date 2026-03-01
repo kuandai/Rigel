@@ -521,6 +521,9 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         if (!persistenceConfig.format.empty()) {
             m_impl->world.worldSet.setPersistencePreferredFormat(persistenceConfig.format);
         }
+        if (!persistenceConfig.zoneId.empty()) {
+            m_impl->world.worldSet.setPersistenceZoneId(persistenceConfig.zoneId);
+        }
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
         Input::loadInputBindings(m_impl->assets, m_impl->input);

@@ -18,6 +18,7 @@ namespace Rigel::Persistence::Backends::Memory {
 namespace {
 
 constexpr int32_t kMemoryRegionSpan = 16;
+constexpr const char* kDefaultZoneId = "rigel:default";
 
 std::string zoneRoot(const PersistenceContext& context, const std::string& zoneId) {
     return context.rootPath + "/zones/" + zoneId;
@@ -209,12 +210,20 @@ public:
     void write(const WorldMetadata& metadata, ByteWriter& writer) override {
         writeString(writer, metadata.worldId);
         writeString(writer, metadata.displayName);
+        writeString(writer,
+                    metadata.defaultZoneId.empty() ? std::string(kDefaultZoneId) : metadata.defaultZoneId);
     }
 
     WorldMetadata read(ByteReader& reader) override {
         WorldMetadata out;
         out.worldId = readString(reader);
         out.displayName = readString(reader);
+        if (reader.tell() < reader.size()) {
+            out.defaultZoneId = readString(reader);
+        }
+        if (out.defaultZoneId.empty()) {
+            out.defaultZoneId = kDefaultZoneId;
+        }
         return out;
     }
 };

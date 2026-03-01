@@ -84,6 +84,10 @@ void PersistenceConfig::applyYaml(const char* sourceName, const std::string& yam
     }
 
     format = Util::readString(persistenceNode, "format", format);
+    zoneId = Util::readString(
+        persistenceNode,
+        "zone_id",
+        Util::readString(persistenceNode, "zoneId", zoneId));
 
     if (persistenceNode.has_child("providers")) {
         ryml::ConstNodeRef providersNode = persistenceNode["providers"];

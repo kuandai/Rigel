@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
@@ -22,6 +23,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <spdlog/spdlog.h>
 
 namespace Rigel::Persistence::Backends::CR {
 
@@ -69,6 +72,7 @@ constexpr size_t kLayerBytesHalfNibble = kLayerBlocks / 4;
 constexpr size_t kLayerBytesNibble = kLayerBlocks / 2;
 constexpr size_t kLayerBytesByte = kLayerBlocks;
 constexpr size_t kLayerBytesShort = kLayerBlocks * 2;
+constexpr const char* kDefaultZoneId = "rigel:default";
 
 int32_t floorDiv(int32_t value, int32_t divisor) {
     int32_t q = value / divisor;
@@ -517,9 +521,14 @@ void readLayer(TrackingReader& reader, uint8_t layerType, std::array<uint16_t, 2
 }
 
 std::vector<std::string> buildPalette(const std::vector<Voxel::BlockState>& blocks,
-                                      const Voxel::BlockRegistry& registry,
+                                      const BlockIdentityProvider* identityProvider,
+                                      const PersistencePolicies& policies,
                                       std::unordered_map<uint16_t, uint16_t>& paletteIndex) {
+    if (!identityProvider) {
+        throw std::runtime_error("CRChunkCodec: missing block identity provider");
+    }
     std::vector<std::string> palette;
+    std::unordered_map<uint16_t, size_t> unknownRuntimeIds;
     for (const auto& state : blocks) {
         uint16_t id = state.id.type;
         if (paletteIndex.find(id) != paletteIndex.end()) {
@@ -527,7 +536,52 @@ std::vector<std::string> buildPalette(const std::vector<Voxel::BlockState>& bloc
         }
         uint16_t index = static_cast<uint16_t>(palette.size());
         paletteIndex[id] = index;
-        palette.push_back(registry.getType(Voxel::BlockID{id}).identifier);
+        std::optional<std::string> externalId = identityProvider->resolveExternalId(Voxel::BlockID{id});
+        if (!externalId || externalId->empty()) {
+            ++unknownRuntimeIds[id];
+            switch (policies.unknownBlockPolicy) {
+            case UnknownIdPolicy::Fail:
+                throw std::runtime_error(
+                    "CRChunkCodec: failed to resolve external identifier for runtime block " +
+                    std::to_string(id));
+            case UnknownIdPolicy::Placeholder:
+                externalId = identityProvider->resolveExternalId(identityProvider->placeholderRuntimeId());
+                break;
+            case UnknownIdPolicy::Skip:
+                externalId = identityProvider->resolveExternalId(Voxel::BlockRegistry::airId());
+                break;
+            }
+        }
+        if (!externalId || externalId->empty()) {
+            throw std::runtime_error(
+                "CRChunkCodec: unresolved external identifier and fallback failed for runtime block " +
+                std::to_string(id));
+        }
+        palette.push_back(*externalId);
+    }
+    if (!unknownRuntimeIds.empty() && policies.unknownBlockPolicy != UnknownIdPolicy::Fail) {
+        std::vector<std::pair<uint16_t, size_t>> samples(unknownRuntimeIds.begin(), unknownRuntimeIds.end());
+        std::sort(samples.begin(),
+                  samples.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        constexpr size_t kMaxSamples = 4;
+        if (samples.size() > kMaxSamples) {
+            samples.resize(kMaxSamples);
+        }
+        std::string sampleText;
+        for (size_t i = 0; i < samples.size(); ++i) {
+            if (i > 0) {
+                sampleText += ", ";
+            }
+            sampleText += std::to_string(samples[i].first) + " x" + std::to_string(samples[i].second);
+        }
+        const char* policyText =
+            (policies.unknownBlockPolicy == UnknownIdPolicy::Placeholder) ? "placeholder" : "skip->air";
+        spdlog::warn(
+            "CRChunkCodec: remapped {} unknown runtime block IDs during save using policy {} (samples: {})",
+            unknownRuntimeIds.size(),
+            policyText,
+            sampleText.empty() ? std::string("<none>") : sampleText);
     }
     return palette;
 }
@@ -596,29 +650,70 @@ void writeLayer(ByteWriter& writer,
 }
 
 std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
-                                            const Voxel::BlockRegistry* registry) {
+                                            const BlockIdentityProvider* identityProvider,
+                                            const PersistencePolicies& policies) {
     std::vector<Voxel::BlockState> blocks(16 * 16 * 16, Voxel::BlockState{});
-    auto resolveBlockId = [registry](const std::string& id) -> Voxel::BlockID {
-        if (!registry) {
+    std::unordered_map<std::string, size_t> unknownIds;
+    size_t unknownTotal = 0;
+
+    auto resolveBlockId = [&](const std::string& id) -> Voxel::BlockID {
+        if (identityProvider) {
+            if (auto found = identityProvider->resolveRuntimeId(id)) {
+                return *found;
+            }
+            if (auto alias = identityProvider->resolveAlias(id)) {
+                if (auto found = identityProvider->resolveRuntimeId(*alias)) {
+                    return *found;
+                }
+            }
+        }
+
+        ++unknownTotal;
+        ++unknownIds[id];
+        switch (policies.unknownBlockPolicy) {
+        case UnknownIdPolicy::Fail:
+            throw std::runtime_error("CRChunkCodec: unknown block identifier '" + id + "'");
+        case UnknownIdPolicy::Placeholder:
+            if (identityProvider) {
+                return identityProvider->placeholderRuntimeId();
+            }
+            return Voxel::BlockRegistry::airId();
+        case UnknownIdPolicy::Skip:
             return Voxel::BlockRegistry::airId();
         }
-        if (auto found = registry->findByIdentifier(id)) {
-            return *found;
-        }
-        constexpr std::string_view kLegacyNamespace = "rigel:";
-        constexpr std::string_view kBaseNamespace = "base:";
-        if (id.rfind(kLegacyNamespace, 0) == 0) {
-            std::string fallback = std::string(kBaseNamespace) + id.substr(kLegacyNamespace.size());
-            if (auto found = registry->findByIdentifier(fallback)) {
-                return *found;
-            }
-        } else if (id.rfind(kBaseNamespace, 0) == 0) {
-            std::string fallback = std::string(kLegacyNamespace) + id.substr(kBaseNamespace.size());
-            if (auto found = registry->findByIdentifier(fallback)) {
-                return *found;
-            }
-        }
         return Voxel::BlockRegistry::airId();
+    };
+
+    auto maybeLogUnknownSummary = [&]() {
+        if (unknownTotal == 0 || policies.unknownBlockPolicy == UnknownIdPolicy::Fail) {
+            return;
+        }
+        static std::atomic<uint32_t> s_warnBudget{32};
+        uint32_t remaining = s_warnBudget.fetch_sub(1, std::memory_order_relaxed);
+        if (remaining == 0) {
+            return;
+        }
+        std::vector<std::pair<std::string, size_t>> samples(unknownIds.begin(), unknownIds.end());
+        std::sort(samples.begin(),
+                  samples.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        constexpr size_t kMaxSamples = 4;
+        if (samples.size() > kMaxSamples) {
+            samples.resize(kMaxSamples);
+        }
+        std::string sampleText;
+        for (size_t i = 0; i < samples.size(); ++i) {
+            if (i > 0) {
+                sampleText += ", ";
+            }
+            sampleText += samples[i].first + " x" + std::to_string(samples[i].second);
+        }
+        const char* policyText =
+            (policies.unknownBlockPolicy == UnknownIdPolicy::Placeholder) ? "placeholder" : "skip->air";
+        spdlog::warn("CRChunkCodec: resolved {} unknown block entries using policy {} (samples: {})",
+                     unknownTotal,
+                     policyText,
+                     sampleText.empty() ? std::string("<none>") : sampleText);
     };
 
     uint8_t blockType = reader.readU8();
@@ -634,6 +729,7 @@ std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
         for (auto& state : blocks) {
             state.id = blockId;
         }
+        maybeLogUnknownSummary();
         return blocks;
     }
 
@@ -661,6 +757,7 @@ std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
                 }
             }
         }
+        maybeLogUnknownSummary();
         return blocks;
     }
 
@@ -669,7 +766,8 @@ std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
 
 void writeBlockData(ByteWriter& writer,
                     const std::vector<Voxel::BlockState>& blocks,
-                    const Voxel::BlockRegistry* registry) {
+                    const BlockIdentityProvider* identityProvider,
+                    const PersistencePolicies& policies) {
     if (blocks.empty()) {
         writer.writeU8(kBlockNull);
         return;
@@ -687,12 +785,8 @@ void writeBlockData(ByteWriter& writer,
         return;
     }
 
-    if (!registry) {
-        throw std::runtime_error("CRChunkCodec: missing block registry");
-    }
-
     std::unordered_map<uint16_t, uint16_t> paletteIndex;
-    auto palette = buildPalette(blocks, *registry, paletteIndex);
+    auto palette = buildPalette(blocks, identityProvider, policies, paletteIndex);
     if (palette.size() == 1) {
         writer.writeU8(kBlockSingle);
         writeString(writer, palette[0]);
@@ -802,8 +896,12 @@ void readBlockLightData(TrackingReader& reader) {
 
 class CRChunkCodec {
 public:
-    void setRegistry(const Voxel::BlockRegistry* registry) {
-        m_registry = registry;
+    void setIdentityProvider(const BlockIdentityProvider* identityProvider) {
+        m_identityProvider = identityProvider;
+    }
+
+    void setPolicies(PersistencePolicies policies) {
+        m_policies = policies;
     }
 
     ChunkSnapshot read(ByteReader& reader, const ChunkKey& keyHint) {
@@ -823,7 +921,7 @@ public:
         out.data.span.sizeX = 16;
         out.data.span.sizeY = 16;
         out.data.span.sizeZ = 16;
-        out.data.blocks = decodeBlocks(tracker, m_registry);
+        out.data.blocks = decodeBlocks(tracker, m_identityProvider, m_policies);
         readSkylightData(tracker);
         readBlockLightData(tracker);
         uint8_t entityFlag = tracker.readU8();
@@ -850,14 +948,15 @@ public:
         writer.writeI32(chunk.key.x);
         writer.writeI32(chunk.key.y);
         writer.writeI32(chunk.key.z);
-        writeBlockData(writer, chunk.data.blocks, m_registry);
+        writeBlockData(writer, chunk.data.blocks, m_identityProvider, m_policies);
         writer.writeU8(static_cast<uint8_t>(kSkyNull));
         writer.writeU8(static_cast<uint8_t>(kBlockLightNull));
         writer.writeU8(static_cast<uint8_t>(kBlockEntityNull));
     }
 
 private:
-    const Voxel::BlockRegistry* m_registry = nullptr;
+    const BlockIdentityProvider* m_identityProvider = nullptr;
+    PersistencePolicies m_policies{};
 };
 
 class CRWorldMetadataCodec final : public WorldMetadataCodec {
@@ -867,9 +966,11 @@ public:
     }
 
     void write(const WorldMetadata& metadata, ByteWriter& writer) override {
+        const std::string defaultZoneId =
+            metadata.defaultZoneId.empty() ? std::string(kDefaultZoneId) : metadata.defaultZoneId;
         std::string text = "{\n";
         text += "  \"latestRegionFileVersion\": " + std::to_string(kFileVersion) + ",\n";
-        text += "  \"defaultZoneId\": \"rigel:default\",\n";
+        text += "  \"defaultZoneId\": \"" + defaultZoneId + "\",\n";
         text += "  \"worldDisplayName\": \"" + metadata.displayName + "\",\n";
         text += "  \"worldSeed\": 0,\n";
         text += "  \"worldCreatedEpochMillis\": 0,\n";
@@ -894,6 +995,12 @@ public:
         } else {
             out.displayName = out.worldId;
         }
+        auto defaultZone = extractJsonString(text, "defaultZoneId");
+        if (defaultZone && !defaultZone->empty()) {
+            out.defaultZoneId = *defaultZone;
+        } else {
+            out.defaultZoneId = kDefaultZoneId;
+        }
         return out;
     }
 
@@ -914,11 +1021,11 @@ public:
     void write(const ZoneMetadata& metadata, ByteWriter& writer) override {
         std::string text = "{\n";
         text += "  \"zoneId\": \"" + metadata.zoneId + "\",\n";
-        text += "  \"worldGenSaveKey\": \"rigel:default\",\n";
+        text += "  \"worldGenSaveKey\": \"" + metadata.zoneId + "\",\n";
         text += "  \"seed\": 0,\n";
         text += "  \"respawnHeight\": 0,\n";
         text += "  \"spawnPoint\": {\"x\":0,\"y\":0,\"z\":0},\n";
-        text += "  \"skyId\": \"rigel:default\"\n";
+        text += "  \"skyId\": \"" + metadata.zoneId + "\"\n";
         text += "}\n";
         writer.writeBytes(reinterpret_cast<const uint8_t*>(text.data()), text.size());
     }
@@ -1269,11 +1376,18 @@ public:
           m_chunkContainer(m_storage, m_context, m_chunkCodec),
           m_entityContainer(m_storage, m_context) {
         m_worldCodec.setContext(m_context);
+        m_chunkCodec.setPolicies(m_context.policies);
         if (m_context.providers) {
-            auto provider = m_context.providers->findAs<BlockRegistryProvider>(kBlockRegistryProviderId);
+            auto provider = m_context.providers->findAs<BlockIdentityProvider>(kBlockRegistryProviderId);
             if (provider) {
-                m_chunkCodec.setRegistry(provider->registry());
+                m_chunkCodec.setIdentityProvider(provider.get());
+            } else {
+                spdlog::warn(
+                    "CRFormat: missing '{}' provider; non-air chunk decode/encode may fail",
+                    kBlockRegistryProviderId);
             }
+        } else {
+            spdlog::warn("CRFormat: no provider registry; non-air chunk decode/encode may fail");
         }
     }
 

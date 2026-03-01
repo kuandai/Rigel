@@ -17,6 +17,7 @@ struct ProviderConfig {
 
 struct PersistenceConfig {
     std::string format = "cr";
+    std::string zoneId;
     std::vector<ProviderConfig> providers;
 
     const ProviderConfig* findProvider(std::string_view id) const;

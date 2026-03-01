@@ -35,6 +35,20 @@ bool isAllAir(const ChunkData& data) {
     return true;
 }
 
+std::string resolveZoneId(PersistenceService& service, const PersistenceContext& context) {
+    if (!context.zoneId.empty()) {
+        return context.zoneId;
+    }
+    try {
+        WorldMetadata metadata = service.loadWorldMetadata(context);
+        if (!metadata.defaultZoneId.empty()) {
+            return metadata.defaultZoneId;
+        }
+    } catch (const std::exception&) {
+    }
+    return kDefaultZoneId;
+}
+
 } // namespace
 
 std::string mainWorldRootPath(Voxel::WorldId id) {
@@ -50,8 +64,8 @@ void loadWorldFromDisk(Voxel::World& world,
     world.clear();
     world.chunkManager().clearDirtyFlags();
 
+    std::string zoneId = resolveZoneId(service, context);
     auto format = service.openFormat(context);
-    std::string zoneId = kDefaultZoneId;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> touchedChunks;
 
     if (includesChunks(scope)) {
@@ -116,9 +130,9 @@ void loadWorldFromDisk(Voxel::World& world,
 void saveWorldToDisk(const Voxel::World& world,
                      PersistenceService& service,
                      PersistenceContext context) {
+    std::string zoneId = resolveZoneId(service, context);
     auto format = service.openFormat(context);
     const auto& layout = format->regionLayout();
-    std::string zoneId = kDefaultZoneId;
 
     struct RegionSave {
         RegionKey key;
@@ -260,6 +274,7 @@ void saveWorldToDisk(const Voxel::World& world,
     WorldSnapshot worldSnapshot;
     worldSnapshot.metadata.worldId = "world_" + std::to_string(world.id());
     worldSnapshot.metadata.displayName = worldSnapshot.metadata.worldId;
+    worldSnapshot.metadata.defaultZoneId = zoneId;
     worldSnapshot.zones.push_back(ZoneMetadata{zoneId, zoneId});
     service.saveWorld(worldSnapshot, SaveScope::MetadataOnly, context);
 }
@@ -269,9 +284,9 @@ bool loadChunkFromDisk(Voxel::World& world,
                        PersistenceContext context,
                        const Voxel::ChunkCoord& coord,
                        uint32_t worldGenVersion) {
+    std::string zoneId = resolveZoneId(service, context);
     auto format = service.openFormat(context);
     const auto& layout = format->regionLayout();
-    std::string zoneId = kDefaultZoneId;
 
     RegionKey regionKey = layout.regionForChunk(zoneId, coord);
     ChunkRegionSnapshot region;

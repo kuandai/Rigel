@@ -126,6 +126,36 @@ The asset system throws typed exceptions:
 
 Most loader errors are fatal at call-site and should be handled by the caller.
 
+## Asset Audit Tool
+
+Rigel supports a headless audit mode for comparing embedded Rigel assets against
+a CR asset dump without creating a window or OpenGL context.
+
+Usage:
+
+```bash
+./build/bin/Rigel --asset-audit /path/to/cr/root --output /tmp/asset_audit.json
+```
+
+Alternative CR root source:
+
+```bash
+RIGEL_CR_ASSET_ROOT=/path/to/cr/root ./build/bin/Rigel --asset-audit
+```
+
+Current behavior:
+- Left source: embedded Rigel assets (`ResourceRegistry`).
+- Right source: CR filesystem tree (expects `<root>/base/...`, or `root` may be
+  the `base` directory itself).
+- Output: deterministic JSON report containing inventories and set-diffs for:
+  - block roots
+  - block variants
+  - model refs
+  - texture refs
+  - entity defs
+  - item defs
+- Duplicate block variant identifiers are reported per source.
+
 ## Threading + GL Context Requirements
 
 - `AssetManager` is not thread-safe.

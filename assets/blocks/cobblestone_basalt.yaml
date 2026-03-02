@@ -1,7 +1,0 @@
-id: cobblestone_basalt
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/stone/cobblestone_basalt.png

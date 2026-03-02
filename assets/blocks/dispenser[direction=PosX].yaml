@@ -1,7 +1,0 @@
-id: dispenser[direction=PosX]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/machines/dispenser_front.png

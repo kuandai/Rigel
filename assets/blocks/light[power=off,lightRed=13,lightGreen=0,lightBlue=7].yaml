@@ -1,7 +1,0 @@
-id: light[power=off,lightRed=13,lightGreen=0,lightBlue=7]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/lights/light_off.png

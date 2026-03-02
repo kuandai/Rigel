@@ -1,9 +1,0 @@
-id: lava[type=source]
-model: cube
-opaque: false
-solid: false
-cull_same_type: true
-layer: transparent
-emits_light: 15
-textures:
-  all: textures/blocks/lava.png

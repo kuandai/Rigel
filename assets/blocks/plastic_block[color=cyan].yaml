@@ -1,7 +1,0 @@
-id: plastic_block[color=cyan]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/plastics/plastic_block_cyan.png

@@ -45,6 +45,10 @@ conan.lock
 
 # Binary assets
 assets/textures/
+assets/blocks/*.yaml
+assets/models/entities/**/*.json
+assets/animations/entities/*.animation.json
+assets/sounds/**/*.ogg
 
 # Runtime artifacts
 saves/

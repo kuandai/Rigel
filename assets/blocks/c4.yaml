@@ -1,9 +1,0 @@
-id: c4
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  top: textures/blocks/c4_side.png
-  bottom: textures/blocks/c4_side.png
-  sides: textures/blocks/c4_side.png

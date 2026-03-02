@@ -1,8 +1,0 @@
-id: light[power=on,lightRed=13,lightGreen=13,lightBlue=0]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-emits_light: 13
-textures:
-  all: textures/blocks/lights/light_yellow.png

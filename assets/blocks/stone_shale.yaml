@@ -1,7 +1,0 @@
-id: stone_shale
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/stone/stone_shale.png

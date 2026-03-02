@@ -1,7 +1,0 @@
-id: piston[power=on,direction=NegZ,type=push,part=body]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/machines/piston_base.png

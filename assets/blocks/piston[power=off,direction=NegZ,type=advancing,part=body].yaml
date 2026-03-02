@@ -1,8 +1,0 @@
-id: piston[power=off,direction=NegZ,type=advancing,part=body]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  pos_x: textures/blocks/machines/machine_top.png
-  neg_x: textures/blocks/machines/piston_base.png

@@ -1,7 +1,0 @@
-id: laser_switch[power=on,direction=NegZ]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  pos_x: textures/blocks/machines/laser_emitter_top.png

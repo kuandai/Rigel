@@ -1,8 +1,0 @@
-id: laser_emitter_motion[type=single,direction=NegZ]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  pos_x: textures/blocks/machines/laser_emitter_motion_front.png
-  neg_y: textures/blocks/hazard.png

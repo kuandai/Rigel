@@ -1,7 +1,0 @@
-id: sandstone
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/stone/sandstone.png

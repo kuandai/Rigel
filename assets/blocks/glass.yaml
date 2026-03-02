@@ -1,8 +1,0 @@
-id: glass
-model: cube
-opaque: false
-solid: true
-layer: transparent
-light_attenuation: 0
-textures:
-  all: textures/blocks/glass.png

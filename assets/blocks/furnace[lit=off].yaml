@@ -1,9 +1,0 @@
-id: furnace[lit=off]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  top: textures/blocks/furnace_top.png
-  bottom: textures/blocks/furnace_bottom.png
-  sides: textures/blocks/furnace_side.png

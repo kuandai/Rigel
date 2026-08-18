@@ -29,9 +29,20 @@ tools.system.package_manager:sudo=True
 EOF
 ```
 
-Then install dependencies and compile
+Then install dependencies, configure CMake with the Conan toolchain, and compile:
 
 ```bash
-conan install . --output-folder=build --build=missing
-cmake --build ./build --parallel $(nproc) --target Rigel
+conan install . --output-folder=build-release --build=missing
+cmake -S . -B build-release \
+  -DCMAKE_TOOLCHAIN_FILE=build-release/conan_toolchain.cmake \
+  -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --parallel $(nproc) --target Rigel
+```
+
+To build and run the tests:
+
+```bash
+cmake --build build-release --parallel $(nproc) --target Rigel_tests
+ctest --test-dir build-release --output-on-failure --parallel $(nproc)
 ```

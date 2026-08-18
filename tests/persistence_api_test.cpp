@@ -7,6 +7,7 @@
 
 #include <glm/vec3.hpp>
 
+#include <algorithm>
 #include <unordered_map>
 
 using namespace Rigel::Persistence;

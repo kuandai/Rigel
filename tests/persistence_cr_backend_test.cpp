@@ -12,6 +12,7 @@
 #include <filesystem>
 #include "Rigel/Persistence/Storage.h"
 
+#include <algorithm>
 #include <unordered_map>
 
 using namespace Rigel::Persistence;

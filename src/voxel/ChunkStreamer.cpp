@@ -229,6 +229,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                         }
                         m_chunkManager->unloadChunk(coord);
                         m_states.erase(coord);
+                        m_countedMeshRetryRevisions.erase(coord);
                         if (!genFull) {
                             enqueueGeneration(coord);
                             genFull = m_inFlightGen >= genLimit;
@@ -251,6 +252,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                         }
                         chunk->clearDirty();
                         m_states[coord] = ChunkState::ReadyMesh;
+                        m_countedMeshRetryRevisions.erase(coord);
                         continue;
                     }
 
@@ -367,6 +369,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             m_chunkManager->unloadChunk(coord);
             m_cache.erase(coord);
             m_states.erase(coord);
+            m_countedMeshRetryRevisions.erase(coord);
         }
 
     }
@@ -382,6 +385,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
             m_chunkManager->unloadChunk(coord);
             m_states.erase(coord);
+            m_countedMeshRetryRevisions.erase(coord);
         }
     }
 
@@ -467,6 +471,7 @@ void ChunkStreamer::reset() {
     m_inFlightMeshMissing = 0;
     m_inFlightMeshDirty = 0;
     m_meshInFlight.clear();
+    m_countedMeshRetryRevisions.clear();
     m_cache = ChunkCache();
     m_cache.setMaxChunks(m_config.maxResidentChunks);
     m_desired.clear();
@@ -597,10 +602,14 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             continue;
         }
 
-        if (chunk->meshRevision() != meshResult.revision) {
-            if (flight && flight->observedRevision != chunk->meshRevision()) {
+        uint32_t currentRevision = chunk->meshRevision();
+        if (currentRevision != meshResult.revision) {
+            if (flight && flight->observedRevision != currentRevision) {
                 ++m_workMetrics.meshInvalidations;
                 ++m_workMetrics.meshRequestsCoalesced;
+            }
+            if (flight && flight->kind == MeshRequestKind::Dirty) {
+                m_countedMeshRetryRevisions[meshResult.coord] = currentRevision;
             }
             stateIt->second = ChunkState::ReadyData;
             ++m_workMetrics.meshJobsRejectedStale;
@@ -770,7 +779,15 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
         ++m_inFlightMeshMissing;
     } else {
         ++m_inFlightMeshDirty;
-        ++m_workMetrics.meshInvalidations;
+        auto retryIt = m_countedMeshRetryRevisions.find(coord);
+        bool invalidationAlreadyCounted = retryIt != m_countedMeshRetryRevisions.end() &&
+            retryIt->second == task.revision;
+        if (retryIt != m_countedMeshRetryRevisions.end()) {
+            m_countedMeshRetryRevisions.erase(retryIt);
+        }
+        if (!invalidationAlreadyCounted) {
+            ++m_workMetrics.meshInvalidations;
+        }
     }
 
     BlockRegistry* registry = m_registry;

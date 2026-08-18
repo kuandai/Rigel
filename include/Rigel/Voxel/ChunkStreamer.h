@@ -154,6 +154,7 @@ private:
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_loadPending;
     std::unordered_map<ChunkCoord, std::shared_ptr<std::atomic_bool>, ChunkCoordHash> m_genCancel;
     std::unordered_map<ChunkCoord, MeshInFlight, ChunkCoordHash> m_meshInFlight;
+    std::unordered_map<ChunkCoord, uint32_t, ChunkCoordHash> m_countedMeshRetryRevisions;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     size_t m_inFlightGen = 0;

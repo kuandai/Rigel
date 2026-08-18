@@ -807,4 +807,15 @@ TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {
     CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
     CHECK_EQ(metrics.meshInvalidations, static_cast<uint64_t>(3));
     CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
+
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(4));
+    CHECK_EQ(metrics.meshInvalidations, static_cast<uint64_t>(3));
+    streamer.processCompletions();
+
+    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(4));
+    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(3));
+    CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
+    CHECK_EQ(metrics.meshInvalidations, static_cast<uint64_t>(3));
+    CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
 }

@@ -12,6 +12,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <unordered_map>
@@ -24,6 +25,28 @@ namespace Rigel::Voxel {
 
 class ChunkStreamer {
 public:
+    // Cumulative counters are retained for the lifetime of the streamer.
+    // The last-update fields are replaced by each call to update().
+    struct WorkMetrics {
+        uint64_t generationJobsStarted = 0;
+        // Distinct coordinates whose load request transitioned to pending.
+        uint64_t chunkLoadRequestsStarted = 0;
+        uint64_t meshJobsStarted = 0;
+        // Results observed by the completion drain.
+        uint64_t meshJobsCompleted = 0;
+        uint64_t meshJobsAccepted = 0;
+        uint64_t meshJobsRejectedStale = 0;
+        // Dirty revisions requiring new mesh work, including in-flight replacements.
+        uint64_t meshInvalidations = 0;
+        uint64_t meshRequestsCoalesced = 0;
+        // Candidate coordinates tested while rebuilding the desired set.
+        uint64_t desiredBuildCoordinatesInspected = 0;
+        // Desired entries visited by the load/generation and dirty-mesh passes.
+        uint64_t schedulerCoordinatesInspected = 0;
+        uint64_t lastUpdateDesiredBuildCoordinatesInspected = 0;
+        uint64_t lastUpdateSchedulerCoordinatesInspected = 0;
+    };
+
     enum class DebugState : uint8_t {
         QueuedGen,
         LoadedFromDisk,
@@ -62,6 +85,7 @@ public:
     void reset();
     void getDebugStates(std::vector<DebugChunkState>& out) const;
     int viewDistanceChunks() const { return m_config.viewDistanceChunks; }
+    const WorkMetrics& workMetrics() const { return m_workMetrics; }
 
 private:
     static constexpr int kPaddedSize = Chunk::SIZE + 2;
@@ -104,6 +128,11 @@ private:
         Dirty
     };
 
+    struct MeshInFlight {
+        MeshRequestKind kind = MeshRequestKind::Missing;
+        uint32_t observedRevision = 0;
+    };
+
     WorldGenConfig::StreamConfig m_config;
     ChunkManager* m_chunkManager = nullptr;
     WorldMeshStore* m_meshStore = nullptr;
@@ -124,7 +153,7 @@ private:
     std::unordered_map<ChunkCoord, ChunkState, ChunkCoordHash> m_states;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_loadPending;
     std::unordered_map<ChunkCoord, std::shared_ptr<std::atomic_bool>, ChunkCoordHash> m_genCancel;
-    std::unordered_map<ChunkCoord, MeshRequestKind, ChunkCoordHash> m_meshInFlight;
+    std::unordered_map<ChunkCoord, MeshInFlight, ChunkCoordHash> m_meshInFlight;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     size_t m_inFlightGen = 0;
@@ -135,6 +164,7 @@ private:
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;
     size_t m_dirtyCursor = 0;
+    WorkMetrics m_workMetrics;
 
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);

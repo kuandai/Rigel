@@ -63,6 +63,9 @@ public:
 
     void updateStreaming(const glm::vec3& cameraPos);
     void updateMeshes();
+    const ChunkStreamer::WorkMetrics& streamingMetrics() const {
+        return m_streamer.workMetrics();
+    }
     void render(const glm::mat4& view,
                 const glm::mat4& projection,
                 const glm::vec3& cameraPos,

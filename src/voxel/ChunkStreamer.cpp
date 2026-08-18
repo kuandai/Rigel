@@ -74,9 +74,14 @@ void ChunkStreamer::setChunkLoadCancel(ChunkLoadCancelCallback cancel) {
 }
 
 void ChunkStreamer::update(const glm::vec3& cameraPos) {
+    m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected = 0;
+    m_workMetrics.lastUpdateSchedulerCoordinatesInspected = 0;
     if (!m_chunkManager || !m_generator || !m_meshStore) {
         return;
     }
+
+    uint64_t desiredBuildCoordinatesInspected = 0;
+    uint64_t schedulerCoordinatesInspected = 0;
 
     ChunkCoord center = cameraToChunk(cameraPos);
     int viewDistance = std::max(0, m_config.viewDistanceChunks);
@@ -99,6 +104,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         for (int dz = -viewDistance; dz <= viewDistance; ++dz) {
             for (int dy = -viewDistance; dy <= viewDistance; ++dy) {
                 for (int dx = -viewDistance; dx <= viewDistance; ++dx) {
+                    ++desiredBuildCoordinatesInspected;
                     ChunkCoord coord{center.x + dx, center.y + dy, center.z + dz};
                     int distSq = distanceSquared(center, coord);
                     if (distSq > viewRadiusSq) {
@@ -191,6 +197,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             while (queued < budget && scanned < desiredCount) {
                 const ChunkCoord& coord = m_desired[scanned];
                 ++scanned;
+                ++schedulerCoordinatesInspected;
 
                 if (genFull && meshFullMissing) {
                     break;
@@ -205,7 +212,11 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 Chunk* chunk = m_chunkManager->getChunk(coord);
                 bool requested = false;
                 if (!chunk && state != ChunkState::QueuedGen && m_chunkLoader) {
+                    bool wasPending = m_loadPending.find(coord) != m_loadPending.end();
                     requested = m_chunkLoader(coord);
+                    if (requested && !wasPending) {
+                        ++m_workMetrics.chunkLoadRequestsStarted;
+                    }
                     chunk = m_chunkManager->getChunk(coord);
                 }
 
@@ -293,6 +304,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
             const ChunkCoord& coord = m_desired[m_dirtyCursor];
             ++scanned;
+            ++schedulerCoordinatesInspected;
             ++m_dirtyCursor;
             if (m_dirtyCursor >= m_desired.size()) {
                 m_dirtyCursor = 0;
@@ -306,6 +318,17 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
 
             Chunk* chunk = m_chunkManager->getChunk(coord);
             if (!chunk || chunk->isEmpty()) {
+                continue;
+            }
+
+            if (state == ChunkState::QueuedMesh && chunk->isDirty()) {
+                auto flightIt = m_meshInFlight.find(coord);
+                if (flightIt != m_meshInFlight.end() &&
+                    flightIt->second.observedRevision != chunk->meshRevision()) {
+                    flightIt->second.observedRevision = chunk->meshRevision();
+                    ++m_workMetrics.meshInvalidations;
+                    ++m_workMetrics.meshRequestsCoalesced;
+                }
                 continue;
             }
 
@@ -362,6 +385,13 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
     }
 
+    m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected =
+        desiredBuildCoordinatesInspected;
+    m_workMetrics.lastUpdateSchedulerCoordinatesInspected =
+        schedulerCoordinatesInspected;
+    m_workMetrics.desiredBuildCoordinatesInspected +=
+        desiredBuildCoordinatesInspected;
+    m_workMetrics.schedulerCoordinatesInspected += schedulerCoordinatesInspected;
 }
 
 ChunkCoord ChunkStreamer::cameraToChunk(const glm::vec3& cameraPos) const {
@@ -461,6 +491,8 @@ void ChunkStreamer::reset() {
     }
     MeshResult meshResult;
     while (m_meshComplete.tryPop(meshResult)) {
+        ++m_workMetrics.meshJobsCompleted;
+        ++m_workMetrics.meshJobsRejectedStale;
     }
 }
 
@@ -532,12 +564,15 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
     size_t applied = 0;
     MeshResult meshResult;
     while (applied < budget && m_meshComplete.tryPop(meshResult)) {
+        ++m_workMetrics.meshJobsCompleted;
         if (m_inFlightMesh > 0) {
             --m_inFlightMesh;
         }
+        std::optional<MeshInFlight> flight;
         auto kindIt = m_meshInFlight.find(meshResult.coord);
         if (kindIt != m_meshInFlight.end()) {
-            if (kindIt->second == MeshRequestKind::Missing) {
+            flight = kindIt->second;
+            if (kindIt->second.kind == MeshRequestKind::Missing) {
                 if (m_inFlightMeshMissing > 0) {
                     --m_inFlightMeshMissing;
                 }
@@ -551,17 +586,24 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
 
         auto stateIt = m_states.find(meshResult.coord);
         if (stateIt == m_states.end() || stateIt->second != ChunkState::QueuedMesh) {
+            ++m_workMetrics.meshJobsRejectedStale;
             continue;
         }
 
         Chunk* chunk = m_chunkManager->getChunk(meshResult.coord);
         if (!chunk) {
             m_states.erase(meshResult.coord);
+            ++m_workMetrics.meshJobsRejectedStale;
             continue;
         }
 
         if (chunk->meshRevision() != meshResult.revision) {
+            if (flight && flight->observedRevision != chunk->meshRevision()) {
+                ++m_workMetrics.meshInvalidations;
+                ++m_workMetrics.meshRequestsCoalesced;
+            }
             stateIt->second = ChunkState::ReadyData;
+            ++m_workMetrics.meshJobsRejectedStale;
             continue;
         }
 
@@ -584,6 +626,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         if (m_benchmark) {
             m_benchmark->addMesh(meshResult.seconds, meshResult.empty);
         }
+        ++m_workMetrics.meshJobsAccepted;
         ++applied;
     }
 }
@@ -596,6 +639,7 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
 
     m_states[coord] = ChunkState::QueuedGen;
     ++m_inFlightGen;
+    ++m_workMetrics.generationJobsStarted;
 
     auto cancelToken = std::make_shared<std::atomic_bool>(false);
     m_genCancel[coord] = cancelToken;
@@ -717,11 +761,16 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
 
     m_states[coord] = ChunkState::QueuedMesh;
     ++m_inFlightMesh;
-    m_meshInFlight[coord] = kind;
+    m_meshInFlight[coord] = MeshInFlight{
+        .kind = kind,
+        .observedRevision = task.revision
+    };
+    ++m_workMetrics.meshJobsStarted;
     if (kind == MeshRequestKind::Missing) {
         ++m_inFlightMeshMissing;
     } else {
         ++m_inFlightMeshDirty;
+        ++m_workMetrics.meshInvalidations;
     }
 
     BlockRegistry* registry = m_registry;

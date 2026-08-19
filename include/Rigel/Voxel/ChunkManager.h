@@ -50,6 +50,8 @@ class BlockRegistry;
 class ChunkManager {
 public:
     ChunkManager() = default;
+    ChunkManager(ChunkManager&& other) noexcept;
+    ChunkManager& operator=(ChunkManager&& other) noexcept;
 
     /// @name Chunk Access
     /// @{
@@ -197,6 +199,8 @@ public:
     void setRegistry(const BlockRegistry* registry) { m_registry = registry; }
 
 private:
+    void rebindMeshChangeTracking();
+
     std::atomic<uint64_t> m_meshChangeVersion{0};
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> m_chunks;
     const BlockRegistry* m_registry = nullptr;

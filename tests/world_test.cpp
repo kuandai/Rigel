@@ -4,7 +4,14 @@
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/WorldView.h"
 
+#include <type_traits>
+
 using namespace Rigel::Voxel;
+
+static_assert(std::is_move_constructible_v<ChunkManager>);
+static_assert(std::is_move_assignable_v<ChunkManager>);
+static_assert(std::is_move_constructible_v<World>);
+static_assert(std::is_move_assignable_v<World>);
 
 TEST_CASE(World_StreamingPopulatesChunks) {
     WorldResources resources;

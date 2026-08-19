@@ -3,7 +3,34 @@
 
 #include <spdlog/spdlog.h>
 
+#include <utility>
+
 namespace Rigel::Voxel {
+
+ChunkManager::ChunkManager(ChunkManager&& other) noexcept
+    : m_meshChangeVersion(other.m_meshChangeVersion.load(std::memory_order_relaxed))
+    , m_chunks(std::move(other.m_chunks))
+    , m_registry(other.m_registry) {
+    rebindMeshChangeTracking();
+}
+
+ChunkManager& ChunkManager::operator=(ChunkManager&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+
+    m_chunks = std::move(other.m_chunks);
+    m_registry = other.m_registry;
+    m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
+    rebindMeshChangeTracking();
+    return *this;
+}
+
+void ChunkManager::rebindMeshChangeTracking() {
+    for (auto& [coord, chunk] : m_chunks) {
+        chunk->trackMeshChanges(&m_meshChangeVersion);
+    }
+}
 
 Chunk* ChunkManager::getChunk(ChunkCoord coord) {
     auto it = m_chunks.find(coord);

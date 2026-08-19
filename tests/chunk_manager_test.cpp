@@ -2,6 +2,8 @@
 
 #include "Rigel/Voxel/ChunkManager.h"
 
+#include <utility>
+
 using namespace Rigel::Voxel;
 
 TEST_CASE(ChunkManager_BlockAccessAndDirty) {
@@ -48,4 +50,20 @@ TEST_CASE(ChunkManager_LoadAndUnload) {
 
     manager.unloadChunk(coord);
     CHECK(!manager.hasChunk(coord));
+}
+
+TEST_CASE(ChunkManager_MoveRetainsChangeTracking) {
+    ChunkManager source;
+    source.getOrCreateChunk({0, 0, 0});
+
+    ChunkManager moved(std::move(source));
+    const uint64_t beforeConstructedMutation = moved.meshChangeVersion();
+    moved.getChunk({0, 0, 0})->markDirty();
+    CHECK_EQ(moved.meshChangeVersion(), beforeConstructedMutation + 1);
+
+    ChunkManager assigned;
+    assigned = std::move(moved);
+    const uint64_t beforeAssignedMutation = assigned.meshChangeVersion();
+    assigned.getChunk({0, 0, 0})->markDirty();
+    CHECK_EQ(assigned.meshChangeVersion(), beforeAssignedMutation + 1);
 }

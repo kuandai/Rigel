@@ -102,31 +102,31 @@ void ChunkManager::setBlock(int wx, int wy, int wz, BlockState state) {
 
     if (lx == 0) {
         if (Chunk* neighbor = getChunk(chunkCoord.offset(-1, 0, 0))) {
-            neighbor->markDirty();
+            neighbor->invalidateMesh();
         }
     } else if (lx == Chunk::SIZE - 1) {
         if (Chunk* neighbor = getChunk(chunkCoord.offset(1, 0, 0))) {
-            neighbor->markDirty();
+            neighbor->invalidateMesh();
         }
     }
 
     if (ly == 0) {
         if (Chunk* neighbor = getChunk(chunkCoord.offset(0, -1, 0))) {
-            neighbor->markDirty();
+            neighbor->invalidateMesh();
         }
     } else if (ly == Chunk::SIZE - 1) {
         if (Chunk* neighbor = getChunk(chunkCoord.offset(0, 1, 0))) {
-            neighbor->markDirty();
+            neighbor->invalidateMesh();
         }
     }
 
     if (lz == 0) {
         if (Chunk* neighbor = getChunk(chunkCoord.offset(0, 0, -1))) {
-            neighbor->markDirty();
+            neighbor->invalidateMesh();
         }
     } else if (lz == Chunk::SIZE - 1) {
         if (Chunk* neighbor = getChunk(chunkCoord.offset(0, 0, 1))) {
-            neighbor->markDirty();
+            neighbor->invalidateMesh();
         }
     }
 }

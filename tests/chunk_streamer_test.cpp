@@ -820,6 +820,85 @@ TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {
     CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
 }
 
+TEST_CASE(ChunkStreamer_DependencyChangeRejectsInFlightMesh) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:dependency_solid");
+
+    Chunk& chunk = manager.getOrCreateChunk({0, 0, 0});
+    chunk.setBlock(Chunk::SIZE - 1, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    streamer.update(glm::vec3(0.0f));
+    const uint32_t queuedRevision = chunk.meshRevision();
+
+    manager.setBlock(Chunk::SIZE, 0, 0, BlockState{solid});
+    CHECK(chunk.meshRevision() != queuedRevision);
+
+    streamer.processCompletions();
+    const auto& metrics = streamer.workMetrics();
+    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(1));
+    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(0));
+    CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
+    CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
+}
+
+TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:notification_solid");
+
+    Chunk& chunk = manager.getOrCreateChunk({0, 0, 0});
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    streamer.update(glm::vec3(0.0f));
+    const uint32_t queuedRevision = chunk.meshRevision();
+
+    chunk.markDirty();
+    chunk.markDirty();
+    CHECK_EQ(chunk.meshRevision(), queuedRevision);
+
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale, static_cast<uint64_t>(0));
+
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+}
+
 TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     ChunkManager manager;
     BlockRegistry registry;

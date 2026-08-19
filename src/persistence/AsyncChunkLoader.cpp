@@ -238,7 +238,7 @@ bool AsyncChunkLoader::applyPayload(const ChunkPayload& payload) {
         Voxel::ChunkCoord neighborCoord = payload.coord.offset(dx, dy, dz);
         Voxel::Chunk* neighbor = m_world->chunkManager().getChunk(neighborCoord);
         if (neighbor) {
-            neighbor->markDirty();
+            neighbor->invalidateMesh();
         }
     }
 

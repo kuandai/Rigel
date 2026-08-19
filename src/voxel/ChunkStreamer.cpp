@@ -575,7 +575,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             ChunkCoord neighborCoord = genResult.coord.offset(dx, dy, dz);
             Chunk* neighbor = m_chunkManager->getChunk(neighborCoord);
             if (neighbor) {
-                neighbor->markDirty();
+                neighbor->invalidateMesh();
             }
         }
         ++applied;
@@ -634,8 +634,6 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             continue;
         }
 
-        bool needsRemesh = chunk->isDirty();
-
         if (meshResult.empty) {
             if (m_meshStore) {
                 m_meshStore->remove(meshResult.coord);
@@ -643,12 +641,8 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         } else if (m_meshStore) {
             m_meshStore->set(meshResult.coord, std::move(meshResult.mesh));
         }
-        if (needsRemesh) {
-            stateIt->second = ChunkState::ReadyData;
-        } else {
-            chunk->clearDirty();
-            stateIt->second = ChunkState::ReadyMesh;
-        }
+        chunk->clearDirty();
+        stateIt->second = ChunkState::ReadyMesh;
 
         if (m_benchmark) {
             m_benchmark->addMesh(meshResult.seconds, meshResult.empty);

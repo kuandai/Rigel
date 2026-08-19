@@ -145,8 +145,17 @@ public:
     /// Mark whether the chunk data originated from persistence
     void setLoadedFromDisk(bool loaded) { m_loadedFromDisk = loaded; }
 
-    /// Mark chunk as needing mesh rebuild
+    /// Mark chunk as needing mesh rebuild without changing its validity revision
     void markDirty() {
+        if (m_dirty) {
+            return;
+        }
+        m_dirty = true;
+        notifyMeshChange();
+    }
+
+    /// Record a block or dependency change that invalidates existing mesh data
+    void invalidateMesh() {
         m_dirty = true;
         bumpMeshRevision();
     }
@@ -249,6 +258,10 @@ private:
     void bumpMeshRevision() {
         uint32_t next = m_meshRevision + 1;
         m_meshRevision = (next == 0) ? 1 : next;
+        notifyMeshChange();
+    }
+
+    void notifyMeshChange() {
         if (m_meshChangeVersion) {
             m_meshChangeVersion->fetch_add(1, std::memory_order_relaxed);
         }

@@ -54,13 +54,14 @@ TEST_CASE(ChunkManager_LoadAndUnload) {
 
 TEST_CASE(ChunkManager_MoveRetainsChangeTracking) {
     ChunkManager source;
-    source.getOrCreateChunk({0, 0, 0});
+    source.getOrCreateChunk({0, 0, 0}).clearDirty();
 
     ChunkManager moved(std::move(source));
     const uint64_t beforeConstructedMutation = moved.meshChangeVersion();
     moved.getChunk({0, 0, 0})->invalidateMesh();
     CHECK_EQ(moved.meshChangeVersion(), beforeConstructedMutation + 1);
 
+    moved.getChunk({0, 0, 0})->clearDirty();
     ChunkManager assigned;
     assigned = std::move(moved);
     const uint64_t beforeAssignedMutation = assigned.meshChangeVersion();
@@ -88,4 +89,13 @@ TEST_CASE(ChunkManager_DirtyNotificationsCoalesceWithoutChangingMeshRevision) {
     chunk.invalidateMesh();
     CHECK_EQ(chunk.meshRevision(), revision + 1);
     CHECK_EQ(manager.meshChangeVersion(), changeVersion + 2);
+
+    chunk.invalidateMesh();
+    CHECK_EQ(chunk.meshRevision(), revision + 1);
+    CHECK_EQ(manager.meshChangeVersion(), changeVersion + 2);
+
+    chunk.clearDirty();
+    chunk.invalidateMesh();
+    CHECK_EQ(chunk.meshRevision(), revision + 2);
+    CHECK_EQ(manager.meshChangeVersion(), changeVersion + 3);
 }

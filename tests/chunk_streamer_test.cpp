@@ -116,6 +116,32 @@ void verifyPayloadMatches(const Chunk& chunk,
     CHECK_EQ(decoded.span, payload.span);
     CHECK_EQ(decoded.blocks, payload.blocks);
 }
+
+bool meshesMatch(const ChunkMesh& lhs, const ChunkMesh& rhs) {
+    if (lhs.vertices.size() != rhs.vertices.size() ||
+        lhs.indices != rhs.indices) {
+        return false;
+    }
+
+    for (size_t i = 0; i < lhs.vertices.size(); ++i) {
+        const VoxelVertex& a = lhs.vertices[i];
+        const VoxelVertex& b = rhs.vertices[i];
+        if (a.x != b.x || a.y != b.y || a.z != b.z ||
+            a.u != b.u || a.v != b.v ||
+            a.normalIndex != b.normalIndex || a.aoLevel != b.aoLevel ||
+            a.textureLayer != b.textureLayer || a.flags != b.flags) {
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < lhs.layers.size(); ++i) {
+        if (lhs.layers[i].indexStart != rhs.layers[i].indexStart ||
+            lhs.layers[i].indexCount != rhs.layers[i].indexCount) {
+            return false;
+        }
+    }
+    return true;
+}
 }
 
 TEST_CASE(ChunkStreamer_GeneratesSphere) {
@@ -897,6 +923,118 @@ TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {
 
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+}
+
+TEST_CASE(ChunkStreamer_NeighborArrivalInvalidationsCoalesceAcrossOrder) {
+    struct Result {
+        uint32_t revisionDelta = 0;
+        ChunkStreamer::WorkMetrics metrics;
+        ChunkMesh mesh;
+    };
+
+    auto run = [](const std::array<Direction, DirectionCount>& arrivalOrder) {
+        ChunkManager manager;
+        BlockRegistry registry;
+        WorldMeshStore meshStore;
+        auto generator = makeGenerator(registry);
+        BlockID solid = registerTestBlock(registry, "rigel:neighbor_order_solid");
+
+        const ChunkCoord centerCoord{0, 0, 0};
+        Chunk& center = manager.getOrCreateChunk(centerCoord);
+        const int middle = Chunk::SIZE / 2;
+        for (size_t i = 0; i < DirectionCount; ++i) {
+            int dx = 0;
+            int dy = 0;
+            int dz = 0;
+            directionOffset(static_cast<Direction>(i), dx, dy, dz);
+            center.setBlock(
+                dx < 0 ? 0 : (dx > 0 ? Chunk::SIZE - 1 : middle),
+                dy < 0 ? 0 : (dy > 0 ? Chunk::SIZE - 1 : middle),
+                dz < 0 ? 0 : (dz > 0 ? Chunk::SIZE - 1 : middle),
+                BlockState{solid},
+                registry);
+        }
+        center.setWorldGenVersion(generator->config().world.version);
+        center.setLoadedFromDisk(true);
+        center.clearDirty();
+        const uint32_t initialRevision = center.meshRevision();
+
+        for (Direction direction : arrivalOrder) {
+            int dx = 0;
+            int dy = 0;
+            int dz = 0;
+            directionOffset(direction, dx, dy, dz);
+            Chunk& neighbor = manager.getOrCreateChunk(centerCoord.offset(dx, dy, dz));
+            neighbor.setBlock(
+                dx < 0 ? Chunk::SIZE - 1 : (dx > 0 ? 0 : middle),
+                dy < 0 ? Chunk::SIZE - 1 : (dy > 0 ? 0 : middle),
+                dz < 0 ? Chunk::SIZE - 1 : (dz > 0 ? 0 : middle),
+                BlockState{solid},
+                registry);
+            neighbor.setWorldGenVersion(generator->config().world.version);
+            neighbor.setLoadedFromDisk(true);
+            center.invalidateMesh();
+        }
+
+        meshStore.set(centerCoord, ChunkMesh{});
+
+        ChunkStreamer streamer;
+        WorldGenConfig::StreamConfig stream;
+        stream.viewDistanceChunks = 1;
+        stream.unloadDistanceChunks = 1;
+        stream.genQueueLimit = 0;
+        stream.meshQueueLimit = 0;
+        stream.updateBudgetPerFrame = 0;
+        stream.applyBudgetPerFrame = 0;
+        stream.workerThreads = 0;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+        streamer.update(glm::vec3(0.0f));
+        streamer.processCompletions();
+
+        Result result;
+        result.revisionDelta = center.meshRevision() - initialRevision;
+        result.metrics = streamer.workMetrics();
+        meshStore.forEach([&](const WorldMeshEntry& entry) {
+            if (entry.coord == centerCoord) {
+                result.mesh = entry.mesh;
+            }
+        });
+        return result;
+    };
+
+    const std::array<Direction, DirectionCount> forward{
+        Direction::PosX,
+        Direction::NegX,
+        Direction::PosY,
+        Direction::NegY,
+        Direction::PosZ,
+        Direction::NegZ
+    };
+    const std::array<Direction, DirectionCount> reverse{
+        Direction::NegZ,
+        Direction::PosZ,
+        Direction::NegY,
+        Direction::PosY,
+        Direction::NegX,
+        Direction::PosX
+    };
+
+    Result forwardResult = run(forward);
+    Result reverseResult = run(reverse);
+
+    CHECK_EQ(forwardResult.revisionDelta, static_cast<uint32_t>(1));
+    CHECK_EQ(reverseResult.revisionDelta, static_cast<uint32_t>(1));
+    CHECK_EQ(forwardResult.metrics.meshInvalidations, static_cast<uint64_t>(1));
+    CHECK_EQ(reverseResult.metrics.meshInvalidations, static_cast<uint64_t>(1));
+    CHECK_EQ(forwardResult.metrics.meshJobsAccepted,
+             forwardResult.metrics.meshJobsStarted);
+    CHECK_EQ(reverseResult.metrics.meshJobsAccepted,
+             reverseResult.metrics.meshJobsStarted);
+    CHECK(!forwardResult.mesh.isEmpty());
+    CHECK(meshesMatch(forwardResult.mesh, reverseResult.mesh));
 }
 
 TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {

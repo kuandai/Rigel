@@ -136,8 +136,11 @@ public:
     /// Check if chunk was loaded from persistence
     bool loadedFromDisk() const { return m_loadedFromDisk; }
 
-    /// Clear dirty flag (after mesh rebuild)
-    void clearDirty() { m_dirty = false; }
+    /// Clear dirty flag (after mesh rebuild or when starting one)
+    void clearDirty() {
+        m_dirty = false;
+        m_meshInvalidationPending = false;
+    }
 
     /// Clear persistence dirty flag (after save or load)
     void clearPersistDirty() { m_persistDirty = false; }
@@ -154,9 +157,13 @@ public:
         notifyMeshChange();
     }
 
-    /// Record a block or dependency change that invalidates existing mesh data
+    /// Record a block or dependency change, coalescing while a rebuild is pending
     void invalidateMesh() {
         m_dirty = true;
+        if (m_meshInvalidationPending) {
+            return;
+        }
+        m_meshInvalidationPending = true;
         bumpMeshRevision();
     }
 
@@ -230,6 +237,7 @@ private:
 
     // Cached state
     bool m_dirty = true;
+    bool m_meshInvalidationPending = false;
     bool m_persistDirty = false;
     bool m_loadedFromDisk = false;
     uint32_t m_nonAirCount = 0;

@@ -1731,6 +1731,79 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     CHECK_EQ(quiescent.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(0));
 }
 
+TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {
+    auto settleAndMeasure = [](int viewDistance) {
+        ChunkManager manager;
+        BlockRegistry registry;
+        WorldMeshStore meshStore;
+        auto generator = makeGenerator(registry);
+
+        ChunkStreamer streamer;
+        WorldGenConfig::StreamConfig stream;
+        stream.viewDistanceChunks = viewDistance;
+        stream.unloadDistanceChunks = viewDistance;
+        stream.genQueueLimit = 0;
+        stream.meshQueueLimit = 0;
+        stream.updateBudgetPerFrame = 0;
+        stream.applyBudgetPerFrame = 0;
+        stream.workerThreads = 0;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+        size_t loadAttempts = 0;
+        streamer.setChunkLoader([&](ChunkCoord coord) {
+            ++loadAttempts;
+            Chunk& chunk = manager.getOrCreateChunk(coord);
+            chunk.setWorldGenVersion(generator->config().world.version);
+            chunk.setLoadedFromDisk(true);
+            return true;
+        });
+
+        for (int update = 0; update < 4; ++update) {
+            streamer.update(glm::vec3(0.0f));
+            streamer.processCompletions();
+        }
+
+        const ChunkStreamer::WorkMetrics settled = streamer.workMetrics();
+        const size_t settledLoadAttempts = loadAttempts;
+        CHECK(settled.chunkLoadRequestsStarted > 0);
+        CHECK_EQ(settled.generationJobsStarted, static_cast<uint64_t>(0));
+        CHECK_EQ(settled.meshJobsStarted, static_cast<uint64_t>(0));
+        CHECK_EQ(settled.lastUpdateDesiredBuildCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(settled.lastUpdateSchedulerCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+
+        uint64_t steadyStateCoordinatesInspected = 0;
+        for (int update = 0; update < 8; ++update) {
+            streamer.update(glm::vec3(0.0f));
+            const auto& current = streamer.workMetrics();
+            steadyStateCoordinatesInspected +=
+                current.lastUpdateDesiredBuildCoordinatesInspected;
+            steadyStateCoordinatesInspected +=
+                current.lastUpdateSchedulerCoordinatesInspected;
+            streamer.processCompletions();
+        }
+
+        const auto& quiescent = streamer.workMetrics();
+        CHECK_EQ(steadyStateCoordinatesInspected, static_cast<uint64_t>(0));
+        CHECK_EQ(quiescent.generationJobsStarted, settled.generationJobsStarted);
+        CHECK_EQ(quiescent.chunkLoadRequestsStarted, settled.chunkLoadRequestsStarted);
+        CHECK_EQ(quiescent.meshJobsStarted, settled.meshJobsStarted);
+        CHECK_EQ(quiescent.desiredBuildCoordinatesInspected,
+                 settled.desiredBuildCoordinatesInspected);
+        CHECK_EQ(quiescent.schedulerCoordinatesInspected,
+                 settled.schedulerCoordinatesInspected);
+        CHECK_EQ(loadAttempts, settledLoadAttempts);
+        return settled.desiredBuildCoordinatesInspected;
+    };
+
+    const uint64_t smallViewBuildCoordinates = settleAndMeasure(1);
+    const uint64_t largeViewBuildCoordinates = settleAndMeasure(12);
+    CHECK(largeViewBuildCoordinates > smallViewBuildCoordinates * 100);
+}
+
 TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
     ChunkManager manager;
     BlockRegistry registry;

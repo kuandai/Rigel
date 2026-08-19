@@ -558,8 +558,9 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->world.worldView->setChunkLoadDrain(
             [loader = m_impl->world.chunkLoader](size_t budget) {
                 if (loader) {
-                    loader->drainCompletions(budget);
+                    return loader->drainCompletions(budget);
                 }
+                return std::vector<Voxel::ChunkCoord>{};
             });
         m_impl->world.worldView->setChunkLoadCancel(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {

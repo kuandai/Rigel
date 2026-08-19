@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <unordered_map>
@@ -66,7 +67,7 @@ public:
 
     using ChunkLoadCallback = std::function<bool(ChunkCoord)>;
     using ChunkPendingCallback = std::function<bool(ChunkCoord)>;
-    using ChunkLoadDrainCallback = std::function<void(size_t)>;
+    using ChunkLoadDrainCallback = std::function<std::vector<ChunkCoord>(size_t)>;
     using ChunkLoadCancelCallback = std::function<void(ChunkCoord)>;
 
     ChunkStreamer() = default;
@@ -167,6 +168,8 @@ private:
     std::unordered_map<ChunkCoord, std::shared_ptr<std::atomic_bool>, ChunkCoordHash> m_genCancel;
     std::unordered_map<ChunkCoord, MeshInFlight, ChunkCoordHash> m_meshInFlight;
     std::unordered_map<ChunkCoord, uint32_t, ChunkCoordHash> m_countedMeshRetryRevisions;
+    std::deque<ChunkCoord> m_loadGenQueue;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_loadGenQueued;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     size_t m_inFlightGen = 0;
@@ -186,6 +189,8 @@ private:
 
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);
+    void queueLoadGen(ChunkCoord coord);
+    void queueLoadedNeighbors(ChunkCoord coord);
     void enqueueGeneration(ChunkCoord coord);
     void enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind kind);
     void ensureThreadPool();

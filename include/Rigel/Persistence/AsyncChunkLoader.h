@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace Rigel::Voxel { class World; class Chunk; }
 
@@ -32,7 +33,7 @@ public:
     bool isPending(Voxel::ChunkCoord coord) const;
     void cancel(Voxel::ChunkCoord coord);
 
-    void drainCompletions(size_t budget);
+    std::vector<Voxel::ChunkCoord> drainCompletions(size_t budget);
 
     void setMaxCachedRegions(size_t maxRegions);
     void setMaxInFlightRegions(size_t maxRegions);
@@ -70,8 +71,10 @@ private:
         bool loadedFromDisk = false;
     };
 
-    void drainRegionCompletions(size_t budget);
-    void drainPayloadCompletions(size_t budget);
+    void drainRegionCompletions(size_t budget,
+                                std::vector<Voxel::ChunkCoord>& resolved);
+    void drainPayloadCompletions(size_t budget,
+                                 std::vector<Voxel::ChunkCoord>& resolved);
     bool queueRegionLoad(const RegionKey& key);
     void queuePayloadBuild(const RegionEntry& entry, Voxel::ChunkCoord coord);
     void prefetchNeighbors(const RegionKey& center);

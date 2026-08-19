@@ -20,6 +20,8 @@
 #include <optional>
 #include <random>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 
 using namespace Rigel::Voxel;
 
@@ -852,6 +854,212 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     CHECK_EQ(metrics.schedulerCoordinatesInspected, static_cast<uint64_t>(4));
     CHECK_EQ(metrics.lastUpdateDesiredBuildCoordinatesInspected, static_cast<size_t>(0));
     CHECK_EQ(metrics.lastUpdateSchedulerCoordinatesInspected, static_cast<size_t>(2));
+}
+
+TEST_CASE(ChunkStreamer_MissingLoadResolutionStartsGeneration) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    const ChunkCoord coord{0, 0, 0};
+    size_t loadAttempts = 0;
+    streamer.setChunkLoader([&](ChunkCoord request) {
+        CHECK_EQ(request, coord);
+        return ++loadAttempts == 1;
+    });
+    bool resolved = false;
+    streamer.setChunkLoadDrain([&](size_t) {
+        if (resolved) {
+            return std::vector<ChunkCoord>{};
+        }
+        resolved = true;
+        return std::vector<ChunkCoord>{coord};
+    });
+
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(loadAttempts, static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(0));
+
+    streamer.processCompletions();
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(loadAttempts, static_cast<size_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
+
+    streamer.processCompletions();
+    CHECK(manager.hasChunk(coord));
+}
+
+TEST_CASE(ChunkStreamer_MovementRequestsOnlyNewDesiredFrontier) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 2;
+    stream.unloadDistanceChunks = 2;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> requestCounts;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> cancelled;
+    streamer.setChunkLoader([&](ChunkCoord coord) {
+        ++requestCounts[coord];
+        return true;
+    });
+    streamer.setChunkPendingCallback([](ChunkCoord) { return true; });
+    streamer.setChunkLoadDrain([](size_t) {
+        return std::vector<ChunkCoord>{};
+    });
+    streamer.setChunkLoadCancel([&](ChunkCoord coord) {
+        cancelled.insert(coord);
+    });
+
+    auto desiredSet = [](ChunkCoord center, int radius) {
+        std::unordered_set<ChunkCoord, ChunkCoordHash> result;
+        int radiusSq = radius * radius;
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dy = -radius; dy <= radius; ++dy) {
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    ChunkCoord coord = center.offset(dx, dy, dz);
+                    if (dx * dx + dy * dy + dz * dz <= radiusSq) {
+                        result.insert(coord);
+                    }
+                }
+            }
+        }
+        return result;
+    };
+
+    const ChunkCoord firstCenter{0, 0, 0};
+    const ChunkCoord secondCenter{1, 0, 0};
+    const auto firstDesired = desiredSet(firstCenter, stream.viewDistanceChunks);
+    const auto secondDesired = desiredSet(secondCenter, stream.viewDistanceChunks);
+
+    streamer.update(firstCenter.toWorldCenter());
+    CHECK_EQ(requestCounts.size(), firstDesired.size());
+    for (const ChunkCoord& coord : firstDesired) {
+        CHECK_EQ(requestCounts[coord], static_cast<size_t>(1));
+    }
+
+    streamer.update(secondCenter.toWorldCenter());
+
+    size_t frontierSize = 0;
+    for (const ChunkCoord& coord : secondDesired) {
+        if (firstDesired.find(coord) == firstDesired.end()) {
+            ++frontierSize;
+        }
+        CHECK_EQ(requestCounts[coord], static_cast<size_t>(1));
+    }
+    CHECK_EQ(requestCounts.size(), firstDesired.size() + frontierSize);
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(secondDesired.size() + frontierSize));
+
+    size_t departedSize = 0;
+    for (const ChunkCoord& coord : firstDesired) {
+        if (secondDesired.find(coord) != secondDesired.end()) {
+            continue;
+        }
+        ++departedSize;
+        CHECK(cancelled.find(coord) != cancelled.end());
+    }
+    CHECK_EQ(cancelled.size(), departedSize);
+}
+
+TEST_CASE(ChunkStreamer_MovementCancelsDepartedGeneration) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    const ChunkCoord departed{0, 0, 0};
+    const ChunkCoord desired{4, 0, 0};
+    streamer.update(departed.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
+
+    streamer.update(desired.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(2));
+    streamer.processCompletions();
+
+    CHECK(!manager.hasChunk(departed));
+    CHECK(manager.hasChunk(desired));
+}
+
+TEST_CASE(ChunkStreamer_DepartedFrontierReleasesWaitingMesh) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:frontier_solid");
+
+    const ChunkCoord firstCenter{0, 0, 0};
+    const ChunkCoord secondCenter{1, 0, 0};
+    Chunk& waiting = manager.getOrCreateChunk(firstCenter);
+    waiting.setBlock(0, 0, 0, BlockState{solid}, registry);
+    waiting.setWorldGenVersion(generator->config().world.version);
+    waiting.setLoadedFromDisk(true);
+    Chunk& sharedNeighbor = manager.getOrCreateChunk(secondCenter);
+    sharedNeighbor.setWorldGenVersion(generator->config().world.version);
+    sharedNeighbor.setLoadedFromDisk(true);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+    streamer.setChunkLoader([](ChunkCoord) { return true; });
+    streamer.setChunkLoadDrain([](size_t) {
+        return std::vector<ChunkCoord>{};
+    });
+
+    streamer.update(firstCenter.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(!meshStore.contains(firstCenter));
+
+    streamer.update(secondCenter.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(meshStore.contains(firstCenter));
 }
 
 TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {

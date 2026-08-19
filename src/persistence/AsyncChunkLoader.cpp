@@ -135,7 +135,8 @@ void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {
     }
 }
 
-void AsyncChunkLoader::drainCompletions(size_t budget) {
+std::vector<Voxel::ChunkCoord> AsyncChunkLoader::drainCompletions(size_t budget) {
+    std::vector<Voxel::ChunkCoord> resolved;
     {
         PROFILE_SCOPE("Streaming/LoadRegionDrain");
         size_t regionBudget = m_regionDrainBudget;
@@ -145,15 +146,18 @@ void AsyncChunkLoader::drainCompletions(size_t budget) {
         if (budget != std::numeric_limits<size_t>::max()) {
             regionBudget = std::min(regionBudget, budget);
         }
-        drainRegionCompletions(regionBudget);
+        drainRegionCompletions(regionBudget, resolved);
     }
     {
         PROFILE_SCOPE("Streaming/LoadPayloadDrain");
-        drainPayloadCompletions(budget);
+        drainPayloadCompletions(budget, resolved);
     }
+    return resolved;
 }
 
-void AsyncChunkLoader::drainRegionCompletions(size_t budget) {
+void AsyncChunkLoader::drainRegionCompletions(
+    size_t budget,
+    std::vector<Voxel::ChunkCoord>& resolved) {
     size_t drained = 0;
     RegionResult result;
     while (drained < budget && m_regionComplete.tryPop(result)) {
@@ -187,7 +191,9 @@ void AsyncChunkLoader::drainRegionCompletions(size_t budget) {
             if (cacheIt != m_cache.end()) {
                 for (const auto& coord : pendingIt->second) {
                     if (cacheIt->second.present.find(coord) == cacheIt->second.present.end()) {
-                        m_pendingChunks.erase(coord);
+                        if (m_pendingChunks.erase(coord) > 0) {
+                            resolved.push_back(coord);
+                        }
                         continue;
                     }
                     m_pendingChunks.insert(coord);
@@ -199,7 +205,9 @@ void AsyncChunkLoader::drainRegionCompletions(size_t budget) {
     }
 }
 
-void AsyncChunkLoader::drainPayloadCompletions(size_t budget) {
+void AsyncChunkLoader::drainPayloadCompletions(
+    size_t budget,
+    std::vector<Voxel::ChunkCoord>& resolved) {
     size_t applied = 0;
     ChunkPayload payload;
     while (applied < budget && m_chunkComplete.tryPop(payload)) {
@@ -209,6 +217,7 @@ void AsyncChunkLoader::drainPayloadCompletions(size_t budget) {
         }
         m_pendingChunks.erase(payload.coord);
         applyPayload(payload);
+        resolved.push_back(payload.coord);
         ++applied;
     }
 }

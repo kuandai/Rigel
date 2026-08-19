@@ -233,7 +233,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK(loader.request(coord));
     CHECK(loader.isPending(coord));
 
-    loader.drainCompletions(1);
+    auto resolved = loader.drainCompletions(1);
 
     Chunk* loaded = world.chunkManager().getChunk(coord);
     CHECK(loaded != nullptr);
@@ -241,6 +241,8 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
         verifyPayloadMatches(*loaded, payload);
     }
     CHECK(!loader.isPending(coord));
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front(), coord);
 }
 
 TEST_CASE(AsyncChunkLoader_Request_Completes_Random) {
@@ -445,10 +447,12 @@ TEST_CASE(AsyncChunkLoader_MissingRegion_UsesNegativeCache) {
     CHECK(loader.request(missing));
     CHECK(loader.isPending(missing));
 
-    loader.drainCompletions(8);
+    auto resolved = loader.drainCompletions(8);
 
     CHECK(!loader.isPending(missing));
     CHECK(world.chunkManager().getChunk(missing) == nullptr);
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front(), missing);
 
     CHECK(!loader.request(missing));
 }

@@ -12,6 +12,7 @@
 #include "ChunkCoord.h"
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <span>
 #include <vector>
@@ -203,6 +204,8 @@ public:
     /// @}
 
 private:
+    friend class ChunkManager;
+
     struct Subchunk {
         std::unique_ptr<std::array<BlockState, SUBCHUNK_VOLUME>> blocks;
         uint32_t nonAirCount = 0;
@@ -224,6 +227,7 @@ private:
     uint32_t m_opaqueCount = 0;
     uint32_t m_meshRevision = 0;
     uint32_t m_worldGenVersion = 0;
+    std::atomic<uint64_t>* m_meshChangeVersion = nullptr;
 
     /// Convert 3D coordinates to flat array index
     static constexpr int flatIndex(int x, int y, int z) {
@@ -245,6 +249,13 @@ private:
     void bumpMeshRevision() {
         uint32_t next = m_meshRevision + 1;
         m_meshRevision = (next == 0) ? 1 : next;
+        if (m_meshChangeVersion) {
+            m_meshChangeVersion->fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    void trackMeshChanges(std::atomic<uint64_t>* version) {
+        m_meshChangeVersion = version;
     }
 
     void setBlockInternal(int x, int y, int z, BlockState state, const BlockRegistry* registry);

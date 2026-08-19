@@ -38,6 +38,7 @@ void ChunkStreamer::setConfig(const WorldGenConfig::StreamConfig& config) {
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
+    m_schedulerPending = true;
     ensureThreadPool();
 }
 
@@ -51,6 +52,7 @@ void ChunkStreamer::bind(ChunkManager* manager,
     m_registry = registry;
     m_atlas = atlas;
     m_generator = std::move(generator);
+    m_schedulerPending = true;
 }
 
 void ChunkStreamer::setBenchmark(ChunkBenchmarkStats* stats) {
@@ -59,10 +61,12 @@ void ChunkStreamer::setBenchmark(ChunkBenchmarkStats* stats) {
 
 void ChunkStreamer::setChunkLoader(ChunkLoadCallback loader) {
     m_chunkLoader = std::move(loader);
+    m_schedulerPending = true;
 }
 
 void ChunkStreamer::setChunkPendingCallback(ChunkPendingCallback pending) {
     m_chunkPending = std::move(pending);
+    m_schedulerPending = true;
 }
 
 void ChunkStreamer::setChunkLoadDrain(ChunkLoadDrainCallback drain) {
@@ -160,6 +164,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
     }
 
+    bool inspectScheduler = rebuildDesired || m_schedulerPending || !m_loadPending.empty() ||
+        m_lastMeshChangeVersion != m_chunkManager->meshChangeVersion();
+    m_schedulerPending = false;
+
     size_t genLimit = (m_config.genQueueLimit <= 0)
         ? std::numeric_limits<size_t>::max()
         : static_cast<size_t>(m_config.genQueueLimit);
@@ -185,7 +193,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     bool meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
     bool meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
 
-    {
+    if (inspectScheduler) {
         PROFILE_SCOPE("Streaming/Update/LoadGen");
         if (!m_desired.empty()) {
             size_t budget = (m_config.updateBudgetPerFrame <= 0)
@@ -294,7 +302,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
     }
 
-    {
+    if (inspectScheduler) {
         PROFILE_SCOPE("Streaming/Update/MeshDirty");
         if (m_dirtyCursor >= m_desired.size()) {
             m_dirtyCursor = 0;
@@ -396,6 +404,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     m_workMetrics.desiredBuildCoordinatesInspected +=
         desiredBuildCoordinatesInspected;
     m_workMetrics.schedulerCoordinatesInspected += schedulerCoordinatesInspected;
+    m_lastMeshChangeVersion = m_chunkManager->meshChangeVersion();
 }
 
 ChunkCoord ChunkStreamer::cameraToChunk(const glm::vec3& cameraPos) const {
@@ -486,6 +495,8 @@ void ChunkStreamer::reset() {
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
     m_dirtyCursor = 0;
+    m_lastMeshChangeVersion = m_chunkManager ? m_chunkManager->meshChangeVersion() : 0;
+    m_schedulerPending = true;
     for (auto& entry : m_genCancel) {
         entry.second->store(true, std::memory_order_relaxed);
     }
@@ -505,6 +516,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
     size_t applied = 0;
     GenResult genResult;
     while (applied < budget && m_genComplete.tryPop(genResult)) {
+        m_schedulerPending = true;
         if (m_inFlightGen > 0) {
             --m_inFlightGen;
         }
@@ -569,6 +581,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
     size_t applied = 0;
     MeshResult meshResult;
     while (applied < budget && m_meshComplete.tryPop(meshResult)) {
+        m_schedulerPending = true;
         ++m_workMetrics.meshJobsCompleted;
         if (m_inFlightMesh > 0) {
             --m_inFlightMesh;

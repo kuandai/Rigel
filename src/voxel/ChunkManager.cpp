@@ -28,8 +28,10 @@ Chunk& ChunkManager::getOrCreateChunk(ChunkCoord coord) {
     }
 
     auto chunk = std::make_unique<Chunk>(coord);
+    chunk->trackMeshChanges(&m_meshChangeVersion);
     Chunk& ref = *chunk;
     m_chunks[coord] = std::move(chunk);
+    m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
 
     spdlog::debug("Created chunk at ({}, {}, {})", coord.x, coord.y, coord.z);
 
@@ -108,6 +110,7 @@ void ChunkManager::loadChunk(ChunkCoord coord, std::span<const uint8_t> data) {
     // Override position from coordinate (in case data has wrong position)
     // Note: This requires making a new chunk since position is set in constructor
     auto newChunk = std::make_unique<Chunk>(coord);
+    newChunk->trackMeshChanges(&m_meshChangeVersion);
     std::array<BlockState, Chunk::VOLUME> blocks{};
     chunk.copyBlocks(blocks);
     if (m_registry) {
@@ -125,11 +128,15 @@ void ChunkManager::unloadChunk(ChunkCoord coord) {
     auto it = m_chunks.find(coord);
     if (it != m_chunks.end()) {
         m_chunks.erase(it);
+        m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
         spdlog::debug("Unloaded chunk at ({}, {}, {})", coord.x, coord.y, coord.z);
     }
 }
 
 void ChunkManager::clear() {
+    if (!m_chunks.empty()) {
+        m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
+    }
     m_chunks.clear();
     spdlog::debug("ChunkManager cleared");
 }

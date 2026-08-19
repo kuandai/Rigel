@@ -11,6 +11,7 @@
 #include "Chunk.h"
 #include "ChunkCoord.h"
 
+#include <atomic>
 #include <unordered_map>
 #include <memory>
 #include <functional>
@@ -183,6 +184,11 @@ public:
     /// Get number of loaded chunks
     size_t loadedChunkCount() const { return m_chunks.size(); }
 
+    /// Monotonic version of chunk lifecycle and mesh-relevant changes.
+    uint64_t meshChangeVersion() const {
+        return m_meshChangeVersion.load(std::memory_order_relaxed);
+    }
+
     /// @}
 
     /**
@@ -191,6 +197,7 @@ public:
     void setRegistry(const BlockRegistry* registry) { m_registry = registry; }
 
 private:
+    std::atomic<uint64_t> m_meshChangeVersion{0};
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> m_chunks;
     const BlockRegistry* m_registry = nullptr;
 };

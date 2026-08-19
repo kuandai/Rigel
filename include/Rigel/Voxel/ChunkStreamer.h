@@ -165,6 +165,8 @@ private:
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;
     size_t m_dirtyCursor = 0;
+    uint64_t m_lastMeshChangeVersion = 0;
+    bool m_schedulerPending = true;
     WorkMetrics m_workMetrics;
 
     void applyGenCompletions(size_t budget);

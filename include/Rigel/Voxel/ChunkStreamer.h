@@ -170,6 +170,10 @@ private:
     std::unordered_map<ChunkCoord, uint32_t, ChunkCoordHash> m_countedMeshRetryRevisions;
     std::deque<ChunkCoord> m_loadGenQueue;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_loadGenQueued;
+    std::deque<ChunkCoord> m_generationCapacityWait;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_generationCapacityWaiting;
+    std::deque<ChunkCoord> m_missingMeshCapacityWait;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_missingMeshCapacityWaiting;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     size_t m_inFlightGen = 0;
@@ -190,6 +194,10 @@ private:
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);
     void queueLoadGen(ChunkCoord coord);
+    void waitForGenerationCapacity(ChunkCoord coord);
+    void waitForMissingMeshCapacity(ChunkCoord coord);
+    void wakeGenerationCapacityWaiter();
+    void wakeMissingMeshCapacityWaiter();
     void queueLoadedNeighbors(ChunkCoord coord);
     void enqueueGeneration(ChunkCoord coord);
     void enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind kind);

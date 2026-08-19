@@ -37,6 +37,10 @@ void ChunkStreamer::setConfig(const WorldGenConfig::StreamConfig& config) {
     m_desiredSet.clear();
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
+    m_generationCapacityWait.clear();
+    m_generationCapacityWaiting.clear();
+    m_missingMeshCapacityWait.clear();
+    m_missingMeshCapacityWaiting.clear();
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
@@ -152,6 +156,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
         for (const ChunkCoord& coord : previousDesired) {
             if (m_desiredSet.find(coord) == m_desiredSet.end()) {
+                m_generationCapacityWaiting.erase(coord);
+                m_missingMeshCapacityWaiting.erase(coord);
                 queueLoadedNeighbors(coord);
             }
         }
@@ -305,7 +311,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                         genFull = m_inFlightGen >= genLimit;
                         ++queued;
                     } else {
-                        queueLoadGen(coord);
+                        waitForGenerationCapacity(coord);
                     }
                     continue;
                 }
@@ -330,13 +336,13 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 }
 
                 if (!isMeshed && state != ChunkState::QueuedMesh) {
-                    if (!meshFullMissing && hasAllNeighborsLoaded(coord)) {
+                    if (!meshFull && !meshFullMissing && hasAllNeighborsLoaded(coord)) {
                         enqueueMesh(coord, *chunk, MeshRequestKind::Missing);
                         meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
                         meshFull = m_inFlightMesh >= meshLimit;
                         ++queued;
-                    } else if (meshFullMissing) {
-                        queueLoadGen(coord);
+                    } else if (meshFull || meshFullMissing) {
+                        waitForMissingMeshCapacity(coord);
                     }
                 }
                 continue;
@@ -362,7 +368,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 genFull = m_inFlightGen >= genLimit;
                 ++queued;
             } else {
-                queueLoadGen(coord);
+                waitForGenerationCapacity(coord);
             }
         }
     }
@@ -555,6 +561,10 @@ void ChunkStreamer::reset() {
     m_desiredSet.clear();
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
+    m_generationCapacityWait.clear();
+    m_generationCapacityWaiting.clear();
+    m_missingMeshCapacityWait.clear();
+    m_missingMeshCapacityWaiting.clear();
     if (m_chunkLoadCancel) {
         for (const auto& coord : m_loadPending) {
             m_chunkLoadCancel(coord);
@@ -587,6 +597,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         if (m_inFlightGen > 0) {
             --m_inFlightGen;
         }
+        wakeGenerationCapacityWaiter();
 
         if (genResult.cancelToken) {
             auto cancelIt = m_genCancel.find(genResult.coord);
@@ -672,6 +683,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             --m_inFlightMeshDirty;
         }
         m_meshInFlight.erase(flightIt);
+        wakeMissingMeshCapacityWaiter();
 
         if (flight.obsolete) {
             ++m_workMetrics.meshJobsRejectedStale;
@@ -734,8 +746,54 @@ void ChunkStreamer::queueLoadGen(ChunkCoord coord) {
     if (m_desiredSet.find(coord) == m_desiredSet.end()) {
         return;
     }
+    m_generationCapacityWaiting.erase(coord);
+    m_missingMeshCapacityWaiting.erase(coord);
     if (m_loadGenQueued.insert(coord).second) {
         m_loadGenQueue.push_back(coord);
+    }
+}
+
+void ChunkStreamer::waitForGenerationCapacity(ChunkCoord coord) {
+    if (m_desiredSet.find(coord) == m_desiredSet.end()) {
+        return;
+    }
+    if (m_generationCapacityWaiting.insert(coord).second) {
+        m_generationCapacityWait.push_back(coord);
+    }
+}
+
+void ChunkStreamer::waitForMissingMeshCapacity(ChunkCoord coord) {
+    if (m_desiredSet.find(coord) == m_desiredSet.end()) {
+        return;
+    }
+    if (m_missingMeshCapacityWaiting.insert(coord).second) {
+        m_missingMeshCapacityWait.push_back(coord);
+    }
+}
+
+void ChunkStreamer::wakeGenerationCapacityWaiter() {
+    while (!m_generationCapacityWait.empty()) {
+        ChunkCoord coord = m_generationCapacityWait.front();
+        m_generationCapacityWait.pop_front();
+        if (m_generationCapacityWaiting.erase(coord) == 0 ||
+            m_desiredSet.find(coord) == m_desiredSet.end()) {
+            continue;
+        }
+        queueLoadGen(coord);
+        return;
+    }
+}
+
+void ChunkStreamer::wakeMissingMeshCapacityWaiter() {
+    while (!m_missingMeshCapacityWait.empty()) {
+        ChunkCoord coord = m_missingMeshCapacityWait.front();
+        m_missingMeshCapacityWait.pop_front();
+        if (m_missingMeshCapacityWaiting.erase(coord) == 0 ||
+            m_desiredSet.find(coord) == m_desiredSet.end()) {
+            continue;
+        }
+        queueLoadGen(coord);
+        return;
     }
 }
 

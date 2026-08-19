@@ -30,6 +30,8 @@ Shutdown persists world state and releases resources.
 1. Initialize GLFW and create the main window.
    - `glfwInit()` and OpenGL version hints.
    - `glfwCreateWindow()` + `glfwMakeContextCurrent()`.
+   - Interactive runs synchronize buffer swaps to the display. Chunk benchmark
+     runs disable swap synchronization so presentation does not cap throughput.
 2. Initialize GLEW and log the OpenGL version string.
 3. Register window callbacks.
    - Framebuffer resize -> `glViewport`.

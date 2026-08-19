@@ -394,6 +394,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     #endif
     spdlog::info("Optional components: {}", RIGEL_OPTIONAL_COMPONENTS);
 
+    const char* benchEnv = std::getenv("RIGEL_CHUNK_BENCH");
+    m_impl->timing.benchmarkEnabled =
+        benchEnv && benchEnv[0] != '\0' && benchEnv[0] != '0';
+
     // Initialize GLFW
     if (!glfwInit()) {
         spdlog::error("GLFW initialization failed");
@@ -415,6 +419,9 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     }
 
     glfwMakeContextCurrent(m_impl->window.window);
+    const int swapInterval = m_impl->timing.benchmarkEnabled ? 0 : 1;
+    glfwSwapInterval(swapInterval);
+    spdlog::info("Frame pacing swap interval: {}", swapInterval);
 
     // Initialize GLEW
     if (glewInit() != GLEW_OK) {
@@ -445,9 +452,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     m_impl->inputCallbacks.camera = &m_impl->camera;
     Input::registerWindowCallbacks(m_impl->window.window, m_impl->inputCallbacks);
     Input::setCursorCaptured(m_impl->window, true);
-    const char* benchEnv = std::getenv("RIGEL_CHUNK_BENCH");
-    if (benchEnv && benchEnv[0] != '\0' && benchEnv[0] != '0') {
-        m_impl->timing.benchmarkEnabled = true;
+    if (m_impl->timing.benchmarkEnabled) {
         spdlog::info("Chunk benchmark enabled");
     }
 

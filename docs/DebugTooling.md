@@ -114,7 +114,9 @@ TAA, so they are stable.
 
 ## 7. Benchmark Logging
 
-- `RIGEL_CHUNK_BENCH=1` enables chunk benchmark statistics.
+- `RIGEL_CHUNK_BENCH=1` enables chunk benchmark statistics and disables swap
+  synchronization so rendering does not cap measured throughput. Normal runs
+  synchronize buffer swaps to the display.
 - When enabled, `Application` prints a summary on exit:
   - Generated, processed, meshed counts and rates.
   - Timing breakdown for generation and meshing.

@@ -815,7 +815,12 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
 
     BlockRegistry* registry = m_registry;
     TextureAtlas* atlas = m_atlas;
-    auto job = [this, task = std::move(task), registry, atlas]() mutable {
+    auto meshBuildStartCallback = m_meshBuildStartCallback;
+    auto job = [this,
+                task = std::move(task),
+                registry,
+                atlas,
+                meshBuildStartCallback = std::move(meshBuildStartCallback)]() mutable {
         Chunk chunk(task.coord);
         chunk.copyFrom(task.blocks);
 
@@ -830,6 +835,9 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
             .paddedBlocks = &task.paddedBlocks
         };
 
+        if (meshBuildStartCallback) {
+            meshBuildStartCallback();
+        }
         auto start = std::chrono::steady_clock::now();
         ChunkMesh mesh = builder.build(ctx);
         auto end = std::chrono::steady_clock::now();

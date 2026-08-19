@@ -23,6 +23,10 @@
 
 namespace Rigel::Voxel {
 
+namespace detail {
+struct ChunkStreamerTestAccess;
+}
+
 class ChunkStreamer {
 public:
     // Cumulative counters are retained for the lifetime of the streamer.
@@ -88,6 +92,8 @@ public:
     const WorkMetrics& workMetrics() const { return m_workMetrics; }
 
 private:
+    friend struct detail::ChunkStreamerTestAccess;
+
     static constexpr int kPaddedSize = Chunk::SIZE + 2;
     static constexpr int kPaddedVolume = kPaddedSize * kPaddedSize * kPaddedSize;
 
@@ -175,6 +181,7 @@ private:
     uint64_t m_lastMeshChangeVersion = 0;
     uint32_t m_lastWorldGenVersion = 0;
     bool m_schedulerPending = true;
+    std::function<void()> m_meshBuildStartCallback;
     WorkMetrics m_workMetrics;
 
     void applyGenCompletions(size_t budget);

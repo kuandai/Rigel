@@ -898,3 +898,61 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(quiescent.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(0));
 }
+
+TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    for (int update = 0; update < 4; ++update) {
+        streamer.update(glm::vec3(0.0f));
+        streamer.processCompletions();
+    }
+
+    streamer.update(glm::vec3(0.0f));
+    const ChunkStreamer::WorkMetrics settled = streamer.workMetrics();
+    CHECK_EQ(settled.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(0));
+
+    WorldGenConfig changedConfig = generator->config();
+    ++changedConfig.world.version;
+    generator->setConfig(std::move(changedConfig));
+
+    streamer.update(glm::vec3(0.0f));
+    const auto& changed = streamer.workMetrics();
+    CHECK_EQ(changed.generationJobsStarted, settled.generationJobsStarted + 1);
+    CHECK(changed.lastUpdateSchedulerCoordinatesInspected > 0);
+    streamer.processCompletions();
+
+    for (int update = 0; update < 3; ++update) {
+        streamer.update(glm::vec3(0.0f));
+        streamer.processCompletions();
+    }
+
+    Chunk* regenerated = manager.getChunk({0, 0, 0});
+    CHECK(regenerated != nullptr);
+    if (!regenerated) {
+        return;
+    }
+    CHECK_EQ(regenerated->worldGenVersion(), generator->config().world.version);
+
+    const uint64_t generationJobsStarted = changed.generationJobsStarted;
+    const uint64_t meshJobsStarted = changed.meshJobsStarted;
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(changed.generationJobsStarted, generationJobsStarted);
+    CHECK_EQ(changed.meshJobsStarted, meshJobsStarted);
+    CHECK_EQ(changed.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(0));
+}

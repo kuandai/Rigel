@@ -52,6 +52,7 @@ void ChunkStreamer::bind(ChunkManager* manager,
     m_registry = registry;
     m_atlas = atlas;
     m_generator = std::move(generator);
+    m_lastWorldGenVersion = m_generator ? m_generator->config().world.version : 0;
     m_schedulerPending = true;
 }
 
@@ -164,8 +165,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
     }
 
+    const uint32_t worldGenVersion = m_generator->config().world.version;
     bool inspectScheduler = rebuildDesired || m_schedulerPending || !m_loadPending.empty() ||
-        m_lastMeshChangeVersion != m_chunkManager->meshChangeVersion();
+        m_lastMeshChangeVersion != m_chunkManager->meshChangeVersion() ||
+        m_lastWorldGenVersion != worldGenVersion;
     m_schedulerPending = false;
 
     size_t genLimit = (m_config.genQueueLimit <= 0)
@@ -405,6 +408,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         desiredBuildCoordinatesInspected;
     m_workMetrics.schedulerCoordinatesInspected += schedulerCoordinatesInspected;
     m_lastMeshChangeVersion = m_chunkManager->meshChangeVersion();
+    m_lastWorldGenVersion = worldGenVersion;
 }
 
 ChunkCoord ChunkStreamer::cameraToChunk(const glm::vec3& cameraPos) const {
@@ -496,6 +500,7 @@ void ChunkStreamer::reset() {
     m_lastUnloadDistance = -1;
     m_dirtyCursor = 0;
     m_lastMeshChangeVersion = m_chunkManager ? m_chunkManager->meshChangeVersion() : 0;
+    m_lastWorldGenVersion = m_generator ? m_generator->config().world.version : 0;
     m_schedulerPending = true;
     for (auto& entry : m_genCancel) {
         entry.second->store(true, std::memory_order_relaxed);

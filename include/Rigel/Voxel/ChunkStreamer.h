@@ -166,6 +166,7 @@ private:
     int m_lastUnloadDistance = -1;
     size_t m_dirtyCursor = 0;
     uint64_t m_lastMeshChangeVersion = 0;
+    uint32_t m_lastWorldGenVersion = 0;
     bool m_schedulerPending = true;
     WorkMetrics m_workMetrics;
 

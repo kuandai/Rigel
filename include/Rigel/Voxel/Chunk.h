@@ -221,6 +221,7 @@ public:
 
 private:
     friend class ChunkManager;
+    friend class ChunkStreamer;
 
     struct Subchunk {
         std::unique_ptr<std::array<BlockState, SUBCHUNK_VOLUME>> blocks;
@@ -244,7 +245,10 @@ private:
     uint32_t m_opaqueCount = 0;
     uint32_t m_meshRevision = 0;
     uint32_t m_worldGenVersion = 0;
+    const uint64_t m_instanceId = s_nextInstanceId.fetch_add(1, std::memory_order_relaxed);
     std::atomic<uint64_t>* m_meshChangeVersion = nullptr;
+
+    static inline std::atomic<uint64_t> s_nextInstanceId{1};
 
     /// Convert 3D coordinates to flat array index
     static constexpr int flatIndex(int x, int y, int z) {

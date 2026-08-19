@@ -110,6 +110,8 @@ private:
 
     struct MeshTask {
         ChunkCoord coord;
+        uint64_t requestId = 0;
+        uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
         std::array<BlockState, Chunk::VOLUME> blocks{};
         std::array<BlockState, kPaddedVolume> paddedBlocks{};
@@ -117,6 +119,8 @@ private:
 
     struct MeshResult {
         ChunkCoord coord;
+        uint64_t requestId = 0;
+        uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
         ChunkMesh mesh;
         double seconds = 0.0;
@@ -130,7 +134,9 @@ private:
 
     struct MeshInFlight {
         MeshRequestKind kind = MeshRequestKind::Missing;
+        uint64_t requestId = 0;
         uint32_t observedRevision = 0;
+        bool obsolete = false;
     };
 
     WorldGenConfig::StreamConfig m_config;
@@ -161,6 +167,7 @@ private:
     size_t m_inFlightMesh = 0;
     size_t m_inFlightMeshMissing = 0;
     size_t m_inFlightMeshDirty = 0;
+    uint64_t m_nextMeshRequestId = 1;
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;

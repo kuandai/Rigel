@@ -480,10 +480,9 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out) const {
 void ChunkStreamer::reset() {
     m_states.clear();
     m_inFlightGen = 0;
-    m_inFlightMesh = 0;
-    m_inFlightMeshMissing = 0;
-    m_inFlightMeshDirty = 0;
-    m_meshInFlight.clear();
+    for (auto& entry : m_meshInFlight) {
+        entry.second.obsolete = true;
+    }
     m_countedMeshRetryRevisions.clear();
     m_cache = ChunkCache();
     m_cache.setMaxChunks(m_config.maxResidentChunks);
@@ -510,11 +509,7 @@ void ChunkStreamer::reset() {
     GenResult genResult;
     while (m_genComplete.tryPop(genResult)) {
     }
-    MeshResult meshResult;
-    while (m_meshComplete.tryPop(meshResult)) {
-        ++m_workMetrics.meshJobsCompleted;
-        ++m_workMetrics.meshJobsRejectedStale;
-    }
+    applyMeshCompletions(std::numeric_limits<size_t>::max());
 }
 
 void ChunkStreamer::applyGenCompletions(size_t budget) {
@@ -588,23 +583,29 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
     while (applied < budget && m_meshComplete.tryPop(meshResult)) {
         m_schedulerPending = true;
         ++m_workMetrics.meshJobsCompleted;
+        auto flightIt = m_meshInFlight.find(meshResult.coord);
+        if (flightIt == m_meshInFlight.end() ||
+            flightIt->second.requestId != meshResult.requestId) {
+            ++m_workMetrics.meshJobsRejectedStale;
+            continue;
+        }
+
+        MeshInFlight flight = flightIt->second;
         if (m_inFlightMesh > 0) {
             --m_inFlightMesh;
         }
-        std::optional<MeshInFlight> flight;
-        auto kindIt = m_meshInFlight.find(meshResult.coord);
-        if (kindIt != m_meshInFlight.end()) {
-            flight = kindIt->second;
-            if (kindIt->second.kind == MeshRequestKind::Missing) {
-                if (m_inFlightMeshMissing > 0) {
-                    --m_inFlightMeshMissing;
-                }
-            } else {
-                if (m_inFlightMeshDirty > 0) {
-                    --m_inFlightMeshDirty;
-                }
+        if (flight.kind == MeshRequestKind::Missing) {
+            if (m_inFlightMeshMissing > 0) {
+                --m_inFlightMeshMissing;
             }
-            m_meshInFlight.erase(kindIt);
+        } else if (m_inFlightMeshDirty > 0) {
+            --m_inFlightMeshDirty;
+        }
+        m_meshInFlight.erase(flightIt);
+
+        if (flight.obsolete) {
+            ++m_workMetrics.meshJobsRejectedStale;
+            continue;
         }
 
         auto stateIt = m_states.find(meshResult.coord);
@@ -621,12 +622,16 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         }
 
         uint32_t currentRevision = chunk->meshRevision();
-        if (currentRevision != meshResult.revision) {
-            if (flight && flight->observedRevision != currentRevision) {
+        bool replaced = chunk->m_instanceId != meshResult.chunkInstanceId;
+        if (replaced || currentRevision != meshResult.revision) {
+            if (replaced || flight.observedRevision != currentRevision) {
                 ++m_workMetrics.meshInvalidations;
                 ++m_workMetrics.meshRequestsCoalesced;
             }
-            if (flight && flight->kind == MeshRequestKind::Dirty) {
+            if (!chunk->isEmpty()) {
+                chunk->markDirty();
+            }
+            if (flight.kind == MeshRequestKind::Dirty) {
                 m_countedMeshRetryRevisions[meshResult.coord] = currentRevision;
             }
             stateIt->second = ChunkState::ReadyData;
@@ -713,6 +718,11 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
 
     MeshTask task;
     task.coord = coord;
+    task.requestId = m_nextMeshRequestId++;
+    if (m_nextMeshRequestId == 0) {
+        m_nextMeshRequestId = 1;
+    }
+    task.chunkInstanceId = chunk.m_instanceId;
     task.revision = chunk.meshRevision();
     chunk.copyBlocks(task.blocks);
 
@@ -784,6 +794,7 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
     ++m_inFlightMesh;
     m_meshInFlight[coord] = MeshInFlight{
         .kind = kind,
+        .requestId = task.requestId,
         .observedRevision = task.revision
     };
     ++m_workMetrics.meshJobsStarted;
@@ -825,6 +836,8 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
 
         MeshResult result;
         result.coord = task.coord;
+        result.requestId = task.requestId;
+        result.chunkInstanceId = task.chunkInstanceId;
         result.revision = task.revision;
         result.mesh = std::move(mesh);
         result.seconds = std::chrono::duration<double>(end - start).count();

@@ -846,7 +846,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {
     CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
 }
 
-TEST_CASE(ChunkStreamer_DependencyChangeRejectsInFlightMesh) {
+TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
     ChunkManager manager;
     BlockRegistry registry;
     WorldMeshStore meshStore;
@@ -875,14 +875,99 @@ TEST_CASE(ChunkStreamer_DependencyChangeRejectsInFlightMesh) {
     const uint32_t queuedRevision = chunk.meshRevision();
 
     manager.setBlock(Chunk::SIZE, 0, 0, BlockState{solid});
+    manager.setBlock(Chunk::SIZE, 1, 0, BlockState{solid});
+    manager.setBlock(Chunk::SIZE, 2, 0, BlockState{solid});
     CHECK(chunk.meshRevision() != queuedRevision);
 
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+
     streamer.processCompletions();
+    CHECK(!meshStore.contains({0, 0, 0}));
+
+    streamer.update(glm::vec3(0.0f));
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    streamer.processCompletions();
+
+    streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
+
     const auto& metrics = streamer.workMetrics();
-    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(1));
-    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(0));
+    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(1));
     CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
     CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
+
+    size_t installedIndexCount = 0;
+    meshStore.forEach([&](const WorldMeshEntry& entry) {
+        if (entry.coord == ChunkCoord{0, 0, 0}) {
+            installedIndexCount = entry.mesh.indexCount();
+        }
+    });
+    CHECK_EQ(installedIndexCount, static_cast<size_t>(30));
+}
+
+TEST_CASE(ChunkStreamer_ReplacedChunkRejectsInFlightMesh) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:replacement_solid");
+    const ChunkCoord coord{0, 0, 0};
+
+    Chunk& original = manager.getOrCreateChunk(coord);
+    original.setBlock(0, 0, 0, BlockState{solid}, registry);
+    original.setWorldGenVersion(generator->config().world.version);
+    original.setLoadedFromDisk(true);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    streamer.update(glm::vec3(0.0f));
+    const uint32_t queuedRevision = original.meshRevision();
+
+    manager.unloadChunk(coord);
+    Chunk& replacement = manager.getOrCreateChunk(coord);
+    std::array<BlockState, Chunk::VOLUME> replacementBlocks{};
+    replacementBlocks[1] = BlockState{solid};
+    replacementBlocks[2] = BlockState{solid};
+    replacement.copyFrom(replacementBlocks, registry);
+    replacement.setWorldGenVersion(generator->config().world.version);
+    replacement.setLoadedFromDisk(true);
+    CHECK_EQ(replacement.meshRevision(), queuedRevision);
+
+    streamer.processCompletions();
+    CHECK(!meshStore.contains(coord));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale, static_cast<uint64_t>(1));
+
+    streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
+
+    const auto& metrics = streamer.workMetrics();
+    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
+
+    size_t installedIndexCount = 0;
+    meshStore.forEach([&](const WorldMeshEntry& entry) {
+        if (entry.coord == coord) {
+            installedIndexCount = entry.mesh.indexCount();
+        }
+    });
+    CHECK_EQ(installedIndexCount, static_cast<size_t>(60));
 }
 
 TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {

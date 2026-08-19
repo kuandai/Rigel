@@ -63,6 +63,7 @@ void AsyncChunkLoader::setMaxCachedRegions(size_t maxRegions) {
 
 void AsyncChunkLoader::setMaxInFlightRegions(size_t maxRegions) {
     m_maxInFlightRegions = maxRegions;
+    startDeferredRegionLoads();
 }
 
 void AsyncChunkLoader::setPrefetchRadius(int radius) {
@@ -112,6 +113,9 @@ bool AsyncChunkLoader::request(Voxel::ChunkCoord coord) {
     m_regionPending[key].insert(coord);
     if (queueRegionLoad(key)) {
         prefetchNeighbors(key);
+    } else if (m_cache.find(key) == m_cache.end() &&
+               m_inFlight.find(key) == m_inFlight.end()) {
+        deferRegionLoad(key);
     }
     return true;
 }
@@ -131,6 +135,7 @@ void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {
         it->second.erase(coord);
         if (it->second.empty()) {
             m_regionPending.erase(it);
+            m_deferredRegionLoadSet.erase(key);
         }
     }
 }
@@ -203,6 +208,7 @@ void AsyncChunkLoader::drainRegionCompletions(
             m_regionPending.erase(pendingIt);
         }
     }
+    startDeferredRegionLoads();
 }
 
 void AsyncChunkLoader::drainPayloadCompletions(
@@ -252,6 +258,33 @@ bool AsyncChunkLoader::applyPayload(const ChunkPayload& payload) {
     }
 
     return true;
+}
+
+void AsyncChunkLoader::deferRegionLoad(const RegionKey& key) {
+    if (m_deferredRegionLoadSet.insert(key).second) {
+        m_deferredRegionLoads.push_back(key);
+    }
+}
+
+void AsyncChunkLoader::startDeferredRegionLoads() {
+    while (!m_deferredRegionLoads.empty()) {
+        if (m_maxInFlightRegions > 0 &&
+            m_inFlight.size() >= m_maxInFlightRegions) {
+            return;
+        }
+
+        RegionKey key = m_deferredRegionLoads.front();
+        m_deferredRegionLoads.pop_front();
+        if (m_deferredRegionLoadSet.erase(key) == 0) {
+            continue;
+        }
+
+        auto pendingIt = m_regionPending.find(key);
+        if (pendingIt == m_regionPending.end() || pendingIt->second.empty()) {
+            continue;
+        }
+        queueRegionLoad(key);
+    }
 }
 
 bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key) {

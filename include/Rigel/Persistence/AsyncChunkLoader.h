@@ -75,6 +75,8 @@ private:
                                 std::vector<Voxel::ChunkCoord>& resolved);
     void drainPayloadCompletions(size_t budget,
                                  std::vector<Voxel::ChunkCoord>& resolved);
+    void deferRegionLoad(const RegionKey& key);
+    void startDeferredRegionLoads();
     bool queueRegionLoad(const RegionKey& key);
     void queuePayloadBuild(const RegionEntry& entry, Voxel::ChunkCoord coord);
     void prefetchNeighbors(const RegionKey& center);
@@ -110,6 +112,8 @@ private:
     std::unordered_map<RegionKey,
                        std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash>,
                        RegionKeyHash> m_regionPending;
+    std::deque<RegionKey> m_deferredRegionLoads;
+    std::unordered_set<RegionKey, RegionKeyHash> m_deferredRegionLoadSet;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_pendingChunks;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_payloadInFlight;
     std::deque<RegionKey> m_lru;

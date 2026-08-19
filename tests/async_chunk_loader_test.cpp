@@ -330,6 +330,57 @@ TEST_CASE(AsyncChunkLoader_ApplyBudget) {
     CHECK_EQ(loadedCount, static_cast<size_t>(2));
 }
 
+TEST_CASE(AsyncChunkLoader_RegionCapacityStartsDeferredRequests) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID testBlock = registerTestBlock(registry, "rigel:test_region_capacity");
+    std::vector<BlockID> palette = {BlockRegistry::airId(), testBlock};
+    ChunkCoord coordA{0, 0, 0};
+    ChunkCoord coordB{64, 0, 0};
+    ChunkData payloadA = buildPayload(coordA, registry, palette, false, std::nullopt, false);
+    ChunkData payloadB = buildPayload(coordB, registry, palette, false, std::nullopt, false);
+
+    MemoryContext ctx;
+    saveRegionForPayload(ctx.service, ctx.context, "rigel:default", coordA, payloadA);
+    saveRegionForPayload(ctx.service, ctx.context, "rigel:default", coordB, payloadB);
+
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+    loader.setMaxInFlightRegions(1);
+    loader.setPrefetchRadius(0);
+
+    CHECK(loader.request(coordA));
+    CHECK(loader.request(coordB));
+    CHECK(loader.isPending(coordA));
+    CHECK(loader.isPending(coordB));
+
+    auto firstResolved = loader.drainCompletions(1);
+    CHECK_EQ(firstResolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(firstResolved.front(), coordA);
+    CHECK(!loader.isPending(coordA));
+    CHECK(loader.isPending(coordB));
+
+    auto secondResolved = loader.drainCompletions(1);
+    CHECK_EQ(secondResolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(secondResolved.front(), coordB);
+    CHECK(!loader.isPending(coordB));
+    CHECK(world.chunkManager().getChunk(coordA) != nullptr);
+    CHECK(world.chunkManager().getChunk(coordB) != nullptr);
+}
+
 TEST_CASE(AsyncChunkLoader_Cancel) {
     WorldResources resources;
     World world;

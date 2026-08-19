@@ -1,5 +1,6 @@
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/ChunkManager.h"
 
 #include <cassert>
 #include <stdexcept>
@@ -7,6 +8,22 @@
 #include <algorithm>
 
 namespace Rigel::Voxel {
+
+void Chunk::bumpMeshRevision() {
+    uint32_t next = m_meshRevision + 1;
+    m_meshRevision = (next == 0) ? 1 : next;
+    notifyMeshChange();
+}
+
+void Chunk::notifyMeshChange() {
+    if (m_chunkManager) {
+        m_chunkManager->notifyMeshChange(m_position);
+    }
+}
+
+void Chunk::trackMeshChanges(ChunkManager* manager) {
+    m_chunkManager = manager;
+}
 
 Chunk::Chunk() {
     // All blocks default to air (BlockState default constructor)

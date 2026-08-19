@@ -814,9 +814,9 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CountGenerationAndSchedulerInspection) {
     CHECK_EQ(metrics.chunkLoadRequestsStarted, static_cast<uint64_t>(0));
     CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(0));
     CHECK_EQ(metrics.desiredBuildCoordinatesInspected, static_cast<uint64_t>(27));
-    CHECK_EQ(metrics.schedulerCoordinatesInspected, static_cast<uint64_t>(14));
+    CHECK_EQ(metrics.schedulerCoordinatesInspected, static_cast<uint64_t>(7));
     CHECK_EQ(metrics.lastUpdateDesiredBuildCoordinatesInspected, static_cast<size_t>(27));
-    CHECK_EQ(metrics.lastUpdateSchedulerCoordinatesInspected, static_cast<size_t>(14));
+    CHECK_EQ(metrics.lastUpdateSchedulerCoordinatesInspected, static_cast<size_t>(7));
 }
 
 TEST_CASE(ChunkStreamer_GenerationCapacityWaitsForCompletion) {
@@ -926,6 +926,94 @@ TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
 }
 
+TEST_CASE(ChunkStreamer_DirtyMeshCapacityPreservesNearestFirstPriority) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:dirty_capacity_solid");
+
+    const std::array<ChunkCoord, 7> desired{
+        ChunkCoord{0, 0, 0},
+        ChunkCoord{1, 0, 0},
+        ChunkCoord{-1, 0, 0},
+        ChunkCoord{0, 1, 0},
+        ChunkCoord{0, -1, 0},
+        ChunkCoord{0, 0, 1},
+        ChunkCoord{0, 0, -1}
+    };
+    for (const ChunkCoord& coord : desired) {
+        Chunk& chunk = manager.getOrCreateChunk(coord);
+        chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setLoadedFromDisk(true);
+        chunk.clearDirty();
+        meshStore.set(coord, {});
+    }
+
+    auto gate = std::make_shared<MeshBuildGate>();
+    std::atomic<size_t> buildsEntered{0};
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 2;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer,
+        [gate, &buildsEntered]() {
+            if (buildsEntered.fetch_add(1, std::memory_order_relaxed) == 0) {
+                gate->enterAndWait();
+            }
+        });
+    MeshBuildRelease releaseOnExit(gate);
+
+    for (size_t update = 0; update <= desired.size(); ++update) {
+        streamer.update(glm::vec3(0.0f));
+    }
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+
+    Chunk& nearest = *manager.getChunk({0, 0, 0});
+    Chunk& farther = *manager.getChunk({1, 0, 0});
+    farther.setBlock(1, 0, 0, BlockState{solid}, registry);
+    nearest.setBlock(1, 0, 0, BlockState{solid}, registry);
+    farther.invalidateMesh();
+    nearest.invalidateMesh();
+
+    streamer.update(glm::vec3(0.0f));
+    bool firstBuildEntered = gate->waitUntilEntered();
+    if (!firstBuildEntered) {
+        gate->release();
+    }
+    CHECK(firstBuildEntered);
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK(!nearest.isDirty());
+    CHECK(farther.isDirty());
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(1));
+
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+
+    gate->release();
+    CHECK(waitForMeshCompletions(streamer, 1));
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK(!farther.isDirty());
+    CHECK(waitForMeshCompletions(streamer, 2));
+}
+
 TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     ChunkManager manager;
     BlockRegistry registry;
@@ -958,7 +1046,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     CHECK_EQ(callbackCount, static_cast<size_t>(2));
     CHECK_EQ(metrics.chunkLoadRequestsStarted, static_cast<uint64_t>(1));
     CHECK_EQ(metrics.desiredBuildCoordinatesInspected, static_cast<uint64_t>(1));
-    CHECK_EQ(metrics.schedulerCoordinatesInspected, static_cast<uint64_t>(4));
+    CHECK_EQ(metrics.schedulerCoordinatesInspected, static_cast<uint64_t>(3));
     CHECK_EQ(metrics.lastUpdateDesiredBuildCoordinatesInspected, static_cast<size_t>(0));
     CHECK_EQ(metrics.lastUpdateSchedulerCoordinatesInspected, static_cast<size_t>(2));
 }
@@ -1081,7 +1169,7 @@ TEST_CASE(ChunkStreamer_MovementRequestsOnlyNewDesiredFrontier) {
     }
     CHECK_EQ(requestCounts.size(), firstDesired.size() + frontierSize);
     CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
-             static_cast<uint64_t>(secondDesired.size() + frontierSize));
+             static_cast<uint64_t>(frontierSize));
 
     size_t departedSize = 0;
     for (const ChunkCoord& coord : firstDesired) {
@@ -1630,9 +1718,11 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
         return;
     }
     center->setBlock(1, 0, 0, BlockState{solid}, registry);
+    center->invalidateMesh();
+    center->markDirty();
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(quiescent.meshJobsStarted, settled.meshJobsStarted + 1);
-    CHECK(quiescent.lastUpdateSchedulerCoordinatesInspected > 0);
+    CHECK_EQ(quiescent.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(1));
     streamer.processCompletions();
 
     streamer.update(glm::vec3(0.0f));

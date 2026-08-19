@@ -37,6 +37,7 @@ namespace Rigel::Voxel {
  * concurrent access.
  */
 class BlockRegistry;
+class ChunkManager;
 
 class Chunk {
 public:
@@ -246,7 +247,7 @@ private:
     uint32_t m_meshRevision = 0;
     uint32_t m_worldGenVersion = 0;
     const uint64_t m_instanceId = s_nextInstanceId.fetch_add(1, std::memory_order_relaxed);
-    std::atomic<uint64_t>* m_meshChangeVersion = nullptr;
+    ChunkManager* m_chunkManager = nullptr;
 
     static inline std::atomic<uint64_t> s_nextInstanceId{1};
 
@@ -267,21 +268,9 @@ private:
         return x + y * SUBCHUNK_SIZE + z * SUBCHUNK_SIZE * SUBCHUNK_SIZE;
     }
 
-    void bumpMeshRevision() {
-        uint32_t next = m_meshRevision + 1;
-        m_meshRevision = (next == 0) ? 1 : next;
-        notifyMeshChange();
-    }
-
-    void notifyMeshChange() {
-        if (m_meshChangeVersion) {
-            m_meshChangeVersion->fetch_add(1, std::memory_order_relaxed);
-        }
-    }
-
-    void trackMeshChanges(std::atomic<uint64_t>* version) {
-        m_meshChangeVersion = version;
-    }
+    void bumpMeshRevision();
+    void notifyMeshChange();
+    void trackMeshChanges(ChunkManager* manager);
 
     void setBlockInternal(int x, int y, int z, BlockState state, const BlockRegistry* registry);
     void fillInternal(BlockState state, const BlockRegistry* registry);

@@ -12,13 +12,16 @@
 #include "ChunkCoord.h"
 
 #include <atomic>
+#include <deque>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <functional>
 #include <vector>
 
 namespace Rigel::Voxel {
 class BlockRegistry;
+class ChunkStreamer;
 
 /**
  * @brief Manages multiple chunks in a voxel world.
@@ -199,10 +202,17 @@ public:
     void setRegistry(const BlockRegistry* registry) { m_registry = registry; }
 
 private:
+    friend class Chunk;
+    friend class ChunkStreamer;
+
     void rebindMeshChangeTracking();
+    void notifyMeshChange(ChunkCoord coord);
+    std::vector<ChunkCoord> consumeDirtyMeshNotifications();
 
     std::atomic<uint64_t> m_meshChangeVersion{0};
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> m_chunks;
+    std::deque<ChunkCoord> m_dirtyMeshQueue;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;
     const BlockRegistry* m_registry = nullptr;
 };
 

@@ -16,6 +16,7 @@
 #include <deque>
 #include <functional>
 #include <optional>
+#include <queue>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -46,7 +47,7 @@ public:
         uint64_t meshRequestsCoalesced = 0;
         // Candidate coordinates tested while rebuilding the desired set.
         uint64_t desiredBuildCoordinatesInspected = 0;
-        // Desired entries visited by the load/generation and dirty-mesh passes.
+        // Pending load/generation and dirty-mesh entries visited by the scheduler.
         uint64_t schedulerCoordinatesInspected = 0;
         uint64_t lastUpdateDesiredBuildCoordinatesInspected = 0;
         uint64_t lastUpdateSchedulerCoordinatesInspected = 0;
@@ -146,6 +147,17 @@ private:
         bool obsolete = false;
     };
 
+    struct PendingDirtyMesh {
+        size_t priority = 0;
+        ChunkCoord coord;
+    };
+
+    struct PendingDirtyMeshGreater {
+        bool operator()(const PendingDirtyMesh& lhs, const PendingDirtyMesh& rhs) const {
+            return lhs.priority > rhs.priority;
+        }
+    };
+
     WorldGenConfig::StreamConfig m_config;
     ChunkManager* m_chunkManager = nullptr;
     WorldMeshStore* m_meshStore = nullptr;
@@ -176,6 +188,11 @@ private:
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_missingMeshCapacityWaiting;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
+    std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> m_desiredPriority;
+    std::priority_queue<PendingDirtyMesh,
+                        std::vector<PendingDirtyMesh>,
+                        PendingDirtyMeshGreater> m_dirtyMeshQueue;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;
     size_t m_inFlightGen = 0;
     size_t m_inFlightMesh = 0;
     size_t m_inFlightMeshMissing = 0;
@@ -184,10 +201,7 @@ private:
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;
-    size_t m_dirtyCursor = 0;
-    uint64_t m_lastMeshChangeVersion = 0;
     uint32_t m_lastWorldGenVersion = 0;
-    bool m_schedulerPending = true;
     std::function<void()> m_meshBuildStartCallback;
     WorkMetrics m_workMetrics;
 
@@ -199,6 +213,8 @@ private:
     void wakeGenerationCapacityWaiter();
     void wakeMissingMeshCapacityWaiter();
     void queueLoadedNeighbors(ChunkCoord coord);
+    void queueDirtyMesh(ChunkCoord coord);
+    void reprioritizeDirtyMeshes();
     void enqueueGeneration(ChunkCoord coord);
     void enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind kind);
     void ensureThreadPool();

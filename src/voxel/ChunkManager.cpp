@@ -10,6 +10,8 @@ namespace Rigel::Voxel {
 ChunkManager::ChunkManager(ChunkManager&& other) noexcept
     : m_meshChangeVersion(other.m_meshChangeVersion.load(std::memory_order_relaxed))
     , m_chunks(std::move(other.m_chunks))
+    , m_dirtyMeshQueue(std::move(other.m_dirtyMeshQueue))
+    , m_dirtyMeshQueued(std::move(other.m_dirtyMeshQueued))
     , m_registry(other.m_registry) {
     rebindMeshChangeTracking();
 }
@@ -20,6 +22,8 @@ ChunkManager& ChunkManager::operator=(ChunkManager&& other) noexcept {
     }
 
     m_chunks = std::move(other.m_chunks);
+    m_dirtyMeshQueue = std::move(other.m_dirtyMeshQueue);
+    m_dirtyMeshQueued = std::move(other.m_dirtyMeshQueued);
     m_registry = other.m_registry;
     m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
     rebindMeshChangeTracking();
@@ -28,8 +32,28 @@ ChunkManager& ChunkManager::operator=(ChunkManager&& other) noexcept {
 
 void ChunkManager::rebindMeshChangeTracking() {
     for (auto& [coord, chunk] : m_chunks) {
-        chunk->trackMeshChanges(&m_meshChangeVersion);
+        chunk->trackMeshChanges(this);
     }
+}
+
+void ChunkManager::notifyMeshChange(ChunkCoord coord) {
+    m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
+    if (m_dirtyMeshQueued.insert(coord).second) {
+        m_dirtyMeshQueue.push_back(coord);
+    }
+}
+
+std::vector<ChunkCoord> ChunkManager::consumeDirtyMeshNotifications() {
+    std::vector<ChunkCoord> dirty;
+    dirty.reserve(m_dirtyMeshQueued.size());
+    while (!m_dirtyMeshQueue.empty()) {
+        ChunkCoord coord = m_dirtyMeshQueue.front();
+        m_dirtyMeshQueue.pop_front();
+        if (m_dirtyMeshQueued.erase(coord) != 0) {
+            dirty.push_back(coord);
+        }
+    }
+    return dirty;
 }
 
 Chunk* ChunkManager::getChunk(ChunkCoord coord) {
@@ -55,10 +79,10 @@ Chunk& ChunkManager::getOrCreateChunk(ChunkCoord coord) {
     }
 
     auto chunk = std::make_unique<Chunk>(coord);
-    chunk->trackMeshChanges(&m_meshChangeVersion);
+    chunk->trackMeshChanges(this);
     Chunk& ref = *chunk;
     m_chunks[coord] = std::move(chunk);
-    m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
+    notifyMeshChange(coord);
 
     spdlog::debug("Created chunk at ({}, {}, {})", coord.x, coord.y, coord.z);
 
@@ -137,7 +161,7 @@ void ChunkManager::loadChunk(ChunkCoord coord, std::span<const uint8_t> data) {
     // Override position from coordinate (in case data has wrong position)
     // Note: This requires making a new chunk since position is set in constructor
     auto newChunk = std::make_unique<Chunk>(coord);
-    newChunk->trackMeshChanges(&m_meshChangeVersion);
+    newChunk->trackMeshChanges(this);
     std::array<BlockState, Chunk::VOLUME> blocks{};
     chunk.copyBlocks(blocks);
     if (m_registry) {
@@ -155,6 +179,7 @@ void ChunkManager::unloadChunk(ChunkCoord coord) {
     auto it = m_chunks.find(coord);
     if (it != m_chunks.end()) {
         m_chunks.erase(it);
+        m_dirtyMeshQueued.erase(coord);
         m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
         spdlog::debug("Unloaded chunk at ({}, {}, {})", coord.x, coord.y, coord.z);
     }
@@ -165,6 +190,8 @@ void ChunkManager::clear() {
         m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
     }
     m_chunks.clear();
+    m_dirtyMeshQueue.clear();
+    m_dirtyMeshQueued.clear();
     spdlog::debug("ChunkManager cleared");
 }
 

@@ -1126,9 +1126,8 @@ TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
 }
 
-TEST_CASE(ChunkStreamer_NeighborArrivalInvalidationsCoalesceAcrossOrder) {
+TEST_CASE(ChunkStreamer_DiskLoadedChunksWaitForNeighborFrontierAcrossArrivalOrder) {
     struct Result {
-        uint32_t revisionDelta = 0;
         ChunkStreamer::WorkMetrics metrics;
         ChunkMesh mesh;
     };
@@ -1158,8 +1157,27 @@ TEST_CASE(ChunkStreamer_NeighborArrivalInvalidationsCoalesceAcrossOrder) {
         center.setWorldGenVersion(generator->config().world.version);
         center.setLoadedFromDisk(true);
         center.clearDirty();
-        const uint32_t initialRevision = center.meshRevision();
 
+        ChunkStreamer streamer;
+        WorldGenConfig::StreamConfig stream;
+        stream.viewDistanceChunks = 1;
+        stream.unloadDistanceChunks = 1;
+        stream.genQueueLimit = 0;
+        stream.meshQueueLimit = 0;
+        stream.updateBudgetPerFrame = 0;
+        stream.applyBudgetPerFrame = 0;
+        stream.workerThreads = 0;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+        streamer.setChunkLoader([](ChunkCoord) { return true; });
+
+        streamer.update(glm::vec3(0.0f));
+        streamer.processCompletions();
+        CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+        CHECK(!meshStore.contains(centerCoord));
+
+        size_t arrived = 0;
         for (Direction direction : arrivalOrder) {
             int dx = 0;
             int dy = 0;
@@ -1174,29 +1192,20 @@ TEST_CASE(ChunkStreamer_NeighborArrivalInvalidationsCoalesceAcrossOrder) {
                 registry);
             neighbor.setWorldGenVersion(generator->config().world.version);
             neighbor.setLoadedFromDisk(true);
+            neighbor.clearDirty();
             center.invalidateMesh();
+
+            streamer.update(glm::vec3(0.0f));
+            streamer.processCompletions();
+            ++arrived;
+
+            const uint64_t expectedJobs = static_cast<uint64_t>(arrived) +
+                (arrived == arrivalOrder.size() ? 1 : 0);
+            CHECK_EQ(streamer.workMetrics().meshJobsStarted, expectedJobs);
+            CHECK_EQ(meshStore.contains(centerCoord), arrived == arrivalOrder.size());
         }
 
-        meshStore.set(centerCoord, ChunkMesh{});
-
-        ChunkStreamer streamer;
-        WorldGenConfig::StreamConfig stream;
-        stream.viewDistanceChunks = 1;
-        stream.unloadDistanceChunks = 1;
-        stream.genQueueLimit = 0;
-        stream.meshQueueLimit = 0;
-        stream.updateBudgetPerFrame = 0;
-        stream.applyBudgetPerFrame = 0;
-        stream.workerThreads = 0;
-        stream.maxResidentChunks = 0;
-        streamer.setConfig(stream);
-        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
-
-        streamer.update(glm::vec3(0.0f));
-        streamer.processCompletions();
-
         Result result;
-        result.revisionDelta = center.meshRevision() - initialRevision;
         result.metrics = streamer.workMetrics();
         meshStore.forEach([&](const WorldMeshEntry& entry) {
             if (entry.coord == centerCoord) {
@@ -1226,10 +1235,10 @@ TEST_CASE(ChunkStreamer_NeighborArrivalInvalidationsCoalesceAcrossOrder) {
     Result forwardResult = run(forward);
     Result reverseResult = run(reverse);
 
-    CHECK_EQ(forwardResult.revisionDelta, static_cast<uint32_t>(1));
-    CHECK_EQ(reverseResult.revisionDelta, static_cast<uint32_t>(1));
-    CHECK_EQ(forwardResult.metrics.meshInvalidations, static_cast<uint64_t>(1));
-    CHECK_EQ(reverseResult.metrics.meshInvalidations, static_cast<uint64_t>(1));
+    CHECK_EQ(forwardResult.metrics.meshJobsStarted,
+             static_cast<uint64_t>(DirectionCount + 1));
+    CHECK_EQ(reverseResult.metrics.meshJobsStarted,
+             static_cast<uint64_t>(DirectionCount + 1));
     CHECK_EQ(forwardResult.metrics.meshJobsAccepted,
              forwardResult.metrics.meshJobsStarted);
     CHECK_EQ(reverseResult.metrics.meshJobsAccepted,

@@ -268,9 +268,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     }
 
                     if (!isMeshed && state != ChunkState::QueuedMesh) {
-                        bool allowMissingNeighbors = chunk->loadedFromDisk();
-                        if (!meshFullMissing &&
-                            (allowMissingNeighbors || hasAllNeighborsLoaded(coord))) {
+                        if (!meshFullMissing && hasAllNeighborsLoaded(coord)) {
                             enqueueMesh(coord, *chunk, MeshRequestKind::Missing);
                             meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
                             meshFull = m_inFlightMesh >= meshLimit;

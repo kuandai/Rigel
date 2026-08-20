@@ -94,7 +94,6 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     #else
     spdlog::info("Rigel v{}", RIGEL_VERSION);
     #endif
-    spdlog::info("Optional components: {}", RIGEL_OPTIONAL_COMPONENTS);
 
     const char* benchEnv = std::getenv("RIGEL_CHUNK_BENCH");
     m_impl->timing.benchmarkEnabled =

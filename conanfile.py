@@ -1,12 +1,11 @@
 from conan import ConanFile
-from conan.tools.cmake import CMake, cmake_layout
+from conan.tools.cmake import CMakeDeps, CMakeToolchain
+
 
 class RigelConan(ConanFile):
     name = "rigel"
     version = "0.0.0"
     settings = "os", "compiler", "build_type", "arch"
-    generators = "CMakeDeps", "CMakeToolchain"
-
     # Dependencies
     requires = (
         "spdlog/1.12.0",
@@ -24,3 +23,12 @@ class RigelConan(ConanFile):
         "glew/*:shared": False,
         "glfw/*:shared": False
     }
+
+    def generate(self):
+        dependencies = CMakeDeps(self)
+        dependencies.generate()
+
+        imgui = self.dependencies["imgui"]
+        toolchain = CMakeToolchain(self)
+        toolchain.variables["RIGEL_IMGUI_BINDINGS_DIR"] = imgui.cpp_info.srcdirs[0]
+        toolchain.generate()

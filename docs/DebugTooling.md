@@ -9,7 +9,7 @@ through gameplay UI.
 ## 1. Overview
 
 `FrameRenderer` owns the debug overlay state and GPU resources. It draws the GL
-overlays after the main scene; Application renders the optional ImGui profiler
+overlays after the main scene; Application renders the ImGui profiler
 window from the same state. When enabled the tooling draws:
 
 - Chunk streaming field (colored cubes for pipeline state).
@@ -18,8 +18,7 @@ window from the same state. When enabled the tooling draws:
 - Entity bounds wireframes.
 
 The overlay is toggled by the `debug_overlay` action (F1 by default).
-The profiler window is shown whenever the debug overlay is enabled and ImGui is
-available.
+The profiler window is shown whenever the debug overlay is enabled.
 
 ---
 
@@ -94,7 +93,7 @@ State mapping (from `ChunkStreamer::DebugState`):
 ## 5. Profiler Window (ImGui)
 
 - The ImGui profiler window displays a flame graph for the last frame.
-- It is only available when ImGui is linked (`imgui` package found).
+- ImGui is a required build dependency.
 - The window appears when the debug overlay is enabled (F1).
 
 ---
@@ -234,7 +233,6 @@ llvmpipe comparison.
 
 ## 10. Known Limitations
 
-- Profiler view requires ImGui and is hidden when ImGui is unavailable.
 - Debug overlay is global and not per-world.
 - Missing shaders disable that overlay component.
 - Entity boxes reflect AABB extents, not exact mesh silhouettes.

@@ -267,9 +267,9 @@ config (`assets/config/render.yaml`) may override them.
 | `render.shadow.split_lambda` | float | `0.5` | Log/linear split blend. |
 | `render.shadow.bias` | float | `0.0005` | Depth bias. |
 | `render.shadow.normal_bias` | float | `0.005` | Normal-based bias. |
-| `render.shadow.pcf_radius` | int | `1` | PCF radius (fallback). |
-| `render.shadow.pcf_radius_near` | int | `1` | Near PCF radius. |
-| `render.shadow.pcf_radius_far` | int | `1` | Far PCF radius. |
+| `render.shadow.pcf_radius` | int | `1` | Fallback for near and far PCF radii. |
+| `render.shadow.pcf_radius_near` | int | `1` | Near PCF radius override. |
+| `render.shadow.pcf_radius_far` | int | `1` | Far PCF radius override. |
 | `render.shadow.transparent_scale` | float | `1.0` | Transparent attenuation. |
 | `render.shadow.strength` | float | `1.0` | Shadow strength multiplier. |
 | `render.shadow.fade_power` | float | `1.0` | Shadow fade exponent. |
@@ -300,6 +300,10 @@ Values are clamped during load:
 - `shadow.cascades` is clamped to `[1, ShadowConfig::MaxCascades]`.
 - `pcf_radius` and related values are clamped to non-negative.
 - `taa.blend` is clamped to `[0, 1]`.
+
+When a near or far PCF radius is not configured, it follows `pcf_radius`.
+Specific near and far values take precedence across configuration layers, so a
+later generic radius only updates sides that have no specific value.
 
 `RIGEL_PROFILE=1` forces profiling on at runtime, regardless of config. Setting
 `RIGEL_PROFILE=0` forces profiling off.

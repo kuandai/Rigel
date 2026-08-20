@@ -105,3 +105,61 @@ render:
     CHECK_EQ(config.shadow.pcfRadiusNear, 1);
     CHECK_EQ(config.shadow.pcfRadiusFar, 3);
 }
+
+TEST_CASE(RenderConfig_GenericPcfRadiusSuppliesNearAndFarFallbacks) {
+    ConfigProvider provider;
+    provider.addSource(std::make_unique<StringConfigSource>(R"(
+render:
+  shadow:
+    pcf_radius: 4
+)"));
+
+    const WorldRenderConfig config = provider.loadRenderConfig();
+
+    CHECK_EQ(config.shadow.pcfRadius, 4);
+    CHECK_EQ(config.shadow.pcfRadiusNear, 4);
+    CHECK_EQ(config.shadow.pcfRadiusFar, 4);
+}
+
+TEST_CASE(RenderConfig_LayeredGenericPcfRadiusPreservesSpecificOverrides) {
+    ConfigProvider provider;
+    provider.addSource(std::make_unique<StringConfigSource>(R"(
+render:
+  shadow:
+    pcf_radius: 2
+    pcf_radius_near: 1
+    pcf_radius_far: 3
+)"));
+    provider.addSource(std::make_unique<StringConfigSource>(R"(
+render:
+  shadow:
+    pcf_radius: 4
+)"));
+
+    const WorldRenderConfig config = provider.loadRenderConfig();
+
+    CHECK_EQ(config.shadow.pcfRadius, 4);
+    CHECK_EQ(config.shadow.pcfRadiusNear, 1);
+    CHECK_EQ(config.shadow.pcfRadiusFar, 3);
+}
+
+TEST_CASE(RenderConfig_LayeredGenericPcfRadiusUpdatesUnspecifiedFallback) {
+    ConfigProvider provider;
+    provider.addSource(std::make_unique<StringConfigSource>(R"(
+render:
+  shadow:
+    pcf_radius: 2
+    pcf_radius_near: 1
+)"));
+    provider.addSource(std::make_unique<StringConfigSource>(R"(
+render:
+  shadow:
+    pcf_radius: 4
+)"));
+
+    const WorldRenderConfig config = provider.loadRenderConfig();
+
+    CHECK_EQ(config.shadow.pcfRadius, 4);
+    CHECK_EQ(config.shadow.pcfRadiusNear, 1);
+    CHECK_EQ(config.shadow.pcfRadiusFar, 4);
+}

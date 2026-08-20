@@ -52,7 +52,14 @@ bool readVec3(ryml::ConstNodeRef node, const char* key, glm::vec3& value) {
     return false;
 }
 
-void applyShadowConfig(ryml::ConstNodeRef shadowNode, ShadowConfig& shadow) {
+struct PcfRadiusState {
+    bool hasNearOverride = false;
+    bool hasFarOverride = false;
+};
+
+void applyShadowConfig(ryml::ConstNodeRef shadowNode,
+                       ShadowConfig& shadow,
+                       PcfRadiusState& pcfState) {
     if (!shadowNode.readable()) {
         return;
     }
@@ -63,9 +70,22 @@ void applyShadowConfig(ryml::ConstNodeRef shadowNode, ShadowConfig& shadow) {
     shadow.splitLambda = Util::readFloat(shadowNode, "split_lambda", shadow.splitLambda);
     shadow.bias = Util::readFloat(shadowNode, "bias", shadow.bias);
     shadow.normalBias = Util::readFloat(shadowNode, "normal_bias", shadow.normalBias);
+    const bool hasPcfRadius = shadowNode.has_child("pcf_radius");
     shadow.pcfRadius = Util::readInt(shadowNode, "pcf_radius", shadow.pcfRadius);
-    shadow.pcfRadiusNear = Util::readInt(shadowNode, "pcf_radius_near", shadow.pcfRadiusNear);
-    shadow.pcfRadiusFar = Util::readInt(shadowNode, "pcf_radius_far", shadow.pcfRadiusFar);
+    if (shadowNode.has_child("pcf_radius_near")) {
+        shadow.pcfRadiusNear = Util::readInt(
+            shadowNode, "pcf_radius_near", shadow.pcfRadiusNear);
+        pcfState.hasNearOverride = true;
+    } else if (hasPcfRadius && !pcfState.hasNearOverride) {
+        shadow.pcfRadiusNear = shadow.pcfRadius;
+    }
+    if (shadowNode.has_child("pcf_radius_far")) {
+        shadow.pcfRadiusFar = Util::readInt(
+            shadowNode, "pcf_radius_far", shadow.pcfRadiusFar);
+        pcfState.hasFarOverride = true;
+    } else if (hasPcfRadius && !pcfState.hasFarOverride) {
+        shadow.pcfRadiusFar = shadow.pcfRadius;
+    }
     shadow.transparentScale = Util::readFloat(shadowNode, "transparent_scale", shadow.transparentScale);
     shadow.strength = Util::readFloat(shadowNode, "strength", shadow.strength);
     shadow.fadePower = Util::readFloat(shadowNode, "fade_power", shadow.fadePower);
@@ -119,7 +139,8 @@ void applyTaaConfig(ryml::ConstNodeRef taaNode, TaaConfig& taa) {
 
 void applyRenderYaml(const char* sourceName,
                      const std::string& yaml,
-                     WorldRenderConfig& config) {
+                     WorldRenderConfig& config,
+                     PcfRadiusState& pcfState) {
     if (yaml.empty()) {
         return;
     }
@@ -142,7 +163,7 @@ void applyRenderYaml(const char* sourceName,
     config.renderDistance = Util::readFloat(renderNode, "render_distance", config.renderDistance);
 
     if (renderNode.has_child("shadow")) {
-        applyShadowConfig(renderNode["shadow"], config.shadow);
+        applyShadowConfig(renderNode["shadow"], config.shadow, pcfState);
     }
     if (renderNode.has_child("taa")) {
         applyTaaConfig(renderNode["taa"], config.taa);
@@ -267,12 +288,13 @@ WorldGenConfig ConfigProvider::loadConfig() const {
 
 WorldRenderConfig ConfigProvider::loadRenderConfig() const {
     WorldRenderConfig config;
+    PcfRadiusState pcfState;
     for (const auto& source : m_sources) {
         auto yaml = source->load();
         if (!yaml) {
             continue;
         }
-        applyRenderYaml(source->name().c_str(), *yaml, config);
+        applyRenderYaml(source->name().c_str(), *yaml, config, pcfState);
     }
     return config;
 }

@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 using namespace Rigel::Asset;
 
@@ -49,6 +50,56 @@ int readShaderVersion(const std::string& path, std::span<const char> data) {
             "Shader source '" + path + "' must declare the core GLSL profile");
     }
     return version;
+}
+
+std::vector<std::string> manifestShaderStagePaths(
+    const AssetManager::AssetEntry& entry
+) {
+    constexpr std::array<std::string_view, 4> stageKeys = {
+        "vertex", "fragment", "geometry", "compute"
+    };
+
+    std::vector<std::string> paths;
+    for (const std::string_view key : stageKeys) {
+        if (const auto path = entry.getString(std::string(key))) {
+            paths.push_back(*path);
+        }
+    }
+
+    if (!entry.getString("fragment") && !entry.getString("compute")) {
+        if (const auto vertexPath = entry.getString("vertex")) {
+            std::string fragmentPath = *vertexPath;
+            const size_t extension = fragmentPath.rfind(".vert");
+            if (extension != std::string::npos) {
+                fragmentPath.replace(extension, 5, ".frag");
+                paths.push_back(std::move(fragmentPath));
+            }
+        }
+    }
+
+    return paths;
+}
+
+template <typename LoadResource>
+void validateManifestShaderStages(
+    const AssetManager::AssetEntry& entry,
+    int supportedVersion,
+    std::unordered_set<std::string>& checkedPaths,
+    LoadResource&& loadResource
+) {
+    for (const std::string& path : manifestShaderStagePaths(entry)) {
+        if (!checkedPaths.insert(path).second) {
+            continue;
+        }
+
+        const int version = readShaderVersion(path, loadResource(path));
+        if (version > supportedVersion) {
+            throw Rigel::Test::TestFailure(
+                "Manifest-referenced shader stage '" + path + "' requires GLSL " +
+                std::to_string(version) + ", but the runtime supports GLSL " +
+                std::to_string(supportedVersion));
+        }
+    }
 }
 
 class HiddenOpenGLContext {
@@ -141,6 +192,30 @@ TEST_CASE(ShaderCompiler_PreprocessInsertsVersion) {
     CHECK(out.find("#define BAZ 2") != std::string::npos);
 }
 
+TEST_CASE(ShaderCompiler_ImplicitFragmentVersionIsValidated) {
+    AssetManager::AssetEntry entry;
+    entry.configTree = ryml::parse_in_arena("vertex: shaders/future.vert\n");
+    entry.config = entry.configTree.crootref();
+
+    constexpr std::string_view supportedSource = "#version 410 core\nvoid main(){}";
+    constexpr std::string_view newerFragmentSource = "#version 450 core\nvoid main(){}";
+    bool loadedImplicitFragment = false;
+    std::unordered_set<std::string> checkedPaths;
+
+    CHECK_THROWS(validateManifestShaderStages(
+        entry,
+        Rigel::Render::kSupportedGLSLVersion,
+        checkedPaths,
+        [&](const std::string& path) -> std::span<const char> {
+            const std::string_view source = path == "shaders/future.frag"
+                ? newerFragmentSource
+                : supportedSource;
+            loadedImplicitFragment = path == "shaders/future.frag";
+            return {source.data(), source.size()};
+        }));
+    CHECK(loadedImplicitFragment);
+}
+
 TEST_CASE(ShaderCompiler_ManifestShaderVersionsMatchRuntime) {
     CHECK_EQ(
         Rigel::Render::kSupportedGLSLVersion,
@@ -157,29 +232,17 @@ TEST_CASE(ShaderCompiler_ManifestShaderVersionsMatchRuntime) {
     AssetManager assets;
     CHECK_NO_THROW(assets.loadManifest("manifest.yaml"));
 
-    constexpr std::array<std::string_view, 4> stageKeys = {
-        "vertex", "fragment", "geometry", "compute"
-    };
     std::unordered_set<std::string> checkedPaths;
 
     assets.forEachInCategory("shaders", [&](const std::string& name,
                                                const AssetManager::AssetEntry& entry) {
         const std::string shaderId = "shaders/" + name;
         LoadContext context{shaderId, entry.config, assets};
-        for (const std::string_view key : stageKeys) {
-            const auto path = entry.getString(std::string(key));
-            if (!path || !checkedPaths.insert(*path).second) {
-                continue;
-            }
-
-            const int version = readShaderVersion(*path, context.loadResource(*path));
-            if (version > Rigel::Render::kSupportedGLSLVersion) {
-                throw Rigel::Test::TestFailure(
-                    "Manifest-referenced shader stage '" + *path + "' requires GLSL " +
-                    std::to_string(version) + ", but the runtime supports GLSL " +
-                    std::to_string(Rigel::Render::kSupportedGLSLVersion));
-            }
-        }
+        validateManifestShaderStages(
+            entry,
+            Rigel::Render::kSupportedGLSLVersion,
+            checkedPaths,
+            [&](const std::string& path) { return context.loadResource(path); });
     });
 
     CHECK(!checkedPaths.empty());

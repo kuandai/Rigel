@@ -44,6 +44,7 @@ void ChunkStreamer::setConfig(const WorldGenConfig::StreamConfig& config) {
     m_generationCapacityWaiting.clear();
     m_missingMeshCapacityWait.clear();
     m_missingMeshCapacityWaiting.clear();
+    m_meshDependencyWaiting.clear();
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
@@ -184,6 +185,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             if (m_desiredSet.find(coord) == m_desiredSet.end()) {
                 m_generationCapacityWaiting.erase(coord);
                 m_missingMeshCapacityWaiting.erase(coord);
+                m_meshDependencyWaiting.erase(coord);
                 queueLoadedNeighbors(coord);
             }
         }
@@ -371,6 +373,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                         ++queued;
                     } else if (meshFull || meshFullMissing) {
                         waitForMissingMeshCapacity(coord);
+                    } else {
+                        waitForMeshDependencies(coord);
                     }
                 }
                 continue;
@@ -448,6 +452,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
 
             if (!hasAllNeighborsLoaded(coord)) {
+                waitForMeshDependencies(coord);
                 continue;
             }
             enqueueMesh(coord, *chunk, MeshRequestKind::Dirty);
@@ -621,6 +626,7 @@ void ChunkStreamer::reset() {
     m_generationCapacityWaiting.clear();
     m_missingMeshCapacityWait.clear();
     m_missingMeshCapacityWaiting.clear();
+    m_meshDependencyWaiting.clear();
     if (m_chunkLoadCancel) {
         for (const auto& coord : m_loadPending) {
             m_chunkLoadCancel(coord);
@@ -651,10 +657,12 @@ void ChunkStreamer::reset() {
 StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() const {
     StreamingDiagnosticSnapshot snapshot;
     size_t generationPending = m_generationCapacityWaiting.size();
-    size_t meshPending = m_missingMeshCapacityWaiting.size();
+    size_t meshPending =
+        m_missingMeshCapacityWaiting.size() + m_meshDependencyWaiting.size();
     for (const ChunkCoord& coord : m_dirtyMeshQueued) {
         if (m_missingMeshCapacityWaiting.find(coord) ==
                 m_missingMeshCapacityWaiting.end() &&
+            m_meshDependencyWaiting.find(coord) == m_meshDependencyWaiting.end() &&
             m_meshInFlight.find(coord) == m_meshInFlight.end()) {
             ++meshPending;
         }
@@ -681,6 +689,7 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() const {
         if (chunk->isEmpty() ||
             m_missingMeshCapacityWaiting.find(coord) !=
                 m_missingMeshCapacityWaiting.end() ||
+            m_meshDependencyWaiting.find(coord) != m_meshDependencyWaiting.end() ||
             m_dirtyMeshQueued.find(coord) != m_dirtyMeshQueued.end()) {
             continue;
         }
@@ -899,6 +908,7 @@ void ChunkStreamer::queueLoadGen(ChunkCoord coord) {
     }
     m_generationCapacityWaiting.erase(coord);
     m_missingMeshCapacityWaiting.erase(coord);
+    m_meshDependencyWaiting.erase(coord);
     if (m_loadGenQueued.insert(coord).second) {
         m_loadGenQueue.push_back(coord);
     }
@@ -920,6 +930,13 @@ void ChunkStreamer::waitForMissingMeshCapacity(ChunkCoord coord) {
     if (m_missingMeshCapacityWaiting.insert(coord).second) {
         m_missingMeshCapacityWait.push_back(coord);
     }
+}
+
+void ChunkStreamer::waitForMeshDependencies(ChunkCoord coord) {
+    if (m_desiredSet.find(coord) == m_desiredSet.end()) {
+        return;
+    }
+    m_meshDependencyWaiting.insert(coord);
 }
 
 void ChunkStreamer::wakeGenerationCapacityWaiter() {
@@ -970,6 +987,7 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord) {
     if (priorityIt == m_desiredPriority.end()) {
         return;
     }
+    m_meshDependencyWaiting.erase(coord);
     if (m_dirtyMeshQueued.insert(coord).second) {
         m_dirtyMeshQueue.push({priorityIt->second, coord});
     }

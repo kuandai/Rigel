@@ -1255,10 +1255,12 @@ TEST_CASE(ChunkStreamer_DepartedFrontierReleasesWaitingMesh) {
     streamer.update(firstCenter.toWorldCenter());
     streamer.processCompletions();
     CHECK(!meshStore.contains(firstCenter));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
 
     streamer.update(secondCenter.toWorldCenter());
     streamer.processCompletions();
     CHECK(meshStore.contains(firstCenter));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
 }
 
 TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {

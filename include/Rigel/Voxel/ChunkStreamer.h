@@ -192,6 +192,7 @@ private:
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_generationCapacityWaiting;
     std::deque<ChunkCoord> m_missingMeshCapacityWait;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_missingMeshCapacityWaiting;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_meshDependencyWaiting;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> m_desiredPriority;
@@ -223,6 +224,7 @@ private:
     void queueLoadGen(ChunkCoord coord);
     void waitForGenerationCapacity(ChunkCoord coord);
     void waitForMissingMeshCapacity(ChunkCoord coord);
+    void waitForMeshDependencies(ChunkCoord coord);
     void wakeGenerationCapacityWaiter();
     void wakeMissingMeshCapacityWaiter();
     void queueLoadedNeighbors(ChunkCoord coord);

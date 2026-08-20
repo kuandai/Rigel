@@ -1112,6 +1112,72 @@ TEST_CASE(ChunkStreamer_DirtyMeshCapacityPreservesNearestFirstPriority) {
     CHECK(waitForMeshCompletions(streamer, 2));
 }
 
+TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPrecedesDistancePriority) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:explicit_priority_solid");
+
+    const ChunkCoord nearestCoord{0, 0, 0};
+    const ChunkCoord prioritizedCoord{1, 0, 0};
+    const std::array<ChunkCoord, 7> desired{
+        nearestCoord,
+        prioritizedCoord,
+        ChunkCoord{-1, 0, 0},
+        ChunkCoord{0, 1, 0},
+        ChunkCoord{0, -1, 0},
+        ChunkCoord{0, 0, 1},
+        ChunkCoord{0, 0, -1}
+    };
+    for (const ChunkCoord& coord : desired) {
+        Chunk& chunk = manager.getOrCreateChunk(coord);
+        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setLoadedFromDisk(true);
+        if (coord == nearestCoord || coord == prioritizedCoord) {
+            chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+            meshStore.set(coord, {});
+        }
+        chunk.clearDirty();
+    }
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 1;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
+    const uint64_t jobsStarted = streamer.workMetrics().meshJobsStarted;
+
+    Chunk& nearest = *manager.getChunk(nearestCoord);
+    Chunk& prioritized = *manager.getChunk(prioritizedCoord);
+    nearest.setBlock(1, 0, 0, BlockState{solid}, registry);
+    prioritized.setBlock(1, 0, 0, BlockState{solid}, registry);
+    streamer.prioritizeMesh(prioritizedCoord);
+    streamer.prioritizeMesh(prioritizedCoord);
+
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, jobsStarted + 1);
+    CHECK(nearest.isDirty());
+    CHECK(!prioritized.isDirty());
+
+    streamer.processCompletions();
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, jobsStarted + 2);
+    CHECK(!nearest.isDirty());
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, jobsStarted + 2);
+}
+
 TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     ChunkManager manager;
     BlockRegistry registry;

@@ -369,27 +369,27 @@ void handleBlockEdits(InputState& input,
     bool leftDown = glfwGetMouseButton(window.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     bool rightDown = glfwGetMouseButton(window.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     if (window.cursorCaptured) {
-        auto rebuildEditedChunk = [&](const glm::ivec3& worldPos) {
+        auto prioritizeEditedChunk = [&](const glm::ivec3& worldPos) {
             Voxel::ChunkCoord coord = Voxel::worldToChunk(worldPos.x, worldPos.y, worldPos.z);
             int lx = 0;
             int ly = 0;
             int lz = 0;
             Voxel::worldToLocal(worldPos.x, worldPos.y, worldPos.z, lx, ly, lz);
-            worldView.rebuildChunkMesh(coord);
+            worldView.prioritizeChunkMesh(coord);
             if (lx == 0) {
-                worldView.rebuildChunkMesh(coord.offset(-1, 0, 0));
+                worldView.prioritizeChunkMesh(coord.offset(-1, 0, 0));
             } else if (lx == Voxel::Chunk::SIZE - 1) {
-                worldView.rebuildChunkMesh(coord.offset(1, 0, 0));
+                worldView.prioritizeChunkMesh(coord.offset(1, 0, 0));
             }
             if (ly == 0) {
-                worldView.rebuildChunkMesh(coord.offset(0, -1, 0));
+                worldView.prioritizeChunkMesh(coord.offset(0, -1, 0));
             } else if (ly == Voxel::Chunk::SIZE - 1) {
-                worldView.rebuildChunkMesh(coord.offset(0, 1, 0));
+                worldView.prioritizeChunkMesh(coord.offset(0, 1, 0));
             }
             if (lz == 0) {
-                worldView.rebuildChunkMesh(coord.offset(0, 0, -1));
+                worldView.prioritizeChunkMesh(coord.offset(0, 0, -1));
             } else if (lz == Voxel::Chunk::SIZE - 1) {
-                worldView.rebuildChunkMesh(coord.offset(0, 0, 1));
+                worldView.prioritizeChunkMesh(coord.offset(0, 0, 1));
             }
         };
 
@@ -399,7 +399,7 @@ void handleBlockEdits(InputState& input,
             if (raycastBlock(world, camera.position, camera.forward,
                              interactDistance, hit)) {
                 world.setBlock(hit.block.x, hit.block.y, hit.block.z, Voxel::BlockState{});
-                rebuildEditedChunk(hit.block);
+                prioritizeEditedChunk(hit.block);
             }
         }
         if (rightDown && !input.lastRightDown) {
@@ -412,7 +412,7 @@ void handleBlockEdits(InputState& input,
                     Voxel::BlockState state;
                     state.id = placeBlock;
                     world.setBlock(placePos.x, placePos.y, placePos.z, state);
-                    rebuildEditedChunk(placePos);
+                    prioritizeEditedChunk(placePos);
                 }
             }
         }

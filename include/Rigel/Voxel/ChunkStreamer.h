@@ -91,6 +91,7 @@ public:
     void setChunkLoadCancel(ChunkLoadCancelCallback cancel);
     void setChunkLoadWorkCallback(ChunkLoadWorkCallback work);
     void markSpawnDiscoveryComplete();
+    void prioritizeMesh(ChunkCoord coord);
 
     void update(const glm::vec3& cameraPos);
     void processCompletions();
@@ -151,16 +152,21 @@ private:
         MeshRequestKind kind = MeshRequestKind::Missing;
         uint64_t requestId = 0;
         uint32_t observedRevision = 0;
+        bool prioritized = false;
         bool obsolete = false;
     };
 
     struct PendingDirtyMesh {
         size_t priority = 0;
         ChunkCoord coord;
+        bool prioritized = false;
     };
 
     struct PendingDirtyMeshGreater {
         bool operator()(const PendingDirtyMesh& lhs, const PendingDirtyMesh& rhs) const {
+            if (lhs.prioritized != rhs.prioritized) {
+                return lhs.prioritized < rhs.prioritized;
+            }
             return lhs.priority > rhs.priority;
         }
     };
@@ -202,6 +208,7 @@ private:
                         std::vector<PendingDirtyMesh>,
                         PendingDirtyMeshGreater> m_dirtyMeshQueue;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityDirtyMeshQueued;
     size_t m_inFlightGen = 0;
     size_t m_inFlightMesh = 0;
     size_t m_inFlightMeshMissing = 0;
@@ -231,10 +238,13 @@ private:
     void wakeGenerationCapacityWaiter();
     void wakeMissingMeshCapacityWaiter();
     void queueLoadedNeighbors(ChunkCoord coord);
-    void queueDirtyMesh(ChunkCoord coord);
+    void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
     void reprioritizeDirtyMeshes();
     void enqueueGeneration(ChunkCoord coord);
-    void enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind kind);
+    void enqueueMesh(ChunkCoord coord,
+                     Chunk& chunk,
+                     MeshRequestKind kind,
+                     bool prioritized = false);
     void ensureThreadPool();
     bool hasAllNeighborsLoaded(ChunkCoord coord) const;
     StreamingDiagnosticSnapshot collectDiagnostics() const;

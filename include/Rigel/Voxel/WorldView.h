@@ -3,7 +3,6 @@
 #include "ChunkBenchmark.h"
 #include "ChunkRenderer.h"
 #include "ChunkStreamer.h"
-#include "MeshBuilder.h"
 #include "World.h"
 #include "WorldMeshStore.h"
 #include "WorldRenderContext.h"
@@ -78,7 +77,7 @@ public:
                 float dt = 0.0f);
     void getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const;
     int viewDistanceChunks() const;
-    void rebuildChunkMesh(ChunkCoord coord);
+    void prioritizeChunkMesh(ChunkCoord coord);
 
     void applyChunkDelta(ChunkCoord coord, std::span<const uint8_t> payload);
 
@@ -88,7 +87,6 @@ public:
 private:
     World* m_world = nullptr;
     WorldResources* m_resources = nullptr;
-    MeshBuilder m_meshBuilder;
     ChunkRenderer m_renderer;
     WorldMeshStore m_meshStore;
     ChunkStreamer m_streamer;

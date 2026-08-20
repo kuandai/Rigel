@@ -38,6 +38,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_desiredPriority.clear();
     m_dirtyMeshQueue = {};
     m_dirtyMeshQueued.clear();
+    m_priorityDirtyMeshQueued.clear();
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
     m_generationCapacityWait.clear();
@@ -69,6 +70,7 @@ void ChunkStreamer::bind(ChunkManager* manager,
     m_lastWorldGenVersion = m_generator ? m_generator->config().world.version : 0;
     m_dirtyMeshQueue = {};
     m_dirtyMeshQueued.clear();
+    m_priorityDirtyMeshQueued.clear();
     for (const ChunkCoord& coord : m_desired) {
         queueLoadGen(coord);
     }
@@ -104,6 +106,11 @@ void ChunkStreamer::setChunkLoadWorkCallback(ChunkLoadWorkCallback work) {
 
 void ChunkStreamer::markSpawnDiscoveryComplete() {
     m_spawnDiscoveryComplete = true;
+    refreshDiagnostics(false);
+}
+
+void ChunkStreamer::prioritizeMesh(ChunkCoord coord) {
+    queueDirtyMesh(coord, true);
     refreshDiagnostics(false);
 }
 
@@ -303,11 +310,14 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 break;
             }
 
-            ChunkCoord coord = m_dirtyMeshQueue.top().coord;
+            PendingDirtyMesh request = m_dirtyMeshQueue.top();
             m_dirtyMeshQueue.pop();
+            ChunkCoord coord = request.coord;
             if (m_dirtyMeshQueued.erase(coord) == 0) {
                 continue;
             }
+            bool prioritized = request.prioritized ||
+                m_priorityDirtyMeshQueued.erase(coord) != 0;
             ++schedulerCoordinatesInspected;
 
             if (m_desiredSet.find(coord) == m_desiredSet.end()) {
@@ -321,7 +331,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
 
             Chunk* chunk = m_chunkManager->getChunk(coord);
-            if (!chunk || chunk->isEmpty()) {
+            if (!chunk) {
                 continue;
             }
 
@@ -332,6 +342,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     flightIt->second.observedRevision = chunk->meshRevision();
                     ++m_workMetrics.meshInvalidations;
                     ++m_workMetrics.meshRequestsCoalesced;
+                }
+                if (flightIt != m_meshInFlight.end()) {
+                    flightIt->second.prioritized =
+                        flightIt->second.prioritized || prioritized;
                 }
                 continue;
             }
@@ -346,7 +360,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 waitForMeshDependencies(coord);
                 continue;
             }
-            enqueueMesh(coord, *chunk, MeshRequestKind::Dirty);
+            enqueueMesh(coord, *chunk, MeshRequestKind::Dirty, prioritized);
             meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
             meshFull = m_inFlightMesh >= meshLimit;
         }
@@ -642,6 +656,7 @@ void ChunkStreamer::reset() {
     m_desiredPriority.clear();
     m_dirtyMeshQueue = {};
     m_dirtyMeshQueued.clear();
+    m_priorityDirtyMeshQueued.clear();
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
     m_generationCapacityWait.clear();
@@ -903,7 +918,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             stateIt->second = ChunkState::ReadyData;
             ++m_workMetrics.meshJobsRejectedStale;
             queueLoadGen(meshResult.coord);
-            queueDirtyMesh(meshResult.coord);
+            queueDirtyMesh(meshResult.coord, flight.prioritized);
             continue;
         }
 
@@ -1005,31 +1020,41 @@ void ChunkStreamer::queueLoadedNeighbors(ChunkCoord coord) {
     }
 }
 
-void ChunkStreamer::queueDirtyMesh(ChunkCoord coord) {
+void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     auto priorityIt = m_desiredPriority.find(coord);
     if (priorityIt == m_desiredPriority.end()) {
         return;
     }
     m_meshDependencyWaiting.erase(coord);
-    if (m_dirtyMeshQueued.insert(coord).second) {
-        m_dirtyMeshQueue.push({priorityIt->second, coord});
+    bool newlyQueued = m_dirtyMeshQueued.insert(coord).second;
+    bool promoted = prioritize && m_priorityDirtyMeshQueued.insert(coord).second;
+    if (newlyQueued || promoted) {
+        m_dirtyMeshQueue.push({priorityIt->second, coord, prioritize});
     }
 }
 
 void ChunkStreamer::reprioritizeDirtyMeshes() {
     decltype(m_dirtyMeshQueue) prioritized;
     std::unordered_set<ChunkCoord, ChunkCoordHash> retained;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> retainedPriority;
     retained.reserve(m_dirtyMeshQueued.size());
+    retainedPriority.reserve(m_priorityDirtyMeshQueued.size());
     for (const ChunkCoord& coord : m_dirtyMeshQueued) {
         auto priorityIt = m_desiredPriority.find(coord);
         if (priorityIt == m_desiredPriority.end()) {
             continue;
         }
+        bool isPrioritized = m_priorityDirtyMeshQueued.find(coord) !=
+            m_priorityDirtyMeshQueued.end();
         retained.insert(coord);
-        prioritized.push({priorityIt->second, coord});
+        if (isPrioritized) {
+            retainedPriority.insert(coord);
+        }
+        prioritized.push({priorityIt->second, coord, isPrioritized});
     }
     m_dirtyMeshQueue = std::move(prioritized);
     m_dirtyMeshQueued = std::move(retained);
+    m_priorityDirtyMeshQueued = std::move(retainedPriority);
 }
 
 void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
@@ -1077,7 +1102,10 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
     }
 }
 
-void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind kind) {
+void ChunkStreamer::enqueueMesh(ChunkCoord coord,
+                                Chunk& chunk,
+                                MeshRequestKind kind,
+                                bool prioritized) {
     if (!m_registry) {
         return;
     }
@@ -1170,7 +1198,8 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
     m_meshInFlight[coord] = MeshInFlight{
         .kind = kind,
         .requestId = task.requestId,
-        .observedRevision = task.revision
+        .observedRevision = task.revision,
+        .prioritized = prioritized
     };
     ++m_workMetrics.meshJobsStarted;
     if (kind == MeshRequestKind::Missing) {

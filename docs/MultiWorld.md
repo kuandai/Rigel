@@ -5,21 +5,18 @@ application still boots a single default World/WorldView, but multiple Worlds
 can now exist in memory. GPU cache sharing across multiple renderers is not
 implemented; each renderer maintains its own GPU cache.
 
-This document describes the multi-world architecture that aligns with CR's
-network model while preserving the existing naming scheme:
+This document describes the multi-world architecture:
 
 - A **World** is a single 3D voxel space.
 - A **WorldSet** is a container that holds multiple Worlds.
 
-This document describes what exists today, and calls out planned extensions.
+This document describes what exists today.
 
 ---
 
 ## 1. Goals
 
 - Support multiple independent voxel spaces in one session.
-- Match CR's model where a session can host multiple world spaces.
-- Keep server-authoritative ownership and client-side rendering boundaries.
 - Allow multiple renderers to view the same World without duplicating meshes
   (CPU meshes can be shared; GPU caches are still per renderer).
 
@@ -54,11 +51,10 @@ struct World {
 };
 ```
 
-### 2.3 WorldView (Client View)
+### 2.3 WorldView (Render View)
 
-WorldView is the client-side representation of a World. It owns CPU meshes,
-streaming state, and renderer-facing config. It can host replicated chunk
-data in the future.
+WorldView owns the rendering and streaming state for a World, including CPU
+meshes and renderer-facing config.
 
 ```
 struct WorldView {
@@ -152,30 +148,15 @@ Persistence is scoped per world ID:
 
 ---
 
-## 6. Server vs Client WorldSets
-
-### Server WorldSet
-
-Holds authoritative Worlds, runs ticks, generates chunks, and produces deltas.
-
-### Client WorldSet
-
-Holds WorldViews, applies deltas, builds meshes off-thread, and renders.
-
-Single-player can run both in-process with a local loopback.
-
----
-
-## 7. Streaming and Meshing
+## 6. Streaming and Meshing
 
 - Streaming is per WorldView.
-- Mesh builds are based on replicated data snapshots.
 - GPU uploads are main-thread only.
 - Revisions guard against applying stale meshes.
 
 ---
 
-## 8. Configuration
+## 7. Configuration
 
 Per-world config overlays should be supported by convention:
 
@@ -187,7 +168,7 @@ Global defaults apply when per-world overrides are absent.
 
 ---
 
-## 9. Minimal Integration Path
+## 8. Minimal Integration Path
 
 1) Add WorldId and WorldRegistry in WorldSet.
 2) Create one default World and WorldView.
@@ -197,20 +178,7 @@ Global defaults apply when per-world overrides are absent.
 
 ---
 
-## 10. Future Networking Hooks
-
-Planned replication surface (no protocol binding yet):
-
-```
-WorldView::applyChunkDelta(WorldId, ChunkCoord, Payload)
-World::serializeChunkDelta(WorldId, ChunkCoord)
-```
-
-These are placeholders for CR-style S2C/C2S pipelines.
-
----
-
-## 11. Current Limitations
+## 9. Current Limitations
 
 - Only a single `WorldView` is tracked per world.
 - GPU mesh caches are renderer-local (no sharing across views).

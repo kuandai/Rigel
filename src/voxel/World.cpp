@@ -92,9 +92,4 @@ void World::tickEntities(float dt) {
     m_entities.tick(dt);
 }
 
-std::vector<uint8_t> World::serializeChunkDelta(ChunkCoord coord) const {
-    (void)coord;
-    return {};
-}
-
 } // namespace Rigel::Voxel

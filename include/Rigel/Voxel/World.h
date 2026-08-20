@@ -17,7 +17,6 @@
 #include <Rigel/Entity/WorldEntities.h>
 
 #include <memory>
-#include <vector>
 
 namespace Rigel::Persistence {
 class ProviderRegistry;
@@ -133,13 +132,6 @@ public:
      * @brief Tick entities for this world.
      */
     void tickEntities(float dt);
-
-    /**
-     * @brief Serialize a delta for replication.
-     *
-     * Stub for network integration.
-     */
-    std::vector<uint8_t> serializeChunkDelta(ChunkCoord coord) const;
 
     /// @}
 

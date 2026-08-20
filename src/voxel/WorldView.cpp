@@ -184,16 +184,10 @@ void WorldView::prioritizeChunkMesh(ChunkCoord coord) {
     m_streamer.prioritizeMesh(coord);
 }
 
-void WorldView::applyChunkDelta(ChunkCoord coord, std::span<const uint8_t> payload) {
-    (void)payload;
-    m_replication.knownChunks.insert(coord);
-}
-
 void WorldView::clear() {
     m_meshStore.clear();
     m_renderer.clearCache();
     m_streamer.reset();
-    m_replication.knownChunks.clear();
 }
 
 void WorldView::releaseRenderResources() {

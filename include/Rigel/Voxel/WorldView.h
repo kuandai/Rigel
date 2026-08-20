@@ -16,15 +16,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <span>
-#include <unordered_set>
 #include <vector>
 
 namespace Rigel::Voxel {
-
-struct WorldReplicationState {
-    std::unordered_set<ChunkCoord, ChunkCoordHash> knownChunks;
-};
 
 class WorldView {
 public:
@@ -47,9 +41,6 @@ public:
 
     WorldRenderConfig& renderConfig() { return m_renderConfig; }
     const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
-
-    WorldReplicationState& replicationState() { return m_replication; }
-    const WorldReplicationState& replicationState() const { return m_replication; }
 
     void setGenerator(std::shared_ptr<WorldGenerator> generator);
     void setChunkLoader(ChunkStreamer::ChunkLoadCallback loader);
@@ -79,8 +70,6 @@ public:
     int viewDistanceChunks() const;
     void prioritizeChunkMesh(ChunkCoord coord);
 
-    void applyChunkDelta(ChunkCoord coord, std::span<const uint8_t> payload);
-
     void clear();
     void releaseRenderResources();
 
@@ -95,7 +84,6 @@ private:
     Asset::Handle<Asset::ShaderAsset> m_shadowDepthShader;
     Asset::Handle<Asset::ShaderAsset> m_shadowTransmitShader;
     ChunkBenchmarkStats* m_benchmark = nullptr;
-    WorldReplicationState m_replication;
     Entity::EntityRenderer m_entityRenderer;
     uint64_t m_frameCounter = 0;
     bool m_initialized = false;

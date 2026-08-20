@@ -17,6 +17,8 @@ public:
     void touch(ChunkCoord coord);
     void erase(ChunkCoord coord);
 
+    // Evicts least-recently-used unprotected entries. Protected entries keep
+    // their recency and may leave the cache above the configured limit.
     std::vector<ChunkCoord> evict(const std::unordered_set<ChunkCoord, ChunkCoordHash>& protectedSet);
 
     size_t size() const { return m_entries.size(); }

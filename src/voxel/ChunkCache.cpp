@@ -36,17 +36,16 @@ std::vector<ChunkCoord> ChunkCache::evict(
         return evicted;
     }
 
-    while (m_entries.size() > m_maxChunks && !m_lru.empty()) {
-        ChunkCoord coord = m_lru.back();
+    auto it = m_lru.end();
+    while (m_entries.size() > m_maxChunks && it != m_lru.begin()) {
+        --it;
+        ChunkCoord coord = *it;
         if (protectedSet.find(coord) != protectedSet.end()) {
-            m_lru.pop_back();
-            m_lru.push_front(coord);
-            m_entries[coord] = m_lru.begin();
             continue;
         }
 
-        m_lru.pop_back();
         m_entries.erase(coord);
+        it = m_lru.erase(it);
         evicted.push_back(coord);
     }
 

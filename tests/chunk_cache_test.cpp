@@ -41,3 +41,28 @@ TEST_CASE(ChunkCache_ProtectedSet) {
     CHECK_EQ(evicted.size(), static_cast<size_t>(1));
     CHECK_EQ(evicted[0].x, 1);
 }
+
+TEST_CASE(ChunkCache_AllProtectedEntriesRemainResidentBeyondLimit) {
+    ChunkCache cache;
+    cache.setMaxChunks(2);
+
+    ChunkCoord a{0, 0, 0};
+    ChunkCoord b{1, 0, 0};
+    ChunkCoord c{2, 0, 0};
+    ChunkCoord d{3, 0, 0};
+    cache.touch(a);
+    cache.touch(b);
+    cache.touch(c);
+
+    std::unordered_set<ChunkCoord, ChunkCoordHash> protectedSet{a, b, c};
+
+    CHECK(cache.evict(protectedSet).empty());
+    CHECK(cache.evict(protectedSet).empty());
+    CHECK_EQ(cache.size(), static_cast<size_t>(3));
+
+    cache.touch(d);
+    auto evicted = cache.evict(protectedSet);
+    CHECK_EQ(evicted.size(), static_cast<size_t>(1));
+    CHECK_EQ(evicted[0], d);
+    CHECK_EQ(cache.size(), static_cast<size_t>(3));
+}

@@ -176,6 +176,8 @@ Empty chunks skip mesh generation and move directly to `ReadyMesh`.
 - Generation tasks carry cancellation tokens; leaving the desired set cancels
   work before it is applied.
 - `streaming.max_resident_chunks` enables an LRU eviction pass (via `ChunkCache`).
+  Desired chunks are protected, so the cache can remain above this limit when
+  the desired set alone exceeds it.
 - Chunks outside `unload_distance_chunks` are unloaded immediately.
 - If a loaded chunk’s `worldGenVersion` does not match the generator, the chunk
   is discarded and regenerated.

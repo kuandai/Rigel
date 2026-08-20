@@ -58,8 +58,8 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
 }
 
 AsyncChunkLoader::~AsyncChunkLoader() {
-    m_ioPool.stop();
-    m_workerPool.stop();
+    m_ioPool.stop(m_ioPoolStopStartCallback);
+    m_workerPool.stop(m_workerPoolStopStartCallback);
 }
 
 void AsyncChunkLoader::setMaxCachedRegions(size_t maxRegions) {

@@ -73,13 +73,16 @@ public:
         return m_threads.size();
     }
 
-    void stop() {
+    void stop(std::function<void()> onStopping = {}) {
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (m_stopping) {
                 return;
             }
             m_stopping = true;
+        }
+        if (onStopping) {
+            onStopping();
         }
         m_cv.notify_all();
         for (std::thread& thread : m_threads) {

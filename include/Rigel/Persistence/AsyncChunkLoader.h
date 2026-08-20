@@ -121,6 +121,8 @@ private:
 
     std::function<void()> m_regionLoadStartCallback;
     std::function<void()> m_payloadBuildStartCallback;
+    std::function<void()> m_ioPoolStopStartCallback;
+    std::function<void()> m_workerPoolStopStartCallback;
 
     Voxel::detail::ThreadPool m_ioPool;
     Voxel::detail::ThreadPool m_workerPool;

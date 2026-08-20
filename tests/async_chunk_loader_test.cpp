@@ -35,6 +35,16 @@ struct AsyncChunkLoaderTestAccess {
         loader.m_payloadBuildStartCallback = std::move(callback);
     }
 
+    static void setIoPoolStopStartCallback(AsyncChunkLoader& loader,
+                                           std::function<void()> callback) {
+        loader.m_ioPoolStopStartCallback = std::move(callback);
+    }
+
+    static void setWorkerPoolStopStartCallback(AsyncChunkLoader& loader,
+                                               std::function<void()> callback) {
+        loader.m_workerPoolStopStartCallback = std::move(callback);
+    }
+
     static size_t regionCompletionCount(const AsyncChunkLoader& loader) {
         return loader.m_regionComplete.size();
     }
@@ -824,30 +834,39 @@ TEST_CASE(AsyncChunkLoader_DestroyWithInFlightJobs) {
         *loader,
         std::move(lifetimeProbe));
 
-    std::promise<void> destructionThreadReady;
-    auto destructionThreadStarted = destructionThreadReady.get_future();
-    std::promise<void> startDestruction;
-    auto startDestructionSignal = startDestruction.get_future();
+    auto ioPoolStopStarted = std::make_shared<std::promise<void>>();
+    auto ioPoolStopping = ioPoolStopStarted->get_future();
+    auto workerPoolStopStarted = std::make_shared<std::promise<void>>();
+    auto workerPoolStopping = workerPoolStopStarted->get_future();
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setIoPoolStopStartCallback(
+        *loader,
+        [ioPoolStopStarted]() { ioPoolStopStarted->set_value(); });
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setWorkerPoolStopStartCallback(
+        *loader,
+        [workerPoolStopStarted]() { workerPoolStopStarted->set_value(); });
+
     auto destruction = std::async(
         std::launch::async,
-        [loader = std::move(loader),
-         &destructionThreadReady,
-         startDestructionSignal = std::move(startDestructionSignal)]() mutable {
-            destructionThreadReady.set_value();
-            startDestructionSignal.wait();
+        [loader = std::move(loader)]() mutable {
             loader.reset();
         });
     LoaderWorkRelease releaseWorkBeforeFutureWait(regionGate, payloadGate);
 
-    destructionThreadStarted.wait();
-    startDestruction.set_value();
-    CHECK_EQ(destruction.wait_for(std::chrono::milliseconds(50)),
+    CHECK_EQ(ioPoolStopping.wait_for(std::chrono::seconds(5)),
+             std::future_status::ready);
+    CHECK_EQ(destruction.wait_for(std::chrono::milliseconds(0)),
              std::future_status::timeout);
     CHECK_EQ(completionQueueLifetime.wait_for(std::chrono::milliseconds(0)),
              std::future_status::timeout);
+
     regionGate->release();
-    CHECK_EQ(destruction.wait_for(std::chrono::milliseconds(50)),
+    CHECK_EQ(workerPoolStopping.wait_for(std::chrono::seconds(5)),
+             std::future_status::ready);
+    CHECK_EQ(destruction.wait_for(std::chrono::milliseconds(0)),
              std::future_status::timeout);
+    CHECK_EQ(completionQueueLifetime.wait_for(std::chrono::milliseconds(0)),
+             std::future_status::timeout);
+
     payloadGate->release();
     CHECK_EQ(destruction.wait_for(std::chrono::seconds(5)),
              std::future_status::ready);

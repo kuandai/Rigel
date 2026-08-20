@@ -7,9 +7,9 @@
 #include "ChunkManager.h"
 #include "ChunkMesh.h"
 #include "StreamingDiagnostics.h"
+#include "StreamingConfig.h"
 #include "TextureAtlas.h"
 #include "WorldMeshStore.h"
-#include "WorldGenConfig.h"
 #include "WorldGenerator.h"
 
 #include <array>
@@ -78,7 +78,7 @@ public:
     ChunkStreamer() = default;
     ~ChunkStreamer();
 
-    void setConfig(const WorldGenConfig::StreamConfig& config);
+    void setConfig(const StreamingConfig& config);
     void bind(ChunkManager* manager,
               WorldMeshStore* meshStore,
               BlockRegistry* registry,
@@ -165,7 +165,7 @@ private:
         }
     };
 
-    WorldGenConfig::StreamConfig m_config;
+    StreamingConfig m_config;
     ChunkManager* m_chunkManager = nullptr;
     WorldMeshStore* m_meshStore = nullptr;
     BlockRegistry* m_registry = nullptr;

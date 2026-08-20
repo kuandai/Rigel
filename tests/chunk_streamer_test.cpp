@@ -224,7 +224,7 @@ TEST_CASE(ChunkStreamer_GeneratesSphere) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 0;
@@ -247,7 +247,7 @@ TEST_CASE(ChunkStreamer_RespectsQueueLimit) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 2;
@@ -270,7 +270,7 @@ TEST_CASE(ChunkStreamer_UpdateBudget_DoesNotStarveOuterChunks) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 2;
     stream.unloadDistanceChunks = 2;
     stream.genQueueLimit = 0;
@@ -302,7 +302,7 @@ TEST_CASE(ChunkStreamer_EvictsOutsideRadius) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -335,7 +335,7 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Deterministic) {
     Rigel::Persistence::ChunkData payload = buildPayload(coord, registry, palette, false, std::nullopt, true);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -381,7 +381,7 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Random) {
     Rigel::Persistence::ChunkData payload = buildPayload(coord, registry, palette, true, std::nullopt, true);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -457,7 +457,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Deterministic) {
     format->chunkContainer().saveRegion(region);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -540,7 +540,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Random) {
     format->chunkContainer().saveRegion(region);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -649,7 +649,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
     Rigel::Persistence::ChunkData payload = decodedRegion.chunks.front().data;
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -753,7 +753,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
     Rigel::Persistence::ChunkData payload = decodedRegion.chunks.front().data;
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -795,7 +795,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CountGenerationAndSchedulerInspection) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 0;
@@ -826,7 +826,7 @@ TEST_CASE(ChunkStreamer_GenerationCapacityWaitsForCompletion) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 1;
@@ -885,7 +885,7 @@ TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
     auto gate = std::make_shared<MeshBuildGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 0;
@@ -965,7 +965,7 @@ TEST_CASE(ChunkStreamer_SingleMeshSlotAlternatesMissingAndDirtyWork) {
     auto gate = std::make_shared<MeshBuildGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 0;
@@ -1052,7 +1052,7 @@ TEST_CASE(ChunkStreamer_DirtyMeshCapacityPreservesNearestFirstPriority) {
     auto gate = std::make_shared<MeshBuildGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 0;
@@ -1119,7 +1119,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -1156,7 +1156,7 @@ TEST_CASE(ChunkStreamer_MissingLoadResolutionStartsGeneration) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -1207,7 +1207,7 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -1254,7 +1254,7 @@ TEST_CASE(ChunkStreamer_MovementRequestsOnlyNewDesiredFrontier) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 2;
     stream.unloadDistanceChunks = 2;
     stream.genQueueLimit = 0;
@@ -1338,7 +1338,7 @@ TEST_CASE(ChunkStreamer_MovementCancelsDepartedGeneration) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -1381,7 +1381,7 @@ TEST_CASE(ChunkStreamer_DepartedFrontierReleasesWaitingMesh) {
     sharedNeighbor.setLoadedFromDisk(true);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 0;
@@ -1423,7 +1423,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {
     chunk.setLoadedFromDisk(true);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -1488,7 +1488,7 @@ TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
     auto gate = std::make_shared<MeshBuildGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -1573,7 +1573,7 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
     auto gate = std::make_shared<MeshBuildGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -1655,7 +1655,7 @@ TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {
     chunk.setLoadedFromDisk(true);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -1715,7 +1715,7 @@ TEST_CASE(ChunkStreamer_DiskLoadedChunksWaitForNeighborFrontierAcrossArrivalOrde
         center.clearDirty();
 
         ChunkStreamer streamer;
-        WorldGenConfig::StreamConfig stream;
+        StreamingConfig stream;
         stream.viewDistanceChunks = 1;
         stream.unloadDistanceChunks = 1;
         stream.genQueueLimit = 0;
@@ -1813,7 +1813,7 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     BlockID solid = registerTestBlock(registry, "rigel:quiescence_solid");
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 0;
@@ -1899,7 +1899,7 @@ TEST_CASE(ChunkStreamer_QuiescenceRequiresStableIdleUpdates) {
     center.setLoadedFromDisk(true);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -2016,7 +2016,7 @@ TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {
         auto generator = makeGenerator(registry);
 
         ChunkStreamer streamer;
-        WorldGenConfig::StreamConfig stream;
+        StreamingConfig stream;
         stream.viewDistanceChunks = viewDistance;
         stream.unloadDistanceChunks = viewDistance;
         stream.genQueueLimit = 0;
@@ -2088,7 +2088,7 @@ TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
     auto generator = makeGenerator(registry);
 
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;

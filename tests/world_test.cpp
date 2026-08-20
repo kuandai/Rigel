@@ -32,18 +32,19 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     config.terrain.baseHeight = 0.0f;
     config.terrain.heightVariation = 0.0f;
     config.terrain.surfaceDepth = 1;
-    config.stream.viewDistanceChunks = 0;
-    config.stream.unloadDistanceChunks = 0;
-    config.stream.genQueueLimit = 0;
-    config.stream.meshQueueLimit = 0;
-    config.stream.applyBudgetPerFrame = 0;
-    config.stream.workerThreads = 0;
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 0;
+    streaming.unloadDistanceChunks = 0;
+    streaming.genQueueLimit = 0;
+    streaming.meshQueueLimit = 0;
+    streaming.applyBudgetPerFrame = 0;
+    streaming.workerThreads = 0;
 
     auto generator = std::make_shared<WorldGenerator>(resources.registry());
     generator->setConfig(config);
     world.setGenerator(generator);
     view.setGenerator(generator);
-    view.setStreamConfig(config.stream);
+    view.setStreamConfig(streaming);
 
     view.updateStreaming(glm::vec3(0.0f));
     view.updateMeshes();
@@ -57,7 +58,7 @@ TEST_CASE(WorldView_StreamAndRenderDistancesRemainIndependent) {
 
     view.renderConfig().renderDistance = 300.0f;
 
-    WorldGenConfig::StreamConfig streamConfig;
+    StreamingConfig streamConfig;
     streamConfig.viewDistanceChunks = 3;
     view.setStreamConfig(streamConfig);
 

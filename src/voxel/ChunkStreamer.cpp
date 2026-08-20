@@ -30,7 +30,7 @@ ChunkStreamer::~ChunkStreamer() {
     }
 }
 
-void ChunkStreamer::setConfig(const WorldGenConfig::StreamConfig& config) {
+void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_config = config;
     m_cache.setMaxChunks(m_config.maxResidentChunks);
     m_desired.clear();

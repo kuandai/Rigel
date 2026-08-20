@@ -489,12 +489,12 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         Voxel::ConfigProvider configProvider =
             Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
-        Voxel::WorldGenConfig config = configProvider.loadConfig();
-        if (config.solidBlock.empty()) {
-            config.solidBlock = "base:stone_shale";
+        Voxel::WorldConfiguration config = configProvider.loadConfig();
+        if (config.generation.solidBlock.empty()) {
+            config.generation.solidBlock = "base:stone_shale";
         }
-        if (config.surfaceBlock.empty()) {
-            config.surfaceBlock = "base:grass";
+        if (config.generation.surfaceBlock.empty()) {
+            config.generation.surfaceBlock = "base:grass";
         }
 
         m_impl->world.world = &m_impl->world.worldSet.createWorld(m_impl->world.activeWorldId);
@@ -510,7 +510,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         auto generator =
             std::make_shared<Voxel::WorldGenerator>(m_impl->world.worldSet.resources().registry());
-        generator->setConfig(config);
+        generator->setConfig(config.generation);
         m_impl->world.world->setGenerator(generator);
         m_impl->world.worldView->setGenerator(generator);
 
@@ -525,8 +525,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             Persistence::SaveScope::EntitiesOnly);
 
         uint32_t worldGenVersion = generator->config().world.version;
-        size_t ioThreads = static_cast<size_t>(std::max(0, config.stream.ioThreads));
-        size_t loadWorkerThreads = static_cast<size_t>(std::max(0, config.stream.loadWorkerThreads));
+        size_t ioThreads = static_cast<size_t>(
+            std::max(0, config.streaming.ioThreads));
+        size_t loadWorkerThreads = static_cast<size_t>(
+            std::max(0, config.streaming.loadWorkerThreads));
         m_impl->world.chunkLoader = std::make_shared<Persistence::AsyncChunkLoader>(
             m_impl->world.worldSet.persistenceService(),
             std::move(persistenceContext),
@@ -534,22 +536,26 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             worldGenVersion,
             ioThreads,
             loadWorkerThreads,
-            config.stream.viewDistanceChunks,
+            config.streaming.viewDistanceChunks,
             generator);
-        if (config.stream.loadQueueLimit >= 0) {
+        if (config.streaming.loadQueueLimit >= 0) {
             m_impl->world.chunkLoader->setLoadQueueLimit(
-                static_cast<size_t>(config.stream.loadQueueLimit));
+                static_cast<size_t>(config.streaming.loadQueueLimit));
         }
         m_impl->world.chunkLoader->setRegionDrainBudget(
-            static_cast<size_t>(std::max(0, config.stream.loadRegionDrainBudget)));
+            static_cast<size_t>(
+                std::max(0, config.streaming.loadRegionDrainBudget)));
         m_impl->world.chunkLoader->setMaxCachedRegions(
-            static_cast<size_t>(std::max(0, config.stream.loadMaxCachedRegions)));
+            static_cast<size_t>(
+                std::max(0, config.streaming.loadMaxCachedRegions)));
         m_impl->world.chunkLoader->setMaxInFlightRegions(
-            static_cast<size_t>(std::max(0, config.stream.loadMaxInFlightRegions)));
+            static_cast<size_t>(
+                std::max(0, config.streaming.loadMaxInFlightRegions)));
         m_impl->world.chunkLoader->setPrefetchRadius(
-            std::max(0, config.stream.loadPrefetchRadius));
+            std::max(0, config.streaming.loadPrefetchRadius));
         m_impl->world.chunkLoader->setPrefetchPerRequest(
-            static_cast<size_t>(std::max(0, config.stream.loadPrefetchPerRequest)));
+            static_cast<size_t>(
+                std::max(0, config.streaming.loadPrefetchPerRequest)));
         m_impl->world.worldView->setChunkLoader(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
                 return loader
@@ -589,12 +595,13 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         }
         m_impl->world.worldView->renderConfig() = renderConfig;
         Core::Profiler::setEnabled(renderConfig.profilingEnabled);
-        m_impl->world.worldView->setStreamConfig(config.stream);
+        m_impl->world.worldView->setStreamConfig(config.streaming);
         if (m_impl->timing.benchmarkEnabled) {
             m_impl->world.worldView->setBenchmark(&m_impl->timing.benchmark);
         }
 
-        auto placeId = m_impl->world.world->blockRegistry().findByIdentifier(config.solidBlock);
+        auto placeId = m_impl->world.world->blockRegistry().findByIdentifier(
+            config.generation.solidBlock);
         if (!placeId) {
             placeId = m_impl->world.world->blockRegistry().findByIdentifier("base:stone_shale");
         }
@@ -606,7 +613,8 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
 
         int spawnX = static_cast<int>(std::floor(m_impl->camera.position.x));
         int spawnZ = static_cast<int>(std::floor(m_impl->camera.position.z));
-        int spawnY = Voxel::findFirstAirY(*generator, config, spawnX, spawnZ);
+        int spawnY = Voxel::findFirstAirY(
+            *generator, config.generation, spawnX, spawnZ);
         m_impl->camera.position.y = static_cast<float>(spawnY) + 0.5f;
         m_impl->world.worldView->markSpawnDiscoveryComplete();
 

@@ -5,7 +5,6 @@
 #include "ChunkStreamer.h"
 #include "MeshBuilder.h"
 #include "World.h"
-#include "WorldGenConfig.h"
 #include "WorldMeshStore.h"
 #include "WorldRenderContext.h"
 #include "WorldResources.h"
@@ -59,7 +58,7 @@ public:
     void setChunkLoadDrain(ChunkStreamer::ChunkLoadDrainCallback drain);
     void setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel);
     void setChunkLoadWorkCallback(ChunkStreamer::ChunkLoadWorkCallback work);
-    void setStreamConfig(const WorldGenConfig::StreamConfig& config);
+    void setStreamConfig(const StreamingConfig& config);
     void setBenchmark(ChunkBenchmarkStats* stats);
     void markSpawnDiscoveryComplete();
 

@@ -524,7 +524,7 @@ TEST_CASE(ChunkStreamer_SaturatedLoaderPreservesPersistedChunk) {
 
     WorldMeshStore meshStore;
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
@@ -622,7 +622,7 @@ TEST_CASE(ChunkStreamer_TransientRegionFailurePreservesPersistedChunk) {
 
     WorldMeshStore meshStore;
     ChunkStreamer streamer;
-    WorldGenConfig::StreamConfig stream;
+    StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;

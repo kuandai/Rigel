@@ -225,7 +225,8 @@ std::optional<ConfigSourceResult> IConfigSource::loadPath(std::string_view) cons
     return std::nullopt;
 }
 
-EmbeddedConfigSource::EmbeddedConfigSource(Asset::AssetManager& assets, std::string assetId)
+EmbeddedConfigSource::EmbeddedConfigSource(Asset::AssetManager& assets,
+                                           std::string assetId)
     : m_assets(assets)
     , m_assetId(std::move(assetId))
 {}
@@ -242,11 +243,15 @@ std::string EmbeddedConfigSource::name() const {
     return m_assetId;
 }
 
-std::optional<ConfigSourceResult> EmbeddedConfigSource::loadPath(std::string_view path) const {
+std::optional<ConfigSourceResult> EmbeddedConfigSource::loadPath(
+    std::string_view path) const {
     std::string normalized = stripAssetsPrefix(path);
     try {
         auto data = ResourceRegistry::Get(normalized);
-        return ConfigSourceResult{std::move(normalized), std::string(data.begin(), data.end())};
+        return ConfigSourceResult{
+            std::move(normalized),
+            std::string(data.begin(), data.end())
+        };
     } catch (const std::exception&) {
         return std::nullopt;
     }
@@ -264,7 +269,8 @@ std::string FileConfigSource::name() const {
     return m_path;
 }
 
-std::optional<ConfigSourceResult> FileConfigSource::loadPath(std::string_view path) const {
+std::optional<ConfigSourceResult> FileConfigSource::loadPath(
+    std::string_view path) const {
     std::filesystem::path candidate(path);
     if (!candidate.is_absolute()) {
         std::filesystem::path baseDir = std::filesystem::path(m_path).parent_path();
@@ -283,8 +289,8 @@ void ConfigProvider::addSource(std::unique_ptr<IConfigSource> source) {
     m_sources.push_back(std::move(source));
 }
 
-WorldGenConfig ConfigProvider::loadConfig() const {
-    WorldGenConfig config;
+WorldConfiguration ConfigProvider::loadConfig() const {
+    WorldConfiguration config;
     auto applyOverlays = [&config](
         const IConfigSource& source,
         std::vector<WorldGenConfig::OverlayConfig> pending) {
@@ -293,7 +299,8 @@ WorldGenConfig ConfigProvider::loadConfig() const {
         while (overlayIndex < pending.size()) {
             WorldGenConfig::OverlayConfig overlay = std::move(pending[overlayIndex]);
             ++overlayIndex;
-            if (!overlay.when.empty() && !config.isFlagEnabled(overlay.when)) {
+            if (!overlay.when.empty() &&
+                !config.generation.isFlagEnabled(overlay.when)) {
                 continue;
             }
             if (!appliedPaths.insert(overlay.path).second) {
@@ -305,10 +312,12 @@ WorldGenConfig ConfigProvider::loadConfig() const {
                 continue;
             }
 
-            auto nestedOverlays = config.applyYamlWithOverlays(
+            auto nestedOverlays = config.generation.applyYamlWithOverlays(
                 overlayData->name.c_str(),
                 overlayData->content
             );
+            config.streaming.applyYaml(
+                overlayData->name.c_str(), overlayData->content);
             pending.insert(
                 pending.end(),
                 std::make_move_iterator(nestedOverlays.begin()),
@@ -322,7 +331,9 @@ WorldGenConfig ConfigProvider::loadConfig() const {
         if (!yaml) {
             continue;
         }
-        auto overlays = config.applyYamlWithOverlays(source->name().c_str(), *yaml);
+        auto overlays = config.generation.applyYamlWithOverlays(
+            source->name().c_str(), *yaml);
+        config.streaming.applyYaml(source->name().c_str(), *yaml);
         applyOverlays(*source, std::move(overlays));
     }
 

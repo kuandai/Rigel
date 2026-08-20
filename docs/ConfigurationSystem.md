@@ -41,9 +41,10 @@ merges entries by `id`, replacing a matching node as a whole. Persistence
 `providers` is a map keyed by provider ID, and each provider's options merge by
 option name.
 
-Three config types are supported today:
+Four config types are supported today:
 
-- `WorldGenConfig` (world generation + streaming)
+- `WorldGenConfig` (world generation)
+- `StreamingConfig` (runtime chunk loading, generation, and meshing schedules)
 - `WorldRenderConfig` (render pipeline settings)
 - `PersistenceConfig` (save/load format and provider options)
 
@@ -62,7 +63,7 @@ Each config type has a fixed source order defined in
 3) Project root overrides (for quick testing).
 4) Per-world overrides under `config/worlds/<worldId>/`.
 
-### World Generation
+### World Generation and Streaming
 
 Sources (in order):
 
@@ -121,8 +122,9 @@ resolved only by the source that declared them.
 
 ## World Generation Config
 
-`WorldGenConfig` is loaded by applying each source and its overlays before
-moving to the next source.
+`WorldConfiguration` holds separate `WorldGenConfig` and `StreamingConfig`
+values. Each source and its overlays are applied to both typed configurations
+before loading moves to the next source.
 
 Defaults below reflect the code defaults from `WorldGenConfig`. The embedded
 config (`assets/config/world_generation.yaml`) overrides many of these values.
@@ -159,18 +161,6 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `caves.density_output` | string | `cave_density` | Density output name. |
 | `caves.threshold` | float | `0.5` | Density threshold. |
 | `structures.features[]` | list | - | Simple feature definitions. |
-| `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera. |
-| `streaming.unload_distance_chunks` | int | `8` | Unload radius in chunks. |
-| `streaming.gen_queue_limit` | int | `0` | Generation queue cap (0 = unlimited). |
-| `streaming.mesh_queue_limit` | int | `0` | Mesh queue cap (0 = unlimited). |
-| `streaming.update_budget_per_frame` | int | `0` | Desired-set scan budget (0 = unlimited). |
-| `streaming.apply_budget_per_frame` | int | `0` | Apply budget (0 = unlimited). |
-| `streaming.worker_threads` | int | `2` | Gen/mesh thread count. |
-| `streaming.io_threads` | int | `1` | Region IO thread count. |
-| `streaming.load_worker_threads` | int | `2` | Chunk payload build thread count. |
-| `streaming.load_apply_budget_per_frame` | int | `8` | Disk payload apply budget (0 = unlimited). |
-| `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited). |
-| `streaming.max_resident_chunks` | int | `0` | Cache cap (0 = unlimited). |
 | `generation.stages` | map | all enabled | Boolean stage enable flags. |
 | `flags` | map | - | Boolean flags for overlays. |
 | `overlays[]` | list | - | Overlay definitions. |
@@ -197,7 +187,6 @@ Key top-level fields (see `assets/config/world_generation.yaml` for examples):
 - `density_graph`: node graph for terrain density
 - `caves`: carver settings
 - `structures`: simple feature generation
-- `streaming`: chunk streamer and thread pool settings
 - `generation.stages`: stage enable map
 - `overlays`: conditional config overlays
 
@@ -237,6 +226,37 @@ source layer, and a path is applied at most once within that layer.
 The shipped overlay:
 
 - `assets/config/worldgen_overlays/no_carvers.yaml` disables caves.
+
+---
+
+## Streaming Config
+
+`StreamingConfig` owns runtime chunk loading, generation, and meshing schedule
+settings under the `streaming` key. It uses the world generation and streaming
+source order above so existing project and per-world overrides retain their
+precedence.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera. |
+| `streaming.unload_distance_chunks` | int | `8` | Unload radius in chunks. |
+| `streaming.gen_queue_limit` | int | `0` | Generation queue cap (0 = unlimited). |
+| `streaming.mesh_queue_limit` | int | `0` | Mesh queue cap (0 = unlimited). |
+| `streaming.update_budget_per_frame` | int | `0` | Desired-set scan budget (0 = unlimited). |
+| `streaming.apply_budget_per_frame` | int | `0` | Apply budget (0 = unlimited). |
+| `streaming.worker_threads` | int | `2` | Generation and mesh thread count. |
+| `streaming.io_threads` | int | `1` | Region IO thread count. |
+| `streaming.load_worker_threads` | int | `2` | Chunk payload build thread count. |
+| `streaming.load_apply_budget_per_frame` | int | `8` | Disk payload apply budget (0 = unlimited). |
+| `streaming.load_region_drain_budget` | int | `32` | Region completion drain budget. |
+| `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited). |
+| `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = disabled). |
+| `streaming.load_max_inflight_regions` | int | `8` | Concurrent region read cap (0 = disabled). |
+| `streaming.load_prefetch_radius` | int | `1` | Region prefetch radius. |
+| `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request. |
+| `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited). |
+
+Negative queue, budget, thread, cache, and prefetch values are clamped to zero.
 
 ---
 

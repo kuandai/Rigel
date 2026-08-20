@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "Rigel/Persistence/PersistenceConfig.h"
+#include "Rigel/Voxel/StreamingConfig.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 
 #include <spdlog/logger.h>
@@ -142,6 +143,21 @@ TEST_CASE(RenderConfig_ReportsUnknownKeyAndSource) {
     CHECK(output.find("render-settings.yaml") != std::string::npos);
 }
 
+TEST_CASE(StreamingConfig_ReportsUnknownKeyAndSource) {
+    LogCapture logs;
+    StreamingConfig config;
+
+    config.applyYaml(
+        "streaming-settings.yaml",
+        "streaming:\n"
+        "  worker_threds: 2\n"
+    );
+
+    const std::string output = logs.output();
+    CHECK(output.find("streaming.worker_threds") != std::string::npos);
+    CHECK(output.find("streaming-settings.yaml") != std::string::npos);
+}
+
 TEST_CASE(PersistenceConfig_ReportsUnknownKeyAndSource) {
     LogCapture logs;
     Rigel::Persistence::PersistenceConfig config;
@@ -167,6 +183,8 @@ TEST_CASE(Configuration_ValidKeysAreQuiet) {
 
     WorldGenConfig worldConfig;
     worldConfig.applyYaml(worldPath.string().c_str(), readFile(worldPath));
+    StreamingConfig streamingConfig;
+    streamingConfig.applyYaml(worldPath.string().c_str(), readFile(worldPath));
 
     ConfigProvider renderProvider;
     renderProvider.addSource(std::make_unique<NamedConfigSource>(

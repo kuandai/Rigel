@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Chunk.h"
-#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -13,10 +12,9 @@ namespace Rigel::Voxel {
 class ConfigProvider;
 
 /**
- * @brief Configuration values for world generation and streaming.
+ * @brief Configuration values for world generation.
  *
- * Loaded via a layered config provider and applied to WorldGenerator
- * and ChunkStreamer.
+ * Loaded via a layered config provider and applied to WorldGenerator.
  */
 struct WorldGenConfig {
     struct WorldConfig {
@@ -135,26 +133,6 @@ struct WorldGenConfig {
         std::string when;
     };
 
-    struct StreamConfig {
-        int viewDistanceChunks = 6;
-        int unloadDistanceChunks = 8;
-        size_t genQueueLimit = 0;
-        size_t meshQueueLimit = 0;
-        int updateBudgetPerFrame = 0;
-        int applyBudgetPerFrame = 0;
-        int workerThreads = 2;
-        int ioThreads = 1;
-        int loadWorkerThreads = 2;
-        int loadApplyBudgetPerFrame = 8;
-        int loadRegionDrainBudget = 32;
-        int loadQueueLimit = 0;
-        int loadMaxCachedRegions = 8;
-        int loadMaxInFlightRegions = 8;
-        int loadPrefetchRadius = 1;
-        int loadPrefetchPerRequest = 12;
-        size_t maxResidentChunks = 0;  // 0 = no cap
-    };
-
     uint32_t seed = 1337;
     std::string solidBlock = "base:debug";
     std::string surfaceBlock = "base:debug";
@@ -165,7 +143,6 @@ struct WorldGenConfig {
     DensityGraphConfig densityGraph;
     CavesConfig caves;
     StructuresConfig structures;
-    StreamConfig stream;
 
     // Stage enable flags keyed by stage name.
     std::unordered_map<std::string, bool> stageEnabled;

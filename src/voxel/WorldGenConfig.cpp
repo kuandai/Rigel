@@ -231,23 +231,6 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
         }
     }
 
-    if (root.has_child("streaming")) {
-        Util::warnUnknownKeys(
-            root["streaming"],
-            sourceName,
-            "streaming",
-            {
-                "view_distance_chunks", "unload_distance_chunks", "gen_queue_limit",
-                "mesh_queue_limit", "update_budget_per_frame", "apply_budget_per_frame",
-                "worker_threads", "io_threads", "load_worker_threads",
-                "load_apply_budget_per_frame", "load_region_drain_budget",
-                "load_queue_limit", "load_max_cached_regions",
-                "load_max_inflight_regions", "load_prefetch_radius",
-                "load_prefetch_per_request", "max_resident_chunks"
-            }
-        );
-    }
-
     if (root.has_child("generation")) {
         const ryml::ConstNodeRef generation = root["generation"];
         Util::warnUnknownKeys(
@@ -535,96 +518,6 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
                 }
             }
         }
-    }
-
-    if (root.has_child("streaming")) {
-        ryml::ConstNodeRef streamNode = root["streaming"];
-        stream.viewDistanceChunks = Util::readInt(streamNode, "view_distance_chunks", stream.viewDistanceChunks);
-        stream.unloadDistanceChunks = Util::readInt(streamNode, "unload_distance_chunks", stream.unloadDistanceChunks);
-        int genLimit = Util::readInt(streamNode, "gen_queue_limit", static_cast<int>(stream.genQueueLimit));
-        if (genLimit < 0) {
-            genLimit = 0;
-        }
-        stream.genQueueLimit = static_cast<size_t>(genLimit);
-
-        int meshLimit = Util::readInt(streamNode, "mesh_queue_limit", static_cast<int>(stream.meshQueueLimit));
-        if (meshLimit < 0) {
-            meshLimit = 0;
-        }
-        stream.meshQueueLimit = static_cast<size_t>(meshLimit);
-
-        stream.updateBudgetPerFrame =
-            Util::readInt(streamNode, "update_budget_per_frame", stream.updateBudgetPerFrame);
-        if (stream.updateBudgetPerFrame < 0) {
-            stream.updateBudgetPerFrame = 0;
-        }
-
-        stream.applyBudgetPerFrame = Util::readInt(streamNode, "apply_budget_per_frame", stream.applyBudgetPerFrame);
-        if (stream.applyBudgetPerFrame < 0) {
-            stream.applyBudgetPerFrame = 0;
-        }
-
-        stream.workerThreads = Util::readInt(streamNode, "worker_threads", stream.workerThreads);
-        if (stream.workerThreads < 0) {
-            stream.workerThreads = 0;
-        }
-
-        stream.ioThreads = Util::readInt(streamNode, "io_threads", stream.ioThreads);
-        if (stream.ioThreads < 0) {
-            stream.ioThreads = 0;
-        }
-
-        stream.loadWorkerThreads = Util::readInt(streamNode, "load_worker_threads", stream.loadWorkerThreads);
-        if (stream.loadWorkerThreads < 0) {
-            stream.loadWorkerThreads = 0;
-        }
-
-        stream.loadApplyBudgetPerFrame =
-            Util::readInt(streamNode, "load_apply_budget_per_frame", stream.loadApplyBudgetPerFrame);
-        if (stream.loadApplyBudgetPerFrame < 0) {
-            stream.loadApplyBudgetPerFrame = 0;
-        }
-
-        stream.loadRegionDrainBudget =
-            Util::readInt(streamNode, "load_region_drain_budget", stream.loadRegionDrainBudget);
-        if (stream.loadRegionDrainBudget < 0) {
-            stream.loadRegionDrainBudget = 0;
-        }
-
-        stream.loadQueueLimit = Util::readInt(streamNode, "load_queue_limit", stream.loadQueueLimit);
-        if (stream.loadQueueLimit < 0) {
-            stream.loadQueueLimit = 0;
-        }
-
-        stream.loadMaxCachedRegions =
-            Util::readInt(streamNode, "load_max_cached_regions", stream.loadMaxCachedRegions);
-        if (stream.loadMaxCachedRegions < 0) {
-            stream.loadMaxCachedRegions = 0;
-        }
-
-        stream.loadMaxInFlightRegions =
-            Util::readInt(streamNode, "load_max_inflight_regions", stream.loadMaxInFlightRegions);
-        if (stream.loadMaxInFlightRegions < 0) {
-            stream.loadMaxInFlightRegions = 0;
-        }
-
-        stream.loadPrefetchRadius =
-            Util::readInt(streamNode, "load_prefetch_radius", stream.loadPrefetchRadius);
-        if (stream.loadPrefetchRadius < 0) {
-            stream.loadPrefetchRadius = 0;
-        }
-
-        stream.loadPrefetchPerRequest =
-            Util::readInt(streamNode, "load_prefetch_per_request", stream.loadPrefetchPerRequest);
-        if (stream.loadPrefetchPerRequest < 0) {
-            stream.loadPrefetchPerRequest = 0;
-        }
-
-        int resident = Util::readInt(streamNode, "max_resident_chunks", static_cast<int>(stream.maxResidentChunks));
-        if (resident < 0) {
-            resident = 0;
-        }
-        stream.maxResidentChunks = static_cast<size_t>(resident);
     }
 
     if (root.has_child("generation") && root["generation"].has_child("stages")) {

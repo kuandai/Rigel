@@ -69,7 +69,7 @@ TEST_CASE(WorldConfigProvider_FileSource) {
 
     ConfigProvider provider;
     provider.addSource(std::make_unique<FileConfigSource>(path.string()));
-    WorldGenConfig config = provider.loadConfig();
+    WorldGenConfig config = provider.loadConfig().generation;
 
     CHECK_EQ(config.seed, static_cast<uint32_t>(99));
     CHECK_EQ(config.solidBlock, "base:stone_shale");
@@ -98,7 +98,7 @@ TEST_CASE(WorldConfigProvider_OverlaySource) {
 
     ConfigProvider provider;
     provider.addSource(std::make_unique<FileConfigSource>(basePath.string()));
-    WorldGenConfig config = provider.loadConfig();
+    WorldGenConfig config = provider.loadConfig().generation;
 
     CHECK_NEAR(config.terrain.baseHeight, 9.0f, 0.001f);
 
@@ -112,21 +112,32 @@ TEST_CASE(WorldConfigProvider_HigherPrecedenceSourceOverridesLowerOverlay) {
         "defaults",
         "terrain:\n"
         "  base_height: 1.0\n"
+        "streaming:\n"
+        "  worker_threads: 1\n"
         "overlays:\n"
         "  - path: tuning.yaml\n",
         std::unordered_map<std::string, std::string>{
-            {"tuning.yaml", "terrain:\n  base_height: 2.0\n"}
+            {
+                "tuning.yaml",
+                "terrain:\n"
+                "  base_height: 2.0\n"
+                "streaming:\n"
+                "  worker_threads: 2\n"
+            }
         }
     ));
     provider.addSource(std::make_unique<MemoryConfigSource>(
         "world",
         "terrain:\n"
         "  base_height: 9.0\n"
+        "streaming:\n"
+        "  worker_threads: 3\n"
     ));
 
-    WorldGenConfig config = provider.loadConfig();
+    const WorldConfiguration config = provider.loadConfig();
 
-    CHECK_NEAR(config.terrain.baseHeight, 9.0f, 0.001f);
+    CHECK_NEAR(config.generation.terrain.baseHeight, 9.0f, 0.001f);
+    CHECK_EQ(config.streaming.workerThreads, 3);
 }
 
 TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {
@@ -148,7 +159,7 @@ TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {
         }
     ));
 
-    WorldGenConfig config = provider.loadConfig();
+    WorldGenConfig config = provider.loadConfig().generation;
 
     CHECK_NEAR(config.terrain.baseHeight, 10.0f, 0.001f);
 }
@@ -175,7 +186,7 @@ TEST_CASE(WorldConfigProvider_AppliesNestedOverlaysAfterDeclaredOverlays) {
         }
     ));
 
-    WorldGenConfig config = provider.loadConfig();
+    WorldGenConfig config = provider.loadConfig().generation;
 
     CHECK_NEAR(config.terrain.baseHeight, 4.0f, 0.001f);
 }

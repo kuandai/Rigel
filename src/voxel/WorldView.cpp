@@ -74,7 +74,7 @@ void WorldView::setChunkLoadWorkCallback(ChunkStreamer::ChunkLoadWorkCallback wo
     m_streamer.setChunkLoadWorkCallback(std::move(work));
 }
 
-void WorldView::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
+void WorldView::setStreamConfig(const StreamingConfig& config) {
     m_streamer.setConfig(config);
 }
 

@@ -210,7 +210,7 @@ Synchronization:
 - `Voxel::Chunk` and `BlockRegistry` are not thread-safe; treat them as
   main-thread-only objects.
 - Region IO is async, but application of spans is always main-threaded.
-- Thread pool sizes are controlled by `WorldGenConfig::StreamConfig`
+- Thread pool sizes are controlled by `StreamingConfig`
   (`worker_threads`, `io_threads`, `load_worker_threads`).
 
 ---

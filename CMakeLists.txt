@@ -155,6 +155,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+get_target_property(RIGEL_LIBRARY_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
+
 option(RIGEL_BUILD_TESTS "Build Rigel tests" ON)
 if (RIGEL_BUILD_TESTS)
     enable_testing()
@@ -170,6 +172,9 @@ if (RIGEL_BUILD_TESTS)
     add_executable(Rigel_tests ${TEST_SOURCES})
     target_include_directories(Rigel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(Rigel_tests PRIVATE RigelLib)
+    target_compile_definitions(Rigel_tests PRIVATE
+        $<$<CONFIG:Debug>:RIGEL_EXPECT_PROFILER_ENABLED>
+    )
 
     add_executable(Rigel_profiler_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
@@ -203,4 +208,9 @@ if (RIGEL_BUILD_TESTS)
 
     rigel_register_tests(Rigel_tests ${TEST_SOURCES})
     rigel_register_tests(Rigel_profiler_tests ${PROFILER_TEST_SOURCE})
+
+    get_target_property(RIGEL_LIBRARY_TEST_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
+    if (NOT RIGEL_LIBRARY_TEST_COMPILE_DEFINITIONS STREQUAL RIGEL_LIBRARY_COMPILE_DEFINITIONS)
+        message(FATAL_ERROR "Test targets must not change RigelLib compile definitions")
+    endif()
 endif()

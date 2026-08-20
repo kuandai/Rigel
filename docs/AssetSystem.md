@@ -46,8 +46,6 @@ assets:
     voxel:
       vertex: shaders/voxel.vert
       fragment: shaders/voxel.frag
-      defines:
-        ENABLE_AO: true
 ```
 
 Manifest constraints in the current implementation:
@@ -109,12 +107,11 @@ if requested incorrectly, which will fail with a type mismatch.
 ## Shader-Specific Behavior
 
 Shader assets support:
-- Inheritance via `inherit:` (ShaderLoader merges parent + child config).
-- Preprocessor defines via `defines:`.
-- Fragment fallback when `fragment` is missing and `vertex` ends in `.vert`.
+- One required `vertex` source.
+- One required `fragment` source.
 
-Both `AssetManager` and `ShaderLoader` attempt to supply a missing fragment
-path by swapping `.vert` -> `.frag`.
+The shader loader validates both paths before loading either source and rejects
+other fields in shader entries.
 
 ## Error Handling
 

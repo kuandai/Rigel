@@ -14,7 +14,7 @@
  * with the AssetManager. This design allows for:
  * - Easy extension with new asset types
  * - Category-specific loading logic and optimization
- * - Complex asset configurations (e.g., shader inheritance)
+ * - Category-specific asset configuration
  *
  * @section usage_example Usage Example
  *
@@ -130,20 +130,10 @@ struct AssetBase {
  * //   my_shader:
  * //     vertex: shaders/basic.vert
  * //     fragment: shaders/basic.frag
- * //     defines:
- * //       USE_LIGHTING: true
  *
  * std::string vertex, fragment;
  * ctx.config["vertex"] >> vertex;
  * ctx.config["fragment"] >> fragment;
- *
- * if (ctx.config.has_child("defines")) {
- *     for (auto define : ctx.config["defines"].children()) {
- *         std::string key(define.key().data(), define.key().size());
- *         std::string value;
- *         define >> value;
- *     }
- * }
  * @endcode
  *
  * @section dependency_loading Loading Dependencies

@@ -300,9 +300,6 @@ private:
  *   lit:
  *     vertex: shaders/lit.vert
  *     fragment: shaders/lit.frag
- *     defines:
- *       MAX_LIGHTS: 4
- *       USE_SHADOWS: true
  * @endcode
  *
  * @section caching Uniform and Attribute Caching
@@ -315,22 +312,6 @@ private:
  * - Locations are cached per-name, per-ShaderAsset instance
  * - Cache is cleared when the shader is moved or destroyed
  * - Missing uniforms/attributes return -1 (with a warning logged)
- *
- * @section inheritance Shader Inheritance
- *
- * Shaders can inherit from other shaders in the manifest:
- *
- * @code{.yaml}
- * shaders:
- *   base_lit:
- *     vertex: shaders/standard.vert
- *     fragment: shaders/lit.frag
- *
- *   textured_lit:
- *     inherit: shaders/base_lit
- *     defines:
- *       USE_TEXTURE: true
- * @endcode
  *
  * @note Requires a valid OpenGL context when loading, using, and when
  *       the destructor runs.

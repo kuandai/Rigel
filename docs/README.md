@@ -22,7 +22,7 @@ implementation and how the systems fit together.
 
 - `docs/WorldGeneration.md` (pipeline, streaming, overlays)
 - `docs/RenderingPipeline.md` (voxel rendering, TAA, shadows)
-- `docs/ShaderSystem.md` (shader assets, compilation, defines)
+- `docs/ShaderSystem.md` (shader assets and compilation)
 - `docs/VoxelEngine.md` (block and chunk structures)
 
 ### Entities

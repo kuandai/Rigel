@@ -171,7 +171,7 @@ If TAA is disabled, the history is invalidated each frame.
 - No frustum culling; distance-only culling for voxels.
 - Shadow cascades use a camera-centered cube instead of fitting the frustum.
 - Transparent layer does not receive shadows in the main pass.
-- Shader include support is not implemented (defines only).
+- Shader source inclusion is not implemented.
 
 ---
 

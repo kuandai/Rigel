@@ -187,8 +187,8 @@ private:
 /**
  * @brief Exception thrown when GLSL shader compilation fails.
  *
- * This exception is thrown by ShaderCompiler when a shader stage
- * (vertex, fragment, geometry, or compute) fails to compile. It includes
+ * This exception is thrown by ShaderCompiler when a vertex or fragment stage
+ * fails to compile. It includes
  * information about which stage failed and the OpenGL compiler log.
  *
  * @section error_log Error Log
@@ -200,9 +200,6 @@ private:
  * 0:15: error: 'undeclared_var' : undeclared identifier
  * 0:15: error: 'assign' : cannot convert from 'float' to 'int'
  * @endcode
- *
- * Note: Line numbers in the log are relative to the preprocessed source,
- * which may differ from the original file due to injected #defines.
  *
  * @section example Example
  *
@@ -236,8 +233,7 @@ public:
 
     /**
      * @brief Get the shader stage that failed to compile.
-     * @return OpenGL shader type constant (GL_VERTEX_SHADER, GL_FRAGMENT_SHADER,
-     *         GL_GEOMETRY_SHADER, or GL_COMPUTE_SHADER)
+     * @return GL_VERTEX_SHADER or GL_FRAGMENT_SHADER
      */
     GLenum stage() const { return m_stage; }
 
@@ -499,8 +495,8 @@ public:
      * stores its category and full YAML configuration. This configuration
      * is passed to loaders during asset loading.
      *
-     * @note This is primarily used internally and by loaders implementing
-     *       features like shader inheritance.
+     * @note This is primarily used internally and when enumerating manifest
+     *       entries by category.
      */
     struct AssetEntry {
         /**
@@ -540,8 +536,7 @@ public:
      * @brief Get an asset's manifest entry.
      *
      * Returns the raw manifest entry for an asset, including its full YAML
-     * configuration. This is used by loaders to implement features like
-     * shader inheritance.
+     * configuration.
      *
      * @param id Asset identifier
      * @return Pointer to entry if found, nullptr otherwise

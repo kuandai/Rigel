@@ -1,23 +1,16 @@
 #include "Rigel/Voxel/WorldConfigBootstrap.h"
 
+#include <utility>
+
 namespace Rigel::Voxel {
 
 WorldConfigProvider makeWorldConfigProvider(Asset::AssetManager& assets,
                                             WorldId worldId) {
     WorldConfigProvider provider;
-    provider.addSource(
-        std::make_unique<Config::EmbeddedConfigSource>(assets, "raw/world_config")
-    );
-    provider.addSource(
-        std::make_unique<Config::FileConfigSource>("config/world_generation.yaml")
-    );
-    provider.addSource(
-        std::make_unique<Config::FileConfigSource>("world_generation.yaml")
-    );
-    provider.addSource(
-        std::make_unique<Config::FileConfigSource>(
-            "config/worlds/" + std::to_string(worldId) + "/world_generation.yaml")
-    );
+    for (auto& source : Config::makeStandardConfigSources(
+             assets, "raw/world_config", "world_generation.yaml", worldId)) {
+        provider.addSource(std::move(source));
+    }
     return provider;
 }
 

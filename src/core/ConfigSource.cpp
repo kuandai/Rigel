@@ -96,4 +96,21 @@ std::optional<ConfigSourceResult> FileConfigSource::loadPath(
     return ConfigSourceResult{candidate.string(), std::move(*content)};
 }
 
+std::vector<std::unique_ptr<IConfigSource>> makeStandardConfigSources(
+    Asset::AssetManager& assets,
+    std::string embeddedAssetId,
+    std::string fileName,
+    std::uint32_t worldId) {
+    std::vector<std::unique_ptr<IConfigSource>> sources;
+    sources.reserve(4);
+    sources.push_back(std::make_unique<EmbeddedConfigSource>(
+        assets, std::move(embeddedAssetId)));
+    sources.push_back(std::make_unique<FileConfigSource>(
+        "config/" + fileName));
+    sources.push_back(std::make_unique<FileConfigSource>(fileName));
+    sources.push_back(std::make_unique<FileConfigSource>(
+        "config/worlds/" + std::to_string(worldId) + "/" + fileName));
+    return sources;
+}
+
 } // namespace Rigel::Config

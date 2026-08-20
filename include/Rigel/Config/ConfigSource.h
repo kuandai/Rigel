@@ -2,10 +2,12 @@
 
 #include <Rigel/Asset/AssetManager.h>
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Rigel::Config {
 
@@ -46,5 +48,11 @@ public:
 private:
     std::string m_path;
 };
+
+std::vector<std::unique_ptr<IConfigSource>> makeStandardConfigSources(
+    Asset::AssetManager& assets,
+    std::string embeddedAssetId,
+    std::string fileName,
+    std::uint32_t worldId);
 
 } // namespace Rigel::Config

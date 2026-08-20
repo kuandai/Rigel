@@ -1,23 +1,16 @@
 #include "Rigel/Render/RenderConfigBootstrap.h"
 
+#include <utility>
+
 namespace Rigel::Render {
 
 RenderConfigProvider makeRenderConfigProvider(Asset::AssetManager& assets,
                                               Voxel::WorldId worldId) {
     RenderConfigProvider provider;
-    provider.addSource(
-        std::make_unique<Config::EmbeddedConfigSource>(assets, "raw/render_config")
-    );
-    provider.addSource(
-        std::make_unique<Config::FileConfigSource>("config/render.yaml")
-    );
-    provider.addSource(
-        std::make_unique<Config::FileConfigSource>("render.yaml")
-    );
-    provider.addSource(
-        std::make_unique<Config::FileConfigSource>(
-            "config/worlds/" + std::to_string(worldId) + "/render.yaml")
-    );
+    for (auto& source : Config::makeStandardConfigSources(
+             assets, "raw/render_config", "render.yaml", worldId)) {
+        provider.addSource(std::move(source));
+    }
     return provider;
 }
 

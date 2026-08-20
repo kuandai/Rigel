@@ -523,27 +523,7 @@ public:
          * @return The string value if key exists, std::nullopt otherwise
          */
         std::optional<std::string> getString(const std::string& key) const;
-
-        /**
-         * @brief Check if a configuration key exists.
-         * @param key The key to check for
-         * @return true if key exists, false otherwise
-         */
-        bool hasChild(const std::string& key) const;
     };
-
-    /**
-     * @brief Get an asset's manifest entry.
-     *
-     * Returns the raw manifest entry for an asset, including its full YAML
-     * configuration.
-     *
-     * @param id Asset identifier
-     * @return Pointer to entry if found, nullptr otherwise
-     *
-     * @note The returned pointer is valid until the next loadManifest() call.
-     */
-    const AssetEntry* getEntry(const std::string& id) const;
 
     /**
      * @brief Iterate over all entries in a specific category.

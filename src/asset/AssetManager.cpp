@@ -28,11 +28,6 @@ std::optional<std::string> AssetManager::AssetEntry::getString(const std::string
     return value;
 }
 
-bool AssetManager::AssetEntry::hasChild(const std::string& key) const {
-    ryml::ConstNodeRef root = configTree.crootref();
-    return root.readable() && root.has_child(ryml::to_csubstr(key));
-}
-
 // LoadContext implementation
 std::span<const char> LoadContext::loadResource(const std::string& path) const {
     return ResourceRegistry::Get(path);
@@ -293,14 +288,6 @@ void AssetManager::clearCache() {
 void AssetManager::registerLoader(const std::string& category, std::unique_ptr<IAssetLoader> loader) {
     spdlog::debug("Registered loader for category: {}", category);
     m_loaders[category] = std::move(loader);
-}
-
-const AssetManager::AssetEntry* AssetManager::getEntry(const std::string& id) const {
-    auto it = m_entries.find(id);
-    if (it == m_entries.end()) {
-        return nullptr;
-    }
-    return &it->second;
 }
 
 void AssetManager::forEachInCategory(

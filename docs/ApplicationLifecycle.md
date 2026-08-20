@@ -46,6 +46,9 @@ Shutdown persists world state and releases resources.
    - Preferred format + provider options come from `persistence.yaml`.
 6. Initialize world resources.
    - Block registry, texture atlas, and other shared resources.
+   - Failed block definitions, an all-air registry, or an empty texture atlas
+     abort world bootstrap before spawn discovery.
+   - Successful initialization records loaded block and texture counts.
 7. Load world config and create `World` + `WorldView`.
    - `WorldGenerator` is created and attached to both.
 8. Load entity data from disk (chunks are lazy-loaded).

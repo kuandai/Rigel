@@ -31,6 +31,19 @@ Ensure you have the following installed:
 * **Conan 2.x** `pip install conan`
 * **OpenGL** Version 4.1 core with GLSL 4.10 support
 
+### Interactive Runtime Assets
+
+The interactive runtime requires the separately supplied block texture tree at
+`assets/textures/`. The tracked definitions under `assets/blocks/` refer to
+files in that tree, and startup rejects missing or invalid block inputs instead
+of creating an all-air world.
+
+Populate `assets/textures/` before configuring CMake so the resource-embedding
+step discovers the files. Reconfigure and rebuild after changing imported
+assets. A source-only checkout without the imported textures can still build
+and run `Rigel_tests`; representative block/material tests use in-memory pixel
+data and do not require production textures.
+
 ### One-Time Setup
 
 If this is your first time using Conan on this machine, you must create a default profile to detect your compiler:

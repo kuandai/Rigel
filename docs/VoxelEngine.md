@@ -35,7 +35,9 @@ byte containing sky and block light nibbles.
 
 `BlockRegistry` assigns sequential IDs and supports lookup by ID or identifier.
 `WorldResources::initialize()` uses `BlockLoader` to load block assets and build
-the texture atlas before worlds are created.
+the texture atlas before worlds are created. Initialization rejects failed block
+definitions, an all-air registry, or an empty atlas. A successful interactive
+startup logs the loaded definition and texture counts before spawn discovery.
 
 ## Chunk Storage and Coordinates
 

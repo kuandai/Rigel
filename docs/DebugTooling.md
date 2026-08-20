@@ -164,9 +164,22 @@ the desired chunk set or poll persistence for discovery.
 
 ## 9. Reproducible Streaming Validation
 
-Use the same world and streaming configuration for comparisons, and record the
-full `streaming.lifecycle state=quiescent` line with every result. Configure an
-out-of-tree build as described in the project README, then set its location:
+Use the same world and streaming configuration for comparisons. Every
+interactive result must include the successful resource record emitted before
+spawn discovery, for example:
+
+```text
+world.resources blocks.loaded=248 blocks.failed=0 blocks.skipped=1 blocks.discovered=249 textures.loaded=134
+```
+
+Require `blocks.loaded` and `textures.loaded` to be greater than zero and
+`blocks.failed` to be zero. If this record is absent, or resource initialization
+reports a failure, do not use a later lifecycle line as a measurement boundary;
+an all-air run is not representative streaming or remeshing evidence.
+
+Record the resource line and the full
+`streaming.lifecycle state=quiescent` line with every accepted result. Configure
+an out-of-tree build as described in the project README, then set its location:
 
 ```bash
 rigel_build_dir=/absolute/path/to/rigel-build
@@ -202,8 +215,9 @@ RIGEL_PROFILE=1 RIGEL_CHUNK_BENCH=1 \
 ```
 
 Confirm that the `OpenGL Version` log identifies the intended hardware driver.
-From another terminal, wait for the lifecycle signal rather than using a startup
-delay:
+Confirm the successful `world.resources` record and its block/texture counts.
+From another terminal, wait for the lifecycle signal rather than using a
+startup delay:
 
 ```bash
 tail -n +1 -F /tmp/rigel-hardware.log | \
@@ -225,10 +239,11 @@ LIBGL_ALWAYS_SOFTWARE=1 RIGEL_PROFILE=1 RIGEL_CHUNK_BENCH=1 \
   "$rigel_build_dir/bin/Rigel" 2>&1 | tee /tmp/rigel-llvmpipe.log
 ```
 
-Verify that the `OpenGL Version` line identifies llvmpipe, then wait for the
-same quiescent record before measuring. Xvfb plus llvmpipe is useful for
-repeatable startup and streaming validation when no hardware GPU is available,
-but software rasterization can dominate process CPU. Attribute CPU to streaming
+Verify that the `OpenGL Version` line identifies llvmpipe and that the successful
+`world.resources` record has valid block/texture counts, then wait for the same
+quiescent record before measuring. Xvfb plus llvmpipe is useful for repeatable
+startup and streaming validation when no hardware GPU is available, but
+software rasterization can dominate process CPU. Attribute CPU to streaming
 only when the `Streaming` scopes or renderer-independent regressions provide
 that evidence; do not infer it from the process total or from a hardware versus
 llvmpipe comparison.

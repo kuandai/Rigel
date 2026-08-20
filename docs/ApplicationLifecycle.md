@@ -65,10 +65,32 @@ Per frame:
 5. Tick entities (`World::tickEntities`).
 6. Update chunk streaming (load/gen/mesh decisions).
 7. Apply completed generation + mesh tasks.
-8. Render scene (voxel + entities + debug overlays).
+8. Refresh the streaming lifecycle snapshot and log lifecycle transitions.
+9. Render scene (voxel + entities + debug overlays).
    - Shadow maps, TAA, and debug overlays are all handled here.
-9. Profiler frame ends (`Core::Profiler::endFrame`) before buffer swap.
-10. Swap buffers and check for exit (`exit` action).
+10. Profiler frame ends (`Core::Profiler::endFrame`) before buffer swap.
+11. Swap buffers and check for exit (`exit` action).
+
+### Streaming lifecycle
+
+Spawn discovery completes during bootstrap, before the world becomes ready.
+The first runtime streaming update begins the initial-stream phase. After each
+normal update and completion drain, `ChunkStreamer` combines its generation and
+mesh counts with the `AsyncChunkLoader` load counts supplied by `WorldView`.
+
+Pending counts include capacity-blocked generation and mesh requests, mesh
+requests waiting for neighbor data, and deferred region loads. A zero count at
+startup or between completion stages is not sufficient for quiescence. The
+lifecycle reaches `quiescent` only after three consecutive complete updates
+observe no pending or in-flight work and start no new work. A new load,
+generation, or mesh request returns the lifecycle to `streaming` immediately on
+the next update.
+
+The application logs lifecycle transitions as `streaming.lifecycle` records
+with the snapshot counts. This is the developer-facing readiness signal for
+starting a stationary performance measurement without a fixed startup delay.
+The snapshot is assembled from active queues and counters and does not add a
+desired-set scan or periodic persistence query.
 
 ## Phase 3: Shutdown (Application::~Application)
 

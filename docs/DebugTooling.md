@@ -123,7 +123,115 @@ TAA, so they are stable.
 
 ---
 
-## 8. Known Limitations
+## 8. Streaming Lifecycle Signal
+
+`WorldView::streamingDiagnostics()` exposes the current streaming lifecycle and
+generation, chunk-load, and mesh work counts. Each category reports pending
+requests, in-flight work, and a cumulative started count. Pending load counts
+include deferred region requests. Pending generation and mesh counts include
+scheduler and capacity wait queues; mesh requests waiting for neighbor data are
+also pending.
+
+The lifecycle states are:
+
+- `discovering_spawn`: initial camera placement is not complete.
+- `awaiting_initial_stream`: spawn discovery completed, but no streaming update
+  has run.
+- `streaming`: work was pending, in flight, or started during the current update.
+- `stabilizing`: an entire update completed without streaming work.
+- `quiescent`: three consecutive full updates completed without pending,
+  in-flight, or newly started work.
+
+The application writes a `streaming.lifecycle` log record whenever the lifecycle
+state changes. The record contains the state, all work counts, and the stable
+update count. In particular, this record is the readiness signal for automated
+performance capture:
+
+```text
+streaming.lifecycle state=quiescent generation.pending=0 generation.in_flight=0 ...
+```
+
+The started counts remain cumulative, so tests can take a snapshot at
+quiescence and verify that stationary updates do not start additional work.
+Quiescence bookkeeping examines active request queues only; it does not rescan
+the desired chunk set or poll persistence for discovery.
+
+---
+
+## 9. Reproducible Streaming Validation
+
+Use the same world and streaming configuration for comparisons, and record the
+full `streaming.lifecycle state=quiescent` line with every result. Configure an
+out-of-tree build as described in the project README, then set its location:
+
+```bash
+rigel_build_dir=/absolute/path/to/rigel-build
+cmake --build "$rigel_build_dir" --parallel --target Rigel Rigel_tests
+```
+
+### 9.1 Renderer-independent behavior
+
+Run the lifecycle and steady-state scheduler regressions directly. These tests
+do not create a window or execute renderer code:
+
+```bash
+"$rigel_build_dir/Rigel_tests" \
+  --filter ChunkStreamer_QuiescenceRequiresStableIdleUpdates --verbose
+"$rigel_build_dir/Rigel_tests" \
+  --filter ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume --verbose
+```
+
+The first test covers startup gating, pending and in-flight load states, the
+stable update window, stationary work counts, and leaving quiescence after an
+edit. The second verifies that a settled update performs no scheduler or desired
+set inspection even when the configured view volume is large. Use these results
+for claims about streaming behavior independent of rendering.
+
+### 9.2 Interactive hardware-GPU run
+
+On a machine with a hardware OpenGL driver, launch Rigel with profiling enabled
+and capture its log:
+
+```bash
+RIGEL_PROFILE=1 RIGEL_CHUNK_BENCH=1 \
+  "$rigel_build_dir/bin/Rigel" 2>&1 | tee /tmp/rigel-hardware.log
+```
+
+Confirm that the `OpenGL Version` log identifies the intended hardware driver.
+From another terminal, wait for the lifecycle signal rather than using a startup
+delay:
+
+```bash
+tail -n +1 -F /tmp/rigel-hardware.log | \
+  sed -n '/streaming.lifecycle state=quiescent /q'
+```
+
+Begin the stationary CPU capture only after that command exits. Keep the camera
+and world unchanged during the capture. Use the profiler's `Streaming` scopes
+to measure streaming and the `Render` scopes to measure renderer work; total
+process CPU alone does not identify which subsystem consumed it.
+
+### 9.3 Xvfb with llvmpipe
+
+Run the same configuration under a virtual display with software rendering:
+
+```bash
+LIBGL_ALWAYS_SOFTWARE=1 RIGEL_PROFILE=1 RIGEL_CHUNK_BENCH=1 \
+  xvfb-run -a -s "-screen 0 1280x720x24" \
+  "$rigel_build_dir/bin/Rigel" 2>&1 | tee /tmp/rigel-llvmpipe.log
+```
+
+Verify that the `OpenGL Version` line identifies llvmpipe, then wait for the
+same quiescent record before measuring. Xvfb plus llvmpipe is useful for
+repeatable startup and streaming validation when no hardware GPU is available,
+but software rasterization can dominate process CPU. Attribute CPU to streaming
+only when the `Streaming` scopes or renderer-independent regressions provide
+that evidence; do not infer it from the process total or from a hardware versus
+llvmpipe comparison.
+
+---
+
+## 10. Known Limitations
 
 - Profiler view requires ImGui and is hidden when ImGui is unavailable.
 - Debug overlay is global and not per-world.

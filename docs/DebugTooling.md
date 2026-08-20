@@ -8,8 +8,9 @@ through gameplay UI.
 
 ## 1. Overview
 
-The debug overlay is owned by `Application` and renders after the main scene.
-When enabled it draws:
+`FrameRenderer` owns the debug overlay state and GPU resources. It draws the GL
+overlays after the main scene; Application renders the optional ImGui profiler
+window from the same state. When enabled the tooling draws:
 
 - Chunk streaming field (colored cubes for pipeline state).
 - Frame time graph (ms per frame).
@@ -24,15 +25,15 @@ available.
 
 ## 2. Toggle and Lifetime
 
-- `Render::DebugState` holds all overlay state (`DebugField`, `FrameTimeGraph`,
-  `EntityDebug`).
+- `FrameRenderer` owns the `Render::DebugState` containing `DebugField`,
+  `FrameTimeGraph`, and `EntityDebug`.
 - `Input::DebugOverlayListener` toggles `DebugState::overlayEnabled` on action
   release.
-- `Application` calls:
+- `FrameRenderer::initialize` calls:
   - `Render::initDebugField`
   - `Render::initFrameGraph`
   - `Render::initEntityDebug`
-  - `Render::releaseDebugResources` on shutdown
+- `FrameRenderer::release` calls `Render::releaseDebugResources` on shutdown.
 
 If a shader asset is missing, the corresponding overlay logs a warning and is
 skipped.
@@ -82,7 +83,7 @@ State mapping (from `ChunkStreamer::DebugState`):
 ## 4. Frame Time Graph
 
 - Shader: `shaders/frame_graph`.
-- `Render::recordFrameTime` appends delta time in milliseconds.
+- `FrameRenderer::recordFrameTime` appends delta time in milliseconds.
 - Ring buffer size is 180 samples; newest samples render on the right.
 - Values are clamped to 50 ms and drawn as vertical bars at the bottom of the
   screen.

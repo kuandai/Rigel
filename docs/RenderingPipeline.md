@@ -8,29 +8,30 @@ features.
 
 ## 1. Overview
 
-Rendering is driven by `WorldView::render`, which:
+`FrameRenderer` owns the main render pass, camera matrices, TAA, and debug
+overlays. It delegates world drawing to `WorldView::render`, which:
 
 - Builds a `WorldRenderContext` with mesh store, texture atlas, shaders, and
   render config.
 - Delegates voxel rendering to `ChunkRenderer`.
 - Delegates entity rendering to `EntityRenderer`.
 
-The Application sets the view/projection matrices and optionally applies TAA
-before calling `WorldView::render`.
+The Application supplies the active world, camera state, viewport, and frame
+time to `FrameRenderer` once per frame.
 
 ---
 
 ## 2. Frame Flow (Current)
 
-1. Application builds `view` and `projection` matrices.
-2. Optional TAA jitter is applied to the projection.
-3. Scene renders to the TAA scene FBO (if enabled) or the default framebuffer.
-4. `WorldView`:
-   - Updates chunk streaming and meshes.
+1. Application updates simulation and streaming, then submits a frame context.
+2. `FrameRenderer` builds `view` and `projection` matrices.
+3. Optional TAA jitter is applied to the projection.
+4. Scene renders to the TAA scene FBO (if enabled) or the default framebuffer.
+5. `WorldView`:
    - Calls `ChunkRenderer::render`.
    - Calls `EntityRenderer::render`.
-5. Optional TAA resolve blends history into the current frame.
-6. Debug overlays render (chunk visualizer, frame graph, entity debug).
+6. Optional TAA resolve blends history into the current frame.
+7. Debug overlays render (chunk visualizer, frame graph, entity debug).
 
 ---
 
@@ -149,7 +150,7 @@ Transparent voxels do not receive shadows (`u_renderLayer == Transparent`).
 
 ## 6. Temporal AA (Post-Process)
 
-TAA runs as a post-process pass in `Application`:
+TAA runs as a post-process pass owned by `FrameRenderer`:
 
 - Scene renders into a color+depth FBO.
 - History uses two ping-pong textures plus depth history.

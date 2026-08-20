@@ -51,7 +51,7 @@ Shutdown persists world state and releases resources.
 9. Create the async chunk loader (disk IO) and wire it into `WorldView`.
    - Loader provides non-blocking requests + budgeted apply callbacks.
 10. Apply render config + stream config.
-11. Snap camera to the first air block, initialize debug overlays, init TAA.
+11. Snap camera to the first air block and initialize `FrameRenderer`.
 
 ## Phase 2: Runtime Loop (Application::run)
 
@@ -66,8 +66,9 @@ Per frame:
 6. Update chunk streaming (load/gen/mesh decisions).
 7. Apply completed generation + mesh tasks.
 8. Refresh the streaming lifecycle snapshot and log lifecycle transitions.
-9. Render scene (voxel + entities + debug overlays).
-   - Shadow maps, TAA, and debug overlays are all handled here.
+9. Submit the active world, camera, viewport, and frame time to `FrameRenderer`.
+   - `FrameRenderer` handles camera matrices, TAA, world drawing, and debug
+     overlays.
 10. Profiler frame ends (`Core::Profiler::endFrame`) before buffer swap.
 11. Swap buffers and check for exit (`exit` action).
 
@@ -95,7 +96,7 @@ desired-set scan or periodic persistence query.
 ## Phase 3: Shutdown (Application::~Application)
 
 1. Save world to disk (synchronous) if initialized.
-2. Release debug GPU resources.
+2. Release frame-renderer and world GPU resources.
 3. Destroy window and terminate GLFW.
 
 ---
@@ -230,6 +231,7 @@ Synchronization:
 ## Relevant Code
 
 - `src/core/Application.cpp`
+- `src/render/FrameRenderer.cpp`
 - `src/voxel/WorldView.cpp`
 - `src/voxel/ChunkStreamer.cpp`
 - `src/persistence/WorldPersistence.cpp`

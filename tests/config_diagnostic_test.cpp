@@ -91,6 +91,38 @@ TEST_CASE(WorldGenConfig_ReportsUnknownKeyAndSource) {
     CHECK(output.find("world-settings.yaml") != std::string::npos);
 }
 
+TEST_CASE(WorldGenConfig_ReportsRemovedKeysAndIgnoresUnknownStages) {
+    LogCapture logs;
+    WorldGenConfig config;
+
+    config.applyYaml(
+        "legacy-world-settings.yaml",
+        "world:\n"
+        "  lava_level: -16\n"
+        "climate:\n"
+        "  elevation_lapse: 0.02\n"
+        "caves:\n"
+        "  sample_step: 8\n"
+        "generation:\n"
+        "  stages:\n"
+        "    terrain_density: false\n"
+        "    post_process: true\n"
+        "    terrain_densitty: false\n"
+    );
+
+    const std::string output = logs.output();
+    CHECK(output.find("world.lava_level") != std::string::npos);
+    CHECK(output.find("climate.elevation_lapse") != std::string::npos);
+    CHECK(output.find("caves.sample_step") != std::string::npos);
+    CHECK(output.find("generation.stages.post_process") != std::string::npos);
+    CHECK(output.find("generation.stages.terrain_densitty") != std::string::npos);
+    CHECK(output.find("legacy-world-settings.yaml") != std::string::npos);
+    CHECK(!config.isStageEnabled("terrain_density"));
+    CHECK(!config.isStageEnabled("post_process"));
+    CHECK(!config.isStageEnabled("terrain_densitty"));
+    CHECK_EQ(config.stageEnabled.size(), static_cast<size_t>(1));
+}
+
 TEST_CASE(RenderConfig_ReportsUnknownKeyAndSource) {
     LogCapture logs;
     ConfigProvider provider;

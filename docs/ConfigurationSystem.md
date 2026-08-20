@@ -137,7 +137,6 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `world.min_y` | int | `-64` | Minimum world Y coordinate. |
 | `world.max_y` | int | `320` | Maximum world Y coordinate. |
 | `world.sea_level` | int | `0` | Sea level for water placement. |
-| `world.lava_level` | int | `-32` | Lava level (not used by generator). |
 | `world.version` | int | `1` | World generation version. |
 | `terrain.base_height` | float | `16.0` | Base terrain height. |
 | `terrain.height_variation` | float | `16.0` | Terrain height variation. |
@@ -149,7 +148,6 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `climate.local_blend` | float | `1.0` | Blend factor for local climate. |
 | `climate.latitude_scale` | float | `0.0` | Latitude noise scale. |
 | `climate.latitude_strength` | float | `0.0` | Latitude influence. |
-| `climate.elevation_lapse` | float | `0.0` | Unused by generator. |
 | `climate.global.*` | object | - | Global climate noise (see below). |
 | `climate.local.*` | object | - | Local climate noise (see below). |
 | `biomes.blend_power` | float | `2.0` | Biome blend power. |
@@ -161,7 +159,6 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `caves.enabled` | bool | `true` | Enables cave carving. |
 | `caves.density_output` | string | `cave_density` | Density output name. |
 | `caves.threshold` | float | `0.5` | Density threshold. |
-| `caves.sample_step` | int | `4` | Step size for carving. |
 | `structures.features[]` | list | - | Simple feature definitions. |
 | `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera. |
 | `streaming.unload_distance_chunks` | int | `8` | Unload radius in chunks. |
@@ -193,7 +190,7 @@ Noise objects (`terrain.noise`, `terrain.density_noise`, `climate.*.*`) use:
 Key top-level fields (see `assets/config/world_generation.yaml` for examples):
 
 - `seed`, `solid_block`, `surface_block`
-- `world`: `min_y`, `max_y`, `sea_level`, `lava_level`, `version`
+- `world`: `min_y`, `max_y`, `sea_level`, `version`
 - `flags`: boolean map used by overlays
 - `terrain`: base heights and noise controls
 - `climate`: global/local temperature + humidity + continentalness noise
@@ -208,7 +205,7 @@ Key top-level fields (see `assets/config/world_generation.yaml` for examples):
 ### Pipeline Stages
 
 `generation.stages` maps fixed stage names to boolean enable flags. Map key
-order has no runtime meaning.
+order has no runtime meaning. Unknown stage names are reported and ignored.
 
 Current stage names:
 
@@ -219,7 +216,6 @@ Current stage names:
 - `caves`
 - `surface_rules`
 - `structures`
-- `post_process`
 
 Stages default to enabled unless explicitly disabled.
 

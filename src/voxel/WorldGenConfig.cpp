@@ -7,10 +7,38 @@
 
 #include "Rigel/Util/Yaml.h"
 #include "Rigel/Util/Ryml.h"
+#include "Rigel/Voxel/WorldGenStages.h"
 
 namespace Rigel::Voxel {
 
 namespace {
+bool isKnownGenerationStage(std::string_view name) {
+    return std::any_of(
+        kWorldGenPipelineStages.begin(),
+        kWorldGenPipelineStages.end(),
+        [name](const char* stage) { return name == stage; }
+    );
+}
+
+void warnUnknownGenerationStages(ryml::ConstNodeRef stages,
+                                 const char* sourceName) {
+    if (!stages.readable() || !stages.is_map()) {
+        return;
+    }
+
+    for (ryml::ConstNodeRef stage : stages.children()) {
+        const std::string name = Util::toStdString(stage.key());
+        if (isKnownGenerationStage(name)) {
+            continue;
+        }
+        spdlog::warn(
+            "Unknown configuration key 'generation.stages.{}' in '{}'",
+            name,
+            sourceName
+        );
+    }
+}
+
 void validateNoiseKeys(ryml::ConstNodeRef node,
                        const char* sourceName,
                        std::string_view path) {
@@ -55,7 +83,7 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
             root["world"],
             sourceName,
             "world",
-            {"min_y", "max_y", "sea_level", "lava_level", "version"}
+            {"min_y", "max_y", "sea_level", "version"}
         );
     }
 
@@ -87,7 +115,7 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
             "climate",
             {
                 "global", "local", "local_blend", "latitude_scale",
-                "latitude_strength", "elevation_lapse"
+                "latitude_strength"
             }
         );
         if (climate.has_child("global")) {
@@ -183,7 +211,7 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
             root["caves"],
             sourceName,
             "caves",
-            {"enabled", "density_output", "threshold", "sample_step"}
+            {"enabled", "density_output", "threshold"}
         );
     }
 
@@ -224,6 +252,9 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
         const ryml::ConstNodeRef generation = root["generation"];
         Util::warnUnknownKeys(
             generation, sourceName, "generation", {"stages"});
+        if (generation.has_child("stages")) {
+            warnUnknownGenerationStages(generation["stages"], sourceName);
+        }
     }
 
     if (root.has_child("overlays")) {
@@ -299,7 +330,6 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         world.minY = Util::readInt(worldNode, "min_y", world.minY);
         world.maxY = Util::readInt(worldNode, "max_y", world.maxY);
         world.seaLevel = Util::readInt(worldNode, "sea_level", world.seaLevel);
-        world.lavaLevel = Util::readInt(worldNode, "lava_level", world.lavaLevel);
         world.version = static_cast<uint32_t>(Util::readInt(worldNode, "version",
                                                       static_cast<int>(world.version)));
     }
@@ -324,7 +354,6 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         climate.localBlend = Util::readFloat(climateNode, "local_blend", climate.localBlend);
         climate.latitudeScale = Util::readFloat(climateNode, "latitude_scale", climate.latitudeScale);
         climate.latitudeStrength = Util::readFloat(climateNode, "latitude_strength", climate.latitudeStrength);
-        climate.elevationLapse = Util::readFloat(climateNode, "elevation_lapse", climate.elevationLapse);
         if (climateNode.has_child("global")) {
             applyClimateLayer(climateNode["global"], climate.global);
         }
@@ -474,7 +503,6 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         caves.enabled = Util::readBool(cavesNode, "enabled", caves.enabled);
         caves.densityOutput = Util::readString(cavesNode, "density_output", caves.densityOutput);
         caves.threshold = Util::readFloat(cavesNode, "threshold", caves.threshold);
-        caves.sampleStep = Util::readInt(cavesNode, "sample_step", caves.sampleStep);
     }
 
     if (root.has_child("structures")) {
@@ -605,6 +633,9 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         if (stages.is_map()) {
             for (ryml::ConstNodeRef stage : stages.children()) {
                 const std::string name = Util::toStdString(stage.key());
+                if (!isKnownGenerationStage(name)) {
+                    continue;
+                }
                 stageEnabled[name] = Util::readBool(stages, name.c_str(), true);
             }
         }
@@ -642,6 +673,9 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
 }
 
 bool WorldGenConfig::isStageEnabled(const std::string& stage) const {
+    if (!isKnownGenerationStage(stage)) {
+        return false;
+    }
     auto it = stageEnabled.find(stage);
     if (it == stageEnabled.end()) {
         return true;

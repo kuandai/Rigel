@@ -150,19 +150,6 @@ struct NoiseGridCache final : DensitySampleContext::NoiseSampleCache {
     std::vector<NoiseGrid> grids;
 };
 
-class NoopStage : public WorldGenStage {
-public:
-    explicit NoopStage(const char* stageName)
-        : m_name(stageName)
-    {}
-
-    const char* name() const override { return m_name; }
-    void apply(WorldGenContext&, ChunkBuffer&) override {}
-
-private:
-    const char* m_name;
-};
-
 class ClimateGlobalStage : public WorldGenStage {
 public:
     explicit ClimateGlobalStage(const WorldGenConfig& config)
@@ -983,9 +970,6 @@ void WorldGenerator::registerDefaultStages() {
     m_stageFactories["structures"] = [this]() {
         return std::make_unique<StructuresStage>(m_config, m_registry);
     };
-    m_stageFactories["post_process"] = []() {
-        return std::make_unique<NoopStage>("post_process");
-    };
 }
 
 void WorldGenerator::rebuildStages() {
@@ -997,7 +981,7 @@ void WorldGenerator::rebuildStages() {
         }
         auto it = m_stageFactories.find(stageName);
         if (it == m_stageFactories.end()) {
-            m_stages.push_back(std::make_unique<NoopStage>(stageName));
+            spdlog::error("WorldGenerator: no factory registered for stage '{}'", stageName);
             continue;
         }
         m_stages.push_back(it->second());

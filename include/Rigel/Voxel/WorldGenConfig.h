@@ -23,7 +23,6 @@ struct WorldGenConfig {
         int minY = -64;
         int maxY = 320;
         int seaLevel = 0;
-        int lavaLevel = -32;
         uint32_t version = 1;
     };
 
@@ -58,7 +57,6 @@ struct WorldGenConfig {
         float localBlend = 1.0f;
         float latitudeScale = 0.0f;
         float latitudeStrength = 0.0f;
-        float elevationLapse = 0.0f;
     };
 
     struct BiomeTarget {
@@ -118,7 +116,6 @@ struct WorldGenConfig {
         bool enabled = true;
         std::string densityOutput = "cave_density";
         float threshold = 0.5f;
-        int sampleStep = 4;
     };
 
     struct FeatureConfig {

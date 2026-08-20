@@ -6,7 +6,6 @@ world:
   min_y: -64
   max_y: 320
   sea_level: 60
-  lava_level: -32
   version: 1
 
 flags:
@@ -36,7 +35,6 @@ terrain:
 climate:
   latitude_scale: 0.0002
   latitude_strength: 0.3
-  elevation_lapse: 0.0
   local_blend: 0.3
   global:
     temperature:
@@ -245,7 +243,6 @@ caves:
   enabled: true
   density_output: cave_density
   threshold: 0.75
-  sample_step: 8
 
 structures:
   features:
@@ -288,4 +285,3 @@ generation:
     caves: true
     surface_rules: true
     structures: false
-    post_process: true

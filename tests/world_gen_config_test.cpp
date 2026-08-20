@@ -14,7 +14,6 @@ world:
   min_y: -32
   max_y: 128
   sea_level: 8
-  lava_level: -16
   version: 7
 flags:
   no_carvers: true
@@ -41,7 +40,6 @@ terrain:
 climate:
   latitude_scale: 0.001
   latitude_strength: 0.5
-  elevation_lapse: 0.02
   local_blend: 0.25
   global:
     temperature:
@@ -126,7 +124,6 @@ generation:
     CHECK_EQ(config.world.minY, -32);
     CHECK_EQ(config.world.maxY, 128);
     CHECK_EQ(config.world.seaLevel, 8);
-    CHECK_EQ(config.world.lavaLevel, -16);
     CHECK_EQ(config.world.version, static_cast<uint32_t>(7));
     CHECK(config.isFlagEnabled("no_carvers"));
     CHECK_NEAR(config.terrain.baseHeight, 5.0f, 0.001f);

@@ -27,7 +27,6 @@ terrain_density
 caves
 surface_rules
 structures
-post_process
 ```
 
 Stage order is fixed in code. The `generation.stages` config map contains an
@@ -85,12 +84,6 @@ enable flag for each stage; its key order has no runtime meaning.
 - Chance is driven by 2D noise per column.
 - Optional biome filters limit placement to specific biomes.
 
-### 3.8 post_process
-
-- No-op stage reserved for future post-processing (lighting, ores, etc).
-
----
-
 ## 4. Climate, Biomes, and Density Graph
 
 ### 4.1 Climate Fields
@@ -101,8 +94,7 @@ Climate samples contain:
 - `humidity`
 - `continentalness`
 
-Global and local layers are combined additively. `climate.elevation_lapse` is
-defined in config but not used by the current generator.
+Global and local layers are combined additively.
 
 ### 4.2 Biome Blending
 
@@ -218,11 +210,6 @@ Overlays:
 - `overlays` is a list of `{ path, when }`.
 - `when` references a boolean flag from `flags`.
 - Overlays are resolved using the same config sources.
-
-Reserved or not-yet-used fields:
-
-- `world.lava_level` (unused in generator)
-- `climate.elevation_lapse` (unused in generator)
 
 ---
 

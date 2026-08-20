@@ -10,7 +10,11 @@
 #include "Rigel/Voxel/ChunkStreamer.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
+#include <functional>
+#include <future>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <thread>
@@ -19,7 +23,94 @@
 using namespace Rigel::Voxel;
 using namespace Rigel::Persistence;
 
+namespace Rigel::Persistence::detail {
+struct AsyncChunkLoaderTestAccess {
+    static void setRegionLoadStartCallback(AsyncChunkLoader& loader,
+                                           std::function<void()> callback) {
+        loader.m_regionLoadStartCallback = std::move(callback);
+    }
+
+    static void setPayloadBuildStartCallback(AsyncChunkLoader& loader,
+                                             std::function<void()> callback) {
+        loader.m_payloadBuildStartCallback = std::move(callback);
+    }
+
+    static size_t regionCompletionCount(const AsyncChunkLoader& loader) {
+        return loader.m_regionComplete.size();
+    }
+
+    static void retainInRegionCompletionQueue(
+        AsyncChunkLoader& loader,
+        std::shared_ptr<ChunkRegionSnapshot> lifetimeProbe) {
+        AsyncChunkLoader::RegionResult result;
+        result.entry.region = std::move(lifetimeProbe);
+        loader.m_regionComplete.push(std::move(result));
+    }
+};
+}
+
 namespace {
+class LoaderWorkGate {
+public:
+    void enterAndWait() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_entered = true;
+        m_condition.notify_all();
+        m_condition.wait(lock, [this]() { return m_released; });
+    }
+
+    bool waitUntilEntered() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        return m_condition.wait_for(
+            lock,
+            std::chrono::seconds(5),
+            [this]() { return m_entered; });
+    }
+
+    void release() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_released = true;
+        m_condition.notify_all();
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    bool m_entered = false;
+    bool m_released = false;
+};
+
+class LoaderWorkRelease {
+public:
+    LoaderWorkRelease(std::shared_ptr<LoaderWorkGate> regionGate,
+                      std::shared_ptr<LoaderWorkGate> payloadGate)
+        : m_regionGate(std::move(regionGate)),
+          m_payloadGate(std::move(payloadGate)) {}
+
+    ~LoaderWorkRelease() {
+        m_regionGate->release();
+        m_payloadGate->release();
+    }
+
+private:
+    std::shared_ptr<LoaderWorkGate> m_regionGate;
+    std::shared_ptr<LoaderWorkGate> m_payloadGate;
+};
+
+bool waitForRegionCompletion(const AsyncChunkLoader& loader) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        size_t completionCount = Rigel::Persistence::detail::
+            AsyncChunkLoaderTestAccess::regionCompletionCount(loader);
+        if (completionCount > 0) {
+            return true;
+        }
+        std::this_thread::yield();
+    }
+    return Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        regionCompletionCount(loader) > 0;
+}
+
 std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     BlockType solid;
     solid.identifier = "rigel:test_solid";
@@ -679,39 +770,88 @@ TEST_CASE(AsyncChunkLoader_DestroyWithInFlightJobs) {
     auto generator = makeGenerator(registry);
     world.setGenerator(generator);
 
-    BlockID testA = registerTestBlock(registry, "rigel:test_destroy_a");
-    BlockID testB = registerTestBlock(registry, "rigel:test_destroy_b");
-    std::vector<BlockID> palette = {BlockRegistry::airId(), testA, testB};
-
-    std::vector<std::pair<ChunkCoord, ChunkData>> payloads;
-    payloads.reserve(16);
-    for (int z = 0; z < 4; ++z) {
-        for (int x = 0; x < 4; ++x) {
-            ChunkCoord coord{x, 0, z};
-            payloads.emplace_back(coord, buildPayload(coord, registry, palette, true, std::nullopt, true));
-        }
-    }
+    BlockID testBlock = registerTestBlock(registry, "rigel:test_destroy");
+    std::vector<BlockID> palette = {BlockRegistry::airId(), testBlock};
+    ChunkCoord payloadCoord{0, 0, 0};
+    ChunkCoord regionCoord{64, 0, 0};
+    ChunkData payload =
+        buildPayload(payloadCoord, registry, palette, true, std::nullopt, true);
+    ChunkData regionPayload =
+        buildPayload(regionCoord, registry, palette, true, std::nullopt, true);
 
     MemoryContext ctx;
-    saveRegionForPayloads(ctx.service, ctx.context, "rigel:default", payloads);
+    saveRegionForPayload(ctx.service, ctx.context, "rigel:default", payloadCoord, payload);
+    saveRegionForPayload(ctx.service, ctx.context, "rigel:default", regionCoord, regionPayload);
 
-    {
-        AsyncChunkLoader loader(
-            ctx.service,
-            ctx.context,
-            world,
-            generator->config().world.version,
-            2,
-            2,
-            4,
-            generator);
+    auto loader = std::make_unique<AsyncChunkLoader>(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        1,
+        1,
+        4,
+        generator);
+    loader->setPrefetchRadius(0);
 
-        for (const auto& entry : payloads) {
-            CHECK_EQ(loader.request(entry.first), ChunkLoadRequestResult::Queued);
-        }
+    auto regionGate = std::make_shared<LoaderWorkGate>();
+    auto payloadGate = std::make_shared<LoaderWorkGate>();
+    LoaderWorkRelease releaseWork(regionGate, payloadGate);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setPayloadBuildStartCallback(
+        *loader,
+        [payloadGate]() { payloadGate->enterAndWait(); });
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    CHECK_EQ(loader->request(payloadCoord), ChunkLoadRequestResult::Queued);
+    CHECK(waitForRegionCompletion(*loader));
+    loader->drainCompletions(1);
+    CHECK(payloadGate->waitUntilEntered());
 
-    CHECK(true);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setRegionLoadStartCallback(
+        *loader,
+        [regionGate]() { regionGate->enterAndWait(); });
+    CHECK_EQ(loader->request(regionCoord), ChunkLoadRequestResult::Queued);
+    CHECK(regionGate->waitUntilEntered());
+
+    auto completionQueueDestroyed = std::make_shared<std::promise<void>>();
+    auto completionQueueLifetime = completionQueueDestroyed->get_future();
+    auto lifetimeProbe = std::shared_ptr<ChunkRegionSnapshot>(
+        new ChunkRegionSnapshot(),
+        [completionQueueDestroyed](ChunkRegionSnapshot* snapshot) {
+            delete snapshot;
+            completionQueueDestroyed->set_value();
+        });
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::retainInRegionCompletionQueue(
+        *loader,
+        std::move(lifetimeProbe));
+
+    std::promise<void> destructionThreadReady;
+    auto destructionThreadStarted = destructionThreadReady.get_future();
+    std::promise<void> startDestruction;
+    auto startDestructionSignal = startDestruction.get_future();
+    auto destruction = std::async(
+        std::launch::async,
+        [loader = std::move(loader),
+         &destructionThreadReady,
+         startDestructionSignal = std::move(startDestructionSignal)]() mutable {
+            destructionThreadReady.set_value();
+            startDestructionSignal.wait();
+            loader.reset();
+        });
+    LoaderWorkRelease releaseWorkBeforeFutureWait(regionGate, payloadGate);
+
+    destructionThreadStarted.wait();
+    startDestruction.set_value();
+    CHECK_EQ(destruction.wait_for(std::chrono::milliseconds(50)),
+             std::future_status::timeout);
+    CHECK_EQ(completionQueueLifetime.wait_for(std::chrono::milliseconds(0)),
+             std::future_status::timeout);
+    regionGate->release();
+    CHECK_EQ(destruction.wait_for(std::chrono::milliseconds(50)),
+             std::future_status::timeout);
+    payloadGate->release();
+    CHECK_EQ(destruction.wait_for(std::chrono::seconds(5)),
+             std::future_status::ready);
+    destruction.get();
+    CHECK_EQ(completionQueueLifetime.wait_for(std::chrono::milliseconds(0)),
+             std::future_status::ready);
 }

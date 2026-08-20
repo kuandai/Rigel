@@ -57,6 +57,11 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
     m_prefetchRadius = radius;
 }
 
+AsyncChunkLoader::~AsyncChunkLoader() {
+    m_ioPool.stop();
+    m_workerPool.stop();
+}
+
 void AsyncChunkLoader::setMaxCachedRegions(size_t maxRegions) {
     m_maxCachedRegions = maxRegions;
 }
@@ -382,8 +387,16 @@ bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key) {
     m_inFlight.insert(key);
     PersistenceService* servicePtr = m_service;
     PersistenceContext contextCopy = m_context;
+    auto regionLoadStartCallback = m_regionLoadStartCallback;
 
-    auto job = [this, servicePtr, contextCopy, key]() mutable {
+    auto job = [this,
+                servicePtr,
+                contextCopy,
+                key,
+                regionLoadStartCallback = std::move(regionLoadStartCallback)]() mutable {
+        if (regionLoadStartCallback) {
+            regionLoadStartCallback();
+        }
         RegionResult result;
         result.key = key;
         try {
@@ -448,8 +461,18 @@ void AsyncChunkLoader::queuePayloadBuild(const RegionEntry& entry, Voxel::ChunkC
     auto registry = &m_world->blockRegistry();
     std::vector<const ChunkSnapshot*> spans = spanIt->second;
     std::shared_ptr<ChunkRegionSnapshot> region = entry.region;
+    auto payloadBuildStartCallback = m_payloadBuildStartCallback;
 
-    auto job = [this, coord, spans = std::move(spans), generator, registry, region]() mutable {
+    auto job = [this,
+                coord,
+                spans = std::move(spans),
+                generator,
+                registry,
+                region,
+                payloadBuildStartCallback = std::move(payloadBuildStartCallback)]() mutable {
+        if (payloadBuildStartCallback) {
+            payloadBuildStartCallback();
+        }
         ChunkPayload payload;
         payload.coord = coord;
         payload.worldGenVersion = generator ? generator->config().world.version : 0;

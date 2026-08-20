@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -19,6 +20,10 @@
 namespace Rigel::Voxel { class World; class Chunk; }
 
 namespace Rigel::Persistence {
+
+namespace detail {
+struct AsyncChunkLoaderTestAccess;
+}
 
 class AsyncChunkLoader {
 public:
@@ -30,6 +35,7 @@ public:
                      size_t workerThreads,
                      int viewDistanceChunks,
                      std::shared_ptr<Voxel::WorldGenerator> generator);
+    ~AsyncChunkLoader();
 
     Voxel::ChunkLoadRequestResult request(Voxel::ChunkCoord coord);
     bool isPending(Voxel::ChunkCoord coord) const;
@@ -47,6 +53,8 @@ public:
     void setLoadQueueLimit(size_t maxPending);
 
 private:
+    friend struct detail::AsyncChunkLoaderTestAccess;
+
     struct RegionKeyHash {
         size_t operator()(const RegionKey& key) const;
     };
@@ -110,6 +118,9 @@ private:
     size_t m_regionDrainBudget = 32;
 
     std::shared_ptr<Voxel::WorldGenerator> m_generator;
+
+    std::function<void()> m_regionLoadStartCallback;
+    std::function<void()> m_payloadBuildStartCallback;
 
     Voxel::detail::ThreadPool m_ioPool;
     Voxel::detail::ThreadPool m_workerPool;

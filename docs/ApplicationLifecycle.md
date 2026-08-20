@@ -28,7 +28,7 @@ Shutdown persists world state and releases resources.
 ## Phase 1: Bootstrap (Application::Application)
 
 1. Initialize GLFW and create the main window.
-   - `glfwInit()` and OpenGL version hints.
+   - `glfwInit()` and an OpenGL 4.1 forward-compatible core context request.
    - `glfwCreateWindow()` + `glfwMakeContextCurrent()`.
    - Interactive runs synchronize buffer swaps to the display. Chunk benchmark
      runs disable swap synchronization so presentation does not cap throughput.

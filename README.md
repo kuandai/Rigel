@@ -13,6 +13,7 @@ Ensure you have the following installed:
 * **C++ Compiler** GCC 12.2 supporting C++20. Clang may work, untested
 * **CMake** Version 3.20+
 * **Conan 2.x** `pip install conan`
+* **OpenGL** Version 4.1 core with GLSL 4.10 support
 
 ### One-Time Setup
 

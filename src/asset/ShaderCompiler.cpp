@@ -1,5 +1,6 @@
 #include "Rigel/Asset/ShaderCompiler.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Render/OpenGLRuntime.h"
 
 #include <spdlog/spdlog.h>
 #include <vector>
@@ -24,7 +25,8 @@ std::string ShaderCompiler::preprocess(
         result = source.substr(0, versionEnd + 1);
     } else {
         // Default version if none specified
-        result = "#version 410 core\n";
+        result = Rigel::Render::kGLSLVersionDirective;
+        result += '\n';
         versionEnd = 0;
     }
 

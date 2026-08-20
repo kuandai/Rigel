@@ -1,6 +1,7 @@
 #include "Rigel/UI/ImGuiLayer.h"
 
 #include "Rigel/Core/Profiler.h"
+#include "Rigel/Render/OpenGLRuntime.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -40,7 +41,7 @@ bool init(GLFWwindow* window) {
         ImGui::DestroyContext();
         return false;
     }
-    if (!ImGui_ImplOpenGL3_Init("#version 330")) {
+    if (!ImGui_ImplOpenGL3_Init(Render::kGLSLVersionDirective)) {
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         return false;

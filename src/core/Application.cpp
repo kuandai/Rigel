@@ -9,6 +9,7 @@
 #include "Rigel/Persistence/PersistenceConfigBootstrap.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/FrameRenderer.h"
+#include "Rigel/Render/OpenGLRuntime.h"
 #include "Rigel/Render/RenderConfigBootstrap.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/ChunkTasks.h"
@@ -107,9 +108,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     spdlog::info("GLFW initialized successfully");
 
     // Create a simple GLFW window
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, Render::kOpenGLContextMajorVersion);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, Render::kOpenGLContextMinorVersion);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
 
     m_impl->window.window = glfwCreateWindow(800, 600, "Rigel", nullptr, nullptr);
@@ -125,6 +127,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     spdlog::info("Frame pacing swap interval: {}", swapInterval);
 
     // Initialize GLEW
+    glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {
         spdlog::error("GLEW initialization failed");
         glfwDestroyWindow(m_impl->window.window);

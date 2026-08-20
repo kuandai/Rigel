@@ -45,8 +45,8 @@ fragment source produces `AssetLoadError`.
 
 The loader also accepts a standalone `compute` source instead of the graphics
 stages. `ShaderCompiler` compiles it as `GL_COMPUTE_SHADER`, but the application
-creates an OpenGL 3.3 core context and does not declare compute assets, so this
-path is not usable in the current application runtime.
+creates an OpenGL 4.1 core context and does not declare compute assets. Compute
+shaders require OpenGL 4.3, so this path is not usable in the current runtime.
 
 ## Shader Inheritance
 
@@ -109,6 +109,11 @@ When the source does not begin with `#version`, preprocessing prepends
 `#version 410 core`. Rigel's shipped shader sources also explicitly declare
 `#version 410 core`.
 
+The application, compiler fallback, and ImGui backend share an OpenGL 4.1 core
+and GLSL 4.10 runtime contract. A mechanical test walks the shader entries in
+the embedded manifest and checks each referenced stage declaration against that
+supported GLSL version.
+
 The preprocessor does not resolve `#include` directives.
 
 ## ShaderAsset Ownership and Lookups
@@ -147,11 +152,8 @@ inheritance variants.
 - Shader assets are loaded once and cached; there is no source hot reload.
 - The preprocessor supports definition injection but not includes.
 - Inheritance cycles are not detected.
-- Both the fallback and shipped sources require GLSL 4.10, while `Application`
-  requests an OpenGL 3.3 core context. A strict 3.3 implementation cannot
-  compile the current shader set.
-- The loader has a compute-source path, but the application context does not
-  provide the required compute-shader runtime.
+- The loader has a compute-source path, but the OpenGL 4.1 application context
+  does not provide the OpenGL 4.3 compute-shader runtime.
 
 ---
 

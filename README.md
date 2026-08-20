@@ -1,5 +1,21 @@
 # Rigel
-High-performance, extensible voxel engine
+
+Rigel is a voxel engine prototype. The current application opens a single local
+world and provides:
+
+* deterministic, seed-based terrain generation with climate and biome
+  selection, caves, surface materials, and simple structures;
+* background chunk loading, generation, meshing, and distance-based streaming;
+* OpenGL 4.1 rendering for voxel layers and entities, with cascaded shadows,
+  temporal anti-aliasing, and debug overlays; and
+* YAML-configured assets and world settings, plus CR-format persistence for
+  chunks and entities.
+
+The CMake project is currently versioned `0.0.0`, and debug builds identify
+themselves as a Developer Preview. Linux with GCC is the tested build
+environment; other platforms and Clang are not currently verified. See
+[`docs/README.md`](docs/README.md) for the implemented architecture and known
+limitations.
 
 ## Build Instructions
 

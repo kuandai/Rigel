@@ -179,6 +179,72 @@ void checkShaderLoadError(const char* configSource, const std::string& expectedR
     throw Rigel::Test::TestFailure("Expected AssetLoadError");
 }
 
+const ShaderSource validShaderSource{
+    "#version 410 core\n"
+    "void main() {\n"
+    "    gl_Position = vec4(0.0);\n"
+    "}\n",
+    "#version 410 core\n"
+    "out vec4 color;\n"
+    "void main() {\n"
+    "    color = vec4(1.0);\n"
+    "}\n"
+};
+
+void checkFragmentCompileFailure() {
+    ShaderSource source = validShaderSource;
+    source.fragment =
+        "#version 410 core\n"
+        "out vec4 color;\n"
+        "void main() {\n"
+        "    color = missing_value;\n"
+        "}\n";
+
+    try {
+        const GLuint program = ShaderCompiler::compile(source, "fragment_failure");
+        glDeleteProgram(program);
+    } catch (const ShaderCompileError& error) {
+        CHECK_EQ(error.stage(), GL_FRAGMENT_SHADER);
+        CHECK_EQ(glGetError(), GL_NO_ERROR);
+        return;
+    } catch (const std::exception& error) {
+        throw Rigel::Test::TestFailure(
+            "Expected ShaderCompileError, received: " + std::string(error.what()));
+    }
+
+    throw Rigel::Test::TestFailure("Expected ShaderCompileError");
+}
+
+void checkLinkFailure() {
+    const ShaderSource source{
+        "#version 410 core\n"
+        "out vec3 link_value;\n"
+        "void main() {\n"
+        "    link_value = vec3(1.0);\n"
+        "    gl_Position = vec4(0.0);\n"
+        "}\n",
+        "#version 410 core\n"
+        "in vec4 link_value;\n"
+        "out vec4 color;\n"
+        "void main() {\n"
+        "    color = link_value;\n"
+        "}\n"
+    };
+
+    try {
+        const GLuint program = ShaderCompiler::compile(source, "link_failure");
+        glDeleteProgram(program);
+    } catch (const ShaderLinkError&) {
+        CHECK_EQ(glGetError(), GL_NO_ERROR);
+        return;
+    } catch (const std::exception& error) {
+        throw Rigel::Test::TestFailure(
+            "Expected ShaderLinkError, received: " + std::string(error.what()));
+    }
+
+    throw Rigel::Test::TestFailure("Expected ShaderLinkError");
+}
+
 } // namespace
 
 TEST_CASE(ShaderLoader_MissingStagesFailClearly) {
@@ -239,4 +305,28 @@ TEST_CASE(ShaderCompiler_ShippedProgramsCompileAndLink) {
         ++compiledPrograms;
     });
     CHECK(compiledPrograms > 0);
+}
+
+TEST_CASE(ShaderCompiler_HandlesCompileAndLinkOutcomes) {
+    HiddenOpenGLContext context;
+    if (!context.available()) {
+        SKIP_TEST(context.error());
+    }
+
+    checkFragmentCompileFailure();
+    checkLinkFailure();
+
+    ShaderAsset compiled;
+    compiled.program = ShaderCompiler::compile(validShaderSource, "valid_program");
+    CHECK_NE(compiled.program, 0u);
+    CHECK_EQ(glIsProgram(compiled.program), GL_TRUE);
+
+    GLint linkStatus = GL_FALSE;
+    glGetProgramiv(compiled.program, GL_LINK_STATUS, &linkStatus);
+    CHECK_EQ(linkStatus, GL_TRUE);
+
+    GLint attachedShaders = -1;
+    glGetProgramiv(compiled.program, GL_ATTACHED_SHADERS, &attachedShaders);
+    CHECK_EQ(attachedShaders, 0);
+    CHECK_EQ(glGetError(), GL_NO_ERROR);
 }

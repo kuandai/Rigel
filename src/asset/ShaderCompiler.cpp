@@ -2,27 +2,67 @@
 #include "Rigel/Asset/AssetManager.h"
 
 #include <spdlog/spdlog.h>
-#include <vector>
+#include <utility>
 
 namespace Rigel::Asset {
+namespace {
 
-GLuint ShaderCompiler::compileStage(
-    GLenum type,
-    const std::string& source,
-    const std::string& shaderId
-) {
-    GLuint shader = glCreateShader(type);
+class ShaderObject {
+public:
+    explicit ShaderObject(GLenum type)
+        : m_id(glCreateShader(type))
+    {}
 
-    const char* src = source.c_str();
-    glShaderSource(shader, 1, &src, nullptr);
-    glCompileShader(shader);
+    ShaderObject(const ShaderObject&) = delete;
+    ShaderObject& operator=(const ShaderObject&) = delete;
 
-    checkCompileErrors(shader, type, shaderId);
+    ShaderObject(ShaderObject&& other) noexcept
+        : m_id(std::exchange(other.m_id, 0))
+    {}
 
-    return shader;
+    ~ShaderObject() {
+        if (m_id != 0) {
+            glDeleteShader(m_id);
+        }
+    }
+
+    GLuint get() const { return m_id; }
+
+private:
+    GLuint m_id;
+};
+
+class ProgramObject {
+public:
+    ProgramObject()
+        : m_id(glCreateProgram())
+    {}
+
+    ProgramObject(const ProgramObject&) = delete;
+    ProgramObject& operator=(const ProgramObject&) = delete;
+
+    ~ProgramObject() {
+        if (m_id != 0) {
+            glDeleteProgram(m_id);
+        }
+    }
+
+    GLuint get() const { return m_id; }
+    GLuint release() { return std::exchange(m_id, 0); }
+
+private:
+    GLuint m_id;
+};
+
+const char* stageToString(GLenum stage) {
+    switch (stage) {
+        case GL_VERTEX_SHADER:   return "Vertex";
+        case GL_FRAGMENT_SHADER: return "Fragment";
+        default:                 return "Unknown";
+    }
 }
 
-void ShaderCompiler::checkCompileErrors(
+void checkCompileErrors(
     GLuint shader,
     GLenum stage,
     const std::string& shaderId
@@ -40,12 +80,27 @@ void ShaderCompiler::checkCompileErrors(
         spdlog::error("{} shader '{}' compilation failed:\n{}",
                       stageToString(stage), shaderId, log);
 
-        glDeleteShader(shader);
         throw ShaderCompileError(shaderId, stage, log);
     }
 }
 
-void ShaderCompiler::checkLinkErrors(GLuint program, const std::string& shaderId) {
+ShaderObject compileStage(
+    GLenum type,
+    const std::string& source,
+    const std::string& shaderId
+) {
+    ShaderObject shader(type);
+
+    const char* src = source.c_str();
+    glShaderSource(shader.get(), 1, &src, nullptr);
+    glCompileShader(shader.get());
+
+    checkCompileErrors(shader.get(), type, shaderId);
+
+    return shader;
+}
+
+void checkLinkErrors(GLuint program, const std::string& shaderId) {
     GLint success;
     glGetProgramiv(program, GL_LINK_STATUS, &success);
 
@@ -58,18 +113,11 @@ void ShaderCompiler::checkLinkErrors(GLuint program, const std::string& shaderId
 
         spdlog::error("Shader program '{}' linking failed:\n{}", shaderId, log);
 
-        glDeleteProgram(program);
         throw ShaderLinkError(shaderId, log);
     }
 }
 
-const char* ShaderCompiler::stageToString(GLenum stage) {
-    switch (stage) {
-        case GL_VERTEX_SHADER:   return "Vertex";
-        case GL_FRAGMENT_SHADER: return "Fragment";
-        default:                 return "Unknown";
-    }
-}
+} // namespace
 
 GLuint ShaderCompiler::compile(const ShaderSource& source, const std::string& shaderId) {
     if (source.vertex.empty()) {
@@ -79,29 +127,23 @@ GLuint ShaderCompiler::compile(const ShaderSource& source, const std::string& sh
         throw AssetLoadError(shaderId, "Fragment shader source is required");
     }
 
-    std::vector<GLuint> shaders;
-    shaders.push_back(compileStage(GL_VERTEX_SHADER, source.vertex, shaderId));
-    shaders.push_back(compileStage(GL_FRAGMENT_SHADER, source.fragment, shaderId));
+    ShaderObject vertex = compileStage(GL_VERTEX_SHADER, source.vertex, shaderId);
+    ShaderObject fragment = compileStage(GL_FRAGMENT_SHADER, source.fragment, shaderId);
 
-    // Create and link program
-    GLuint program = glCreateProgram();
+    ProgramObject program;
 
-    for (GLuint shader : shaders) {
-        glAttachShader(program, shader);
-    }
+    glAttachShader(program.get(), vertex.get());
+    glAttachShader(program.get(), fragment.get());
 
-    glLinkProgram(program);
-    checkLinkErrors(program, shaderId);
+    glLinkProgram(program.get());
+    checkLinkErrors(program.get(), shaderId);
 
-    // Detach and delete shader objects
-    for (GLuint shader : shaders) {
-        glDetachShader(program, shader);
-        glDeleteShader(shader);
-    }
+    glDetachShader(program.get(), vertex.get());
+    glDetachShader(program.get(), fragment.get());
 
-    spdlog::debug("Compiled shader program '{}' (id={})", shaderId, program);
+    spdlog::debug("Compiled shader program '{}' (id={})", shaderId, program.get());
 
-    return program;
+    return program.release();
 }
 
 } // namespace Rigel::Asset

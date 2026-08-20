@@ -33,12 +33,6 @@ public:
      * @throws ShaderLinkError if the program fails to link
      */
     static GLuint compile(const ShaderSource& source, const std::string& shaderId);
-
-private:
-    static GLuint compileStage(GLenum type, const std::string& source, const std::string& shaderId);
-    static void checkCompileErrors(GLuint shader, GLenum stage, const std::string& shaderId);
-    static void checkLinkErrors(GLuint program, const std::string& shaderId);
-    static const char* stageToString(GLenum stage);
 };
 
 } // namespace Rigel::Asset

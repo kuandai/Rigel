@@ -51,6 +51,7 @@ void ChunkStreamer::setConfig(const WorldGenConfig::StreamConfig& config) {
     m_initialStreamingBegun = false;
     m_workObservedThisUpdate = false;
     m_workStartedThisUpdate = false;
+    m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
     ensureThreadPool();
     refreshDiagnostics(false);
 }
@@ -266,21 +267,94 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     size_t meshLimitMissing = meshLimit;
     size_t meshLimitDirty = meshLimit;
     if (meshLimit != std::numeric_limits<size_t>::max()) {
-        size_t reserve = meshLimit / 4;
-        if (meshLimit > 1 && reserve == 0) {
-            reserve = 1;
+        if (meshLimit == 1) {
+            meshLimitMissing = 1;
+            meshLimitDirty = 1;
+        } else {
+            size_t reserve = meshLimit / 4;
+            if (reserve == 0) {
+                reserve = 1;
+            }
+            if (reserve >= meshLimit) {
+                reserve = meshLimit - 1;
+            }
+            meshLimitMissing = meshLimit - reserve;
+            meshLimitDirty = reserve;
         }
-        if (reserve >= meshLimit) {
-            reserve = meshLimit - 1;
-        }
-        meshLimitMissing = meshLimit - reserve;
-        meshLimitDirty = reserve;
     }
 
     bool genFull = m_inFlightGen >= genLimit;
     bool meshFull = m_inFlightMesh >= meshLimit;
+    bool dirtyHasSingleSlotTurn =
+        meshLimit == 1 &&
+        m_nextSingleSlotMeshKind == MeshRequestKind::Dirty &&
+        !m_dirtyMeshQueue.empty();
     bool meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
     bool meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
+
+    auto scheduleDirtyMeshes = [&]() {
+        if (m_dirtyMeshQueue.empty()) {
+            return;
+        }
+
+        PROFILE_SCOPE("Streaming/Update/MeshDirty");
+        while (!m_dirtyMeshQueue.empty()) {
+            if (meshFull || meshFullDirty) {
+                break;
+            }
+
+            ChunkCoord coord = m_dirtyMeshQueue.top().coord;
+            m_dirtyMeshQueue.pop();
+            if (m_dirtyMeshQueued.erase(coord) == 0) {
+                continue;
+            }
+            ++schedulerCoordinatesInspected;
+
+            if (m_desiredSet.find(coord) == m_desiredSet.end()) {
+                continue;
+            }
+
+            ChunkState state = ChunkState::Missing;
+            auto stateIt = m_states.find(coord);
+            if (stateIt != m_states.end()) {
+                state = stateIt->second;
+            }
+
+            Chunk* chunk = m_chunkManager->getChunk(coord);
+            if (!chunk || chunk->isEmpty()) {
+                continue;
+            }
+
+            if (state == ChunkState::QueuedMesh && chunk->isDirty()) {
+                auto flightIt = m_meshInFlight.find(coord);
+                if (flightIt != m_meshInFlight.end() &&
+                    flightIt->second.observedRevision != chunk->meshRevision()) {
+                    flightIt->second.observedRevision = chunk->meshRevision();
+                    ++m_workMetrics.meshInvalidations;
+                    ++m_workMetrics.meshRequestsCoalesced;
+                }
+                continue;
+            }
+
+            bool hasMesh = m_meshStore && m_meshStore->contains(coord);
+            bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+            if (!isMeshed || !chunk->isDirty() || state == ChunkState::QueuedMesh) {
+                continue;
+            }
+
+            if (!hasAllNeighborsLoaded(coord)) {
+                waitForMeshDependencies(coord);
+                continue;
+            }
+            enqueueMesh(coord, *chunk, MeshRequestKind::Dirty);
+            meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
+            meshFull = m_inFlightMesh >= meshLimit;
+        }
+    };
+
+    if (dirtyHasSingleSlotTurn) {
+        scheduleDirtyMeshes();
+    }
 
     if (!m_loadGenQueue.empty()) {
         PROFILE_SCOPE("Streaming/Update/LoadGen");
@@ -405,61 +479,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
     }
 
-    if (!m_dirtyMeshQueue.empty()) {
-        PROFILE_SCOPE("Streaming/Update/MeshDirty");
-        while (!m_dirtyMeshQueue.empty()) {
-            if (meshFull || meshFullDirty) {
-                break;
-            }
-
-            ChunkCoord coord = m_dirtyMeshQueue.top().coord;
-            m_dirtyMeshQueue.pop();
-            if (m_dirtyMeshQueued.erase(coord) == 0) {
-                continue;
-            }
-            ++schedulerCoordinatesInspected;
-
-            if (m_desiredSet.find(coord) == m_desiredSet.end()) {
-                continue;
-            }
-
-            ChunkState state = ChunkState::Missing;
-            auto stateIt = m_states.find(coord);
-            if (stateIt != m_states.end()) {
-                state = stateIt->second;
-            }
-
-            Chunk* chunk = m_chunkManager->getChunk(coord);
-            if (!chunk || chunk->isEmpty()) {
-                continue;
-            }
-
-            if (state == ChunkState::QueuedMesh && chunk->isDirty()) {
-                auto flightIt = m_meshInFlight.find(coord);
-                if (flightIt != m_meshInFlight.end() &&
-                    flightIt->second.observedRevision != chunk->meshRevision()) {
-                    flightIt->second.observedRevision = chunk->meshRevision();
-                    ++m_workMetrics.meshInvalidations;
-                    ++m_workMetrics.meshRequestsCoalesced;
-                }
-                continue;
-            }
-
-            bool hasMesh = m_meshStore && m_meshStore->contains(coord);
-            bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
-            if (!isMeshed || !chunk->isDirty() || state == ChunkState::QueuedMesh) {
-                continue;
-            }
-
-            if (!hasAllNeighborsLoaded(coord)) {
-                waitForMeshDependencies(coord);
-                continue;
-            }
-            enqueueMesh(coord, *chunk, MeshRequestKind::Dirty);
-            meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
-            meshFull = m_inFlightMesh >= meshLimit;
-        }
-    }
+    scheduleDirtyMeshes();
 
     if (rebuildDesired) {
         PROFILE_SCOPE("Streaming/Update/Evict");
@@ -640,6 +660,7 @@ void ChunkStreamer::reset() {
     m_initialStreamingBegun = false;
     m_workObservedThisUpdate = false;
     m_workStartedThisUpdate = false;
+    m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
     m_streamingUpdateSequence = 0;
     m_lifecycleUpdateSequence = 0;
     for (auto& entry : m_genCancel) {
@@ -1163,6 +1184,11 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind 
         if (!invalidationAlreadyCounted) {
             ++m_workMetrics.meshInvalidations;
         }
+    }
+    if (m_config.meshQueueLimit == 1) {
+        m_nextSingleSlotMeshKind = kind == MeshRequestKind::Missing
+            ? MeshRequestKind::Dirty
+            : MeshRequestKind::Missing;
     }
 
     BlockRegistry* registry = m_registry;

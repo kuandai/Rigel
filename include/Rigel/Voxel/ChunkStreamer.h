@@ -206,6 +206,7 @@ private:
     size_t m_inFlightMeshMissing = 0;
     size_t m_inFlightMeshDirty = 0;
     uint64_t m_nextMeshRequestId = 1;
+    MeshRequestKind m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;

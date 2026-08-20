@@ -15,23 +15,24 @@ TEST_CASE(AssetManager_LoadsEmbeddedManifest) {
     CHECK(assets.exists("entity_anims/demo_spin"));
 }
 
-TEST_CASE(AssetManager_ShaderEntriesHaveFragmentSources) {
+TEST_CASE(AssetManager_ShaderEntriesHaveRequiredStages) {
     AssetManager assets;
     CHECK_NO_THROW(assets.loadManifest("manifest.yaml"));
 
-    const auto* voxelShadow = assets.getEntry("shaders/voxel_shadow_depth");
-    CHECK(voxelShadow);
-    CHECK(voxelShadow->hasChild("vertex"));
-    CHECK(voxelShadow->hasChild("fragment"));
-    auto voxelFrag = voxelShadow->getString("fragment");
-    CHECK(voxelFrag);
-    CHECK(!voxelFrag->empty());
-
-    const auto* entityShadow = assets.getEntry("shaders/entity_shadow_depth");
-    CHECK(entityShadow);
-    CHECK(entityShadow->hasChild("vertex"));
-    CHECK(entityShadow->hasChild("fragment"));
-    auto entityFrag = entityShadow->getString("fragment");
-    CHECK(entityFrag);
-    CHECK(!entityFrag->empty());
+    size_t shaderCount = 0;
+    assets.forEachInCategory("shaders", [&](const std::string& name,
+                                                const AssetManager::AssetEntry& entry) {
+        const auto vertex = entry.getString("vertex");
+        const auto fragment = entry.getString("fragment");
+        if (!vertex || vertex->empty()) {
+            throw Rigel::Test::TestFailure(
+                "Shader entry '" + name + "' is missing its vertex source");
+        }
+        if (!fragment || fragment->empty()) {
+            throw Rigel::Test::TestFailure(
+                "Shader entry '" + name + "' is missing its fragment source");
+        }
+        ++shaderCount;
+    });
+    CHECK(shaderCount > 0);
 }

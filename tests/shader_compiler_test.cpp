@@ -2,6 +2,7 @@
 
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Asset/ShaderCompiler.h"
+#include "Rigel/Asset/ShaderLoader.h"
 #include "Rigel/Render/OpenGLRuntime.h"
 
 #include <GLFW/glfw3.h>
@@ -9,7 +10,6 @@
 #include <array>
 #include <charconv>
 #include <string_view>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -55,25 +55,14 @@ int readShaderVersion(const std::string& path, std::span<const char> data) {
 std::vector<std::string> manifestShaderStagePaths(
     const AssetManager::AssetEntry& entry
 ) {
-    constexpr std::array<std::string_view, 4> stageKeys = {
-        "vertex", "fragment", "geometry", "compute"
+    constexpr std::array<std::string_view, 2> stageKeys = {
+        "vertex", "fragment"
     };
 
     std::vector<std::string> paths;
     for (const std::string_view key : stageKeys) {
         if (const auto path = entry.getString(std::string(key))) {
             paths.push_back(*path);
-        }
-    }
-
-    if (!entry.getString("fragment") && !entry.getString("compute")) {
-        if (const auto vertexPath = entry.getString("vertex")) {
-            std::string fragmentPath = *vertexPath;
-            const size_t extension = fragmentPath.rfind(".vert");
-            if (extension != std::string::npos) {
-                fragmentPath.replace(extension, 5, ".frag");
-                paths.push_back(std::move(fragmentPath));
-            }
         }
     }
 
@@ -168,52 +157,45 @@ private:
     std::string m_error;
 };
 
+void checkShaderLoadError(const char* configSource, const std::string& expectedReason) {
+    AssetManager assets;
+    ryml::Tree configTree = ryml::parse_in_arena(configSource);
+    const std::string shaderId = "shaders/incomplete";
+    LoadContext context{shaderId, configTree.crootref(), assets};
+    ShaderLoader loader;
+
+    try {
+        loader.load(context);
+    } catch (const AssetLoadError& error) {
+        CHECK_EQ(
+            std::string(error.what()),
+            "Failed to load asset 'shaders/incomplete': " + expectedReason);
+        return;
+    } catch (const std::exception& error) {
+        throw Rigel::Test::TestFailure(
+            "Expected AssetLoadError, received: " + std::string(error.what()));
+    }
+
+    throw Rigel::Test::TestFailure("Expected AssetLoadError");
+}
+
 } // namespace
 
-TEST_CASE(ShaderCompiler_PreprocessAddsDefines) {
-    ShaderSource source;
-    source.vertex = "#version 330 core\nvoid main(){}";
-    source.defines["FOO"] = "1";
-    source.defines["BAR"] = "true";
-
-    std::string out = ShaderCompiler::preprocess(source.vertex, source.defines);
-    CHECK(out.find("#version 330 core") == 0);
-    CHECK(out.find("#define FOO 1") != std::string::npos);
-    CHECK(out.find("#define BAR 1") != std::string::npos);
+TEST_CASE(ShaderLoader_MissingStagesFailClearly) {
+    checkShaderLoadError(
+        "fragment: shaders/voxel.frag\n",
+        "Shader missing 'vertex' source");
+    checkShaderLoadError(
+        "vertex: shaders/not_present.vert\n",
+        "Shader missing 'fragment' source");
 }
 
-TEST_CASE(ShaderCompiler_PreprocessInsertsVersion) {
-    std::string src = "void main(){}";
-    std::unordered_map<std::string, std::string> defines;
-    defines["BAZ"] = "2";
-
-    std::string out = ShaderCompiler::preprocess(src, defines);
-    CHECK(out.find(Rigel::Render::kGLSLVersionDirective) == 0);
-    CHECK(out.find("#define BAZ 2") != std::string::npos);
-}
-
-TEST_CASE(ShaderCompiler_ImplicitFragmentVersionIsValidated) {
-    AssetManager::AssetEntry entry;
-    entry.configTree = ryml::parse_in_arena("vertex: shaders/future.vert\n");
-    entry.config = entry.configTree.crootref();
-
-    constexpr std::string_view supportedSource = "#version 410 core\nvoid main(){}";
-    constexpr std::string_view newerFragmentSource = "#version 450 core\nvoid main(){}";
-    bool loadedImplicitFragment = false;
-    std::unordered_set<std::string> checkedPaths;
-
-    CHECK_THROWS(validateManifestShaderStages(
-        entry,
-        Rigel::Render::kSupportedGLSLVersion,
-        checkedPaths,
-        [&](const std::string& path) -> std::span<const char> {
-            const std::string_view source = path == "shaders/future.frag"
-                ? newerFragmentSource
-                : supportedSource;
-            loadedImplicitFragment = path == "shaders/future.frag";
-            return {source.data(), source.size()};
-        }));
-    CHECK(loadedImplicitFragment);
+TEST_CASE(ShaderLoader_RejectsUnsupportedConfiguration) {
+    checkShaderLoadError(
+        "vertex: shaders/voxel.vert\n"
+        "fragment: shaders/voxel.frag\n"
+        "options: unused\n",
+        "Shader configuration contains unsupported field 'options'");
 }
 
 TEST_CASE(ShaderCompiler_ManifestShaderVersionsMatchRuntime) {
@@ -221,13 +203,6 @@ TEST_CASE(ShaderCompiler_ManifestShaderVersionsMatchRuntime) {
         Rigel::Render::kSupportedGLSLVersion,
         Rigel::Render::kOpenGLContextMajorVersion * 100 +
             Rigel::Render::kOpenGLContextMinorVersion * 10);
-
-    const std::string fallbackSource = ShaderCompiler::preprocess("void main(){}", {});
-    CHECK_EQ(
-        readShaderVersion(
-            "ShaderCompiler fallback",
-            std::span<const char>(fallbackSource.data(), fallbackSource.size())),
-        Rigel::Render::kSupportedGLSLVersion);
 
     AssetManager assets;
     CHECK_NO_THROW(assets.loadManifest("manifest.yaml"));

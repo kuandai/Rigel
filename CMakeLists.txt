@@ -189,25 +189,15 @@ if (RIGEL_BUILD_TESTS)
     target_compile_definitions(Rigel_profiler_tests PRIVATE RIGEL_ENABLE_PROFILER)
     add_dependencies(Rigel_tests Rigel_profiler_tests)
 
-    function(rigel_register_tests target)
-        set(test_case_names "")
-        foreach(test_src ${ARGN})
-            file(READ "${test_src}" test_contents)
-            string(REGEX MATCHALL "TEST_CASE\\(([A-Za-z0-9_]+)\\)" test_matches "${test_contents}")
-            foreach(test_match ${test_matches})
-                string(REGEX REPLACE "TEST_CASE\\(([A-Za-z0-9_]+)\\)" "\\1" test_name "${test_match}")
-                list(APPEND test_case_names "${test_name}")
-            endforeach()
-        endforeach()
-        list(REMOVE_DUPLICATES test_case_names)
-
-        foreach(test_name ${test_case_names})
-            add_test(NAME Rigel_${test_name} COMMAND ${target} --filter ${test_name})
-        endforeach()
-    endfunction()
-
-    rigel_register_tests(Rigel_tests ${TEST_SOURCES})
-    rigel_register_tests(Rigel_profiler_tests ${PROFILER_TEST_SOURCE})
+    add_test(NAME Rigel_tests COMMAND Rigel_tests)
+    add_test(NAME Rigel_profiler_tests COMMAND Rigel_profiler_tests)
+    add_test(
+        NAME Rigel_tests_filtered_count
+        COMMAND Rigel_tests --filter AssetHandle_Basics
+    )
+    set_tests_properties(Rigel_tests_filtered_count PROPERTIES
+        PASS_REGULAR_EXPRESSION "Ran 1 tests, 0 failed, 0 skipped\\."
+    )
 
     get_target_property(RIGEL_LIBRARY_TEST_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
     if (NOT RIGEL_LIBRARY_TEST_COMPILE_DEFINITIONS STREQUAL RIGEL_LIBRARY_COMPILE_DEFINITIONS)

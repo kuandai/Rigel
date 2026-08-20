@@ -6,6 +6,7 @@
 
 int main(int argc, char** argv) {
     auto& tests = Rigel::Test::registry();
+    size_t executed = 0;
     size_t failed = 0;
     size_t skipped = 0;
     bool listOnly = false;
@@ -44,6 +45,7 @@ int main(int argc, char** argv) {
                 continue;
             }
         }
+        ++executed;
         try {
             test.fn();
             if (verbose) {
@@ -61,7 +63,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::cout << "Ran " << tests.size() << " tests, " << failed << " failed, "
+    std::cout << "Ran " << executed << " tests, " << failed << " failed, "
               << skipped << " skipped.\n";
 
     return failed == 0 ? 0 : 1;

@@ -16,8 +16,8 @@ Rigel uses a minimal in-tree test harness located in `tests/`:
   `tests/TestFramework.cpp`.
 - Tests are registered via a `TEST_CASE(Name)` macro and executed by
   `tests/main.cpp`.
-- CTest integration registers one CTest entry per `TEST_CASE` at configure
-  time.
+- CTest integration runs each test executable as an aggregate suite. Test cases
+  register with the harness when the executable starts.
 
 There is no external testing library (Catch2, GoogleTest, etc.).
 
@@ -70,27 +70,21 @@ in the build directory root unless you change CMake output paths.
 
 ## 3. CTest Integration
 
-CTest registration is done in `CMakeLists.txt`:
+CTest registration is done in `CMakeLists.txt`. Aggregate suite entries run
+`Rigel_tests` and `Rigel_profiler_tests`; the harness obtains its test cases from
+the executable's runtime registry. A small filtered-run entry verifies the
+runner's executed-test summary. Adding, renaming, or reformatting a `TEST_CASE`
+does not change aggregate suite coverage; if the case selected by the
+filtered-run check is renamed, that check fails rather than silently omitting
+it.
 
-- CMake scans `tests/*.cpp` at configure time.
-- It extracts `TEST_CASE` names via regex:
-
-```
-TEST_CASE\(([A-Za-z0-9_]+)\)
-```
-
-- Each test becomes a CTest entry: `Rigel_<TestName>`.
-
-Important implications:
-
-- Test names must be alphanumeric/underscore only (no spaces or quotes).
-- If you add or rename tests, re-run CMake to refresh the test list.
-
-Run a single test via CTest:
+Run the main suite via CTest:
 
 ```bash
-ctest --test-dir build -R Rigel_WorldConfigProvider_FileSource
+ctest --test-dir build -R '^Rigel_tests$'
 ```
+
+Use the test executable's `--filter` option to run selected test cases.
 
 ---
 
@@ -142,7 +136,7 @@ The test runner supports:
 ```
 
 3) Add one or more `TEST_CASE` blocks.
-4) Re-run CMake so CTest discovers the new test names.
+4) Build and run `Rigel_tests`; the new test registers automatically at runtime.
 
 Most tests link against `RigelLib`, so they can use core engine types directly.
 Profiler tests instead compile their implementation in the focused profiler
@@ -152,8 +146,9 @@ test executable.
 
 ## 6. Known Limitations
 
-- No fixtures, parameterized tests, or test discovery at runtime.
-- Test discovery is regex-based and runs only at CMake configure time.
+- No fixtures or parameterized tests.
+- CTest reports results at executable-suite granularity rather than per test
+  case.
 - The harness uses exceptions for control flow.
 - There is no built-in per-test setup/teardown beyond static construction.
 

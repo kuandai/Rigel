@@ -81,3 +81,27 @@ render:
     CHECK_NEAR(config.taa.jitterScale, 1.5f, 0.0001f);
     CHECK(config.profilingEnabled);
 }
+
+TEST_CASE(RenderConfig_LayeredShadowRetainsOmittedValues) {
+    ConfigProvider provider;
+    provider.addSource(std::make_unique<StringConfigSource>(R"(
+render:
+  shadow:
+    enabled: true
+    pcf_radius: 2
+    pcf_radius_near: 1
+    pcf_radius_far: 3
+)"));
+    provider.addSource(std::make_unique<StringConfigSource>(R"(
+render:
+  shadow:
+    enabled: false
+)"));
+
+    const WorldRenderConfig config = provider.loadRenderConfig();
+
+    CHECK(!config.shadow.enabled);
+    CHECK_EQ(config.shadow.pcfRadius, 2);
+    CHECK_EQ(config.shadow.pcfRadiusNear, 1);
+    CHECK_EQ(config.shadow.pcfRadiusFar, 3);
+}

@@ -64,8 +64,8 @@ void applyShadowConfig(ryml::ConstNodeRef shadowNode, ShadowConfig& shadow) {
     shadow.bias = Util::readFloat(shadowNode, "bias", shadow.bias);
     shadow.normalBias = Util::readFloat(shadowNode, "normal_bias", shadow.normalBias);
     shadow.pcfRadius = Util::readInt(shadowNode, "pcf_radius", shadow.pcfRadius);
-    shadow.pcfRadiusNear = Util::readInt(shadowNode, "pcf_radius_near", shadow.pcfRadius);
-    shadow.pcfRadiusFar = Util::readInt(shadowNode, "pcf_radius_far", shadow.pcfRadius);
+    shadow.pcfRadiusNear = Util::readInt(shadowNode, "pcf_radius_near", shadow.pcfRadiusNear);
+    shadow.pcfRadiusFar = Util::readInt(shadowNode, "pcf_radius_far", shadow.pcfRadiusFar);
     shadow.transparentScale = Util::readFloat(shadowNode, "transparent_scale", shadow.transparentScale);
     shadow.strength = Util::readFloat(shadowNode, "strength", shadow.strength);
     shadow.fadePower = Util::readFloat(shadowNode, "fade_power", shadow.fadePower);

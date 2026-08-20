@@ -7,7 +7,6 @@
 
 #include "Rigel/Util/Yaml.h"
 #include "Rigel/Util/Ryml.h"
-#include "Rigel/Voxel/WorldGenStages.h"
 
 namespace Rigel::Voxel {
 
@@ -224,13 +223,7 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
     if (root.has_child("generation")) {
         const ryml::ConstNodeRef generation = root["generation"];
         Util::warnUnknownKeys(
-            generation, sourceName, "generation", {"pipeline"});
-        if (generation.has_child("pipeline")) {
-            for (ryml::ConstNodeRef stage : generation["pipeline"].children()) {
-                Util::warnUnknownKeys(
-                    stage, sourceName, "generation.pipeline", {"stage", "enabled"});
-            }
-        }
+            generation, sourceName, "generation", {"stages"});
     }
 
     if (root.has_child("overlays")) {
@@ -607,29 +600,13 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         stream.maxResidentChunks = static_cast<size_t>(resident);
     }
 
-    if (root.has_child("generation") && root["generation"].has_child("pipeline")) {
-        ryml::ConstNodeRef pipeline = root["generation"]["pipeline"];
-        bool orderMatches = (pipeline.num_children() == kWorldGenPipelineStages.size());
-        size_t index = 0;
-        for (ryml::ConstNodeRef stage : pipeline.children()) {
-            if (!stage.has_child("stage")) {
-                ++index;
-                continue;
+    if (root.has_child("generation") && root["generation"].has_child("stages")) {
+        const ryml::ConstNodeRef stages = root["generation"]["stages"];
+        if (stages.is_map()) {
+            for (ryml::ConstNodeRef stage : stages.children()) {
+                const std::string name = Util::toStdString(stage.key());
+                stageEnabled[name] = Util::readBool(stages, name.c_str(), true);
             }
-            std::string stageName;
-            stage["stage"] >> stageName;
-            bool enabled = Util::readBool(stage, "enabled", true);
-            stageEnabled[stageName] = enabled;
-            if (orderMatches) {
-                if (index >= kWorldGenPipelineStages.size() ||
-                    stageName != kWorldGenPipelineStages[index]) {
-                    orderMatches = false;
-                }
-            }
-            ++index;
-        }
-        if (!orderMatches) {
-            spdlog::warn("Pipeline list order does not match fixed stage order; order will be ignored");
         }
     }
 

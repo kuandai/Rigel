@@ -36,9 +36,8 @@ Fields merge according to their YAML shape:
 - Sequences replace the earlier sequence, including when the later sequence is
   empty.
 
-World generation has two keyed sequence exceptions. `density_graph.nodes`
-merges entries by `id`, replacing a matching node as a whole, and
-`generation.pipeline` merges the `enabled` value by `stage`. Persistence
+World generation has one keyed sequence exception: `density_graph.nodes`
+merges entries by `id`, replacing a matching node as a whole. Persistence
 `providers` is a map keyed by provider ID, and each provider's options merge by
 option name.
 
@@ -176,7 +175,7 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `streaming.load_apply_budget_per_frame` | int | `8` | Disk payload apply budget (0 = unlimited). |
 | `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited). |
 | `streaming.max_resident_chunks` | int | `0` | Cache cap (0 = unlimited). |
-| `generation.pipeline[]` | list | - | Stage enable list. |
+| `generation.stages` | map | all enabled | Boolean stage enable flags. |
 | `flags` | map | - | Boolean flags for overlays. |
 | `overlays[]` | list | - | Overlay definitions. |
 
@@ -203,14 +202,13 @@ Key top-level fields (see `assets/config/world_generation.yaml` for examples):
 - `caves`: carver settings
 - `structures`: simple feature generation
 - `streaming`: chunk streamer and thread pool settings
-- `generation.pipeline`: stage enable list
+- `generation.stages`: stage enable map
 - `overlays`: conditional config overlays
 
 ### Pipeline Stages
 
-`generation.pipeline` does **not** reorder stages; it only enables or disables
-fixed stages. If the list order does not match the fixed pipeline order, a
-warning is logged and the order is ignored.
+`generation.stages` maps fixed stage names to boolean enable flags. Map key
+order has no runtime meaning.
 
 Current stage names:
 

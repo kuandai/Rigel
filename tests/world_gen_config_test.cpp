@@ -113,23 +113,9 @@ streaming:
   worker_threads: 0
   max_resident_chunks: 100
 generation:
-  pipeline:
-    - stage: climate_global
-      enabled: true
-    - stage: climate_local
-      enabled: true
-    - stage: biome_resolve
-      enabled: true
-    - stage: terrain_density
-      enabled: false
-    - stage: caves
-      enabled: true
-    - stage: surface_rules
-      enabled: true
-    - stage: structures
-      enabled: true
-    - stage: post_process
-      enabled: true
+  stages:
+    surface_rules: true
+    terrain_density: false
 )";
 
     config.applyYaml("test", yaml);
@@ -169,6 +155,8 @@ generation:
     CHECK_EQ(config.stream.workerThreads, 0);
     CHECK_EQ(config.stream.maxResidentChunks, static_cast<size_t>(100));
     CHECK(!config.isStageEnabled("terrain_density"));
+    CHECK(config.isStageEnabled("surface_rules"));
+    CHECK(config.isStageEnabled("caves"));
 }
 
 TEST_CASE(WorldGenConfig_LayeredMergeSemantics) {
@@ -202,9 +190,8 @@ structures:
     - name: shrubs
       block: base:grass
 generation:
-  pipeline:
-    - stage: terrain_density
-      enabled: false
+  stages:
+    terrain_density: false
 flags:
   retained: true
   changed: false
@@ -234,11 +221,9 @@ structures:
     - name: crystals
       block: base:stone_shale
 generation:
-  pipeline:
-    - stage: terrain_density
-      enabled: true
-    - stage: caves
-      enabled: false
+  stages:
+    terrain_density: true
+    caves: false
 flags:
   changed: true
   added: true

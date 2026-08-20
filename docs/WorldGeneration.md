@@ -30,8 +30,8 @@ structures
 post_process
 ```
 
-Stage order is fixed in code. The config `generation.pipeline` section is used
-to enable or disable stages, not reorder them.
+Stage order is fixed in code. The `generation.stages` config map contains an
+enable flag for each stage; its key order has no runtime meaning.
 
 ---
 

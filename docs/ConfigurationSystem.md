@@ -145,7 +145,7 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `caves.threshold` | float | `0.5` | Density threshold. |
 | `caves.sample_step` | int | `4` | Step size for carving. |
 | `structures.features[]` | list | - | Simple feature definitions. |
-| `streaming.view_distance_chunks` | int | `6` | Render/stream radius in chunks. |
+| `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera. |
 | `streaming.unload_distance_chunks` | int | `8` | Unload radius in chunks. |
 | `streaming.gen_queue_limit` | int | `0` | Generation queue cap (0 = unlimited). |
 | `streaming.mesh_queue_limit` | int | `0` | Mesh queue cap (0 = unlimited). |
@@ -255,6 +255,10 @@ config (`assets/config/render.yaml`) may override them.
 | `render.taa.blend` | float | `0.9` | History blend factor. |
 | `render.taa.jitter_scale` | float | `1.0` | Subpixel jitter scale. |
 | `render.profiling.enabled` | bool | `false` | Enable the per-frame profiler. |
+
+`streaming.view_distance_chunks` controls which chunks are loaded and meshed.
+`render.render_distance` independently controls distance culling of available
+chunk meshes in world units.
 
 Key fields:
 

@@ -142,6 +142,8 @@ Empty chunks skip mesh generation and move directly to `ReadyMesh`.
   `streaming.view_distance_chunks`.
 - Entries are sorted by distance, nearest first.
 - Unload uses `streaming.unload_distance_chunks` for hysteresis.
+- Render distance is configured separately by `render.render_distance` in world
+  units and does not change the streaming desired set.
 
 ### 5.3 Background Work and Budgets
 

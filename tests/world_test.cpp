@@ -49,3 +49,18 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     view.updateMeshes();
     CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(1));
 }
+
+TEST_CASE(WorldView_StreamAndRenderDistancesRemainIndependent) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    view.renderConfig().renderDistance = 300.0f;
+
+    WorldGenConfig::StreamConfig streamConfig;
+    streamConfig.viewDistanceChunks = 3;
+    view.setStreamConfig(streamConfig);
+
+    CHECK_EQ(view.viewDistanceChunks(), 3);
+    CHECK_NEAR(view.renderConfig().renderDistance, 300.0f, 0.0001f);
+}

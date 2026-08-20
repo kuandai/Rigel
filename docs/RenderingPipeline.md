@@ -45,6 +45,7 @@ before calling `WorldView::render`.
 ### 3.2 Culling and Ordering
 
 - Distance culling uses `renderDistance` from `WorldRenderConfig`.
+- This world-unit culling distance is independent of the chunk streaming radius.
 - There is no frustum culling in the current pipeline.
 - Transparent chunks are sorted back-to-front by view depth.
 

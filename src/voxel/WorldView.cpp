@@ -76,9 +76,6 @@ void WorldView::setChunkLoadWorkCallback(ChunkStreamer::ChunkLoadWorkCallback wo
 
 void WorldView::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
     m_streamer.setConfig(config);
-    m_renderConfig.renderDistance =
-        (static_cast<float>(std::max(0, config.viewDistanceChunks)) + 0.5f) *
-        static_cast<float>(Chunk::SIZE);
 }
 
 void WorldView::setBenchmark(ChunkBenchmarkStats* stats) {

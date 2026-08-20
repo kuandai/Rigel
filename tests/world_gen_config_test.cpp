@@ -191,6 +191,7 @@ density_graph:
     - id: terrain
       type: constant
       value: 1.0
+      offset: 7.0
     - id: retained_node
       type: constant
       value: 2.0
@@ -234,6 +235,8 @@ structures:
       block: base:stone_shale
 generation:
   pipeline:
+    - stage: terrain_density
+      enabled: true
     - stage: caves
       enabled: false
 flags:
@@ -266,12 +269,13 @@ overlays:
     CHECK_EQ(config.densityGraph.nodes.size(), static_cast<size_t>(2));
     CHECK_EQ(config.densityGraph.nodes[0].id, "terrain");
     CHECK_NEAR(config.densityGraph.nodes[0].value, 10.0f, 0.001f);
+    CHECK_NEAR(config.densityGraph.nodes[0].offset, 0.0f, 0.001f);
     CHECK_EQ(config.densityGraph.nodes[1].id, "retained_node");
 
     CHECK(config.isFlagEnabled("retained"));
     CHECK(config.isFlagEnabled("changed"));
     CHECK(config.isFlagEnabled("added"));
-    CHECK(!config.isStageEnabled("terrain_density"));
+    CHECK(config.isStageEnabled("terrain_density"));
     CHECK(!config.isStageEnabled("caves"));
 
     config.applyYaml(

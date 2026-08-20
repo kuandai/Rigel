@@ -235,8 +235,9 @@ appear in the `overlays` list. Each overlay is a `{ path, when }` pair:
 
 If `when` is omitted, the overlay is unconditional. If it names a false or
 missing flag, the overlay is skipped. The condition uses the configuration
-state at that source layer. Overlays may declare more overlays; a path is
-applied at most once within a source layer.
+state at that source layer. Overlays may declare more overlays. Nested
+declarations are appended after any sibling overlays already pending for the
+source layer, and a path is applied at most once within that layer.
 
 The shipped overlay:
 

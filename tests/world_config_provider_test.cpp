@@ -153,6 +153,33 @@ TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {
     CHECK_NEAR(config.terrain.baseHeight, 10.0f, 0.001f);
 }
 
+TEST_CASE(WorldConfigProvider_AppliesNestedOverlaysAfterDeclaredOverlays) {
+    ConfigProvider provider;
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "defaults",
+        "terrain:\n"
+        "  base_height: 1.0\n"
+        "overlays:\n"
+        "  - path: first.yaml\n"
+        "  - path: second.yaml\n",
+        std::unordered_map<std::string, std::string>{
+            {
+                "first.yaml",
+                "terrain:\n"
+                "  base_height: 2.0\n"
+                "overlays:\n"
+                "  - path: nested.yaml\n"
+            },
+            {"second.yaml", "terrain:\n  base_height: 3.0\n"},
+            {"nested.yaml", "terrain:\n  base_height: 4.0\n"}
+        }
+    ));
+
+    WorldGenConfig config = provider.loadConfig();
+
+    CHECK_NEAR(config.terrain.baseHeight, 4.0f, 0.001f);
+}
+
 TEST_CASE(FileConfigSource_ResolvesOverlayRelativeToDeclaringFile) {
     const auto root = std::filesystem::temp_directory_path()
         / "rigel_config_relative_overlay_test";

@@ -35,7 +35,9 @@ Shutdown persists world state and releases resources.
 2. Initialize GLEW and log the OpenGL version string.
 3. Register window callbacks.
    - Framebuffer resize -> `glViewport`.
-   - Key + mouse callbacks wired through `Input` helpers.
+   - Key and mouse-button callbacks feed the application-owned `InputState`.
+   - Cursor, focus, character, and scroll callbacks also feed camera or ImGui
+     state as applicable.
 4. Load the asset manifest and register loaders.
    - `input`, `entity_models`, `entity_anims` loaders are registered.
 5. Register persistence formats and configure persistence root.
@@ -50,27 +52,36 @@ Shutdown persists world state and releases resources.
    - `loadWorldFromDisk(..., SaveScope::EntitiesOnly)` loads only entities.
 9. Create the async chunk loader (disk IO) and wire it into `WorldView`.
    - Loader provides non-blocking requests + budgeted apply callbacks.
-10. Apply render config + stream config.
-11. Snap camera to the first air block and initialize `FrameRenderer`.
+10. Load and apply render config, the profiling environment override, and
+    stream config.
+11. Snap the camera to the first air block, mark spawn discovery complete, and
+    initialize `FrameRenderer`.
 
 ## Phase 2: Runtime Loop (Application::run)
 
 Per frame:
-1. Poll events and compute `deltaTime` (clamped to max).
-2. Begin profiler frame (if enabled).
-3. Update key state + dispatch action events (`InputDispatcher`).
-4. Update camera and interaction logic.
+
+1. Compute `deltaTime`, poll GLFW events, apply any focus-driven time reset, and
+   clamp the frame time.
+2. Begin the ImGui and profiler frames.
+3. Record the frame-time sample and call `InputState::beginFrame()` to publish
+   callback-fed key and mouse-button state and notify action listeners.
+4. Apply cursor-capture actions, then update camera and interaction logic.
    - Mouse look is applied if the cursor is captured.
-   - Block edit raycasts and demo entity spawn occur here.
+   - Block edit raycasts use mouse press edges; demo entity spawning uses an
+     action press edge.
 5. Tick entities (`World::tickEntities`).
-6. Update chunk streaming (load/gen/mesh decisions).
-7. Apply completed generation + mesh tasks.
-8. Refresh the streaming lifecycle snapshot and log lifecycle transitions.
+6. Update chunk streaming (load/generation/mesh decisions).
+7. Drain and apply completed generation, load, and mesh work.
+8. Read the refreshed streaming lifecycle snapshot and log state transitions.
 9. Submit the active world, camera, viewport, and frame time to `FrameRenderer`.
    - `FrameRenderer` handles camera matrices, TAA, world drawing, and debug
      overlays.
-10. Profiler frame ends (`Core::Profiler::endFrame`) before buffer swap.
-11. Swap buffers and check for exit (`exit` action).
+10. Render the ImGui profiler window, end the profiler and ImGui frames, and
+    swap buffers.
+
+The loop ends when GLFW marks the window for closure. There is no application
+exit action in the current binding set.
 
 ### Streaming lifecycle
 
@@ -117,7 +128,8 @@ Worker threads:
 
 Synchronization:
 - `detail::ConcurrentQueue` for result handoff.
-- `detail::ThreadPool` per subsystem (generation/meshing, IO).
+- Separate generation and mesh pools partition `streaming.worker_threads`;
+  asynchronous loading has region IO and payload-build pools.
 
 ---
 
@@ -135,13 +147,16 @@ Synchronization:
   (`applyGenCompletions`).
 
 **Queueing rules**:
-- Queue size is capped by `stream.gen_queue_limit` (0 = unlimited).
+- `streaming.gen_queue_limit` caps in-flight generation jobs (0 = unlimited).
+- Capacity-blocked requests wait in the scheduler rather than starting another
+  job.
 - Chunks outside the desired set are cancelled (token flipped).
 
 **Cancellation**:
 - Each gen task holds a shared `atomic_bool` cancel token.
 - If a chunk falls outside the desired set, the token is flipped.
-- The worker checks the token; cancelled results are ignored.
+- The worker checks the token; the main thread also requires the coordinate to
+  remain in `QueuedGen` before applying the result.
 
 **Thread-safety**:
 - Worker threads never mutate live `Chunk` instances.
@@ -159,15 +174,23 @@ Synchronization:
 - Main thread applies mesh results in `processCompletions()`.
 
 **Queueing rules**:
-- Queue size is capped by `stream.mesh_queue_limit` (0 = unlimited).
-- A portion of the queue is reserved for dirty remeshes.
+- `streaming.mesh_queue_limit` caps in-flight mesh jobs (0 = unlimited).
+- A portion of a finite limit is reserved for dirty remeshes.
+- At most one mesh job is in flight for a chunk. Additional invalidations are
+  coalesced and cause a replacement build after the current result returns.
 
 **Neighbor gating**:
-- Meshing is skipped until all 6 neighbors are loaded (`hasAllNeighborsLoaded`).
+- Meshing waits for each cardinal neighbor that is also in the desired set.
+  Neighbors outside the desired set are sampled as air.
 
 **Thread-safety**:
 - Worker threads operate on copied block data only.
 - GPU updates / mesh store mutations happen on the main thread.
+
+**Result validity**:
+- Installation requires the active request id, a live `QueuedMesh` state, the
+  same chunk instance id, and the same mesh revision captured by the task.
+- Invalid results are counted as stale and current dirty state is rescheduled.
 
 ### C) Async Chunk IO (disk reads)
 
@@ -204,15 +227,16 @@ Synchronization:
 - Synchronous on the main thread.
 - Uses format containers + region layout to load/save spans.
 - Entities are loaded/saved only if supported by the format.
- - Dirty chunk tracking controls what is written on save.
+- Dirty chunk tracking controls what is written on save.
 
 ## Known Caveats
 
 - `Voxel::Chunk` and `BlockRegistry` are not thread-safe; treat them as
   main-thread-only objects.
 - Region IO is async, but application of spans is always main-threaded.
-- Thread pool sizes are controlled by `StreamingConfig`
-  (`worker_threads`, `io_threads`, `load_worker_threads`).
+- Worker counts are controlled by `StreamingConfig` (`worker_threads` is split
+  between generation and meshing; `io_threads` and `load_worker_threads`
+  control asynchronous loading).
 
 ---
 

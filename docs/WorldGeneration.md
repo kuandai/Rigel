@@ -1,7 +1,7 @@
 # World Generation and Chunk Streaming
 
-This document describes the current world generation pipeline and chunk streaming
-system in Rigel. Planned items are called out explicitly.
+This document describes the current world generation pipeline and chunk
+streaming system in Rigel.
 
 ---
 
@@ -100,8 +100,8 @@ Global and local layers are combined additively.
 ### 4.2 Biome Blending
 
 Biome weights are computed from the distance to each target in climate space.
-`biomes.blend.blend_power` controls falloff, and `biomes.blend.epsilon` avoids
-division by zero.
+`biomes.blend_power` controls falloff, and `biomes.epsilon` avoids division by
+zero.
 
 ### 4.3 Density Graph
 
@@ -140,15 +140,17 @@ Empty chunks skip mesh generation and move directly to `ReadyMesh`.
 
 ### 5.3 Background Work and Budgets
 
-- Generation and meshing run on a thread pool sized by `streaming.worker_threads`.
-- `streaming.gen_queue_limit` and `streaming.mesh_queue_limit` cap in-flight work
-  (`0` means unlimited).
+- Generation and meshing use separate pools partitioned from
+  `streaming.worker_threads`. A pool with no worker executes its job inline.
+- `streaming.gen_queue_limit` and `streaming.mesh_queue_limit` cap in-flight
+  work (`0` means unlimited).
 - Mesh queue capacity reserves roughly 1/4 of the slots for dirty remeshes to
   keep player edits responsive.
-- `streaming.update_budget_per_frame` limits how many desired chunks are scanned
-  during the streaming update step (`0` means unlimited).
-- `streaming.apply_budget_per_frame` limits how many completed results are
-  applied per frame (`0` means unlimited).
+- `streaming.update_budget_per_frame` limits how many queued load, generation,
+  or missing-mesh requests advance during an update (`0` means unlimited). A
+  desired-set rebuild itself is not spread across frames.
+- `streaming.apply_budget_per_frame` limits completed generation results and
+  completed mesh results separately (`0` means unlimited).
 - Disk load payloads are applied via `streaming.load_apply_budget_per_frame`
   to prevent IO completions from stalling frames.
 - `streaming.io_threads` controls region IO concurrency, while
@@ -159,10 +161,14 @@ Empty chunks skip mesh generation and move directly to `ReadyMesh`.
 
 ### 5.4 Meshing Constraints
 
-- Meshes are only built when all 6 neighboring chunks are loaded to avoid
-  culling seams at chunk borders.
+- Meshes wait for all cardinal neighbors that fall inside the desired set.
+  Missing neighbors outside that set are sampled as air.
 - Mesh work uses padded block data to sample neighbors and AO.
-- Each chunk has a `meshRevision` so stale results are discarded.
+- A chunk has at most one mesh build in flight. Repeated invalidations are
+  coalesced while it runs.
+- Mesh installation validates the request id, streamer state, chunk instance,
+  and captured mesh revision. Invalid results are rejected and current dirty
+  state is queued for another build.
 
 ### 5.5 Cancellation and Eviction
 

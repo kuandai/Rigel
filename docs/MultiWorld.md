@@ -1,193 +1,123 @@
-# Multi-World System
+# WorldSet and World Ownership
 
-Status: WorldSet, WorldResources, and WorldView are implemented. The
-application still boots a single default World/WorldView, but multiple Worlds
-can now exist in memory. GPU cache sharing across multiple renderers is not
-implemented; each renderer maintains its own GPU cache.
+This document describes the implemented ownership model for worlds, views,
+shared voxel resources, and persistence context. `WorldSet` can contain
+multiple worlds, while the application currently creates and runs one default
+world and one view.
 
-This document describes the multi-world architecture:
+## Core Types
 
-- A **World** is a single 3D voxel space.
-- A **WorldSet** is a container that holds multiple Worlds.
+### WorldSet
 
-This document describes what exists today.
+`WorldSet` is the container and lookup point for world entries. Each entry owns
+one `World` and optionally one `WorldView`:
 
----
-
-## 1. Goals
-
-- Support multiple independent voxel spaces in one session.
-- Allow multiple renderers to view the same World without duplicating meshes
-  (CPU meshes can be shared; GPU caches are still per renderer).
-
----
-
-## 2. Core Concepts
-
-### 2.1 WorldSet (Container)
-
-WorldSet is the explicit container of Worlds. It owns shared resources and
-provides lookup by WorldId.
-
-```
-struct WorldSet {
-  WorldRegistry worlds;      // WorldId -> World
-  WorldResources resources;  // shared registry + atlas
-};
-```
-
-### 2.2 World (Voxel Space)
-
-A World is the authoritative voxel space. It owns chunk data and a generator.
-It does not own meshes.
-
-```
-struct World {
-  WorldId id;
-  WorldConfig config;
-  ChunkStore chunks;
-  WorldGenerator generator;
-  TickScheduler tick;
-};
-```
-
-### 2.3 WorldView (Render View)
-
-WorldView owns the rendering and streaming state for a World, including CPU
-meshes and renderer-facing config.
-
-```
-struct WorldView {
-  WorldId id;
-  WorldRenderConfig renderConfig;
-  WorldMeshStore meshes;
-  StreamingController streaming;
-};
-```
-
----
-
-## 3. Ownership and Rendering
-
-- **World** owns authoritative chunk data.
-- **WorldView** owns CPU meshes and derived state.
-- **Renderer** owns GPU caches only and never owns chunk data.
-
-CPU meshes live in `WorldMeshStore` and can be referenced by multiple views or
-systems. GPU meshes are cached per `ChunkRenderer`, so separate renderers will
-duplicate GPU buffers today.
-
----
-
-## 4. Current Implementation
-
-### 4.1 WorldSet API
-
-`WorldSet` manages world entries and shared resources:
-
-- `createWorld(WorldId id)` creates or returns a `World`.
-- `createView(WorldId id, AssetManager& assets)` creates a `WorldView` for a
-  world and initializes render resources.
-- `world(id)` and `view(id)` return existing instances.
-- `removeWorld(id)` destroys the World and its view (if present).
-- `clear()` releases all worlds and resources.
-
-World entries are stored as a `WorldEntry` containing:
-
-```
+```cpp
 struct WorldEntry {
-  World world;
-  std::unique_ptr<WorldView> view;
+    World world;
+    std::unique_ptr<WorldView> view;
 };
 ```
 
-Only one `WorldView` is stored per world today.
+The implemented API includes:
 
-### 4.2 Shared Resources
+- `createWorld(id)`, which creates or returns a world.
+- `createView(id, assets)`, which creates the world if necessary and initializes
+  its single view.
+- `world(id)`, `view(id)`, and `findView(id)` for lookup.
+- `removeWorld(id)` and `clear()` for destruction.
 
-`WorldResources` are shared across all worlds:
+`WorldSet` also owns the shared `WorldResources`, persistence format registry,
+persistence service, storage backend, preferred format, policies, and root
+path.
+
+### WorldResources
+
+One `WorldResources` instance is shared by every world in a `WorldSet`. It owns:
 
 - `BlockRegistry`
 - `TextureAtlas`
 
-Block definitions and textures are global in the current architecture.
+Block definitions and atlas textures therefore have set-wide ownership rather
+than per-world ownership.
 
-### 4.3 World and Entities
+### World
 
-Each `World` owns:
+`World` owns authoritative simulation and persistence-facing state:
 
-- `ChunkManager` (block data)
-- `WorldGenerator`
+- `WorldId`
+- `ChunkManager` and its block data
 - `WorldEntities`
+- A shared `WorldGenerator`
+- A persistence `ProviderRegistry`
 
-Entity state is per-world and not shared across worlds.
+It provides block access and entity ticking. It does not own streaming state,
+meshes, render configuration, shaders, or GPU resources.
 
-### 4.4 WorldView and Streaming
+### WorldView
 
-Each `WorldView` owns:
+`WorldView` refers to one `World` and the set's `WorldResources`. It owns the
+derived and renderer-facing state for that world:
 
-- `ChunkStreamer` (async generation + meshing)
-- `WorldMeshStore` (CPU meshes)
-- `ChunkRenderer` (GPU cache)
-- Render config and shader handles
+- `ChunkStreamer`
+- `WorldMeshStore` CPU meshes
+- `ChunkRenderer` and its GPU mesh/shadow cache
+- `EntityRenderer`
+- `WorldRenderConfig`
+- Voxel and shadow shader handles
 
-`WorldView::setGenerator` binds the streaming pipeline to the world generator.
+`WorldView::setGenerator()` binds the streaming pipeline to the supplied
+generator. The application assigns the same generator to both the `World` and
+its `WorldView` during bootstrap.
 
----
+## Application Wiring
 
-## 5. Persistence Integration
+The current application path uses `WorldSet::defaultWorldId()` and stores
+pointers to that world and view as the active pair. It then:
 
-Persistence is scoped per world ID:
+1. Initializes the set-wide block registry and texture atlas.
+2. Creates the active `World` and its `WorldView`.
+3. Configures the world generator and persistence providers.
+4. Wires the view to the asynchronous chunk loader.
+5. Assigns streaming and render configuration to the view.
+6. Updates and renders only that active pair in the main loop.
 
-- Root path is `saves/world_<id>`.
-- Per-world overrides are loaded from `config/worlds/<id>/...`.
-- `WorldSet::persistenceContext(id)` supplies providers and storage for the
-  active world.
+There is no runtime world switching or simultaneous multi-view rendering in
+`Application`.
 
-`World` exposes a provider registry to formats (e.g., block registry provider).
+## Persistence and Configuration
 
----
+`WorldSet::persistenceContext(id)` uses the selected world's provider registry,
+but copies the root path, preferred format, policies, and storage backend from
+the `WorldSet`. The application configures those shared values for its active
+default world before loading or saving it. The root used by that boot path is
+`saves/world_<id>`.
 
-## 6. Streaming and Meshing
-
-- Streaming is per WorldView.
-- GPU uploads are main-thread only.
-- Revisions guard against applying stale meshes.
-
----
-
-## 7. Configuration
-
-Per-world config overlays should be supported by convention:
+The subsystem bootstrap functions accept a world ID and include these optional
+highest-precedence files for that ID:
 
 - `config/worlds/<worldId>/world_generation.yaml`
 - `config/worlds/<worldId>/render.yaml`
 - `config/worlds/<worldId>/persistence.yaml`
 
-Global defaults apply when per-world overrides are absent.
+Configuration values are loaded and applied by the application and subsystem
+providers; they are not stored as a general configuration object on `World` or
+`WorldSet`.
 
----
+## Current Limitations
 
-## 8. Minimal Integration Path
-
-1) Add WorldId and WorldRegistry in WorldSet.
-2) Create one default World and WorldView.
-3) Move CPU mesh ownership to WorldView.
-4) Update renderer to accept WorldId + mesh store.
-5) Add WorldSet entry points in the app layer.
-
----
-
-## 9. Current Limitations
-
-- Only a single `WorldView` is tracked per world.
-- GPU mesh caches are renderer-local (no sharing across views).
-- Application boot path creates only the default world and view.
+- `WorldSet` stores at most one `WorldView` for each world.
+- `Application` creates only the default world and view.
+- Persistence root, preferred format, policies, and storage are set-wide even
+  though provider registries are per-world.
+- GPU caches belong to each view's `ChunkRenderer`; no shared GPU cache exists
+  outside a view.
 
 ---
 
 ## Related Docs
 
+- `docs/ApplicationLifecycle.md`
 - `docs/VoxelEngine.md`
 - `docs/WorldGeneration.md`
 - `docs/PersistenceAPI.md`

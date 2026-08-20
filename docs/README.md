@@ -15,7 +15,7 @@ implementation and how the systems fit together.
 ### Core Runtime
 
 - `docs/ApplicationLifecycle.md` (bootstrap, main loop, shutdown)
-- `docs/InputSystem.md` (bindings, dispatcher, mouse look)
+- `docs/InputSystem.md` (per-application device state, bindings, mouse look)
 - `docs/DebugTooling.md` (chunk visualizer, frame graph, entity bounds)
 
 ### Voxel + World
@@ -55,6 +55,5 @@ implementation and how the systems fit together.
 
 ## Scope and Status
 
-The project is in active development. Documentation reflects the current
-implementation; sections labeled "planned" in individual docs are not yet
-implemented.
+The project is in active development. These documents describe implemented
+behavior and call out current limitations where relevant.

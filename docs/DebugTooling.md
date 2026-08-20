@@ -17,8 +17,9 @@ window from the same state. When enabled the tooling draws:
 - ImGui profiler window (flame graph of per-frame scopes).
 - Entity bounds wireframes.
 
-The overlay is toggled by the `debug_overlay` action (F1 by default).
-The profiler window is shown whenever the debug overlay is enabled.
+The GL overlays are toggled by the `debug_overlay` action (F1 by default). The
+ImGui profiler window is toggled independently by the `imgui_overlay` action
+(F3 by default).
 
 ---
 
@@ -26,8 +27,9 @@ The profiler window is shown whenever the debug overlay is enabled.
 
 - `FrameRenderer` owns the `Render::DebugState` containing `DebugField`,
   `FrameTimeGraph`, and `EntityDebug`.
-- `Input::DebugOverlayListener` toggles `DebugState::overlayEnabled` on action
-  release.
+- The application-owned `InputState` notifies `Input::DebugOverlayListener` and
+  `Input::ImGuiOverlayListener` on action releases. The listeners toggle
+  `DebugState::overlayEnabled` and `DebugState::imguiEnabled`, respectively.
 - `FrameRenderer::initialize` calls:
   - `Render::initDebugField`
   - `Render::initFrameGraph`
@@ -65,6 +67,7 @@ skipped.
 State mapping (from `ChunkStreamer::DebugState`):
 
 - `QueuedGen` (red): waiting for world generation.
+- `LoadedFromDisk` (gray): persisted chunk data is ready but not yet meshed.
 - `ReadyData` (yellow): chunk data loaded/generated, mesh not queued.
 - `QueuedMesh` (blue): waiting for mesh build.
 - `ReadyMesh` (green): mesh available.
@@ -94,7 +97,8 @@ State mapping (from `ChunkStreamer::DebugState`):
 
 - The ImGui profiler window displays a flame graph for the last frame.
 - ImGui is a required build dependency.
-- The window appears when the debug overlay is enabled (F1).
+- The window is toggled by `imgui_overlay` (F3 by default), independently of the
+  GL overlays.
 
 ---
 
@@ -233,7 +237,8 @@ llvmpipe comparison.
 
 ## 10. Known Limitations
 
-- Debug overlay is global and not per-world.
+- Overlay state is owned by the application's `FrameRenderer`, not by a world
+  or `WorldView`.
 - Missing shaders disable that overlay component.
 - Entity boxes reflect AABB extents, not exact mesh silhouettes.
 

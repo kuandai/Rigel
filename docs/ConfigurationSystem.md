@@ -52,8 +52,10 @@ Typed providers load each subsystem's settings from YAML input using rapidyaml.
 `Voxel::WorldConfigProvider` loads generation and streaming settings together
 so their shared overlays have one deterministic order. Rendering is loaded by
 `Render::RenderConfigProvider`, and persistence by
-`Persistence::PersistenceConfigProvider`. Unknown keys are ignored; only known
-fields are applied.
+`Persistence::PersistenceConfigProvider`. Each subsystem's bootstrap function
+uses the shared standard-source builder, but the typed provider remains the
+semantic owner of parsing and merging its settings. Unknown fixed keys produce
+a warning and are not applied.
 
 ---
 
@@ -243,12 +245,12 @@ precedence.
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera. |
-| `streaming.unload_distance_chunks` | int | `8` | Unload radius in chunks. |
-| `streaming.gen_queue_limit` | int | `0` | Generation queue cap (0 = unlimited). |
-| `streaming.mesh_queue_limit` | int | `0` | Mesh queue cap (0 = unlimited). |
-| `streaming.update_budget_per_frame` | int | `0` | Desired-set scan budget (0 = unlimited). |
-| `streaming.apply_budget_per_frame` | int | `0` | Apply budget (0 = unlimited). |
-| `streaming.worker_threads` | int | `2` | Generation and mesh thread count. |
+| `streaming.unload_distance_chunks` | int | `8` | Unload radius, with the view radius as its effective minimum. |
+| `streaming.gen_queue_limit` | int | `0` | In-flight generation cap (0 = unlimited). |
+| `streaming.mesh_queue_limit` | int | `0` | In-flight mesh cap (0 = unlimited). |
+| `streaming.update_budget_per_frame` | int | `0` | Load/generation/missing-mesh requests advanced per update (0 = unlimited). |
+| `streaming.apply_budget_per_frame` | int | `0` | Generation and mesh results applied per category (0 = unlimited). |
+| `streaming.worker_threads` | int | `2` | Total worker count partitioned between generation and meshing. |
 | `streaming.io_threads` | int | `1` | Region IO thread count. |
 | `streaming.load_worker_threads` | int | `2` | Chunk payload build thread count. |
 | `streaming.load_apply_budget_per_frame` | int | `8` | Disk payload apply budget (0 = unlimited). |
@@ -261,6 +263,9 @@ precedence.
 | `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited). |
 
 Negative queue, budget, thread, cache, and prefetch values are clamped to zero.
+The desired set is rebuilt only when the camera enters a different chunk or a
+distance changes; `update_budget_per_frame` does not turn that rebuild into a
+partial desired-set scan.
 
 ---
 

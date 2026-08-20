@@ -8,16 +8,18 @@ features.
 
 ## 1. Overview
 
-`FrameRenderer` owns the main render pass, camera matrices, TAA, and debug
-overlays. It delegates world drawing to `WorldView::render`, which:
+`FrameRenderer` owns frame-level camera matrices, TAA resources and resolve,
+and GL debug-overlay state. It delegates world drawing to `WorldView::render`,
+which:
 
 - Builds a `WorldRenderContext` with mesh store, texture atlas, shaders, and
   render config.
 - Delegates voxel rendering to `ChunkRenderer`.
 - Delegates entity rendering to `EntityRenderer`.
 
-The Application supplies the active world, camera state, viewport, and frame
-time to `FrameRenderer` once per frame.
+The application supplies the active `World`, `WorldView`, camera vectors,
+viewport, and frame time to `FrameRenderer` once per frame. The application
+renders the ImGui profiler after `FrameRenderer` returns.
 
 ---
 
@@ -31,7 +33,9 @@ time to `FrameRenderer` once per frame.
    - Calls `ChunkRenderer::render`.
    - Calls `EntityRenderer::render`.
 6. Optional TAA resolve blends history into the current frame.
-7. Debug overlays render (chunk visualizer, frame graph, entity debug).
+7. Entity debug bounds render before the resolve when TAA is enabled (or after
+   the world when it is disabled); the chunk visualizer and frame graph render
+   after the resolve.
 
 ---
 
@@ -65,7 +69,8 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
 
 ## 4. Render Configuration
 
-Render config is loaded from the config provider:
+`Render::makeRenderConfigProvider()` assembles these sources in order, and the
+application assigns the loaded `WorldRenderConfig` to the active `WorldView`:
 
 - `assets/config/render.yaml` (embedded as `raw/render_config`)
 - `config/render.yaml`

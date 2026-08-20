@@ -2,10 +2,39 @@
 
 #include <ryml.hpp>
 #include <ryml_std.hpp>
+#include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <initializer_list>
 #include <string>
+#include <string_view>
 
 namespace Rigel::Util {
+
+inline void warnUnknownKeys(ryml::ConstNodeRef node,
+                            const char* sourceName,
+                            std::string_view path,
+                            std::initializer_list<std::string_view> knownKeys) {
+    if (!node.readable() || !node.is_map()) {
+        return;
+    }
+
+    for (ryml::ConstNodeRef child : node.children()) {
+        const std::string key(child.key().data(), child.key().size());
+        if (std::find(knownKeys.begin(), knownKeys.end(), key) != knownKeys.end()) {
+            continue;
+        }
+
+        const std::string fullPath = path.empty()
+            ? key
+            : std::string(path) + "." + key;
+        spdlog::warn(
+            "Unknown configuration key '{}' in '{}'",
+            fullPath,
+            sourceName
+        );
+    }
+}
 
 inline bool readBool(ryml::ConstNodeRef node, const char* key, bool fallback) {
     if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {

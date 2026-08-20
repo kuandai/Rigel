@@ -82,6 +82,15 @@ void PersistenceConfig::applyYaml(const char* sourceName, const std::string& yam
     if (!persistenceNode.readable()) {
         return;
     }
+    if (root.has_child("persistence")) {
+        Util::warnUnknownKeys(root, sourceName, "", {"persistence"});
+    }
+    Util::warnUnknownKeys(
+        persistenceNode,
+        sourceName,
+        "persistence",
+        {"format", "providers"}
+    );
 
     format = Util::readString(persistenceNode, "format", format);
 

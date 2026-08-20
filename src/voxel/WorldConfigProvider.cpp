@@ -57,6 +57,48 @@ struct PcfRadiusState {
     bool hasFarOverride = false;
 };
 
+void validateRenderConfigKeys(ryml::ConstNodeRef root,
+                              ryml::ConstNodeRef renderNode,
+                              const char* sourceName) {
+    if (root.has_child("render")) {
+        Util::warnUnknownKeys(root, sourceName, "", {"render"});
+    }
+    Util::warnUnknownKeys(
+        renderNode,
+        sourceName,
+        "render",
+        {"sun_direction", "transparent_alpha", "render_distance", "shadow", "taa", "profiling"}
+    );
+    if (renderNode.has_child("shadow")) {
+        Util::warnUnknownKeys(
+            renderNode["shadow"],
+            sourceName,
+            "render.shadow",
+            {
+                "enabled", "cascades", "map_size", "max_distance", "split_lambda",
+                "bias", "normal_bias", "pcf_radius", "pcf_radius_near",
+                "pcf_radius_far", "transparent_scale", "strength", "fade_power"
+            }
+        );
+    }
+    if (renderNode.has_child("taa")) {
+        Util::warnUnknownKeys(
+            renderNode["taa"],
+            sourceName,
+            "render.taa",
+            {"enabled", "blend", "jitter_scale"}
+        );
+    }
+    if (renderNode.has_child("profiling")) {
+        Util::warnUnknownKeys(
+            renderNode["profiling"],
+            sourceName,
+            "render.profiling",
+            {"enabled"}
+        );
+    }
+}
+
 void applyShadowConfig(ryml::ConstNodeRef shadowNode,
                        ShadowConfig& shadow,
                        PcfRadiusState& pcfState) {
@@ -157,6 +199,7 @@ void applyRenderYaml(const char* sourceName,
     if (!renderNode.readable()) {
         return;
     }
+    validateRenderConfigKeys(root, renderNode, sourceName);
 
     readVec3(renderNode, "sun_direction", config.sunDirection);
     config.transparentAlpha = Util::readFloat(renderNode, "transparent_alpha", config.transparentAlpha);

@@ -9,7 +9,9 @@ run in Rigel.
 
 Rigel uses a minimal in-tree test harness located in `tests/`:
 
-- Tests are compiled into a single executable: `Rigel_tests`.
+- Most tests are compiled into `Rigel_tests` and link against `RigelLib`.
+- Profiler tests are compiled into `Rigel_profiler_tests` with an isolated
+  profiler implementation so test instrumentation does not change `RigelLib`.
 - The harness is implemented in `tests/TestFramework.h` and
   `tests/TestFramework.cpp`.
 - Tests are registered via a `TEST_CASE(Name)` macro and executed by
@@ -40,6 +42,7 @@ cmake -S . -B build -DRIGEL_BUILD_TESTS=OFF
 When enabled, CMake adds:
 
 - `Rigel_tests` (test executable)
+- `Rigel_profiler_tests` (profiler test executable)
 
 ### 2.3 Running Tests
 
@@ -57,10 +60,11 @@ You can also run the test executable directly:
 ./build/Rigel_tests --list
 ./build/Rigel_tests --filter WorldConfigProvider
 ./build/Rigel_tests --verbose
+./build/Rigel_profiler_tests --verbose
 ```
 
-Note: `Rigel_tests` is not placed in `build/bin` by default; it lives in the
-build directory root unless you change CMake output paths.
+Note: The test executables are not placed in `build/bin` by default; they live
+in the build directory root unless you change CMake output paths.
 
 ---
 
@@ -140,7 +144,9 @@ The test runner supports:
 3) Add one or more `TEST_CASE` blocks.
 4) Re-run CMake so CTest discovers the new test names.
 
-Tests link against `RigelLib`, so they can use core engine types directly.
+Most tests link against `RigelLib`, so they can use core engine types directly.
+Profiler tests instead compile their implementation in the focused profiler
+test executable.
 
 ---
 

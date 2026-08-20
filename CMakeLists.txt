@@ -158,30 +158,49 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 option(RIGEL_BUILD_TESTS "Build Rigel tests" ON)
 if (RIGEL_BUILD_TESTS)
     enable_testing()
-    target_compile_definitions(RigelLib PRIVATE RIGEL_ENABLE_PROFILER)
 
     file(GLOB_RECURSE TEST_SOURCES
         CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp
     )
 
+    set(PROFILER_TEST_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/tests/profiler_test.cpp)
+    list(REMOVE_ITEM TEST_SOURCES ${PROFILER_TEST_SOURCE})
+
     add_executable(Rigel_tests ${TEST_SOURCES})
     target_include_directories(Rigel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(Rigel_tests PRIVATE RigelLib)
-    target_compile_definitions(Rigel_tests PRIVATE RIGEL_ENABLE_PROFILER)
 
-    set(TEST_CASE_NAMES "")
-    foreach(test_src ${TEST_SOURCES})
-        file(READ "${test_src}" test_contents)
-        string(REGEX MATCHALL "TEST_CASE\\(([A-Za-z0-9_]+)\\)" test_matches "${test_contents}")
-        foreach(test_match ${test_matches})
-            string(REGEX REPLACE "TEST_CASE\\(([A-Za-z0-9_]+)\\)" "\\1" test_name "${test_match}")
-            list(APPEND TEST_CASE_NAMES "${test_name}")
+    add_executable(Rigel_profiler_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/TestFramework.cpp
+        ${PROFILER_TEST_SOURCE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/Profiler.cpp
+    )
+    target_include_directories(Rigel_profiler_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+    target_compile_definitions(Rigel_profiler_tests PRIVATE RIGEL_ENABLE_PROFILER)
+    add_dependencies(Rigel_tests Rigel_profiler_tests)
+
+    function(rigel_register_tests target)
+        set(test_case_names "")
+        foreach(test_src ${ARGN})
+            file(READ "${test_src}" test_contents)
+            string(REGEX MATCHALL "TEST_CASE\\(([A-Za-z0-9_]+)\\)" test_matches "${test_contents}")
+            foreach(test_match ${test_matches})
+                string(REGEX REPLACE "TEST_CASE\\(([A-Za-z0-9_]+)\\)" "\\1" test_name "${test_match}")
+                list(APPEND test_case_names "${test_name}")
+            endforeach()
         endforeach()
-    endforeach()
-    list(REMOVE_DUPLICATES TEST_CASE_NAMES)
+        list(REMOVE_DUPLICATES test_case_names)
 
-    foreach(test_name ${TEST_CASE_NAMES})
-        add_test(NAME Rigel_${test_name} COMMAND Rigel_tests --filter ${test_name})
-    endforeach()
+        foreach(test_name ${test_case_names})
+            add_test(NAME Rigel_${test_name} COMMAND ${target} --filter ${test_name})
+        endforeach()
+    endfunction()
+
+    rigel_register_tests(Rigel_tests ${TEST_SOURCES})
+    rigel_register_tests(Rigel_profiler_tests ${PROFILER_TEST_SOURCE})
 endif()

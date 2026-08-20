@@ -58,7 +58,7 @@ enable flag for each stage; its key order has no runtime meaning.
 
 - Clears the chunk to air.
 - If a density graph is present, evaluates output `base_density` per voxel.
-- Otherwise uses `terrain.height_noise` and `terrain.density_noise` fallback:
+- Otherwise uses `terrain.noise` and `terrain.density_noise` fallback:
   `density = density_noise * density_strength + (height - y) * gradient_strength`.
 - Fills solid blocks using `solid_block` (config).
 - Fills water up to `world.sea_level` when the column biome is `sea` or `beach`

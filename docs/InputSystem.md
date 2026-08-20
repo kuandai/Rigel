@@ -102,8 +102,8 @@ Defaults currently include:
    callbacks update the pending arrays without changing the state visible to
    gameplay in the current frame.
 2. `InputState::beginFrame()` copies pending state to the current arrays.
-   Press, release, and repeat edges are visible for that frame; held state is
-   retained in the pending arrays for subsequent frames.
+   Press and release edges are visible for that frame. Held and repeat state is
+   retained in the pending arrays until release.
 3. During `beginFrame()`, bound key edges invoke `InputListener` press and
    release callbacks.
 4. The application and gameplay helpers query the published state for camera

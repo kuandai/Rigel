@@ -98,7 +98,9 @@ bool AsyncChunkLoader::request(Voxel::ChunkCoord coord) {
         if (cacheIt->second.present.find(coord) == cacheIt->second.present.end()) {
             return false;
         }
-        m_pendingChunks.insert(coord);
+        if (m_pendingChunks.insert(coord).second) {
+            ++m_requestsStarted;
+        }
         queuePayloadBuild(cacheIt->second, coord);
         touch(key);
         return true;
@@ -109,7 +111,9 @@ bool AsyncChunkLoader::request(Voxel::ChunkCoord coord) {
         }
     }
 
-    m_pendingChunks.insert(coord);
+    if (m_pendingChunks.insert(coord).second) {
+        ++m_requestsStarted;
+    }
     m_regionPending[key].insert(coord);
     if (queueRegionLoad(key)) {
         prefetchNeighbors(key);
@@ -122,6 +126,14 @@ bool AsyncChunkLoader::request(Voxel::ChunkCoord coord) {
 
 bool AsyncChunkLoader::isPending(Voxel::ChunkCoord coord) const {
     return m_pendingChunks.find(coord) != m_pendingChunks.end();
+}
+
+Voxel::StreamingWorkCount AsyncChunkLoader::workCount() const {
+    return Voxel::StreamingWorkCount{
+        .pending = m_pendingChunks.size(),
+        .inFlight = m_inFlight.size() + m_payloadInFlight.size(),
+        .started = m_requestsStarted
+    };
 }
 
 void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {

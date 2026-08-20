@@ -107,6 +107,9 @@ struct Application::Impl {
         Voxel::WorldView* worldView = nullptr;
         std::shared_ptr<Persistence::AsyncChunkLoader> chunkLoader;
         bool ready = false;
+        bool streamingLifecycleLogged = false;
+        Voxel::StreamingLifecycleState lastStreamingLifecycle =
+            Voxel::StreamingLifecycleState::DiscoveringSpawn;
         Voxel::BlockID placeBlock = Voxel::BlockRegistry::airId();
     };
 
@@ -568,6 +571,12 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
                     loader->cancel(coord);
                 }
             });
+        m_impl->world.worldView->setChunkLoadWorkCallback(
+            [loader = m_impl->world.chunkLoader]() {
+                return loader
+                    ? loader->workCount()
+                    : Voxel::StreamingWorkCount{};
+            });
 
         Voxel::ConfigProvider renderConfigProvider =
             Voxel::makeRenderConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
@@ -597,6 +606,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         int spawnZ = static_cast<int>(std::floor(m_impl->camera.position.z));
         int spawnY = Voxel::findFirstAirY(*generator, config, spawnX, spawnZ);
         m_impl->camera.position.y = static_cast<float>(spawnY) + 0.5f;
+        m_impl->world.worldView->markSpawnDiscoveryComplete();
 
         Render::initDebugField(m_impl->debug, m_impl->assets);
         Render::initFrameGraph(m_impl->debug, m_impl->assets);
@@ -638,6 +648,7 @@ Application::~Application() {
             m_impl->world.worldView->setChunkPendingCallback({});
             m_impl->world.worldView->setChunkLoadDrain({});
             m_impl->world.worldView->setChunkLoadCancel({});
+            m_impl->world.worldView->setChunkLoadWorkCallback({});
         }
         m_impl->world.chunkLoader.reset();
 
@@ -764,6 +775,31 @@ void Application::run() {
                     {
                         PROFILE_SCOPE("Streaming/Apply");
                         m_impl->world.worldView->updateMeshes();
+                    }
+                    const auto& diagnostics =
+                        m_impl->world.worldView->streamingDiagnostics();
+                    if (!m_impl->world.streamingLifecycleLogged ||
+                        diagnostics.state != m_impl->world.lastStreamingLifecycle) {
+                        spdlog::info(
+                            "streaming.lifecycle state={} "
+                            "generation.pending={} generation.in_flight={} generation.started={} "
+                            "load.pending={} load.in_flight={} load.started={} "
+                            "mesh.pending={} mesh.in_flight={} mesh.started={} "
+                            "stable_updates={}/{}",
+                            Voxel::streamingLifecycleName(diagnostics.state),
+                            diagnostics.generation.pending,
+                            diagnostics.generation.inFlight,
+                            diagnostics.generation.started,
+                            diagnostics.chunkLoad.pending,
+                            diagnostics.chunkLoad.inFlight,
+                            diagnostics.chunkLoad.started,
+                            diagnostics.mesh.pending,
+                            diagnostics.mesh.inFlight,
+                            diagnostics.mesh.started,
+                            diagnostics.stableUpdates,
+                            Voxel::StreamingDiagnosticSnapshot::QuiescenceUpdateWindow);
+                        m_impl->world.lastStreamingLifecycle = diagnostics.state;
+                        m_impl->world.streamingLifecycleLogged = true;
                     }
                 }
 

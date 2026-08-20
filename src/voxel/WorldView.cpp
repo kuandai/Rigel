@@ -70,6 +70,10 @@ void WorldView::setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel
     m_streamer.setChunkLoadCancel(std::move(cancel));
 }
 
+void WorldView::setChunkLoadWorkCallback(ChunkStreamer::ChunkLoadWorkCallback work) {
+    m_streamer.setChunkLoadWorkCallback(std::move(work));
+}
+
 void WorldView::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
     m_streamer.setConfig(config);
     m_renderConfig.renderDistance =
@@ -80,6 +84,10 @@ void WorldView::setStreamConfig(const WorldGenConfig::StreamConfig& config) {
 void WorldView::setBenchmark(ChunkBenchmarkStats* stats) {
     m_benchmark = stats;
     m_streamer.setBenchmark(stats);
+}
+
+void WorldView::markSpawnDiscoveryComplete() {
+    m_streamer.markSpawnDiscoveryComplete();
 }
 
 void WorldView::updateStreaming(const glm::vec3& cameraPos) {

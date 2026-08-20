@@ -58,13 +58,18 @@ public:
     void setChunkPendingCallback(ChunkStreamer::ChunkPendingCallback pending);
     void setChunkLoadDrain(ChunkStreamer::ChunkLoadDrainCallback drain);
     void setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel);
+    void setChunkLoadWorkCallback(ChunkStreamer::ChunkLoadWorkCallback work);
     void setStreamConfig(const WorldGenConfig::StreamConfig& config);
     void setBenchmark(ChunkBenchmarkStats* stats);
+    void markSpawnDiscoveryComplete();
 
     void updateStreaming(const glm::vec3& cameraPos);
     void updateMeshes();
     const ChunkStreamer::WorkMetrics& streamingMetrics() const {
         return m_streamer.workMetrics();
+    }
+    const StreamingDiagnosticSnapshot& streamingDiagnostics() const {
+        return m_streamer.diagnostics();
     }
     void render(const glm::mat4& view,
                 const glm::mat4& projection,

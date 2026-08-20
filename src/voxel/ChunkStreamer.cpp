@@ -47,7 +47,11 @@ void ChunkStreamer::setConfig(const WorldGenConfig::StreamConfig& config) {
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
+    m_initialStreamingBegun = false;
+    m_workObservedThisUpdate = false;
+    m_workStartedThisUpdate = false;
     ensureThreadPool();
+    refreshDiagnostics(false);
 }
 
 void ChunkStreamer::bind(ChunkManager* manager,
@@ -91,12 +95,28 @@ void ChunkStreamer::setChunkLoadCancel(ChunkLoadCancelCallback cancel) {
     m_chunkLoadCancel = std::move(cancel);
 }
 
+void ChunkStreamer::setChunkLoadWorkCallback(ChunkLoadWorkCallback work) {
+    m_chunkLoadWork = std::move(work);
+    refreshDiagnostics(false);
+}
+
+void ChunkStreamer::markSpawnDiscoveryComplete() {
+    m_spawnDiscoveryComplete = true;
+    refreshDiagnostics(false);
+}
+
 void ChunkStreamer::update(const glm::vec3& cameraPos) {
     m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected = 0;
     m_workMetrics.lastUpdateSchedulerCoordinatesInspected = 0;
     if (!m_chunkManager || !m_generator || !m_meshStore) {
         return;
     }
+
+    m_initialStreamingBegun = true;
+    ++m_streamingUpdateSequence;
+    StreamingDiagnosticSnapshot beforeUpdate = collectDiagnostics();
+    m_workObservedThisUpdate = !beforeUpdate.workEmpty();
+    m_workStartedThisUpdate = false;
 
     uint64_t desiredBuildCoordinatesInspected = 0;
     uint64_t schedulerCoordinatesInspected = 0;
@@ -484,6 +504,14 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         desiredBuildCoordinatesInspected;
     m_workMetrics.schedulerCoordinatesInspected += schedulerCoordinatesInspected;
     m_lastWorldGenVersion = worldGenVersion;
+
+    StreamingDiagnosticSnapshot afterUpdate = collectDiagnostics();
+    m_workObservedThisUpdate = m_workObservedThisUpdate || !afterUpdate.workEmpty();
+    m_workStartedThisUpdate =
+        beforeUpdate.generation.started != afterUpdate.generation.started ||
+        beforeUpdate.chunkLoad.started != afterUpdate.chunkLoad.started ||
+        beforeUpdate.mesh.started != afterUpdate.mesh.started;
+    refreshDiagnostics(false);
 }
 
 ChunkCoord ChunkStreamer::cameraToChunk(const glm::vec3& cameraPos) const {
@@ -498,6 +526,10 @@ void ChunkStreamer::processCompletions() {
     if (!m_chunkManager) {
         return;
     }
+
+    StreamingDiagnosticSnapshot beforeCompletions = collectDiagnostics();
+    m_workObservedThisUpdate =
+        m_workObservedThisUpdate || !beforeCompletions.workEmpty();
 
     size_t loadBudget = (m_config.loadApplyBudgetPerFrame <= 0)
         ? std::numeric_limits<size_t>::max()
@@ -519,6 +551,20 @@ void ChunkStreamer::processCompletions() {
     {
         PROFILE_SCOPE("Streaming/MeshApply");
         applyMeshCompletions(budget);
+    }
+
+    StreamingDiagnosticSnapshot afterCompletions = collectDiagnostics();
+    m_workObservedThisUpdate =
+        m_workObservedThisUpdate || !afterCompletions.workEmpty();
+    m_workStartedThisUpdate = m_workStartedThisUpdate ||
+        beforeCompletions.generation.started != afterCompletions.generation.started ||
+        beforeCompletions.chunkLoad.started != afterCompletions.chunkLoad.started ||
+        beforeCompletions.mesh.started != afterCompletions.mesh.started;
+
+    bool advanceWindow = m_lifecycleUpdateSequence != m_streamingUpdateSequence;
+    refreshDiagnostics(advanceWindow);
+    if (advanceWindow) {
+        m_lifecycleUpdateSequence = m_streamingUpdateSequence;
     }
 }
 
@@ -585,6 +631,11 @@ void ChunkStreamer::reset() {
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
     m_lastWorldGenVersion = m_generator ? m_generator->config().world.version : 0;
+    m_initialStreamingBegun = false;
+    m_workObservedThisUpdate = false;
+    m_workStartedThisUpdate = false;
+    m_streamingUpdateSequence = 0;
+    m_lifecycleUpdateSequence = 0;
     for (auto& entry : m_genCancel) {
         entry.second->store(true, std::memory_order_relaxed);
     }
@@ -594,6 +645,100 @@ void ChunkStreamer::reset() {
     while (m_genComplete.tryPop(genResult)) {
     }
     applyMeshCompletions(std::numeric_limits<size_t>::max());
+    refreshDiagnostics(false);
+}
+
+StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() const {
+    StreamingDiagnosticSnapshot snapshot;
+    size_t generationPending = m_generationCapacityWaiting.size();
+    size_t meshPending = m_missingMeshCapacityWaiting.size();
+    for (const ChunkCoord& coord : m_dirtyMeshQueued) {
+        if (m_missingMeshCapacityWaiting.find(coord) ==
+                m_missingMeshCapacityWaiting.end() &&
+            m_meshInFlight.find(coord) == m_meshInFlight.end()) {
+            ++meshPending;
+        }
+    }
+    for (const ChunkCoord& coord : m_loadGenQueued) {
+        if (m_loadPending.find(coord) != m_loadPending.end()) {
+            continue;
+        }
+
+        ChunkState state = ChunkState::Missing;
+        auto stateIt = m_states.find(coord);
+        if (stateIt != m_states.end()) {
+            state = stateIt->second;
+        }
+        if (state == ChunkState::QueuedGen || state == ChunkState::QueuedMesh) {
+            continue;
+        }
+
+        Chunk* chunk = m_chunkManager ? m_chunkManager->getChunk(coord) : nullptr;
+        if (!chunk) {
+            ++generationPending;
+            continue;
+        }
+        if (chunk->isEmpty() ||
+            m_missingMeshCapacityWaiting.find(coord) !=
+                m_missingMeshCapacityWaiting.end() ||
+            m_dirtyMeshQueued.find(coord) != m_dirtyMeshQueued.end()) {
+            continue;
+        }
+
+        bool hasMesh = m_meshStore && m_meshStore->contains(coord);
+        bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+        if (!isMeshed || chunk->isDirty()) {
+            ++meshPending;
+        }
+    }
+
+    snapshot.generation = StreamingWorkCount{
+        .pending = generationPending,
+        .inFlight = m_inFlightGen,
+        .started = m_workMetrics.generationJobsStarted
+    };
+    snapshot.mesh = StreamingWorkCount{
+        .pending = meshPending,
+        .inFlight = m_inFlightMesh,
+        .started = m_workMetrics.meshJobsStarted
+    };
+    if (m_chunkLoadWork) {
+        snapshot.chunkLoad = m_chunkLoadWork();
+    } else {
+        snapshot.chunkLoad = StreamingWorkCount{
+            .pending = m_loadPending.size(),
+            .inFlight = 0,
+            .started = m_workMetrics.chunkLoadRequestsStarted
+        };
+    }
+    return snapshot;
+}
+
+void ChunkStreamer::refreshDiagnostics(bool advanceWindow) {
+    StreamingDiagnosticSnapshot next = collectDiagnostics();
+    next.state = m_diagnostics.state;
+    next.stableUpdates = m_diagnostics.stableUpdates;
+
+    if (!m_spawnDiscoveryComplete) {
+        next.state = StreamingLifecycleState::DiscoveringSpawn;
+        next.stableUpdates = 0;
+    } else if (!m_initialStreamingBegun) {
+        next.state = StreamingLifecycleState::AwaitingInitialStream;
+        next.stableUpdates = 0;
+    } else if (!next.workEmpty() || m_workObservedThisUpdate || m_workStartedThisUpdate) {
+        next.state = StreamingLifecycleState::Streaming;
+        next.stableUpdates = 0;
+    } else if (advanceWindow) {
+        if (next.stableUpdates < StreamingDiagnosticSnapshot::QuiescenceUpdateWindow) {
+            ++next.stableUpdates;
+        }
+        next.state =
+            next.stableUpdates >= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow
+            ? StreamingLifecycleState::Quiescent
+            : StreamingLifecycleState::Stabilizing;
+    }
+
+    m_diagnostics = next;
 }
 
 void ChunkStreamer::applyGenCompletions(size_t budget) {

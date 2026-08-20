@@ -5,6 +5,7 @@
 #include "ChunkBenchmark.h"
 #include "ChunkManager.h"
 #include "ChunkMesh.h"
+#include "StreamingDiagnostics.h"
 #include "TextureAtlas.h"
 #include "WorldMeshStore.h"
 #include "WorldGenConfig.h"
@@ -70,6 +71,7 @@ public:
     using ChunkPendingCallback = std::function<bool(ChunkCoord)>;
     using ChunkLoadDrainCallback = std::function<std::vector<ChunkCoord>(size_t)>;
     using ChunkLoadCancelCallback = std::function<void(ChunkCoord)>;
+    using ChunkLoadWorkCallback = std::function<StreamingWorkCount()>;
 
     ChunkStreamer() = default;
     ~ChunkStreamer();
@@ -85,6 +87,8 @@ public:
     void setChunkPendingCallback(ChunkPendingCallback pending);
     void setChunkLoadDrain(ChunkLoadDrainCallback drain);
     void setChunkLoadCancel(ChunkLoadCancelCallback cancel);
+    void setChunkLoadWorkCallback(ChunkLoadWorkCallback work);
+    void markSpawnDiscoveryComplete();
 
     void update(const glm::vec3& cameraPos);
     void processCompletions();
@@ -92,6 +96,7 @@ public:
     void getDebugStates(std::vector<DebugChunkState>& out) const;
     int viewDistanceChunks() const { return m_config.viewDistanceChunks; }
     const WorkMetrics& workMetrics() const { return m_workMetrics; }
+    const StreamingDiagnosticSnapshot& diagnostics() const { return m_diagnostics; }
 
 private:
     friend struct detail::ChunkStreamerTestAccess;
@@ -170,6 +175,7 @@ private:
     ChunkPendingCallback m_chunkPending;
     ChunkLoadDrainCallback m_chunkLoadDrain;
     ChunkLoadCancelCallback m_chunkLoadCancel;
+    ChunkLoadWorkCallback m_chunkLoadWork;
 
     std::unique_ptr<detail::ThreadPool> m_genPool;
     std::unique_ptr<detail::ThreadPool> m_meshPool;
@@ -202,8 +208,15 @@ private:
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;
     uint32_t m_lastWorldGenVersion = 0;
+    bool m_spawnDiscoveryComplete = false;
+    bool m_initialStreamingBegun = false;
+    bool m_workObservedThisUpdate = false;
+    bool m_workStartedThisUpdate = false;
+    uint64_t m_streamingUpdateSequence = 0;
+    uint64_t m_lifecycleUpdateSequence = 0;
     std::function<void()> m_meshBuildStartCallback;
     WorkMetrics m_workMetrics;
+    StreamingDiagnosticSnapshot m_diagnostics;
 
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);
@@ -219,6 +232,8 @@ private:
     void enqueueMesh(ChunkCoord coord, Chunk& chunk, MeshRequestKind kind);
     void ensureThreadPool();
     bool hasAllNeighborsLoaded(ChunkCoord coord) const;
+    StreamingDiagnosticSnapshot collectDiagnostics() const;
+    void refreshDiagnostics(bool advanceWindow);
 
     ChunkCoord cameraToChunk(const glm::vec3& cameraPos) const;
 };

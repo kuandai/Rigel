@@ -840,6 +840,8 @@ TEST_CASE(ChunkStreamer_GenerationCapacityWaitsForCompletion) {
 
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(6));
 
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
@@ -910,6 +912,8 @@ TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
     }
     CHECK(firstBuildEntered);
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(6));
 
     streamer.update(glm::vec3(0.0f));
     streamer.update(glm::vec3(0.0f));
@@ -1729,6 +1733,128 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     streamer.processCompletions();
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(quiescent.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(0));
+}
+
+TEST_CASE(ChunkStreamer_QuiescenceRequiresStableIdleUpdates) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:diagnostic_solid");
+
+    Chunk& center = manager.getOrCreateChunk({0, 0, 0});
+    center.setBlock(0, 0, 0, BlockState{solid}, registry);
+    center.setWorldGenVersion(generator->config().world.version);
+    center.setLoadedFromDisk(true);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    StreamingWorkCount loadWork{
+        .pending = 1,
+        .inFlight = 0,
+        .started = 1
+    };
+    streamer.setChunkLoadWorkCallback([&loadWork]() { return loadWork; });
+
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::DiscoveringSpawn);
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::DiscoveringSpawn);
+
+    streamer.markSpawnDiscoveryComplete();
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::AwaitingInitialStream);
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::AwaitingInitialStream);
+
+    streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+    CHECK_EQ(streamer.diagnostics().chunkLoad.pending, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().chunkLoad.inFlight, static_cast<size_t>(0));
+
+    loadWork.pending = 0;
+    loadWork.inFlight = 1;
+    streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+    CHECK_EQ(streamer.diagnostics().chunkLoad.pending, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().chunkLoad.inFlight, static_cast<size_t>(1));
+
+    loadWork.inFlight = 0;
+    streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Stabilizing);
+    CHECK_EQ(streamer.diagnostics().stableUpdates, static_cast<uint32_t>(1));
+
+    for (uint32_t stable = 2;
+         stable < StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++stable) {
+        streamer.update(glm::vec3(0.0f));
+        streamer.processCompletions();
+        CHECK_EQ(streamer.diagnostics().state,
+                 StreamingLifecycleState::Stabilizing);
+        CHECK_EQ(streamer.diagnostics().stableUpdates, stable);
+    }
+
+    streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Quiescent);
+    CHECK_EQ(streamer.diagnostics().stableUpdates,
+             StreamingDiagnosticSnapshot::QuiescenceUpdateWindow);
+    CHECK(streamer.diagnostics().workEmpty());
+
+    const auto settledMetrics = streamer.workMetrics();
+    const auto settledLoadStarted = streamer.diagnostics().chunkLoad.started;
+    for (int update = 0; update < 5; ++update) {
+        streamer.update(glm::vec3(0.0f));
+        streamer.processCompletions();
+        CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Quiescent);
+    }
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             settledMetrics.generationJobsStarted);
+    CHECK_EQ(streamer.diagnostics().chunkLoad.started, settledLoadStarted);
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+             settledMetrics.meshJobsStarted);
+    CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+
+    center.setBlock(1, 0, 0, BlockState{solid}, registry);
+    center.invalidateMesh();
+    center.markDirty();
+    streamer.update(glm::vec3(0.0f));
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+    CHECK_EQ(streamer.diagnostics().stableUpdates, static_cast<uint32_t>(0));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+             settledMetrics.meshJobsStarted + 1);
+
+    for (uint32_t stable = 1;
+         stable <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++stable) {
+        streamer.update(glm::vec3(0.0f));
+        streamer.processCompletions();
+        CHECK_EQ(streamer.diagnostics().stableUpdates, stable);
+        CHECK_EQ(streamer.diagnostics().state,
+                 stable == StreamingDiagnosticSnapshot::QuiescenceUpdateWindow
+                 ? StreamingLifecycleState::Quiescent
+                 : StreamingLifecycleState::Stabilizing);
+    }
 }
 
 TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {

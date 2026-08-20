@@ -4,6 +4,7 @@
 #include "Rigel/Persistence/Types.h"
 #include "Rigel/Voxel/ChunkCoord.h"
 #include "Rigel/Voxel/ChunkTasks.h"
+#include "Rigel/Voxel/StreamingDiagnostics.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 
 #include <atomic>
@@ -32,6 +33,8 @@ public:
     bool request(Voxel::ChunkCoord coord);
     bool isPending(Voxel::ChunkCoord coord) const;
     void cancel(Voxel::ChunkCoord coord);
+
+    Voxel::StreamingWorkCount workCount() const;
 
     std::vector<Voxel::ChunkCoord> drainCompletions(size_t budget);
 
@@ -116,6 +119,7 @@ private:
     std::unordered_set<RegionKey, RegionKeyHash> m_deferredRegionLoadSet;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_pendingChunks;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_payloadInFlight;
+    uint64_t m_requestsStarted = 0;
     std::deque<RegionKey> m_lru;
 
     struct RegionPresence {

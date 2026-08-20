@@ -366,17 +366,29 @@ TEST_CASE(AsyncChunkLoader_RegionCapacityStartsDeferredRequests) {
     CHECK(loader.request(coordB));
     CHECK(loader.isPending(coordA));
     CHECK(loader.isPending(coordB));
+    auto deferred = loader.workCount();
+    CHECK_EQ(deferred.pending, static_cast<size_t>(2));
+    CHECK_EQ(deferred.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(deferred.started, static_cast<uint64_t>(2));
 
     auto firstResolved = loader.drainCompletions(1);
     CHECK_EQ(firstResolved.size(), static_cast<size_t>(1));
     CHECK_EQ(firstResolved.front(), coordA);
     CHECK(!loader.isPending(coordA));
     CHECK(loader.isPending(coordB));
+    auto secondActive = loader.workCount();
+    CHECK_EQ(secondActive.pending, static_cast<size_t>(1));
+    CHECK_EQ(secondActive.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(secondActive.started, static_cast<uint64_t>(2));
 
     auto secondResolved = loader.drainCompletions(1);
     CHECK_EQ(secondResolved.size(), static_cast<size_t>(1));
     CHECK_EQ(secondResolved.front(), coordB);
     CHECK(!loader.isPending(coordB));
+    auto settled = loader.workCount();
+    CHECK_EQ(settled.pending, static_cast<size_t>(0));
+    CHECK_EQ(settled.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(settled.started, static_cast<uint64_t>(2));
     CHECK(world.chunkManager().getChunk(coordA) != nullptr);
     CHECK(world.chunkManager().getChunk(coordB) != nullptr);
 }

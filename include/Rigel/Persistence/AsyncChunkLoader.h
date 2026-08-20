@@ -9,6 +9,7 @@
 #include "Rigel/Voxel/WorldGenerator.h"
 
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -43,7 +44,7 @@ public:
 
     Voxel::StreamingWorkCount workCount() const;
 
-    std::vector<Voxel::ChunkCoord> drainCompletions(size_t budget);
+    std::vector<Voxel::ChunkLoadCompletion> drainCompletions(size_t budget);
 
     void setMaxCachedRegions(size_t maxRegions);
     void setMaxInFlightRegions(size_t maxRegions);
@@ -70,6 +71,7 @@ private:
     struct RegionResult {
         RegionKey key;
         RegionEntry entry;
+        std::string error;
         bool ok = false;
         bool exists = false;
     };
@@ -84,14 +86,16 @@ private:
     };
 
     void drainRegionCompletions(size_t budget,
-                                std::vector<Voxel::ChunkCoord>& resolved);
+                                std::vector<Voxel::ChunkLoadCompletion>& resolved);
     void drainPayloadCompletions(size_t budget,
-                                 std::vector<Voxel::ChunkCoord>& resolved);
+                                 std::vector<Voxel::ChunkLoadCompletion>& resolved);
     Voxel::ChunkLoadRequestResult queueChunkLoad(Voxel::ChunkCoord coord);
     void deferChunkLoad(Voxel::ChunkCoord coord);
-    void startDeferredChunkLoads(std::vector<Voxel::ChunkCoord>* resolved = nullptr);
+    void startDeferredChunkLoads(
+        std::vector<Voxel::ChunkLoadCompletion>* resolved = nullptr);
     void completeChunkLoad(Voxel::ChunkCoord coord,
-                           std::vector<Voxel::ChunkCoord>& resolved);
+                           Voxel::ChunkLoadOutcome outcome,
+                           std::vector<Voxel::ChunkLoadCompletion>& resolved);
     void deferRegionLoad(const RegionKey& key);
     void startDeferredRegionLoads();
     bool queueRegionLoad(const RegionKey& key);
@@ -139,7 +143,7 @@ private:
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_pendingChunks;
     std::deque<Voxel::ChunkCoord> m_deferredChunkLoads;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_deferredChunkLoadSet;
-    std::deque<Voxel::ChunkCoord> m_resolvedChunks;
+    std::deque<Voxel::ChunkLoadCompletion> m_resolvedChunks;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_payloadInFlight;
     uint64_t m_requestsStarted = 0;
     std::deque<RegionKey> m_lru;
@@ -149,6 +153,7 @@ private:
         std::chrono::steady_clock::time_point nextCheck{};
     };
     std::unordered_map<RegionKey, RegionPresence, RegionKeyHash> m_regionPresence;
+    std::unordered_map<RegionKey, size_t, RegionKeyHash> m_regionLoadAttempts;
 };
 
 } // namespace Rigel::Persistence

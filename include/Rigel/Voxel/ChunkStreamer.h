@@ -70,7 +70,8 @@ public:
 
     using ChunkLoadCallback = std::function<ChunkLoadRequestResult(ChunkCoord)>;
     using ChunkPendingCallback = std::function<bool(ChunkCoord)>;
-    using ChunkLoadDrainCallback = std::function<std::vector<ChunkCoord>(size_t)>;
+    using ChunkLoadDrainCallback =
+        std::function<std::vector<ChunkLoadCompletion>(size_t)>;
     using ChunkLoadCancelCallback = std::function<void(ChunkCoord)>;
     using ChunkLoadWorkCallback = std::function<StreamingWorkCount()>;
 

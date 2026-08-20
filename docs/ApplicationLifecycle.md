@@ -179,6 +179,8 @@ Synchronization:
 - Payload builds (decode + base fill) run on a worker pool.
 - `ChunkStreamer::processCompletions()` drains payloads on the main thread via
   `ChunkLoadDrainCallback`, honoring `streaming.load_apply_budget_per_frame`.
+- Failed region reads are retried from their completion events. Exhausted reads
+  complete with a failure outcome and do not fall through to generation.
 
 **Merge behavior**:
 - When spans exist, `mergeChunkSpans()` overlays disk data into a chunk.

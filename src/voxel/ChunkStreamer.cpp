@@ -561,9 +561,11 @@ void ChunkStreamer::processCompletions() {
         : static_cast<size_t>(m_config.loadApplyBudgetPerFrame);
     if (m_chunkLoadDrain) {
         PROFILE_SCOPE("Streaming/LoadDrain");
-        for (const ChunkCoord& coord : m_chunkLoadDrain(loadBudget)) {
-            m_loadPending.erase(coord);
-            queueLoadGen(coord);
+        for (const ChunkLoadCompletion& completion : m_chunkLoadDrain(loadBudget)) {
+            m_loadPending.erase(completion.coord);
+            if (completion.outcome != ChunkLoadOutcome::Failed) {
+                queueLoadGen(completion.coord);
+            }
         }
     }
     size_t budget = (m_config.applyBudgetPerFrame <= 0)

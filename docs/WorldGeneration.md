@@ -190,12 +190,14 @@ Empty chunks skip mesh generation and move directly to `ReadyMesh`.
 
 - `ChunkLoadCallback` enqueues a non-blocking request for disk data.
 - `ChunkPendingCallback` reports whether a load is already in flight.
-- `ChunkLoadDrainCallback` applies completed payloads within a per-frame budget.
+- `ChunkLoadDrainCallback` reports loaded, missing, or failed requests within a
+  per-frame budget.
 
 The default loader (`AsyncChunkLoader`) uses the persistence service to fetch
 region data asynchronously, builds chunk payloads off-thread (including base
 fill for partial spans), then applies payloads on the main thread with a budget.
-If no stored data is found, generation proceeds normally.
+If no stored data is found, generation proceeds normally. Region read failures
+are retried from completion events and never imply that stored data is absent.
 
 Chunk modifications mark `persistDirty`, which allows save logic to skip
 unchanged chunks when persisting data.

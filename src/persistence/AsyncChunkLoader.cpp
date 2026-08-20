@@ -16,6 +16,10 @@
 
 namespace Rigel::Persistence {
 
+namespace {
+constexpr size_t kMaxRegionLoadAttempts = 3;
+}
+
 size_t AsyncChunkLoader::RegionKeyHash::operator()(const RegionKey& key) const {
     size_t seed = std::hash<std::string>{}(key.zoneId);
     size_t hx = std::hash<int32_t>{}(key.x);
@@ -186,8 +190,9 @@ void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {
     }
 }
 
-std::vector<Voxel::ChunkCoord> AsyncChunkLoader::drainCompletions(size_t budget) {
-    std::vector<Voxel::ChunkCoord> resolved;
+std::vector<Voxel::ChunkLoadCompletion> AsyncChunkLoader::drainCompletions(
+    size_t budget) {
+    std::vector<Voxel::ChunkLoadCompletion> resolved;
     while (!m_resolvedChunks.empty()) {
         resolved.push_back(m_resolvedChunks.front());
         m_resolvedChunks.pop_front();
@@ -212,24 +217,62 @@ std::vector<Voxel::ChunkCoord> AsyncChunkLoader::drainCompletions(size_t budget)
 
 void AsyncChunkLoader::drainRegionCompletions(
     size_t budget,
-    std::vector<Voxel::ChunkCoord>& resolved) {
+    std::vector<Voxel::ChunkLoadCompletion>& resolved) {
     size_t drained = 0;
     RegionResult result;
     while (drained < budget && m_regionComplete.tryPop(result)) {
         ++drained;
         m_inFlight.erase(result.key);
+        auto pendingIt = m_regionPending.find(result.key);
+        if (!result.ok) {
+            size_t attempts = m_regionLoadAttempts[result.key];
+            bool hasPendingRequests =
+                pendingIt != m_regionPending.end() && !pendingIt->second.empty();
+            if (hasPendingRequests && attempts < kMaxRegionLoadAttempts) {
+                spdlog::warn(
+                    "Region load failed ({} {} {}) on attempt {} of {}: {}; retrying",
+                    result.key.x,
+                    result.key.y,
+                    result.key.z,
+                    attempts,
+                    kMaxRegionLoadAttempts,
+                    result.error);
+                if (!queueRegionLoad(result.key)) {
+                    deferRegionLoad(result.key);
+                }
+                continue;
+            }
+
+            m_regionLoadAttempts.erase(result.key);
+            if (!hasPendingRequests) {
+                spdlog::warn("Region prefetch failed ({} {} {}): {}",
+                             result.key.x,
+                             result.key.y,
+                             result.key.z,
+                             result.error);
+                continue;
+            }
+
+            auto pending = std::move(pendingIt->second);
+            m_regionPending.erase(pendingIt);
+            spdlog::error(
+                "Region load failed ({} {} {}) after {} attempts; {} chunk loads failed: {}",
+                result.key.x,
+                result.key.y,
+                result.key.z,
+                attempts,
+                pending.size(),
+                result.error);
+            for (const auto& coord : pending) {
+                completeChunkLoad(coord, Voxel::ChunkLoadOutcome::Failed, resolved);
+            }
+            continue;
+        }
+
+        m_regionLoadAttempts.erase(result.key);
         auto now = std::chrono::steady_clock::now();
         RegionPresence& presence = m_regionPresence[result.key];
-        if (!result.ok) {
-            presence.exists = false;
-            presence.nextCheck = now + std::chrono::seconds(2);
-            spdlog::warn("Region load failed ({} {} {}), treating as empty",
-                         result.key.x, result.key.y, result.key.z);
-            result.entry.region = std::make_shared<ChunkRegionSnapshot>();
-            result.entry.region->key = result.key;
-            result.entry.present.clear();
-            result.entry.spansByCoord.clear();
-        } else if (result.exists) {
+        if (result.exists) {
             presence.exists = true;
             presence.nextCheck = std::chrono::steady_clock::time_point{};
         } else {
@@ -240,7 +283,6 @@ void AsyncChunkLoader::drainRegionCompletions(
         touch(result.key);
         evictIfNeeded();
 
-        auto pendingIt = m_regionPending.find(result.key);
         if (pendingIt != m_regionPending.end()) {
             auto pending = std::move(pendingIt->second);
             m_regionPending.erase(pendingIt);
@@ -248,7 +290,10 @@ void AsyncChunkLoader::drainRegionCompletions(
             if (cacheIt != m_cache.end()) {
                 for (const auto& coord : pending) {
                     if (cacheIt->second.present.find(coord) == cacheIt->second.present.end()) {
-                        completeChunkLoad(coord, resolved);
+                        completeChunkLoad(
+                            coord,
+                            Voxel::ChunkLoadOutcome::Missing,
+                            resolved);
                         continue;
                     }
                     m_pendingChunks.insert(coord);
@@ -262,7 +307,7 @@ void AsyncChunkLoader::drainRegionCompletions(
 
 void AsyncChunkLoader::drainPayloadCompletions(
     size_t budget,
-    std::vector<Voxel::ChunkCoord>& resolved) {
+    std::vector<Voxel::ChunkLoadCompletion>& resolved) {
     size_t applied = 0;
     ChunkPayload payload;
     while (applied < budget && m_chunkComplete.tryPop(payload)) {
@@ -271,7 +316,10 @@ void AsyncChunkLoader::drainPayloadCompletions(
             continue;
         }
         applyPayload(payload);
-        completeChunkLoad(payload.coord, resolved);
+        completeChunkLoad(
+            payload.coord,
+            Voxel::ChunkLoadOutcome::Loaded,
+            resolved);
         ++applied;
     }
 }
@@ -283,7 +331,7 @@ void AsyncChunkLoader::deferChunkLoad(Voxel::ChunkCoord coord) {
 }
 
 void AsyncChunkLoader::startDeferredChunkLoads(
-    std::vector<Voxel::ChunkCoord>* resolved) {
+    std::vector<Voxel::ChunkLoadCompletion>* resolved) {
     while (!m_deferredChunkLoads.empty() &&
            (m_loadQueueLimit == 0 || m_pendingChunks.size() < m_loadQueueLimit)) {
         Voxel::ChunkCoord coord = m_deferredChunkLoads.front();
@@ -297,20 +345,23 @@ void AsyncChunkLoader::startDeferredChunkLoads(
             continue;
         }
         if (resolved) {
-            resolved->push_back(coord);
+            resolved->push_back(
+                {coord, Voxel::ChunkLoadOutcome::Missing});
         } else {
-            m_resolvedChunks.push_back(coord);
+            m_resolvedChunks.push_back(
+                {coord, Voxel::ChunkLoadOutcome::Missing});
         }
     }
 }
 
 void AsyncChunkLoader::completeChunkLoad(
     Voxel::ChunkCoord coord,
-    std::vector<Voxel::ChunkCoord>& resolved) {
+    Voxel::ChunkLoadOutcome outcome,
+    std::vector<Voxel::ChunkLoadCompletion>& resolved) {
     if (m_pendingChunks.erase(coord) == 0) {
         return;
     }
-    resolved.push_back(coord);
+    resolved.push_back({coord, outcome});
     startDeferredChunkLoads(&resolved);
 }
 
@@ -385,6 +436,7 @@ bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key) {
     }
 
     m_inFlight.insert(key);
+    ++m_regionLoadAttempts[key];
     PersistenceService* servicePtr = m_service;
     PersistenceContext contextCopy = m_context;
     auto regionLoadStartCallback = m_regionLoadStartCallback;
@@ -425,10 +477,13 @@ bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key) {
             result.entry = std::move(entry);
             result.ok = true;
         } catch (const std::exception& e) {
-            spdlog::warn("Async region load failed ({} {} {}): {}",
-                         key.x, key.y, key.z, e.what());
             result.ok = false;
             result.exists = false;
+            result.error = e.what();
+        } catch (...) {
+            result.ok = false;
+            result.exists = false;
+            result.error = "unknown error";
         }
         m_regionComplete.push(std::move(result));
     };

@@ -1179,10 +1179,12 @@ TEST_CASE(ChunkStreamer_MissingLoadResolutionStartsGeneration) {
     bool resolved = false;
     streamer.setChunkLoadDrain([&](size_t) {
         if (resolved) {
-            return std::vector<ChunkCoord>{};
+            return std::vector<ChunkLoadCompletion>{};
         }
         resolved = true;
-        return std::vector<ChunkCoord>{coord};
+        return std::vector<ChunkLoadCompletion>{
+            {coord, ChunkLoadOutcome::Missing}
+        };
     });
 
     streamer.update(coord.toWorldCenter());
@@ -1196,6 +1198,53 @@ TEST_CASE(ChunkStreamer_MissingLoadResolutionStartsGeneration) {
 
     streamer.processCompletions();
     CHECK(manager.hasChunk(coord));
+}
+
+TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    const ChunkCoord coord{0, 0, 0};
+    size_t loadAttempts = 0;
+    streamer.setChunkLoader([&](ChunkCoord request) {
+        CHECK_EQ(request, coord);
+        ++loadAttempts;
+        return ChunkLoadRequestResult::Queued;
+    });
+    bool resolved = false;
+    streamer.setChunkLoadDrain([&](size_t) {
+        if (resolved) {
+            return std::vector<ChunkLoadCompletion>{};
+        }
+        resolved = true;
+        return std::vector<ChunkLoadCompletion>{
+            {coord, ChunkLoadOutcome::Failed}
+        };
+    });
+
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(coord.toWorldCenter());
+
+    CHECK_EQ(loadAttempts, static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(0));
+    CHECK(!manager.hasChunk(coord));
 }
 
 TEST_CASE(ChunkStreamer_MovementRequestsOnlyNewDesiredFrontier) {
@@ -1225,7 +1274,7 @@ TEST_CASE(ChunkStreamer_MovementRequestsOnlyNewDesiredFrontier) {
     });
     streamer.setChunkPendingCallback([](ChunkCoord) { return true; });
     streamer.setChunkLoadDrain([](size_t) {
-        return std::vector<ChunkCoord>{};
+        return std::vector<ChunkLoadCompletion>{};
     });
     streamer.setChunkLoadCancel([&](ChunkCoord coord) {
         cancelled.insert(coord);
@@ -1347,7 +1396,7 @@ TEST_CASE(ChunkStreamer_DepartedFrontierReleasesWaitingMesh) {
         return ChunkLoadRequestResult::Queued;
     });
     streamer.setChunkLoadDrain([](size_t) {
-        return std::vector<ChunkCoord>{};
+        return std::vector<ChunkLoadCompletion>{};
     });
 
     streamer.update(firstCenter.toWorldCenter());

@@ -1178,6 +1178,153 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPrecedesDistancePriority) {
     CHECK_EQ(streamer.workMetrics().meshJobsAccepted, jobsStarted + 2);
 }
 
+TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPromotesPendingInitialMesh) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:pending_priority_solid");
+
+    const ChunkCoord ordinaryCoord{0, 0, 0};
+    const ChunkCoord pendingCoord{1, 0, 0};
+    const ChunkCoord initialMeshCoord{-1, 0, 0};
+    const std::array<ChunkCoord, 7> desired{
+        ordinaryCoord,
+        pendingCoord,
+        initialMeshCoord,
+        ChunkCoord{0, 1, 0},
+        ChunkCoord{0, -1, 0},
+        ChunkCoord{0, 0, 1},
+        ChunkCoord{0, 0, -1}
+    };
+    for (const ChunkCoord& coord : desired) {
+        if (coord == pendingCoord) {
+            continue;
+        }
+        Chunk& chunk = manager.getOrCreateChunk(coord);
+        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setLoadedFromDisk(true);
+        if (coord == ordinaryCoord || coord == initialMeshCoord) {
+            chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+        }
+        chunk.clearDirty();
+    }
+    meshStore.set(ordinaryCoord, {});
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 1;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+    streamer.setChunkLoader([&](ChunkCoord coord) {
+        return coord == pendingCoord
+            ? ChunkLoadRequestResult::Queued
+            : ChunkLoadRequestResult::Missing;
+    });
+
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    streamer.processCompletions();
+
+    streamer.prioritizeMesh(pendingCoord);
+    Chunk& pending = manager.getOrCreateChunk(pendingCoord);
+    pending.setWorldGenVersion(generator->config().world.version);
+    pending.setLoadedFromDisk(true);
+    pending.setBlock(0, 0, 0, BlockState{solid}, registry);
+    Chunk& ordinary = *manager.getChunk(ordinaryCoord);
+    ordinary.setBlock(1, 0, 0, BlockState{solid}, registry);
+
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK(!pending.isDirty());
+    CHECK(ordinary.isDirty());
+
+    streamer.processCompletions();
+    CHECK(meshStore.contains(pendingCoord));
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
+    CHECK(!ordinary.isDirty());
+    streamer.processCompletions();
+}
+
+TEST_CASE(ChunkStreamer_ExplicitMeshPrioritySurvivesDependencyWait) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:waiting_priority_solid");
+
+    const ChunkCoord ordinaryCoord{0, 0, 0};
+    const ChunkCoord prioritizedCoord{1, 0, 0};
+    const ChunkCoord missingDependency{2, 0, 0};
+    for (int z = -2; z <= 2; ++z) {
+        for (int y = -2; y <= 2; ++y) {
+            for (int x = -2; x <= 2; ++x) {
+                if (x * x + y * y + z * z > 4) {
+                    continue;
+                }
+                ChunkCoord coord{x, y, z};
+                if (coord == missingDependency) {
+                    continue;
+                }
+                Chunk& chunk = manager.getOrCreateChunk(coord);
+                chunk.setWorldGenVersion(generator->config().world.version);
+                chunk.setLoadedFromDisk(true);
+                if (coord == ordinaryCoord || coord == prioritizedCoord) {
+                    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+                    meshStore.set(coord, {});
+                }
+                chunk.clearDirty();
+            }
+        }
+    }
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 2;
+    stream.unloadDistanceChunks = 2;
+    stream.genQueueLimit = 1;
+    stream.meshQueueLimit = 1;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+
+    Chunk& ordinary = *manager.getChunk(ordinaryCoord);
+    Chunk& prioritized = *manager.getChunk(prioritizedCoord);
+    ordinary.setBlock(1, 0, 0, BlockState{solid}, registry);
+    prioritized.setBlock(1, 0, 0, BlockState{solid}, registry);
+    streamer.prioritizeMesh(prioritizedCoord);
+
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK(prioritized.isDirty());
+    CHECK(!ordinary.isDirty());
+
+    streamer.processCompletions();
+    ordinary.setBlock(2, 0, 0, BlockState{solid}, registry);
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK(!prioritized.isDirty());
+    CHECK(ordinary.isDirty());
+
+    streamer.processCompletions();
+    CHECK(meshStore.contains(prioritizedCoord));
+}
+
 TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     ChunkManager manager;
     BlockRegistry registry;

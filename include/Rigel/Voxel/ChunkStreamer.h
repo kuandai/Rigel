@@ -208,7 +208,7 @@ private:
                         std::vector<PendingDirtyMesh>,
                         PendingDirtyMeshGreater> m_dirtyMeshQueue;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;
-    std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityDirtyMeshQueued;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityMeshRequests;
     size_t m_inFlightGen = 0;
     size_t m_inFlightMesh = 0;
     size_t m_inFlightMeshMissing = 0;

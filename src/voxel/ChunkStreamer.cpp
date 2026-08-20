@@ -312,11 +312,11 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
 
             Chunk* chunk = m_chunkManager->getChunk(coord);
-            bool requested = false;
+            ChunkLoadRequestResult loadResult = ChunkLoadRequestResult::Missing;
             if (!chunk && state != ChunkState::QueuedGen && m_chunkLoader) {
                 bool wasPending = m_loadPending.find(coord) != m_loadPending.end();
-                requested = m_chunkLoader(coord);
-                if (requested && !wasPending) {
+                loadResult = m_chunkLoader(coord);
+                if (loadResult != ChunkLoadRequestResult::Missing && !wasPending) {
                     ++m_workMetrics.chunkLoadRequestsStarted;
                 }
                 chunk = m_chunkManager->getChunk(coord);
@@ -384,7 +384,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 continue;
             }
 
-            if (requested) {
+            if (loadResult != ChunkLoadRequestResult::Missing) {
                 m_loadPending.insert(coord);
                 ++queued;
                 continue;

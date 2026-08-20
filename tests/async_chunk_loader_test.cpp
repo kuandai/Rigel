@@ -7,6 +7,7 @@
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/ChunkStreamer.h"
 
 #include <chrono>
 #include <filesystem>
@@ -230,7 +231,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
         1,
         generator);
 
-    CHECK(loader.request(coord));
+    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(coord));
 
     auto resolved = loader.drainCompletions(1);
@@ -274,7 +275,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Random) {
         1,
         generator);
 
-    CHECK(loader.request(coord));
+    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
     loader.drainCompletions(1);
 
     Chunk* loaded = world.chunkManager().getChunk(coord);
@@ -317,8 +318,8 @@ TEST_CASE(AsyncChunkLoader_ApplyBudget) {
         1,
         generator);
 
-    CHECK(loader.request(coordA));
-    CHECK(loader.request(coordB));
+    CHECK_EQ(loader.request(coordA), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(coordB), ChunkLoadRequestResult::Queued);
 
     loader.drainCompletions(1);
 
@@ -328,6 +329,103 @@ TEST_CASE(AsyncChunkLoader_ApplyBudget) {
     loader.drainCompletions(4);
     loadedCount = world.chunkManager().loadedChunkCount();
     CHECK_EQ(loadedCount, static_cast<size_t>(2));
+}
+
+TEST_CASE(ChunkStreamer_SaturatedLoaderPreservesPersistedChunk) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID persisted = registerTestBlock(registry, "rigel:test_saturated_persisted");
+    std::vector<BlockID> palette = {persisted};
+    ChunkCoord blocker{0, 0, 0};
+    ChunkCoord target{1, 0, 0};
+    ChunkData blockerPayload =
+        buildPayload(blocker, registry, palette, false, std::nullopt, false);
+    ChunkData targetPayload =
+        buildPayload(target, registry, palette, false, std::nullopt, false);
+
+    MemoryContext ctx;
+    saveRegionForPayloads(ctx.service,
+                          ctx.context,
+                          "rigel:default",
+                          {{blocker, blockerPayload}, {target, targetPayload}});
+
+    auto loader = std::make_shared<AsyncChunkLoader>(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+    loader->setLoadQueueLimit(1);
+    CHECK_EQ(loader->request(blocker), ChunkLoadRequestResult::Queued);
+
+    WorldMeshStore meshStore;
+    ChunkStreamer streamer;
+    WorldGenConfig::StreamConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
+    std::optional<ChunkLoadRequestResult> targetRequest;
+    size_t targetRequestCount = 0;
+    streamer.setChunkLoader([&, loader](ChunkCoord coord) {
+        ChunkLoadRequestResult result = loader->request(coord);
+        if (coord == target) {
+            targetRequest = result;
+            ++targetRequestCount;
+        }
+        return result;
+    });
+    streamer.setChunkPendingCallback([loader](ChunkCoord coord) {
+        return loader->isPending(coord);
+    });
+    streamer.setChunkLoadDrain([loader](size_t budget) {
+        return loader->drainCompletions(budget);
+    });
+    streamer.setChunkLoadCancel([loader](ChunkCoord coord) {
+        loader->cancel(coord);
+    });
+
+    streamer.update(target.toWorldCenter());
+    CHECK_EQ(targetRequest, ChunkLoadRequestResult::Deferred);
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(0));
+    for (int update = 0; update < 3; ++update) {
+        streamer.update(target.toWorldCenter());
+        CHECK_EQ(targetRequestCount, static_cast<size_t>(1));
+        CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+    }
+
+    streamer.processCompletions();
+    streamer.update(target.toWorldCenter());
+    streamer.processCompletions();
+
+    Chunk* loaded = world.chunkManager().getChunk(target);
+    CHECK(loaded != nullptr);
+    if (!loaded) {
+        return;
+    }
+    CHECK(loaded->loadedFromDisk());
+    verifyPayloadMatches(*loaded, targetPayload);
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(0));
 }
 
 TEST_CASE(AsyncChunkLoader_RegionCapacityStartsDeferredRequests) {
@@ -362,8 +460,8 @@ TEST_CASE(AsyncChunkLoader_RegionCapacityStartsDeferredRequests) {
     loader.setMaxInFlightRegions(1);
     loader.setPrefetchRadius(0);
 
-    CHECK(loader.request(coordA));
-    CHECK(loader.request(coordB));
+    CHECK_EQ(loader.request(coordA), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(coordB), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(coordA));
     CHECK(loader.isPending(coordB));
     auto deferred = loader.workCount();
@@ -421,7 +519,7 @@ TEST_CASE(AsyncChunkLoader_Cancel) {
         1,
         generator);
 
-    CHECK(loader.request(coord));
+    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
     loader.cancel(coord);
     CHECK(!loader.isPending(coord));
 
@@ -429,6 +527,58 @@ TEST_CASE(AsyncChunkLoader_Cancel) {
 
     Chunk* loaded = world.chunkManager().getChunk(coord);
     CHECK(loaded == nullptr);
+}
+
+TEST_CASE(AsyncChunkLoader_CancelDeferredRequest) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID testBlock = registerTestBlock(registry, "rigel:test_cancel_deferred");
+    std::vector<BlockID> palette = {testBlock};
+    ChunkCoord active{0, 0, 0};
+    ChunkCoord deferred{1, 0, 0};
+    ChunkData activePayload =
+        buildPayload(active, registry, palette, false, std::nullopt, false);
+    ChunkData deferredPayload =
+        buildPayload(deferred, registry, palette, false, std::nullopt, false);
+
+    MemoryContext ctx;
+    saveRegionForPayloads(ctx.service,
+                          ctx.context,
+                          "rigel:default",
+                          {{active, activePayload}, {deferred, deferredPayload}});
+
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+    loader.setLoadQueueLimit(1);
+
+    CHECK_EQ(loader.request(active), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(deferred), ChunkLoadRequestResult::Deferred);
+    CHECK(loader.isPending(deferred));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(2));
+
+    loader.cancel(deferred);
+    CHECK(!loader.isPending(deferred));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
+
+    auto resolved = loader.drainCompletions(2);
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front(), active);
+    CHECK(world.chunkManager().getChunk(active) != nullptr);
+    CHECK(world.chunkManager().getChunk(deferred) == nullptr);
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
 }
 
 TEST_CASE(AsyncChunkLoader_PartialSpan_BaseFill) {
@@ -470,7 +620,7 @@ TEST_CASE(AsyncChunkLoader_PartialSpan_BaseFill) {
         1,
         generator);
 
-    CHECK(loader.request(coord));
+    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
     loader.drainCompletions(1);
 
     Chunk* loaded = world.chunkManager().getChunk(coord);
@@ -507,7 +657,7 @@ TEST_CASE(AsyncChunkLoader_MissingRegion_UsesNegativeCache) {
         generator);
 
     ChunkCoord missing{123, 4, -77};
-    CHECK(loader.request(missing));
+    CHECK_EQ(loader.request(missing), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(missing));
 
     auto resolved = loader.drainCompletions(8);
@@ -517,7 +667,7 @@ TEST_CASE(AsyncChunkLoader_MissingRegion_UsesNegativeCache) {
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));
     CHECK_EQ(resolved.front(), missing);
 
-    CHECK(!loader.request(missing));
+    CHECK_EQ(loader.request(missing), ChunkLoadRequestResult::Missing);
 }
 
 TEST_CASE(AsyncChunkLoader_DestroyWithInFlightJobs) {
@@ -557,7 +707,7 @@ TEST_CASE(AsyncChunkLoader_DestroyWithInFlightJobs) {
             generator);
 
         for (const auto& entry : payloads) {
-            CHECK(loader.request(entry.first));
+            CHECK_EQ(loader.request(entry.first), ChunkLoadRequestResult::Queued);
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(5));

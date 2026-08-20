@@ -3,6 +3,7 @@
 #include "ChunkTasks.h"
 #include "ChunkCache.h"
 #include "ChunkBenchmark.h"
+#include "ChunkLoadRequest.h"
 #include "ChunkManager.h"
 #include "ChunkMesh.h"
 #include "StreamingDiagnostics.h"
@@ -67,7 +68,7 @@ public:
         DebugState state;
     };
 
-    using ChunkLoadCallback = std::function<bool(ChunkCoord)>;
+    using ChunkLoadCallback = std::function<ChunkLoadRequestResult(ChunkCoord)>;
     using ChunkPendingCallback = std::function<bool(ChunkCoord)>;
     using ChunkLoadDrainCallback = std::function<std::vector<ChunkCoord>(size_t)>;
     using ChunkLoadCancelCallback = std::function<void(ChunkCoord)>;

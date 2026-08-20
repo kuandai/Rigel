@@ -3,6 +3,7 @@
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Types.h"
 #include "Rigel/Voxel/ChunkCoord.h"
+#include "Rigel/Voxel/ChunkLoadRequest.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/StreamingDiagnostics.h"
 #include "Rigel/Voxel/WorldGenerator.h"
@@ -30,7 +31,7 @@ public:
                      int viewDistanceChunks,
                      std::shared_ptr<Voxel::WorldGenerator> generator);
 
-    bool request(Voxel::ChunkCoord coord);
+    Voxel::ChunkLoadRequestResult request(Voxel::ChunkCoord coord);
     bool isPending(Voxel::ChunkCoord coord) const;
     void cancel(Voxel::ChunkCoord coord);
 
@@ -78,6 +79,11 @@ private:
                                 std::vector<Voxel::ChunkCoord>& resolved);
     void drainPayloadCompletions(size_t budget,
                                  std::vector<Voxel::ChunkCoord>& resolved);
+    Voxel::ChunkLoadRequestResult queueChunkLoad(Voxel::ChunkCoord coord);
+    void deferChunkLoad(Voxel::ChunkCoord coord);
+    void startDeferredChunkLoads(std::vector<Voxel::ChunkCoord>* resolved = nullptr);
+    void completeChunkLoad(Voxel::ChunkCoord coord,
+                           std::vector<Voxel::ChunkCoord>& resolved);
     void deferRegionLoad(const RegionKey& key);
     void startDeferredRegionLoads();
     bool queueRegionLoad(const RegionKey& key);
@@ -118,6 +124,9 @@ private:
     std::deque<RegionKey> m_deferredRegionLoads;
     std::unordered_set<RegionKey, RegionKeyHash> m_deferredRegionLoadSet;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_pendingChunks;
+    std::deque<Voxel::ChunkCoord> m_deferredChunkLoads;
+    std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_deferredChunkLoadSet;
+    std::deque<Voxel::ChunkCoord> m_resolvedChunks;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_payloadInFlight;
     uint64_t m_requestsStarted = 0;
     std::deque<RegionKey> m_lru;

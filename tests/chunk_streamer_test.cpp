@@ -348,13 +348,13 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Deterministic) {
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         if (request != coord) {
-            return false;
+            return ChunkLoadRequestResult::Missing;
         }
         Chunk& target = manager.getOrCreateChunk(request);
         Rigel::Persistence::applyChunkData(payload, target, registry);
         target.setWorldGenVersion(generator->config().world.version);
         target.clearPersistDirty();
-        return true;
+        return ChunkLoadRequestResult::Queued;
     });
 
     streamer.update(coord.toWorldCenter());
@@ -394,13 +394,13 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Random) {
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         if (request != coord) {
-            return false;
+            return ChunkLoadRequestResult::Missing;
         }
         Chunk& target = manager.getOrCreateChunk(request);
         Rigel::Persistence::applyChunkData(payload, target, registry);
         target.setWorldGenVersion(generator->config().world.version);
         target.clearPersistDirty();
-        return true;
+        return ChunkLoadRequestResult::Queued;
     });
 
     streamer.update(coord.toWorldCenter());
@@ -478,10 +478,10 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Deterministic) {
                 Rigel::Persistence::applyChunkData(chunk.data, target, registry);
                 target.setWorldGenVersion(generator->config().world.version);
                 target.clearPersistDirty();
-                return true;
+                return ChunkLoadRequestResult::Queued;
             }
         }
-        return false;
+        return ChunkLoadRequestResult::Missing;
     });
 
     streamer.update(coord.toWorldCenter());
@@ -561,10 +561,10 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Random) {
                 Rigel::Persistence::applyChunkData(chunk.data, target, registry);
                 target.setWorldGenVersion(generator->config().world.version);
                 target.clearPersistDirty();
-                return true;
+                return ChunkLoadRequestResult::Queued;
             }
         }
-        return false;
+        return ChunkLoadRequestResult::Missing;
     });
 
     streamer.update(coord.toWorldCenter());
@@ -662,13 +662,13 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         if (request != coord) {
-            return false;
+            return ChunkLoadRequestResult::Missing;
         }
         Chunk& target = manager.getOrCreateChunk(request);
         Rigel::Persistence::applyChunkData(payload, target, registry);
         target.setWorldGenVersion(generator->config().world.version);
         target.clearPersistDirty();
-        return true;
+        return ChunkLoadRequestResult::Queued;
     });
 
     streamer.update(coord.toWorldCenter());
@@ -766,13 +766,13 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         if (request != coord) {
-            return false;
+            return ChunkLoadRequestResult::Missing;
         }
         Chunk& target = manager.getOrCreateChunk(request);
         Rigel::Persistence::applyChunkData(payload, target, registry);
         target.setWorldGenVersion(generator->config().world.version);
         target.clearPersistDirty();
-        return true;
+        return ChunkLoadRequestResult::Queued;
     });
 
     streamer.update(coord.toWorldCenter());
@@ -1040,7 +1040,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     size_t callbackCount = 0;
     streamer.setChunkLoader([&](ChunkCoord) {
         ++callbackCount;
-        return true;
+        return ChunkLoadRequestResult::Queued;
     });
 
     streamer.update(glm::vec3(0.0f));
@@ -1078,7 +1078,9 @@ TEST_CASE(ChunkStreamer_MissingLoadResolutionStartsGeneration) {
     size_t loadAttempts = 0;
     streamer.setChunkLoader([&](ChunkCoord request) {
         CHECK_EQ(request, coord);
-        return ++loadAttempts == 1;
+        return ++loadAttempts == 1
+            ? ChunkLoadRequestResult::Queued
+            : ChunkLoadRequestResult::Missing;
     });
     bool resolved = false;
     streamer.setChunkLoadDrain([&](size_t) {
@@ -1125,7 +1127,7 @@ TEST_CASE(ChunkStreamer_MovementRequestsOnlyNewDesiredFrontier) {
     std::unordered_set<ChunkCoord, ChunkCoordHash> cancelled;
     streamer.setChunkLoader([&](ChunkCoord coord) {
         ++requestCounts[coord];
-        return true;
+        return ChunkLoadRequestResult::Queued;
     });
     streamer.setChunkPendingCallback([](ChunkCoord) { return true; });
     streamer.setChunkLoadDrain([](size_t) {
@@ -1247,7 +1249,9 @@ TEST_CASE(ChunkStreamer_DepartedFrontierReleasesWaitingMesh) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
     streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
-    streamer.setChunkLoader([](ChunkCoord) { return true; });
+    streamer.setChunkLoader([](ChunkCoord) {
+        return ChunkLoadRequestResult::Queued;
+    });
     streamer.setChunkLoadDrain([](size_t) {
         return std::vector<ChunkCoord>{};
     });
@@ -1579,7 +1583,9 @@ TEST_CASE(ChunkStreamer_DiskLoadedChunksWaitForNeighborFrontierAcrossArrivalOrde
         stream.maxResidentChunks = 0;
         streamer.setConfig(stream);
         streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
-        streamer.setChunkLoader([](ChunkCoord) { return true; });
+        streamer.setChunkLoader([](ChunkCoord) {
+            return ChunkLoadRequestResult::Queued;
+        });
 
         streamer.update(glm::vec3(0.0f));
         streamer.processCompletions();
@@ -1680,13 +1686,13 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     streamer.setChunkLoader([&](ChunkCoord coord) {
         ++loadAttempts;
         if (coord != ChunkCoord{0, 0, 0}) {
-            return false;
+            return ChunkLoadRequestResult::Missing;
         }
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
         chunk.setWorldGenVersion(generator->config().world.version);
         chunk.setLoadedFromDisk(true);
-        return true;
+        return ChunkLoadRequestResult::Queued;
     });
 
     for (int update = 0; update < 4; ++update) {
@@ -1885,7 +1891,7 @@ TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {
             Chunk& chunk = manager.getOrCreateChunk(coord);
             chunk.setWorldGenVersion(generator->config().world.version);
             chunk.setLoadedFromDisk(true);
-            return true;
+            return ChunkLoadRequestResult::Queued;
         });
 
         for (int update = 0; update < 4; ++update) {

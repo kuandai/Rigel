@@ -80,40 +80,64 @@ void AsyncChunkLoader::setRegionDrainBudget(size_t budget) {
 
 void AsyncChunkLoader::setLoadQueueLimit(size_t maxPending) {
     m_loadQueueLimit = maxPending;
+    startDeferredChunkLoads();
 }
 
-bool AsyncChunkLoader::request(Voxel::ChunkCoord coord) {
+Voxel::ChunkLoadRequestResult AsyncChunkLoader::request(Voxel::ChunkCoord coord) {
     if (!m_format || !m_world) {
-        return false;
+        return Voxel::ChunkLoadRequestResult::Missing;
     }
-    if (m_loadQueueLimit > 0 &&
-        m_pendingChunks.find(coord) == m_pendingChunks.end() &&
-        m_pendingChunks.size() >= m_loadQueueLimit) {
-        return false;
+    if (m_pendingChunks.find(coord) != m_pendingChunks.end()) {
+        return Voxel::ChunkLoadRequestResult::Queued;
+    }
+    if (m_deferredChunkLoadSet.find(coord) != m_deferredChunkLoadSet.end()) {
+        return Voxel::ChunkLoadRequestResult::Deferred;
     }
 
     RegionKey key = m_format->regionLayout().regionForChunk(m_zoneId, coord);
     auto cacheIt = m_cache.find(key);
+    if (cacheIt != m_cache.end() &&
+        cacheIt->second.present.find(coord) == cacheIt->second.present.end()) {
+        return Voxel::ChunkLoadRequestResult::Missing;
+    }
+    if (cacheIt == m_cache.end() &&
+        m_inFlight.find(key) == m_inFlight.end() &&
+        !regionMayExist(key)) {
+        return Voxel::ChunkLoadRequestResult::Missing;
+    }
+
+    if (m_loadQueueLimit > 0 && m_pendingChunks.size() >= m_loadQueueLimit) {
+        deferChunkLoad(coord);
+        ++m_requestsStarted;
+        return Voxel::ChunkLoadRequestResult::Deferred;
+    }
+
+    Voxel::ChunkLoadRequestResult result = queueChunkLoad(coord);
+    if (result == Voxel::ChunkLoadRequestResult::Queued) {
+        ++m_requestsStarted;
+    }
+    return result;
+}
+
+Voxel::ChunkLoadRequestResult AsyncChunkLoader::queueChunkLoad(Voxel::ChunkCoord coord) {
+    RegionKey key = m_format->regionLayout().regionForChunk(m_zoneId, coord);
+    auto cacheIt = m_cache.find(key);
     if (cacheIt != m_cache.end()) {
         if (cacheIt->second.present.find(coord) == cacheIt->second.present.end()) {
-            return false;
+            return Voxel::ChunkLoadRequestResult::Missing;
         }
-        if (m_pendingChunks.insert(coord).second) {
-            ++m_requestsStarted;
-        }
+        m_pendingChunks.insert(coord);
         queuePayloadBuild(cacheIt->second, coord);
         touch(key);
-        return true;
+        return Voxel::ChunkLoadRequestResult::Queued;
     }
     if (m_inFlight.find(key) == m_inFlight.end()) {
         if (!regionMayExist(key)) {
-            return false;
+            return Voxel::ChunkLoadRequestResult::Missing;
         }
     }
 
-    if (m_pendingChunks.insert(coord).second) {
-        ++m_requestsStarted;
-    }
+    m_pendingChunks.insert(coord);
     m_regionPending[key].insert(coord);
     if (queueRegionLoad(key)) {
         prefetchNeighbors(key);
@@ -121,23 +145,25 @@ bool AsyncChunkLoader::request(Voxel::ChunkCoord coord) {
                m_inFlight.find(key) == m_inFlight.end()) {
         deferRegionLoad(key);
     }
-    return true;
+    return Voxel::ChunkLoadRequestResult::Queued;
 }
 
 bool AsyncChunkLoader::isPending(Voxel::ChunkCoord coord) const {
-    return m_pendingChunks.find(coord) != m_pendingChunks.end();
+    return m_pendingChunks.find(coord) != m_pendingChunks.end() ||
+        m_deferredChunkLoadSet.find(coord) != m_deferredChunkLoadSet.end();
 }
 
 Voxel::StreamingWorkCount AsyncChunkLoader::workCount() const {
     return Voxel::StreamingWorkCount{
-        .pending = m_pendingChunks.size(),
+        .pending = m_pendingChunks.size() + m_deferredChunkLoadSet.size(),
         .inFlight = m_inFlight.size() + m_payloadInFlight.size(),
         .started = m_requestsStarted
     };
 }
 
 void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {
-    m_pendingChunks.erase(coord);
+    bool releasedCapacity = m_pendingChunks.erase(coord) > 0;
+    m_deferredChunkLoadSet.erase(coord);
     if (!m_format) {
         return;
     }
@@ -150,10 +176,17 @@ void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {
             m_deferredRegionLoadSet.erase(key);
         }
     }
+    if (releasedCapacity) {
+        startDeferredChunkLoads();
+    }
 }
 
 std::vector<Voxel::ChunkCoord> AsyncChunkLoader::drainCompletions(size_t budget) {
     std::vector<Voxel::ChunkCoord> resolved;
+    while (!m_resolvedChunks.empty()) {
+        resolved.push_back(m_resolvedChunks.front());
+        m_resolvedChunks.pop_front();
+    }
     {
         PROFILE_SCOPE("Streaming/LoadRegionDrain");
         size_t regionBudget = m_regionDrainBudget;
@@ -204,20 +237,19 @@ void AsyncChunkLoader::drainRegionCompletions(
 
         auto pendingIt = m_regionPending.find(result.key);
         if (pendingIt != m_regionPending.end()) {
+            auto pending = std::move(pendingIt->second);
+            m_regionPending.erase(pendingIt);
             auto cacheIt = m_cache.find(result.key);
             if (cacheIt != m_cache.end()) {
-                for (const auto& coord : pendingIt->second) {
+                for (const auto& coord : pending) {
                     if (cacheIt->second.present.find(coord) == cacheIt->second.present.end()) {
-                        if (m_pendingChunks.erase(coord) > 0) {
-                            resolved.push_back(coord);
-                        }
+                        completeChunkLoad(coord, resolved);
                         continue;
                     }
                     m_pendingChunks.insert(coord);
                     queuePayloadBuild(cacheIt->second, coord);
                 }
             }
-            m_regionPending.erase(pendingIt);
         }
     }
     startDeferredRegionLoads();
@@ -233,11 +265,48 @@ void AsyncChunkLoader::drainPayloadCompletions(
         if (payload.cancelled || m_pendingChunks.find(payload.coord) == m_pendingChunks.end()) {
             continue;
         }
-        m_pendingChunks.erase(payload.coord);
         applyPayload(payload);
-        resolved.push_back(payload.coord);
+        completeChunkLoad(payload.coord, resolved);
         ++applied;
     }
+}
+
+void AsyncChunkLoader::deferChunkLoad(Voxel::ChunkCoord coord) {
+    if (m_deferredChunkLoadSet.insert(coord).second) {
+        m_deferredChunkLoads.push_back(coord);
+    }
+}
+
+void AsyncChunkLoader::startDeferredChunkLoads(
+    std::vector<Voxel::ChunkCoord>* resolved) {
+    while (!m_deferredChunkLoads.empty() &&
+           (m_loadQueueLimit == 0 || m_pendingChunks.size() < m_loadQueueLimit)) {
+        Voxel::ChunkCoord coord = m_deferredChunkLoads.front();
+        m_deferredChunkLoads.pop_front();
+        if (m_deferredChunkLoadSet.erase(coord) == 0) {
+            continue;
+        }
+
+        Voxel::ChunkLoadRequestResult result = queueChunkLoad(coord);
+        if (result != Voxel::ChunkLoadRequestResult::Missing) {
+            continue;
+        }
+        if (resolved) {
+            resolved->push_back(coord);
+        } else {
+            m_resolvedChunks.push_back(coord);
+        }
+    }
+}
+
+void AsyncChunkLoader::completeChunkLoad(
+    Voxel::ChunkCoord coord,
+    std::vector<Voxel::ChunkCoord>& resolved) {
+    if (m_pendingChunks.erase(coord) == 0) {
+        return;
+    }
+    resolved.push_back(coord);
+    startDeferredChunkLoads(&resolved);
 }
 
 bool AsyncChunkLoader::applyPayload(const ChunkPayload& payload) {

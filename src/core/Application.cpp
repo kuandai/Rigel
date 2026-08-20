@@ -552,7 +552,9 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             static_cast<size_t>(std::max(0, config.stream.loadPrefetchPerRequest)));
         m_impl->world.worldView->setChunkLoader(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
-                return loader ? loader->request(coord) : false;
+                return loader
+                    ? loader->request(coord)
+                    : Voxel::ChunkLoadRequestResult::Missing;
             });
         m_impl->world.worldView->setChunkPendingCallback(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {

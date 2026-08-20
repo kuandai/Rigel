@@ -211,7 +211,7 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
             root["caves"],
             sourceName,
             "caves",
-            {"enabled", "density_output", "threshold"}
+            {"density_output", "threshold"}
         );
     }
 
@@ -500,7 +500,6 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
 
     if (root.has_child("caves")) {
         ryml::ConstNodeRef cavesNode = root["caves"];
-        caves.enabled = Util::readBool(cavesNode, "enabled", caves.enabled);
         caves.densityOutput = Util::readString(cavesNode, "density_output", caves.densityOutput);
         caves.threshold = Util::readFloat(cavesNode, "threshold", caves.threshold);
     }

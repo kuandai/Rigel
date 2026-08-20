@@ -113,7 +113,6 @@ struct WorldGenConfig {
     };
 
     struct CavesConfig {
-        bool enabled = true;
         std::string densityOutput = "cave_density";
         float threshold = 0.5f;
     };

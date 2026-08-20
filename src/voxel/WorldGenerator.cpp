@@ -502,7 +502,7 @@ public:
 
     void apply(WorldGenContext& ctx, ChunkBuffer& buffer) override {
         const auto& caves = m_config.caves;
-        if (!caves.enabled || !m_graph || m_graph->empty()) {
+        if (!m_graph || m_graph->empty()) {
             return;
         }
         const auto& world = m_config.world;
@@ -718,7 +718,7 @@ private:
             if (density < 0.0f) {
                 return false;
             }
-            if (m_config.caves.enabled) {
+            if (m_config.isStageEnabled("caves")) {
                 float caveDensity = evaluator.evaluateOutput(m_config.caves.densityOutput, sampleCtx);
                 if (caveDensity > m_config.caves.threshold) {
                     return false;

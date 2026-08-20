@@ -102,6 +102,7 @@ TEST_CASE(WorldGenConfig_ReportsRemovedKeysAndIgnoresUnknownStages) {
         "climate:\n"
         "  elevation_lapse: 0.02\n"
         "caves:\n"
+        "  enabled: false\n"
         "  sample_step: 8\n"
         "generation:\n"
         "  stages:\n"
@@ -113,6 +114,7 @@ TEST_CASE(WorldGenConfig_ReportsRemovedKeysAndIgnoresUnknownStages) {
     const std::string output = logs.output();
     CHECK(output.find("world.lava_level") != std::string::npos);
     CHECK(output.find("climate.elevation_lapse") != std::string::npos);
+    CHECK(output.find("caves.enabled") != std::string::npos);
     CHECK(output.find("caves.sample_step") != std::string::npos);
     CHECK(output.find("generation.stages.post_process") != std::string::npos);
     CHECK(output.find("generation.stages.terrain_densitty") != std::string::npos);

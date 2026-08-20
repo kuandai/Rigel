@@ -240,7 +240,6 @@ density_graph:
       inputs: [cave_noise, cave_depth_bias]
 
 caves:
-  enabled: true
   density_output: cave_density
   threshold: 0.75
 

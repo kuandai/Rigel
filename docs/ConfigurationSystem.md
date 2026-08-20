@@ -156,7 +156,6 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `biomes.entries[]` | list | - | Biome definitions. |
 | `density_graph.outputs` | map | - | Output name -> node id. |
 | `density_graph.nodes[]` | list | - | Density node graph. |
-| `caves.enabled` | bool | `true` | Enables cave carving. |
 | `caves.density_output` | string | `cave_density` | Density output name. |
 | `caves.threshold` | float | `0.5` | Density threshold. |
 | `structures.features[]` | list | - | Simple feature definitions. |
@@ -218,6 +217,8 @@ Current stage names:
 - `structures`
 
 Stages default to enabled unless explicitly disabled.
+The `generation.stages.caves` flag is the only control that enables or disables
+cave carving; the `caves` object contains only cave-stage parameters.
 
 ### Flags and Overlays
 

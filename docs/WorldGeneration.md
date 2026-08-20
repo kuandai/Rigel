@@ -67,6 +67,7 @@ enable flag for each stage; its key order has no runtime meaning.
 
 ### 3.5 caves
 
+- Enabled or disabled by `generation.stages.caves`.
 - Requires a density graph.
 - Evaluates the `caves.density_output` output (default `cave_density`).
 - Carves to air when `density > caves.threshold`.

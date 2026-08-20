@@ -63,6 +63,43 @@ TEST_CASE(WorldGenerator_DisableSurfaceStage) {
     CHECK_EQ(surface.id.type, registry.findByIdentifier("rigel:stone")->type);
 }
 
+TEST_CASE(WorldGenerator_CaveStageFlagControlsCarving) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenerator generator(registry);
+
+    WorldGenConfig config = makeFlatConfig();
+    config.densityGraph.outputs["base_density"] = "solid";
+    config.densityGraph.outputs["cave_density"] = "cave";
+    config.densityGraph.nodes = {
+        WorldGenConfig::DensityNodeConfig{
+            .id = "solid",
+            .type = "constant",
+            .value = 1.0f
+        },
+        WorldGenConfig::DensityNodeConfig{
+            .id = "cave",
+            .type = "constant",
+            .value = 1.0f
+        }
+    };
+    config.caves.threshold = 0.5f;
+    config.stageEnabled["surface_rules"] = false;
+
+    generator.setConfig(config);
+    ChunkBuffer cavesEnabled;
+    generator.generate({0, 0, 0}, cavesEnabled);
+    CHECK(cavesEnabled.at(0, 0, 0).isAir());
+
+    config.stageEnabled["caves"] = false;
+    generator.setConfig(config);
+    ChunkBuffer cavesDisabled;
+    generator.generate({0, 0, 0}, cavesDisabled);
+    CHECK_EQ(
+        cavesDisabled.at(0, 0, 0).id.type,
+        registry.findByIdentifier("rigel:stone")->type
+    );
+}
+
 TEST_CASE(WorldGenerator_Deterministic) {
     BlockRegistry registry = makeRegistry();
     WorldGenerator generator(registry);

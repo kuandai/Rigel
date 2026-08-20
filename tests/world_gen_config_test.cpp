@@ -81,7 +81,6 @@ density_graph:
       type: constant
       value: 0.5
 caves:
-  enabled: true
   density_output: cave_density
   threshold: 0.2
 structures:

@@ -9,6 +9,7 @@
 #include "Rigel/Persistence/PersistenceConfigBootstrap.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/RenderConfigBootstrap.h"
+#include "Rigel/Render/TemporalJitter.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/WorldSet.h"
@@ -53,17 +54,6 @@ namespace {
 
 constexpr float kMaxFrameTime = 0.05f;
 
-float halton(uint32_t index, uint32_t base) {
-    float f = 1.0f;
-    float result = 0.0f;
-    while (index > 0) {
-        f /= static_cast<float>(base);
-        result += f * static_cast<float>(index % base);
-        index /= base;
-    }
-    return result;
-}
-
 } // namespace
 
 struct Application::Impl {
@@ -92,7 +82,7 @@ struct Application::Impl {
         bool initialized = false;
         bool historyValid = false;
         glm::mat4 prevViewProjection{1.0f};
-        uint64_t frameIndex = 0;
+        Render::TemporalJitterSequence jitter;
     };
 
     struct TimingState {
@@ -266,19 +256,6 @@ struct Application::Impl {
 
         glGenFramebuffers(1, &taa.resolveFbo);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    }
-
-    glm::vec2 nextJitter(int width, int height, float scale) {
-        auto& taa = render.taa;
-        if (width <= 0 || height <= 0) {
-            return glm::vec2(0.0f);
-        }
-        ++taa.frameIndex;
-        float jx = halton(static_cast<uint32_t>(taa.frameIndex), 2) - 0.5f;
-        float jy = halton(static_cast<uint32_t>(taa.frameIndex), 3) - 0.5f;
-        float offsetX = jx * scale * 2.0f / static_cast<float>(width);
-        float offsetY = jy * scale * 2.0f / static_cast<float>(height);
-        return glm::vec2(offsetX, offsetY);
     }
 
     bool resolveTaa(const glm::mat4& invViewProjection,
@@ -771,8 +748,10 @@ void Application::run() {
 
                 glm::vec2 jitter(0.0f);
                 if (useTaa) {
-                    jitter = m_impl->nextJitter(width, height,
-                                                m_impl->world.worldView->renderConfig().taa.jitterScale);
+                    jitter = m_impl->render.taa.jitter.next(
+                        width,
+                        height,
+                        m_impl->world.worldView->renderConfig().taa.jitterScale);
                     projection[2][0] += jitter.x;
                     projection[2][1] += jitter.y;
                 }

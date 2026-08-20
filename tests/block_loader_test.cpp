@@ -1,11 +1,9 @@
 #include "TestFramework.h"
 
 #include "Rigel/Voxel/BlockLoader.h"
-#include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Asset/AssetManager.h"
 
 #include <array>
-#include <string>
 #include <vector>
 
 using namespace Rigel::Voxel;
@@ -63,26 +61,4 @@ TEST_CASE(BlockLoader_LoadsManifestBlocks) {
         registry.getType(*registry.findByIdentifier("base:grass[type=full]"));
     CHECK_EQ(fullGrass.textures.forFace(Direction::PosY), texturePaths[2]);
     CHECK_EQ(fullGrass.textures.forFace(Direction::NegY), texturePaths[2]);
-}
-
-TEST_CASE(WorldResources_RejectsMissingBlockTextures) {
-    AssetManager assets;
-    assets.loadManifest("manifest.yaml");
-
-    WorldResources resources;
-    std::string diagnostic;
-    try {
-        resources.initialize(assets);
-    } catch (const std::exception& e) {
-        diagnostic = e.what();
-    }
-
-    CHECK(!diagnostic.empty());
-    CHECK(!resources.initialized());
-    CHECK(diagnostic.find("definitions loaded") != std::string::npos);
-    CHECK(diagnostic.find("failed") != std::string::npos);
-    CHECK(diagnostic.find("textures loaded") != std::string::npos);
-    CHECK(diagnostic.find("assets/textures/") != std::string::npos);
-    CHECK(diagnostic.find("blocks/aluminium_panel.yaml") != std::string::npos);
-    CHECK(diagnostic.find("textures/blocks/metal_panel_aluminium.png") != std::string::npos);
 }

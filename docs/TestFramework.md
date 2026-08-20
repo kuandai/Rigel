@@ -12,6 +12,8 @@ Rigel uses a minimal in-tree test harness located in `tests/`:
 - Most tests are compiled into `Rigel_tests` and link against `RigelLib`.
 - Profiler tests are compiled into `Rigel_profiler_tests` with an isolated
   profiler implementation so test instrumentation does not change `RigelLib`.
+- Block asset failure coverage is compiled into
+  `Rigel_block_asset_failure_tests` with a fixed embedded-resource fixture.
 - The harness is implemented in `tests/TestFramework.h` and
   `tests/TestFramework.cpp`.
 - Tests are registered via a `TEST_CASE(Name)` macro and executed by
@@ -43,6 +45,7 @@ When enabled, CMake adds:
 
 - `Rigel_tests` (test executable)
 - `Rigel_profiler_tests` (profiler test executable)
+- `Rigel_block_asset_failure_tests` (missing-resource test executable)
 
 ### 2.3 Running Tests
 
@@ -61,6 +64,7 @@ You can also run the test executable directly:
 ./build/Rigel_tests --filter WorldConfigProvider
 ./build/Rigel_tests --verbose
 ./build/Rigel_profiler_tests --verbose
+./build/Rigel_block_asset_failure_tests --verbose
 ```
 
 Note: The test executables are not placed in `build/bin` by default; they live
@@ -71,12 +75,11 @@ in the build directory root unless you change CMake output paths.
 ## 3. CTest Integration
 
 CTest registration is done in `CMakeLists.txt`. Aggregate suite entries run
-`Rigel_tests` and `Rigel_profiler_tests`; the harness obtains its test cases from
-the executable's runtime registry. A small filtered-run entry verifies the
-runner's executed-test summary. Adding, renaming, or reformatting a `TEST_CASE`
-does not change aggregate suite coverage; if the case selected by the
-filtered-run check is renamed, that check fails rather than silently omitting
-it.
+the three test executables; the harness obtains its test cases from each
+executable's runtime registry. A small filtered-run entry verifies the runner's
+executed-test summary. Adding, renaming, or reformatting a `TEST_CASE` does not
+change aggregate suite coverage; if the case selected by the filtered-run check
+is renamed, that check fails rather than silently omitting it.
 
 Run the main suite via CTest:
 

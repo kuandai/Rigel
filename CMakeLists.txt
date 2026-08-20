@@ -113,7 +113,13 @@ if (RIGEL_BUILD_TESTS)
     )
 
     set(PROFILER_TEST_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/tests/profiler_test.cpp)
-    list(REMOVE_ITEM TEST_SOURCES ${PROFILER_TEST_SOURCE})
+    set(BLOCK_ASSET_FAILURE_TEST_SOURCE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/block_asset_failure_test.cpp
+    )
+    list(REMOVE_ITEM TEST_SOURCES
+        ${PROFILER_TEST_SOURCE}
+        ${BLOCK_ASSET_FAILURE_TEST_SOURCE}
+    )
 
     add_executable(Rigel_tests ${TEST_SOURCES})
     target_include_directories(Rigel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -133,10 +139,38 @@ if (RIGEL_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     target_compile_definitions(Rigel_profiler_tests PRIVATE RIGEL_ENABLE_PROFILER)
-    add_dependencies(Rigel_tests Rigel_profiler_tests)
+
+    add_executable(Rigel_block_asset_failure_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/TestFramework.cpp
+        ${BLOCK_ASSET_FAILURE_TEST_SOURCE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/BlockLoader.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/BlockRegistry.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/TextureAtlas.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/WorldResources.cpp
+    )
+    target_include_directories(Rigel_block_asset_failure_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/missing_block_assets
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+    target_compile_definitions(Rigel_block_asset_failure_tests PRIVATE STB_IMAGE_IMPLEMENTATION)
+    target_link_libraries(Rigel_block_asset_failure_tests PRIVATE
+        spdlog::spdlog
+        GLEW::GLEW
+        OpenGL::GL
+        ryml::ryml
+        stb::stb
+    )
+
+    add_dependencies(Rigel_tests
+        Rigel_profiler_tests
+        Rigel_block_asset_failure_tests
+    )
 
     add_test(NAME Rigel_tests COMMAND Rigel_tests)
     add_test(NAME Rigel_profiler_tests COMMAND Rigel_profiler_tests)
+    add_test(NAME Rigel_block_asset_failure_tests COMMAND Rigel_block_asset_failure_tests)
     add_test(
         NAME Rigel_tests_filtered_count
         COMMAND Rigel_tests --filter AssetHandle_Basics

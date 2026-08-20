@@ -23,8 +23,6 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include "Rigel/input/InputBindingsLoader.h"
-#include "Rigel/input/InputDispatcher.h"
-#include "Rigel/input/keypress.h"
 #include "Rigel/version.h"
 #include <glm/glm.hpp>
 #include <algorithm>
@@ -77,6 +75,8 @@ struct Application::Impl {
     Input::WindowState window;
     Input::CameraState camera;
     Input::InputState input;
+    Input::DebugOverlayListener debugOverlayListener;
+    Input::ImGuiOverlayListener imguiOverlayListener;
     Render::FrameRenderer renderer;
     TimingState timing;
     WorldState world;
@@ -150,6 +150,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     glfwSetFramebufferSizeCallback(m_impl->window.window, [](GLFWwindow* window, int width, int height)-> void {
         glViewport(0, 0, width, height);
     });
+    m_impl->inputCallbacks.input = &m_impl->input;
     m_impl->inputCallbacks.window = &m_impl->window;
     m_impl->inputCallbacks.camera = &m_impl->camera;
     Input::registerWindowCallbacks(m_impl->window.window, m_impl->inputCallbacks);
@@ -185,10 +186,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
         Input::loadInputBindings(m_impl->assets, m_impl->input);
-        Input::attachDebugOverlayListener(
-            m_impl->input, &m_impl->renderer.debugOverlayEnabled());
-        Input::attachImGuiOverlayListener(
-            m_impl->input, &m_impl->renderer.profilerWindowEnabled());
+        m_impl->debugOverlayListener.enabled = &m_impl->renderer.debugOverlayEnabled();
+        m_impl->input.addListener(&m_impl->debugOverlayListener);
+        m_impl->imguiOverlayListener.enabled = &m_impl->renderer.profilerWindowEnabled();
+        m_impl->input.addListener(&m_impl->imguiOverlayListener);
 
         Voxel::WorldConfigProvider configProvider =
             Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
@@ -406,12 +407,11 @@ void Application::run() {
             {
                 PROFILE_SCOPE("Input");
                 m_impl->renderer.recordFrameTime(deltaTime);
-                Input::keyupdate();
-                m_impl->input.dispatcher.update();
+                m_impl->input.beginFrame();
             }
 
             if (m_impl->world.ready && m_impl->world.world && m_impl->world.worldView) {
-                if (m_impl->input.dispatcher.isActionJustPressed("toggle_mouse_capture")) {
+                if (m_impl->input.isActionJustPressed("toggle_mouse_capture")) {
                     Input::setCursorCaptured(m_impl->window, !m_impl->window.cursorCaptured);
                 }
                 if (m_impl->window.cursorCaptured &&

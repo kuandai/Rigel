@@ -10,7 +10,6 @@
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldView.h"
-#include "Rigel/input/keypress.h"
 
 #include <spdlog/spdlog.h>
 
@@ -22,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace Rigel::Input {
 namespace {
@@ -136,7 +136,20 @@ void setCursorCaptured(WindowState& window, bool captured) {
 
 void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) {
     glfwSetWindowUserPointer(window, &context);
-    glfwSetKeyCallback(window, keyCallback);
+    glfwSetKeyCallback(window, [](GLFWwindow* cbWindow, int key, int scancode, int action, int mods) {
+#if defined(RIGEL_ENABLE_IMGUI)
+        if (ImGui::GetCurrentContext()) {
+            ImGui_ImplGlfw_KeyCallback(cbWindow, key, scancode, action, mods);
+        }
+#else
+        (void)scancode;
+        (void)mods;
+#endif
+        auto* ctx = static_cast<InputCallbackContext*>(glfwGetWindowUserPointer(cbWindow));
+        if (ctx && ctx->input) {
+            ctx->input->handleKeyEvent(key, action);
+        }
+    });
     glfwSetCharCallback(window, [](GLFWwindow* cbWindow, unsigned int c) {
 #if defined(RIGEL_ENABLE_IMGUI)
         if (ImGui::GetCurrentContext()) {
@@ -153,11 +166,12 @@ void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) 
             ImGui_ImplGlfw_MouseButtonCallback(cbWindow, button, action, mods);
         }
 #else
-        (void)cbWindow;
-        (void)button;
-        (void)action;
         (void)mods;
 #endif
+        auto* ctx = static_cast<InputCallbackContext*>(glfwGetWindowUserPointer(cbWindow));
+        if (ctx && ctx->input) {
+            ctx->input->handleMouseButtonEvent(button, action);
+        }
     });
     glfwSetScrollCallback(window, [](GLFWwindow* cbWindow, double xoffset, double yoffset) {
 #if defined(RIGEL_ENABLE_IMGUI)
@@ -222,15 +236,16 @@ void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) 
 }
 
 void loadInputBindings(Asset::AssetManager& assets, InputState& input) {
+    std::shared_ptr<InputBindings> bindings;
     if (assets.exists("input/default")) {
         auto bindingsHandle = assets.get<InputBindings>("input/default");
-        input.bindings = bindingsHandle.shared();
+        bindings = bindingsHandle.shared();
     }
-    if (!input.bindings) {
-        input.bindings = std::make_shared<InputBindings>();
+    if (!bindings) {
+        bindings = std::make_shared<InputBindings>();
     }
-    ensureDefaultBindings(*input.bindings);
-    input.dispatcher.setBindings(input.bindings);
+    ensureDefaultBindings(*bindings);
+    input.setBindings(std::move(bindings));
 }
 
 void ensureDefaultBindings(InputBindings& bindings) {
@@ -269,16 +284,6 @@ void ensureDefaultBindings(InputBindings& bindings) {
     }
 }
 
-void attachDebugOverlayListener(InputState& input, bool* overlayEnabled) {
-    input.debugOverlayListener.enabled = overlayEnabled;
-    input.dispatcher.addListener(&input.debugOverlayListener);
-}
-
-void attachImGuiOverlayListener(InputState& input, bool* overlayEnabled) {
-    input.imguiOverlayListener.enabled = overlayEnabled;
-    input.dispatcher.addListener(&input.imguiOverlayListener);
-}
-
 void updateCamera(const InputState& input, CameraState& camera, float dt) {
     if (dt <= 0.0f) {
         return;
@@ -300,27 +305,27 @@ void updateCamera(const InputState& input, CameraState& camera, float dt) {
     glm::vec3 up = glm::normalize(glm::cross(right, forward));
 
     glm::vec3 move(0.0f);
-    if (input.dispatcher.isActionPressed("move_forward")) {
+    if (input.isActionPressed("move_forward")) {
         move += forward;
     }
-    if (input.dispatcher.isActionPressed("move_backward")) {
+    if (input.isActionPressed("move_backward")) {
         move -= forward;
     }
-    if (input.dispatcher.isActionPressed("move_right")) {
+    if (input.isActionPressed("move_right")) {
         move += right;
     }
-    if (input.dispatcher.isActionPressed("move_left")) {
+    if (input.isActionPressed("move_left")) {
         move -= right;
     }
-    if (input.dispatcher.isActionPressed("move_up")) {
+    if (input.isActionPressed("move_up")) {
         move += worldUp;
     }
-    if (input.dispatcher.isActionPressed("move_down")) {
+    if (input.isActionPressed("move_down")) {
         move -= worldUp;
     }
 
     float speed = camera.moveSpeed;
-    if (input.dispatcher.isActionPressed("sprint")) {
+    if (input.isActionPressed("sprint")) {
         speed *= 2.0f;
     }
 
@@ -334,11 +339,11 @@ void updateCamera(const InputState& input, CameraState& camera, float dt) {
     camera.target = camera.position + forward;
 }
 
-void handleDemoSpawn(InputState& input,
+void handleDemoSpawn(const InputState& input,
                      Asset::AssetManager& assets,
                      Voxel::World& world,
                      const CameraState& camera) {
-    if (!input.dispatcher.isActionJustPressed("demo_spawn_entity")) {
+    if (!input.isActionJustPressed("demo_spawn_entity")) {
         return;
     }
 
@@ -360,14 +365,12 @@ void handleDemoSpawn(InputState& input,
     }
 }
 
-void handleBlockEdits(InputState& input,
-                      WindowState& window,
+void handleBlockEdits(const InputState& input,
+                      const WindowState& window,
                       const CameraState& camera,
                       Voxel::World& world,
                       Voxel::WorldView& worldView,
                       Voxel::BlockID placeBlock) {
-    bool leftDown = glfwGetMouseButton(window.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-    bool rightDown = glfwGetMouseButton(window.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     if (window.cursorCaptured) {
         auto prioritizeEditedChunk = [&](const glm::ivec3& worldPos) {
             Voxel::ChunkCoord coord = Voxel::worldToChunk(worldPos.x, worldPos.y, worldPos.z);
@@ -395,14 +398,14 @@ void handleBlockEdits(InputState& input,
 
         const float interactDistance = 8.0f;
         RaycastHit hit;
-        if (leftDown && !input.lastLeftDown) {
+        if (input.isMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT)) {
             if (raycastBlock(world, camera.position, camera.forward,
                              interactDistance, hit)) {
                 world.setBlock(hit.block.x, hit.block.y, hit.block.z, Voxel::BlockState{});
                 prioritizeEditedChunk(hit.block);
             }
         }
-        if (rightDown && !input.lastRightDown) {
+        if (input.isMouseButtonJustPressed(GLFW_MOUSE_BUTTON_RIGHT)) {
             if (raycastBlock(world, camera.position, camera.forward,
                              interactDistance, hit)) {
                 glm::ivec3 placePos = hit.block + hit.normal;
@@ -417,8 +420,6 @@ void handleBlockEdits(InputState& input,
             }
         }
     }
-    input.lastLeftDown = leftDown;
-    input.lastRightDown = rightDown;
 }
 
 } // namespace Rigel::Input

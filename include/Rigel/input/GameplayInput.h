@@ -2,11 +2,9 @@
 
 #include "Rigel/Voxel/Block.h"
 #include "Rigel/input/InputBindings.h"
-#include "Rigel/input/InputDispatcher.h"
+#include "Rigel/input/InputState.h"
 
 #include <glm/glm.hpp>
-
-#include <memory>
 
 struct GLFWwindow;
 
@@ -64,16 +62,8 @@ struct ImGuiOverlayListener : InputListener {
     }
 };
 
-struct InputState {
-    std::shared_ptr<InputBindings> bindings;
-    InputDispatcher dispatcher;
-    DebugOverlayListener debugOverlayListener;
-    ImGuiOverlayListener imguiOverlayListener;
-    bool lastLeftDown = false;
-    bool lastRightDown = false;
-};
-
 struct InputCallbackContext {
+    InputState* input = nullptr;
     WindowState* window = nullptr;
     CameraState* camera = nullptr;
 };
@@ -86,18 +76,15 @@ void loadInputBindings(Asset::AssetManager& assets, InputState& input);
 
 void ensureDefaultBindings(InputBindings& bindings);
 
-void attachDebugOverlayListener(InputState& input, bool* overlayEnabled);
-void attachImGuiOverlayListener(InputState& input, bool* overlayEnabled);
-
 void updateCamera(const InputState& input, CameraState& camera, float dt);
 
-void handleDemoSpawn(InputState& input,
+void handleDemoSpawn(const InputState& input,
                      Asset::AssetManager& assets,
                      Voxel::World& world,
                      const CameraState& camera);
 
-void handleBlockEdits(InputState& input,
-                      WindowState& window,
+void handleBlockEdits(const InputState& input,
+                      const WindowState& window,
                       const CameraState& camera,
                       Voxel::World& world,
                       Voxel::WorldView& worldView,

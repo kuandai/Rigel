@@ -9,7 +9,7 @@
 
 namespace Rigel::Voxel {
 
-class ConfigProvider;
+class WorldConfigProvider;
 
 /**
  * @brief Configuration values for world generation.
@@ -154,7 +154,7 @@ struct WorldGenConfig {
     bool isFlagEnabled(const std::string& name) const;
 
 private:
-    friend class ConfigProvider;
+    friend class WorldConfigProvider;
     std::vector<OverlayConfig> applyYamlWithOverlays(
         const char* sourceName,
         const std::string& yaml

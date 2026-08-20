@@ -8,14 +8,12 @@ namespace Asset { class AssetManager; }
 
 namespace Voxel {
 
-ConfigProvider makeWorldConfigProvider(Asset::AssetManager& assets,
-                                       WorldId worldId);
+WorldConfigProvider makeWorldConfigProvider(Asset::AssetManager& assets,
+                                            WorldId worldId);
 
-ConfigProvider makeRenderConfigProvider(Asset::AssetManager& assets,
-                                        WorldId worldId);
-
-ConfigProvider makePersistenceConfigProvider(Asset::AssetManager& assets,
-                                             WorldId worldId);
+PersistenceConfigProvider makePersistenceConfigProvider(
+    Asset::AssetManager& assets,
+    WorldId worldId);
 
 } // namespace Voxel
 } // namespace Rigel

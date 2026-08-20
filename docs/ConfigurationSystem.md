@@ -48,15 +48,18 @@ Four config types are supported today:
 - `WorldRenderConfig` (render pipeline settings)
 - `PersistenceConfig` (save/load format and provider options)
 
-The loader is implemented in `Voxel::ConfigProvider` and uses YAML input
-(rapidyaml parser). Unknown keys are ignored; only known fields are applied.
+Typed providers load each subsystem's settings from YAML input using rapidyaml.
+`Voxel::WorldConfigProvider` loads generation and streaming settings together
+so their shared overlays have one deterministic order. Rendering is loaded by
+`Render::RenderConfigProvider`, and persistence has its own provider. Unknown
+keys are ignored; only known fields are applied.
 
 ---
 
 ## Config Sources and Precedence
 
-Each config type has a fixed source order defined in
-`src/voxel/WorldConfigBootstrap.cpp`. The general rule is:
+Each config type has a fixed source order defined by its subsystem bootstrap.
+The general rule is:
 
 1) Embedded defaults (from assets).
 2) Project-level overrides under `config/`.
@@ -92,9 +95,9 @@ Sources (in order):
 
 ---
 
-## Config Provider and Sources
+## Config Providers and Sources
 
-`ConfigProvider` aggregates a list of `IConfigSource` instances:
+Each typed provider aggregates neutral `Config::IConfigSource` instances:
 
 - `EmbeddedConfigSource` reads an embedded raw asset (e.g. `raw/world_config`).
 - `FileConfigSource` reads a file from disk.

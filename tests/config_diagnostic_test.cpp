@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "Rigel/Persistence/PersistenceConfig.h"
+#include "Rigel/Render/RenderConfigProvider.h"
 #include "Rigel/Voxel/StreamingConfig.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 
@@ -16,6 +17,7 @@
 #include <string>
 
 using namespace Rigel::Voxel;
+using namespace Rigel::Config;
 
 namespace {
 
@@ -128,7 +130,7 @@ TEST_CASE(WorldGenConfig_ReportsRemovedKeysAndIgnoresUnknownStages) {
 
 TEST_CASE(RenderConfig_ReportsUnknownKeyAndSource) {
     LogCapture logs;
-    ConfigProvider provider;
+    Rigel::Render::RenderConfigProvider provider;
     provider.addSource(std::make_unique<NamedConfigSource>(
         "render-settings.yaml",
         "render:\n"
@@ -136,7 +138,7 @@ TEST_CASE(RenderConfig_ReportsUnknownKeyAndSource) {
         "    split_lamda: 0.5\n"
     ));
 
-    provider.loadRenderConfig();
+    provider.load();
 
     const std::string output = logs.output();
     CHECK(output.find("render.shadow.split_lamda") != std::string::npos);
@@ -186,12 +188,12 @@ TEST_CASE(Configuration_ValidKeysAreQuiet) {
     StreamingConfig streamingConfig;
     streamingConfig.applyYaml(worldPath.string().c_str(), readFile(worldPath));
 
-    ConfigProvider renderProvider;
+    Rigel::Render::RenderConfigProvider renderProvider;
     renderProvider.addSource(std::make_unique<NamedConfigSource>(
         renderPath.string(),
         readFile(renderPath)
     ));
-    renderProvider.loadRenderConfig();
+    renderProvider.load();
 
     Rigel::Persistence::PersistenceConfig persistenceConfig;
     persistenceConfig.applyYaml(

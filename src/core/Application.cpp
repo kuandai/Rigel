@@ -7,6 +7,7 @@
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/Storage.h"
+#include "Rigel/Render/RenderConfigBootstrap.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/WorldSet.h"
@@ -475,7 +476,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->world.worldSet.setPersistenceStorage(std::make_shared<Persistence::FilesystemBackend>());
         m_impl->world.worldSet.setPersistenceRoot(
             Persistence::mainWorldRootPath(m_impl->world.activeWorldId));
-        Voxel::ConfigProvider persistenceConfigProvider =
+        Voxel::PersistenceConfigProvider persistenceConfigProvider =
             Voxel::makePersistenceConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
         Persistence::PersistenceConfig persistenceConfig = persistenceConfigProvider.loadPersistenceConfig();
         if (!persistenceConfig.format.empty()) {
@@ -487,7 +488,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         Input::attachDebugOverlayListener(m_impl->input, &m_impl->debug.overlayEnabled);
         Input::attachImGuiOverlayListener(m_impl->input, &m_impl->debug.imguiEnabled);
 
-        Voxel::ConfigProvider configProvider =
+        Voxel::WorldConfigProvider configProvider =
             Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
         Voxel::WorldConfiguration config = configProvider.loadConfig();
         if (config.generation.solidBlock.empty()) {
@@ -586,9 +587,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
                     : Voxel::StreamingWorkCount{};
             });
 
-        Voxel::ConfigProvider renderConfigProvider =
-            Voxel::makeRenderConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
-        Voxel::WorldRenderConfig renderConfig = renderConfigProvider.loadRenderConfig();
+        Render::RenderConfigProvider renderConfigProvider =
+            Render::makeRenderConfigProvider(
+                m_impl->assets, m_impl->world.activeWorldId);
+        Voxel::WorldRenderConfig renderConfig = renderConfigProvider.load();
         const char* profileEnv = std::getenv("RIGEL_PROFILE");
         if (profileEnv && profileEnv[0] != '\0') {
             renderConfig.profilingEnabled = (profileEnv[0] != '0');

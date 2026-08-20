@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 using namespace Rigel::Voxel;
+using namespace Rigel::Config;
 
 namespace {
 
@@ -67,7 +68,7 @@ TEST_CASE(WorldConfigProvider_FileSource) {
         out << "solid_block: base:stone_shale\n";
     }
 
-    ConfigProvider provider;
+    WorldConfigProvider provider;
     provider.addSource(std::make_unique<FileConfigSource>(path.string()));
     WorldGenConfig config = provider.loadConfig().generation;
 
@@ -96,7 +97,7 @@ TEST_CASE(WorldConfigProvider_OverlaySource) {
         out << "  base_height: 9.0\n";
     }
 
-    ConfigProvider provider;
+    WorldConfigProvider provider;
     provider.addSource(std::make_unique<FileConfigSource>(basePath.string()));
     WorldGenConfig config = provider.loadConfig().generation;
 
@@ -107,7 +108,7 @@ TEST_CASE(WorldConfigProvider_OverlaySource) {
 }
 
 TEST_CASE(WorldConfigProvider_HigherPrecedenceSourceOverridesLowerOverlay) {
-    ConfigProvider provider;
+    WorldConfigProvider provider;
     provider.addSource(std::make_unique<MemoryConfigSource>(
         "defaults",
         "terrain:\n"
@@ -141,7 +142,7 @@ TEST_CASE(WorldConfigProvider_HigherPrecedenceSourceOverridesLowerOverlay) {
 }
 
 TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {
-    ConfigProvider provider;
+    WorldConfigProvider provider;
     provider.addSource(std::make_unique<MemoryConfigSource>(
         "defaults",
         "overlays:\n"
@@ -165,7 +166,7 @@ TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {
 }
 
 TEST_CASE(WorldConfigProvider_AppliesNestedOverlaysAfterDeclaredOverlays) {
-    ConfigProvider provider;
+    WorldConfigProvider provider;
     provider.addSource(std::make_unique<MemoryConfigSource>(
         "defaults",
         "terrain:\n"

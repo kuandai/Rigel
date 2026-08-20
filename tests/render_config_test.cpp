@@ -1,7 +1,9 @@
 #include "TestFramework.h"
 
-#include "Rigel/Voxel/WorldConfigProvider.h"
+#include "Rigel/Render/RenderConfigProvider.h"
 
+using namespace Rigel::Config;
+using namespace Rigel::Render;
 using namespace Rigel::Voxel;
 
 namespace {
@@ -54,9 +56,9 @@ render:
     enabled: true
 )";
 
-    ConfigProvider provider;
+    RenderConfigProvider provider;
     provider.addSource(std::make_unique<StringConfigSource>(yaml));
-    WorldRenderConfig config = provider.loadRenderConfig();
+    WorldRenderConfig config = provider.load();
 
     CHECK_NEAR(config.sunDirection.x, 0.2f, 0.0001f);
     CHECK_NEAR(config.sunDirection.y, 0.8f, 0.0001f);
@@ -83,7 +85,7 @@ render:
 }
 
 TEST_CASE(RenderConfig_LayeredShadowRetainsOmittedValues) {
-    ConfigProvider provider;
+    RenderConfigProvider provider;
     provider.addSource(std::make_unique<StringConfigSource>(R"(
 render:
   shadow:
@@ -98,7 +100,7 @@ render:
     enabled: false
 )"));
 
-    const WorldRenderConfig config = provider.loadRenderConfig();
+    const WorldRenderConfig config = provider.load();
 
     CHECK(!config.shadow.enabled);
     CHECK_EQ(config.shadow.pcfRadius, 2);
@@ -107,14 +109,14 @@ render:
 }
 
 TEST_CASE(RenderConfig_GenericPcfRadiusSuppliesNearAndFarFallbacks) {
-    ConfigProvider provider;
+    RenderConfigProvider provider;
     provider.addSource(std::make_unique<StringConfigSource>(R"(
 render:
   shadow:
     pcf_radius: 4
 )"));
 
-    const WorldRenderConfig config = provider.loadRenderConfig();
+    const WorldRenderConfig config = provider.load();
 
     CHECK_EQ(config.shadow.pcfRadius, 4);
     CHECK_EQ(config.shadow.pcfRadiusNear, 4);
@@ -122,7 +124,7 @@ render:
 }
 
 TEST_CASE(RenderConfig_LayeredGenericPcfRadiusPreservesSpecificOverrides) {
-    ConfigProvider provider;
+    RenderConfigProvider provider;
     provider.addSource(std::make_unique<StringConfigSource>(R"(
 render:
   shadow:
@@ -136,7 +138,7 @@ render:
     pcf_radius: 4
 )"));
 
-    const WorldRenderConfig config = provider.loadRenderConfig();
+    const WorldRenderConfig config = provider.load();
 
     CHECK_EQ(config.shadow.pcfRadius, 4);
     CHECK_EQ(config.shadow.pcfRadiusNear, 1);
@@ -144,7 +146,7 @@ render:
 }
 
 TEST_CASE(RenderConfig_LayeredGenericPcfRadiusUpdatesUnspecifiedFallback) {
-    ConfigProvider provider;
+    RenderConfigProvider provider;
     provider.addSource(std::make_unique<StringConfigSource>(R"(
 render:
   shadow:
@@ -157,7 +159,7 @@ render:
     pcf_radius: 4
 )"));
 
-    const WorldRenderConfig config = provider.loadRenderConfig();
+    const WorldRenderConfig config = provider.load();
 
     CHECK_EQ(config.shadow.pcfRadius, 4);
     CHECK_EQ(config.shadow.pcfRadiusNear, 1);

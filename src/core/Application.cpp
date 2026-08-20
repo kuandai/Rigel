@@ -6,6 +6,7 @@
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
+#include "Rigel/Persistence/PersistenceConfigBootstrap.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/RenderConfigBootstrap.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
@@ -476,9 +477,11 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->world.worldSet.setPersistenceStorage(std::make_shared<Persistence::FilesystemBackend>());
         m_impl->world.worldSet.setPersistenceRoot(
             Persistence::mainWorldRootPath(m_impl->world.activeWorldId));
-        Voxel::PersistenceConfigProvider persistenceConfigProvider =
-            Voxel::makePersistenceConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
-        Persistence::PersistenceConfig persistenceConfig = persistenceConfigProvider.loadPersistenceConfig();
+        Persistence::PersistenceConfigProvider persistenceConfigProvider =
+            Persistence::makePersistenceConfigProvider(
+                m_impl->assets, m_impl->world.activeWorldId);
+        Persistence::PersistenceConfig persistenceConfig =
+            persistenceConfigProvider.load();
         if (!persistenceConfig.format.empty()) {
             m_impl->world.worldSet.setPersistencePreferredFormat(persistenceConfig.format);
         }

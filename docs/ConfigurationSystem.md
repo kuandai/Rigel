@@ -51,8 +51,9 @@ Four config types are supported today:
 Typed providers load each subsystem's settings from YAML input using rapidyaml.
 `Voxel::WorldConfigProvider` loads generation and streaming settings together
 so their shared overlays have one deterministic order. Rendering is loaded by
-`Render::RenderConfigProvider`, and persistence has its own provider. Unknown
-keys are ignored; only known fields are applied.
+`Render::RenderConfigProvider`, and persistence by
+`Persistence::PersistenceConfigProvider`. Unknown keys are ignored; only known
+fields are applied.
 
 ---
 

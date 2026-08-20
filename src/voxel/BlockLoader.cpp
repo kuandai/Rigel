@@ -13,6 +13,8 @@
 namespace Rigel::Voxel {
 
 namespace {
+    constexpr size_t kRepresentativeFailureLimit = 3;
+
     ryml::Tree loadBlockConfigTree(const std::string& path) {
         auto data = ResourceRegistry::Get(path);
         return ryml::parse_in_arena(
@@ -65,12 +67,12 @@ namespace {
     }
 }
 
-size_t BlockLoader::loadFromManifest(
+BlockLoadReport BlockLoader::loadFromManifest(
     Asset::AssetManager& assets,
     BlockRegistry& registry,
     TextureAtlas& atlas
 ) {
-    size_t count = 0;
+    BlockLoadReport report;
     const std::string& ns = assets.ns();
 
     spdlog::info("Loading block definitions from blocks directory...");
@@ -83,6 +85,7 @@ size_t BlockLoader::loadFromManifest(
         blockPaths.emplace_back(path);
     }
     std::sort(blockPaths.begin(), blockPaths.end());
+    report.discovered = blockPaths.size();
 
     for (const auto& path : blockPaths) {
         try {
@@ -93,20 +96,29 @@ size_t BlockLoader::loadFromManifest(
 
             std::string identifier = blockType.identifier;
             if (registry.hasIdentifier(identifier)) {
-                spdlog::warn("Skipping duplicate block identifier '{}'", identifier);
+                ++report.skipped;
                 continue;
             }
             BlockID id = registry.registerBlock(identifier, std::move(blockType));
             spdlog::debug("Registered block '{}' from '{}' with ID {}", name, path, id.type);
 
-            ++count;
+            ++report.loaded;
         } catch (const std::exception& e) {
-            spdlog::error("Failed to load block from '{}': {}", path, e.what());
+            ++report.failed;
+            if (report.representativeFailures.size() < kRepresentativeFailureLimit) {
+                report.representativeFailures.push_back({path, e.what()});
+            }
         }
     }
 
-    spdlog::info("Loaded {} block definitions", count);
-    return count;
+    spdlog::info(
+        "Block definitions: {} loaded, {} failed, {} skipped ({} discovered)",
+        report.loaded,
+        report.failed,
+        report.skipped,
+        report.discovered
+    );
+    return report;
 }
 
 BlockType BlockLoader::parseBlockType(

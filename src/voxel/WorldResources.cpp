@@ -4,7 +4,42 @@
 
 #include <spdlog/spdlog.h>
 
+#include <sstream>
+#include <stdexcept>
+
 namespace Rigel::Voxel {
+
+namespace {
+
+std::string unusableBlockAssetsMessage(
+    const BlockLoadReport& report,
+    size_t textureCount
+) {
+    std::ostringstream message;
+    message << "Block assets are unusable: "
+            << report.loaded << " definitions loaded, "
+            << report.failed << " failed, "
+            << report.skipped << " skipped ("
+            << report.discovered << " discovered); "
+            << textureCount << " textures loaded. "
+            << "Ensure imported block textures are present under assets/textures/ "
+               "before configuring the build.";
+
+    if (!report.representativeFailures.empty()) {
+        message << " Representative failures: ";
+        for (size_t i = 0; i < report.representativeFailures.size(); ++i) {
+            if (i != 0) {
+                message << "; ";
+            }
+            const auto& failure = report.representativeFailures[i];
+            message << failure.definitionPath << " (" << failure.reason << ')';
+        }
+    }
+
+    return message.str();
+}
+
+} // namespace
 
 void WorldResources::initialize(Asset::AssetManager& assets) {
     if (m_initialized) {
@@ -12,19 +47,24 @@ void WorldResources::initialize(Asset::AssetManager& assets) {
         return;
     }
 
-    try {
-        BlockLoader loader;
-        size_t loaded = loader.loadFromManifest(assets, m_registry, m_textureAtlas);
-        if (m_textureAtlas.textureCount() > 0) {
-            m_textureAtlas.upload();
-        }
-        spdlog::info("Loaded {} block types (registry size {})", loaded, m_registry.size());
-        spdlog::info("Texture atlas entries: {}", m_textureAtlas.textureCount());
-    } catch (const std::exception& e) {
-        spdlog::error("Failed to load blocks: {}", e.what());
-        throw;
+    BlockLoader loader;
+    BlockLoadReport report = loader.loadFromManifest(assets, m_registry, m_textureAtlas);
+    const size_t textureCount = m_textureAtlas.textureCount();
+    if (report.failed != 0 || report.loaded == 0 || m_registry.size() <= 1 ||
+        textureCount == 0) {
+        throw std::runtime_error(unusableBlockAssetsMessage(report, textureCount));
     }
 
+    m_textureAtlas.upload();
+    spdlog::info(
+        "world.resources blocks.loaded={} blocks.failed={} blocks.skipped={} "
+        "blocks.discovered={} textures.loaded={}",
+        report.loaded,
+        report.failed,
+        report.skipped,
+        report.discovered,
+        textureCount
+    );
     m_initialized = true;
 }
 

@@ -15,9 +15,24 @@
 
 #include <Rigel/Asset/AssetManager.h>
 
+#include <cstddef>
 #include <string>
+#include <vector>
 
 namespace Rigel::Voxel {
+
+struct BlockLoadFailure {
+    std::string definitionPath;
+    std::string reason;
+};
+
+struct BlockLoadReport {
+    size_t discovered = 0;
+    size_t loaded = 0;
+    size_t failed = 0;
+    size_t skipped = 0;
+    std::vector<BlockLoadFailure> representativeFailures;
+};
 
 /**
  * @brief Loads block definitions from asset manifests.
@@ -89,9 +104,9 @@ public:
      * @param registry The block registry to register types with
      * @param atlas The texture atlas to load textures into
      *
-     * @return Number of blocks loaded
+     * @return Counts and representative failures from the load
      */
-    size_t loadFromManifest(
+    BlockLoadReport loadFromManifest(
         Asset::AssetManager& assets,
         BlockRegistry& registry,
         TextureAtlas& atlas

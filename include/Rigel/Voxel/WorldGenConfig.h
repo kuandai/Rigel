@@ -10,6 +10,8 @@
 
 namespace Rigel::Voxel {
 
+class ConfigProvider;
+
 /**
  * @brief Configuration values for world generation and streaming.
  *
@@ -177,6 +179,13 @@ struct WorldGenConfig {
     void applyYaml(const char* sourceName, const std::string& yaml);
     bool isStageEnabled(const std::string& stage) const;
     bool isFlagEnabled(const std::string& name) const;
+
+private:
+    friend class ConfigProvider;
+    std::vector<OverlayConfig> applyYamlWithOverlays(
+        const char* sourceName,
+        const std::string& yaml
+    );
 };
 
 } // namespace Rigel::Voxel

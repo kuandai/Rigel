@@ -50,8 +50,15 @@ WorldGenConfig::BiomeTarget readBiomeTarget(ryml::ConstNodeRef node,
 } // namespace
 
 void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) {
+    applyYamlWithOverlays(sourceName, yaml);
+}
+
+std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays(
+    const char* sourceName,
+    const std::string& yaml) {
+    std::vector<OverlayConfig> declaredOverlays;
     if (yaml.empty()) {
-        return;
+        return declaredOverlays;
     }
 
     ryml::Tree tree = ryml::parse_in_arena(
@@ -110,6 +117,7 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         if (biomesNode.has_child("entries")) {
             ryml::ConstNodeRef entries = biomesNode["entries"];
             if (entries.is_seq()) {
+                biomes.entries.clear();
                 for (ryml::ConstNodeRef entry : entries.children()) {
                     BiomeConfig biome;
                     biome.name = Util::readString(entry, "name", "");
@@ -251,6 +259,7 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
         if (structuresNode.has_child("features")) {
             ryml::ConstNodeRef features = structuresNode["features"];
             if (features.is_seq()) {
+                structures.features.clear();
                 for (ryml::ConstNodeRef featureNode : features.children()) {
                     FeatureConfig feature;
                     feature.name = Util::readString(featureNode, "name", "");
@@ -408,11 +417,13 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
     if (root.has_child("overlays")) {
         ryml::ConstNodeRef overlaysNode = root["overlays"];
         if (overlaysNode.is_seq()) {
+            overlays.clear();
             for (ryml::ConstNodeRef overlayNode : overlaysNode.children()) {
                 OverlayConfig overlay;
                 overlay.path = Util::readString(overlayNode, "path", "");
                 overlay.when = Util::readString(overlayNode, "when", "");
                 if (!overlay.path.empty()) {
+                    declaredOverlays.push_back(overlay);
                     overlays.push_back(std::move(overlay));
                 }
             }
@@ -420,6 +431,7 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
     }
 
     spdlog::debug("Applied world gen config from {}", sourceName);
+    return declaredOverlays;
 }
 
 bool WorldGenConfig::isStageEnabled(const std::string& stage) const {

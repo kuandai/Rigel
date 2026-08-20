@@ -4,8 +4,60 @@
 
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 
 using namespace Rigel::Voxel;
+
+namespace {
+
+class MemoryConfigSource : public IConfigSource {
+public:
+    MemoryConfigSource(std::string sourceName,
+                       std::string yaml,
+                       std::unordered_map<std::string, std::string> paths = {})
+        : m_name(std::move(sourceName))
+        , m_yaml(std::move(yaml))
+        , m_paths(std::move(paths))
+    {}
+
+    std::optional<std::string> load() const override {
+        return m_yaml;
+    }
+
+    std::string name() const override {
+        return m_name;
+    }
+
+    std::optional<ConfigSourceResult> loadPath(std::string_view path) const override {
+        auto it = m_paths.find(std::string(path));
+        if (it == m_paths.end()) {
+            return std::nullopt;
+        }
+        return ConfigSourceResult{m_name + ":" + it->first, it->second};
+    }
+
+private:
+    std::string m_name;
+    std::string m_yaml;
+    std::unordered_map<std::string, std::string> m_paths;
+};
+
+class CurrentPathGuard {
+public:
+    explicit CurrentPathGuard(const std::filesystem::path& path)
+        : m_original(std::filesystem::current_path()) {
+        std::filesystem::current_path(path);
+    }
+
+    ~CurrentPathGuard() {
+        std::filesystem::current_path(m_original);
+    }
+
+private:
+    std::filesystem::path m_original;
+};
+
+} // namespace
 
 TEST_CASE(WorldConfigProvider_FileSource) {
     std::filesystem::path path = std::filesystem::temp_directory_path() / "rigel_world_config_test.yaml";
@@ -52,4 +104,83 @@ TEST_CASE(WorldConfigProvider_OverlaySource) {
 
     std::filesystem::remove(basePath);
     std::filesystem::remove(overlayPath);
+}
+
+TEST_CASE(WorldConfigProvider_HigherPrecedenceSourceOverridesLowerOverlay) {
+    ConfigProvider provider;
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "defaults",
+        "terrain:\n"
+        "  base_height: 1.0\n"
+        "overlays:\n"
+        "  - path: tuning.yaml\n",
+        std::unordered_map<std::string, std::string>{
+            {"tuning.yaml", "terrain:\n  base_height: 2.0\n"}
+        }
+    ));
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "world",
+        "terrain:\n"
+        "  base_height: 9.0\n"
+    ));
+
+    WorldGenConfig config = provider.loadConfig();
+
+    CHECK_NEAR(config.terrain.baseHeight, 9.0f, 0.001f);
+}
+
+TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {
+    ConfigProvider provider;
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "defaults",
+        "overlays:\n"
+        "  - path: tuning.yaml\n",
+        std::unordered_map<std::string, std::string>{
+            {"tuning.yaml", "terrain:\n  base_height: 2.0\n"}
+        }
+    ));
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "world",
+        "overlays:\n"
+        "  - path: tuning.yaml\n",
+        std::unordered_map<std::string, std::string>{
+            {"tuning.yaml", "terrain:\n  base_height: 10.0\n"}
+        }
+    ));
+
+    WorldGenConfig config = provider.loadConfig();
+
+    CHECK_NEAR(config.terrain.baseHeight, 10.0f, 0.001f);
+}
+
+TEST_CASE(FileConfigSource_ResolvesOverlayRelativeToDeclaringFile) {
+    const auto root = std::filesystem::temp_directory_path()
+        / "rigel_config_relative_overlay_test";
+    const auto sourceDir = root / "source";
+    const auto workingDir = root / "working";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(sourceDir);
+    std::filesystem::create_directories(workingDir);
+    {
+        std::ofstream out(sourceDir / "overlay.yaml");
+        out << "terrain:\n  base_height: 9.0\n";
+    }
+    {
+        std::ofstream out(workingDir / "overlay.yaml");
+        out << "terrain:\n  base_height: 2.0\n";
+    }
+
+    std::optional<ConfigSourceResult> result;
+    {
+        CurrentPathGuard workingDirectory(workingDir);
+        FileConfigSource source((sourceDir / "world_generation.yaml").string());
+        result = source.loadPath("overlay.yaml");
+    }
+
+    CHECK(result.has_value());
+    if (result) {
+        CHECK(result->content.find("9.0") != std::string::npos);
+        CHECK(result->content.find("2.0") == std::string::npos);
+    }
+    std::filesystem::remove_all(root);
 }

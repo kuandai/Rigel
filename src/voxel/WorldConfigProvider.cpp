@@ -9,6 +9,7 @@
 #include <ryml_std.hpp>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -201,14 +202,13 @@ std::string FileConfigSource::name() const {
 
 std::optional<ConfigSourceResult> FileConfigSource::loadPath(std::string_view path) const {
     std::filesystem::path candidate(path);
-    auto content = readFile(candidate);
-    if (!content && !candidate.is_absolute()) {
+    if (!candidate.is_absolute()) {
         std::filesystem::path baseDir = std::filesystem::path(m_path).parent_path();
         if (!baseDir.empty()) {
             candidate = baseDir / candidate;
-            content = readFile(candidate);
         }
     }
+    auto content = readFile(candidate);
     if (!content) {
         return std::nullopt;
     }
@@ -221,38 +221,45 @@ void ConfigProvider::addSource(std::unique_ptr<IConfigSource> source) {
 
 WorldGenConfig ConfigProvider::loadConfig() const {
     WorldGenConfig config;
+    auto applyOverlays = [&config](
+        const IConfigSource& source,
+        std::vector<WorldGenConfig::OverlayConfig> pending) {
+        std::unordered_set<std::string> appliedPaths;
+        size_t overlayIndex = 0;
+        while (overlayIndex < pending.size()) {
+            WorldGenConfig::OverlayConfig overlay = std::move(pending[overlayIndex]);
+            ++overlayIndex;
+            if (!overlay.when.empty() && !config.isFlagEnabled(overlay.when)) {
+                continue;
+            }
+            if (!appliedPaths.insert(overlay.path).second) {
+                continue;
+            }
+
+            auto overlayData = source.loadPath(overlay.path);
+            if (!overlayData) {
+                continue;
+            }
+
+            auto nestedOverlays = config.applyYamlWithOverlays(
+                overlayData->name.c_str(),
+                overlayData->content
+            );
+            pending.insert(
+                pending.end(),
+                std::make_move_iterator(nestedOverlays.begin()),
+                std::make_move_iterator(nestedOverlays.end())
+            );
+        }
+    };
 
     for (const auto& source : m_sources) {
         auto yaml = source->load();
         if (!yaml) {
             continue;
         }
-        config.applyYaml(source->name().c_str(), *yaml);
-    }
-
-    std::unordered_set<std::string> appliedOverlays;
-    size_t overlayIndex = 0;
-    while (overlayIndex < config.overlays.size()) {
-        const auto& overlay = config.overlays[overlayIndex];
-        ++overlayIndex;
-        if (!overlay.when.empty() && !config.isFlagEnabled(overlay.when)) {
-            continue;
-        }
-        if (appliedOverlays.find(overlay.path) != appliedOverlays.end()) {
-            continue;
-        }
-        std::optional<ConfigSourceResult> overlayData;
-        for (const auto& source : m_sources) {
-            overlayData = source->loadPath(overlay.path);
-            if (overlayData) {
-                break;
-            }
-        }
-        if (!overlayData) {
-            continue;
-        }
-        config.applyYaml(overlayData->name.c_str(), overlayData->content);
-        appliedOverlays.insert(overlay.path);
+        auto overlays = config.applyYamlWithOverlays(source->name().c_str(), *yaml);
+        applyOverlays(*source, std::move(overlays));
     }
 
     return config;

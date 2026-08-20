@@ -40,6 +40,7 @@ persistence:
   providers:
     rigel:persistence.cr:
       lz4: false
+      mode: safe
 )";
     std::string overlay = R"(
 persistence:
@@ -55,5 +56,6 @@ persistence:
     CHECK(cr != nullptr);
     if (cr) {
         CHECK(cr->getBool("lz4", false));
+        CHECK_EQ(cr->getString("mode", ""), "safe");
     }
 }

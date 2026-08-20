@@ -29,6 +29,19 @@ Rigel uses a layered configuration system. Each config type is loaded from a
 stack of sources, and later sources override earlier values. Configs are read
 once during application bootstrap.
 
+Fields merge according to their YAML shape:
+
+- Scalars replace the earlier value.
+- Objects and maps merge by key, so omitted keys retain their earlier values.
+- Sequences replace the earlier sequence, including when the later sequence is
+  empty.
+
+World generation has two keyed sequence exceptions. `density_graph.nodes`
+merges entries by `id`, replacing a matching node as a whole, and
+`generation.pipeline` merges the `enabled` value by `stage`. Persistence
+`providers` is a map keyed by provider ID, and each provider's options merge by
+option name.
+
 Three config types are supported today:
 
 - `WorldGenConfig` (world generation + streaming)
@@ -89,7 +102,7 @@ Sources (in order):
 Each source provides:
 
 - `load()` -> full YAML file content.
-- `loadPath(path)` -> overlay resolution (optional).
+- `loadPath(path)` -> resolution of overlays declared by that source (optional).
 
 Overlay resolution has two behaviors:
 
@@ -99,12 +112,18 @@ Overlay resolution has two behaviors:
   directory (e.g. `config/world_generation.yaml` can reference
   `worldgen_overlays/no_carvers.yaml`).
 
+Each source and its overlays form one precedence layer. A source's base YAML is
+applied first, followed by its overlays in declaration order. Loading then
+continues with the next source, so project-root and per-world values cannot be
+overridden by an overlay from a lower-precedence source. Overlay paths are
+resolved only by the source that declared them.
+
 ---
 
 ## World Generation Config
 
-`WorldGenConfig` is loaded by applying all sources in order, then processing
-any overlays listed in the final config state.
+`WorldGenConfig` is loaded by applying each source and its overlays before
+moving to the next source.
 
 Defaults below reflect the code defaults from `WorldGenConfig`. The embedded
 config (`assets/config/world_generation.yaml`) overrides many of these values.
@@ -208,14 +227,16 @@ Stages default to enabled unless explicitly disabled.
 
 ### Flags and Overlays
 
-Overlays are applied after base config load, in the order they appear in the
-`overlays` list. Each overlay is a `{ path, when }` pair:
+Overlays are applied after the declaring source's base YAML, in the order they
+appear in the `overlays` list. Each overlay is a `{ path, when }` pair:
 
 - `path`: YAML file to load.
 - `when`: name of a boolean in `flags` (optional).
 
-If `when` is missing or the flag is false, the overlay is skipped.
-Overlays are deduplicated by path; each path is applied at most once.
+If `when` is omitted, the overlay is unconditional. If it names a false or
+missing flag, the overlay is skipped. The condition uses the configuration
+state at that source layer. Overlays may declare more overlays; a path is
+applied at most once within a source layer.
 
 The shipped overlay:
 
@@ -332,7 +353,9 @@ and used directly in the override paths:
 - `config/worlds/<worldId>/render.yaml`
 - `config/worlds/<worldId>/persistence.yaml`
 
-These files are optional and only override fields they define.
+These files are optional and only override fields they define. As the last
+source layer, a per-world file and any overlays it declares have the highest
+precedence.
 
 ---
 

@@ -170,3 +170,119 @@ generation:
     CHECK_EQ(config.stream.maxResidentChunks, static_cast<size_t>(100));
     CHECK(!config.isStageEnabled("terrain_density"));
 }
+
+TEST_CASE(WorldGenConfig_LayeredMergeSemantics) {
+    WorldGenConfig config;
+    const std::string base = R"(
+seed: 7
+terrain:
+  base_height: 11.0
+  noise:
+    frequency: 0.2
+biomes:
+  entries:
+    - name: plains
+    - name: forest
+density_graph:
+  outputs:
+    terrain: old_terrain
+    retained: retained_node
+  nodes:
+    - id: terrain
+      type: constant
+      value: 1.0
+    - id: retained_node
+      type: constant
+      value: 2.0
+structures:
+  features:
+    - name: boulders
+      block: base:stone_shale
+    - name: shrubs
+      block: base:grass
+generation:
+  pipeline:
+    - stage: terrain_density
+      enabled: false
+flags:
+  retained: true
+  changed: false
+overlays:
+  - path: first.yaml
+  - path: second.yaml
+)";
+    const std::string higherPrecedence = R"(
+seed: 9
+terrain:
+  density_strength: 3.0
+  noise:
+    octaves: 2
+biomes:
+  entries:
+    - name: tundra
+density_graph:
+  outputs:
+    terrain: new_terrain
+    added: added_node
+  nodes:
+    - id: terrain
+      type: constant
+      value: 10.0
+structures:
+  features:
+    - name: crystals
+      block: base:stone_shale
+generation:
+  pipeline:
+    - stage: caves
+      enabled: false
+flags:
+  changed: true
+  added: true
+overlays:
+  - path: world.yaml
+)";
+
+    config.applyYaml("base", base);
+    config.applyYaml("world", higherPrecedence);
+
+    CHECK_EQ(config.seed, static_cast<uint32_t>(9));
+    CHECK_NEAR(config.terrain.baseHeight, 11.0f, 0.001f);
+    CHECK_NEAR(config.terrain.densityStrength, 3.0f, 0.001f);
+    CHECK_EQ(config.terrain.heightNoise.octaves, 2);
+    CHECK_NEAR(config.terrain.heightNoise.frequency, 0.2f, 0.001f);
+
+    CHECK_EQ(config.biomes.entries.size(), static_cast<size_t>(1));
+    CHECK_EQ(config.biomes.entries[0].name, "tundra");
+    CHECK_EQ(config.structures.features.size(), static_cast<size_t>(1));
+    CHECK_EQ(config.structures.features[0].name, "crystals");
+    CHECK_EQ(config.overlays.size(), static_cast<size_t>(1));
+    CHECK_EQ(config.overlays[0].path, "world.yaml");
+
+    CHECK_EQ(config.densityGraph.outputs.size(), static_cast<size_t>(3));
+    CHECK_EQ(config.densityGraph.outputs.at("terrain"), "new_terrain");
+    CHECK_EQ(config.densityGraph.outputs.at("retained"), "retained_node");
+    CHECK_EQ(config.densityGraph.outputs.at("added"), "added_node");
+    CHECK_EQ(config.densityGraph.nodes.size(), static_cast<size_t>(2));
+    CHECK_EQ(config.densityGraph.nodes[0].id, "terrain");
+    CHECK_NEAR(config.densityGraph.nodes[0].value, 10.0f, 0.001f);
+    CHECK_EQ(config.densityGraph.nodes[1].id, "retained_node");
+
+    CHECK(config.isFlagEnabled("retained"));
+    CHECK(config.isFlagEnabled("changed"));
+    CHECK(config.isFlagEnabled("added"));
+    CHECK(!config.isStageEnabled("terrain_density"));
+    CHECK(!config.isStageEnabled("caves"));
+
+    config.applyYaml(
+        "clear",
+        "biomes:\n"
+        "  entries: []\n"
+        "structures:\n"
+        "  features: []\n"
+        "overlays: []\n"
+    );
+    CHECK(config.biomes.entries.empty());
+    CHECK(config.structures.features.empty());
+    CHECK(config.overlays.empty());
+}

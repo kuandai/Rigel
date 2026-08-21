@@ -678,6 +678,10 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out) const {
 }
 
 void ChunkStreamer::reset() {
+    ++m_generationLifecycle;
+    if (m_generationLifecycle == 0) {
+        m_generationLifecycle = 1;
+    }
     m_states.clear();
     m_inFlightGen = 0;
     for (auto& entry : m_meshInFlight) {
@@ -921,6 +925,9 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
     size_t applied = 0;
     GenResult genResult;
     while (applied < budget && m_genComplete.tryPop(genResult)) {
+        if (genResult.lifecycle != m_generationLifecycle) {
+            continue;
+        }
         if (m_inFlightGen > 0) {
             --m_inFlightGen;
         }
@@ -1207,16 +1214,27 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
     auto cancelToken = std::make_shared<std::atomic_bool>(false);
     m_genCancel[coord] = cancelToken;
     auto generator = m_generator;
-    auto job = [this, generator, coord, cancelToken]() {
+    uint64_t generationLifecycle = m_generationLifecycle;
+    auto generationStartCallback = m_generationStartCallback;
+    auto job = [this,
+                generator,
+                coord,
+                cancelToken,
+                generationLifecycle,
+                generationStartCallback = std::move(generationStartCallback)]() {
         if (cancelToken->load(std::memory_order_relaxed)) {
             GenResult result;
             result.coord = coord;
+            result.lifecycle = generationLifecycle;
             result.cancelled = true;
             result.cancelToken = cancelToken;
             m_genComplete.push(std::move(result));
             return;
         }
 
+        if (generationStartCallback) {
+            generationStartCallback();
+        }
         ChunkBuffer buffer;
         auto start = std::chrono::steady_clock::now();
         generator->generate(coord, buffer, cancelToken.get());
@@ -1224,6 +1242,7 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
 
         GenResult result;
         result.coord = coord;
+        result.lifecycle = generationLifecycle;
         result.blocks = buffer.blocks;
         result.worldGenVersion = generator ? generator->config().world.version : 0;
         result.seconds = std::chrono::duration<double>(end - start).count();

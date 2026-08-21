@@ -27,15 +27,24 @@ using namespace Rigel::Voxel;
 
 namespace Rigel::Voxel::detail {
 struct ChunkStreamerTestAccess {
+    static void setGenerationStartCallback(ChunkStreamer& streamer,
+                                           std::function<void()> callback) {
+        streamer.m_generationStartCallback = std::move(callback);
+    }
+
     static void setMeshBuildStartCallback(ChunkStreamer& streamer,
                                           std::function<void()> callback) {
         streamer.m_meshBuildStartCallback = std::move(callback);
+    }
+
+    static size_t generationCompletionCount(const ChunkStreamer& streamer) {
+        return streamer.m_genComplete.size();
     }
 };
 }
 
 namespace {
-class MeshBuildGate {
+class WorkerGate {
 public:
     void enterAndWait() {
         std::unique_lock<std::mutex> lock(m_mutex);
@@ -65,18 +74,31 @@ private:
     bool m_released = false;
 };
 
-class MeshBuildRelease {
+class WorkerGateRelease {
 public:
-    explicit MeshBuildRelease(std::shared_ptr<MeshBuildGate> gate)
+    explicit WorkerGateRelease(std::shared_ptr<WorkerGate> gate)
         : m_gate(std::move(gate)) {}
 
-    ~MeshBuildRelease() {
+    ~WorkerGateRelease() {
         m_gate->release();
     }
 
 private:
-    std::shared_ptr<MeshBuildGate> m_gate;
+    std::shared_ptr<WorkerGate> m_gate;
 };
+
+bool waitForGenerationCompletion(const ChunkStreamer& streamer) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (Rigel::Voxel::detail::ChunkStreamerTestAccess::generationCompletionCount(
+                streamer) > 0) {
+            return true;
+        }
+        std::this_thread::yield();
+    }
+    return Rigel::Voxel::detail::ChunkStreamerTestAccess::generationCompletionCount(
+        streamer) > 0;
+}
 
 bool waitForMeshCompletions(ChunkStreamer& streamer, uint64_t target) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1076,6 +1098,94 @@ TEST_CASE(ChunkStreamer_GenerationCapacityWaitsForCompletion) {
              static_cast<uint64_t>(0));
 }
 
+TEST_CASE(ChunkStreamer_ResetRejectsPreviousGenerationCompletion) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto originalGenerator = makeGenerator(registry);
+    BlockID replacementBlock =
+        registerTestBlock(registry, "rigel:replacement_generation_solid");
+
+    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
+    WorldGenConfig replacementConfig = originalGenerator->config();
+    ++replacementConfig.world.version;
+    replacementConfig.solidBlock = "rigel:replacement_generation_solid";
+    replacementConfig.surfaceBlock = "rigel:replacement_generation_solid";
+    replacementConfig.terrain.baseHeight = 64.0f;
+    replacementGenerator->setConfig(replacementConfig);
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 1;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 4;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, originalGenerator);
+    streamer.markSpawnDiscoveryComplete();
+
+    auto originalGate = std::make_shared<WorkerGate>();
+    auto replacementGate = std::make_shared<WorkerGate>();
+    WorkerGateRelease releaseOriginalOnExit(originalGate);
+    WorkerGateRelease releaseReplacementOnExit(replacementGate);
+    std::atomic<size_t> jobsEntered{0};
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [originalGate, replacementGate, &jobsEntered]() {
+            size_t jobIndex = jobsEntered.fetch_add(1, std::memory_order_relaxed);
+            if (jobIndex == 0) {
+                originalGate->enterAndWait();
+            } else if (jobIndex == 1) {
+                replacementGate->enterAndWait();
+            }
+        });
+
+    const ChunkCoord coord{0, 0, 0};
+    streamer.update(coord.toWorldCenter());
+    CHECK(originalGate->waitUntilEntered());
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+
+    streamer.reset();
+    streamer.bind(&manager, &meshStore, &registry, nullptr, replacementGenerator);
+    streamer.update(coord.toWorldCenter());
+    CHECK(replacementGate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+
+    originalGate->release();
+    CHECK(waitForGenerationCompletion(streamer));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationCompletionCount(
+            streamer),
+        static_cast<size_t>(1));
+    streamer.processCompletions();
+
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+    CHECK(!manager.hasChunk(coord));
+
+    replacementGate->release();
+    CHECK(waitForGenerationCompletion(streamer));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationCompletionCount(
+            streamer),
+        static_cast<size_t>(1));
+    streamer.processCompletions();
+
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
+    Chunk* accepted = manager.getChunk(coord);
+    CHECK(accepted != nullptr);
+    if (!accepted) {
+        return;
+    }
+    CHECK_EQ(accepted->worldGenVersion(), replacementConfig.world.version);
+    CHECK_EQ(accepted->getBlock(0, 0, 0).id, replacementBlock);
+}
+
 TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
     ChunkManager manager;
     BlockRegistry registry;
@@ -1099,7 +1209,7 @@ TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
         chunk.setLoadedFromDisk(true);
     }
 
-    auto gate = std::make_shared<MeshBuildGate>();
+    auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
     StreamingConfig stream;
@@ -1120,7 +1230,7 @@ TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
                 gate->enterAndWait();
             }
         });
-    MeshBuildRelease releaseOnExit(gate);
+    WorkerGateRelease releaseOnExit(gate);
 
     streamer.update(glm::vec3(0.0f));
     bool firstBuildEntered = gate->waitUntilEntered();
@@ -1179,7 +1289,7 @@ TEST_CASE(ChunkStreamer_SingleMeshSlotAlternatesMissingAndDirtyWork) {
     Chunk& dirty = *manager.getChunk(dirtyCoord);
     dirty.invalidateMesh();
 
-    auto gate = std::make_shared<MeshBuildGate>();
+    auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
     StreamingConfig stream;
@@ -1200,7 +1310,7 @@ TEST_CASE(ChunkStreamer_SingleMeshSlotAlternatesMissingAndDirtyWork) {
                 gate->enterAndWait();
             }
         });
-    MeshBuildRelease releaseOnExit(gate);
+    WorkerGateRelease releaseOnExit(gate);
 
     streamer.update(glm::vec3(0.0f));
     bool firstBuildEntered = gate->waitUntilEntered();
@@ -1266,7 +1376,7 @@ TEST_CASE(ChunkStreamer_DirtyMeshCapacityPreservesNearestFirstPriority) {
         meshStore.set(coord, {});
     }
 
-    auto gate = std::make_shared<MeshBuildGate>();
+    auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
     StreamingConfig stream;
@@ -1287,7 +1397,7 @@ TEST_CASE(ChunkStreamer_DirtyMeshCapacityPreservesNearestFirstPriority) {
                 gate->enterAndWait();
             }
         });
-    MeshBuildRelease releaseOnExit(gate);
+    WorkerGateRelease releaseOnExit(gate);
 
     for (size_t update = 0; update <= desired.size(); ++update) {
         streamer.update(glm::vec3(0.0f));
@@ -1915,7 +2025,7 @@ TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
     chunk.setWorldGenVersion(generator->config().world.version);
     chunk.setLoadedFromDisk(true);
 
-    auto gate = std::make_shared<MeshBuildGate>();
+    auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
     StreamingConfig stream;
@@ -1936,7 +2046,7 @@ TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
                 gate->enterAndWait();
             }
         });
-    MeshBuildRelease releaseOnExit(gate);
+    WorkerGateRelease releaseOnExit(gate);
 
     streamer.update(glm::vec3(0.0f));
     bool firstBuildEntered = gate->waitUntilEntered();
@@ -2078,7 +2188,7 @@ TEST_CASE(ChunkStreamer_ReplacementRejectsMeshBuiltWithPriorNeighbor) {
     replaced.setWorldGenVersion(generator->config().world.version);
     replaced.setLoadedFromDisk(true);
 
-    auto gate = std::make_shared<MeshBuildGate>();
+    auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
     StreamingConfig stream;
@@ -2099,7 +2209,7 @@ TEST_CASE(ChunkStreamer_ReplacementRejectsMeshBuiltWithPriorNeighbor) {
                 gate->enterAndWait();
             }
         });
-    MeshBuildRelease releaseOnExit(gate);
+    WorkerGateRelease releaseOnExit(gate);
 
     streamer.update(survivingCoord.toWorldCenter());
     bool firstBuildEntered = gate->waitUntilEntered();
@@ -2162,7 +2272,7 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
     original.setWorldGenVersion(generator->config().world.version);
     original.setLoadedFromDisk(true);
 
-    auto gate = std::make_shared<MeshBuildGate>();
+    auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer;
     StreamingConfig stream;
@@ -2183,7 +2293,7 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
                 gate->enterAndWait();
             }
         });
-    MeshBuildRelease releaseOnExit(gate);
+    WorkerGateRelease releaseOnExit(gate);
 
     streamer.update(glm::vec3(0.0f));
     bool firstBuildEntered = gate->waitUntilEntered();

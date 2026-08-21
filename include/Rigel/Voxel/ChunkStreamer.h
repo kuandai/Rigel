@@ -122,6 +122,7 @@ private:
 
     struct GenResult {
         ChunkCoord coord;
+        uint64_t lifecycle = 0;
         std::array<BlockState, Chunk::VOLUME> blocks{};
         uint32_t worldGenVersion = 0;
         double seconds = 0.0;
@@ -233,7 +234,9 @@ private:
     bool m_workStartedThisUpdate = false;
     uint64_t m_streamingUpdateSequence = 0;
     uint64_t m_lifecycleUpdateSequence = 0;
+    uint64_t m_generationLifecycle = 1;
     uint64_t m_nextEvictionRetrySequence = 0;
+    std::function<void()> m_generationStartCallback;
     std::function<void()> m_meshBuildStartCallback;
     WorkMetrics m_workMetrics;
     StreamingDiagnosticSnapshot m_diagnostics;

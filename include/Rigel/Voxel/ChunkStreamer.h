@@ -19,6 +19,7 @@
 #include <functional>
 #include <optional>
 #include <queue>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -37,6 +38,7 @@ public:
     // The last-update fields are replaced by each call to update().
     struct WorkMetrics {
         uint64_t generationJobsStarted = 0;
+        uint64_t generationJobsFailed = 0;
         // Distinct coordinates whose load request transitioned to pending.
         uint64_t chunkLoadRequestsStarted = 0;
         uint64_t meshJobsStarted = 0;
@@ -44,6 +46,7 @@ public:
         uint64_t meshJobsCompleted = 0;
         uint64_t meshJobsAccepted = 0;
         uint64_t meshJobsRejectedStale = 0;
+        uint64_t meshJobsFailed = 0;
         // Dirty revisions requiring new mesh work, including in-flight replacements.
         uint64_t meshInvalidations = 0;
         uint64_t meshRequestsCoalesced = 0;
@@ -63,7 +66,9 @@ public:
         LoadedFromDisk,
         ReadyData,
         QueuedMesh,
-        ReadyMesh
+        ReadyMesh,
+        GenerationFailed,
+        MeshFailed
     };
 
     struct DebugChunkState {
@@ -117,7 +122,9 @@ private:
         QueuedGen,
         ReadyData,
         QueuedMesh,
-        ReadyMesh
+        ReadyMesh,
+        GenerationFailed,
+        MeshFailed
     };
 
     struct GenResult {
@@ -126,7 +133,9 @@ private:
         std::array<BlockState, Chunk::VOLUME> blocks{};
         uint32_t worldGenVersion = 0;
         double seconds = 0.0;
+        std::string error;
         bool cancelled = false;
+        bool failed = false;
         std::shared_ptr<std::atomic_bool> cancelToken;
     };
 
@@ -146,7 +155,9 @@ private:
         uint32_t revision = 0;
         ChunkMesh mesh;
         double seconds = 0.0;
+        std::string error;
         bool empty = false;
+        bool failed = false;
     };
 
     enum class MeshRequestKind : uint8_t {

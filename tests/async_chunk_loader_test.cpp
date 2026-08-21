@@ -1545,6 +1545,79 @@ TEST_CASE(AsyncChunkLoader_RegionFailureExhaustionIsTerminal) {
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
 }
 
+TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID persisted = registerTestBlock(registry, "rigel:test_malformed_payload");
+    const ChunkCoord coord{0, 0, 0};
+    const ChunkCoord deferredCoord{1, 0, 0};
+    ChunkData payload = buildPayload(
+        coord,
+        registry,
+        {persisted},
+        false,
+        std::nullopt,
+        false);
+    payload.blocks.pop_back();
+    ChunkData deferredPayload = buildPayload(
+        deferredCoord,
+        registry,
+        {persisted},
+        false,
+        std::nullopt,
+        false);
+
+    MemoryContext ctx;
+    saveRegionForPayloads(
+        ctx.service,
+        ctx.context,
+        "rigel:default",
+        {{coord, payload}, {deferredCoord, deferredPayload}});
+
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        1,
+        1,
+        1,
+        generator);
+    loader.setPrefetchRadius(0);
+    loader.setLoadQueueLimit(1);
+
+    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(deferredCoord), ChunkLoadRequestResult::Deferred);
+    CHECK(waitForRegionCompletion(loader));
+    std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(1);
+    if (resolved.empty()) {
+        CHECK(waitForPayloadCompletions(loader, 1));
+        resolved = loader.drainCompletions(8);
+    }
+
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front().coord, coord);
+    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Failed);
+    CHECK(!loader.isPending(coord));
+
+    CHECK(waitForPayloadCompletions(loader, 1));
+    resolved = loader.drainCompletions(8);
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front().coord, deferredCoord);
+    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
+    CHECK(!loader.isPending(deferredCoord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+    CHECK(world.chunkManager().getChunk(coord) == nullptr);
+    CHECK(world.chunkManager().getChunk(deferredCoord) != nullptr);
+}
+
 TEST_CASE(AsyncChunkLoader_RegionCapacityStartsDeferredRequests) {
     WorldResources resources;
     World world;

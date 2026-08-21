@@ -8,6 +8,8 @@
 #include <limits>
 #include <unordered_set>
 
+#include <spdlog/spdlog.h>
+
 namespace Rigel::Voxel {
 
 namespace {
@@ -671,6 +673,12 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out) const {
             case ChunkState::ReadyMesh:
                 debugState = DebugState::ReadyMesh;
                 break;
+            case ChunkState::GenerationFailed:
+                debugState = DebugState::GenerationFailed;
+                break;
+            case ChunkState::MeshFailed:
+                debugState = DebugState::MeshFailed;
+                break;
             default:
                 continue;
         }
@@ -958,6 +966,18 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             continue;
         }
 
+        if (genResult.failed) {
+            stateIt->second = ChunkState::GenerationFailed;
+            ++m_workMetrics.generationJobsFailed;
+            spdlog::error("Chunk generation failed at ({}, {}, {}): {}",
+                          genResult.coord.x,
+                          genResult.coord.y,
+                          genResult.coord.z,
+                          genResult.error);
+            ++applied;
+            continue;
+        }
+
         cancelPendingLoad(genResult.coord);
         Chunk& chunk = m_chunkManager->getOrCreateChunk(genResult.coord);
         if (m_registry) {
@@ -1038,6 +1058,22 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         if (stateIt == m_states.end() || stateIt->second != ChunkState::QueuedMesh) {
             ++m_workMetrics.meshJobsRejectedStale;
             queueLoadGen(meshResult.coord);
+            continue;
+        }
+
+        if (meshResult.failed) {
+            stateIt->second = ChunkState::MeshFailed;
+            m_dirtyMeshQueued.erase(meshResult.coord);
+            m_missingMeshCapacityWaiting.erase(meshResult.coord);
+            m_meshDependencyWaiting.erase(meshResult.coord);
+            m_priorityMeshRequests.erase(meshResult.coord);
+            ++m_workMetrics.meshJobsFailed;
+            spdlog::error("Chunk mesh build failed at ({}, {}, {}): {}",
+                          meshResult.coord.x,
+                          meshResult.coord.y,
+                          meshResult.coord.z,
+                          meshResult.error);
+            ++applied;
             continue;
         }
 
@@ -1242,32 +1278,38 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
                 cancelToken,
                 generationLifecycle,
                 generationStartCallback = std::move(generationStartCallback)]() {
+        GenResult result;
+        result.coord = coord;
+        result.lifecycle = generationLifecycle;
+        result.cancelToken = cancelToken;
         if (cancelToken->load(std::memory_order_relaxed)) {
-            GenResult result;
-            result.coord = coord;
-            result.lifecycle = generationLifecycle;
             result.cancelled = true;
-            result.cancelToken = cancelToken;
             m_genComplete.push(std::move(result));
             return;
         }
 
-        if (generationStartCallback) {
-            generationStartCallback();
-        }
-        ChunkBuffer buffer;
-        auto start = std::chrono::steady_clock::now();
-        generator->generate(coord, buffer, cancelToken.get());
-        auto end = std::chrono::steady_clock::now();
+        try {
+            if (generationStartCallback) {
+                generationStartCallback();
+            }
+            ChunkBuffer buffer;
+            auto start = std::chrono::steady_clock::now();
+            generator->generate(coord, buffer, cancelToken.get());
+            auto end = std::chrono::steady_clock::now();
 
-        GenResult result;
-        result.coord = coord;
-        result.lifecycle = generationLifecycle;
-        result.blocks = buffer.blocks;
-        result.worldGenVersion = generator ? generator->config().world.version : 0;
-        result.seconds = std::chrono::duration<double>(end - start).count();
+            result.blocks = buffer.blocks;
+            result.worldGenVersion = generator
+                ? generator->config().world.version
+                : 0;
+            result.seconds = std::chrono::duration<double>(end - start).count();
+        } catch (const std::exception& e) {
+            result.failed = true;
+            result.error = e.what();
+        } catch (...) {
+            result.failed = true;
+            result.error = "unknown error";
+        }
         result.cancelled = cancelToken->load(std::memory_order_relaxed);
-        result.cancelToken = cancelToken;
         m_genComplete.push(std::move(result));
     };
 
@@ -1410,35 +1452,42 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord,
                 registry,
                 atlas,
                 meshBuildStartCallback = std::move(meshBuildStartCallback)]() mutable {
-        Chunk chunk(task.coord);
-        chunk.copyFrom(task.blocks);
-
-        std::array<const Chunk*, DirectionCount> neighborPtrs{};
-
-        MeshBuilder builder;
-        MeshBuilder::BuildContext ctx{
-            .chunk = chunk,
-            .registry = *registry,
-            .atlas = atlas,
-            .neighbors = neighborPtrs,
-            .paddedBlocks = &task.paddedBlocks
-        };
-
-        if (meshBuildStartCallback) {
-            meshBuildStartCallback();
-        }
-        auto start = std::chrono::steady_clock::now();
-        ChunkMesh mesh = builder.build(ctx);
-        auto end = std::chrono::steady_clock::now();
-
         MeshResult result;
         result.coord = task.coord;
         result.requestId = task.requestId;
         result.chunkInstanceId = task.chunkInstanceId;
         result.revision = task.revision;
-        result.mesh = std::move(mesh);
-        result.seconds = std::chrono::duration<double>(end - start).count();
-        result.empty = result.mesh.isEmpty();
+        try {
+            Chunk chunk(task.coord);
+            chunk.copyFrom(task.blocks);
+
+            std::array<const Chunk*, DirectionCount> neighborPtrs{};
+
+            MeshBuilder builder;
+            MeshBuilder::BuildContext ctx{
+                .chunk = chunk,
+                .registry = *registry,
+                .atlas = atlas,
+                .neighbors = neighborPtrs,
+                .paddedBlocks = &task.paddedBlocks
+            };
+
+            if (meshBuildStartCallback) {
+                meshBuildStartCallback();
+            }
+            auto start = std::chrono::steady_clock::now();
+            result.mesh = builder.build(ctx);
+            auto end = std::chrono::steady_clock::now();
+
+            result.seconds = std::chrono::duration<double>(end - start).count();
+            result.empty = result.mesh.isEmpty();
+        } catch (const std::exception& e) {
+            result.failed = true;
+            result.error = e.what();
+        } catch (...) {
+            result.failed = true;
+            result.error = "unknown error";
+        }
         m_meshComplete.push(std::move(result));
     };
 

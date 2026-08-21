@@ -394,6 +394,20 @@ void AsyncChunkLoader::drainPayloadCompletions(
             restartChunkLoad(payload.coord, payload.requestId, resolved);
             continue;
         }
+        if (payload.failed) {
+            spdlog::error("Chunk payload build failed at ({}, {}, {}): {}",
+                          payload.coord.x,
+                          payload.coord.y,
+                          payload.coord.z,
+                          payload.error);
+            completeChunkLoad(
+                payload.coord,
+                payload.requestId,
+                Voxel::ChunkLoadOutcome::Failed,
+                resolved);
+            ++applied;
+            continue;
+        }
         applyPayload(payload);
         completeChunkLoad(
             payload.coord,
@@ -663,9 +677,6 @@ void AsyncChunkLoader::queuePayloadBuild(
                 regionKey,
                 regionRevision,
                 payloadBuildStartCallback = std::move(payloadBuildStartCallback)]() mutable {
-        if (payloadBuildStartCallback) {
-            payloadBuildStartCallback();
-        }
         ChunkPayload payload;
         payload.coord = coord;
         payload.requestId = requestId;
@@ -673,31 +684,45 @@ void AsyncChunkLoader::queuePayloadBuild(
         payload.regionRevision = regionRevision;
         payload.worldGenVersion = generator ? generator->config().world.version : 0;
         payload.loadedFromDisk = true;
-        if (!region) {
-            payload.cancelled = true;
-            m_chunkComplete.push(std::move(payload));
-            return;
-        }
+        try {
+            if (payloadBuildStartCallback) {
+                payloadBuildStartCallback();
+            }
+            if (!region) {
+                payload.cancelled = true;
+                m_chunkComplete.push(std::move(payload));
+                return;
+            }
 
-        Voxel::Chunk temp(coord);
-    ChunkBaseFillFn baseFill;
-    bool allowBaseFill = false;
-    if (m_format) {
-        allowBaseFill = m_format->descriptor().capabilities.fillMissingChunkSpans;
-    }
-    if (allowBaseFill && generator) {
-        baseFill = [generator, coord](Voxel::Chunk& target, const Voxel::BlockRegistry& reg) {
-            Voxel::ChunkBuffer buffer;
-            generator->generate(coord, buffer, nullptr);
-            target.copyFrom(buffer.blocks, reg);
-            target.clearPersistDirty();
-        };
-    }
-        auto mergeResult = mergeChunkSpans(temp, *registry, spans, baseFill);
-        temp.copyBlocks(payload.blocks.blocks);
-        payload.empty = temp.isEmpty();
-        payload.cancelled = false;
-        payload.loadedFromDisk = mergeResult.loadedFromDisk;
+            Voxel::Chunk temp(coord);
+            ChunkBaseFillFn baseFill;
+            bool allowBaseFill = false;
+            if (m_format) {
+                allowBaseFill =
+                    m_format->descriptor().capabilities.fillMissingChunkSpans;
+            }
+            if (allowBaseFill && generator) {
+                baseFill = [generator, coord](
+                    Voxel::Chunk& target,
+                    const Voxel::BlockRegistry& reg) {
+                    Voxel::ChunkBuffer buffer;
+                    generator->generate(coord, buffer, nullptr);
+                    target.copyFrom(buffer.blocks, reg);
+                    target.clearPersistDirty();
+                };
+            }
+            auto mergeResult = mergeChunkSpans(temp, *registry, spans, baseFill);
+            temp.copyBlocks(payload.blocks.blocks);
+            payload.empty = temp.isEmpty();
+            payload.cancelled = false;
+            payload.loadedFromDisk = mergeResult.loadedFromDisk;
+        } catch (const std::exception& e) {
+            payload.failed = true;
+            payload.error = e.what();
+        } catch (...) {
+            payload.failed = true;
+            payload.error = "unknown error";
+        }
         m_chunkComplete.push(std::move(payload));
     };
 

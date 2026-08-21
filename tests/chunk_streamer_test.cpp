@@ -1098,6 +1098,57 @@ TEST_CASE(ChunkStreamer_GenerationCapacityWaitsForCompletion) {
              static_cast<uint64_t>(0));
 }
 
+TEST_CASE(ChunkStreamer_GenerationFailureCompletesJob) {
+    for (int workerThreads : {0, 2}) {
+        ChunkManager manager;
+        BlockRegistry registry;
+        WorldMeshStore meshStore;
+        auto generator = makeGenerator(registry);
+
+        ChunkStreamer streamer;
+        StreamingConfig stream;
+        stream.viewDistanceChunks = 0;
+        stream.unloadDistanceChunks = 0;
+        stream.genQueueLimit = 1;
+        stream.meshQueueLimit = 0;
+        stream.updateBudgetPerFrame = 0;
+        stream.applyBudgetPerFrame = 0;
+        stream.workerThreads = workerThreads;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+            streamer,
+            []() { throw std::runtime_error("injected generation failure"); });
+
+        const ChunkCoord coord{0, 0, 0};
+        streamer.update(coord.toWorldCenter());
+        CHECK(waitForGenerationCompletion(streamer));
+        streamer.processCompletions();
+
+        CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+                 static_cast<uint64_t>(1));
+        CHECK_EQ(streamer.workMetrics().generationJobsFailed,
+                 static_cast<uint64_t>(1));
+        CHECK_EQ(streamer.diagnostics().generation.inFlight,
+                 static_cast<size_t>(0));
+        CHECK_EQ(streamer.diagnostics().generation.pending,
+                 static_cast<size_t>(0));
+        CHECK(!manager.hasChunk(coord));
+
+        std::vector<ChunkStreamer::DebugChunkState> states;
+        streamer.getDebugStates(states);
+        CHECK_EQ(states.size(), static_cast<size_t>(1));
+        CHECK_EQ(states.front().coord, coord);
+        CHECK_EQ(states.front().state,
+                 ChunkStreamer::DebugState::GenerationFailed);
+
+        streamer.update(coord.toWorldCenter());
+        CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+                 static_cast<uint64_t>(1));
+    }
+}
+
 TEST_CASE(ChunkStreamer_ResetRejectsPreviousGenerationCompletion) {
     ChunkManager manager;
     BlockRegistry registry;
@@ -2011,6 +2062,58 @@ TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {
     CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
     CHECK_EQ(metrics.meshInvalidations, static_cast<uint64_t>(3));
     CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
+}
+
+TEST_CASE(ChunkStreamer_MeshFailureCompletesJob) {
+    for (int workerThreads : {0, 2}) {
+        ChunkManager manager;
+        BlockRegistry registry;
+        WorldMeshStore meshStore;
+        auto generator = makeGenerator(registry);
+        BlockID solid = registerTestBlock(registry, "rigel:mesh_failure_solid");
+
+        const ChunkCoord coord{0, 0, 0};
+        Chunk& chunk = manager.getOrCreateChunk(coord);
+        chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setLoadedFromDisk(true);
+
+        ChunkStreamer streamer;
+        StreamingConfig stream;
+        stream.viewDistanceChunks = 0;
+        stream.unloadDistanceChunks = 0;
+        stream.genQueueLimit = 0;
+        stream.meshQueueLimit = 1;
+        stream.updateBudgetPerFrame = 0;
+        stream.applyBudgetPerFrame = 0;
+        stream.workerThreads = workerThreads;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+            streamer,
+            []() { throw std::runtime_error("injected mesh failure"); });
+
+        streamer.update(coord.toWorldCenter());
+        CHECK(waitForMeshCompletions(streamer, 1));
+
+        CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+        CHECK_EQ(streamer.workMetrics().meshJobsCompleted, static_cast<uint64_t>(1));
+        CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().meshJobsFailed, static_cast<uint64_t>(1));
+        CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(0));
+        CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
+        CHECK(!meshStore.contains(coord));
+
+        std::vector<ChunkStreamer::DebugChunkState> states;
+        streamer.getDebugStates(states);
+        CHECK_EQ(states.size(), static_cast<size_t>(1));
+        CHECK_EQ(states.front().coord, coord);
+        CHECK_EQ(states.front().state, ChunkStreamer::DebugState::MeshFailed);
+
+        streamer.update(coord.toWorldCenter());
+        CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    }
 }
 
 TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {

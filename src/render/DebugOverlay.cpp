@@ -280,7 +280,7 @@ void renderDebugField(DebugState& debug,
                        Voxel::ChunkStreamer::DebugState,
                        Voxel::ChunkCoordHash> stateMap;
     stateMap.reserve(debug.debugStates.size());
-    std::array<std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash>, 5> occupancy;
+    std::array<std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash>, 7> occupancy;
     for (auto& set : occupancy) {
         set.reserve(debug.debugStates.size());
     }
@@ -311,6 +311,12 @@ void renderDebugField(DebugState& debug,
             case Voxel::ChunkStreamer::DebugState::ReadyMesh:
                 occupancy[4].insert(offset);
                 break;
+            case Voxel::ChunkStreamer::DebugState::GenerationFailed:
+                occupancy[5].insert(offset);
+                break;
+            case Voxel::ChunkStreamer::DebugState::MeshFailed:
+                occupancy[6].insert(offset);
+                break;
         }
     }
 
@@ -318,13 +324,15 @@ void renderDebugField(DebugState& debug,
         return;
     }
 
-    std::array<std::vector<glm::vec3>, 5> meshVertices;
-    std::array<glm::vec4, 5> colors = {
+    std::array<std::vector<glm::vec3>, 7> meshVertices;
+    std::array<glm::vec4, 7> colors = {
         glm::vec4(1.0f, 0.2f, 0.2f, kDebugAlpha),
         glm::vec4(0.8f, 0.8f, 0.8f, kDebugAlpha),
         glm::vec4(1.0f, 0.9f, 0.2f, kDebugAlpha),
         glm::vec4(0.2f, 0.8f, 1.0f, kDebugAlpha),
-        glm::vec4(0.2f, 1.0f, 0.3f, kDebugAlpha)
+        glm::vec4(0.2f, 1.0f, 0.3f, kDebugAlpha),
+        glm::vec4(1.0f, 0.2f, 1.0f, kDebugAlpha),
+        glm::vec4(1.0f, 0.5f, 0.1f, kDebugAlpha)
     };
     std::array<std::array<int, 3>, 6> offsets = {{
         { 1, 0, 0},
@@ -352,6 +360,12 @@ void renderDebugField(DebugState& debug,
                 break;
             case Voxel::ChunkStreamer::DebugState::ReadyMesh:
                 stateIdx = 4;
+                break;
+            case Voxel::ChunkStreamer::DebugState::GenerationFailed:
+                stateIdx = 5;
+                break;
+            case Voxel::ChunkStreamer::DebugState::MeshFailed:
+                stateIdx = 6;
                 break;
         }
 

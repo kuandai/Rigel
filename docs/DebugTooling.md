@@ -46,7 +46,7 @@ skipped.
 ### 3.1 Data Source
 
 - `WorldView::getChunkDebugStates` exposes `ChunkStreamer` state.
-- Only non-missing chunks appear (queued or ready states).
+- Only tracked chunks appear (queued, ready, or failed states).
 - The field is centered on the camera chunk and clipped to the current
   `viewDistanceChunks` radius.
 
@@ -71,6 +71,8 @@ State mapping (from `ChunkStreamer::DebugState`):
 - `ReadyData` (yellow): chunk data loaded/generated, mesh not queued.
 - `QueuedMesh` (blue): waiting for mesh build.
 - `ReadyMesh` (green): mesh available.
+- `GenerationFailed` (magenta): generation terminated with an error.
+- `MeshFailed` (orange): mesh construction terminated with an error.
 
 ### 3.4 Rendering Rules
 

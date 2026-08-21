@@ -106,7 +106,12 @@ private:
                 job = std::move(m_jobs.front());
                 m_jobs.pop_front();
             }
-            job();
+            try {
+                job();
+            } catch (...) {
+                // Typed jobs are responsible for publishing failure results.
+                // Keep an unexpected worker exception from terminating the process.
+            }
         }
     }
 

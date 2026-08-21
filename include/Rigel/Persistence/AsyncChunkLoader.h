@@ -91,8 +91,10 @@ private:
         uint64_t regionRevision = 0;
         Voxel::ChunkBuffer blocks;
         uint32_t worldGenVersion = 0;
+        std::string error;
         bool empty = false;
         bool cancelled = false;
+        bool failed = false;
         bool loadedFromDisk = false;
     };
 

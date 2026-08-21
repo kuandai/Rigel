@@ -125,9 +125,13 @@ Chunks transition through the following states:
 
 ```
 Missing -> QueuedGen -> ReadyData -> QueuedMesh -> ReadyMesh
+QueuedGen -> GenerationFailed
+QueuedMesh -> MeshFailed
 ```
 
 Empty chunks skip mesh generation and move directly to `ReadyMesh`.
+Failed generation and mesh jobs release their queue capacity and remain in an
+explicit failed state until a later streaming requeue retries them.
 
 ### 5.2 Desired Set and Distances
 

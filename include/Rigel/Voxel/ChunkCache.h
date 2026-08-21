@@ -2,6 +2,7 @@
 
 #include "ChunkCoord.h"
 
+#include <functional>
 #include <list>
 #include <unordered_map>
 #include <unordered_set>
@@ -19,7 +20,9 @@ public:
 
     // Evicts least-recently-used unprotected entries. Protected entries keep
     // their recency and may leave the cache above the configured limit.
-    std::vector<ChunkCoord> evict(const std::unordered_set<ChunkCoord, ChunkCoordHash>& protectedSet);
+    std::vector<ChunkCoord> evict(
+        const std::unordered_set<ChunkCoord, ChunkCoordHash>& protectedSet,
+        const std::function<bool(ChunkCoord)>& canEvict = {});
 
     size_t size() const { return m_entries.size(); }
 

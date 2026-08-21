@@ -29,7 +29,8 @@ void ChunkCache::erase(ChunkCoord coord) {
 }
 
 std::vector<ChunkCoord> ChunkCache::evict(
-    const std::unordered_set<ChunkCoord, ChunkCoordHash>& protectedSet
+    const std::unordered_set<ChunkCoord, ChunkCoordHash>& protectedSet,
+    const std::function<bool(ChunkCoord)>& canEvict
 ) {
     std::vector<ChunkCoord> evicted;
     if (m_maxChunks == 0) {
@@ -41,6 +42,9 @@ std::vector<ChunkCoord> ChunkCache::evict(
         --it;
         ChunkCoord coord = *it;
         if (protectedSet.find(coord) != protectedSet.end()) {
+            continue;
+        }
+        if (canEvict && !canEvict(coord)) {
             continue;
         }
 

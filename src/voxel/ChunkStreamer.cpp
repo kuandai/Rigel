@@ -11,6 +11,8 @@
 namespace Rigel::Voxel {
 
 namespace {
+constexpr uint64_t kEvictionRetryDelayUpdates = 60;
+
 int distanceSquared(const ChunkCoord& a, const ChunkCoord& b) {
     int dx = a.x - b.x;
     int dy = a.y - b.y;
@@ -39,6 +41,8 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_dirtyMeshQueue = {};
     m_dirtyMeshQueued.clear();
     m_priorityMeshRequests.clear();
+    m_evictionRetryAfter.clear();
+    m_nextEvictionRetrySequence = 0;
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
     m_generationCapacityWait.clear();
@@ -102,6 +106,10 @@ void ChunkStreamer::setChunkLoadCancel(ChunkLoadCancelCallback cancel) {
 void ChunkStreamer::setChunkLoadWorkCallback(ChunkLoadWorkCallback work) {
     m_chunkLoadWork = std::move(work);
     refreshDiagnostics(false);
+}
+
+void ChunkStreamer::setChunkEvictionCallback(ChunkEvictionCallback evict) {
+    m_chunkEviction = std::move(evict);
 }
 
 void ChunkStreamer::markSpawnDiscoveryComplete() {
@@ -537,33 +545,20 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         });
 
         for (const ChunkCoord& coord : toEvict) {
-            if (m_meshStore) {
-                m_meshStore->remove(coord);
+            if (evictChunk(coord)) {
+                m_cache.erase(coord);
             }
-            if (Chunk* chunk = m_chunkManager->getChunk(coord)) {
-                chunk->setLoadedFromDisk(false);
-            }
-            m_chunkManager->unloadChunk(coord);
-            m_cache.erase(coord);
-            m_states.erase(coord);
-            m_countedMeshRetryRevisions.erase(coord);
         }
 
     }
 
+    retryDeferredEvictions(center, unloadRadiusSq);
+
     {
         PROFILE_SCOPE("Streaming/Update/CacheEvict");
-        for (const ChunkCoord& coord : m_cache.evict(m_desiredSet)) {
-            if (m_meshStore) {
-                m_meshStore->remove(coord);
-            }
-            if (Chunk* chunk = m_chunkManager->getChunk(coord)) {
-                chunk->setLoadedFromDisk(false);
-            }
-            m_chunkManager->unloadChunk(coord);
-            m_states.erase(coord);
-            m_countedMeshRetryRevisions.erase(coord);
-        }
+        m_cache.evict(
+            m_desiredSet,
+            [this](ChunkCoord coord) { return evictChunk(coord); });
     }
 
     m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected =
@@ -688,6 +683,8 @@ void ChunkStreamer::reset() {
     m_dirtyMeshQueue = {};
     m_dirtyMeshQueued.clear();
     m_priorityMeshRequests.clear();
+    m_evictionRetryAfter.clear();
+    m_nextEvictionRetrySequence = 0;
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
     m_generationCapacityWait.clear();
@@ -721,6 +718,81 @@ void ChunkStreamer::reset() {
     }
     applyMeshCompletions(std::numeric_limits<size_t>::max());
     refreshDiagnostics(false);
+}
+
+bool ChunkStreamer::evictChunk(ChunkCoord coord) {
+    Chunk* chunk = m_chunkManager ? m_chunkManager->getChunk(coord) : nullptr;
+    if (chunk && chunk->isPersistDirty()) {
+        auto retryIt = m_evictionRetryAfter.find(coord);
+        if (retryIt != m_evictionRetryAfter.end() &&
+            retryIt->second > m_streamingUpdateSequence) {
+            return false;
+        }
+        if (!m_chunkEviction || !m_chunkEviction(coord)) {
+            deferEviction(coord);
+            return false;
+        }
+        chunk = m_chunkManager->getChunk(coord);
+        if (chunk && chunk->isPersistDirty()) {
+            deferEviction(coord);
+            return false;
+        }
+    }
+
+    m_evictionRetryAfter.erase(coord);
+    if (m_meshStore) {
+        m_meshStore->remove(coord);
+    }
+    if (chunk) {
+        chunk->setLoadedFromDisk(false);
+        m_chunkManager->unloadChunk(coord);
+    }
+    m_states.erase(coord);
+    m_countedMeshRetryRevisions.erase(coord);
+    return true;
+}
+
+void ChunkStreamer::deferEviction(ChunkCoord coord) {
+    uint64_t retrySequence = m_streamingUpdateSequence + kEvictionRetryDelayUpdates;
+    m_evictionRetryAfter[coord] = retrySequence;
+    if (m_nextEvictionRetrySequence == 0 ||
+        retrySequence < m_nextEvictionRetrySequence) {
+        m_nextEvictionRetrySequence = retrySequence;
+    }
+}
+
+void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq) {
+    if (m_nextEvictionRetrySequence == 0 ||
+        m_streamingUpdateSequence < m_nextEvictionRetrySequence) {
+        return;
+    }
+
+    std::vector<ChunkCoord> due;
+    m_nextEvictionRetrySequence = 0;
+    for (auto it = m_evictionRetryAfter.begin();
+         it != m_evictionRetryAfter.end();) {
+        if (it->second <= m_streamingUpdateSequence) {
+            due.push_back(it->first);
+            it = m_evictionRetryAfter.erase(it);
+            continue;
+        }
+        if (m_nextEvictionRetrySequence == 0 ||
+            it->second < m_nextEvictionRetrySequence) {
+            m_nextEvictionRetrySequence = it->second;
+        }
+        ++it;
+    }
+
+    for (const ChunkCoord& coord : due) {
+        bool outsideUnloadRadius = distanceSquared(center, coord) > unloadRadiusSq;
+        bool cachePressure =
+            m_cache.maxChunks() > 0 &&
+            m_cache.size() > m_cache.maxChunks() &&
+            m_desiredSet.find(coord) == m_desiredSet.end();
+        if ((outsideUnloadRadius || cachePressure) && evictChunk(coord)) {
+            m_cache.erase(coord);
+        }
+    }
 }
 
 StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() const {

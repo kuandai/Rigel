@@ -74,6 +74,7 @@ public:
         std::function<std::vector<ChunkLoadCompletion>(size_t)>;
     using ChunkLoadCancelCallback = std::function<void(ChunkCoord)>;
     using ChunkLoadWorkCallback = std::function<StreamingWorkCount()>;
+    using ChunkEvictionCallback = std::function<bool(ChunkCoord)>;
 
     ChunkStreamer() = default;
     ~ChunkStreamer();
@@ -90,6 +91,7 @@ public:
     void setChunkLoadDrain(ChunkLoadDrainCallback drain);
     void setChunkLoadCancel(ChunkLoadCancelCallback cancel);
     void setChunkLoadWorkCallback(ChunkLoadWorkCallback work);
+    void setChunkEvictionCallback(ChunkEvictionCallback evict);
     void markSpawnDiscoveryComplete();
     void prioritizeMesh(ChunkCoord coord);
 
@@ -184,6 +186,7 @@ private:
     ChunkLoadDrainCallback m_chunkLoadDrain;
     ChunkLoadCancelCallback m_chunkLoadCancel;
     ChunkLoadWorkCallback m_chunkLoadWork;
+    ChunkEvictionCallback m_chunkEviction;
 
     std::unique_ptr<detail::ThreadPool> m_genPool;
     std::unique_ptr<detail::ThreadPool> m_meshPool;
@@ -209,6 +212,7 @@ private:
                         PendingDirtyMeshGreater> m_dirtyMeshQueue;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityMeshRequests;
+    std::unordered_map<ChunkCoord, uint64_t, ChunkCoordHash> m_evictionRetryAfter;
     size_t m_inFlightGen = 0;
     size_t m_inFlightMesh = 0;
     size_t m_inFlightMeshMissing = 0;
@@ -225,6 +229,7 @@ private:
     bool m_workStartedThisUpdate = false;
     uint64_t m_streamingUpdateSequence = 0;
     uint64_t m_lifecycleUpdateSequence = 0;
+    uint64_t m_nextEvictionRetrySequence = 0;
     std::function<void()> m_meshBuildStartCallback;
     WorkMetrics m_workMetrics;
     StreamingDiagnosticSnapshot m_diagnostics;
@@ -249,6 +254,9 @@ private:
     bool hasAllNeighborsLoaded(ChunkCoord coord) const;
     StreamingDiagnosticSnapshot collectDiagnostics() const;
     void refreshDiagnostics(bool advanceWindow);
+    bool evictChunk(ChunkCoord coord);
+    void deferEviction(ChunkCoord coord);
+    void retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq);
 
     ChunkCoord cameraToChunk(const glm::vec3& cameraPos) const;
 };

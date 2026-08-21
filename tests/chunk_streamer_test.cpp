@@ -322,6 +322,151 @@ TEST_CASE(ChunkStreamer_EvictsOutsideRadius) {
     CHECK_EQ(manager.loadedChunkCount(), static_cast<size_t>(1));
 }
 
+TEST_CASE(ChunkStreamer_RetainsDirtyChunkWithoutEvictionPersistence) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID edited = registerTestBlock(registry, "rigel:eviction_edit");
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    const ChunkCoord origin{0, 0, 0};
+    streamer.update(origin.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(origin.toWorldCenter());
+    Chunk* chunk = manager.getChunk(origin);
+    CHECK(chunk != nullptr);
+    if (!chunk) {
+        return;
+    }
+    chunk->setBlock(0, 0, 0, BlockState{edited}, registry);
+    CHECK(chunk->isPersistDirty());
+
+    streamer.update(ChunkCoord{4, 0, 0}.toWorldCenter());
+
+    CHECK(manager.hasChunk(origin));
+    CHECK(manager.getChunk(origin)->isPersistDirty());
+}
+
+TEST_CASE(ChunkStreamer_RetriesFailedEvictionPersistenceAtBoundedIntervals) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID edited = registerTestBlock(registry, "rigel:retry_eviction_edit");
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    const ChunkCoord origin{0, 0, 0};
+    streamer.update(origin.toWorldCenter());
+    streamer.processCompletions();
+    Chunk* chunk = manager.getChunk(origin);
+    CHECK(chunk != nullptr);
+    if (!chunk) {
+        return;
+    }
+    chunk->setBlock(0, 0, 0, BlockState{edited}, registry);
+
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord coord) {
+        ++persistenceAttempts;
+        if (persistenceAttempts == 1) {
+            return false;
+        }
+        Chunk* saved = manager.getChunk(coord);
+        if (saved) {
+            saved->clearPersistDirty();
+        }
+        return true;
+    });
+
+    const glm::vec3 distant = ChunkCoord{4, 0, 0}.toWorldCenter();
+    streamer.update(distant);
+    CHECK(manager.hasChunk(origin));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+
+    for (int update = 0; update < 59; ++update) {
+        streamer.update(distant);
+    }
+    CHECK(manager.hasChunk(origin));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+
+    streamer.update(distant);
+    CHECK(!manager.hasChunk(origin));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(2));
+}
+
+TEST_CASE(ChunkStreamer_CachePressureRetainsChunkWhenPersistenceDefers) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID edited = registerTestBlock(registry, "rigel:cache_eviction_edit");
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 8;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 1;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    const ChunkCoord origin{0, 0, 0};
+    streamer.update(origin.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(origin.toWorldCenter());
+    Chunk* chunk = manager.getChunk(origin);
+    CHECK(chunk != nullptr);
+    if (!chunk) {
+        return;
+    }
+    chunk->setBlock(0, 0, 0, BlockState{edited}, registry);
+
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord) {
+        ++persistenceAttempts;
+        return false;
+    });
+
+    const ChunkCoord neighbor{1, 0, 0};
+    streamer.update(neighbor.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(neighbor.toWorldCenter());
+
+    CHECK(manager.hasChunk(origin));
+    CHECK(manager.getChunk(origin)->isPersistDirty());
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+    for (int update = 0; update < 5; ++update) {
+        streamer.update(neighbor.toWorldCenter());
+    }
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+}
+
 TEST_CASE(ChunkStreamer_LoadsChunkPayload_Deterministic) {
     ChunkManager manager;
     BlockRegistry registry;

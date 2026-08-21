@@ -25,9 +25,11 @@ public:
         const std::function<bool(ChunkCoord)>& canEvict = {});
 
     size_t size() const { return m_entries.size(); }
+    size_t lastEvictionInspections() const { return m_lastEvictionInspections; }
 
 private:
     size_t m_maxChunks = 0;
+    size_t m_lastEvictionInspections = 0;
     std::list<ChunkCoord> m_lru;
     std::unordered_map<ChunkCoord, std::list<ChunkCoord>::iterator, ChunkCoordHash> m_entries;
 };

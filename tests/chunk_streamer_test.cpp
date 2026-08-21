@@ -467,6 +467,78 @@ TEST_CASE(ChunkStreamer_CachePressureRetainsChunkWhenPersistenceDefers) {
     CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
 }
 
+TEST_CASE(ChunkStreamer_CachePressureDeferralRemainsQuiescentUntilRetry) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID edited = registerTestBlock(registry, "rigel:cache_retry_edit");
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 8;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 1;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord) {
+        ++persistenceAttempts;
+        return false;
+    });
+
+    const ChunkCoord first{0, 0, 0};
+    streamer.update(first.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(first.toWorldCenter());
+    Chunk* firstChunk = manager.getChunk(first);
+    CHECK(firstChunk != nullptr);
+    if (!firstChunk) {
+        return;
+    }
+    firstChunk->setBlock(0, 0, 0, BlockState{edited}, registry);
+
+    const ChunkCoord second{1, 0, 0};
+    streamer.update(second.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(second.toWorldCenter());
+    Chunk* secondChunk = manager.getChunk(second);
+    CHECK(secondChunk != nullptr);
+    if (!secondChunk) {
+        return;
+    }
+    secondChunk->setBlock(0, 0, 0, BlockState{edited}, registry);
+
+    const ChunkCoord current{2, 0, 0};
+    streamer.update(current.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(current.toWorldCenter());
+
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(2));
+    CHECK(manager.hasChunk(first));
+    CHECK(manager.hasChunk(second));
+    CHECK(manager.getChunk(first)->isPersistDirty());
+    CHECK(manager.getChunk(second)->isPersistDirty());
+    CHECK(streamer.workMetrics().lastUpdateCacheEvictionCoordinatesInspected > 0);
+
+    const uint64_t settledInspections =
+        streamer.workMetrics().cacheEvictionCoordinatesInspected;
+    for (int update = 0; update < 10; ++update) {
+        streamer.update(current.toWorldCenter());
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateCacheEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+    }
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(2));
+    CHECK_EQ(streamer.workMetrics().cacheEvictionCoordinatesInspected,
+             settledInspections);
+}
+
 TEST_CASE(ChunkStreamer_LoadsChunkPayload_Deterministic) {
     ChunkManager manager;
     BlockRegistry registry;

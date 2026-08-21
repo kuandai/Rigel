@@ -33,6 +33,7 @@ std::vector<ChunkCoord> ChunkCache::evict(
     const std::function<bool(ChunkCoord)>& canEvict
 ) {
     std::vector<ChunkCoord> evicted;
+    m_lastEvictionInspections = 0;
     if (m_maxChunks == 0) {
         return evicted;
     }
@@ -40,6 +41,7 @@ std::vector<ChunkCoord> ChunkCache::evict(
     auto it = m_lru.end();
     while (m_entries.size() > m_maxChunks && it != m_lru.begin()) {
         --it;
+        ++m_lastEvictionInspections;
         ChunkCoord coord = *it;
         if (protectedSet.find(coord) != protectedSet.end()) {
             continue;

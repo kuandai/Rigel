@@ -51,8 +51,11 @@ public:
         uint64_t desiredBuildCoordinatesInspected = 0;
         // Pending load/generation and dirty-mesh entries visited by the scheduler.
         uint64_t schedulerCoordinatesInspected = 0;
+        // Resident cache entries considered for capacity eviction.
+        uint64_t cacheEvictionCoordinatesInspected = 0;
         uint64_t lastUpdateDesiredBuildCoordinatesInspected = 0;
         uint64_t lastUpdateSchedulerCoordinatesInspected = 0;
+        uint64_t lastUpdateCacheEvictionCoordinatesInspected = 0;
     };
 
     enum class DebugState : uint8_t {

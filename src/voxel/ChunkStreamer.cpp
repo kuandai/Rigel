@@ -125,6 +125,7 @@ void ChunkStreamer::prioritizeMesh(ChunkCoord coord) {
 void ChunkStreamer::update(const glm::vec3& cameraPos) {
     m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected = 0;
     m_workMetrics.lastUpdateSchedulerCoordinatesInspected = 0;
+    m_workMetrics.lastUpdateCacheEvictionCoordinatesInspected = 0;
     if (!m_chunkManager || !m_generator || !m_meshStore) {
         return;
     }
@@ -137,6 +138,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
 
     uint64_t desiredBuildCoordinatesInspected = 0;
     uint64_t schedulerCoordinatesInspected = 0;
+    uint64_t cacheEvictionCoordinatesInspected = 0;
 
     ChunkCoord center = cameraToChunk(cameraPos);
     int viewDistance = std::max(0, m_config.viewDistanceChunks);
@@ -148,6 +150,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         *m_lastCenter != center ||
         m_lastViewDistance != viewDistance ||
         m_lastUnloadDistance != unloadDistance;
+    bool cacheEvictionNeeded = rebuildDesired;
 
     if (rebuildDesired) {
         PROFILE_SCOPE("Streaming/Update/DesiredBuild");
@@ -469,6 +472,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 }
 
                 m_cache.touch(coord);
+                cacheEvictionNeeded = true;
                 bool hasMesh = m_meshStore && m_meshStore->contains(coord);
                 bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
                 if (stateIt == m_states.end() || state == ChunkState::QueuedGen) {
@@ -554,20 +558,25 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
 
     retryDeferredEvictions(center, unloadRadiusSq);
 
-    {
+    if (cacheEvictionNeeded) {
         PROFILE_SCOPE("Streaming/Update/CacheEvict");
         m_cache.evict(
             m_desiredSet,
             [this](ChunkCoord coord) { return evictChunk(coord); });
+        cacheEvictionCoordinatesInspected = m_cache.lastEvictionInspections();
     }
 
     m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected =
         desiredBuildCoordinatesInspected;
     m_workMetrics.lastUpdateSchedulerCoordinatesInspected =
         schedulerCoordinatesInspected;
+    m_workMetrics.lastUpdateCacheEvictionCoordinatesInspected =
+        cacheEvictionCoordinatesInspected;
     m_workMetrics.desiredBuildCoordinatesInspected +=
         desiredBuildCoordinatesInspected;
     m_workMetrics.schedulerCoordinatesInspected += schedulerCoordinatesInspected;
+    m_workMetrics.cacheEvictionCoordinatesInspected +=
+        cacheEvictionCoordinatesInspected;
     m_lastWorldGenVersion = worldGenVersion;
 
     StreamingDiagnosticSnapshot afterUpdate = collectDiagnostics();

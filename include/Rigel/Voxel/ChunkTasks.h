@@ -11,6 +11,8 @@
 
 namespace Rigel::Voxel::detail {
 
+struct ThreadPoolTestAccess;
+
 template <typename T>
 class ConcurrentQueue {
 public:
@@ -41,15 +43,12 @@ private:
 
 class ThreadPool {
 public:
-    explicit ThreadPool(size_t threadCount) {
-        if (threadCount == 0) {
-            return;
-        }
-        m_threads.reserve(threadCount);
-        for (size_t i = 0; i < threadCount; ++i) {
-            m_threads.emplace_back([this]() { workerLoop(); });
-        }
-    }
+    explicit ThreadPool(size_t threadCount)
+        : ThreadPool(
+              threadCount,
+              [](std::function<void()> worker) {
+                  return std::thread(std::move(worker));
+              }) {}
 
     ~ThreadPool() {
         stop();
@@ -94,6 +93,27 @@ public:
     }
 
 private:
+    using ThreadStarter =
+        std::function<std::thread(std::function<void()>)>;
+
+    ThreadPool(size_t threadCount, ThreadStarter startThread) {
+        if (threadCount == 0) {
+            return;
+        }
+        m_threads.reserve(threadCount);
+        try {
+            for (size_t i = 0; i < threadCount; ++i) {
+                m_threads.emplace_back(
+                    startThread([this]() { workerLoop(); }));
+            }
+        } catch (...) {
+            stop();
+            throw;
+        }
+    }
+
+    friend struct ThreadPoolTestAccess;
+
     void workerLoop() {
         for (;;) {
             std::function<void()> job;

@@ -51,12 +51,12 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
                                    std::shared_ptr<Voxel::WorldGenerator> generator)
     : m_service(&service),
       m_context(std::move(context)),
+      m_format(service.openFormat(m_context)),
       m_world(&world),
       m_worldGenVersion(worldGenVersion),
       m_generator(std::move(generator)),
       m_ioPool(ioThreads),
       m_workerPool(workerThreads) {
-    m_format = m_service->openFormat(m_context);
     int regionSpan = estimateRegionSpan();
     if (regionSpan < 1) {
         regionSpan = 1;

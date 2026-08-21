@@ -152,8 +152,6 @@ private:
     std::function<void()> m_ioPoolStopStartCallback;
     std::function<void()> m_workerPoolStopStartCallback;
 
-    Voxel::detail::ThreadPool m_ioPool;
-    Voxel::detail::ThreadPool m_workerPool;
     Voxel::detail::ConcurrentQueue<RegionResult> m_regionComplete;
     Voxel::detail::ConcurrentQueue<ChunkPayload> m_chunkComplete;
 
@@ -180,6 +178,9 @@ private:
     std::unordered_map<RegionKey, RegionPresence, RegionKeyHash> m_regionPresence;
     std::unordered_map<RegionKey, size_t, RegionKeyHash> m_regionLoadAttempts;
     std::unordered_map<RegionKey, uint64_t, RegionKeyHash> m_regionRevisions;
+
+    Voxel::detail::ThreadPool m_ioPool;
+    Voxel::detail::ThreadPool m_workerPool;
 };
 
 } // namespace Rigel::Persistence

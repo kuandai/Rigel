@@ -1061,22 +1061,6 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             continue;
         }
 
-        if (meshResult.failed) {
-            stateIt->second = ChunkState::MeshFailed;
-            m_dirtyMeshQueued.erase(meshResult.coord);
-            m_missingMeshCapacityWaiting.erase(meshResult.coord);
-            m_meshDependencyWaiting.erase(meshResult.coord);
-            m_priorityMeshRequests.erase(meshResult.coord);
-            ++m_workMetrics.meshJobsFailed;
-            spdlog::error("Chunk mesh build failed at ({}, {}, {}): {}",
-                          meshResult.coord.x,
-                          meshResult.coord.y,
-                          meshResult.coord.z,
-                          meshResult.error);
-            ++applied;
-            continue;
-        }
-
         Chunk* chunk = m_chunkManager->getChunk(meshResult.coord);
         if (!chunk) {
             m_states.erase(meshResult.coord);
@@ -1101,6 +1085,22 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             ++m_workMetrics.meshJobsRejectedStale;
             queueLoadGen(meshResult.coord);
             queueDirtyMesh(meshResult.coord, flight.prioritized);
+            continue;
+        }
+
+        if (meshResult.failed) {
+            stateIt->second = ChunkState::MeshFailed;
+            m_dirtyMeshQueued.erase(meshResult.coord);
+            m_missingMeshCapacityWaiting.erase(meshResult.coord);
+            m_meshDependencyWaiting.erase(meshResult.coord);
+            m_priorityMeshRequests.erase(meshResult.coord);
+            ++m_workMetrics.meshJobsFailed;
+            spdlog::error("Chunk mesh build failed at ({}, {}, {}): {}",
+                          meshResult.coord.x,
+                          meshResult.coord.y,
+                          meshResult.coord.z,
+                          meshResult.error);
+            ++applied;
             continue;
         }
 

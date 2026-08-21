@@ -216,6 +216,7 @@ private:
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityMeshRequests;
     std::unordered_map<ChunkCoord, uint64_t, ChunkCoordHash> m_evictionRetryAfter;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_versionReplacementWaiting;
     size_t m_inFlightGen = 0;
     size_t m_inFlightMesh = 0;
     size_t m_inFlightMeshMissing = 0;

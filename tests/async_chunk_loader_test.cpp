@@ -9,6 +9,7 @@
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/ChunkStreamer.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -905,6 +906,177 @@ TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {
     streamer.update(distant);
     CHECK(!world.chunkManager().hasChunk(coord));
     CHECK_EQ(failingStorage->writeAttempts(), static_cast<size_t>(2));
+}
+
+TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID original = registerTestBlock(registry, "rigel:version_original");
+    BlockID edited = registerTestBlock(registry, "rigel:version_edit");
+    const ChunkCoord coord{0, 0, 0};
+    ChunkData payload = buildPayload(
+        coord,
+        registry,
+        {original},
+        false,
+        std::nullopt,
+        false);
+
+    MemoryContext ctx;
+    saveRegionForPayload(
+        ctx.service, ctx.context, "rigel:default", coord, payload);
+    auto failingStorage = std::make_shared<TransientWriteFailureStorage>(
+        ctx.context.storage,
+        1);
+    ctx.context.storage = failingStorage;
+    auto loader = std::make_shared<AsyncChunkLoader>(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        0,
+        generator);
+    loader->setPrefetchRadius(0);
+
+    WorldMeshStore meshStore;
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
+
+    size_t loadRequests = 0;
+    streamer.setChunkLoader([loader, &loadRequests](ChunkCoord request) {
+        ++loadRequests;
+        return loader->request(request);
+    });
+    streamer.setChunkPendingCallback([loader](ChunkCoord request) {
+        return loader->isPending(request);
+    });
+    streamer.setChunkLoadDrain([loader](size_t budget) {
+        return loader->drainCompletions(budget);
+    });
+    streamer.setChunkLoadCancel([loader](ChunkCoord request) {
+        loader->cancel(request);
+    });
+    streamer.setChunkEvictionCallback([loader](ChunkCoord request) {
+        return loader->persistChunk(request);
+    });
+
+    for (int index = 0; index < DirectionCount; ++index) {
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(static_cast<Direction>(index), dx, dy, dz);
+        Chunk& neighbor = world.chunkManager().getOrCreateChunk(
+            coord.offset(dx, dy, dz));
+        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.clearDirty();
+    }
+
+    streamChunk(streamer, coord);
+    Chunk* loaded = world.chunkManager().getChunk(coord);
+    CHECK(loaded != nullptr);
+    if (!loaded) {
+        return;
+    }
+    CHECK_EQ(loaded->getBlock(0, 0, 0).id, original);
+    CHECK(meshStore.contains(coord));
+    loaded->setBlock(0, 0, 0, BlockState{edited}, registry);
+
+    const size_t settledLoadRequests = loadRequests;
+    const uint64_t settledGenerationJobs =
+        streamer.workMetrics().generationJobsStarted;
+    WorldGenConfig changedConfig = generator->config();
+    ++changedConfig.world.version;
+    generator->setConfig(std::move(changedConfig));
+
+    streamer.update(coord.toWorldCenter());
+
+    loaded = world.chunkManager().getChunk(coord);
+    CHECK(loaded != nullptr);
+    if (!loaded) {
+        return;
+    }
+    CHECK(loaded->isPersistDirty());
+    CHECK_EQ(loaded->getBlock(0, 0, 0).id, edited);
+    CHECK(meshStore.contains(coord));
+    CHECK_EQ(failingStorage->writeAttempts(), static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             settledGenerationJobs);
+
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    streamer.getDebugStates(states);
+    CHECK(std::any_of(states.begin(), states.end(), [coord](const auto& state) {
+        return state.coord == coord;
+    }));
+
+    for (int update = 0; update < 59; ++update) {
+        streamer.update(coord.toWorldCenter());
+    }
+    CHECK(world.chunkManager().hasChunk(coord));
+    CHECK(meshStore.contains(coord));
+    CHECK_EQ(failingStorage->writeAttempts(), static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             settledGenerationJobs);
+
+    streamer.update(coord.toWorldCenter());
+    CHECK(!world.chunkManager().hasChunk(coord));
+    CHECK(!meshStore.contains(coord));
+    CHECK_EQ(failingStorage->writeAttempts(), static_cast<size_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             settledGenerationJobs + 1);
+    CHECK_EQ(loadRequests, settledLoadRequests);
+
+    streamer.processCompletions();
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+    Chunk* replacement = world.chunkManager().getChunk(coord);
+    CHECK(replacement != nullptr);
+    if (replacement) {
+        CHECK_EQ(replacement->worldGenVersion(), generator->config().world.version);
+        CHECK_NE(replacement->getBlock(0, 0, 0).id, edited);
+        CHECK(!replacement->loadedFromDisk());
+    }
+    CHECK(meshStore.contains(coord));
+    CHECK_EQ(loadRequests, settledLoadRequests);
+
+    World reconstructed;
+    reconstructed.initialize(resources);
+    reconstructed.setGenerator(generator);
+    AsyncChunkLoader reconstructedLoader(
+        ctx.service,
+        ctx.context,
+        reconstructed,
+        generator->config().world.version,
+        0,
+        0,
+        0,
+        generator);
+    reconstructedLoader.setPrefetchRadius(0);
+    CHECK_EQ(reconstructedLoader.request(coord), ChunkLoadRequestResult::Queued);
+    reconstructedLoader.drainCompletions(4);
+
+    const Chunk* recovered = reconstructed.chunkManager().getChunk(coord);
+    CHECK(recovered != nullptr);
+    if (recovered) {
+        CHECK_EQ(recovered->getBlock(0, 0, 0).id, edited);
+        CHECK(!recovered->isPersistDirty());
+    }
 }
 
 TEST_CASE(ChunkStreamer_SaturatedLoaderPreservesPersistedChunk) {

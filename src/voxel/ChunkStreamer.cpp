@@ -42,6 +42,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_dirtyMeshQueued.clear();
     m_priorityMeshRequests.clear();
     m_evictionRetryAfter.clear();
+    m_versionReplacementWaiting.clear();
     m_nextEvictionRetrySequence = 0;
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
@@ -75,6 +76,7 @@ void ChunkStreamer::bind(ChunkManager* manager,
     m_dirtyMeshQueue = {};
     m_dirtyMeshQueued.clear();
     m_priorityMeshRequests.clear();
+    m_versionReplacementWaiting.clear();
     for (const ChunkCoord& coord : m_desired) {
         queueLoadGen(coord);
     }
@@ -250,6 +252,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             queueLoadGen(coord);
         }
     }
+
+    retryDeferredEvictions(center, unloadRadiusSq);
 
     if (!m_chunkLoadDrain && !m_loadPending.empty()) {
         for (auto it = m_loadPending.begin(); it != m_loadPending.end(); ) {
@@ -455,12 +459,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 m_loadPending.erase(coord);
                 if (m_generator &&
                     chunk->worldGenVersion() != m_generator->config().world.version) {
-                    if (m_meshStore) {
-                        m_meshStore->remove(coord);
+                    if (!evictChunk(coord)) {
+                        m_versionReplacementWaiting.insert(coord);
+                        continue;
                     }
-                    m_chunkManager->unloadChunk(coord);
-                    m_states.erase(coord);
-                    m_countedMeshRetryRevisions.erase(coord);
                     if (!genFull) {
                         enqueueGeneration(coord);
                         genFull = m_inFlightGen >= genLimit;
@@ -555,8 +557,6 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
 
     }
-
-    retryDeferredEvictions(center, unloadRadiusSq);
 
     if (cacheEvictionNeeded) {
         PROFILE_SCOPE("Streaming/Update/CacheEvict");
@@ -693,6 +693,7 @@ void ChunkStreamer::reset() {
     m_dirtyMeshQueued.clear();
     m_priorityMeshRequests.clear();
     m_evictionRetryAfter.clear();
+    m_versionReplacementWaiting.clear();
     m_nextEvictionRetrySequence = 0;
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
@@ -749,6 +750,7 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord) {
     }
 
     m_evictionRetryAfter.erase(coord);
+    m_versionReplacementWaiting.erase(coord);
     if (m_meshStore) {
         m_meshStore->remove(coord);
     }
@@ -793,6 +795,21 @@ void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq
     }
 
     for (const ChunkCoord& coord : due) {
+        Chunk* chunk = m_chunkManager ? m_chunkManager->getChunk(coord) : nullptr;
+        bool replacementWaiting =
+            m_versionReplacementWaiting.find(coord) !=
+            m_versionReplacementWaiting.end();
+        if (replacementWaiting &&
+            m_desiredSet.find(coord) != m_desiredSet.end() &&
+            chunk && m_generator &&
+            chunk->worldGenVersion() != m_generator->config().world.version) {
+            queueLoadGen(coord);
+            continue;
+        }
+        if (replacementWaiting) {
+            m_versionReplacementWaiting.erase(coord);
+        }
+
         bool outsideUnloadRadius = distanceSquared(center, coord) > unloadRadiusSq;
         bool cachePressure =
             m_cache.maxChunks() > 0 &&

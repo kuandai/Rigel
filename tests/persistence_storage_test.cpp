@@ -47,6 +47,25 @@ std::vector<uint8_t> readFile(FilesystemBackend& storage, const std::filesystem:
     return reader->readAt(0, reader->size());
 }
 
+std::vector<std::filesystem::path> stagingFiles(const std::filesystem::path& path) {
+    std::vector<std::filesystem::path> result;
+    const auto prefix = path.filename().string() + ".tmp";
+    for (const auto& entry : std::filesystem::directory_iterator(path.parent_path())) {
+        if (entry.path().filename().string().starts_with(prefix)) {
+            result.push_back(entry.path());
+        }
+    }
+    return result;
+}
+
+std::filesystem::path onlyStagingFile(const std::filesystem::path& path) {
+    auto files = stagingFiles(path);
+    if (files.size() != 1) {
+        throw Rigel::Test::TestFailure("Expected exactly one staging file");
+    }
+    return files.front();
+}
+
 void writeRawFile(const std::filesystem::path& path, const std::vector<uint8_t>& data) {
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     stream.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
@@ -66,20 +85,20 @@ TEST_CASE(FilesystemBackend_atomic_replace_writes_complete_replacement) {
     writeFile(storage, path, replacement);
 
     CHECK_EQ(readFile(storage, path), replacement);
-    CHECK(!std::filesystem::exists(path.string() + ".tmp"));
+    CHECK(stagingFiles(path).empty());
 }
 
 TEST_CASE(FilesystemBackend_failed_atomic_replace_preserves_existing_file) {
     TemporaryDirectory directory;
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
-    const auto tempPath = std::filesystem::path(path.string() + ".tmp");
     const std::vector<uint8_t> previous{1, 2, 3, 4};
     const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
 
     writeFile(storage, path, previous);
     auto session = storage.openWrite(path.string(), AtomicWriteOptions{});
     session->writer().writeBytes(replacement.data(), replacement.size());
+    const auto tempPath = onlyStagingFile(path);
 
     CHECK(std::filesystem::remove(tempPath));
     CHECK_THROWS(session->commit());
@@ -92,7 +111,6 @@ TEST_CASE(FilesystemBackend_failed_atomic_write_removes_temporary_file) {
     TemporaryDirectory directory;
     FilesystemBackend storage;
     const auto path = directory.path() / "occupied";
-    const auto tempPath = std::filesystem::path(path.string() + ".tmp");
     const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
 
     std::filesystem::create_directories(path);
@@ -100,6 +118,7 @@ TEST_CASE(FilesystemBackend_failed_atomic_write_removes_temporary_file) {
 
     auto session = storage.openWrite(path.string(), AtomicWriteOptions{});
     session->writer().writeBytes(replacement.data(), replacement.size());
+    const auto tempPath = onlyStagingFile(path);
 
     CHECK_THROWS(session->commit());
 
@@ -140,7 +159,6 @@ TEST_CASE(FilesystemBackend_abandoned_atomic_write_removes_temporary_file) {
     TemporaryDirectory directory;
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
-    const auto tempPath = std::filesystem::path(path.string() + ".tmp");
     const std::vector<uint8_t> previous{1, 2, 3, 4};
     const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
 
@@ -151,14 +169,13 @@ TEST_CASE(FilesystemBackend_abandoned_atomic_write_removes_temporary_file) {
     }
 
     CHECK_EQ(readFile(storage, path), previous);
-    CHECK(!std::filesystem::exists(tempPath));
+    CHECK(stagingFiles(path).empty());
 }
 
 TEST_CASE(FilesystemBackend_destroying_committed_session_preserves_new_temporary_file) {
     TemporaryDirectory directory;
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
-    const auto tempPath = std::filesystem::path(path.string() + ".tmp");
     const std::vector<uint8_t> previous{1, 2, 3, 4};
     const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
 
@@ -168,6 +185,7 @@ TEST_CASE(FilesystemBackend_destroying_committed_session_preserves_new_temporary
 
     auto replacementSession = storage.openWrite(path.string(), AtomicWriteOptions{});
     replacementSession->writer().writeBytes(replacement.data(), replacement.size());
+    const auto tempPath = onlyStagingFile(path);
     completedSession.reset();
 
     CHECK(std::filesystem::exists(tempPath));
@@ -179,7 +197,6 @@ TEST_CASE(FilesystemBackend_destroying_failed_session_preserves_new_temporary_fi
     TemporaryDirectory directory;
     FilesystemBackend storage;
     const auto path = directory.path() / "occupied";
-    const auto tempPath = std::filesystem::path(path.string() + ".tmp");
     const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
 
     std::filesystem::create_directories(path);
@@ -192,9 +209,113 @@ TEST_CASE(FilesystemBackend_destroying_failed_session_preserves_new_temporary_fi
     std::filesystem::remove_all(path);
     auto replacementSession = storage.openWrite(path.string(), AtomicWriteOptions{});
     replacementSession->writer().writeBytes(replacement.data(), replacement.size());
+    const auto tempPath = onlyStagingFile(path);
     failedSession.reset();
 
     CHECK(std::filesystem::exists(tempPath));
     replacementSession->commit();
+    CHECK_EQ(readFile(storage, path), replacement);
+}
+
+TEST_CASE(FilesystemBackend_overlapping_sessions_do_not_reuse_stale_staging_file) {
+    TemporaryDirectory directory;
+    FilesystemBackend storage;
+    const auto path = directory.path() / "region.bin";
+    const auto stalePath = std::filesystem::path(path.string() + ".tmp");
+    const std::vector<uint8_t> staleData{9, 8, 7};
+
+    writeRawFile(stalePath, staleData);
+    auto first = storage.openWrite(path.string(), AtomicWriteOptions{});
+    auto second = storage.openWrite(path.string(), AtomicWriteOptions{});
+
+    CHECK_EQ(stagingFiles(path).size(), 3u);
+    CHECK_EQ(readFile(storage, stalePath), staleData);
+
+    first->abort();
+    second->abort();
+    CHECK_EQ(readFile(storage, stalePath), staleData);
+}
+
+TEST_CASE(FilesystemBackend_commit_then_continued_write_and_abort_are_isolated) {
+    TemporaryDirectory directory;
+    FilesystemBackend storage;
+    const auto path = directory.path() / "region.bin";
+    const std::vector<uint8_t> committed{1, 2, 3, 4};
+    const std::vector<uint8_t> staged{5, 6};
+    const std::vector<uint8_t> continued{7, 8};
+
+    auto first = storage.openWrite(path.string(), AtomicWriteOptions{});
+    first->writer().writeBytes(committed.data(), committed.size());
+    auto second = storage.openWrite(path.string(), AtomicWriteOptions{});
+    second->writer().writeBytes(staged.data(), staged.size());
+
+    first->commit();
+    second->writer().writeBytes(continued.data(), continued.size());
+    second->abort();
+
+    CHECK_EQ(readFile(storage, path), committed);
+    CHECK(stagingFiles(path).empty());
+}
+
+TEST_CASE(FilesystemBackend_destroying_stale_session_preserves_active_session) {
+    TemporaryDirectory directory;
+    FilesystemBackend storage;
+    const auto path = directory.path() / "region.bin";
+    const std::vector<uint8_t> replacement{5, 6, 7, 8};
+
+    auto stale = storage.openWrite(path.string(), AtomicWriteOptions{});
+    stale->writer().writeU8(42);
+    auto active = storage.openWrite(path.string(), AtomicWriteOptions{});
+    active->writer().writeBytes(replacement.data(), replacement.size());
+
+    stale.reset();
+    CHECK_EQ(stagingFiles(path).size(), 1u);
+    active->commit();
+
+    CHECK_EQ(readFile(storage, path), replacement);
+}
+
+TEST_CASE(FilesystemBackend_overlapping_sessions_publish_in_commit_order) {
+    TemporaryDirectory directory;
+    FilesystemBackend storage;
+    const std::vector<uint8_t> firstData{1, 2, 3};
+    const std::vector<uint8_t> secondData{4, 5, 6};
+
+    const auto secondWinsPath = directory.path() / "second-wins.bin";
+    auto first = storage.openWrite(secondWinsPath.string(), AtomicWriteOptions{});
+    first->writer().writeBytes(firstData.data(), firstData.size());
+    auto second = storage.openWrite(secondWinsPath.string(), AtomicWriteOptions{});
+    second->writer().writeBytes(secondData.data(), secondData.size());
+    first->commit();
+    second->commit();
+    CHECK_EQ(readFile(storage, secondWinsPath), secondData);
+
+    const auto firstWinsPath = directory.path() / "first-wins.bin";
+    first = storage.openWrite(firstWinsPath.string(), AtomicWriteOptions{});
+    first->writer().writeBytes(firstData.data(), firstData.size());
+    second = storage.openWrite(firstWinsPath.string(), AtomicWriteOptions{});
+    second->writer().writeBytes(secondData.data(), secondData.size());
+    second->commit();
+    first->commit();
+    CHECK_EQ(readFile(storage, firstWinsPath), firstData);
+}
+
+TEST_CASE(FilesystemBackend_failed_session_does_not_disable_overlapping_session) {
+    TemporaryDirectory directory;
+    FilesystemBackend storage;
+    const auto path = directory.path() / "region.bin";
+    const std::vector<uint8_t> replacement{5, 6, 7, 8};
+
+    auto failing = storage.openWrite(path.string(), AtomicWriteOptions{});
+    failing->writer().writeU8(42);
+    auto usable = storage.openWrite(path.string(), AtomicWriteOptions{});
+    usable->writer().writeBytes(replacement.data(), replacement.size());
+    std::filesystem::create_directory(path);
+
+    CHECK_THROWS(failing->commit());
+    CHECK_EQ(stagingFiles(path).size(), 1u);
+
+    std::filesystem::remove(path);
+    usable->commit();
     CHECK_EQ(readFile(storage, path), replacement);
 }

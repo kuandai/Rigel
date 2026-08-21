@@ -2,13 +2,52 @@
 
 #include "AtomicFileCommit.h"
 
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <system_error>
 
 namespace Rigel::Persistence {
 
 namespace {
+
+std::filesystem::path createUniqueTemporaryFile(const std::filesystem::path& finalPath) {
+    static std::atomic<uint64_t> nextId{0};
+    const auto timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
+
+    for (;;) {
+        auto candidate = std::filesystem::path(
+            finalPath.string() + ".tmp." + std::to_string(timestamp) + "." +
+            std::to_string(nextId.fetch_add(1, std::memory_order_relaxed)));
+
+        errno = 0;
+        auto* file = std::fopen(candidate.string().c_str(), "wbx");
+        if (file == nullptr) {
+            if (errno == EEXIST) {
+                continue;
+            }
+            throw std::system_error(
+                errno,
+                std::generic_category(),
+                "Failed to create temporary file for " + finalPath.string());
+        }
+
+        if (std::fclose(file) != 0) {
+            const int closeError = errno == 0 ? EIO : errno;
+            std::error_code cleanupError;
+            std::filesystem::remove(candidate, cleanupError);
+            throw std::system_error(
+                closeError,
+                std::generic_category(),
+                "Failed to close temporary file for " + finalPath.string());
+        }
+        return candidate;
+    }
+}
 
 class FileByteReader final : public ByteReader {
 public:
@@ -265,9 +304,9 @@ std::unique_ptr<AtomicWriteSession> FilesystemBackend::openWrite(const std::stri
         return std::make_unique<DirectFileWriteSession>(path);
     }
 
-    std::string tempPath = path + ".tmp";
+    const auto tempPath = createUniqueTemporaryFile(p);
     try {
-        return std::make_unique<AtomicFileWriteSession>(path, tempPath);
+        return std::make_unique<AtomicFileWriteSession>(path, tempPath.string());
     } catch (...) {
         std::error_code cleanupError;
         std::filesystem::remove(tempPath, cleanupError);

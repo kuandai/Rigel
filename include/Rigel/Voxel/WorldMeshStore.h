@@ -29,7 +29,7 @@ struct MeshIdHash {
 };
 
 struct MeshRevision {
-    uint32_t value = 0;
+    uint64_t value = 0;
 };
 
 struct WorldMeshEntry {
@@ -56,18 +56,14 @@ public:
         if (inserted) {
             entry.id = makeMeshId(coord);
         }
-        uint32_t& counter = m_revisionCounters[coord];
-        uint32_t next = counter + 1;
-        counter = (next == 0) ? 1 : next;
-        entry.revision.value = counter;
         entry.mesh = std::move(mesh);
-        m_version.fetch_add(1, std::memory_order_relaxed);
+        entry.revision.value =
+            m_version.fetch_add(1, std::memory_order_relaxed) + 1;
     }
 
     void remove(ChunkCoord coord) {
         std::unique_lock lock(m_mutex);
         bool removed = m_meshes.erase(coord) > 0;
-        m_revisionCounters.erase(coord);
         if (removed) {
             m_version.fetch_add(1, std::memory_order_relaxed);
         }
@@ -77,7 +73,6 @@ public:
         std::unique_lock lock(m_mutex);
         if (!m_meshes.empty()) {
             m_meshes.clear();
-            m_revisionCounters.clear();
             m_version.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -107,7 +102,6 @@ private:
     uint32_t m_storeId = 0;
     mutable std::shared_mutex m_mutex;
     std::unordered_map<ChunkCoord, WorldMeshEntry, ChunkCoordHash> m_meshes;
-    std::unordered_map<ChunkCoord, uint32_t, ChunkCoordHash> m_revisionCounters;
     std::atomic<uint64_t> m_version{0};
 };
 

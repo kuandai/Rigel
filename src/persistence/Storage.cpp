@@ -1,5 +1,7 @@
 #include "Rigel/Persistence/Storage.h"
 
+#include "AtomicFileCommit.h"
+
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -154,6 +156,25 @@ public:
 
     void flush() override {
         m_stream.flush();
+        if (!m_stream) {
+            throw std::runtime_error("Failed to flush file: " + m_path);
+        }
+    }
+
+    void close() {
+        m_stream.flush();
+        const bool flushFailed = !m_stream;
+        if (flushFailed) {
+            m_stream.clear();
+        }
+
+        m_stream.close();
+        if (flushFailed) {
+            throw std::runtime_error("Failed to flush file: " + m_path);
+        }
+        if (!m_stream) {
+            throw std::runtime_error("Failed to close file: " + m_path);
+        }
     }
 
 private:
@@ -164,26 +185,40 @@ private:
 class AtomicFileWriteSession final : public AtomicWriteSession {
 public:
     AtomicFileWriteSession(std::string finalPath, std::string tempPath)
-        : m_finalPath(std::move(finalPath)), m_tempPath(std::move(tempPath)), m_writer(m_tempPath) {
+        : m_finalPath(std::move(finalPath)),
+          m_tempPath(std::move(tempPath)),
+          m_writer(std::make_unique<FileByteWriter>(m_tempPath)) {
+    }
+
+    ~AtomicFileWriteSession() override {
+        abort();
     }
 
     ByteWriter& writer() override {
-        return m_writer;
+        return *m_writer;
     }
 
     void commit() override {
-        m_writer.flush();
-        std::error_code renameError;
-        std::filesystem::rename(m_tempPath, m_finalPath, renameError);
-        if (renameError) {
-            std::error_code cleanupError;
-            std::filesystem::remove(m_tempPath, cleanupError);
-            throw std::runtime_error(
-                "Failed to commit atomic write to " + m_finalPath + ": " + renameError.message());
-        }
+        detail::commitAtomicFile(
+            m_tempPath,
+            m_finalPath,
+            [this]() {
+                auto writer = std::move(m_writer);
+                writer->close();
+            },
+            [](const std::filesystem::path& tempPath,
+               const std::filesystem::path& finalPath,
+               std::error_code& error) {
+                std::filesystem::rename(tempPath, finalPath, error);
+            });
     }
 
     void abort() override {
+        if (!m_writer) {
+            return;
+        }
+
+        m_writer.reset();
         std::error_code ec;
         std::filesystem::remove(m_tempPath, ec);
     }
@@ -191,7 +226,7 @@ public:
 private:
     std::string m_finalPath;
     std::string m_tempPath;
-    FileByteWriter m_writer;
+    std::unique_ptr<FileByteWriter> m_writer;
 };
 
 class DirectFileWriteSession final : public AtomicWriteSession {
@@ -231,7 +266,13 @@ std::unique_ptr<AtomicWriteSession> FilesystemBackend::openWrite(const std::stri
     }
 
     std::string tempPath = path + ".tmp";
-    return std::make_unique<AtomicFileWriteSession>(path, tempPath);
+    try {
+        return std::make_unique<AtomicFileWriteSession>(path, tempPath);
+    } catch (...) {
+        std::error_code cleanupError;
+        std::filesystem::remove(tempPath, cleanupError);
+        throw;
+    }
 }
 
 bool FilesystemBackend::exists(const std::string& path) {

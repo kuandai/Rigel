@@ -138,41 +138,37 @@ void initEntityDebug(DebugState& debug, Asset::AssetManager& assets) {
 }
 
 void releaseDebugResources(DebugState& debug) {
-    if (debug.field.initialized) {
-        if (debug.field.vao != 0) {
-            glDeleteVertexArrays(1, &debug.field.vao);
-            debug.field.vao = 0;
-        }
-        for (GLuint& vbo : debug.field.vbos) {
-            if (vbo != 0) {
-                glDeleteBuffers(1, &vbo);
-                vbo = 0;
-            }
-        }
-        debug.field.initialized = false;
+    if (debug.field.vao != 0) {
+        glDeleteVertexArrays(1, &debug.field.vao);
+        debug.field.vao = 0;
     }
-    if (debug.frameGraph.initialized) {
-        if (debug.frameGraph.vao != 0) {
-            glDeleteVertexArrays(1, &debug.frameGraph.vao);
-            debug.frameGraph.vao = 0;
+    for (GLuint& vbo : debug.field.vbos) {
+        if (vbo != 0) {
+            glDeleteBuffers(1, &vbo);
+            vbo = 0;
         }
-        if (debug.frameGraph.vbo != 0) {
-            glDeleteBuffers(1, &debug.frameGraph.vbo);
-            debug.frameGraph.vbo = 0;
-        }
-        debug.frameGraph.initialized = false;
     }
-    if (debug.entityDebug.initialized) {
-        if (debug.entityDebug.vao != 0) {
-            glDeleteVertexArrays(1, &debug.entityDebug.vao);
-            debug.entityDebug.vao = 0;
-        }
-        if (debug.entityDebug.vbo != 0) {
-            glDeleteBuffers(1, &debug.entityDebug.vbo);
-            debug.entityDebug.vbo = 0;
-        }
-        debug.entityDebug.initialized = false;
+    debug.field.initialized = false;
+
+    if (debug.frameGraph.vao != 0) {
+        glDeleteVertexArrays(1, &debug.frameGraph.vao);
+        debug.frameGraph.vao = 0;
     }
+    if (debug.frameGraph.vbo != 0) {
+        glDeleteBuffers(1, &debug.frameGraph.vbo);
+        debug.frameGraph.vbo = 0;
+    }
+    debug.frameGraph.initialized = false;
+
+    if (debug.entityDebug.vao != 0) {
+        glDeleteVertexArrays(1, &debug.entityDebug.vao);
+        debug.entityDebug.vao = 0;
+    }
+    if (debug.entityDebug.vbo != 0) {
+        glDeleteBuffers(1, &debug.entityDebug.vbo);
+        debug.entityDebug.vbo = 0;
+    }
+    debug.entityDebug.initialized = false;
 }
 
 void recordFrameTime(DebugState& debug, float seconds) {

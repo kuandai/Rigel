@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "Rigel/Persistence/PersistenceService.h"
+#include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/CR/CRPaths.h"
 #include "Rigel/Persistence/Backends/CR/CRChunkMapping.h"
@@ -12,6 +13,7 @@
 #include "Rigel/Voxel/Block.h"
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldResources.h"
 
 #include <filesystem>
@@ -234,6 +236,46 @@ private:
 void createEmptyFile(StorageBackend& storage, const std::string& path) {
     auto session = storage.openWrite(path, AtomicWriteOptions{});
     session->commit();
+}
+
+void writeText(StorageBackend& storage,
+               const std::string& path,
+               const std::string& text) {
+    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    session->writer().writeBytes(
+        reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    session->writer().flush();
+    session->commit();
+}
+
+void saveCRWorld(const std::shared_ptr<StorageBackend>& storage,
+                 const std::string& rootPath,
+                 bool dirtyChunk = false) {
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::World world(resources);
+    world.setId(17);
+    if (dirtyChunk) {
+        const std::string identifier = "base:save_marker";
+        Rigel::Voxel::BlockType block;
+        block.identifier = identifier;
+        block.isOpaque = true;
+        block.isSolid = true;
+        auto blockId = resources.registry().registerBlock(
+            identifier, std::move(block));
+        world.setBlock(0, 0, 0, Rigel::Voxel::BlockState{blockId});
+    }
+
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = rootPath;
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = world.persistenceProvidersHandle();
+    saveWorldToDisk(world, service, context);
 }
 
 ChunkData makeMinimalChunkData(const ChunkKey& key) {
@@ -669,6 +711,177 @@ TEST_CASE(CRBackend_world_metadata_roundtrip) {
 
     CHECK_EQ(loaded.worldId, "demo");
     CHECK_EQ(loaded.displayName, "Demo World");
+}
+
+TEST_CASE(CRBackend_world_save_preserves_existing_metadata_bytes) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "worlds/preserved_metadata";
+    context.storage = storage;
+
+    const std::string worldInfo = R"({
+  "latestRegionFileVersion": 4,
+  "defaultZoneId": "rigel:default",
+  "worldDisplayName": "Imported World",
+  "worldSeed": 782347234,
+  "worldCreatedEpochMillis": 123456789,
+  "lastPlayedEpochMillis": 987654321,
+  "worldTick": 44332211,
+  "extension": {"preserve": true}
+}
+)";
+    const std::string zoneInfo = R"({
+  "zoneId": "rigel:default",
+  "worldGenSaveKey": "base:overworld",
+  "seed": 918273645,
+  "respawnHeight": -64,
+  "spawnPoint": {"x":12.5,"y":94.0,"z":-33.25},
+  "skyId": "base:starry_sky",
+  "extension": [1, 2, 3]
+}
+)";
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const auto zonePath = CRPaths::zoneInfoPath(ZoneKey{"rigel:default"}, context);
+    writeText(*storage, worldPath, worldInfo);
+    writeText(*storage, zonePath, zoneInfo);
+
+    saveCRWorld(storage, context.rootPath, true);
+
+    CHECK_EQ(readAll(*storage, worldPath),
+             (std::vector<uint8_t>(worldInfo.begin(), worldInfo.end())));
+    CHECK_EQ(readAll(*storage, zonePath),
+             (std::vector<uint8_t>(zoneInfo.begin(), zoneInfo.end())));
+    CHECK(storage->exists(CRPaths::regionPath(
+        RegionKey{"rigel:default", 0, 0, 0}, context)));
+}
+
+TEST_CASE(CRBackend_world_save_initializes_missing_metadata) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "worlds/fresh_metadata";
+    context.storage = storage;
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const auto zonePath = CRPaths::zoneInfoPath(ZoneKey{"rigel:default"}, context);
+
+    saveCRWorld(storage, context.rootPath);
+
+    CHECK(storage->exists(worldPath));
+    CHECK(storage->exists(zonePath));
+}
+
+TEST_CASE(CRBackend_world_save_preserves_world_only_metadata) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "worlds/world_only_metadata";
+    context.storage = storage;
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const auto zonePath = CRPaths::zoneInfoPath(ZoneKey{"rigel:default"}, context);
+    const std::string worldInfo = R"({
+  "defaultZoneId": "rigel:default",
+  "worldDisplayName": "Existing World",
+  "worldSeed": 271828182,
+  "worldTick": 314159265
+}
+)";
+    writeText(*storage, worldPath, worldInfo);
+
+    saveCRWorld(storage, context.rootPath);
+
+    CHECK_EQ(readAll(*storage, worldPath),
+             (std::vector<uint8_t>(worldInfo.begin(), worldInfo.end())));
+    CHECK(storage->exists(zonePath));
+}
+
+TEST_CASE(CRBackend_world_save_preserves_zone_only_metadata) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "worlds/zone_only_metadata";
+    context.storage = storage;
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const auto zonePath = CRPaths::zoneInfoPath(ZoneKey{"rigel:default"}, context);
+    const std::string zoneInfo = R"({
+  "zoneId": "rigel:default",
+  "worldGenSaveKey": "base:custom_generator",
+  "seed": 161803398,
+  "respawnHeight": 72,
+  "spawnPoint": {"x":4,"y":80,"z":9},
+  "skyId": "base:day_sky"
+}
+)";
+    writeText(*storage, zonePath, zoneInfo);
+
+    saveCRWorld(storage, context.rootPath);
+
+    CHECK(storage->exists(worldPath));
+    CHECK_EQ(readAll(*storage, zonePath),
+             (std::vector<uint8_t>(zoneInfo.begin(), zoneInfo.end())));
+}
+
+TEST_CASE(CRBackend_world_save_rejects_alternate_default_zone) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "worlds/alternate_default";
+    context.storage = storage;
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const auto rigelZonePath =
+        CRPaths::zoneInfoPath(ZoneKey{"rigel:default"}, context);
+    const auto rigelRegionPath = CRPaths::regionPath(
+        RegionKey{"rigel:default", 0, 0, 0}, context);
+    const std::string worldInfo = R"({
+  "defaultZoneId": "base:moon",
+  "worldDisplayName": "Moon World",
+  "worldSeed": 42424242
+}
+)";
+    writeText(*storage, worldPath, worldInfo);
+
+    std::string diagnostic;
+    try {
+        saveCRWorld(storage, context.rootPath, true);
+    } catch (const std::exception& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK(diagnostic.find("base:moon") != std::string::npos);
+    CHECK(diagnostic.find("rigel:default") != std::string::npos);
+    CHECK_EQ(readAll(*storage, worldPath),
+             (std::vector<uint8_t>(worldInfo.begin(), worldInfo.end())));
+    CHECK(!storage->exists(rigelZonePath));
+    CHECK(!storage->exists(rigelRegionPath));
+}
+
+TEST_CASE(CRBackend_async_loader_rejects_alternate_default_zone) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::World world(resources);
+
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/alternate_async_default";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = world.persistenceProvidersHandle();
+    writeText(*storage, CRPaths::worldInfoPath(context), R"({
+  "defaultZoneId": "base:moon"
+}
+)");
+    auto generator = std::make_shared<Rigel::Voxel::WorldGenerator>(
+        resources.registry());
+
+    std::string diagnostic;
+    try {
+        AsyncChunkLoader loader(
+            service, context, world, 0, 0, 0, 4, std::move(generator));
+    } catch (const std::exception& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK(diagnostic.find("base:moon") != std::string::npos);
+    CHECK(diagnostic.find("rigel:default") != std::string::npos);
 }
 
 TEST_CASE(CRBackend_metadata_saves_preserve_existing_payloads) {

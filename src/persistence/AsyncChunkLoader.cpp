@@ -1,5 +1,6 @@
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 
+#include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/ChunkSpanMerge.h"
 #include "Rigel/Persistence/Containers.h"
 #include "Rigel/Persistence/RegionLayout.h"
@@ -7,6 +8,7 @@
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Core/Profiler.h"
+#include "backends/cr/CRWorldMetadata.h"
 
 #include <algorithm>
 #include <chrono>
@@ -57,6 +59,10 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
       m_generator(std::move(generator)),
       m_ioPool(ioThreads),
       m_workerPool(workerThreads) {
+    if (m_format->descriptor().id == Backends::CR::descriptor().id) {
+        Backends::CR::requireSupportedDefaultZone(m_context, m_zoneId);
+    }
+
     int regionSpan = estimateRegionSpan();
     if (regionSpan < 1) {
         regionSpan = 1;

@@ -5,11 +5,14 @@
 #include "Rigel/Entity/EntityFactory.h"
 #include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Entity/EntityRegion.h"
+#include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/ChunkSerializer.h"
 #include "Rigel/Persistence/Format.h"
 #include "Rigel/Persistence/PersistenceService.h"
+#include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
+#include "backends/cr/CRWorldMetadata.h"
 
 #include <cmath>
 #include <exception>
@@ -25,6 +28,13 @@ namespace Rigel::Persistence {
 namespace {
 
 constexpr const char* kDefaultZoneId = "rigel:default";
+
+void requireSupportedDefaultZone(const PersistenceFormat& format,
+                                 const PersistenceContext& context) {
+    if (format.descriptor().id == Backends::CR::descriptor().id) {
+        Backends::CR::requireSupportedDefaultZone(context, kDefaultZoneId);
+    }
+}
 
 void saveChunkRegions(const Voxel::World& world,
                       PersistenceFormat& format,
@@ -111,10 +121,12 @@ void loadWorldFromDisk(Voxel::World& world,
                        PersistenceContext context,
                        uint32_t worldGenVersion,
                        LoadScope scope) {
+    auto format = service.openFormat(context);
+    requireSupportedDefaultZone(*format, context);
+
     world.clear();
     world.chunkManager().clearDirtyFlags();
 
-    auto format = service.openFormat(context);
     std::string zoneId = kDefaultZoneId;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> touchedChunks;
 
@@ -181,7 +193,12 @@ void saveWorldToDisk(const Voxel::World& world,
                      PersistenceService& service,
                      PersistenceContext context) {
     auto format = service.openFormat(context);
+    requireSupportedDefaultZone(*format, context);
     std::string zoneId = kDefaultZoneId;
+    const bool worldMetadataExists = context.storage->exists(
+        format->worldMetadataCodec().metadataPath(context));
+    const bool zoneMetadataExists = context.storage->exists(
+        format->zoneMetadataCodec().metadataPath(ZoneKey{zoneId}, context));
     std::vector<Voxel::ChunkCoord> dirtyChunks;
     world.chunkManager().forEachChunk([&](Voxel::ChunkCoord coord, const Voxel::Chunk& chunk) {
         if (chunk.isPersistDirty()) {
@@ -261,8 +278,12 @@ void saveWorldToDisk(const Voxel::World& world,
     WorldSnapshot worldSnapshot;
     worldSnapshot.metadata.worldId = "world_" + std::to_string(world.id());
     worldSnapshot.metadata.displayName = worldSnapshot.metadata.worldId;
-    worldSnapshot.zones.push_back(ZoneMetadata{zoneId, zoneId});
-    service.saveWorld(worldSnapshot, context);
+    if (!worldMetadataExists) {
+        service.saveWorld(worldSnapshot, context);
+    }
+    if (!zoneMetadataExists) {
+        service.saveZoneMetadata(ZoneMetadata{zoneId, zoneId}, context);
+    }
 }
 
 void saveChunkToDisk(const Voxel::World& world,
@@ -275,6 +296,7 @@ void saveChunkToDisk(const Voxel::World& world,
     }
 
     auto format = service.openFormat(context);
+    requireSupportedDefaultZone(*format, context);
     saveChunkRegions(world, *format, {coord});
 }
 
@@ -284,6 +306,7 @@ bool loadChunkFromDisk(Voxel::World& world,
                        const Voxel::ChunkCoord& coord,
                        uint32_t worldGenVersion) {
     auto format = service.openFormat(context);
+    requireSupportedDefaultZone(*format, context);
     const auto& layout = format->regionLayout();
     std::string zoneId = kDefaultZoneId;
 

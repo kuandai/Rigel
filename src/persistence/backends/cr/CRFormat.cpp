@@ -9,6 +9,7 @@
 #include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/Chunk.h"
+#include "CRWorldMetadata.h"
 #include "../../RegionFilename.h"
 
 #include <algorithm>
@@ -1416,6 +1417,39 @@ FormatProbe probe() {
         }
         return std::nullopt;
     };
+}
+
+void requireSupportedDefaultZone(const PersistenceContext& context,
+                                 const std::string& supportedZoneId) {
+    if (!context.storage) {
+        throw std::runtime_error("CR default-zone validation requires a storage backend");
+    }
+
+    const std::string path = CRPaths::worldInfoPath(context);
+    if (!context.storage->exists(path)) {
+        return;
+    }
+
+    auto reader = context.storage->openRead(path);
+    std::vector<uint8_t> bytes(reader->size());
+    if (!bytes.empty()) {
+        reader->readBytes(bytes.data(), bytes.size());
+    }
+    const std::string text(bytes.begin(), bytes.end());
+    const auto defaultZoneId = extractJsonString(text, "defaultZoneId");
+    if (!defaultZoneId || defaultZoneId->empty()) {
+        throw std::runtime_error(
+            "CR world metadata at '" + path +
+            "' does not declare defaultZoneId; refusing to open this world "
+            "because its persistence zone cannot be determined");
+    }
+    if (*defaultZoneId != supportedZoneId) {
+        throw std::runtime_error(
+            "CR world metadata at '" + path + "' declares default zone '" +
+            *defaultZoneId + "', but Rigel supports only '" + supportedZoneId +
+            "'; refusing to open this world because alternate-zone persistence "
+            "and async loading are not supported");
+    }
 }
 
 } // namespace Rigel::Persistence::Backends::CR

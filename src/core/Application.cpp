@@ -291,6 +291,10 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
                     ? loader->workCount()
                     : Voxel::StreamingWorkCount{};
             });
+        m_impl->world.worldView->setChunkEvictionCallback(
+            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
+                return loader ? loader->persistChunk(coord) : false;
+            });
 
         Render::RenderConfigProvider renderConfigProvider =
             Render::makeRenderConfigProvider(
@@ -357,6 +361,7 @@ Application::~Application() {
             m_impl->world.worldView->setChunkLoadDrain({});
             m_impl->world.worldView->setChunkLoadCancel({});
             m_impl->world.worldView->setChunkLoadWorkCallback({});
+            m_impl->world.worldView->setChunkEvictionCallback({});
         }
         m_impl->world.chunkLoader.reset();
 

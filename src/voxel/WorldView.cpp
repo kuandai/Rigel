@@ -73,6 +73,10 @@ void WorldView::setChunkLoadWorkCallback(ChunkStreamer::ChunkLoadWorkCallback wo
     m_streamer.setChunkLoadWorkCallback(std::move(work));
 }
 
+void WorldView::setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback evict) {
+    m_streamer.setChunkEvictionCallback(std::move(evict));
+}
+
 void WorldView::setStreamConfig(const StreamingConfig& config) {
     m_streamer.setConfig(config);
 }

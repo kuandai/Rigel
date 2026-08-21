@@ -26,6 +26,11 @@ void saveWorldToDisk(const Voxel::World& world,
                      PersistenceService& service,
                      PersistenceContext context);
 
+void saveChunkToDisk(const Voxel::World& world,
+                     PersistenceService& service,
+                     PersistenceContext context,
+                     const Voxel::ChunkCoord& coord);
+
 bool loadChunkFromDisk(Voxel::World& world,
                        PersistenceService& service,
                        PersistenceContext context,

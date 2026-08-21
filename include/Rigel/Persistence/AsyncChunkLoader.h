@@ -41,6 +41,7 @@ public:
     Voxel::ChunkLoadRequestResult request(Voxel::ChunkCoord coord);
     bool isPending(Voxel::ChunkCoord coord) const;
     void cancel(Voxel::ChunkCoord coord);
+    bool persistChunk(Voxel::ChunkCoord coord);
 
     Voxel::StreamingWorkCount workCount() const;
 
@@ -70,6 +71,7 @@ private:
 
     struct RegionResult {
         RegionKey key;
+        uint64_t revision = 0;
         RegionEntry entry;
         std::string error;
         bool ok = false;
@@ -78,6 +80,8 @@ private:
 
     struct ChunkPayload {
         Voxel::ChunkCoord coord;
+        RegionKey regionKey;
+        uint64_t regionRevision = 0;
         Voxel::ChunkBuffer blocks;
         uint32_t worldGenVersion = 0;
         bool empty = false;
@@ -107,6 +111,7 @@ private:
     bool regionMayExist(const RegionKey& key);
 
     bool applyPayload(const ChunkPayload& payload);
+    void invalidateRegion(const RegionKey& key);
 
     PersistenceService* m_service = nullptr;
     PersistenceContext m_context;
@@ -154,6 +159,7 @@ private:
     };
     std::unordered_map<RegionKey, RegionPresence, RegionKeyHash> m_regionPresence;
     std::unordered_map<RegionKey, size_t, RegionKeyHash> m_regionLoadAttempts;
+    std::unordered_map<RegionKey, uint64_t, RegionKeyHash> m_regionRevisions;
 };
 
 } // namespace Rigel::Persistence

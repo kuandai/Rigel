@@ -305,6 +305,58 @@ private:
     std::atomic<size_t> m_readAttempts = 0;
 };
 
+class TransientWriteFailureStorage final : public StorageBackend {
+public:
+    TransientWriteFailureStorage(std::shared_ptr<StorageBackend> delegate,
+                                 size_t failures)
+        : m_delegate(std::move(delegate)),
+          m_failuresRemaining(failures) {}
+
+    std::unique_ptr<ByteReader> openRead(const std::string& path) override {
+        return m_delegate->openRead(path);
+    }
+
+    std::unique_ptr<AtomicWriteSession> openWrite(
+        const std::string& path,
+        AtomicWriteOptions options) override {
+        ++m_writeAttempts;
+        size_t remaining = m_failuresRemaining.load();
+        while (remaining > 0) {
+            if (m_failuresRemaining.compare_exchange_weak(
+                    remaining,
+                    remaining - 1)) {
+                throw std::runtime_error("injected transient write failure");
+            }
+        }
+        return m_delegate->openWrite(path, options);
+    }
+
+    bool exists(const std::string& path) override {
+        return m_delegate->exists(path);
+    }
+
+    std::vector<std::string> list(const std::string& path) override {
+        return m_delegate->list(path);
+    }
+
+    void mkdirs(const std::string& path) override {
+        m_delegate->mkdirs(path);
+    }
+
+    void remove(const std::string& path) override {
+        m_delegate->remove(path);
+    }
+
+    size_t writeAttempts() const {
+        return m_writeAttempts.load();
+    }
+
+private:
+    std::shared_ptr<StorageBackend> m_delegate;
+    std::atomic<size_t> m_failuresRemaining;
+    std::atomic<size_t> m_writeAttempts = 0;
+};
+
 ChunkRegionSnapshot buildRegionSnapshot(const std::string& zoneId,
                                         const ChunkData& payload) {
     ChunkRegionSnapshot region;
@@ -353,6 +405,32 @@ void saveRegionForPayloads(PersistenceService& service,
         region.chunks.push_back(snapshot);
     }
     format->chunkContainer().saveRegion(region);
+}
+
+void configureStreamerLoader(ChunkStreamer& streamer,
+                             const std::shared_ptr<AsyncChunkLoader>& loader) {
+    streamer.setChunkLoader([loader](ChunkCoord coord) {
+        return loader->request(coord);
+    });
+    streamer.setChunkPendingCallback([loader](ChunkCoord coord) {
+        return loader->isPending(coord);
+    });
+    streamer.setChunkLoadDrain([loader](size_t budget) {
+        return loader->drainCompletions(budget);
+    });
+    streamer.setChunkLoadCancel([loader](ChunkCoord coord) {
+        loader->cancel(coord);
+    });
+    streamer.setChunkEvictionCallback([loader](ChunkCoord coord) {
+        return loader->persistChunk(coord);
+    });
+}
+
+void streamChunk(ChunkStreamer& streamer, ChunkCoord coord) {
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
 }
 }
 
@@ -484,6 +562,251 @@ TEST_CASE(AsyncChunkLoader_ApplyBudget) {
     loader.drainCompletions(4);
     loadedCount = world.chunkManager().loadedChunkCount();
     CHECK_EQ(loadedCount, static_cast<size_t>(2));
+}
+
+TEST_CASE(ChunkStreamer_EvictionPersistenceSurvivesLoaderAndWorldReload) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID original = registerTestBlock(registry, "rigel:eviction_original");
+    const ChunkCoord coord{0, 0, 0};
+    ChunkData payload = buildPayload(
+        coord,
+        registry,
+        {original},
+        false,
+        std::nullopt,
+        false);
+
+    MemoryContext ctx;
+    saveRegionForPayload(
+        ctx.service, ctx.context, "rigel:default", coord, payload);
+    auto loader = std::make_shared<AsyncChunkLoader>(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        0,
+        generator);
+    loader->setPrefetchRadius(0);
+
+    WorldMeshStore meshStore;
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
+    configureStreamerLoader(streamer, loader);
+
+    streamChunk(streamer, coord);
+    Chunk* loaded = world.chunkManager().getChunk(coord);
+    CHECK(loaded != nullptr);
+    if (!loaded) {
+        return;
+    }
+    CHECK_EQ(loaded->getBlock(0, 0, 0).id, original);
+    loaded->fill(BlockState{}, registry);
+    CHECK(loaded->isPersistDirty());
+
+    const ChunkCoord distant{4, 0, 0};
+    streamer.update(distant.toWorldCenter());
+    CHECK(!world.chunkManager().hasChunk(coord));
+
+    streamChunk(streamer, coord);
+    loaded = world.chunkManager().getChunk(coord);
+    CHECK(loaded != nullptr);
+    if (!loaded) {
+        return;
+    }
+    CHECK(loaded->getBlock(0, 0, 0).isAir());
+    CHECK(!loaded->isPersistDirty());
+
+    World reconstructed;
+    reconstructed.initialize(resources);
+    reconstructed.setGenerator(generator);
+    AsyncChunkLoader reconstructedLoader(
+        ctx.service,
+        ctx.context,
+        reconstructed,
+        generator->config().world.version,
+        0,
+        0,
+        0,
+        generator);
+    reconstructedLoader.setPrefetchRadius(0);
+    CHECK_EQ(reconstructedLoader.request(coord), ChunkLoadRequestResult::Queued);
+    reconstructedLoader.drainCompletions(4);
+
+    const Chunk* reconstructedChunk = reconstructed.chunkManager().getChunk(coord);
+    CHECK(reconstructedChunk != nullptr);
+    if (reconstructedChunk) {
+        CHECK(reconstructedChunk->getBlock(0, 0, 0).isAir());
+        CHECK(!reconstructedChunk->isPersistDirty());
+    }
+}
+
+TEST_CASE(AsyncChunkLoader_PersistenceInvalidatesInFlightRegionSnapshot) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID original = registerTestBlock(registry, "rigel:inflight_original");
+    BlockID edited = registerTestBlock(registry, "rigel:inflight_edit");
+    const ChunkCoord coord{0, 0, 0};
+    ChunkData payload = buildPayload(
+        coord,
+        registry,
+        {original},
+        false,
+        std::nullopt,
+        false);
+
+    MemoryContext ctx;
+    saveRegionForPayload(
+        ctx.service, ctx.context, "rigel:default", coord, payload);
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        1,
+        0,
+        0,
+        generator);
+    loader.setPrefetchRadius(0);
+
+    auto regionGate = std::make_shared<LoaderWorkGate>();
+    auto payloadGate = std::make_shared<LoaderWorkGate>();
+    LoaderWorkRelease releaseOnExit(regionGate, payloadGate);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setRegionLoadStartCallback(loader, [regionGate]() {
+            regionGate->enterAndWait();
+        });
+
+    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    bool loadStarted = regionGate->waitUntilEntered();
+    if (!loadStarted) {
+        regionGate->release();
+    }
+    CHECK(loadStarted);
+
+    Chunk& dirty = world.chunkManager().getOrCreateChunk(coord);
+    dirty.fill(BlockState{edited}, registry);
+    dirty.setWorldGenVersion(generator->config().world.version);
+    CHECK(loader.persistChunk(coord));
+    CHECK(!dirty.isPersistDirty());
+    world.chunkManager().unloadChunk(coord);
+
+    regionGate->release();
+    CHECK(waitForRegionCompletion(loader));
+    loader.drainCompletions(4);
+    CHECK(waitForRegionCompletion(loader));
+    loader.drainCompletions(4);
+
+    const Chunk* loaded = world.chunkManager().getChunk(coord);
+    CHECK(loaded != nullptr);
+    if (loaded) {
+        CHECK_EQ(loaded->getBlock(0, 0, 0).id, edited);
+        CHECK(!loaded->isPersistDirty());
+    }
+}
+
+TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID original = registerTestBlock(registry, "rigel:failed_save_original");
+    BlockID edited = registerTestBlock(registry, "rigel:failed_save_edit");
+    const ChunkCoord coord{0, 0, 0};
+    ChunkData payload = buildPayload(
+        coord,
+        registry,
+        {original},
+        false,
+        std::nullopt,
+        false);
+
+    MemoryContext ctx;
+    saveRegionForPayload(
+        ctx.service, ctx.context, "rigel:default", coord, payload);
+    auto failingStorage = std::make_shared<TransientWriteFailureStorage>(
+        ctx.context.storage,
+        1);
+    ctx.context.storage = failingStorage;
+    auto loader = std::make_shared<AsyncChunkLoader>(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        0,
+        generator);
+    loader->setPrefetchRadius(0);
+
+    WorldMeshStore meshStore;
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
+    configureStreamerLoader(streamer, loader);
+
+    streamChunk(streamer, coord);
+    Chunk* loaded = world.chunkManager().getChunk(coord);
+    CHECK(loaded != nullptr);
+    if (!loaded) {
+        return;
+    }
+    loaded->setBlock(0, 0, 0, BlockState{edited}, registry);
+
+    const glm::vec3 distant = ChunkCoord{4, 0, 0}.toWorldCenter();
+    streamer.update(distant);
+    loaded = world.chunkManager().getChunk(coord);
+    CHECK(loaded != nullptr);
+    if (!loaded) {
+        return;
+    }
+    CHECK(loaded->isPersistDirty());
+    CHECK_EQ(loaded->getBlock(0, 0, 0).id, edited);
+    CHECK_EQ(failingStorage->writeAttempts(), static_cast<size_t>(1));
+
+    for (int update = 0; update < 59; ++update) {
+        streamer.update(distant);
+    }
+    CHECK(world.chunkManager().hasChunk(coord));
+    CHECK_EQ(failingStorage->writeAttempts(), static_cast<size_t>(1));
+
+    streamer.update(distant);
+    CHECK(!world.chunkManager().hasChunk(coord));
+    CHECK_EQ(failingStorage->writeAttempts(), static_cast<size_t>(2));
 }
 
 TEST_CASE(ChunkStreamer_SaturatedLoaderPreservesPersistedChunk) {

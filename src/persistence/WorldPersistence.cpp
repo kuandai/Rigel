@@ -26,13 +26,74 @@ namespace {
 
 constexpr const char* kDefaultZoneId = "rigel:default";
 
-bool isAllAir(const ChunkData& data) {
-    for (const auto& block : data.blocks) {
-        if (!block.isAir()) {
-            return false;
+void saveChunkRegions(const Voxel::World& world,
+                      PersistenceFormat& format,
+                      const std::vector<Voxel::ChunkCoord>& dirtyChunks) {
+    const auto& layout = format.regionLayout();
+
+    struct RegionSave {
+        RegionKey key;
+        std::vector<Voxel::ChunkCoord> chunks;
+    };
+
+    std::map<std::tuple<int, int, int>, RegionSave> regions;
+    for (const Voxel::ChunkCoord& coord : dirtyChunks) {
+        RegionKey regionKey = layout.regionForChunk(kDefaultZoneId, coord);
+        auto keyTuple = std::make_tuple(regionKey.x, regionKey.y, regionKey.z);
+        auto& region = regions[keyTuple];
+        if (region.chunks.empty()) {
+            region.key = regionKey;
         }
+        region.chunks.push_back(coord);
     }
-    return true;
+
+    std::set<std::tuple<int, int, int>> existingRegions;
+    for (const auto& key : format.chunkContainer().listRegions(kDefaultZoneId)) {
+        existingRegions.insert(std::make_tuple(key.x, key.y, key.z));
+    }
+
+    for (auto& [coords, regionSave] : regions) {
+        ChunkRegionSnapshot existing;
+        if (existingRegions.contains(coords)) {
+            existing = format.chunkContainer().loadRegion(regionSave.key);
+        } else {
+            existing.key = regionSave.key;
+        }
+
+        using KeyTuple = std::tuple<int32_t, int32_t, int32_t>;
+        std::map<KeyTuple, ChunkSnapshot> merged;
+        for (auto& snapshot : existing.chunks) {
+            KeyTuple key{snapshot.key.x, snapshot.key.y, snapshot.key.z};
+            merged.emplace(key, std::move(snapshot));
+        }
+
+        for (const Voxel::ChunkCoord& coord : regionSave.chunks) {
+            const Voxel::Chunk* chunk = world.chunkManager().getChunk(coord);
+            if (!chunk) {
+                continue;
+            }
+            for (const auto& storageKey :
+                 layout.storageKeysForChunk(kDefaultZoneId, coord)) {
+                KeyTuple key{storageKey.x, storageKey.y, storageKey.z};
+                merged.erase(key);
+
+                ChunkSpan span = layout.spanForStorageKey(storageKey);
+                ChunkData data = serializeChunkSpan(*chunk, span);
+                ChunkSnapshot snapshot;
+                snapshot.key = storageKey;
+                snapshot.data = std::move(data);
+                merged[key] = std::move(snapshot);
+            }
+        }
+
+        ChunkRegionSnapshot out;
+        out.key = regionSave.key;
+        out.chunks.reserve(merged.size());
+        for (auto& entry : merged) {
+            out.chunks.push_back(std::move(entry.second));
+        }
+        format.chunkContainer().saveRegion(out);
+    }
 }
 
 } // namespace
@@ -117,77 +178,14 @@ void saveWorldToDisk(const Voxel::World& world,
                      PersistenceService& service,
                      PersistenceContext context) {
     auto format = service.openFormat(context);
-    const auto& layout = format->regionLayout();
     std::string zoneId = kDefaultZoneId;
-
-    struct RegionSave {
-        RegionKey key;
-        std::vector<Voxel::ChunkCoord> dirtyChunks;
-    };
-
-    std::map<std::tuple<int, int, int>, RegionSave> regions;
+    std::vector<Voxel::ChunkCoord> dirtyChunks;
     world.chunkManager().forEachChunk([&](Voxel::ChunkCoord coord, const Voxel::Chunk& chunk) {
-        if (!chunk.isPersistDirty()) {
-            return;
+        if (chunk.isPersistDirty()) {
+            dirtyChunks.push_back(coord);
         }
-        RegionKey regionKey = layout.regionForChunk(zoneId, coord);
-        auto keyTuple = std::make_tuple(regionKey.x, regionKey.y, regionKey.z);
-        auto& region = regions[keyTuple];
-        if (region.dirtyChunks.empty()) {
-            region.key = regionKey;
-        }
-        region.dirtyChunks.push_back(coord);
     });
-
-    std::set<std::tuple<int, int, int>> existingRegions;
-    for (const auto& key : format->chunkContainer().listRegions(zoneId)) {
-        existingRegions.insert(std::make_tuple(key.x, key.y, key.z));
-    }
-
-    for (auto& [coords, regionSave] : regions) {
-        ChunkRegionSnapshot existing;
-        if (existingRegions.contains(std::make_tuple(regionSave.key.x, regionSave.key.y, regionSave.key.z))) {
-            existing = format->chunkContainer().loadRegion(regionSave.key);
-        } else {
-            existing.key = regionSave.key;
-        }
-        using KeyTuple = std::tuple<int32_t, int32_t, int32_t>;
-        std::map<KeyTuple, ChunkSnapshot> merged;
-        for (auto& snapshot : existing.chunks) {
-            KeyTuple key{snapshot.key.x, snapshot.key.y, snapshot.key.z};
-            merged.emplace(key, std::move(snapshot));
-        }
-
-        for (const Voxel::ChunkCoord& coord : regionSave.dirtyChunks) {
-            const Voxel::Chunk* chunk = world.chunkManager().getChunk(coord);
-            if (!chunk) {
-                continue;
-            }
-            for (const auto& storageKey : layout.storageKeysForChunk(zoneId, coord)) {
-                KeyTuple key{storageKey.x, storageKey.y, storageKey.z};
-                merged.erase(key);
-
-                ChunkSpan span = layout.spanForStorageKey(storageKey);
-                ChunkData data = serializeChunkSpan(*chunk, span);
-                if (isAllAir(data)) {
-                    continue;
-                }
-                ChunkSnapshot snapshot;
-                snapshot.key = storageKey;
-                snapshot.data = std::move(data);
-                merged[key] = std::move(snapshot);
-            }
-        }
-
-        ChunkRegionSnapshot out;
-        out.key = regionSave.key;
-        out.chunks.reserve(merged.size());
-        for (auto& entry : merged) {
-            out.chunks.push_back(std::move(entry.second));
-        }
-
-        format->chunkContainer().saveRegion(out);
-    }
+    saveChunkRegions(world, *format, dirtyChunks);
 
     struct EntityRegionSave {
         EntityRegionKey key;
@@ -262,6 +260,19 @@ void saveWorldToDisk(const Voxel::World& world,
     worldSnapshot.metadata.displayName = worldSnapshot.metadata.worldId;
     worldSnapshot.zones.push_back(ZoneMetadata{zoneId, zoneId});
     service.saveWorld(worldSnapshot, SaveScope::MetadataOnly, context);
+}
+
+void saveChunkToDisk(const Voxel::World& world,
+                     PersistenceService& service,
+                     PersistenceContext context,
+                     const Voxel::ChunkCoord& coord) {
+    const Voxel::Chunk* chunk = world.chunkManager().getChunk(coord);
+    if (!chunk || !chunk->isPersistDirty()) {
+        return;
+    }
+
+    auto format = service.openFormat(context);
+    saveChunkRegions(world, *format, {coord});
 }
 
 bool loadChunkFromDisk(Voxel::World& world,

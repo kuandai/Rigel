@@ -97,6 +97,45 @@ TEST_CASE(ChunkManager_UnloadInvalidatesSurvivingFaceNeighborsOnce) {
     }
 }
 
+TEST_CASE(ChunkManager_ReplacementInvalidatesSurvivingFaceNeighborsOnce) {
+    ChunkManager manager;
+    const ChunkCoord center{0, 0, 0};
+    manager.getOrCreateChunk(center).clearDirty();
+
+    std::array<ChunkCoord, DirectionCount> neighborCoords{};
+    std::array<uint32_t, DirectionCount> neighborRevisions{};
+    for (size_t i = 0; i < DirectionCount; ++i) {
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(static_cast<Direction>(i), dx, dy, dz);
+        neighborCoords[i] = center.offset(dx, dy, dz);
+        Chunk& neighbor = manager.getOrCreateChunk(neighborCoords[i]);
+        neighbor.clearDirty();
+        neighborRevisions[i] = neighbor.meshRevision();
+    }
+
+    Chunk replacement(center);
+    BlockState replacementState;
+    replacementState.id.type = 6;
+    replacement.setBlock(1, 1, 1, replacementState);
+    auto replacementData = replacement.serialize();
+
+    manager.loadChunk(center, replacementData);
+    manager.loadChunk(center, replacementData);
+
+    CHECK_EQ(manager.loadedChunkCount(), static_cast<size_t>(DirectionCount + 1));
+    CHECK_EQ(manager.getBlock(1, 1, 1), replacementState);
+    for (size_t i = 0; i < DirectionCount; ++i) {
+        const Chunk* neighbor = manager.getChunk(neighborCoords[i]);
+        CHECK(neighbor != nullptr);
+        if (neighbor) {
+            CHECK(neighbor->isDirty());
+            CHECK_EQ(neighbor->meshRevision(), neighborRevisions[i] + 1);
+        }
+    }
+}
+
 TEST_CASE(ChunkManager_MoveRetainsChangeTracking) {
     ChunkManager source;
     source.getOrCreateChunk({0, 0, 0}).clearDirty();

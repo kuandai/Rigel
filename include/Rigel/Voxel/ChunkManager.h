@@ -206,6 +206,7 @@ private:
     friend class ChunkStreamer;
 
     void rebindMeshChangeTracking();
+    void invalidateFaceNeighbors(ChunkCoord coord);
     void notifyMeshChange(ChunkCoord coord);
     std::vector<ChunkCoord> consumeDirtyMeshNotifications();
 

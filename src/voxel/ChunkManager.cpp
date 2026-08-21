@@ -36,6 +36,18 @@ void ChunkManager::rebindMeshChangeTracking() {
     }
 }
 
+void ChunkManager::invalidateFaceNeighbors(ChunkCoord coord) {
+    for (size_t i = 0; i < DirectionCount; ++i) {
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(static_cast<Direction>(i), dx, dy, dz);
+        if (Chunk* neighbor = getChunk(coord.offset(dx, dy, dz))) {
+            neighbor->invalidateMesh();
+        }
+    }
+}
+
 void ChunkManager::notifyMeshChange(ChunkCoord coord) {
     m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
     if (m_dirtyMeshQueued.insert(coord).second) {
@@ -170,7 +182,13 @@ void ChunkManager::loadChunk(ChunkCoord coord, std::span<const uint8_t> data) {
         newChunk->copyFrom(blocks);
     }
 
-    m_chunks[coord] = std::move(newChunk);
+    auto existing = m_chunks.find(coord);
+    if (existing != m_chunks.end()) {
+        invalidateFaceNeighbors(coord);
+        existing->second = std::move(newChunk);
+    } else {
+        m_chunks.emplace(coord, std::move(newChunk));
+    }
 
     spdlog::debug("Loaded chunk at ({}, {}, {})", coord.x, coord.y, coord.z);
 }
@@ -178,15 +196,7 @@ void ChunkManager::loadChunk(ChunkCoord coord, std::span<const uint8_t> data) {
 void ChunkManager::unloadChunk(ChunkCoord coord) {
     auto it = m_chunks.find(coord);
     if (it != m_chunks.end()) {
-        for (size_t i = 0; i < DirectionCount; ++i) {
-            int dx = 0;
-            int dy = 0;
-            int dz = 0;
-            directionOffset(static_cast<Direction>(i), dx, dy, dz);
-            if (Chunk* neighbor = getChunk(coord.offset(dx, dy, dz))) {
-                neighbor->invalidateMesh();
-            }
-        }
+        invalidateFaceNeighbors(coord);
         m_chunks.erase(it);
         m_dirtyMeshQueued.erase(coord);
         m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);

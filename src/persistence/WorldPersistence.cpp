@@ -110,7 +110,7 @@ void loadWorldFromDisk(Voxel::World& world,
                        PersistenceService& service,
                        PersistenceContext context,
                        uint32_t worldGenVersion,
-                       SaveScope scope) {
+                       LoadScope scope) {
     world.clear();
     world.chunkManager().clearDirtyFlags();
 
@@ -262,7 +262,7 @@ void saveWorldToDisk(const Voxel::World& world,
     worldSnapshot.metadata.worldId = "world_" + std::to_string(world.id());
     worldSnapshot.metadata.displayName = worldSnapshot.metadata.worldId;
     worldSnapshot.zones.push_back(ZoneMetadata{zoneId, zoneId});
-    service.saveWorld(worldSnapshot, SaveScope::MetadataOnly, context);
+    service.saveWorld(worldSnapshot, context);
 }
 
 void saveChunkToDisk(const Voxel::World& world,

@@ -34,17 +34,15 @@ Core storage types live in `Rigel::Persistence::Types`:
 `ChunkSpan` allows partial chunk storage by addressing a sub-region inside a
 chunk. A region file can contain multiple spans for the same chunk.
 
-### 2.2 SaveScope
+### 2.2 LoadScope
 
-Save/load operations can be scoped:
+World loading can be scoped:
 
-- `MetadataOnly`
 - `ChunksOnly`
 - `EntitiesOnly`
 - `All`
 
-Helper functions `includesMetadata`, `includesChunks`, and `includesEntities`
-are used by the service.
+Helper functions select chunk and entity payloads from the requested scope.
 
 ---
 
@@ -183,6 +181,9 @@ Current behavior:
 
 - The default zone ID is `rigel:default`.
 - The world root path is `saves/world_<worldId>`.
+- `PersistenceService::saveWorld` writes world and zone metadata only.
+- `PersistenceService::saveZoneMetadata` writes one zone's metadata only.
+- `PersistenceService` chunk and entity payload writes require explicit region snapshots.
 - Only chunks marked `isPersistDirty()` are saved.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,
   and all-air spans are skipped.

@@ -43,27 +43,19 @@ void PersistenceService::handleUnsupportedFeature(const PersistenceContext& cont
     }
 }
 
-void PersistenceService::saveWorld(const WorldSnapshot& snapshot, SaveScope scope, const PersistenceContext& context) {
+void PersistenceService::saveWorld(const WorldSnapshot& snapshot, const PersistenceContext& context) {
     auto format = resolve(context);
 
-    if (includesMetadata(scope)) {
-        auto& codec = format->worldMetadataCodec();
-        auto path = codec.metadataPath(context);
-        context.storage->mkdirs(parentPath(path));
-        auto session = context.storage->openWrite(path, AtomicWriteOptions{});
-        codec.write(snapshot.metadata, session->writer());
-        session->writer().flush();
-        session->commit();
+    auto& codec = format->worldMetadataCodec();
+    auto path = codec.metadataPath(context);
+    context.storage->mkdirs(parentPath(path));
+    auto session = context.storage->openWrite(path, AtomicWriteOptions{});
+    codec.write(snapshot.metadata, session->writer());
+    session->writer().flush();
+    session->commit();
 
-        for (const auto& zoneMeta : snapshot.zones) {
-            ZoneSnapshot zoneSnapshot;
-            zoneSnapshot.metadata = zoneMeta;
-            saveZone(zoneSnapshot, SaveScope::MetadataOnly, context);
-        }
-    }
-
-    if (includesChunks(scope) || includesEntities(scope)) {
-        handleUnsupportedFeature(context, "saveWorld: payload saves must be handled per-zone");
+    for (const auto& zoneMetadata : snapshot.zones) {
+        saveZoneMetadata(zoneMetadata, context);
     }
 }
 
@@ -75,39 +67,16 @@ WorldMetadata PersistenceService::loadWorldMetadata(const PersistenceContext& co
     return codec.read(*reader);
 }
 
-void PersistenceService::saveZone(const ZoneSnapshot& snapshot, SaveScope scope, const PersistenceContext& context) {
+void PersistenceService::saveZoneMetadata(const ZoneMetadata& metadata, const PersistenceContext& context) {
     auto format = resolve(context);
-
-    if (includesMetadata(scope)) {
-        auto& codec = format->zoneMetadataCodec();
-        ZoneKey key{snapshot.metadata.zoneId};
-        auto path = codec.metadataPath(key, context);
-        context.storage->mkdirs(parentPath(path));
-        auto session = context.storage->openWrite(path, AtomicWriteOptions{});
-        codec.write(snapshot.metadata, session->writer());
-        session->writer().flush();
-        session->commit();
-    }
-
-    if (includesChunks(scope)) {
-        for (const auto& regionKey : snapshot.regions) {
-            ChunkRegionSnapshot region;
-            region.key = regionKey;
-            format->chunkContainer().saveRegion(region);
-        }
-    }
-
-    if (includesEntities(scope)) {
-        if (!format->descriptor().capabilities.supportsEntityRegions) {
-            handleUnsupportedFeature(context, "saveZone: entity regions not supported by format");
-            return;
-        }
-        for (const auto& entityKey : snapshot.entityRegions) {
-            EntityRegionSnapshot region;
-            region.key = entityKey;
-            format->entityContainer().saveRegion(region);
-        }
-    }
+    auto& codec = format->zoneMetadataCodec();
+    ZoneKey key{metadata.zoneId};
+    auto path = codec.metadataPath(key, context);
+    context.storage->mkdirs(parentPath(path));
+    auto session = context.storage->openWrite(path, AtomicWriteOptions{});
+    codec.write(metadata, session->writer());
+    session->writer().flush();
+    session->commit();
 }
 
 ZoneMetadata PersistenceService::loadZoneMetadata(const ZoneKey& key, const PersistenceContext& context) {

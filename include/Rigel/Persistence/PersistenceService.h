@@ -10,10 +10,10 @@ public:
 
     std::unique_ptr<PersistenceFormat> openFormat(const PersistenceContext& context) const;
 
-    void saveWorld(const WorldSnapshot& snapshot, SaveScope scope, const PersistenceContext& context);
+    void saveWorld(const WorldSnapshot& snapshot, const PersistenceContext& context);
     WorldMetadata loadWorldMetadata(const PersistenceContext& context);
 
-    void saveZone(const ZoneSnapshot& snapshot, SaveScope scope, const PersistenceContext& context);
+    void saveZoneMetadata(const ZoneMetadata& metadata, const PersistenceContext& context);
     ZoneMetadata loadZoneMetadata(const ZoneKey& key, const PersistenceContext& context);
 
     void saveRegion(const ChunkRegionSnapshot& region, const PersistenceContext& context);

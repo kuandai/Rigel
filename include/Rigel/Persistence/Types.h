@@ -170,29 +170,18 @@ struct WorldSnapshot {
     std::vector<ZoneMetadata> zones;
 };
 
-struct ZoneSnapshot {
-    ZoneMetadata metadata;
-    std::vector<RegionKey> regions;
-    std::vector<EntityRegionKey> entityRegions;
-};
-
-enum class SaveScope {
-    MetadataOnly,
+enum class LoadScope {
     ChunksOnly,
     EntitiesOnly,
     All
 };
 
-inline bool includesMetadata(SaveScope scope) {
-    return scope == SaveScope::MetadataOnly || scope == SaveScope::All;
+inline bool includesChunks(LoadScope scope) {
+    return scope == LoadScope::ChunksOnly || scope == LoadScope::All;
 }
 
-inline bool includesChunks(SaveScope scope) {
-    return scope == SaveScope::ChunksOnly || scope == SaveScope::All;
-}
-
-inline bool includesEntities(SaveScope scope) {
-    return scope == SaveScope::EntitiesOnly || scope == SaveScope::All;
+inline bool includesEntities(LoadScope scope) {
+    return scope == LoadScope::EntitiesOnly || scope == LoadScope::All;
 }
 
 enum class UnknownIdPolicy {

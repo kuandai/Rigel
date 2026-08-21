@@ -228,7 +228,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
             m_impl->world.worldSet.persistenceService(),
             persistenceContext,
             generator->config().world.version,
-            Persistence::SaveScope::EntitiesOnly);
+            Persistence::LoadScope::EntitiesOnly);
 
         uint32_t worldGenVersion = generator->config().world.version;
         size_t ioThreads = static_cast<size_t>(

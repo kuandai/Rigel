@@ -369,7 +369,7 @@ TEST_CASE(Persistence_MetadataRoundTrip) {
     world.metadata.displayName = "World Alpha";
     world.zones.push_back(ZoneMetadata{"zone-main", "Main"});
 
-    service.saveWorld(world, SaveScope::MetadataOnly, context);
+    service.saveWorld(world, context);
 
     auto loaded = service.loadWorldMetadata(context);
     CHECK_EQ(loaded.worldId, world.metadata.worldId);
@@ -388,15 +388,73 @@ TEST_CASE(Persistence_ZoneMetadataRoundTrip) {
     context.preferredFormat = "memory";
     context.storage = storage;
 
-    ZoneSnapshot zone;
-    zone.metadata.zoneId = "zone-main";
-    zone.metadata.displayName = "Main Zone";
+    ZoneMetadata zone;
+    zone.zoneId = "zone-main";
+    zone.displayName = "Main Zone";
 
-    service.saveZone(zone, SaveScope::MetadataOnly, context);
+    service.saveZoneMetadata(zone, context);
 
     auto loaded = service.loadZoneMetadata(ZoneKey{"zone-main"}, context);
-    CHECK_EQ(loaded.zoneId, zone.metadata.zoneId);
-    CHECK_EQ(loaded.displayName, zone.metadata.displayName);
+    CHECK_EQ(loaded.zoneId, zone.zoneId);
+    CHECK_EQ(loaded.displayName, zone.displayName);
+}
+
+TEST_CASE(Persistence_MetadataSavesPreserveExistingPayloads) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
+
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{"zone-main", 1, 2, 3};
+    chunk.data.span.chunkX = 1;
+    chunk.data.span.chunkY = 2;
+    chunk.data.span.chunkZ = 3;
+    chunk.data.span.sizeX = 1;
+    chunk.data.span.sizeY = 1;
+    chunk.data.span.sizeZ = 1;
+    chunk.data.blocks.push_back(Rigel::Voxel::BlockState{Rigel::Voxel::BlockID{1}, 2, 3});
+
+    ChunkRegionSnapshot chunkRegion;
+    chunkRegion.key = RegionKey{"zone-main", 0, 0, 0};
+    chunkRegion.chunks.push_back(chunk);
+    service.saveRegion(chunkRegion, context);
+
+    EntityPersistedChunk entityChunk;
+    entityChunk.coord = Rigel::Voxel::ChunkCoord{1, 2, 3};
+    EntityPersistedEntity entity;
+    entity.typeId = "rigel:test_entity";
+    entity.id.time = 1;
+    entity.id.random = 2;
+    entity.id.counter = 3;
+    entity.position = glm::vec3(1.0f, 2.0f, 3.0f);
+    entity.modelId = "models/entities/test";
+    entityChunk.entities.push_back(entity);
+
+    EntityRegionSnapshot entityRegion;
+    entityRegion.key = EntityRegionKey{"zone-main", 0, 0, 0};
+    entityRegion.chunks.push_back(entityChunk);
+    service.saveEntities(entityRegion, context);
+
+    ZoneMetadata zone{"zone-main", "Main Zone"};
+    service.saveZoneMetadata(zone, context);
+
+    CHECK_EQ(service.loadRegion(chunkRegion.key, context), chunkRegion);
+    CHECK_EQ(service.loadEntities(entityRegion.key, context), entityRegion);
+
+    WorldSnapshot world;
+    world.metadata = WorldMetadata{"world-main", "Main World"};
+    world.zones.push_back(zone);
+    service.saveWorld(world, context);
+
+    CHECK_EQ(service.loadRegion(chunkRegion.key, context), chunkRegion);
+    CHECK_EQ(service.loadEntities(entityRegion.key, context), entityRegion);
 }
 
 TEST_CASE(Persistence_RegionRoundTrip) {

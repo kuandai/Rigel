@@ -664,11 +664,67 @@ TEST_CASE(CRBackend_world_metadata_roundtrip) {
     world.metadata.worldId = "demo";
     world.metadata.displayName = "Demo World";
 
-    service.saveWorld(world, SaveScope::MetadataOnly, context);
+    service.saveWorld(world, context);
     auto loaded = service.loadWorldMetadata(context);
 
     CHECK_EQ(loaded.worldId, "demo");
     CHECK_EQ(loaded.displayName, "Demo World");
+}
+
+TEST_CASE(CRBackend_metadata_saves_preserve_existing_payloads) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/demo";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{"zone:default", 1, 0, 0};
+    chunk.data = makeMinimalChunkData(chunk.key);
+
+    ChunkRegionSnapshot chunkRegion;
+    chunkRegion.key = RegionKey{"zone:default", 0, 0, 0};
+    chunkRegion.chunks.push_back(chunk);
+    service.saveRegion(chunkRegion, context);
+
+    EntityPersistedEntity entity;
+    entity.typeId = "rigel:test_entity";
+    entity.id.time = 1;
+    entity.id.random = 2;
+    entity.id.counter = 3;
+    entity.position = glm::vec3(1.0f, 2.0f, 3.0f);
+
+    EntityPersistedChunk entityChunk;
+    entityChunk.coord = Rigel::Voxel::ChunkCoord{1, 0, 0};
+    entityChunk.entities.push_back(entity);
+
+    EntityRegionSnapshot entityRegion;
+    entityRegion.key = EntityRegionKey{"zone:default", 0, 0, 0};
+    entityRegion.chunks.push_back(entityChunk);
+    service.saveEntities(entityRegion, context);
+
+    const auto chunkPath = CRPaths::regionPath(chunkRegion.key, context);
+    const auto entityPath = CRPaths::entityRegionPath(entityRegion.key, context);
+    const auto chunkPayload = readAll(*storage, chunkPath);
+    const auto entityPayload = readAll(*storage, entityPath);
+
+    ZoneMetadata zone{"zone:default", "Default Zone"};
+    service.saveZoneMetadata(zone, context);
+
+    CHECK_EQ(readAll(*storage, chunkPath), chunkPayload);
+    CHECK_EQ(readAll(*storage, entityPath), entityPayload);
+
+    WorldSnapshot world;
+    world.metadata = WorldMetadata{"demo", "Demo World"};
+    world.zones.push_back(zone);
+    service.saveWorld(world, context);
+
+    CHECK_EQ(readAll(*storage, chunkPath), chunkPayload);
+    CHECK_EQ(readAll(*storage, entityPath), entityPayload);
 }
 
 TEST_CASE(CRBackend_region_roundtrip_lz4) {

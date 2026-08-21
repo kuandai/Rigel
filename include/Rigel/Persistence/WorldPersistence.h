@@ -20,7 +20,7 @@ void loadWorldFromDisk(Voxel::World& world,
                        PersistenceService& service,
                        PersistenceContext context,
                        uint32_t worldGenVersion,
-                       SaveScope scope = SaveScope::All);
+                       LoadScope scope = LoadScope::All);
 
 void saveWorldToDisk(const Voxel::World& world,
                      PersistenceService& service,

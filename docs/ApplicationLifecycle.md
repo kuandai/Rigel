@@ -52,7 +52,7 @@ Shutdown persists world state and releases resources.
 7. Load world config and create `World` + `WorldView`.
    - `WorldGenerator` is created and attached to both.
 8. Load entity data from disk (chunks are lazy-loaded).
-   - `loadWorldFromDisk(..., SaveScope::EntitiesOnly)` loads only entities.
+   - `loadWorldFromDisk(..., LoadScope::EntitiesOnly)` loads only entities.
 9. Create the async chunk loader (disk IO) and wire it into `WorldView`.
    - Loader provides non-blocking requests + budgeted apply callbacks.
 10. Load and apply render config, the profiling environment override, and

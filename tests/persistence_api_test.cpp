@@ -222,6 +222,11 @@ private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
 };
 
+void createEmptyFile(StorageBackend& storage, const std::string& path) {
+    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    session->commit();
+}
+
 class NullWorldMetadataCodec final : public WorldMetadataCodec {
 public:
     std::string metadataPath(const PersistenceContext& context) const override {
@@ -459,6 +464,40 @@ TEST_CASE(Persistence_EntityRegionRoundTrip) {
 
     auto loaded = service.loadEntities(entityRegion.key, context);
     CHECK_EQ(loaded, entityRegion);
+}
+
+TEST_CASE(MemoryFormat_region_discovery_requires_canonical_filenames) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.storage = storage;
+    const std::string zoneId = "zone-main";
+    const auto zoneRoot = context.rootPath + "/zones/" + zoneId;
+
+    const auto regionsRoot = zoneRoot + "/regions";
+    createEmptyFile(*storage, regionsRoot);
+    createEmptyFile(*storage, regionsRoot + "/region_-12_3_0.mem");
+    createEmptyFile(*storage, regionsRoot + "/region_4_5_6.mem.tmp.123");
+    createEmptyFile(*storage, regionsRoot + "/region_7_8_9.mem.bak");
+    createEmptyFile(*storage, regionsRoot + "/region_01_2_3.mem");
+    createEmptyFile(*storage, regionsRoot + "/region_10_11_12");
+
+    const auto entitiesRoot = zoneRoot + "/entities";
+    createEmptyFile(*storage, entitiesRoot);
+    createEmptyFile(*storage, entitiesRoot + "/entityRegion_6_-7_8.mem");
+    createEmptyFile(*storage, entitiesRoot + "/entityRegion_1_2_3.mem.tmp.456");
+    createEmptyFile(*storage, entitiesRoot + "/entityRegion_4_5_6.mem.bak");
+    createEmptyFile(*storage, entitiesRoot + "/entityRegion_-0_7_8.mem");
+    createEmptyFile(*storage, entitiesRoot + "/entityRegion_9_10_11");
+
+    auto format = Backends::Memory::factory()(context);
+    const auto regions = format->chunkContainer().listRegions(zoneId);
+    const auto entityRegions = format->entityContainer().listRegions(zoneId);
+
+    CHECK_EQ(regions.size(), 1u);
+    CHECK_EQ(regions.front(), (RegionKey{zoneId, -12, 3, 0}));
+    CHECK_EQ(entityRegions.size(), 1u);
+    CHECK_EQ(entityRegions.front(), (EntityRegionKey{zoneId, 6, -7, 8}));
 }
 
 TEST_CASE(Persistence_PartialChunkSupport) {

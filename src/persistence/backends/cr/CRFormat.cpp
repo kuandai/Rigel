@@ -9,11 +9,11 @@
 #include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/Chunk.h"
+#include "../../RegionFilename.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <stdexcept>
@@ -159,12 +159,14 @@ std::string basename(const std::string& path) {
     return trimmed.substr(pos + 1);
 }
 
-bool parseRegionFilename(const std::string& name, int& rx, int& ry, int& rz) {
-    return std::sscanf(name.c_str(), "region_%d_%d_%d.cosmicreach", &rx, &ry, &rz) == 3;
+bool parseRegionFilename(const std::string& name, int32_t& rx, int32_t& ry, int32_t& rz) {
+    return detail::parseCanonicalRegionFilename(
+        name, "region_", ".cosmicreach", rx, ry, rz);
 }
 
-bool parseEntityRegionFilename(const std::string& name, int& rx, int& ry, int& rz) {
-    return std::sscanf(name.c_str(), "entityRegion_%d_%d_%d.crbin", &rx, &ry, &rz) == 3;
+bool parseEntityRegionFilename(const std::string& name, int32_t& rx, int32_t& ry, int32_t& rz) {
+    return detail::parseCanonicalRegionFilename(
+        name, "entityRegion_", ".crbin", rx, ry, rz);
 }
 
 std::array<uint8_t, 4> encodeI32(int32_t value) {
@@ -1174,9 +1176,9 @@ public:
         }
         for (const auto& entry : m_storage->list(dir)) {
             std::string name = std::filesystem::path(entry).filename().string();
-            int rx = 0;
-            int ry = 0;
-            int rz = 0;
+            int32_t rx = 0;
+            int32_t ry = 0;
+            int32_t rz = 0;
             if (!parseRegionFilename(name, rx, ry, rz)) {
                 continue;
             }
@@ -1245,9 +1247,9 @@ public:
         }
         for (const auto& entry : m_storage->list(dir)) {
             std::string name = std::filesystem::path(entry).filename().string();
-            int rx = 0;
-            int ry = 0;
-            int rz = 0;
+            int32_t rx = 0;
+            int32_t ry = 0;
+            int32_t rz = 0;
             if (!parseEntityRegionFilename(name, rx, ry, rz)) {
                 continue;
             }

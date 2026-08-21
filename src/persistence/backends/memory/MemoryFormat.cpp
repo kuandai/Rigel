@@ -3,9 +3,9 @@
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/ChunkCoord.h"
 #include "Rigel/Voxel/Chunk.h"
+#include "../../RegionFilename.h"
 
 #include <bit>
-#include <cstdio>
 #include <filesystem>
 #include <stdexcept>
 #include <utility>
@@ -139,12 +139,13 @@ ChunkSpan readChunkSpan(ByteReader& reader) {
     return span;
 }
 
-bool parseRegionFilename(const std::string& name, int& rx, int& ry, int& rz) {
-    return std::sscanf(name.c_str(), "region_%d_%d_%d.mem", &rx, &ry, &rz) == 3;
+bool parseRegionFilename(const std::string& name, int32_t& rx, int32_t& ry, int32_t& rz) {
+    return detail::parseCanonicalRegionFilename(name, "region_", ".mem", rx, ry, rz);
 }
 
-bool parseEntityRegionFilename(const std::string& name, int& rx, int& ry, int& rz) {
-    return std::sscanf(name.c_str(), "entityRegion_%d_%d_%d.mem", &rx, &ry, &rz) == 3;
+bool parseEntityRegionFilename(const std::string& name, int32_t& rx, int32_t& ry, int32_t& rz) {
+    return detail::parseCanonicalRegionFilename(
+        name, "entityRegion_", ".mem", rx, ry, rz);
 }
 
 int32_t floorDiv(int32_t value, int32_t divisor) {
@@ -367,9 +368,9 @@ public:
         }
         for (const auto& entry : m_storage->list(dir)) {
             std::string name = std::filesystem::path(entry).filename().string();
-            int rx = 0;
-            int ry = 0;
-            int rz = 0;
+            int32_t rx = 0;
+            int32_t ry = 0;
+            int32_t rz = 0;
             if (!parseRegionFilename(name, rx, ry, rz)) {
                 continue;
             }
@@ -437,9 +438,9 @@ public:
         }
         for (const auto& entry : m_storage->list(dir)) {
             std::string name = std::filesystem::path(entry).filename().string();
-            int rx = 0;
-            int ry = 0;
-            int rz = 0;
+            int32_t rx = 0;
+            int32_t ry = 0;
+            int32_t rz = 0;
             if (!parseEntityRegionFilename(name, rx, ry, rz)) {
                 continue;
             }

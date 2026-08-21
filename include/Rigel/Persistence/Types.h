@@ -112,6 +112,8 @@ struct ChunkData {
 struct ChunkSnapshot {
     ChunkKey key;
     ChunkData data;
+    // Format-owned source bytes are valid only while key and data remain unchanged.
+    std::vector<uint8_t> opaquePayload;
 
     bool operator==(const ChunkSnapshot& other) const {
         return key == other.key && data == other.data;

@@ -7,12 +7,18 @@
 #include "Rigel/Persistence/Backends/CR/CRBin.h"
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
 #include "Rigel/Persistence/Backends/CR/CRLz4.h"
+#include "Rigel/Persistence/Providers.h"
+#include "Rigel/Persistence/WorldPersistence.h"
 #include "Rigel/Voxel/Block.h"
+#include "Rigel/Voxel/BlockType.h"
+#include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldResources.h"
 
 #include <filesystem>
 #include "Rigel/Persistence/Storage.h"
 
 #include <algorithm>
+#include <array>
 #include <unordered_map>
 
 using namespace Rigel::Persistence;
@@ -246,6 +252,151 @@ ChunkData makeMinimalChunkData(const ChunkKey& key) {
     return data;
 }
 
+Rigel::Voxel::BlockID registerTestBlock(Rigel::Voxel::BlockRegistry& registry,
+                                        const std::string& identifier) {
+    Rigel::Voxel::BlockType block;
+    block.identifier = identifier;
+    block.isOpaque = true;
+    block.isSolid = true;
+    return registry.registerBlock(identifier, std::move(block));
+}
+
+void writeFixtureString(ByteWriter& writer, const std::string& value) {
+    writer.writeI32(static_cast<int32_t>(value.size()));
+    writer.writeBytes(reinterpret_cast<const uint8_t*>(value.data()), value.size());
+}
+
+std::vector<uint8_t> makeFixtureRecord(const ChunkKey& key,
+                                       const std::string& blockIdentifier,
+                                       bool includeOptionalPayloads) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeI32(key.x);
+    writer.writeI32(key.y);
+    writer.writeI32(key.z);
+
+    if (!includeOptionalPayloads) {
+        writer.writeU8(1);
+        writeFixtureString(writer, blockIdentifier);
+        writer.writeU8(1);
+        writer.writeU8(1);
+        writer.writeU8(0);
+        return bytes;
+    }
+
+    writer.writeU8(2);
+    writer.writeI32(2);
+    writeFixtureString(writer, blockIdentifier);
+    writeFixtureString(writer, "base:air");
+    const std::array<uint8_t, 32> paletteIndices{};
+    for (int layer = 0; layer < 16; ++layer) {
+        writer.writeU8(7);
+        writer.writeBytes(paletteIndices.data(), paletteIndices.size());
+    }
+    writer.writeU8(3);
+    writer.writeU8(0x0D);
+    writer.writeU8(2);
+    for (uint8_t layer = 0; layer < 16; ++layer) {
+        writer.writeU8(1);
+        writer.writeU8(static_cast<uint8_t>(0x20 + layer));
+        writer.writeU8(static_cast<uint8_t>(0x40 + layer));
+        writer.writeU8(static_cast<uint8_t>(0x60 + layer));
+    }
+    const std::array<uint8_t, 5> blockEntity{0xDE, 0xAD, 0xBE, 0xEF, 0x42};
+    writer.writeU8(1);
+    writer.writeI32(static_cast<int32_t>(blockEntity.size()));
+    writer.writeBytes(blockEntity.data(), blockEntity.size());
+    return bytes;
+}
+
+void writeFixtureRegion(StorageBackend& storage,
+                        const std::string& path,
+                        const std::vector<std::vector<uint8_t>>& records) {
+    auto separator = path.find_last_of('/');
+    if (separator != std::string::npos) {
+        createEmptyFile(storage, path.substr(0, separator));
+    }
+    std::array<std::vector<std::vector<uint8_t>>, 16 * 16> columns;
+    for (const auto& record : records) {
+        InMemoryByteReader reader(record);
+        int32_t x = reader.readI32();
+        reader.readI32();
+        int32_t z = reader.readI32();
+        columns[static_cast<size_t>(x + z * 16)].push_back(record);
+    }
+
+    std::array<int32_t, 16 * 16> offsets;
+    offsets.fill(-1);
+    std::vector<uint8_t> columnBytes;
+    InMemoryByteWriter columnWriter(columnBytes);
+    int32_t columnCount = 0;
+    for (size_t index = 0; index < columns.size(); ++index) {
+        const auto& column = columns[index];
+        if (column.empty()) {
+            continue;
+        }
+        offsets[index] = static_cast<int32_t>(columnBytes.size());
+        ++columnCount;
+        size_t columnStart = columnWriter.tell();
+        columnWriter.writeI32(0);
+        columnWriter.writeI32(4);
+        columnWriter.writeU8(static_cast<uint8_t>(column.size()));
+        for (const auto& record : column) {
+            columnWriter.writeBytes(record.data(), record.size());
+        }
+        std::array<uint8_t, 4> columnSize{
+            static_cast<uint8_t>(((columnBytes.size() - columnStart) >> 24) & 0xFF),
+            static_cast<uint8_t>(((columnBytes.size() - columnStart) >> 16) & 0xFF),
+            static_cast<uint8_t>(((columnBytes.size() - columnStart) >> 8) & 0xFF),
+            static_cast<uint8_t>((columnBytes.size() - columnStart) & 0xFF)
+        };
+        columnWriter.writeAt(columnStart, columnSize.data(), columnSize.size());
+    }
+
+    std::vector<uint8_t> regionBytes;
+    InMemoryByteWriter writer(regionBytes);
+    writer.writeI32(static_cast<int32_t>(0xFFECCEAC));
+    writer.writeI32(4);
+    writer.writeI32(0);
+    writer.writeI32(columnCount);
+    writer.writeU8(2);
+    for (int32_t offset : offsets) {
+        writer.writeU16(static_cast<uint16_t>(offset));
+    }
+    writer.writeBytes(columnBytes.data(), columnBytes.size());
+
+    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    session->writer().writeBytes(regionBytes.data(), regionBytes.size());
+    session->writer().flush();
+    session->commit();
+}
+
+std::vector<uint8_t> readAll(StorageBackend& storage, const std::string& path) {
+    auto reader = storage.openRead(path);
+    std::vector<uint8_t> bytes(reader->size());
+    reader->readBytes(bytes.data(), bytes.size());
+    return bytes;
+}
+
+std::vector<uint8_t> readOnlyRecordInColumn(StorageBackend& storage,
+                                            const std::string& path,
+                                            size_t columnIndex) {
+    auto bytes = readAll(storage, path);
+    InMemoryByteReader reader(bytes);
+    reader.seek(16);
+    CHECK_EQ(reader.readU8(), 2);
+    size_t tableStart = reader.tell();
+    reader.seek(tableStart + columnIndex * 2);
+    int16_t relativeOffset = static_cast<int16_t>(reader.readU16());
+    CHECK(relativeOffset >= 0);
+    size_t columnStart = tableStart + 16 * 16 * 2 + static_cast<size_t>(relativeOffset);
+    reader.seek(columnStart);
+    int32_t columnSize = reader.readI32();
+    reader.readI32();
+    CHECK_EQ(reader.readU8(), 1);
+    return reader.readAt(columnStart + 9, static_cast<size_t>(columnSize) - 9);
+}
+
 const CRBinValue& requireField(const CRBinObject& obj, const std::string& name) {
     auto it = obj.fields.find(name);
     if (it == obj.fields.end()) {
@@ -333,6 +484,135 @@ TEST_CASE(CRBackend_region_roundtrip_minimal) {
     CHECK_EQ(loaded.chunks.size(), 1u);
     CHECK_EQ(loaded.chunks[0].key, chunk.key);
     CHECK_EQ(loaded.chunks[0].data, chunk.data);
+}
+
+TEST_CASE(CRBackend_dirty_save_preserves_untouched_record_bytes) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::BlockID stone = registerTestBlock(resources.registry(), "base:test_stone");
+    Rigel::Voxel::World world(resources);
+    world.setBlock(0, 0, 0, Rigel::Voxel::BlockState{stone});
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/preserve_record";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = world.persistenceProvidersHandle();
+    RegionKey regionKey{"rigel:default", 0, 0, 0};
+    const std::string path = CRPaths::regionPath(regionKey, context);
+    auto changedRecord = makeFixtureRecord(
+        ChunkKey{regionKey.zoneId, 0, 0, 0}, "base:test_stone", false);
+    auto untouchedRecord = makeFixtureRecord(
+        ChunkKey{regionKey.zoneId, 2, 0, 0}, "base:unknown_id", true);
+
+    for (UnknownIdPolicy policy : {UnknownIdPolicy::Placeholder, UnknownIdPolicy::Skip}) {
+        context.policies.unknownBlockPolicy = policy;
+        writeFixtureRegion(*storage, path, {changedRecord, untouchedRecord});
+        auto untouchedBefore = readOnlyRecordInColumn(*storage, path, 2);
+
+        saveChunkToDisk(world, service, context, Rigel::Voxel::ChunkCoord{0, 0, 0});
+
+        auto untouchedAfter = readOnlyRecordInColumn(*storage, path, 2);
+        CHECK_EQ(untouchedAfter, untouchedBefore);
+    }
+}
+
+TEST_CASE(CRBackend_unknown_identifier_fail_policy_preserves_region) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::BlockID stone = registerTestBlock(resources.registry(), "base:test_stone");
+    Rigel::Voxel::World world(resources);
+    world.setBlock(0, 0, 0, Rigel::Voxel::BlockState{stone});
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/reject_unknown";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = world.persistenceProvidersHandle();
+
+    RegionKey regionKey{"rigel:default", 0, 0, 0};
+    const std::string path = CRPaths::regionPath(regionKey, context);
+    writeFixtureRegion(*storage, path, {
+        makeFixtureRecord(ChunkKey{regionKey.zoneId, 0, 0, 0}, "base:test_stone", false),
+        makeFixtureRecord(ChunkKey{regionKey.zoneId, 2, 0, 0}, "base:unknown_id", true)
+    });
+    auto regionBefore = readAll(*storage, path);
+
+    CHECK_THROWS(service.loadRegion(regionKey, context));
+    CHECK_EQ(readAll(*storage, path), regionBefore);
+    CHECK_THROWS(saveChunkToDisk(world, service, context, Rigel::Voxel::ChunkCoord{0, 0, 0}));
+    CHECK_EQ(readAll(*storage, path), regionBefore);
+}
+
+TEST_CASE(CRBackend_modified_optional_payload_record_is_rejected) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::BlockID stone = registerTestBlock(resources.registry(), "base:test_stone");
+    Rigel::Voxel::World world(resources);
+    world.setBlock(0, 0, 0, Rigel::Voxel::BlockState{stone});
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/reject_optional_payload";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = world.persistenceProvidersHandle();
+
+    RegionKey regionKey{"rigel:default", 0, 0, 0};
+    const std::string path = CRPaths::regionPath(regionKey, context);
+    writeFixtureRegion(*storage, path, {
+        makeFixtureRecord(ChunkKey{regionKey.zoneId, 0, 0, 0}, "base:test_stone", true),
+        makeFixtureRecord(ChunkKey{regionKey.zoneId, 2, 0, 0}, "base:test_stone", false)
+    });
+    auto regionBefore = readAll(*storage, path);
+
+    CHECK_THROWS(saveChunkToDisk(world, service, context, Rigel::Voxel::ChunkCoord{0, 0, 0}));
+    CHECK_EQ(readAll(*storage, path), regionBefore);
+}
+
+TEST_CASE(CRBackend_unrepresentable_block_state_is_rejected) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::BlockID stone = registerTestBlock(resources.registry(), "base:test_stone");
+    Rigel::Voxel::World world(resources);
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/reject_block_state";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = world.persistenceProvidersHandle();
+
+    RegionKey regionKey{"rigel:default", 0, 0, 0};
+    const std::string path = CRPaths::regionPath(regionKey, context);
+    auto originalRecord = makeFixtureRecord(
+        ChunkKey{regionKey.zoneId, 0, 0, 0}, "base:test_stone", false);
+
+    auto rejectState = [&](Rigel::Voxel::BlockState state) {
+        writeFixtureRegion(*storage, path, {originalRecord});
+        auto regionBefore = readAll(*storage, path);
+        world.setBlock(0, 0, 0, state);
+        CHECK_THROWS(saveChunkToDisk(
+            world, service, context, Rigel::Voxel::ChunkCoord{0, 0, 0}));
+        CHECK_EQ(readAll(*storage, path), regionBefore);
+    };
+
+    rejectState(Rigel::Voxel::BlockState{stone, 1, 0});
+    rejectState(Rigel::Voxel::BlockState{stone, 0, 0x21});
 }
 
 TEST_CASE(CRBackend_region_discovery_requires_canonical_filenames) {

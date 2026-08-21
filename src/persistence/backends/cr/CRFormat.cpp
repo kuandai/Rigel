@@ -520,6 +520,7 @@ void readLayer(TrackingReader& reader, uint8_t layerType, std::array<uint16_t, 2
 
 std::vector<std::string> buildPalette(const std::vector<Voxel::BlockState>& blocks,
                                       const Voxel::BlockRegistry& registry,
+                                      const PersistencePolicies& policies,
                                       std::unordered_map<uint16_t, uint16_t>& paletteIndex) {
     std::vector<std::string> palette;
     for (const auto& state : blocks) {
@@ -529,7 +530,15 @@ std::vector<std::string> buildPalette(const std::vector<Voxel::BlockState>& bloc
         }
         uint16_t index = static_cast<uint16_t>(palette.size());
         paletteIndex[id] = index;
-        palette.push_back(registry.getType(Voxel::BlockID{id}).identifier);
+        if (id < registry.size()) {
+            palette.push_back(registry.getType(Voxel::BlockID{id}).identifier);
+            continue;
+        }
+        if (policies.unknownBlockPolicy == UnknownIdPolicy::Fail) {
+            throw std::runtime_error(
+                "CRChunkCodec: unknown runtime block identifier " + std::to_string(id));
+        }
+        palette.push_back(registry.getType(Voxel::BlockRegistry::airId()).identifier);
     }
     return palette;
 }
@@ -598,27 +607,30 @@ void writeLayer(ByteWriter& writer,
 }
 
 std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
-                                            const Voxel::BlockRegistry* registry) {
+                                            const Voxel::BlockRegistry* registry,
+                                            const PersistencePolicies& policies) {
     std::vector<Voxel::BlockState> blocks(16 * 16 * 16, Voxel::BlockState{});
-    auto resolveBlockId = [registry](const std::string& id) -> Voxel::BlockID {
-        if (!registry) {
-            return Voxel::BlockRegistry::airId();
-        }
-        if (auto found = registry->findByIdentifier(id)) {
-            return *found;
-        }
-        constexpr std::string_view kLegacyNamespace = "rigel:";
-        constexpr std::string_view kBaseNamespace = "base:";
-        if (id.rfind(kLegacyNamespace, 0) == 0) {
-            std::string fallback = std::string(kBaseNamespace) + id.substr(kLegacyNamespace.size());
-            if (auto found = registry->findByIdentifier(fallback)) {
+    auto resolveBlockId = [registry, &policies](const std::string& id) -> Voxel::BlockID {
+        if (registry) {
+            if (auto found = registry->findByIdentifier(id)) {
                 return *found;
             }
-        } else if (id.rfind(kBaseNamespace, 0) == 0) {
-            std::string fallback = std::string(kLegacyNamespace) + id.substr(kBaseNamespace.size());
-            if (auto found = registry->findByIdentifier(fallback)) {
-                return *found;
+            constexpr std::string_view kLegacyNamespace = "rigel:";
+            constexpr std::string_view kBaseNamespace = "base:";
+            if (id.rfind(kLegacyNamespace, 0) == 0) {
+                std::string fallback = std::string(kBaseNamespace) + id.substr(kLegacyNamespace.size());
+                if (auto found = registry->findByIdentifier(fallback)) {
+                    return *found;
+                }
+            } else if (id.rfind(kBaseNamespace, 0) == 0) {
+                std::string fallback = std::string(kLegacyNamespace) + id.substr(kBaseNamespace.size());
+                if (auto found = registry->findByIdentifier(fallback)) {
+                    return *found;
+                }
             }
+        }
+        if (policies.unknownBlockPolicy == UnknownIdPolicy::Fail) {
+            throw std::runtime_error("CRChunkCodec: unknown block identifier '" + id + "'");
         }
         return Voxel::BlockRegistry::airId();
     };
@@ -654,10 +666,10 @@ std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
             for (int z = 0; z < 16; ++z) {
                 for (int x = 0; x < 16; ++x) {
                     uint16_t paletteIndex = indices[static_cast<size_t>(x + z * 16)];
-                    Voxel::BlockID blockId = Voxel::BlockRegistry::airId();
-                    if (paletteIndex < paletteIds.size()) {
-                        blockId = paletteIds[paletteIndex];
+                    if (paletteIndex >= paletteIds.size()) {
+                        throw std::runtime_error("CRChunkCodec: palette index out of range");
                     }
+                    Voxel::BlockID blockId = paletteIds[paletteIndex];
                     size_t idx = static_cast<size_t>(x + z * 16 + layer * 256);
                     blocks[idx].id = blockId;
                 }
@@ -671,7 +683,8 @@ std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
 
 void writeBlockData(ByteWriter& writer,
                     const std::vector<Voxel::BlockState>& blocks,
-                    const Voxel::BlockRegistry* registry) {
+                    const Voxel::BlockRegistry* registry,
+                    const PersistencePolicies& policies) {
     if (blocks.empty()) {
         writer.writeU8(kBlockNull);
         return;
@@ -690,11 +703,15 @@ void writeBlockData(ByteWriter& writer,
     }
 
     if (!registry) {
-        throw std::runtime_error("CRChunkCodec: missing block registry");
+        if (policies.unknownBlockPolicy == UnknownIdPolicy::Fail) {
+            throw std::runtime_error("CRChunkCodec: missing block registry");
+        }
+        static const Voxel::BlockRegistry fallbackRegistry;
+        registry = &fallbackRegistry;
     }
 
     std::unordered_map<uint16_t, uint16_t> paletteIndex;
-    auto palette = buildPalette(blocks, *registry, paletteIndex);
+    auto palette = buildPalette(blocks, *registry, policies, paletteIndex);
     if (palette.size() == 1) {
         writer.writeU8(kBlockSingle);
         writeString(writer, palette[0]);
@@ -746,14 +763,14 @@ void readBlockData(TrackingReader& reader) {
     }
 }
 
-void readSkylightData(TrackingReader& reader) {
+bool readSkylightData(TrackingReader& reader) {
     uint8_t type = reader.readU8();
     switch (type) {
     case kSkyNull:
-        return;
+        return false;
     case kSkySingle:
         reader.readU8();
-        return;
+        return true;
     case kSkyLayered:
         for (int layer = 0; layer < 16; ++layer) {
             uint8_t layerType = reader.readU8();
@@ -765,17 +782,17 @@ void readSkylightData(TrackingReader& reader) {
                 throw std::runtime_error("CRChunkCodec: unknown skylight layer type");
             }
         }
-        return;
+        return true;
     default:
         throw std::runtime_error("CRChunkCodec: unknown skylight type");
     }
 }
 
-void readBlockLightData(TrackingReader& reader) {
+bool readBlockLightData(TrackingReader& reader) {
     uint8_t type = reader.readU8();
     switch (type) {
     case kBlockLightNull:
-        return;
+        return false;
     case kBlockLightLayered:
         for (int layer = 0; layer < 16; ++layer) {
             uint8_t layerType = reader.readU8();
@@ -796,7 +813,7 @@ void readBlockLightData(TrackingReader& reader) {
                 throw std::runtime_error("CRChunkCodec: unknown blocklight layer type");
             }
         }
-        return;
+        return true;
     default:
         throw std::runtime_error("CRChunkCodec: unknown blocklight type");
     }
@@ -808,9 +825,67 @@ public:
         m_registry = registry;
     }
 
+    void setPolicies(PersistencePolicies policies) {
+        m_policies = policies;
+    }
+
     ChunkSnapshot read(ByteReader& reader, const ChunkKey& keyHint) {
+        auto decoded = decodeRecord(reader, keyHint);
+        decoded.chunk.opaquePayload = std::move(decoded.bytes);
+        return std::move(decoded.chunk);
+    }
+
+    void write(const ChunkSnapshot& chunk, ByteWriter& writer) {
+        if (!chunk.opaquePayload.empty()) {
+            MemoryByteReader sourceReader(chunk.opaquePayload);
+            auto source = decodeRecord(sourceReader, ChunkKey{chunk.key.zoneId, 0, 0, 0});
+            if (sourceReader.tell() != sourceReader.size()) {
+                throw std::runtime_error("CRChunkCodec: opaque record has trailing data");
+            }
+            if (source.chunk.key == chunk.key && source.chunk.data == chunk.data) {
+                writer.writeBytes(chunk.opaquePayload.data(), chunk.opaquePayload.size());
+                return;
+            }
+            if (source.hasUnsupportedPayload) {
+                throw std::runtime_error(
+                    "CRChunkCodec: modified record contains unsupported light or block-entity data");
+            }
+        }
+
+        if (chunk.data.span.sizeX != 16 ||
+            chunk.data.span.sizeY != 16 ||
+            chunk.data.span.sizeZ != 16) {
+            throw std::runtime_error("CRChunkCodec: chunk span size mismatch");
+        }
+        if (chunk.data.blocks.size() != 16 * 16 * 16) {
+            throw std::runtime_error("CRChunkCodec: chunk block data size mismatch");
+        }
+        for (const auto& state : chunk.data.blocks) {
+            if (state.metadata != 0 || state.lightLevel != 0) {
+                throw std::runtime_error(
+                    "CRChunkCodec: block metadata and light are not representable");
+            }
+        }
+        writer.writeI32(chunk.key.x);
+        writer.writeI32(chunk.key.y);
+        writer.writeI32(chunk.key.z);
+        writeBlockData(writer, chunk.data.blocks, m_registry, m_policies);
+        writer.writeU8(static_cast<uint8_t>(kSkyNull));
+        writer.writeU8(static_cast<uint8_t>(kBlockLightNull));
+        writer.writeU8(static_cast<uint8_t>(kBlockEntityNull));
+    }
+
+private:
+    struct DecodedRecord {
+        ChunkSnapshot chunk;
+        std::vector<uint8_t> bytes;
+        bool hasUnsupportedPayload = false;
+    };
+
+    DecodedRecord decodeRecord(ByteReader& reader, const ChunkKey& keyHint) const {
         TrackingReader tracker(reader);
-        ChunkSnapshot out;
+        DecodedRecord decoded;
+        ChunkSnapshot& out = decoded.chunk;
         out.key = keyHint;
         out.key.x = tracker.readI32();
         out.key.y = tracker.readI32();
@@ -825,11 +900,13 @@ public:
         out.data.span.sizeX = 16;
         out.data.span.sizeY = 16;
         out.data.span.sizeZ = 16;
-        out.data.blocks = decodeBlocks(tracker, m_registry);
-        readSkylightData(tracker);
-        readBlockLightData(tracker);
+        out.data.blocks = decodeBlocks(tracker, m_registry, m_policies);
+        decoded.hasUnsupportedPayload = readSkylightData(tracker);
+        decoded.hasUnsupportedPayload =
+            readBlockLightData(tracker) || decoded.hasUnsupportedPayload;
         uint8_t entityFlag = tracker.readU8();
         if (entityFlag == kBlockEntityData) {
+            decoded.hasUnsupportedPayload = true;
             int32_t size = tracker.readI32();
             if (size > 0) {
                 tracker.readBytes(static_cast<size_t>(size));
@@ -837,29 +914,12 @@ public:
         } else if (entityFlag != kBlockEntityNull) {
             throw std::runtime_error("CRChunkCodec: unknown block entity flag");
         }
-        return out;
+        decoded.bytes = tracker.takeBytes();
+        return decoded;
     }
 
-    void write(const ChunkSnapshot& chunk, ByteWriter& writer) {
-        if (chunk.data.span.sizeX != 16 ||
-            chunk.data.span.sizeY != 16 ||
-            chunk.data.span.sizeZ != 16) {
-            throw std::runtime_error("CRChunkCodec: chunk span size mismatch");
-        }
-        if (chunk.data.blocks.size() != 16 * 16 * 16) {
-            throw std::runtime_error("CRChunkCodec: chunk block data size mismatch");
-        }
-        writer.writeI32(chunk.key.x);
-        writer.writeI32(chunk.key.y);
-        writer.writeI32(chunk.key.z);
-        writeBlockData(writer, chunk.data.blocks, m_registry);
-        writer.writeU8(static_cast<uint8_t>(kSkyNull));
-        writer.writeU8(static_cast<uint8_t>(kBlockLightNull));
-        writer.writeU8(static_cast<uint8_t>(kBlockEntityNull));
-    }
-
-private:
     const Voxel::BlockRegistry* m_registry = nullptr;
+    PersistencePolicies m_policies{};
 };
 
 class CRWorldMetadataCodec final : public WorldMetadataCodec {
@@ -968,7 +1028,7 @@ public:
             int32_t localY = chunk.key.y - baseY;
             int32_t localZ = chunk.key.z - baseZ;
             if (localX < 0 || localX >= 16 || localZ < 0 || localZ >= 16 || localY < 0 || localY >= 16) {
-                continue;
+                throw std::runtime_error("CRRegion: chunk lies outside its region");
             }
             int index = localX + localZ * 16;
             columns[index].push_back(chunk);
@@ -1271,6 +1331,7 @@ public:
           m_chunkContainer(m_storage, m_context, m_chunkCodec),
           m_entityContainer(m_storage, m_context) {
         m_worldCodec.setContext(m_context);
+        m_chunkCodec.setPolicies(m_context.policies);
         if (m_context.providers) {
             auto provider = m_context.providers->findAs<BlockRegistryProvider>(kBlockRegistryProviderId);
             if (provider) {

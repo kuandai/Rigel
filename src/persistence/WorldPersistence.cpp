@@ -75,13 +75,16 @@ void saveChunkRegions(const Voxel::World& world,
             for (const auto& storageKey :
                  layout.storageKeysForChunk(kDefaultZoneId, coord)) {
                 KeyTuple key{storageKey.x, storageKey.y, storageKey.z};
-                merged.erase(key);
 
                 ChunkSpan span = layout.spanForStorageKey(storageKey);
                 ChunkData data = serializeChunkSpan(*chunk, span);
                 ChunkSnapshot snapshot;
                 snapshot.key = storageKey;
                 snapshot.data = std::move(data);
+                auto existingSnapshot = merged.find(key);
+                if (existingSnapshot != merged.end()) {
+                    snapshot.opaquePayload = std::move(existingSnapshot->second.opaquePayload);
+                }
                 merged[key] = std::move(snapshot);
             }
         }

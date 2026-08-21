@@ -50,6 +50,10 @@ struct AsyncChunkLoaderTestAccess {
         return loader.m_regionComplete.size();
     }
 
+    static size_t payloadCompletionCount(const AsyncChunkLoader& loader) {
+        return loader.m_chunkComplete.size();
+    }
+
     static void retainInRegionCompletionQueue(
         AsyncChunkLoader& loader,
         std::shared_ptr<ChunkRegionSnapshot> lifetimeProbe) {
@@ -120,6 +124,20 @@ bool waitForRegionCompletion(const AsyncChunkLoader& loader) {
     }
     return Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
         regionCompletionCount(loader) > 0;
+}
+
+bool waitForPayloadCompletions(const AsyncChunkLoader& loader, size_t count) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        size_t completionCount = Rigel::Persistence::detail::
+            AsyncChunkLoaderTestAccess::payloadCompletionCount(loader);
+        if (completionCount >= count) {
+            return true;
+        }
+        std::this_thread::yield();
+    }
+    return Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        payloadCompletionCount(loader) >= count;
 }
 
 std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
@@ -725,6 +743,86 @@ TEST_CASE(AsyncChunkLoader_PersistenceInvalidatesInFlightRegionSnapshot) {
         CHECK_EQ(loaded->getBlock(0, 0, 0).id, edited);
         CHECK(!loaded->isPersistDirty());
     }
+}
+
+TEST_CASE(AsyncChunkLoader_StalePayloadRestartsFromReplacementRegionCache) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID original = registerTestBlock(registry, "rigel:stale_payload_original");
+    BlockID edited = registerTestBlock(registry, "rigel:stale_payload_edit");
+    const ChunkCoord persistedCoord{0, 0, 0};
+    const ChunkCoord staleCoord{1, 0, 0};
+    const ChunkCoord refillCoord{2, 0, 0};
+    ChunkData persistedPayload = buildPayload(
+        persistedCoord, registry, {original}, false, std::nullopt, false);
+    ChunkData stalePayload = buildPayload(
+        staleCoord, registry, {original}, false, std::nullopt, false);
+    ChunkData refillPayload = buildPayload(
+        refillCoord, registry, {original}, false, std::nullopt, false);
+
+    MemoryContext ctx;
+    saveRegionForPayloads(
+        ctx.service,
+        ctx.context,
+        "rigel:default",
+        {{persistedCoord, persistedPayload},
+         {staleCoord, stalePayload},
+         {refillCoord, refillPayload}});
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        1,
+        0,
+        generator);
+    loader.setPrefetchRadius(0);
+
+    auto payloadGate = std::make_shared<LoaderWorkGate>();
+    auto unusedGate = std::make_shared<LoaderWorkGate>();
+    LoaderWorkRelease releaseOnExit(unusedGate, payloadGate);
+    std::atomic<size_t> payloadStarts = 0;
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setPayloadBuildStartCallback(loader, [payloadGate, &payloadStarts]() {
+            if (payloadStarts.fetch_add(1) == 0) {
+                payloadGate->enterAndWait();
+            }
+        });
+
+    CHECK_EQ(loader.request(staleCoord), ChunkLoadRequestResult::Queued);
+    loader.drainCompletions(1);
+    CHECK(payloadGate->waitUntilEntered());
+
+    Chunk& dirty = world.chunkManager().getOrCreateChunk(persistedCoord);
+    dirty.fill(BlockState{edited}, registry);
+    dirty.setWorldGenVersion(generator->config().world.version);
+    CHECK(loader.persistChunk(persistedCoord));
+    world.chunkManager().unloadChunk(persistedCoord);
+
+    CHECK_EQ(loader.request(refillCoord), ChunkLoadRequestResult::Queued);
+    loader.drainCompletions(1);
+
+    payloadGate->release();
+    CHECK(waitForPayloadCompletions(loader, 2));
+    std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(8);
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+    CHECK(waitForPayloadCompletions(loader, 1));
+    std::vector<ChunkLoadCompletion> restarted = loader.drainCompletions(8);
+    resolved.insert(resolved.end(), restarted.begin(), restarted.end());
+
+    CHECK_EQ(resolved.size(), static_cast<size_t>(2));
+    CHECK(!loader.isPending(staleCoord));
+    CHECK(!loader.isPending(refillCoord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+    CHECK(world.chunkManager().hasChunk(staleCoord));
+    CHECK(world.chunkManager().hasChunk(refillCoord));
 }
 
 TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {

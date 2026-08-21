@@ -362,9 +362,22 @@ void AsyncChunkLoader::drainPayloadCompletions(
             continue;
         }
         if (payload.regionRevision != m_regionRevisions[payload.regionKey]) {
+            auto cacheIt = m_cache.find(payload.regionKey);
+            if (cacheIt != m_cache.end()) {
+                if (cacheIt->second.present.find(payload.coord) ==
+                    cacheIt->second.present.end()) {
+                    completeChunkLoad(
+                        payload.coord,
+                        Voxel::ChunkLoadOutcome::Missing,
+                        resolved);
+                } else {
+                    queuePayloadBuild(cacheIt->second, payload.coord);
+                    touch(payload.regionKey);
+                }
+                continue;
+            }
             m_regionPending[payload.regionKey].insert(payload.coord);
             if (!queueRegionLoad(payload.regionKey) &&
-                m_cache.find(payload.regionKey) == m_cache.end() &&
                 m_inFlight.find(payload.regionKey) == m_inFlight.end()) {
                 deferRegionLoad(payload.regionKey);
             }

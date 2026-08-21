@@ -243,6 +243,7 @@ private:
 
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);
+    void cancelPendingLoad(ChunkCoord coord);
     void queueLoadGen(ChunkCoord coord);
     void waitForGenerationCapacity(ChunkCoord coord);
     void waitForMissingMeshCapacity(ChunkCoord coord);

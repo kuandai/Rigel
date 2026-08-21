@@ -234,10 +234,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         if (!m_loadPending.empty()) {
             for (auto it = m_loadPending.begin(); it != m_loadPending.end(); ) {
                 if (m_desiredSet.find(*it) == m_desiredSet.end()) {
-                    if (m_chunkLoadCancel) {
-                        m_chunkLoadCancel(*it);
-                    }
-                    it = m_loadPending.erase(it);
+                    ChunkCoord coord = *it;
+                    ++it;
+                    cancelPendingLoad(coord);
                 } else {
                     ++it;
                 }
@@ -258,7 +257,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     if (!m_chunkLoadDrain && !m_loadPending.empty()) {
         for (auto it = m_loadPending.begin(); it != m_loadPending.end(); ) {
             ++schedulerCoordinatesInspected;
-            bool resolved = m_chunkManager->getChunk(*it) != nullptr;
+            bool resident = m_chunkManager->getChunk(*it) != nullptr;
+            bool resolved = resident;
             if (!resolved && m_chunkPending) {
                 resolved = !m_chunkPending(*it);
             } else if (!resolved) {
@@ -268,7 +268,12 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
             if (resolved) {
                 ChunkCoord coord = *it;
-                it = m_loadPending.erase(it);
+                ++it;
+                if (resident) {
+                    cancelPendingLoad(coord);
+                } else {
+                    m_loadPending.erase(coord);
+                }
                 queueLoadGen(coord);
             } else {
                 ++it;
@@ -277,6 +282,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     }
 
     for (const ChunkCoord& coord : m_chunkManager->consumeDirtyMeshNotifications()) {
+        if (m_chunkManager->getChunk(coord)) {
+            cancelPendingLoad(coord);
+        }
         queueDirtyMesh(coord);
     }
 
@@ -456,7 +464,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
 
             if (chunk) {
-                m_loadPending.erase(coord);
+                cancelPendingLoad(coord);
                 if (m_generator &&
                     chunk->worldGenVersion() != m_generator->config().world.version) {
                     if (!evictChunk(coord)) {
@@ -950,6 +958,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             continue;
         }
 
+        cancelPendingLoad(genResult.coord);
         Chunk& chunk = m_chunkManager->getOrCreateChunk(genResult.coord);
         if (m_registry) {
             chunk.copyFrom(genResult.blocks, *m_registry);
@@ -1075,6 +1084,17 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         ++m_workMetrics.meshJobsAccepted;
         ++applied;
     }
+}
+
+void ChunkStreamer::cancelPendingLoad(ChunkCoord coord) {
+    auto pendingIt = m_loadPending.find(coord);
+    if (pendingIt == m_loadPending.end()) {
+        return;
+    }
+    if (m_chunkLoadCancel) {
+        m_chunkLoadCancel(coord);
+    }
+    m_loadPending.erase(pendingIt);
 }
 
 void ChunkStreamer::queueLoadGen(ChunkCoord coord) {

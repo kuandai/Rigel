@@ -61,6 +61,12 @@ private:
         size_t operator()(const RegionKey& key) const;
     };
 
+    using ChunkLoadRequestId = uint64_t;
+    using ChunkRequestMap =
+        std::unordered_map<Voxel::ChunkCoord,
+                           ChunkLoadRequestId,
+                           Voxel::ChunkCoordHash>;
+
     struct RegionEntry {
         std::shared_ptr<ChunkRegionSnapshot> region;
         std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> present;
@@ -80,6 +86,7 @@ private:
 
     struct ChunkPayload {
         Voxel::ChunkCoord coord;
+        ChunkLoadRequestId requestId = 0;
         RegionKey regionKey;
         uint64_t regionRevision = 0;
         Voxel::ChunkBuffer blocks;
@@ -93,17 +100,26 @@ private:
                                 std::vector<Voxel::ChunkLoadCompletion>& resolved);
     void drainPayloadCompletions(size_t budget,
                                  std::vector<Voxel::ChunkLoadCompletion>& resolved);
-    Voxel::ChunkLoadRequestResult queueChunkLoad(Voxel::ChunkCoord coord);
-    void deferChunkLoad(Voxel::ChunkCoord coord);
+    Voxel::ChunkLoadRequestResult queueChunkLoad(
+        Voxel::ChunkCoord coord,
+        ChunkLoadRequestId requestId);
+    void deferChunkLoad(Voxel::ChunkCoord coord,
+                        ChunkLoadRequestId requestId);
     void startDeferredChunkLoads(
         std::vector<Voxel::ChunkLoadCompletion>* resolved = nullptr);
     void completeChunkLoad(Voxel::ChunkCoord coord,
+                           ChunkLoadRequestId requestId,
                            Voxel::ChunkLoadOutcome outcome,
                            std::vector<Voxel::ChunkLoadCompletion>& resolved);
+    void restartChunkLoad(Voxel::ChunkCoord coord,
+                          ChunkLoadRequestId requestId,
+                          std::vector<Voxel::ChunkLoadCompletion>& resolved);
     void deferRegionLoad(const RegionKey& key);
     void startDeferredRegionLoads();
     bool queueRegionLoad(const RegionKey& key);
-    void queuePayloadBuild(const RegionEntry& entry, Voxel::ChunkCoord coord);
+    void queuePayloadBuild(const RegionEntry& entry,
+                           Voxel::ChunkCoord coord,
+                           ChunkLoadRequestId requestId);
     void prefetchNeighbors(const RegionKey& center);
     void touch(const RegionKey& key);
     void evictIfNeeded();
@@ -112,6 +128,7 @@ private:
 
     bool applyPayload(const ChunkPayload& payload);
     void invalidateRegion(const RegionKey& key);
+    ChunkLoadRequestId nextChunkLoadRequestId();
 
     PersistenceService* m_service = nullptr;
     PersistenceContext m_context;
@@ -141,15 +158,16 @@ private:
     std::unordered_map<RegionKey, RegionEntry, RegionKeyHash> m_cache;
     std::unordered_set<RegionKey, RegionKeyHash> m_inFlight;
     std::unordered_map<RegionKey,
-                       std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash>,
+                       ChunkRequestMap,
                        RegionKeyHash> m_regionPending;
     std::deque<RegionKey> m_deferredRegionLoads;
     std::unordered_set<RegionKey, RegionKeyHash> m_deferredRegionLoadSet;
-    std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_pendingChunks;
+    ChunkRequestMap m_pendingChunks;
     std::deque<Voxel::ChunkCoord> m_deferredChunkLoads;
-    std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_deferredChunkLoadSet;
+    ChunkRequestMap m_deferredChunkRequests;
     std::deque<Voxel::ChunkLoadCompletion> m_resolvedChunks;
-    std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> m_payloadInFlight;
+    ChunkRequestMap m_payloadInFlight;
+    ChunkLoadRequestId m_nextChunkLoadRequestId = 1;
     uint64_t m_requestsStarted = 0;
     std::deque<RegionKey> m_lru;
 

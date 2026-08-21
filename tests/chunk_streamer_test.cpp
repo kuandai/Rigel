@@ -1146,6 +1146,22 @@ TEST_CASE(ChunkStreamer_GenerationFailureCompletesJob) {
         streamer.update(coord.toWorldCenter());
         CHECK_EQ(streamer.workMetrics().generationJobsStarted,
                  static_cast<uint64_t>(1));
+
+        const ChunkCoord nextCoord{1, 0, 0};
+        streamer.update(nextCoord.toWorldCenter());
+        CHECK(waitForGenerationCompletion(streamer));
+        streamer.processCompletions();
+
+        CHECK_EQ(streamer.diagnostics().generation.inFlight,
+                 static_cast<size_t>(0));
+        CHECK_EQ(streamer.diagnostics().generation.pending,
+                 static_cast<size_t>(0));
+        states.clear();
+        streamer.getDebugStates(states);
+        CHECK_EQ(states.size(), static_cast<size_t>(1));
+        CHECK_EQ(states.front().coord, nextCoord);
+        CHECK_EQ(states.front().state,
+                 ChunkStreamer::DebugState::GenerationFailed);
     }
 }
 

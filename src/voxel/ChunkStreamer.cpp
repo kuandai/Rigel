@@ -218,7 +218,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_lastUnloadDistance = unloadDistance;
 
         for (auto it = m_states.begin(); it != m_states.end(); ) {
-            if ((it->second == ChunkState::QueuedGen || it->second == ChunkState::QueuedMesh) &&
+            if ((it->second == ChunkState::QueuedGen ||
+                 it->second == ChunkState::QueuedMesh ||
+                 it->second == ChunkState::GenerationFailed) &&
                 m_desiredSet.find(it->first) == m_desiredSet.end()) {
                 if (it->second == ChunkState::QueuedGen) {
                     auto cancelIt = m_genCancel.find(it->first);

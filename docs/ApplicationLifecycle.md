@@ -30,6 +30,9 @@ Shutdown persists world state and releases resources.
 1. Initialize GLFW and create the main window.
    - `glfwInit()` and an OpenGL 4.1 forward-compatible core context request.
    - `glfwCreateWindow()` + `glfwMakeContextCurrent()`.
+   - Runtime and window ownership is recorded as each acquisition succeeds.
+     An exception invokes the normal idempotent shutdown sequence before it is
+     rethrown.
    - Interactive runs synchronize buffer swaps to the display. Chunk benchmark
      runs disable swap synchronization so presentation does not cap throughput.
 2. Initialize GLEW and log the OpenGL version string.
@@ -110,8 +113,15 @@ desired-set scan or periodic persistence query.
 ## Phase 3: Shutdown (Application::~Application)
 
 1. Save world to disk (synchronous) if initialized.
-2. Release frame-renderer and world GPU resources.
-3. Destroy window and terminate GLFW.
+2. Make the application context current and shut down ImGui.
+3. Disconnect streaming callbacks and stop the asynchronous chunk loader.
+4. Release view GPU state, then destroy views, streaming workers, and worlds.
+5. Release the shared atlas, frame renderer, and cached assets while the
+   context remains current.
+6. Destroy the window and terminate GLFW.
+
+The same sequence handles normal shutdown and failed construction. Repeated
+shutdown requests are harmless.
 
 ---
 

@@ -8,7 +8,9 @@ WorldSet::WorldSet()
     : m_persistenceService(m_persistenceFormats) {
 }
 
-WorldSet::~WorldSet() = default;
+WorldSet::~WorldSet() {
+    clear();
+}
 
 void WorldSet::initializeResources(Asset::AssetManager& assets) {
     m_resources.initialize(assets);
@@ -86,6 +88,11 @@ void WorldSet::removeWorld(WorldId id) {
 }
 
 void WorldSet::clear() {
+    for (auto& world : m_worlds) {
+        if (world.second) {
+            world.second->view.reset();
+        }
+    }
     m_worlds.clear();
 }
 

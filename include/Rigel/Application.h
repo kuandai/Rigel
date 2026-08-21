@@ -11,6 +11,8 @@ public:
     void run();
 
 private:
+    void initialize();
+
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };

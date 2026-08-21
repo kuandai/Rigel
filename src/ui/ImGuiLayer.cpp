@@ -21,6 +21,9 @@ namespace Rigel::UI {
 namespace {
 
 bool g_initialized = false;
+bool g_contextCreated = false;
+bool g_glfwBackendInitialized = false;
+bool g_openGLBackendInitialized = false;
 
 }
 #endif
@@ -30,25 +33,32 @@ bool init(GLFWwindow* window) {
     if (g_initialized || !window) {
         return g_initialized;
     }
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = nullptr;
-    ImGui::StyleColorsDark();
+    try {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        g_contextCreated = true;
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.IniFilename = nullptr;
+        ImGui::StyleColorsDark();
 
-    if (!ImGui_ImplGlfw_InitForOpenGL(window, false)) {
-        ImGui::DestroyContext();
-        return false;
-    }
-    if (!ImGui_ImplOpenGL3_Init(Render::kGLSLVersionDirective)) {
-        ImGui_ImplGlfw_Shutdown();
-        ImGui::DestroyContext();
-        return false;
-    }
+        if (!ImGui_ImplGlfw_InitForOpenGL(window, false)) {
+            shutdown();
+            return false;
+        }
+        g_glfwBackendInitialized = true;
+        if (!ImGui_ImplOpenGL3_Init(Render::kGLSLVersionDirective)) {
+            shutdown();
+            return false;
+        }
+        g_openGLBackendInitialized = true;
 
-    g_initialized = true;
-    return true;
+        g_initialized = true;
+        return true;
+    } catch (...) {
+        shutdown();
+        throw;
+    }
 #else
     (void)window;
     return false;
@@ -57,13 +67,19 @@ bool init(GLFWwindow* window) {
 
 void shutdown() {
 #if defined(RIGEL_ENABLE_IMGUI)
-    if (!g_initialized) {
-        return;
-    }
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
     g_initialized = false;
+    if (g_openGLBackendInitialized) {
+        ImGui_ImplOpenGL3_Shutdown();
+        g_openGLBackendInitialized = false;
+    }
+    if (g_glfwBackendInitialized) {
+        ImGui_ImplGlfw_Shutdown();
+        g_glfwBackendInitialized = false;
+    }
+    if (g_contextCreated) {
+        ImGui::DestroyContext();
+        g_contextCreated = false;
+    }
 #endif
 }
 

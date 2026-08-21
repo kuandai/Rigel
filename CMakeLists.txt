@@ -122,7 +122,10 @@ if (RIGEL_BUILD_TESTS)
     )
 
     add_executable(Rigel_tests ${TEST_SOURCES})
-    target_include_directories(Rigel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_include_directories(Rigel_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
     target_link_libraries(Rigel_tests PRIVATE RigelLib)
     target_compile_definitions(Rigel_tests PRIVATE
         $<$<CONFIG:Debug>:RIGEL_EXPECT_PROFILER_ENABLED>

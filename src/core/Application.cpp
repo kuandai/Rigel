@@ -1,4 +1,5 @@
 #include "Rigel/Application.h"
+#include "GlfwRuntime.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Core/Profiler.h"
 #include "Rigel/Entity/EntityModelLoader.h"
@@ -72,6 +73,7 @@ struct Application::Impl {
         Voxel::BlockID placeBlock = Voxel::BlockRegistry::airId();
     };
 
+    GlfwRuntime runtime;
     Asset::AssetManager assets;
     Input::WindowState window;
     Input::CameraState camera;
@@ -82,10 +84,23 @@ struct Application::Impl {
     TimingState timing;
     WorldState world;
     Input::InputCallbackContext inputCallbacks;
+    bool openGLInitialized = false;
+    bool shutDown = false;
 
+    ~Impl();
+    void shutdown(bool saveWorld) noexcept;
 };
 
 Application::Application() : m_impl(std::make_unique<Impl>()) {
+    try {
+        initialize();
+    } catch (...) {
+        m_impl->shutdown(false);
+        throw;
+    }
+}
+
+void Application::initialize() {
     #ifdef DEBUG
     if (!std::string_view(RIGEL_GIT_HASH).empty()) {
         spdlog::info("Rigel v{} Developer Preview (git {})", RIGEL_VERSION, RIGEL_GIT_HASH);
@@ -101,7 +116,7 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         benchEnv && benchEnv[0] != '\0' && benchEnv[0] != '0';
 
     // Initialize GLFW
-    if (!glfwInit()) {
+    if (!m_impl->runtime.initialize()) {
         spdlog::error("GLFW initialization failed");
         throw std::runtime_error("GLFW initialization failed");
     }
@@ -114,14 +129,13 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
 
-    m_impl->window.window = glfwCreateWindow(800, 600, "Rigel", nullptr, nullptr);
+    m_impl->window.window = m_impl->runtime.createWindow(800, 600, "Rigel");
     if (!m_impl->window.window) {
         spdlog::error("Failed to create GLFW window");
-        glfwTerminate();
         throw std::runtime_error("Failed to create GLFW window");
     }
 
-    glfwMakeContextCurrent(m_impl->window.window);
+    m_impl->runtime.makeContextCurrent();
     const int swapInterval = m_impl->timing.benchmarkEnabled ? 0 : 1;
     glfwSwapInterval(swapInterval);
     spdlog::info("Frame pacing swap interval: {}", swapInterval);
@@ -130,10 +144,9 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {
         spdlog::error("GLEW initialization failed");
-        glfwDestroyWindow(m_impl->window.window);
-        glfwTerminate();
         throw std::runtime_error("GLEW initialization failed");
     }
+    m_impl->openGLInitialized = true;
     spdlog::info("GLEW initialized successfully");
 
     // Print OpenGL version
@@ -333,56 +346,77 @@ Application::Application() : m_impl(std::make_unique<Impl>()) {
         m_impl->world.ready = true;
     } catch (const std::exception& e) {
         spdlog::error("Voxel bootstrap failed: {}", e.what());
+        throw;
     }
 }
 
-Application::~Application() {
-    if (m_impl && m_impl->world.ready && m_impl->world.world) {
+Application::Impl::~Impl() {
+    shutdown(false);
+}
+
+void Application::Impl::shutdown(bool saveWorld) noexcept {
+    if (std::exchange(shutDown, true)) {
+        return;
+    }
+
+    if (saveWorld && world.ready && world.world) {
         try {
             Persistence::saveWorldToDisk(
-                *m_impl->world.world,
-                m_impl->world.worldSet.persistenceService(),
-                m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId));
+                *world.world,
+                world.worldSet.persistenceService(),
+                world.worldSet.persistenceContext(world.activeWorldId));
         } catch (const std::exception& e) {
             spdlog::error("World save failed: {}", e.what());
         }
     }
 
-    if (m_impl && m_impl->window.window) {
-        glfwMakeContextCurrent(m_impl->window.window);
-
+    const bool hasContext = runtime.window() != nullptr;
+    if (hasContext) {
+        runtime.makeContextCurrent();
         UI::shutdown();
-
-        m_impl->renderer.release();
-
-        if (m_impl->world.worldView) {
-            m_impl->world.worldView->setChunkLoader({});
-            m_impl->world.worldView->setChunkPendingCallback({});
-            m_impl->world.worldView->setChunkLoadDrain({});
-            m_impl->world.worldView->setChunkLoadCancel({});
-            m_impl->world.worldView->setChunkLoadWorkCallback({});
-            m_impl->world.worldView->setChunkEvictionCallback({});
-        }
-        m_impl->world.chunkLoader.reset();
-
-        if (m_impl->world.worldView) {
-            m_impl->world.worldView->clear();
-            m_impl->world.worldView->releaseRenderResources();
-        }
-        if (m_impl->world.world) {
-            m_impl->world.world->clear();
-        }
-        m_impl->world.worldSet.resources().releaseRenderResources();
-        m_impl->world.worldSet.clear();
-        m_impl->world.worldView = nullptr;
-        m_impl->world.world = nullptr;
-        m_impl->assets.clearCache();
-
-        glfwDestroyWindow(m_impl->window.window);
-        m_impl->window.window = nullptr;
     }
-    glfwTerminate();
+
+    Voxel::WorldView* activeView = world.worldView;
+    if (!activeView) {
+        activeView = world.worldSet.findView(world.activeWorldId);
+    }
+    if (activeView) {
+        activeView->setChunkLoader({});
+        activeView->setChunkPendingCallback({});
+        activeView->setChunkLoadDrain({});
+        activeView->setChunkLoadCancel({});
+        activeView->setChunkLoadWorkCallback({});
+        activeView->setChunkEvictionCallback({});
+    }
+    world.chunkLoader.reset();
+
+    if (activeView) {
+        activeView->clear();
+        if (openGLInitialized && hasContext) {
+            activeView->releaseRenderResources();
+        }
+    }
+    world.worldSet.clear();
+    world.worldView = nullptr;
+    world.world = nullptr;
+    world.ready = false;
+
+    if (openGLInitialized && hasContext) {
+        world.worldSet.resources().releaseRenderResources();
+        renderer.release();
+    }
+    assets.clearCache();
+
+    window.window = nullptr;
+    runtime.shutdown();
+    openGLInitialized = false;
     spdlog::info("Application terminated successfully");
+}
+
+Application::~Application() {
+    if (m_impl) {
+        m_impl->shutdown(true);
+    }
 }
 
 void Application::run() {

@@ -1987,6 +1987,77 @@ TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
     CHECK_EQ(installedIndexCount, static_cast<size_t>(54));
 }
 
+TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterChunkUnload) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:unload_boundary_solid");
+    const ChunkCoord survivingCoord{0, 0, 0};
+    const ChunkCoord removedCoord{1, 0, 0};
+
+    Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
+    surviving.setBlock(
+        Chunk::SIZE - 1, 1, 1, BlockState{solid}, registry);
+    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setLoadedFromDisk(true);
+
+    Chunk& removed = manager.getOrCreateChunk(removedCoord);
+    removed.setBlock(0, 1, 1, BlockState{solid}, registry);
+    removed.setWorldGenVersion(generator->config().world.version);
+    removed.setLoadedFromDisk(true);
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    streamer.update(survivingCoord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(meshStore.contains(survivingCoord));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+
+    size_t hiddenBoundaryIndexCount = 0;
+    meshStore.forEach([&](const WorldMeshEntry& entry) {
+        if (entry.coord == survivingCoord) {
+            hiddenBoundaryIndexCount = entry.mesh.indexCount();
+        }
+    });
+    CHECK_EQ(hiddenBoundaryIndexCount, static_cast<size_t>(30));
+
+    const uint32_t revisionBeforeRemoval = surviving.meshRevision();
+    manager.unloadChunk(removedCoord);
+    manager.unloadChunk(removedCoord);
+    manager.unloadChunk(removedCoord);
+    CHECK(!manager.hasChunk(removedCoord));
+    CHECK_EQ(surviving.meshRevision(), revisionBeforeRemoval + 1);
+
+    streamer.update(survivingCoord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(2));
+
+    size_t exposedBoundaryIndexCount = 0;
+    meshStore.forEach([&](const WorldMeshEntry& entry) {
+        if (entry.coord == survivingCoord) {
+            exposedBoundaryIndexCount = entry.mesh.indexCount();
+        }
+    });
+    CHECK_EQ(exposedBoundaryIndexCount, static_cast<size_t>(36));
+
+    streamer.update(survivingCoord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+}
+
 TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
     ChunkManager manager;
     BlockRegistry registry;

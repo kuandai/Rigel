@@ -60,7 +60,7 @@ public:
         const TextureAtlas* atlas = nullptr;
 
         /// Neighbor chunks for face culling at boundaries.
-        /// Indexed by Direction enum. May be nullptr if neighbor not loaded.
+        /// Indexed by Direction enum. Missing neighbors are sampled as air.
         std::array<const Chunk*, DirectionCount> neighbors{};
 
         /// Optional padded block buffer (1-block border on all sides).

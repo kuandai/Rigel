@@ -50,3 +50,23 @@ TEST_CASE(MeshBuilder_EmptyChunk) {
     ChunkMesh mesh = builder.build(ctx);
     CHECK(mesh.isEmpty());
 }
+
+TEST_CASE(MeshBuilder_MissingBoundaryNeighborIsAir) {
+    BlockRegistry registry = makeRegistry();
+    Chunk chunk({0, 0, 0});
+    BlockState state;
+    state.id = registry.findByIdentifier("rigel:stone").value();
+    chunk.setBlock(Chunk::SIZE - 1, 1, 1, state);
+
+    MeshBuilder builder;
+    MeshBuilder::BuildContext ctx{
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = {}
+    };
+
+    ChunkMesh mesh = builder.build(ctx);
+    CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(24));
+    CHECK_EQ(mesh.indices.size(), static_cast<size_t>(36));
+}

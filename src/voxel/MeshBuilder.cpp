@@ -289,8 +289,8 @@ BlockState MeshBuilder::getBlockAt(
 
     const Chunk* neighbor = ctx.neighbors[static_cast<size_t>(dir)];
     if (!neighbor) {
-        // Treat unloaded chunks as opaque (don't render faces at world edge)
-        return BlockState{};  // Air, will cause face to render
+        // Missing neighbors expose the chunk boundary.
+        return BlockState{};
     }
 
     return neighbor->getBlock(nx, ny, nz);

@@ -2,6 +2,7 @@
 
 #include "Rigel/Voxel/ChunkManager.h"
 
+#include <array>
 #include <utility>
 
 using namespace Rigel::Voxel;
@@ -50,6 +51,50 @@ TEST_CASE(ChunkManager_LoadAndUnload) {
 
     manager.unloadChunk(coord);
     CHECK(!manager.hasChunk(coord));
+}
+
+TEST_CASE(ChunkManager_UnloadInvalidatesSurvivingFaceNeighborsOnce) {
+    ChunkManager manager;
+    const ChunkCoord center{0, 0, 0};
+    manager.getOrCreateChunk(center).clearDirty();
+
+    std::array<ChunkCoord, DirectionCount> neighborCoords{};
+    std::array<uint32_t, DirectionCount> neighborRevisions{};
+    for (size_t i = 0; i < DirectionCount; ++i) {
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(static_cast<Direction>(i), dx, dy, dz);
+        neighborCoords[i] = center.offset(dx, dy, dz);
+        Chunk& neighbor = manager.getOrCreateChunk(neighborCoords[i]);
+        neighbor.clearDirty();
+        neighborRevisions[i] = neighbor.meshRevision();
+    }
+
+    const uint64_t changeVersion = manager.meshChangeVersion();
+    manager.unloadChunk(center);
+
+    CHECK(!manager.hasChunk(center));
+    CHECK_EQ(
+        manager.meshChangeVersion(),
+        changeVersion + static_cast<uint64_t>(DirectionCount) + 1);
+    for (size_t i = 0; i < DirectionCount; ++i) {
+        const Chunk* neighbor = manager.getChunk(neighborCoords[i]);
+        CHECK(neighbor != nullptr);
+        if (neighbor) {
+            CHECK(neighbor->isDirty());
+            CHECK_EQ(neighbor->meshRevision(), neighborRevisions[i] + 1);
+        }
+    }
+
+    const uint64_t versionAfterRemoval = manager.meshChangeVersion();
+    manager.unloadChunk(center);
+    CHECK_EQ(manager.meshChangeVersion(), versionAfterRemoval);
+    for (size_t i = 0; i < DirectionCount; ++i) {
+        CHECK_EQ(
+            manager.getChunk(neighborCoords[i])->meshRevision(),
+            neighborRevisions[i] + 1);
+    }
 }
 
 TEST_CASE(ChunkManager_MoveRetainsChangeTracking) {

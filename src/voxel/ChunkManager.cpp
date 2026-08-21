@@ -178,6 +178,15 @@ void ChunkManager::loadChunk(ChunkCoord coord, std::span<const uint8_t> data) {
 void ChunkManager::unloadChunk(ChunkCoord coord) {
     auto it = m_chunks.find(coord);
     if (it != m_chunks.end()) {
+        for (size_t i = 0; i < DirectionCount; ++i) {
+            int dx = 0;
+            int dy = 0;
+            int dz = 0;
+            directionOffset(static_cast<Direction>(i), dx, dy, dz);
+            if (Chunk* neighbor = getChunk(coord.offset(dx, dy, dz))) {
+                neighbor->invalidateMesh();
+            }
+        }
         m_chunks.erase(it);
         m_dirtyMeshQueued.erase(coord);
         m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);

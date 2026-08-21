@@ -48,7 +48,37 @@ TEST_CASE(Persistence_WorldSaveLoad_MemoryFormat) {
     context.storage = storage;
     context.providers = world.persistenceProvidersHandle();
 
+    Persistence::ChunkSnapshot archivedChunk;
+    archivedChunk.key = Persistence::ChunkKey{"rigel:archive", 20, 0, 0};
+    archivedChunk.data.span.chunkX = 20;
+    archivedChunk.data.span.sizeX = 1;
+    archivedChunk.data.span.sizeY = 1;
+    archivedChunk.data.span.sizeZ = 1;
+    archivedChunk.data.blocks.push_back(Voxel::BlockState{testId, 2, 3});
+
+    Persistence::ChunkRegionSnapshot archivedChunkRegion;
+    archivedChunkRegion.key = Persistence::RegionKey{"rigel:archive", 1, 0, 0};
+    archivedChunkRegion.chunks.push_back(archivedChunk);
+    service.saveRegion(archivedChunkRegion, context);
+
+    Persistence::EntityPersistedEntity archivedEntity;
+    archivedEntity.typeId = "rigel:archived_entity";
+    archivedEntity.id = Entity::EntityId{1, 2, 3};
+    archivedEntity.position = glm::vec3(320.0f, 1.0f, 2.0f);
+
+    Persistence::EntityPersistedChunk archivedEntityChunk;
+    archivedEntityChunk.coord = Voxel::ChunkCoord{20, 0, 0};
+    archivedEntityChunk.entities.push_back(archivedEntity);
+
+    Persistence::EntityRegionSnapshot archivedEntityRegion;
+    archivedEntityRegion.key = Persistence::EntityRegionKey{"rigel:archive", 1, 0, 0};
+    archivedEntityRegion.chunks.push_back(archivedEntityChunk);
+    service.saveEntities(archivedEntityRegion, context);
+
     Persistence::saveWorldToDisk(world, service, context);
+
+    CHECK_EQ(service.loadRegion(archivedChunkRegion.key, context), archivedChunkRegion);
+    CHECK_EQ(service.loadEntities(archivedEntityRegion.key, context), archivedEntityRegion);
 
     Voxel::World loaded(resources);
     loaded.setId(1);

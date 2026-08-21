@@ -173,13 +173,13 @@ public:
 
     void commit() override {
         m_writer.flush();
-        std::error_code ec;
-        if (std::filesystem::exists(m_finalPath)) {
-            std::filesystem::remove(m_finalPath, ec);
-        }
-        std::filesystem::rename(m_tempPath, m_finalPath, ec);
-        if (ec) {
-            throw std::runtime_error("Failed to commit atomic write to " + m_finalPath);
+        std::error_code renameError;
+        std::filesystem::rename(m_tempPath, m_finalPath, renameError);
+        if (renameError) {
+            std::error_code cleanupError;
+            std::filesystem::remove(m_tempPath, cleanupError);
+            throw std::runtime_error(
+                "Failed to commit atomic write to " + m_finalPath + ": " + renameError.message());
         }
     }
 

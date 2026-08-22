@@ -1908,7 +1908,7 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
 
     BlockID persisted = registerTestBlock(registry, "rigel:test_malformed_payload");
     const ChunkCoord coord{0, 0, 0};
-    const ChunkCoord deferredCoord{1, 0, 0};
+    const ChunkCoord deferredCoord{16, 0, 0};
     ChunkData payload = buildPayload(
         coord,
         registry,
@@ -1926,11 +1926,10 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
         false);
 
     MemoryContext ctx;
-    saveRegionForPayloads(
-        ctx.service,
-        ctx.context,
-        "rigel:default",
-        {{coord, payload}, {deferredCoord, deferredPayload}});
+    saveRegionForPayload(
+        ctx.service, ctx.context, "rigel:default", coord, payload);
+    saveRegionForPayload(
+        ctx.service, ctx.context, "rigel:default", deferredCoord, deferredPayload);
 
     AsyncChunkLoader loader(
         ctx.service,
@@ -1959,6 +1958,8 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
     CHECK(loader.workCount().lastError.find("(0, 0, 0)") != std::string::npos);
     CHECK(loader.workCount().lastError.find("repair") != std::string::npos);
 
+    CHECK(waitForRegionCompletion(loader));
+    CHECK(loader.drainCompletions(1).empty());
     CHECK(waitForPayloadCompletions(loader, 1));
     resolved = loader.drainCompletions(8);
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));

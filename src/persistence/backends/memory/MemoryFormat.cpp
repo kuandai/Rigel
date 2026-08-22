@@ -3,6 +3,7 @@
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/ChunkCoord.h"
 #include "Rigel/Voxel/Chunk.h"
+#include "../../ChunkValidation.h"
 #include "../../RegionFilename.h"
 
 #include <bit>
@@ -18,6 +19,48 @@ namespace Rigel::Persistence::Backends::Memory {
 namespace {
 
 constexpr int32_t kMemoryRegionSpan = 16;
+constexpr uint32_t kMaxMemoryStringBytes = 1'048'576;
+constexpr uint32_t kMaxChunksPerRegion =
+    kMemoryRegionSpan * kMemoryRegionSpan * kMemoryRegionSpan;
+constexpr uint32_t kMaxEntitiesPerChunk = 1'048'576;
+constexpr size_t kEncodedChunkHeaderBytes = 13 * sizeof(uint32_t);
+constexpr size_t kEncodedBlockStateBytes =
+    sizeof(uint16_t) + 2 * sizeof(uint8_t);
+constexpr size_t kMinEncodedChunkBytes =
+    kEncodedChunkHeaderBytes + kEncodedBlockStateBytes;
+constexpr size_t kEncodedEntityChunkHeaderBytes = 4 * sizeof(uint32_t);
+constexpr size_t kMinEncodedEntityBytes = 15 * sizeof(uint32_t);
+
+size_t remainingInput(const ByteReader& reader) {
+    const size_t position = reader.tell();
+    const size_t size = reader.size();
+    if (position > size) {
+        throw std::runtime_error("MemoryFormat: invalid reader position");
+    }
+    return size - position;
+}
+
+void requireRemaining(const ByteReader& reader,
+                      size_t required,
+                      const char* diagnostic) {
+    if (required > remainingInput(reader)) {
+        throw std::runtime_error(diagnostic);
+    }
+}
+
+void validateCollectionCount(const ByteReader& reader,
+                             uint32_t count,
+                             uint32_t limit,
+                             size_t minimumElementBytes,
+                             const char* limitDiagnostic,
+                             const char* remainingDiagnostic) {
+    if (count > limit) {
+        throw std::runtime_error(limitDiagnostic);
+    }
+    if (count > remainingInput(reader) / minimumElementBytes) {
+        throw std::runtime_error(remainingDiagnostic);
+    }
+}
 
 std::string zoneRoot(const PersistenceContext& context, const std::string& zoneId) {
     return context.rootPath + "/zones/" + zoneId;
@@ -54,7 +97,18 @@ void writeString(ByteWriter& writer, const std::string& value) {
 }
 
 std::string readString(ByteReader& reader) {
+    requireRemaining(
+        reader, sizeof(uint32_t),
+        "MemoryFormat: truncated string length");
     uint32_t len = reader.readU32();
+    if (len > kMaxMemoryStringBytes) {
+        throw std::runtime_error(
+            "MemoryFormat: string length exceeds format limit");
+    }
+    if (len > remainingInput(reader)) {
+        throw std::runtime_error(
+            "MemoryFormat: string length exceeds remaining input");
+    }
     std::string out;
     if (len == 0) {
         return out;
@@ -253,16 +307,28 @@ public:
     }
 
     ChunkSnapshot read(ByteReader& reader, const ChunkKey& keyHint) override {
+        requireRemaining(
+            reader, kEncodedChunkHeaderBytes - sizeof(uint32_t),
+            "MemoryFormat: truncated chunk header");
         ChunkSnapshot out;
         out.key = keyHint;
         out.key.x = reader.readI32();
         out.key.y = reader.readI32();
         out.key.z = reader.readI32();
         out.data.span = readChunkSpan(reader);
-        uint32_t count = reader.readU32();
-        out.data.blocks.reserve(count);
+        detail::validateChunkSpan(out.data.span);
+        requireRemaining(
+            reader, sizeof(uint32_t),
+            "MemoryFormat: truncated chunk block count");
+        const uint32_t count = reader.readU32();
+        detail::validateChunkBlockCount(out.data.span, count);
+        if (count > remainingInput(reader) / kEncodedBlockStateBytes) {
+            throw std::runtime_error(
+                "MemoryFormat: chunk block count exceeds remaining input");
+        }
+        out.data.blocks.resize(count);
         for (uint32_t i = 0; i < count; ++i) {
-            out.data.blocks.push_back(readBlockState(reader));
+            out.data.blocks[i] = readBlockState(reader);
         }
         return out;
     }
@@ -293,18 +359,41 @@ public:
     EntityRegionSnapshot read(ByteReader& reader, const EntityRegionKey& keyHint) override {
         EntityRegionSnapshot out;
         out.key = keyHint;
-        uint32_t chunkCount = reader.readU32();
+        requireRemaining(
+            reader, sizeof(uint32_t),
+            "MemoryFormat: truncated entity-region chunk count");
+        const uint32_t chunkCount = reader.readU32();
+        validateCollectionCount(
+            reader,
+            chunkCount,
+            kMaxChunksPerRegion,
+            kEncodedEntityChunkHeaderBytes,
+            "MemoryFormat: entity-region chunk count exceeds format limit",
+            "MemoryFormat: entity-region chunk count exceeds remaining input");
         out.chunks.reserve(chunkCount);
         for (uint32_t c = 0; c < chunkCount; ++c) {
+            requireRemaining(
+                reader, kEncodedEntityChunkHeaderBytes,
+                "MemoryFormat: truncated entity chunk header");
             EntityPersistedChunk chunk;
             chunk.coord.x = reader.readI32();
             chunk.coord.y = reader.readI32();
             chunk.coord.z = reader.readI32();
-            uint32_t entityCount = reader.readU32();
+            const uint32_t entityCount = reader.readU32();
+            validateCollectionCount(
+                reader,
+                entityCount,
+                kMaxEntitiesPerChunk,
+                kMinEncodedEntityBytes,
+                "MemoryFormat: entity count exceeds format limit",
+                "MemoryFormat: entity count exceeds remaining input");
             chunk.entities.reserve(entityCount);
             for (uint32_t e = 0; e < entityCount; ++e) {
                 EntityPersistedEntity entity;
                 entity.typeId = readString(reader);
+                requireRemaining(
+                    reader, 14 * sizeof(uint32_t),
+                    "MemoryFormat: truncated entity record");
                 entity.id.time = readU64(reader);
                 entity.id.random = reader.readU32();
                 entity.id.counter = reader.readU32();
@@ -351,7 +440,17 @@ public:
             return region;
         }
         auto reader = m_storage->openRead(path);
-        uint32_t count = reader->readU32();
+        requireRemaining(
+            *reader, sizeof(uint32_t),
+            "MemoryFormat: truncated chunk count");
+        const uint32_t count = reader->readU32();
+        validateCollectionCount(
+            *reader,
+            count,
+            kMaxChunksPerRegion,
+            kMinEncodedChunkBytes,
+            "MemoryFormat: chunk count exceeds format limit",
+            "MemoryFormat: chunk count exceeds remaining input");
         region.chunks.reserve(count);
         ChunkKey hint{key.zoneId, 0, 0, 0};
         for (uint32_t i = 0; i < count; ++i) {

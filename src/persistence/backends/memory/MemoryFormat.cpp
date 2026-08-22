@@ -419,6 +419,13 @@ public:
         session->commit();
     }
 
+    void removeRegion(const EntityRegionKey& key) override {
+        auto path = entityRegionPath(m_context, key);
+        if (m_storage->exists(path)) {
+            m_storage->remove(path);
+        }
+    }
+
     EntityRegionSnapshot loadRegion(const EntityRegionKey& key) override {
         EntityRegionSnapshot empty;
         empty.key = key;

@@ -1277,6 +1277,13 @@ public:
         session->commit();
     }
 
+    void removeRegion(const EntityRegionKey& key) override {
+        auto path = CRPaths::entityRegionPath(key, m_context);
+        if (m_storage->exists(path)) {
+            m_storage->remove(path);
+        }
+    }
+
     EntityRegionSnapshot loadRegion(const EntityRegionKey& key) override {
         EntityRegionSnapshot out;
         out.key = key;

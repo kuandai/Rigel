@@ -39,6 +39,7 @@ public:
     virtual ~EntityContainer() = default;
 
     virtual void saveRegion(const EntityRegionSnapshot& region) = 0;
+    virtual void removeRegion(const EntityRegionKey& key) = 0;
     virtual EntityRegionSnapshot loadRegion(const EntityRegionKey& key) = 0;
     virtual std::vector<EntityRegionKey> listRegions(const std::string& zoneId) = 0;
 };

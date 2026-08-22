@@ -274,6 +274,9 @@ public:
     void saveRegion(const EntityRegionSnapshot&) override {
     }
 
+    void removeRegion(const EntityRegionKey&) override {
+    }
+
     EntityRegionSnapshot loadRegion(const EntityRegionKey& key) override {
         return EntityRegionSnapshot{key, {}};
     }

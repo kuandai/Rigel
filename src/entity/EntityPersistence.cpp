@@ -121,9 +121,13 @@ public:
         return true;
     }
 
+    bool atEnd() const {
+        return m_pos == m_data.size();
+    }
+
 private:
     bool ensure(size_t len) const {
-        return m_pos + len <= m_data.size();
+        return m_pos <= m_data.size() && len <= m_data.size() - m_pos;
     }
 
     std::span<const uint8_t> m_data;
@@ -192,8 +196,8 @@ bool decodeEntityRegionPayload(std::span<const uint8_t> payload,
         return false;
     }
 
-    outChunks.clear();
-    outChunks.reserve(chunkCount);
+    std::vector<EntityPersistedChunk> chunks;
+    chunks.reserve(chunkCount);
 
     for (uint32_t i = 0; i < chunkCount; ++i) {
         EntityPersistedChunk chunk;
@@ -233,9 +237,13 @@ bool decodeEntityRegionPayload(std::span<const uint8_t> payload,
             chunk.entities.push_back(std::move(entity));
         }
 
-        outChunks.push_back(std::move(chunk));
+        chunks.push_back(std::move(chunk));
     }
 
+    if (!reader.atEnd()) {
+        return false;
+    }
+    outChunks = std::move(chunks);
     return true;
 }
 

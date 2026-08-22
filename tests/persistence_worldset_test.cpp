@@ -16,7 +16,7 @@ public:
         throw std::runtime_error("DummyStorage openRead");
     }
 
-    std::unique_ptr<Persistence::AtomicWriteSession> openWrite(const std::string&, Persistence::AtomicWriteOptions) override {
+    std::unique_ptr<Persistence::AtomicWriteSession> openWrite(const std::string&) override {
         throw std::runtime_error("DummyStorage openWrite");
     }
 
@@ -60,4 +60,3 @@ TEST_CASE(WorldSet_PersistenceContextIncludesProviders) {
     CHECK(ctx.providers != nullptr);
     CHECK(ctx.providers->findAs<DummyProvider>("dummy") == provider);
 }
-

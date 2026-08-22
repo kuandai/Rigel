@@ -167,8 +167,10 @@ private:
 
 class InMemoryWriteSession final : public AtomicWriteSession {
 public:
-    explicit InMemoryWriteSession(std::vector<uint8_t>& target)
-        : m_target(target), m_writer(m_buffer) {
+    InMemoryWriteSession(
+        std::unordered_map<std::string, std::vector<uint8_t>>& files,
+        std::string path)
+        : m_files(files), m_path(std::move(path)), m_writer(m_buffer) {
     }
 
     ByteWriter& writer() override {
@@ -176,14 +178,15 @@ public:
     }
 
     void commit() override {
-        m_target = m_buffer;
+        m_files[m_path] = m_buffer;
     }
 
     void abort() override {
     }
 
 private:
-    std::vector<uint8_t>& m_target;
+    std::unordered_map<std::string, std::vector<uint8_t>>& m_files;
+    std::string m_path;
     std::vector<uint8_t> m_buffer;
     InMemoryByteWriter m_writer;
 };
@@ -199,9 +202,9 @@ public:
         return std::make_unique<InMemoryByteReader>(it->second);
     }
 
-    std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path, AtomicWriteOptions) override {
+    std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path) override {
         m_calls.push_back("openWrite " + path);
-        return std::make_unique<InMemoryWriteSession>(m_files[path]);
+        return std::make_unique<InMemoryWriteSession>(m_files, path);
     }
 
     bool exists(const std::string& path) override {
@@ -247,7 +250,7 @@ private:
 };
 
 void createEmptyFile(StorageBackend& storage, const std::string& path) {
-    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    auto session = storage.openWrite(path);
     session->commit();
 }
 
@@ -375,6 +378,16 @@ private:
 };
 
 } // namespace
+
+TEST_CASE(PersistenceInMemoryStorage_abandoned_write_does_not_create_destination) {
+    InMemoryStorageBackend storage;
+    auto session = storage.openWrite("root/uncommitted.bin");
+    session->writer().writeU8(42);
+
+    CHECK(!storage.exists("root/uncommitted.bin"));
+    session.reset();
+    CHECK(!storage.exists("root/uncommitted.bin"));
+}
 
 TEST_CASE(Persistence_MetadataRoundTrip) {
     auto storage = std::make_shared<InMemoryStorageBackend>();

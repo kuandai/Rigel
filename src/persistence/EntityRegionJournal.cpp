@@ -315,7 +315,7 @@ void publishJournal(const EntityRegionJournal& journal,
                     const PersistenceContext& context) {
     const std::string path = journalPath(context);
     context.storage->mkdirs(parentPath(path));
-    auto session = context.storage->openWrite(path, AtomicWriteOptions{});
+    auto session = context.storage->openWrite(path);
     writeJournal(session->writer(), journal, format);
     session->writer().flush();
     session->commit();

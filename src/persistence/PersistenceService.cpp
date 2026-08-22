@@ -139,7 +139,7 @@ void publishMetadata(StorageBackend& storage,
                      const std::vector<uint8_t>& payload,
                      const std::string& path) {
     storage.mkdirs(parentPath(path));
-    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    auto session = storage.openWrite(path);
     if (!payload.empty()) {
         session->writer().writeBytes(payload.data(), payload.size());
     }

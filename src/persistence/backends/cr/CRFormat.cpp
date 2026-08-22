@@ -1402,7 +1402,7 @@ public:
             compressed.resize(static_cast<size_t>(compressedSize));
         }
 
-        auto session = m_storage->openWrite(path, AtomicWriteOptions{});
+        auto session = m_storage->openWrite(path);
         auto& writer = session->writer();
         writer.writeI32(kMagic);
         writer.writeI32(kFileVersion);
@@ -1592,7 +1592,7 @@ public:
         }
         validateRegionChunks(region);
         auto payload = Entity::encodeEntityRegionPayload(region.chunks);
-        auto session = m_storage->openWrite(path, AtomicWriteOptions{});
+        auto session = m_storage->openWrite(path);
         if (!payload.empty()) {
             session->writer().writeBytes(payload.data(), payload.size());
         }

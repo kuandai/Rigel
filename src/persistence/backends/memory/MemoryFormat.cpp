@@ -518,7 +518,7 @@ public:
 
         auto path = regionPath(*m_storage, m_context, region.key);
         m_storage->mkdirs(parentPath(path));
-        auto session = m_storage->openWrite(path, AtomicWriteOptions{});
+        auto session = m_storage->openWrite(path);
         auto& writer = session->writer();
         writer.writeU32(static_cast<uint32_t>(region.chunks.size()));
         for (const auto& chunk : region.chunks) {
@@ -589,7 +589,7 @@ public:
     void saveRegion(const EntityRegionSnapshot& region) override {
         auto path = entityRegionPath(*m_storage, m_context, region.key);
         m_storage->mkdirs(parentPath(path));
-        auto session = m_storage->openWrite(path, AtomicWriteOptions{});
+        auto session = m_storage->openWrite(path);
         m_codec.write(region, session->writer());
         session->writer().flush();
         session->commit();

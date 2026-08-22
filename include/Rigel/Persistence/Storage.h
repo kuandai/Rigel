@@ -46,12 +46,6 @@ public:
     virtual void flush() = 0;
 };
 
-struct AtomicWriteOptions {
-    // Atomic writes remain staged until commit and can be aborted without
-    // changing the destination. Non-atomic writes update it directly.
-    bool atomic = true;
-};
-
 class AtomicWriteSession {
 public:
     virtual ~AtomicWriteSession() = default;
@@ -66,7 +60,9 @@ public:
     virtual ~StorageBackend() = default;
 
     virtual std::unique_ptr<ByteReader> openRead(const std::string& path) = 0;
-    virtual std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path, AtomicWriteOptions options) = 0;
+    // Writes are staged until commit. Aborting or destroying an uncommitted
+    // session leaves the destination unchanged.
+    virtual std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path) = 0;
     virtual bool exists(const std::string& path) = 0;
     virtual std::vector<std::string> list(const std::string& path) = 0;
     virtual void mkdirs(const std::string& path) = 0;
@@ -76,7 +72,7 @@ public:
 class FilesystemBackend : public StorageBackend {
 public:
     std::unique_ptr<ByteReader> openRead(const std::string& path) override;
-    std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path, AtomicWriteOptions options) override;
+    std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path) override;
     bool exists(const std::string& path) override;
     std::vector<std::string> list(const std::string& path) override;
     void mkdirs(const std::string& path) override;

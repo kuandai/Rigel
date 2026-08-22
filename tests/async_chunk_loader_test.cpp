@@ -294,9 +294,8 @@ public:
     }
 
     std::unique_ptr<AtomicWriteSession> openWrite(
-        const std::string& path,
-        AtomicWriteOptions options) override {
-        return m_delegate->openWrite(path, options);
+        const std::string& path) override {
+        return m_delegate->openWrite(path);
     }
 
     bool exists(const std::string& path) override {
@@ -354,9 +353,8 @@ public:
     }
 
     std::unique_ptr<AtomicWriteSession> openWrite(
-        const std::string& path,
-        AtomicWriteOptions options) override {
-        return m_delegate->openWrite(path, options);
+        const std::string& path) override {
+        return m_delegate->openWrite(path);
     }
 
     bool exists(const std::string& path) override {
@@ -389,7 +387,7 @@ private:
         if (!m_needsRestore) {
             return;
         }
-        auto session = m_delegate->openWrite(m_path, {});
+        auto session = m_delegate->openWrite(m_path);
         session->writer().writeBytes(m_originalBytes.data(), m_originalBytes.size());
         session->commit();
         m_needsRestore = false;
@@ -415,8 +413,7 @@ public:
     }
 
     std::unique_ptr<AtomicWriteSession> openWrite(
-        const std::string& path,
-        AtomicWriteOptions options) override {
+        const std::string& path) override {
         ++m_writeAttempts;
         size_t remaining = m_failuresRemaining.load();
         while (remaining > 0) {
@@ -426,7 +423,7 @@ public:
                 throw std::runtime_error("injected transient write failure");
             }
         }
-        return m_delegate->openWrite(path, options);
+        return m_delegate->openWrite(path);
     }
 
     bool exists(const std::string& path) override {
@@ -525,7 +522,7 @@ void writeRawMemoryRegion(
         std::to_string(regionKey.x) + "_" + std::to_string(regionKey.y) +
         "_" + std::to_string(regionKey.z) + ".mem";
     context.storage->mkdirs(directory);
-    auto session = context.storage->openWrite(path, AtomicWriteOptions{});
+    auto session = context.storage->openWrite(path);
     auto& writer = session->writer();
     writer.writeU32(static_cast<uint32_t>(payloads.size()));
     for (const auto& [coord, payload] : payloads) {

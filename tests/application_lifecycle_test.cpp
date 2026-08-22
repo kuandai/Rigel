@@ -129,8 +129,7 @@ public:
     }
 
     std::unique_ptr<Rigel::Persistence::AtomicWriteSession> openWrite(
-        const std::string& path,
-        Rigel::Persistence::AtomicWriteOptions options
+        const std::string& path
     ) override {
         if (matches(path)) {
             ++g_calls->persistenceAttempts;
@@ -139,7 +138,7 @@ public:
                 fail(path);
             }
         }
-        return m_storage.openWrite(path, options);
+        return m_storage.openWrite(path);
     }
 
     bool exists(const std::string& path) override {

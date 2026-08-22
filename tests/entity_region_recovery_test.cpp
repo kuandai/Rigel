@@ -269,8 +269,7 @@ public:
     }
 
     std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
-        const std::string& path,
-        Persistence::AtomicWriteOptions) override {
+        const std::string& path) override {
         return std::make_unique<SharedWriteSession>(
             m_files, m_control, path);
     }

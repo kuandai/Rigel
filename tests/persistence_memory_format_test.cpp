@@ -127,7 +127,7 @@ public:
     void saveWorldMetadata(const WorldMetadata& metadata) {
         const std::string path =
             m_format->worldMetadataCodec().metadataPath(m_context);
-        auto session = m_storage->openWrite(path, AtomicWriteOptions{});
+        auto session = m_storage->openWrite(path);
         m_format->worldMetadataCodec().write(metadata, session->writer());
         session->writer().flush();
         session->commit();
@@ -181,7 +181,7 @@ private:
     }
 
     void write(const std::string& path, std::vector<uint8_t> bytes) {
-        auto session = m_storage->openWrite(path, AtomicWriteOptions{});
+        auto session = m_storage->openWrite(path);
         if (!bytes.empty()) {
             session->writer().writeBytes(bytes.data(), bytes.size());
         }

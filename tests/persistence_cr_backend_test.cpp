@@ -182,8 +182,10 @@ private:
 
 class InMemoryWriteSession final : public AtomicWriteSession {
 public:
-    explicit InMemoryWriteSession(std::vector<uint8_t>& target)
-        : m_writer(target) {
+    InMemoryWriteSession(
+        std::unordered_map<std::string, std::vector<uint8_t>>& files,
+        std::string path)
+        : m_files(files), m_path(std::move(path)), m_writer(m_buffer) {
     }
 
     ByteWriter& writer() override {
@@ -191,12 +193,16 @@ public:
     }
 
     void commit() override {
+        m_files[m_path] = m_buffer;
     }
 
     void abort() override {
     }
 
 private:
+    std::unordered_map<std::string, std::vector<uint8_t>>& m_files;
+    std::string m_path;
+    std::vector<uint8_t> m_buffer;
     InMemoryByteWriter m_writer;
 };
 
@@ -210,9 +216,9 @@ public:
         return std::make_unique<InMemoryByteReader>(it->second);
     }
 
-    std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path, AtomicWriteOptions) override {
+    std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path) override {
         ++m_writeSessionCount;
-        return std::make_unique<InMemoryWriteSession>(m_files[path]);
+        return std::make_unique<InMemoryWriteSession>(m_files, path);
     }
 
     bool exists(const std::string& path) override {
@@ -252,14 +258,14 @@ private:
 };
 
 void createEmptyFile(StorageBackend& storage, const std::string& path) {
-    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    auto session = storage.openWrite(path);
     session->commit();
 }
 
 void writeText(StorageBackend& storage,
                const std::string& path,
                const std::string& text) {
-    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    auto session = storage.openWrite(path);
     session->writer().writeBytes(
         reinterpret_cast<const uint8_t*>(text.data()), text.size());
     session->writer().flush();
@@ -425,7 +431,7 @@ void writeFixtureRegion(StorageBackend& storage,
     }
     writer.writeBytes(columnBytes.data(), columnBytes.size());
 
-    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    auto session = storage.openWrite(path);
     session->writer().writeBytes(regionBytes.data(), regionBytes.size());
     session->writer().flush();
     session->commit();
@@ -616,6 +622,29 @@ std::vector<uint8_t> makeFixturePayload(
     return bytes;
 }
 
+TEST_CASE(InMemoryStorageBackend_uncommitted_writes_are_not_published) {
+    InMemoryStorageBackend storage;
+    const std::string existingPath = "worlds/existing.bin";
+    const std::string missingPath = "worlds/missing.bin";
+    const std::string previous = "previous";
+    const std::string replacement = "replacement";
+
+    writeText(storage, existingPath, previous);
+    {
+        auto session = storage.openWrite(existingPath);
+        session->writer().writeBytes(
+            reinterpret_cast<const uint8_t*>(replacement.data()),
+            replacement.size());
+        CHECK_EQ(storage.openRead(existingPath)->readAt(0, previous.size()),
+                 (std::vector<uint8_t>(previous.begin(), previous.end())));
+    }
+
+    auto session = storage.openWrite(missingPath);
+    session->writer().writeU8(42);
+    session->abort();
+    CHECK(!storage.exists(missingPath));
+}
+
 std::vector<uint8_t> makeUncompressedFixtureRegion(
     const std::vector<uint8_t>& payload,
     int32_t columnCount,
@@ -662,7 +691,7 @@ ChunkRegionSnapshot loadFixtureRegion(
     }
     const RegionKey key{"zone:default", 0, 0, 0};
     const std::string path = CRPaths::regionPath(key, context);
-    auto session = storage->openWrite(path, AtomicWriteOptions{});
+    auto session = storage->openWrite(path);
     session->writer().writeBytes(bytes.data(), bytes.size());
     session->commit();
 
@@ -1228,7 +1257,7 @@ TEST_CASE(CRBackend_entity_regions_reject_malformed_and_duplicate_records) {
     EntityPersistedChunk chunk;
     chunk.coord = Rigel::Voxel::ChunkCoord{0, 0, 0};
     const auto duplicatePayload = Rigel::Entity::encodeEntityRegionPayload({chunk, chunk});
-    auto session = storage->openWrite(path, AtomicWriteOptions{});
+    auto session = storage->openWrite(path);
     session->writer().writeBytes(duplicatePayload.data(), duplicatePayload.size());
     session->commit();
     checkCRRegionError(

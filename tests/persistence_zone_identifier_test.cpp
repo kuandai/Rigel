@@ -23,7 +23,7 @@ public:
     }
 
     std::unique_ptr<AtomicWriteSession> openWrite(
-        const std::string&, AtomicWriteOptions) override {
+        const std::string&) override {
         return reject<std::unique_ptr<AtomicWriteSession>>();
     }
 
@@ -392,8 +392,7 @@ TEST_CASE(MemoryFormat_RejectsSplitNamespacedZoneStorageLayouts) {
         directory.path() / "zones" / "rigel" / "default" / "zone.meta";
     const auto previousPath =
         directory.path() / "zones" / "rigel:default" / "zone.meta";
-    auto previousSession = storage->openWrite(
-        previousPath.string(), AtomicWriteOptions{});
+    auto previousSession = storage->openWrite(previousPath.string());
     previousSession->commit();
 
     std::string diagnostic;

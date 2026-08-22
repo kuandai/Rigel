@@ -309,41 +309,15 @@ private:
     std::unique_ptr<FileByteWriter> m_writer;
 };
 
-class DirectFileWriteSession final : public AtomicWriteSession {
-public:
-    explicit DirectFileWriteSession(std::string path)
-        : m_path(std::move(path)), m_writer(m_path) {
-    }
-
-    ByteWriter& writer() override {
-        return m_writer;
-    }
-
-    void commit() override {
-        m_writer.flush();
-    }
-
-    void abort() override {
-    }
-
-private:
-    std::string m_path;
-    FileByteWriter m_writer;
-};
-
 } // namespace
 
 std::unique_ptr<ByteReader> FilesystemBackend::openRead(const std::string& path) {
     return std::make_unique<FileByteReader>(path);
 }
 
-std::unique_ptr<AtomicWriteSession> FilesystemBackend::openWrite(const std::string& path, AtomicWriteOptions options) {
+std::unique_ptr<AtomicWriteSession> FilesystemBackend::openWrite(const std::string& path) {
     std::filesystem::path p(path);
     std::filesystem::create_directories(p.parent_path());
-
-    if (!options.atomic) {
-        return std::make_unique<DirectFileWriteSession>(path);
-    }
 
     const auto tempPath = createUniqueTemporaryFile(p);
     try {

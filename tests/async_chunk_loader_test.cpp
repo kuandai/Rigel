@@ -505,6 +505,51 @@ void saveRegionForPayloads(PersistenceService& service,
     format->chunkContainer().saveRegion(region);
 }
 
+void writeRawMemoryRegion(
+    PersistenceService& service,
+    PersistenceContext& context,
+    const std::string& zoneId,
+    const std::vector<std::pair<ChunkCoord, ChunkData>>& payloads) {
+    if (payloads.empty()) {
+        return;
+    }
+
+    auto format = service.openFormat(context);
+    const RegionKey regionKey = format->regionLayout().regionForChunk(
+        zoneId, payloads.front().first);
+    const std::string directory = context.rootPath + "/zones/" + zoneId +
+        "/regions";
+    const std::string path = directory + "/region_" +
+        std::to_string(regionKey.x) + "_" + std::to_string(regionKey.y) +
+        "_" + std::to_string(regionKey.z) + ".mem";
+    context.storage->mkdirs(directory);
+    auto session = context.storage->openWrite(path, AtomicWriteOptions{});
+    auto& writer = session->writer();
+    writer.writeU32(static_cast<uint32_t>(payloads.size()));
+    for (const auto& [coord, payload] : payloads) {
+        writer.writeI32(coord.x);
+        writer.writeI32(coord.y);
+        writer.writeI32(coord.z);
+        writer.writeI32(payload.span.chunkX);
+        writer.writeI32(payload.span.chunkY);
+        writer.writeI32(payload.span.chunkZ);
+        writer.writeI32(payload.span.offsetX);
+        writer.writeI32(payload.span.offsetY);
+        writer.writeI32(payload.span.offsetZ);
+        writer.writeI32(payload.span.sizeX);
+        writer.writeI32(payload.span.sizeY);
+        writer.writeI32(payload.span.sizeZ);
+        writer.writeU32(static_cast<uint32_t>(payload.blocks.size()));
+        for (const auto& block : payload.blocks) {
+            writer.writeU16(block.id.type);
+            writer.writeU8(block.metadata);
+            writer.writeU8(block.lightLevel);
+        }
+    }
+    writer.flush();
+    session->commit();
+}
+
 void configureStreamerLoader(ChunkStreamer& streamer,
                              const std::shared_ptr<AsyncChunkLoader>& loader) {
     streamer.setChunkLoader([loader](ChunkLoadRequest request) {
@@ -1926,8 +1971,11 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
         false);
 
     MemoryContext ctx;
-    saveRegionForPayload(
-        ctx.service, ctx.context, "rigel:default", coord, payload);
+    writeRawMemoryRegion(
+        ctx.service,
+        ctx.context,
+        "rigel:default",
+        {{coord, payload}});
     saveRegionForPayload(
         ctx.service, ctx.context, "rigel:default", deferredCoord, deferredPayload);
 
@@ -2039,7 +2087,7 @@ TEST_CASE(AsyncChunkLoader_FailureSignatureTracksTerminalSetMutation) {
     replacementPayload.blocks.pop_back();
 
     MemoryContext ctx;
-    saveRegionForPayloads(
+    writeRawMemoryRegion(
         ctx.service,
         ctx.context,
         "rigel:default",

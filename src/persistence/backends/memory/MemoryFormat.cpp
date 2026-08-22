@@ -62,6 +62,21 @@ void validateCollectionCount(const ByteReader& reader,
     }
 }
 
+void validateCollectionSize(size_t count,
+                            uint32_t limit,
+                            const char* diagnostic) {
+    if (count > limit) {
+        throw std::runtime_error(diagnostic);
+    }
+}
+
+void validateStringSize(const std::string& value) {
+    if (value.size() > kMaxMemoryStringBytes) {
+        throw std::runtime_error(
+            "MemoryFormat: string length exceeds format limit");
+    }
+}
+
 std::string zoneRoot(const PersistenceContext& context, const std::string& zoneId) {
     return context.rootPath + "/zones/" + zoneId;
 }
@@ -90,6 +105,7 @@ std::string chunkPath(const PersistenceContext& context, const ChunkKey& key) {
 }
 
 void writeString(ByteWriter& writer, const std::string& value) {
+    validateStringSize(value);
     writer.writeU32(static_cast<uint32_t>(value.size()));
     if (!value.empty()) {
         writer.writeBytes(reinterpret_cast<const uint8_t*>(value.data()), value.size());
@@ -262,6 +278,8 @@ public:
     }
 
     void write(const WorldMetadata& metadata, ByteWriter& writer) override {
+        validateStringSize(metadata.worldId);
+        validateStringSize(metadata.displayName);
         writeString(writer, metadata.worldId);
         writeString(writer, metadata.displayName);
     }
@@ -281,6 +299,8 @@ public:
     }
 
     void write(const ZoneMetadata& metadata, ByteWriter& writer) override {
+        validateStringSize(metadata.zoneId);
+        validateStringSize(metadata.displayName);
         writeString(writer, metadata.zoneId);
         writeString(writer, metadata.displayName);
     }
@@ -296,6 +316,8 @@ public:
 class MemoryChunkCodec final : public ChunkCodec {
 public:
     void write(const ChunkSnapshot& chunk, ByteWriter& writer) override {
+        detail::validateChunkBlockCount(
+            chunk.data.span, chunk.data.blocks.size());
         writer.writeI32(chunk.key.x);
         writer.writeI32(chunk.key.y);
         writer.writeI32(chunk.key.z);
@@ -337,6 +359,21 @@ public:
 class MemoryEntityRegionCodec final : public EntityRegionCodec {
 public:
     void write(const EntityRegionSnapshot& region, ByteWriter& writer) override {
+        validateCollectionSize(
+            region.chunks.size(),
+            kMaxChunksPerRegion,
+            "MemoryFormat: entity-region chunk count exceeds format limit");
+        for (const auto& chunk : region.chunks) {
+            validateCollectionSize(
+                chunk.entities.size(),
+                kMaxEntitiesPerChunk,
+                "MemoryFormat: entity count exceeds format limit");
+            for (const auto& entity : chunk.entities) {
+                validateStringSize(entity.typeId);
+                validateStringSize(entity.modelId);
+            }
+        }
+
         writer.writeU32(static_cast<uint32_t>(region.chunks.size()));
         for (const auto& chunk : region.chunks) {
             writer.writeI32(chunk.coord.x);
@@ -420,6 +457,15 @@ public:
     }
 
     void saveRegion(const ChunkRegionSnapshot& region) override {
+        validateCollectionSize(
+            region.chunks.size(),
+            kMaxChunksPerRegion,
+            "MemoryFormat: chunk count exceeds format limit");
+        for (const auto& chunk : region.chunks) {
+            detail::validateChunkBlockCount(
+                chunk.data.span, chunk.data.blocks.size());
+        }
+
         auto path = regionPath(m_context, region.key);
         m_storage->mkdirs(parentPath(path));
         auto session = m_storage->openWrite(path, AtomicWriteOptions{});

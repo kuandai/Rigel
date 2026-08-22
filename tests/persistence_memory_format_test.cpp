@@ -18,6 +18,9 @@ using namespace Rigel::Persistence;
 
 namespace {
 
+constexpr size_t kMaxMemoryStringBytes = 1'048'576;
+constexpr size_t kMaxMemoryRegionChunks = 16 * 16 * 16;
+
 void appendU8(std::vector<uint8_t>& bytes, uint8_t value) {
     bytes.push_back(value);
 }
@@ -116,6 +119,46 @@ public:
         return m_format->entityContainer().loadRegion(key);
     }
 
+    void saveWorldMetadata(const WorldMetadata& metadata) {
+        const std::string path =
+            m_format->worldMetadataCodec().metadataPath(m_context);
+        auto session = m_storage->openWrite(path, AtomicWriteOptions{});
+        m_format->worldMetadataCodec().write(metadata, session->writer());
+        session->writer().flush();
+        session->commit();
+    }
+
+    WorldMetadata loadSavedWorldMetadata() {
+        const std::string path =
+            m_format->worldMetadataCodec().metadataPath(m_context);
+        auto reader = m_storage->openRead(path);
+        return m_format->worldMetadataCodec().read(*reader);
+    }
+
+    void saveChunk(const ChunkSnapshot& chunk) {
+        m_format->chunkContainer().saveChunk(chunk);
+    }
+
+    ChunkSnapshot loadSavedChunk(const ChunkKey& key) {
+        return m_format->chunkContainer().loadChunk(key);
+    }
+
+    void saveRegion(const ChunkRegionSnapshot& region) {
+        m_format->chunkContainer().saveRegion(region);
+    }
+
+    ChunkRegionSnapshot loadSavedRegion(const RegionKey& key) {
+        return m_format->chunkContainer().loadRegion(key);
+    }
+
+    void saveEntityRegion(const EntityRegionSnapshot& region) {
+        m_format->entityContainer().saveRegion(region);
+    }
+
+    EntityRegionSnapshot loadSavedEntityRegion(const EntityRegionKey& key) {
+        return m_format->entityContainer().loadRegion(key);
+    }
+
 private:
     std::string chunkPath(const ChunkKey& key) const {
         return m_context.rootPath + "/zones/" + key.zoneId +
@@ -150,6 +193,84 @@ private:
 };
 
 } // namespace
+
+TEST_CASE(MemoryFormat_WriterEnforcesStringBoundaryBeforeCommit) {
+    MemoryFixture fixture;
+    WorldMetadata boundary{
+        "world",
+        std::string(kMaxMemoryStringBytes, 'x')
+    };
+    fixture.saveWorldMetadata(boundary);
+    CHECK(fixture.loadSavedWorldMetadata() == boundary);
+
+    WorldMetadata oversized = boundary;
+    oversized.displayName.push_back('x');
+    checkFormatError(
+        [&]() { fixture.saveWorldMetadata(oversized); },
+        "MemoryFormat: string length exceeds format limit");
+    CHECK(fixture.loadSavedWorldMetadata() == boundary);
+}
+
+TEST_CASE(MemoryFormat_WriterEnforcesRegionCollectionBoundaryBeforeCommit) {
+    MemoryFixture fixture;
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{"zone", 0, 0, 0};
+    chunk.data.span.sizeX = 1;
+    chunk.data.span.sizeY = 1;
+    chunk.data.span.sizeZ = 1;
+    chunk.data.blocks.emplace_back();
+
+    ChunkRegionSnapshot boundary;
+    boundary.key = RegionKey{"zone", 0, 0, 0};
+    boundary.chunks.resize(kMaxMemoryRegionChunks, chunk);
+    fixture.saveRegion(boundary);
+    CHECK(fixture.loadSavedRegion(boundary.key) == boundary);
+
+    ChunkRegionSnapshot oversized = boundary;
+    oversized.chunks.push_back(chunk);
+    checkFormatError(
+        [&]() { fixture.saveRegion(oversized); },
+        "MemoryFormat: chunk count exceeds format limit");
+    CHECK(fixture.loadSavedRegion(boundary.key) == boundary);
+}
+
+TEST_CASE(MemoryFormat_WriterEnforcesEntityCollectionBoundaryBeforeCommit) {
+    MemoryFixture fixture;
+    EntityPersistedChunk chunk;
+    EntityRegionSnapshot boundary;
+    boundary.key = EntityRegionKey{"zone", 0, 0, 0};
+    boundary.chunks.resize(kMaxMemoryRegionChunks, chunk);
+    fixture.saveEntityRegion(boundary);
+    CHECK(fixture.loadSavedEntityRegion(boundary.key) == boundary);
+
+    EntityRegionSnapshot oversized = boundary;
+    oversized.chunks.push_back(chunk);
+    checkFormatError(
+        [&]() { fixture.saveEntityRegion(oversized); },
+        "MemoryFormat: entity-region chunk count exceeds format limit");
+    CHECK(fixture.loadSavedEntityRegion(boundary.key) == boundary);
+}
+
+TEST_CASE(MemoryFormat_WriterRejectsUnreadableChunkBeforeCommit) {
+    MemoryFixture fixture;
+    ChunkSnapshot valid;
+    valid.key = ChunkKey{"zone", 1, 2, 3};
+    valid.data.span.chunkX = 1;
+    valid.data.span.chunkY = 2;
+    valid.data.span.chunkZ = 3;
+    valid.data.span.sizeX = 1;
+    valid.data.span.sizeY = 1;
+    valid.data.span.sizeZ = 1;
+    valid.data.blocks.emplace_back();
+    fixture.saveChunk(valid);
+
+    ChunkSnapshot invalid = valid;
+    invalid.data.blocks.clear();
+    checkFormatError(
+        [&]() { fixture.saveChunk(invalid); },
+        "ChunkSerializer: block data size mismatch");
+    CHECK(fixture.loadSavedChunk(valid.key) == valid);
+}
 
 TEST_CASE(MemoryFormat_RejectsUnboundedStringLengths) {
     MemoryFixture fixture;

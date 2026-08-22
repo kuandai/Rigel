@@ -4,6 +4,7 @@
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/Block.h"
+#include "../src/entity/EntityPersistenceLimits.h"
 
 #include <glm/vec3.hpp>
 
@@ -20,6 +21,48 @@ constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
 constexpr size_t kMaxAggregateMetadataBytes = 8 * 1024 * 1024;
 constexpr size_t kMaxWorldMetadataZones = 4096;
 constexpr size_t kMaxMemoryStringBytes = 1'048'576;
+
+struct StorageMutationCounts {
+    size_t mkdirs = 0;
+    size_t openWrites = 0;
+    size_t commits = 0;
+    size_t removes = 0;
+
+    bool operator==(const StorageMutationCounts&) const = default;
+};
+
+EntityRegionSnapshot maximumMemoryEntityRegion(
+    const std::string& zoneId) {
+    constexpr size_t kEntityCount = 32;
+    constexpr size_t kRegionFixedBytes =
+        sizeof(uint32_t) + Rigel::Entity::detail::MinEncodedChunkBytes +
+        kEntityCount * Rigel::Entity::detail::MinEncodedEntityBytes;
+    size_t remainingStringBytes =
+        Rigel::Entity::detail::MaxEntityRegionBytes - kRegionFixedBytes;
+
+    EntityRegionSnapshot region;
+    region.key = EntityRegionKey{zoneId, 0, 0, 0};
+    region.chunks.emplace_back();
+    auto& entities = region.chunks.back().entities;
+    entities.resize(kEntityCount);
+    for (auto& entity : entities) {
+        const size_t typeBytes = std::min(
+            remainingStringBytes,
+            static_cast<size_t>(
+                Rigel::Entity::detail::MaxEntityStringBytes));
+        entity.typeId.assign(typeBytes, 't');
+        remainingStringBytes -= typeBytes;
+
+        const size_t modelBytes = std::min(
+            remainingStringBytes,
+            static_cast<size_t>(
+                Rigel::Entity::detail::MaxEntityStringBytes));
+        entity.modelId.assign(modelBytes, 'm');
+        remainingStringBytes -= modelBytes;
+    }
+    CHECK_EQ(remainingStringBytes, static_cast<size_t>(0));
+    return region;
+}
 
 class InMemoryByteReader final : public ByteReader {
 public:
@@ -213,8 +256,12 @@ class InMemoryWriteSession final : public AtomicWriteSession {
 public:
     InMemoryWriteSession(
         std::unordered_map<std::string, std::vector<uint8_t>>& files,
-        std::string path)
-        : m_files(files), m_path(std::move(path)), m_writer(m_buffer) {
+        std::string path,
+        StorageMutationCounts& mutations)
+        : m_files(files),
+          m_path(std::move(path)),
+          m_mutations(mutations),
+          m_writer(m_buffer) {
     }
 
     ByteWriter& writer() override {
@@ -222,6 +269,7 @@ public:
     }
 
     void commit() override {
+        ++m_mutations.commits;
         m_files[m_path] = m_buffer;
     }
 
@@ -231,6 +279,7 @@ public:
 private:
     std::unordered_map<std::string, std::vector<uint8_t>>& m_files;
     std::string m_path;
+    StorageMutationCounts& m_mutations;
     std::vector<uint8_t> m_buffer;
     InMemoryByteWriter m_writer;
 };
@@ -248,7 +297,9 @@ public:
 
     std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path) override {
         m_calls.push_back("openWrite " + path);
-        return std::make_unique<InMemoryWriteSession>(m_files, path);
+        ++m_mutations.openWrites;
+        return std::make_unique<InMemoryWriteSession>(
+            m_files, path, m_mutations);
     }
 
     bool exists(const std::string& path) override {
@@ -280,10 +331,12 @@ public:
 
     void mkdirs(const std::string& path) override {
         m_calls.push_back("mkdirs " + path);
+        ++m_mutations.mkdirs;
     }
 
     void remove(const std::string& path) override {
         m_calls.push_back("remove " + path);
+        ++m_mutations.removes;
         m_files.erase(path);
     }
 
@@ -295,6 +348,14 @@ public:
         m_calls.clear();
     }
 
+    StorageMutationCounts mutations() const {
+        return m_mutations;
+    }
+
+    void clearMutations() {
+        m_mutations = {};
+    }
+
     const std::unordered_map<std::string, std::vector<uint8_t>>& files() const {
         return m_files;
     }
@@ -302,6 +363,7 @@ public:
 private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
     std::vector<std::string> m_calls;
+    StorageMutationCounts m_mutations;
 };
 
 void createEmptyFile(StorageBackend& storage, const std::string& path) {
@@ -895,6 +957,84 @@ TEST_CASE(Persistence_EntityRegionRoundTrip) {
 
     auto loaded = service.loadEntities(entityRegion.key, context);
     CHECK_EQ(loaded, entityRegion);
+}
+
+TEST_CASE(MemoryFormat_EntityRegionPayloadBoundaryIsReadableAndAtomic) {
+    Rigel::Test::TemporaryDirectory directory("memory_entity_boundary");
+    auto storage = std::make_shared<FilesystemBackend>();
+    PersistenceContext context;
+    context.rootPath = directory.path().generic_string();
+    context.preferredFormat = "memory";
+    context.storage = storage;
+    auto format = Backends::Memory::factory()(context);
+
+    auto region = maximumMemoryEntityRegion("zone");
+    format->entityContainer().saveRegion(region);
+
+    const std::string path = context.rootPath +
+        "/zones/zone/entities/entityRegion_0_0_0.mem";
+    auto reader = storage->openRead(path);
+    CHECK_EQ(
+        reader->size(),
+        Rigel::Entity::detail::MaxEntityRegionBytes);
+    const auto originalBytes = reader->readAt(0, reader->size());
+    reader.reset();
+    CHECK(format->entityContainer().loadRegion(region.key) == region);
+
+    region.chunks.front().entities.back().modelId.push_back('m');
+    std::string diagnostic;
+    try {
+        format->entityContainer().saveRegion(region);
+    } catch (const std::runtime_error& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK_EQ(
+        diagnostic,
+        "MemoryFormat: entity region payload exceeds format limit");
+    reader = storage->openRead(path);
+    CHECK(reader->readAt(0, reader->size()) == originalBytes);
+}
+
+TEST_CASE(Persistence_MemoryEntityRegionLimitPrecedesStorageMutation) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::Memory::descriptor(),
+        Backends::Memory::factory(),
+        Backends::Memory::probe());
+
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    EntityRegionSnapshot original;
+    original.key = EntityRegionKey{"zone-main", 0, 0, 0};
+    original.chunks.emplace_back();
+    service.saveEntities(original, context);
+
+    auto oversized = maximumMemoryEntityRegion(original.key.zoneId);
+    oversized.chunks.front().entities.back().modelId.push_back('m');
+    const auto originalFiles = storage->files();
+    storage->clearCalls();
+    storage->clearMutations();
+
+    std::string diagnostic;
+    try {
+        service.saveEntities(oversized, context);
+    } catch (const std::runtime_error& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK_EQ(
+        diagnostic,
+        "MemoryFormat: entity region payload exceeds format limit");
+    CHECK(storage->calls().empty());
+    CHECK_EQ(storage->mutations(), StorageMutationCounts{});
+    CHECK_EQ(storage->files(), originalFiles);
 }
 
 TEST_CASE(MemoryFormat_region_discovery_requires_canonical_filenames) {

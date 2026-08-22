@@ -24,14 +24,11 @@ constexpr int32_t kMemoryRegionSpan = 16;
 constexpr uint32_t kMaxMemoryStringBytes = 1'048'576;
 constexpr uint32_t kMaxChunksPerRegion =
     kMemoryRegionSpan * kMemoryRegionSpan * kMemoryRegionSpan;
-constexpr uint32_t kMaxEntitiesPerChunk = 1'048'576;
 constexpr size_t kEncodedChunkHeaderBytes = 13 * sizeof(uint32_t);
 constexpr size_t kEncodedBlockStateBytes =
     sizeof(uint16_t) + 2 * sizeof(uint8_t);
 constexpr size_t kMinEncodedChunkBytes =
     kEncodedChunkHeaderBytes + kEncodedBlockStateBytes;
-constexpr size_t kEncodedEntityChunkHeaderBytes = 4 * sizeof(uint32_t);
-constexpr size_t kMinEncodedEntityBytes = 15 * sizeof(uint32_t);
 
 size_t remainingInput(const ByteReader& reader) {
     const size_t position = reader.tell();
@@ -77,6 +74,40 @@ void validateStringSize(const std::string& value) {
         throw std::runtime_error(
             "MemoryFormat: string length exceeds format limit");
     }
+}
+
+size_t measureEntityRegionBytes(const EntityRegionSnapshot& region) {
+    detail::validateZoneIdentifier(region.key.zoneId);
+    validateCollectionSize(
+        region.chunks.size(),
+        Entity::detail::MaxChunksPerEntityRegion,
+        "MemoryFormat: entity-region chunk count exceeds format limit");
+
+    size_t encodedBytes = sizeof(uint32_t);
+    auto addEncodedBytes = [&](size_t bytes) {
+        if (encodedBytes > Entity::detail::MaxEntityRegionBytes ||
+            bytes > Entity::detail::MaxEntityRegionBytes - encodedBytes) {
+            throw std::runtime_error(
+                "MemoryFormat: entity region payload exceeds format limit");
+        }
+        encodedBytes += bytes;
+    };
+
+    for (const auto& chunk : region.chunks) {
+        validateCollectionSize(
+            chunk.entities.size(),
+            Entity::detail::MaxEntitiesPerChunk,
+            "MemoryFormat: entity count exceeds format limit");
+        addEncodedBytes(Entity::detail::MinEncodedChunkBytes);
+        for (const auto& entity : chunk.entities) {
+            validateStringSize(entity.typeId);
+            validateStringSize(entity.modelId);
+            addEncodedBytes(Entity::detail::MinEncodedEntityBytes);
+            addEncodedBytes(entity.typeId.size());
+            addEncodedBytes(entity.modelId.size());
+        }
+    }
+    return encodedBytes;
 }
 
 std::string canonicalZoneRoot(const PersistenceContext& context,
@@ -410,21 +441,7 @@ public:
 class MemoryEntityRegionCodec final : public EntityRegionCodec {
 public:
     void write(const EntityRegionSnapshot& region, ByteWriter& writer) override {
-        detail::validateZoneIdentifier(region.key.zoneId);
-        validateCollectionSize(
-            region.chunks.size(),
-            kMaxChunksPerRegion,
-            "MemoryFormat: entity-region chunk count exceeds format limit");
-        for (const auto& chunk : region.chunks) {
-            validateCollectionSize(
-                chunk.entities.size(),
-                kMaxEntitiesPerChunk,
-                "MemoryFormat: entity count exceeds format limit");
-            for (const auto& entity : chunk.entities) {
-                validateStringSize(entity.typeId);
-                validateStringSize(entity.modelId);
-            }
-        }
+        measureEntityRegionBytes(region);
 
         writer.writeU32(static_cast<uint32_t>(region.chunks.size()));
         for (const auto& chunk : region.chunks) {
@@ -456,14 +473,14 @@ public:
         validateCollectionCount(
             reader,
             chunkCount,
-            kMaxChunksPerRegion,
-            kEncodedEntityChunkHeaderBytes,
+            Entity::detail::MaxChunksPerEntityRegion,
+            Entity::detail::MinEncodedChunkBytes,
             "MemoryFormat: entity-region chunk count exceeds format limit",
             "MemoryFormat: entity-region chunk count exceeds remaining input");
         out.chunks.reserve(chunkCount);
         for (uint32_t c = 0; c < chunkCount; ++c) {
             requireRemaining(
-                reader, kEncodedEntityChunkHeaderBytes,
+                reader, Entity::detail::MinEncodedChunkBytes,
                 "MemoryFormat: truncated entity chunk header");
             EntityPersistedChunk chunk;
             chunk.coord.x = reader.readI32();
@@ -473,8 +490,8 @@ public:
             validateCollectionCount(
                 reader,
                 entityCount,
-                kMaxEntitiesPerChunk,
-                kMinEncodedEntityBytes,
+                Entity::detail::MaxEntitiesPerChunk,
+                Entity::detail::MinEncodedEntityBytes,
                 "MemoryFormat: entity count exceeds format limit",
                 "MemoryFormat: entity count exceeds remaining input");
             chunk.entities.reserve(entityCount);
@@ -591,6 +608,7 @@ public:
     }
 
     void saveRegion(const EntityRegionSnapshot& region) override {
+        measureEntityRegionBytes(region);
         auto path = entityRegionPath(*m_storage, m_context, region.key);
         m_storage->mkdirs(parentPath(path));
         auto session = m_storage->openWrite(path);

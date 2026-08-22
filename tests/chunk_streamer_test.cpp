@@ -2769,6 +2769,108 @@ TEST_CASE(ChunkStreamer_MeshFailureCompletesJob) {
     }
 }
 
+TEST_CASE(ChunkStreamer_DirtyMeshFailureSurvivesResidentDesiredReentry) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(
+        registry, "rigel:resident_dirty_mesh_failure_solid");
+
+    const ChunkCoord coord{0, 0, 0};
+    Chunk& chunk = manager.getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+
+    const ChunkCoord departureCoord{1, 0, 0};
+    Chunk& departure = manager.getOrCreateChunk(departureCoord);
+    departure.setWorldGenVersion(generator->config().world.version);
+    departure.setLoadedFromDisk(true);
+    departure.clearDirty();
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 2;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 1;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(meshStore.contains(coord));
+    CHECK(!chunk.isDirty());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer,
+        []() { throw std::runtime_error("injected dirty mesh failure"); });
+    chunk.setBlock(1, 0, 0, BlockState{solid}, registry);
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+
+    CHECK(meshStore.contains(coord));
+    CHECK(chunk.isDirty());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsFailed, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.terminalErrors, static_cast<size_t>(1));
+
+    streamer.update(departureCoord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(manager.getChunk(coord) != nullptr);
+    CHECK(meshStore.contains(coord));
+    CHECK_EQ(streamer.diagnostics().mesh.terminalErrors, static_cast<size_t>(0));
+
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.workMetrics().meshJobsFailed, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.diagnostics().mesh.terminalErrors, static_cast<size_t>(1));
+    CHECK(streamer.diagnostics().mesh.lastError.find("mesh build") !=
+          std::string::npos);
+    CHECK(streamer.diagnostics().mesh.lastError.find("(0, 0, 0)") !=
+          std::string::npos);
+
+    for (uint32_t update = 0;
+         update <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++update) {
+        streamer.update(coord.toWorldCenter());
+        streamer.processCompletions();
+        CHECK_EQ(streamer.diagnostics().state,
+                 StreamingLifecycleState::Streaming);
+        CHECK_EQ(streamer.diagnostics().mesh.terminalErrors,
+                 static_cast<size_t>(1));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+    }
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
+
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer,
+        {});
+    auto replacementGenerator =
+        std::make_shared<WorldGenerator>(registry, generator->config());
+    streamer.setGenerator(replacementGenerator);
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(4));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.diagnostics().mesh.terminalErrors, static_cast<size_t>(0));
+    CHECK(meshStore.contains(coord));
+    CHECK(!chunk.isDirty());
+}
+
 TEST_CASE(ChunkStreamer_StaleMeshFailureRetriesLatestRevision) {
     ChunkManager manager;
     BlockRegistry registry;

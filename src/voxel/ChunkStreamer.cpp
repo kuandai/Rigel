@@ -1240,6 +1240,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         }
 
         if (meshResult.failed) {
+            chunk->m_dirty = true;
             stateIt->second = ChunkState::MeshFailed;
             m_dirtyMeshQueued.erase(meshResult.coord);
             m_missingMeshCapacityWaiting.erase(meshResult.coord);

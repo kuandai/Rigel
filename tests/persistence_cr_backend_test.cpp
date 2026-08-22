@@ -1844,6 +1844,71 @@ TEST_CASE(CRBackend_world_metadata_preserves_utf8_and_decodes_unicode) {
     CHECK_EQ(
         service.loadWorldMetadata(context),
         (WorldMetadata{"unicode_metadata", utf8Name}));
+
+    const std::string utf8Boundaries =
+        std::string("\x7f\xc2\x80\xdf\xbf") +
+        "\xe0\xa0\x80\xed\x9f\xbf\xee\x80\x80\xef\xbf\xbf" +
+        "\xf0\x90\x80\x80\xf4\x8f\xbf\xbf";
+    WorldSnapshot boundaryWorld;
+    boundaryWorld.metadata =
+        WorldMetadata{"unicode_metadata", utf8Boundaries};
+    service.saveWorld(boundaryWorld, context);
+    CHECK_EQ(service.loadWorldMetadata(context), boundaryWorld.metadata);
+
+    const ZoneKey zoneKey{"rigel:default"};
+    const auto zonePath = CRPaths::zoneInfoPath(zoneKey, context);
+    const std::string zonePrefix =
+        R"({"zoneId":"rigel:default","extension":")";
+    writeText(
+        *storage,
+        zonePath,
+        zonePrefix + utf8Boundaries + R"("})");
+    CHECK_EQ(
+        service.loadZoneMetadata(zoneKey, context),
+        (ZoneMetadata{"rigel:default", "rigel:default"}));
+
+    const std::vector<std::string> malformedRawUtf8{
+        std::string("\x80", 1),
+        std::string("\xc2", 1),
+        std::string("\xc0\xaf", 2),
+        std::string("\xe1\x80", 2),
+        std::string("\xf1\x80\x80", 3),
+        std::string("\xe0\x9f\xbf", 3),
+        std::string("\xf0\x8f\xbf\xbf", 4),
+        std::string("\xe2\x28\xa1", 3),
+        std::string("\xed\xa0\x80", 3),
+        std::string("\xf4\x90\x80\x80", 4),
+        std::string("\xf5\x80\x80\x80", 4)};
+    for (const auto& malformed : malformedRawUtf8) {
+        writeText(
+            *storage,
+            worldPath,
+            R"({"worldDisplayName":")" + malformed + R"("})");
+        checkCRMetadataError(
+            [&]() { service.loadWorldMetadata(context); },
+            "CRMetadata: invalid JSON string");
+
+        writeText(
+            *storage,
+            zonePath,
+            zonePrefix + malformed + R"("})");
+        checkCRMetadataError(
+            [&]() { service.loadZoneMetadata(zoneKey, context); },
+            "CRMetadata: invalid JSON string");
+    }
+
+    service.saveWorld(boundaryWorld, context);
+    const auto validPayload = readAll(*storage, worldPath);
+    const size_t mkdirCount = storage->mkdirCount();
+    const size_t writeSessionCount = storage->writeSessionCount();
+    WorldSnapshot invalidWorld = boundaryWorld;
+    invalidWorld.metadata.displayName = std::string("\xed\xa0\x80", 3);
+    checkCRMetadataError(
+        [&]() { service.saveWorld(invalidWorld, context); },
+        "CRMetadata: invalid JSON string");
+    CHECK_EQ(storage->mkdirCount(), mkdirCount);
+    CHECK_EQ(storage->writeSessionCount(), writeSessionCount);
+    CHECK_EQ(readAll(*storage, worldPath), validPayload);
 }
 
 TEST_CASE(CRBackend_world_metadata_enforces_string_and_document_boundaries) {
@@ -1936,6 +2001,9 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
         R"({"defaultZoneId":"rigel:default"} trailing)",
         R"({"defaultZoneId":"rigel:default","extension":truth})",
         R"({"defaultZoneId":"rigel:default","extension":01})",
+        std::string(
+            R"({"defaultZoneId":"rigel:default","worldDisplayName":")") +
+            std::string("\x80", 1) + R"("})",
         std::string(kMaxMetadataDocumentBytes + 1, 'x')
     };
     const std::vector<std::string> diagnostics{
@@ -1954,6 +2022,7 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
         "CRMetadata: invalid JSON document",
         "CRMetadata: invalid JSON document",
         "CRMetadata: invalid JSON document",
+        "CRMetadata: invalid JSON string",
         "CRMetadata: document exceeds format limit"
     };
 
@@ -1967,6 +2036,8 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
             ZoneKey{"rigel:default"}, context);
         const auto regionPath = CRPaths::regionPath(
             RegionKey{"rigel:default", 0, 0, 0}, context);
+        const auto entityPath = CRPaths::entityRegionPath(
+            EntityRegionKey{"rigel:default", 0, 0, 0}, context);
         writeText(*storage, worldPath, invalidDocuments[index]);
         const auto previousPayload = readAll(*storage, worldPath);
         const size_t mkdirCount = storage->mkdirCount();
@@ -1981,6 +2052,7 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
         CHECK_EQ(readAll(*storage, worldPath), previousPayload);
         CHECK(!storage->exists(zonePath));
         CHECK(!storage->exists(regionPath));
+        CHECK(!storage->exists(entityPath));
     }
 }
 

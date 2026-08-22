@@ -228,8 +228,66 @@ void requireMetadataDocumentSize(size_t size) {
     }
 }
 
+size_t consumeRawUtf8Sequence(std::string_view text, size_t start) {
+    if (start >= text.size()) {
+        throwInvalidJsonString();
+    }
+    const auto byteAt = [&](size_t offset) {
+        return static_cast<unsigned char>(text[start + offset]);
+    };
+    const unsigned char lead = byteAt(0);
+    size_t length = 0;
+    unsigned char secondMinimum = 0x80;
+    unsigned char secondMaximum = 0xBF;
+    if (lead >= 0xC2 && lead <= 0xDF) {
+        length = 2;
+    } else if (lead >= 0xE0 && lead <= 0xEF) {
+        length = 3;
+        if (lead == 0xE0) {
+            secondMinimum = 0xA0;
+        } else if (lead == 0xED) {
+            secondMaximum = 0x9F;
+        }
+    } else if (lead >= 0xF0 && lead <= 0xF4) {
+        length = 4;
+        if (lead == 0xF0) {
+            secondMinimum = 0x90;
+        } else if (lead == 0xF4) {
+            secondMaximum = 0x8F;
+        }
+    } else {
+        throwInvalidJsonString();
+    }
+    if (length > text.size() - start) {
+        throwInvalidJsonString();
+    }
+    const unsigned char second = byteAt(1);
+    if (second < secondMinimum || second > secondMaximum) {
+        throwInvalidJsonString();
+    }
+    for (size_t index = 2; index < length; ++index) {
+        const unsigned char continuation = byteAt(index);
+        if (continuation < 0x80 || continuation > 0xBF) {
+            throwInvalidJsonString();
+        }
+    }
+    return start + length;
+}
+
+void validateRawUtf8(std::string_view value) {
+    size_t position = 0;
+    while (position < value.size()) {
+        const unsigned char byte =
+            static_cast<unsigned char>(value[position]);
+        position = byte < 0x80
+            ? position + 1
+            : consumeRawUtf8Sequence(value, position);
+    }
+}
+
 size_t encodedJsonStringSize(std::string_view value) {
     requireMetadataStringSize(value.size());
+    validateRawUtf8(value);
     size_t encodedSize = 2;
     for (const unsigned char byte : value) {
         size_t byteSize = 1;
@@ -396,6 +454,17 @@ size_t consumeJsonString(std::string_view text,
         }
         if (byte < 0x20) {
             throwInvalidJsonString();
+        }
+        if (byte >= 0x80) {
+            const size_t sequenceStart = position - 1;
+            position = consumeRawUtf8Sequence(text, sequenceStart);
+            if (decoded) {
+                appendDecodedBytes(
+                    *decoded,
+                    text.data() + sequenceStart,
+                    position - sequenceStart);
+            }
+            continue;
         }
         if (byte != '\\') {
             if (decoded) {

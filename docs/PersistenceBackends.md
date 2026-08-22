@@ -37,7 +37,9 @@ CR metadata is a bounded JSON root object. The authoritative
 `worldDisplayName`, `defaultZoneId`, and `zoneId` members must be strings and
 must be unique in their applicable document; nested extension members do not
 override them. Unknown JSON values are preserved, with container nesting
-limited to 256 levels and the existing 4 MiB document limit.
+limited to 256 levels and the existing 4 MiB document limit. Raw string bytes
+must be canonical UTF-8; malformed, overlong, surrogate, and out-of-range
+sequences are rejected just like invalid JSON escapes.
 
 ### 1.3 Region Layout and Chunk Mapping
 

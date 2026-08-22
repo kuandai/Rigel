@@ -1165,7 +1165,7 @@ TEST_CASE(ChunkStreamer_GenerationFailureCompletesJob) {
     }
 }
 
-TEST_CASE(ChunkStreamer_ResetRejectsPreviousGenerationCompletion) {
+TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     ChunkManager manager;
     BlockRegistry registry;
     WorldMeshStore meshStore;
@@ -1217,11 +1217,25 @@ TEST_CASE(ChunkStreamer_ResetRejectsPreviousGenerationCompletion) {
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
 
     streamer.reset();
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
     streamer.bind(&manager, &meshStore, &registry, nullptr, replacementGenerator);
     streamer.update(coord.toWorldCenter());
-    CHECK(replacementGate->waitUntilEntered());
-    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(2));
+
+    CHECK_EQ(jobsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+
+    for (uint32_t i = 0;
+         i < StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++i) {
+        streamer.processCompletions();
+        streamer.update(coord.toWorldCenter());
+    }
+    CHECK_EQ(jobsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
 
     originalGate->release();
     CHECK(waitForGenerationCompletion(streamer));
@@ -1231,9 +1245,16 @@ TEST_CASE(ChunkStreamer_ResetRejectsPreviousGenerationCompletion) {
         static_cast<size_t>(1));
     streamer.processCompletions();
 
-    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(1));
     CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
     CHECK(!manager.hasChunk(coord));
+
+    streamer.update(coord.toWorldCenter());
+    CHECK(replacementGate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
 
     replacementGate->release();
     CHECK(waitForGenerationCompletion(streamer));
@@ -1243,7 +1264,10 @@ TEST_CASE(ChunkStreamer_ResetRejectsPreviousGenerationCompletion) {
         static_cast<size_t>(1));
     streamer.processCompletions();
 
+    CHECK_EQ(jobsEntered.load(std::memory_order_relaxed), static_cast<size_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(2));
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(0));
     Chunk* accepted = manager.getChunk(coord);
     CHECK(accepted != nullptr);
     if (!accepted) {

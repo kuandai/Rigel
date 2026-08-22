@@ -701,7 +701,6 @@ void ChunkStreamer::reset() {
         m_generationLifecycle = 1;
     }
     m_states.clear();
-    m_inFlightGen = 0;
     for (auto& entry : m_meshInFlight) {
         entry.second.obsolete = true;
     }
@@ -745,9 +744,7 @@ void ChunkStreamer::reset() {
     }
     m_genCancel.clear();
 
-    GenResult genResult;
-    while (m_genComplete.tryPop(genResult)) {
-    }
+    applyGenCompletions(std::numeric_limits<size_t>::max());
     applyMeshCompletions(std::numeric_limits<size_t>::max());
     refreshDiagnostics(false);
 }
@@ -943,13 +940,14 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
     size_t applied = 0;
     GenResult genResult;
     while (applied < budget && m_genComplete.tryPop(genResult)) {
-        if (genResult.lifecycle != m_generationLifecycle) {
-            continue;
-        }
         if (m_inFlightGen > 0) {
             --m_inFlightGen;
         }
         wakeGenerationCapacityWaiter();
+
+        if (genResult.lifecycle != m_generationLifecycle) {
+            continue;
+        }
 
         if (genResult.cancelToken) {
             auto cancelIt = m_genCancel.find(genResult.coord);

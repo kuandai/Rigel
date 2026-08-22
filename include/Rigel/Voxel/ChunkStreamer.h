@@ -229,6 +229,8 @@ private:
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityMeshRequests;
     std::unordered_map<ChunkCoord, uint64_t, ChunkCoordHash> m_evictionRetryAfter;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_versionReplacementWaiting;
+    // Jobs whose completion has not yet been observed, including cancelled work
+    // from an earlier generation lifecycle.
     size_t m_inFlightGen = 0;
     size_t m_inFlightMesh = 0;
     size_t m_inFlightMeshMissing = 0;

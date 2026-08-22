@@ -3,6 +3,7 @@
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Entity/EntityFactory.h"
+#include "Rigel/Entity/EntityModel.h"
 #include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
@@ -57,6 +58,7 @@ struct SharedFiles {
     std::unordered_map<std::string, size_t> materializedListCalls;
     std::unordered_map<std::string, size_t> visitedEntries;
     std::unordered_map<std::string, size_t> openedReads;
+    std::unordered_map<std::string, size_t> readerDataAccesses;
     std::set<std::string> rejectedMaterializedLists;
 };
 
@@ -97,13 +99,16 @@ struct MutationControl {
 class SharedByteReader final : public Persistence::ByteReader {
 public:
     explicit SharedByteReader(std::vector<uint8_t> data,
-                              std::optional<size_t> reportedSize = {})
+                              std::optional<size_t> reportedSize = {},
+                              std::function<void()> observeDataAccess = {})
         : m_data(std::move(data)),
-          m_reportedSize(reportedSize.value_or(m_data.size())) {
+          m_reportedSize(reportedSize.value_or(m_data.size())),
+          m_observeDataAccess(std::move(observeDataAccess)) {
     }
 
     uint8_t readU8() override {
         requireAvailable(1);
+        observeDataAccess();
         return m_data[m_position++];
     }
 
@@ -126,6 +131,7 @@ public:
     void readBytes(uint8_t* destination, size_t length) override {
         requireAvailable(length);
         if (length > 0) {
+            observeDataAccess();
             std::memcpy(destination, m_data.data() + m_position, length);
             m_position += length;
         }
@@ -150,12 +156,21 @@ public:
         if (offset > m_data.size() || length > m_data.size() - offset) {
             throw std::runtime_error("Test storage read out of range");
         }
+        if (length > 0) {
+            observeDataAccess();
+        }
         return std::vector<uint8_t>(
             m_data.begin() + static_cast<std::ptrdiff_t>(offset),
             m_data.begin() + static_cast<std::ptrdiff_t>(offset + length));
     }
 
 private:
+    void observeDataAccess() const {
+        if (m_observeDataAccess) {
+            m_observeDataAccess();
+        }
+    }
+
     void requireAvailable(size_t length) const {
         if (m_position > m_data.size() ||
             length > m_data.size() - m_position) {
@@ -166,6 +181,7 @@ private:
     std::vector<uint8_t> m_data;
     size_t m_reportedSize = 0;
     size_t m_position = 0;
+    std::function<void()> m_observeDataAccess;
 };
 
 void checkSharedReaderFailure(Persistence::ByteReader& reader,
@@ -329,7 +345,10 @@ public:
             found->second,
             reportedSize == m_files->reportedReadSizes.end()
                 ? std::optional<size_t>{}
-                : std::optional<size_t>{reportedSize->second});
+                : std::optional<size_t>{reportedSize->second},
+            [files = m_files, path]() {
+                ++files->readerDataAccesses[path];
+            });
     }
 
     std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
@@ -950,8 +969,30 @@ std::string loadFailure(
 
 constexpr const char* kBootstrapLimitType =
     "rigel:bootstrap_limit_entity";
+constexpr const char* kOversizedMemoryRegionType =
+    "rigel:oversized_memory_region_entity";
 constexpr Entity::EntityId kBootstrapLiveId{901, 902, 903};
 constexpr Voxel::ChunkCoord kBootstrapLiveChunk{71, 72, 73};
+
+class CountingEntityModelLoader final : public Asset::IAssetLoader {
+public:
+    explicit CountingEntityModelLoader(std::shared_ptr<size_t> calls)
+        : m_calls(std::move(calls)) {
+    }
+
+    std::string_view category() const override {
+        return "entity_models";
+    }
+
+    std::shared_ptr<Asset::AssetBase> load(
+        const Asset::LoadContext&) override {
+        ++*m_calls;
+        return std::make_shared<Entity::EntityModelAsset>();
+    }
+
+private:
+    std::shared_ptr<size_t> m_calls;
+};
 
 std::string entityRegionDirectory() {
     return std::string(kRootPath) + "/zones/rigel/default/entities";
@@ -1771,6 +1812,52 @@ TEST_CASE(Persistence_EntityBootstrapRejectsLiveIdCollisionBeforeSpawning) {
     CHECK_EQ(
         world.chunkManager().getChunk(liveChunk)->worldGenVersion(),
         static_cast<uint32_t>(29));
+}
+
+TEST_CASE(Persistence_MemoryBootstrapRejectsOversizedEntityRegionBeforeMutation) {
+    auto factoryCalls = std::make_shared<size_t>(0);
+    Entity::EntityFactory::instance().registerType(
+        kOversizedMemoryRegionType,
+        [factoryCalls]() {
+            ++*factoryCalls;
+            return std::make_unique<Entity::Entity>(
+                kOversizedMemoryRegionType);
+        });
+
+    auto files = std::make_shared<SharedFiles>();
+    const EntityRecord hostile{
+        Entity::EntityId{180, 181, 182},
+        kOversizedMemoryRegionType,
+        glm::vec3(1.0f, 2.0f, 3.0f)};
+    auto region = regionSnapshot(0, {hostile});
+    region.chunks.front().entities.front().modelId =
+        "entity_models/demo_cube";
+    saveRawRegions(files, {region});
+
+    const std::string path = entityRegionPathForTest("memory", 0);
+    files->reportedReadSizes[path] =
+        Entity::detail::MaxEntityRegionBytes + 1;
+
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    populateBootstrapSentinels(world);
+    Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    auto modelCalls = std::make_shared<size_t>(0);
+    assets.registerLoader(
+        "entity_models",
+        std::make_unique<CountingEntityModelLoader>(modelCalls));
+
+    const std::string error = loadFailure(files, world, assets);
+
+    CHECK_EQ(
+        error,
+        "MemoryFormat: entity region payload exceeds format limit");
+    CHECK_EQ(files->openedReads[path], static_cast<size_t>(1));
+    CHECK_EQ(files->readerDataAccesses[path], static_cast<size_t>(0));
+    CHECK_EQ(*factoryCalls, static_cast<size_t>(0));
+    CHECK_EQ(*modelCalls, static_cast<size_t>(0));
+    checkBootstrapSentinels(world);
 }
 
 TEST_CASE(Persistence_EntityBootstrapStopsRegionEnumerationAtLimit) {

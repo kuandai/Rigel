@@ -3,6 +3,7 @@
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/ChunkCoord.h"
 #include "Rigel/Voxel/Chunk.h"
+#include "../../../entity/EntityPersistenceLimits.h"
 #include "../../ChunkValidation.h"
 #include "../../RegionFilename.h"
 #include "../../ZoneIdentifier.h"
@@ -611,6 +612,10 @@ public:
             return empty;
         }
         auto reader = m_storage->openRead(path);
+        if (reader->size() > Entity::detail::MaxEntityRegionBytes) {
+            throw std::runtime_error(
+                "MemoryFormat: entity region payload exceeds format limit");
+        }
         return m_codec.read(*reader, key);
     }
 

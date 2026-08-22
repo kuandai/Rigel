@@ -224,9 +224,7 @@ TEST_CASE(ShaderCompiler_ManifestShaderVersionsMatchRuntime) {
 
 TEST_CASE(ShaderCompiler_ShippedProgramsCompileAndLink) {
     HiddenOpenGLContext context;
-    if (!context.available()) {
-        SKIP_TEST(context.error());
-    }
+    context.require();
 
     AssetManager assets;
     CHECK_NO_THROW(assets.loadManifest("manifest.yaml"));
@@ -242,9 +240,7 @@ TEST_CASE(ShaderCompiler_ShippedProgramsCompileAndLink) {
 
 TEST_CASE(ShaderCompiler_HandlesCompileAndLinkOutcomes) {
     HiddenOpenGLContext context;
-    if (!context.available()) {
-        SKIP_TEST(context.error());
-    }
+    context.require();
 
     checkFragmentCompileFailure();
     checkLinkFailure();

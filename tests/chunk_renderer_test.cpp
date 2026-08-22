@@ -112,9 +112,7 @@ TEST_CASE(WorldMeshStore_ReinsertAdvancesRevision) {
 
 TEST_CASE(ChunkRenderer_ReinsertUploadsWhenRemovalWasNotRendered) {
     Rigel::Test::HiddenOpenGLContext context;
-    if (!context.available()) {
-        SKIP_TEST(context.error());
-    }
+    context.require();
 
     WorldMeshStore store;
     const ChunkCoord coord{0, 0, 0};

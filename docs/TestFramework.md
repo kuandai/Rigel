@@ -33,11 +33,8 @@ Tests are controlled by the CMake option:
 
 - `RIGEL_BUILD_TESTS` (default `ON`)
 
-Disable with:
-
-```bash
-cmake -S . -B build -DRIGEL_BUILD_TESTS=OFF
-```
+To disable tests, append `-DRIGEL_BUILD_TESTS=OFF` to either configure command
+below.
 
 ### 2.2 Build Targets
 
@@ -49,25 +46,42 @@ When enabled, CMake adds:
 
 ### 2.3 Running Tests
 
-Typical commands:
+From the repository root, create independent Conan-backed Debug and Release
+builds and run every registered CTest entry:
 
 ```bash
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build --output-on-failure
+rigel_debug_build=../Rigel-build-debug
+conan install . --output-folder="$rigel_debug_build" --build=missing \
+  -s build_type=Debug
+cmake -S . -B "$rigel_debug_build" \
+  -DCMAKE_TOOLCHAIN_FILE="$rigel_debug_build/conan_toolchain.cmake" \
+  -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+  -DCMAKE_BUILD_TYPE=Debug
+cmake --build "$rigel_debug_build" --parallel
+ctest --test-dir "$rigel_debug_build" --output-on-failure --parallel
+
+rigel_release_build=../Rigel-build-release
+conan install . --output-folder="$rigel_release_build" --build=missing \
+  -s build_type=Release
+cmake -S . -B "$rigel_release_build" \
+  -DCMAKE_TOOLCHAIN_FILE="$rigel_release_build/conan_toolchain.cmake" \
+  -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build "$rigel_release_build" --parallel
+ctest --test-dir "$rigel_release_build" --output-on-failure --parallel
 ```
 
 You can also run the test executable directly:
 
 ```bash
-./build/Rigel_tests --list
-./build/Rigel_tests --filter WorldConfigProvider
-./build/Rigel_tests --verbose
-./build/Rigel_profiler_tests --verbose
-./build/Rigel_block_asset_failure_tests --verbose
+../Rigel-build-debug/Rigel_tests --list
+../Rigel-build-debug/Rigel_tests --filter WorldConfigProvider
+../Rigel-build-debug/Rigel_tests --verbose
+../Rigel-build-debug/Rigel_profiler_tests --verbose
+../Rigel-build-debug/Rigel_block_asset_failure_tests --verbose
 ```
 
-Note: The test executables are not placed in `build/bin` by default; they live
+Note: The test executables are not placed in `bin` by default; they live
 in the build directory root unless you change CMake output paths.
 
 ---
@@ -84,7 +98,7 @@ is renamed, that check fails rather than silently omitting it.
 Run the main suite via CTest:
 
 ```bash
-ctest --test-dir build -R '^Rigel_tests$'
+ctest --test-dir ../Rigel-build-debug -R '^Rigel_tests$'
 ```
 
 Use the test executable's `--filter` option to run selected test cases.

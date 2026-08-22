@@ -200,14 +200,15 @@ public:
     }
 
     void writeBytes(const uint8_t* src, size_t len) override {
+        const size_t end = checkedWriteEnd(m_pos, src, len);
         if (len == 0) {
             return;
         }
-        if (m_pos + len > m_target.size()) {
-            m_target.resize(m_pos + len, 0);
+        if (end > m_target.size()) {
+            growTo(end);
         }
         std::copy_n(src, len, m_target.data() + m_pos);
-        m_pos += len;
+        m_pos = end;
     }
 
     size_t size() const override {
@@ -219,15 +220,23 @@ public:
     }
 
     void seek(size_t offset) override {
+        if (offset > m_target.max_size()) {
+            throw std::runtime_error(
+                "CR fixture writer: write range exceeds destination capacity");
+        }
         if (offset > m_target.size()) {
-            m_target.resize(offset, 0);
+            growTo(offset);
         }
         m_pos = offset;
     }
 
     void writeAt(size_t offset, const uint8_t* src, size_t len) override {
-        if (offset + len > m_target.size()) {
-            m_target.resize(offset + len, 0);
+        const size_t end = checkedWriteEnd(offset, src, len);
+        if (len == 0) {
+            return;
+        }
+        if (end > m_target.size()) {
+            growTo(end);
         }
         std::copy_n(src, len, m_target.data() + offset);
     }
@@ -236,6 +245,29 @@ public:
     }
 
 private:
+    void growTo(size_t size) {
+        m_target.reserve(size);
+        while (m_target.size() < size) {
+            m_target.push_back(0);
+        }
+    }
+
+    size_t checkedWriteEnd(
+        size_t offset,
+        const uint8_t* src,
+        size_t len) const {
+        const size_t capacity = m_target.max_size();
+        if (offset > capacity || len > capacity - offset) {
+            throw std::runtime_error(
+                "CR fixture writer: write range exceeds destination capacity");
+        }
+        if (len > 0 && !src) {
+            throw std::runtime_error(
+                "CR fixture writer: non-empty write has null source");
+        }
+        return offset + len;
+    }
+
     std::vector<uint8_t>& m_target;
     size_t m_pos = 0;
 };
@@ -700,6 +732,76 @@ std::vector<uint8_t> makeFixturePayload(
     }
     writer.writeBytes(columns.data(), columns.size());
     return bytes;
+}
+
+TEST_CASE(CRFixtureByteWriter_bounds_writes_before_mutation) {
+    std::vector<uint8_t> bytes{10, 20, 30, 40};
+    InMemoryByteWriter writer(bytes);
+    writer.seek(1);
+
+    const auto expectFailure = [&](auto&& write, const std::string& expected) {
+        const auto before = bytes;
+        const size_t position = writer.tell();
+        std::string diagnostic;
+        try {
+            write();
+        } catch (const std::runtime_error& error) {
+            diagnostic = error.what();
+        }
+        CHECK_EQ(diagnostic, expected);
+        CHECK_EQ(bytes, before);
+        CHECK_EQ(writer.tell(), position);
+    };
+
+    const uint8_t value = 99;
+    expectFailure(
+        [&]() { writer.writeBytes(nullptr, 1); },
+        "CR fixture writer: non-empty write has null source");
+    expectFailure(
+        [&]() {
+            writer.writeBytes(
+                &value, std::numeric_limits<size_t>::max());
+        },
+        "CR fixture writer: write range exceeds destination capacity");
+    expectFailure(
+        [&]() {
+            writer.writeAt(
+                std::numeric_limits<size_t>::max(), &value, 1);
+        },
+        "CR fixture writer: write range exceeds destination capacity");
+    expectFailure(
+        [&]() {
+            writer.writeAt(
+                1, &value, std::numeric_limits<size_t>::max());
+        },
+        "CR fixture writer: write range exceeds destination capacity");
+    expectFailure(
+        [&]() { writer.writeAt(0, nullptr, 1); },
+        "CR fixture writer: non-empty write has null source");
+    expectFailure(
+        [&]() { writer.seek(std::numeric_limits<size_t>::max()); },
+        "CR fixture writer: write range exceeds destination capacity");
+
+    writer.writeBytes(nullptr, 0);
+    writer.writeAt(bytes.size(), nullptr, 0);
+    CHECK_EQ(bytes, std::vector<uint8_t>({10, 20, 30, 40}));
+    CHECK_EQ(writer.tell(), static_cast<size_t>(1));
+    expectFailure(
+        [&]() {
+            writer.writeAt(
+                std::numeric_limits<size_t>::max(), nullptr, 0);
+        },
+        "CR fixture writer: write range exceeds destination capacity");
+
+    writer.seek(3);
+    writer.writeBytes(&value, 1);
+    CHECK_EQ(bytes, std::vector<uint8_t>({10, 20, 30, 99}));
+    CHECK_EQ(writer.tell(), static_cast<size_t>(4));
+
+    const uint8_t replacement = 77;
+    writer.writeAt(3, &replacement, 1);
+    CHECK_EQ(bytes, std::vector<uint8_t>({10, 20, 30, 77}));
+    CHECK_EQ(writer.tell(), static_cast<size_t>(4));
 }
 
 TEST_CASE(InMemoryStorageBackend_uncommitted_writes_are_not_published) {

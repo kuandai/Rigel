@@ -15,13 +15,12 @@ void createDirectoriesDurably(
         return;
     }
 
-    const auto normalized = path.lexically_normal();
-    std::filesystem::path current = normalized.root_path();
-    for (const auto& component : normalized.relative_path()) {
-        if (component == ".") {
+    std::filesystem::path current = path.root_path();
+    for (const auto& component : path.relative_path()) {
+        current /= component;
+        if (component.empty() || component == "." || component == "..") {
             continue;
         }
-        current /= component;
         createDirectory(current);
         synchronizeDirectory(containingDirectory(current));
     }

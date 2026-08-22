@@ -169,6 +169,35 @@ TEST_CASE(DurableDirectoryCreation_retries_every_failed_parent_sync) {
     }
 }
 
+TEST_CASE(DurableDirectoryCreation_preserves_parent_traversal_in_operation_paths) {
+    const std::filesystem::path path =
+        "entry/../world/zones/rigel/entities";
+    std::vector<std::string> operations;
+
+    detail::createDirectoriesDurably(
+        path,
+        [&](const std::filesystem::path& directoryPath) {
+            operations.push_back("mkdir " + displayPath(directoryPath));
+        },
+        [&](const std::filesystem::path& directoryPath) {
+            operations.push_back("sync " + displayPath(directoryPath));
+        });
+
+    CHECK_EQ(
+        operations,
+        (std::vector<std::string>{
+            "mkdir entry",
+            "sync .",
+            "mkdir entry/../world",
+            "sync entry/..",
+            "mkdir entry/../world/zones",
+            "sync entry/../world",
+            "mkdir entry/../world/zones/rigel",
+            "sync entry/../world/zones",
+            "mkdir entry/../world/zones/rigel/entities",
+            "sync entry/../world/zones/rigel"}));
+}
+
 TEST_CASE(FilesystemBackend_open_write_creates_absent_nested_hierarchy) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
@@ -182,6 +211,45 @@ TEST_CASE(FilesystemBackend_open_write_creates_absent_nested_hierarchy) {
 
     CHECK_EQ(readFile(storage, path), payload);
     CHECK(std::filesystem::is_directory(path.parent_path()));
+}
+
+TEST_CASE(FilesystemBackend_open_write_preserves_missing_parent_traversal) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto path = directory.path() / "entry" / ".." / "world" /
+        "zones" / "rigel" / "entities" / "region.bin";
+    const std::vector<uint8_t> payload{5, 6, 7, 8};
+
+    writeFile(storage, path, payload);
+
+    CHECK(std::filesystem::is_directory(directory.path() / "entry"));
+    CHECK_EQ(readFile(storage, path), payload);
+}
+
+TEST_CASE(FilesystemBackend_open_write_preserves_symlink_parent_traversal) {
+#ifdef _WIN32
+    throw Rigel::Test::TestSkip(
+        "Directory symlink traversal durability is validated on Linux");
+#else
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto sourceParent = directory.path() / "source";
+    const auto targetParent = directory.path() / "target-parent";
+    const auto target = targetParent / "target";
+    std::filesystem::create_directory(sourceParent);
+    std::filesystem::create_directories(target);
+    std::filesystem::create_directory_symlink(
+        target, sourceParent / "alias");
+    const auto path = sourceParent / "alias" / ".." / "world" /
+        "zones" / "rigel" / "entities" / "region.bin";
+    const std::vector<uint8_t> payload{9, 10, 11, 12};
+
+    writeFile(storage, path, payload);
+
+    CHECK(!std::filesystem::exists(sourceParent / "world"));
+    CHECK(std::filesystem::is_directory(targetParent / "world"));
+    CHECK_EQ(readFile(storage, path), payload);
+#endif
 }
 
 TEST_CASE(FilesystemByteReader_bounds_random_access_reads) {

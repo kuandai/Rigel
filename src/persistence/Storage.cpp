@@ -137,11 +137,20 @@ public:
     }
 
     std::vector<uint8_t> readAt(size_t offset, size_t len) override {
-        auto current = tell();
-        seek(offset);
+        requireRange(offset, len);
         std::vector<uint8_t> out(len);
-        if (len > 0) {
+        if (len == 0) {
+            return out;
+        }
+
+        auto current = tell();
+        try {
+            seek(offset);
             readBytes(out.data(), len);
+        } catch (...) {
+            m_stream.clear();
+            seek(current);
+            throw;
         }
         seek(current);
         return out;
@@ -158,6 +167,10 @@ private:
         }
 
         const size_t offset = static_cast<size_t>(position);
+        requireRange(offset, len);
+    }
+
+    void requireRange(size_t offset, size_t len) const {
         if (offset > m_size || len > m_size - offset) {
             throw std::runtime_error("Unexpected end of file while reading: " + m_path);
         }

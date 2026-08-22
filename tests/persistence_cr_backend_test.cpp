@@ -20,6 +20,7 @@
 #include "Rigel/Voxel/WorldResources.h"
 
 #include "Rigel/Persistence/Storage.h"
+#include "../src/persistence/backends/cr/MemoryByteReader.h"
 
 #include <algorithm>
 #include <array>
@@ -33,6 +34,25 @@ using namespace Rigel::Persistence::Backends::CR;
 namespace {
 
 constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
+
+void checkMemoryRandomReadFailure(MemoryByteReader& reader,
+                                  size_t offset,
+                                  size_t length) {
+    const size_t position = reader.tell();
+    try {
+        static_cast<void>(reader.readAt(offset, length));
+    } catch (const std::runtime_error& error) {
+        CHECK_EQ(
+            std::string(error.what()),
+            std::string("CRMemoryReader readAt out of range"));
+        CHECK_EQ(reader.tell(), position);
+        return;
+    } catch (const std::exception& error) {
+        throw Rigel::Test::TestFailure(
+            std::string("Unexpected random read exception: ") + error.what());
+    }
+    throw Rigel::Test::TestFailure("Expected random read to fail");
+}
 
 class InMemoryByteReader final : public ByteReader {
 public:
@@ -90,7 +110,7 @@ public:
     }
 
     std::vector<uint8_t> readAt(size_t offset, size_t len) override {
-        if (offset + len > m_data.size()) {
+        if (offset > m_data.size() || len > m_data.size() - offset) {
             throw std::runtime_error("InMemoryByteReader readAt out of range");
         }
         return std::vector<uint8_t>(m_data.begin() + offset, m_data.begin() + offset + len);
@@ -754,6 +774,27 @@ std::string asString(const CRBinValue& value) {
 }
 
 } // namespace
+
+TEST_CASE(CRMemoryByteReader_bounds_random_access_reads) {
+    const std::vector<uint8_t> fixture{10, 20, 30, 40};
+    MemoryByteReader reader(fixture);
+
+    CHECK_EQ(reader.readAt(0, fixture.size()), fixture);
+    CHECK_EQ(reader.readAt(fixture.size(), 0), std::vector<uint8_t>{});
+
+    reader.seek(1);
+    checkMemoryRandomReadFailure(reader, fixture.size() - 1, 2);
+    checkMemoryRandomReadFailure(reader, fixture.size() + 1, 0);
+    checkMemoryRandomReadFailure(
+        reader, std::numeric_limits<size_t>::max(), 0);
+    checkMemoryRandomReadFailure(
+        reader, 1, std::numeric_limits<size_t>::max());
+    checkMemoryRandomReadFailure(
+        reader,
+        std::numeric_limits<size_t>::max(),
+        std::numeric_limits<size_t>::max());
+    CHECK_EQ(reader.readU8(), static_cast<uint8_t>(20));
+}
 
 TEST_CASE(CRPaths_normalize_zone) {
     CHECK_EQ(CRPaths::normalizeZoneId("rigel:demo"), "rigel/demo");

@@ -75,7 +75,7 @@ public:
     }
 
     std::vector<uint8_t> readAt(size_t offset, size_t len) override {
-        if (offset + len > m_data.size()) {
+        if (offset > m_data.size() || len > m_data.size() - offset) {
             throw std::runtime_error("InMemoryByteReader readAt out of range");
         }
         return std::vector<uint8_t>(m_data.begin() + offset, m_data.begin() + offset + len);

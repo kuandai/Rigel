@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -49,7 +50,53 @@ void writeRawFile(const std::filesystem::path& path, const std::vector<uint8_t>&
     stream.close();
 }
 
+void checkRandomReadFailure(ByteReader& reader,
+                            size_t offset,
+                            size_t length,
+                            const std::string& diagnostic) {
+    const size_t position = reader.tell();
+    try {
+        static_cast<void>(reader.readAt(offset, length));
+    } catch (const std::runtime_error& error) {
+        CHECK_EQ(std::string(error.what()), diagnostic);
+        CHECK_EQ(reader.tell(), position);
+        return;
+    } catch (const std::exception& error) {
+        throw Rigel::Test::TestFailure(
+            std::string("Unexpected random read exception: ") + error.what());
+    }
+    throw Rigel::Test::TestFailure("Expected random read to fail");
+}
+
 } // namespace
+
+TEST_CASE(FilesystemByteReader_bounds_random_access_reads) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto path = directory.path() / "tiny.bin";
+    const std::vector<uint8_t> fixture{10, 20, 30, 40};
+    writeFile(storage, path, fixture);
+
+    auto reader = storage.openRead(path.string());
+    CHECK_EQ(reader->readAt(0, fixture.size()), fixture);
+    CHECK_EQ(reader->readAt(fixture.size(), 0), std::vector<uint8_t>{});
+
+    reader->seek(1);
+    const std::string diagnostic =
+        "Unexpected end of file while reading: " + path.string();
+    checkRandomReadFailure(*reader, fixture.size() - 1, 2, diagnostic);
+    checkRandomReadFailure(*reader, fixture.size() + 1, 0, diagnostic);
+    checkRandomReadFailure(
+        *reader, std::numeric_limits<size_t>::max(), 0, diagnostic);
+    checkRandomReadFailure(
+        *reader, 1, std::numeric_limits<size_t>::max(), diagnostic);
+    checkRandomReadFailure(
+        *reader,
+        std::numeric_limits<size_t>::max(),
+        std::numeric_limits<size_t>::max(),
+        diagnostic);
+    CHECK_EQ(reader->readU8(), static_cast<uint8_t>(20));
+}
 
 TEST_CASE(FilesystemBackend_atomic_replace_writes_complete_replacement) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");

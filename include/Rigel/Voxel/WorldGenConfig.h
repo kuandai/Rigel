@@ -21,6 +21,12 @@ struct WorldGenConfig {
     static constexpr int MaxWorldY = 4096;
     static constexpr int MaxWorldHeight = 1024;
     static constexpr int MaxNoiseOctaves = 16;
+    static constexpr int MaxSurfaceDepth = 32;
+    static constexpr int MaxStructureHeight = MaxWorldHeight;
+    static constexpr size_t MaxBiomeEntries = 32;
+    static constexpr size_t MaxSurfaceLayers = 32;
+    static constexpr size_t MaxStructureFeatures = 16;
+    static constexpr size_t MaxFeatureBiomeFilters = 32;
 
     struct WorldConfig {
         int minY = -64;

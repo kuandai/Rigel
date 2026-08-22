@@ -3,6 +3,7 @@
 #include "Rigel/Voxel/WorldGenConfig.h"
 
 #include <functional>
+#include <sstream>
 #include <stdexcept>
 
 using namespace Rigel::Voxel;
@@ -393,4 +394,390 @@ TEST_CASE(WorldGenConfig_AcceptsSeaLevelOutsideWorldBounds) {
     config.applyYaml("below.yaml", "world:\n  sea_level: -1\n");
     config.validate("merged test configuration");
     CHECK_EQ(config.world.seaLevel, -1);
+}
+
+TEST_CASE(WorldGenConfig_AcceptsGenerationLoopMaxima) {
+    WorldGenConfig config;
+    config.applyYaml(
+        "loop-limits.yaml",
+        "terrain:\n"
+        "  surface_depth: 32\n"
+        "biomes:\n"
+        "  entries:\n"
+        "    - name: bounded\n"
+        "      surface:\n"
+        "        - block: base:stone_shale\n"
+        "          depth: 32\n"
+        "structures:\n"
+        "  features:\n"
+        "    - name: bounded\n"
+        "      block: base:stone_shale\n"
+        "      min_height: 1024\n"
+        "      max_height: 1024\n"
+    );
+
+    CHECK_EQ(config.terrain.surfaceDepth, WorldGenConfig::MaxSurfaceDepth);
+    CHECK_EQ(config.biomes.entries[0].surface[0].depth,
+             WorldGenConfig::MaxSurfaceDepth);
+    CHECK_EQ(config.structures.features[0].minHeight,
+             WorldGenConfig::MaxStructureHeight);
+    CHECK_EQ(config.structures.features[0].maxHeight,
+             WorldGenConfig::MaxStructureHeight);
+}
+
+TEST_CASE(WorldGenConfig_RejectsGenerationLoopValuesAboveMaxima) {
+    const std::string terrainError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "terrain:\n  surface_depth: 33\n"
+        );
+    });
+    CHECK_EQ(
+        terrainError,
+        "Invalid configuration value 'terrain.surface_depth' in "
+        "'loop-limits.yaml': expected integer no greater than 32, got '33'"
+    );
+
+    const std::string terrainIntegerError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "terrain:\n  surface_depth: 2147483647\n"
+        );
+    });
+    CHECK_EQ(
+        terrainIntegerError,
+        "Invalid configuration value 'terrain.surface_depth' in "
+        "'loop-limits.yaml': expected integer no greater than 32, got "
+        "'2147483647'"
+    );
+
+    const std::string terrainUnsignedError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "terrain:\n  surface_depth: 4294967295\n"
+        );
+    });
+    CHECK_EQ(
+        terrainUnsignedError,
+        "Invalid configuration value 'terrain.surface_depth' in "
+        "'loop-limits.yaml': expected integer no greater than 32, got "
+        "'4294967295'"
+    );
+
+    const std::string biomeMaxError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "biomes:\n"
+            "  entries:\n"
+            "    - name: bounded\n"
+            "      surface:\n"
+            "        - block: base:stone_shale\n"
+            "          depth: 33\n"
+        );
+    });
+    CHECK_EQ(
+        biomeMaxError,
+        "Invalid configuration value 'biomes.entries[0].surface[0].depth' "
+        "in 'loop-limits.yaml': expected integer no greater than 32, got '33'"
+    );
+
+    const std::string biomeError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "biomes:\n"
+            "  entries:\n"
+            "    - name: bounded\n"
+            "      surface:\n"
+            "        - block: base:stone_shale\n"
+            "          depth: 2147483647\n"
+        );
+    });
+    CHECK_EQ(
+        biomeError,
+        "Invalid configuration value 'biomes.entries[0].surface[0].depth' "
+        "in 'loop-limits.yaml': expected integer no greater than 32, got "
+        "'2147483647'"
+    );
+
+    const std::string biomeUnsignedError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "biomes:\n"
+            "  entries:\n"
+            "    - name: bounded\n"
+            "      surface:\n"
+            "        - block: base:stone_shale\n"
+            "          depth: 4294967295\n"
+        );
+    });
+    CHECK_EQ(
+        biomeUnsignedError,
+        "Invalid configuration value 'biomes.entries[0].surface[0].depth' "
+        "in 'loop-limits.yaml': expected integer no greater than 32, got "
+        "'4294967295'"
+    );
+
+    const std::string structureMaxError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "structures:\n"
+            "  features:\n"
+            "    - name: bounded\n"
+            "      block: base:stone_shale\n"
+            "      min_height: 1025\n"
+        );
+    });
+    CHECK_EQ(
+        structureMaxError,
+        "Invalid configuration value 'structures.features[0].min_height' "
+        "in 'loop-limits.yaml': expected integer no greater than 1024, got "
+        "'1025'"
+    );
+
+    const std::string structureIntegerError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "structures:\n"
+            "  features:\n"
+            "    - name: bounded\n"
+            "      block: base:stone_shale\n"
+            "      min_height: 2147483647\n"
+        );
+    });
+    CHECK_EQ(
+        structureIntegerError,
+        "Invalid configuration value 'structures.features[0].min_height' "
+        "in 'loop-limits.yaml': expected integer no greater than 1024, got "
+        "'2147483647'"
+    );
+
+    const std::string structureError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "structures:\n"
+            "  features:\n"
+            "    - name: bounded\n"
+            "      block: base:stone_shale\n"
+            "      min_height: 0\n"
+            "      max_height: 4294967295\n"
+        );
+    });
+    CHECK_EQ(
+        structureError,
+        "Invalid configuration value 'structures.features[0].max_height' "
+        "in 'loop-limits.yaml': expected integer no greater than 1024, got "
+        "'4294967295'"
+    );
+}
+
+TEST_CASE(WorldGenConfig_AcceptsGeneratorListMaxima) {
+    std::ostringstream yaml;
+    yaml << "biomes:\n  entries:\n";
+    for (size_t biome = 0; biome < WorldGenConfig::MaxBiomeEntries; ++biome) {
+        yaml << "    - name: biome" << biome << "\n";
+        if (biome == 0) {
+            yaml << "      surface:\n";
+            for (size_t layer = 0; layer < WorldGenConfig::MaxSurfaceLayers;
+                 ++layer) {
+                yaml << "        - block: base:stone_shale\n"
+                     << "          depth: 1\n";
+            }
+        }
+    }
+    yaml << "structures:\n  features:\n";
+    for (size_t feature = 0; feature < WorldGenConfig::MaxStructureFeatures;
+         ++feature) {
+        yaml << "    - name: feature" << feature << "\n"
+             << "      block: base:stone_shale\n";
+        if (feature == 0) {
+            yaml << "      biomes:\n";
+            for (size_t filter = 0;
+                 filter < WorldGenConfig::MaxFeatureBiomeFilters; ++filter) {
+                yaml << "        - biome" << filter << "\n";
+            }
+        }
+    }
+
+    WorldGenConfig config;
+    config.applyYaml("list-limits.yaml", yaml.str());
+    CHECK_EQ(config.biomes.entries.size(), WorldGenConfig::MaxBiomeEntries);
+    CHECK_EQ(config.biomes.entries[0].surface.size(),
+             WorldGenConfig::MaxSurfaceLayers);
+    CHECK_EQ(config.structures.features.size(),
+             WorldGenConfig::MaxStructureFeatures);
+    CHECK_EQ(config.structures.features[0].biomes.size(),
+             WorldGenConfig::MaxFeatureBiomeFilters);
+}
+
+TEST_CASE(WorldGenConfig_RejectsGeneratorListsAboveMaxima) {
+    const std::string biomeError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "biomes:\n  entries:\n";
+        for (size_t i = 0; i <= WorldGenConfig::MaxBiomeEntries; ++i) {
+            yaml << "    - name: biome" << i << "\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("list-limits.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        biomeError,
+        "Invalid configuration value 'biomes.entries' in "
+        "'list-limits.yaml': must contain no more than 32 entries"
+    );
+
+    const std::string layerError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "biomes:\n  entries:\n    - name: bounded\n"
+             << "      surface:\n";
+        for (size_t i = 0; i <= WorldGenConfig::MaxSurfaceLayers; ++i) {
+            yaml << "        - block: base:stone_shale\n"
+                 << "          depth: 0\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("list-limits.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        layerError,
+        "Invalid configuration value 'biomes.entries[0].surface' in "
+        "'list-limits.yaml': must contain no more than 32 entries"
+    );
+
+    const std::string featureError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "structures:\n  features:\n";
+        for (size_t i = 0; i <= WorldGenConfig::MaxStructureFeatures; ++i) {
+            yaml << "    - name: feature" << i << "\n"
+                 << "      block: base:stone_shale\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("list-limits.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        featureError,
+        "Invalid configuration value 'structures.features' in "
+        "'list-limits.yaml': must contain no more than 16 entries"
+    );
+
+    const std::string filterError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "structures:\n  features:\n"
+             << "    - name: bounded\n"
+             << "      block: base:stone_shale\n"
+             << "      biomes:\n";
+        for (size_t i = 0; i <= WorldGenConfig::MaxFeatureBiomeFilters; ++i) {
+            yaml << "        - biome" << i << "\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("list-limits.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        filterError,
+        "Invalid configuration value 'structures.features[0].biomes' in "
+        "'list-limits.yaml': must contain no more than 32 entries"
+    );
+}
+
+TEST_CASE(WorldGenConfig_RejectsExcessCumulativeBiomeDepth) {
+    const std::string error = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "biomes:\n"
+            "  entries:\n"
+            "    - name: bounded\n"
+            "      surface:\n"
+            "        - block: base:stone_shale\n"
+            "          depth: 17\n"
+            "        - block: base:stone_shale\n"
+            "          depth: 16\n"
+        );
+    });
+    CHECK_EQ(
+        error,
+        "Invalid configuration value 'biomes.entries[0].surface[1].depth' "
+        "in 'loop-limits.yaml': cumulative biome surface depth must not exceed "
+        "32"
+    );
+}
+
+TEST_CASE(WorldGenConfig_NegativeBiomeDepthCannotHidePositiveWork) {
+    const std::string error = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "loop-limits.yaml",
+            "biomes:\n"
+            "  entries:\n"
+            "    - name: bounded\n"
+            "      surface:\n"
+            "        - block: base:stone_shale\n"
+            "          depth: -2147483648\n"
+            "        - block: base:stone_shale\n"
+            "          depth: 32\n"
+            "        - block: base:stone_shale\n"
+            "          depth: 1\n"
+        );
+    });
+    CHECK_EQ(
+        error,
+        "Invalid configuration value 'biomes.entries[0].surface[2].depth' "
+        "in 'loop-limits.yaml': cumulative biome surface depth must not exceed "
+        "32"
+    );
+}
+
+TEST_CASE(WorldGenConfig_PreservesNegativeLoopSemantics) {
+    WorldGenConfig config;
+    config.applyYaml(
+        "negative.yaml",
+        "terrain:\n"
+        "  surface_depth: -1\n"
+        "biomes:\n"
+        "  entries:\n"
+        "    - name: bounded\n"
+        "      surface:\n"
+        "        - block: base:stone_shale\n"
+        "          depth: -2\n"
+        "structures:\n"
+        "  features:\n"
+        "    - name: bounded\n"
+        "      block: base:stone_shale\n"
+        "      min_height: -3\n"
+        "      max_height: 5\n"
+    );
+
+    CHECK_EQ(config.terrain.surfaceDepth, -1);
+    CHECK_EQ(config.biomes.entries[0].surface[0].depth, -2);
+    CHECK_EQ(config.structures.features[0].minHeight, -3);
+    CHECK_EQ(config.structures.features[0].maxHeight, 5);
+}
+
+TEST_CASE(WorldGenConfig_IgnoresUnretainedGeneratorListEntries) {
+    std::ostringstream yaml;
+    yaml << "biomes:\n  entries:\n";
+    for (size_t i = 0; i <= WorldGenConfig::MaxBiomeEntries; ++i) {
+        yaml << "    - name: ''\n"
+             << "      surface:\n"
+             << "        - block: ''\n"
+             << "          depth: 4294967295\n";
+    }
+    yaml << "structures:\n  features:\n";
+    for (size_t i = 0; i <= WorldGenConfig::MaxStructureFeatures; ++i) {
+        yaml << "    - name: inert" << i << "\n"
+             << "      block: ''\n"
+             << "      max_height: 4294967295\n";
+    }
+
+    WorldGenConfig config;
+    config.applyYaml("inert.yaml", yaml.str());
+    CHECK(config.biomes.entries.empty());
+    CHECK(config.structures.features.empty());
 }

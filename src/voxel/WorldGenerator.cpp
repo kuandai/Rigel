@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <string_view>
 #include <spdlog/spdlog.h>
@@ -844,19 +845,31 @@ public:
                         static_cast<float>(worldZ - 7),
                         feature.seed ^ 0x9e3779b9u
                     );
-                    int heightRange = feature.maxHeight - feature.minHeight;
-                    int pillarHeight = feature.minHeight;
+                    const int64_t heightRange =
+                        static_cast<int64_t>(feature.maxHeight) -
+                        feature.minHeight;
+                    int64_t pillarHeight = feature.minHeight;
                     if (heightRange > 0) {
-                        float t = (heightNoise + 1.0f) * 0.5f;
-                        pillarHeight += static_cast<int>(std::floor(t * (heightRange + 1)));
+                        const double t =
+                            (static_cast<double>(heightNoise) + 1.0) * 0.5;
+                        pillarHeight = std::min<int64_t>(
+                            feature.maxHeight,
+                            pillarHeight + static_cast<int64_t>(
+                                std::floor(t * static_cast<double>(
+                                    heightRange + 1)))
+                        );
                     }
 
-                    for (int h = 1; h <= pillarHeight; ++h) {
-                        int worldY = height + h;
-                        int localY = worldY - ctx.coord.y * Chunk::SIZE;
-                        if (localY < 0 || localY >= Chunk::SIZE) {
-                            continue;
-                        }
+                    const int64_t chunkMinY =
+                        static_cast<int64_t>(ctx.coord.y) * Chunk::SIZE;
+                    const int64_t chunkMaxY = chunkMinY + Chunk::SIZE - 1;
+                    const int64_t firstWorldY = std::max<int64_t>(
+                        static_cast<int64_t>(height) + 1, chunkMinY);
+                    const int64_t lastWorldY = std::min<int64_t>(
+                        static_cast<int64_t>(height) + pillarHeight, chunkMaxY);
+                    for (int64_t worldY = firstWorldY;
+                         worldY <= lastWorldY; ++worldY) {
+                        const int localY = static_cast<int>(worldY - chunkMinY);
                         BlockState state;
                         state.id = feature.block;
                         buffer.at(x, localY, z) = state;
@@ -947,9 +960,14 @@ std::vector<std::unique_ptr<const WorldGenStage>> buildStages(
 
 } // namespace
 
+static WorldGenConfig validateGeneratorConfig(WorldGenConfig config) {
+    config.validate("WorldGenerator configuration");
+    return config;
+}
+
 WorldGenerator::WorldGenerator(const BlockRegistry& registry, WorldGenConfig config)
     : m_registry(registry),
-      m_config(std::move(config)),
+      m_config(validateGeneratorConfig(std::move(config))),
       m_densityGraph(validateAndBuildDensityGraph(m_registry, m_config)),
       m_stages(buildStages(m_config, m_registry, m_densityGraph)) {}
 

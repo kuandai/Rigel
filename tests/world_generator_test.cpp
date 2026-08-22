@@ -2,6 +2,8 @@
 
 #include "Rigel/Voxel/WorldGenerator.h"
 
+#include <limits>
+
 using namespace Rigel::Voxel;
 
 namespace {
@@ -105,6 +107,97 @@ TEST_CASE(WorldGenerator_Deterministic) {
     generator.generate({1, 0, 0}, b);
 
     CHECK_EQ(a.blocks, b.blocks);
+}
+
+TEST_CASE(WorldGenerator_GeneratesAtLoopConfigurationBoundaries) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenConfig config = makeFlatConfig();
+    config.terrain.surfaceDepth = WorldGenConfig::MaxSurfaceDepth;
+    config.structures.features.push_back({
+        .name = "bounded",
+        .block = "rigel:grass",
+        .chance = 1.0f,
+        .minHeight = WorldGenConfig::MaxStructureHeight,
+        .maxHeight = WorldGenConfig::MaxStructureHeight
+    });
+    config.validate("boundary test configuration");
+    WorldGenerator generator(registry, config);
+
+    ChunkBuffer buffer;
+    generator.generate({0, 31, 0}, buffer);
+
+    CHECK_EQ(
+        buffer.at(0, Chunk::SIZE - 1, 0).id.type,
+        registry.findByIdentifier("rigel:grass")->type
+    );
+}
+
+TEST_CASE(WorldGenerator_ValidatesProgrammaticLoopBoundsBeforeStages) {
+    BlockRegistry registry = makeRegistry();
+
+    WorldGenConfig surfaceConfig = makeFlatConfig();
+    surfaceConfig.terrain.surfaceDepth = std::numeric_limits<int>::max();
+    std::string surfaceDiagnostic;
+    try {
+        WorldGenerator generator(registry, surfaceConfig);
+    } catch (const std::invalid_argument& error) {
+        surfaceDiagnostic = error.what();
+    }
+    CHECK_EQ(
+        surfaceDiagnostic,
+        "Invalid configuration value 'terrain.surface_depth' in "
+        "'WorldGenerator configuration': must be no greater than 32"
+    );
+
+    WorldGenConfig featureConfig = makeFlatConfig();
+    featureConfig.structures.features.push_back({
+        .name = "invalid",
+        .block = "rigel:grass",
+        .chance = 1.0f,
+        .minHeight = std::numeric_limits<int>::min(),
+        .maxHeight = std::numeric_limits<int>::max()
+    });
+    std::string featureDiagnostic;
+    try {
+        WorldGenerator generator(registry, featureConfig);
+    } catch (const std::invalid_argument& error) {
+        featureDiagnostic = error.what();
+    }
+    CHECK_EQ(
+        featureDiagnostic,
+        "Invalid configuration value 'structures.features[0].max_height' in "
+        "'WorldGenerator configuration': must be no greater than 1024"
+    );
+
+    WorldGenConfig listConfig = makeFlatConfig();
+    listConfig.biomes.entries.resize(WorldGenConfig::MaxBiomeEntries + 1);
+    std::string listDiagnostic;
+    try {
+        WorldGenerator generator(registry, listConfig);
+    } catch (const std::invalid_argument& error) {
+        listDiagnostic = error.what();
+    }
+    CHECK_EQ(
+        listDiagnostic,
+        "Invalid configuration value 'biomes.entries' in "
+        "'WorldGenerator configuration': must contain no more than 32 entries"
+    );
+}
+
+TEST_CASE(WorldGenerator_AcceptsProgrammaticMixedSignFeatureRange) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenConfig config = makeFlatConfig();
+    config.structures.features.push_back({
+        .name = "mixed",
+        .block = "rigel:grass",
+        .chance = 1.0f,
+        .minHeight = std::numeric_limits<int>::min(),
+        .maxHeight = WorldGenConfig::MaxStructureHeight
+    });
+
+    WorldGenerator generator(registry, config);
+    ChunkBuffer buffer;
+    CHECK_NO_THROW(generator.generate({0, 0, 0}, buffer));
 }
 
 TEST_CASE(WorldGenerator_RejectsMissingRequiredBlock) {

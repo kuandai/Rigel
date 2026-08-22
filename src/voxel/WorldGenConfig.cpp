@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 
 #include "Rigel/Util/Yaml.h"
 #include "Rigel/Util/Ryml.h"
@@ -13,6 +14,19 @@
 namespace Rigel::Voxel {
 
 namespace {
+void validateRetainedCount(size_t count,
+                           size_t maximum,
+                           const char* sourceName,
+                           const std::string& path) {
+    if (count >= maximum) {
+        Util::throwConfigurationConstraint(
+            sourceName,
+            path,
+            "must contain no more than " + std::to_string(maximum) + " entries"
+        );
+    }
+}
+
 bool isKnownGenerationStage(std::string_view name) {
     return std::any_of(
         kWorldGenPipelineStages.begin(),
@@ -363,7 +377,10 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         ryml::ConstNodeRef terrainNode = root["terrain"];
         terrain.baseHeight = Util::readFloat(terrainNode, "base_height", terrain.baseHeight);
         terrain.heightVariation = Util::readFloat(terrainNode, "height_variation", terrain.heightVariation);
-        terrain.surfaceDepth = Util::readInt(terrainNode, "surface_depth", terrain.surfaceDepth);
+        terrain.surfaceDepth = Util::readIntWithMaximum(
+            terrainNode, "surface_depth", terrain.surfaceDepth,
+            std::numeric_limits<int>::min(),
+            MaxSurfaceDepth, sourceName, "terrain");
         terrain.densityStrength = Util::readFloat(terrainNode, "density_strength", terrain.densityStrength);
         terrain.gradientStrength = Util::readFloat(terrainNode, "gradient_strength", terrain.gradientStrength);
         if (terrainNode.has_child("noise")) {
@@ -403,29 +420,67 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
             ryml::ConstNodeRef entries = biomesNode["entries"];
             if (entries.is_seq()) {
                 biomes.entries.clear();
+                size_t biomeIndex = 0;
                 for (ryml::ConstNodeRef entry : entries.children()) {
                     BiomeConfig biome;
                     biome.name = Util::readString(entry, "name", "");
-                    if (entry.has_child("target")) {
+                    if (!biome.name.empty() && entry.has_child("target")) {
                         biome.target = readBiomeTarget(entry["target"], biome.target);
                     }
-                    biome.weight = Util::readFloat(entry, "weight", biome.weight);
-                    if (entry.has_child("surface")) {
+                    if (!biome.name.empty()) {
+                        biome.weight = Util::readFloat(entry, "weight", biome.weight);
+                    }
+                    if (!biome.name.empty() && entry.has_child("surface")) {
                         ryml::ConstNodeRef surface = entry["surface"];
                         if (surface.is_seq()) {
+                            const std::string surfacePath =
+                                "biomes.entries[" + std::to_string(biomeIndex) +
+                                "].surface";
+                            size_t layerIndex = 0;
+                            int totalSurfaceDepth = 0;
                             for (ryml::ConstNodeRef layerNode : surface.children()) {
                                 SurfaceLayer layer;
                                 layer.block = Util::readString(layerNode, "block", "");
-                                layer.depth = Util::readInt(layerNode, "depth", layer.depth);
                                 if (!layer.block.empty()) {
+                                    layer.depth = Util::readIntWithMaximum(
+                                        layerNode, "depth", layer.depth,
+                                        std::numeric_limits<int>::min(),
+                                        MaxSurfaceDepth, sourceName,
+                                        "biomes.entries[" +
+                                            std::to_string(biomeIndex) +
+                                            "].surface[" +
+                                            std::to_string(layerIndex) + "]");
+                                    validateRetainedCount(
+                                        biome.surface.size(), MaxSurfaceLayers,
+                                        sourceName, surfacePath);
+                                    if (layer.depth > 0) {
+                                        if (layer.depth >
+                                            MaxSurfaceDepth - totalSurfaceDepth) {
+                                            Util::throwConfigurationConstraint(
+                                                sourceName,
+                                                surfacePath + "[" +
+                                                    std::to_string(layerIndex) +
+                                                    "].depth",
+                                                "cumulative biome surface depth must "
+                                                "not exceed " +
+                                                    std::to_string(MaxSurfaceDepth)
+                                            );
+                                        }
+                                        totalSurfaceDepth += layer.depth;
+                                    }
                                     biome.surface.push_back(std::move(layer));
                                 }
+                                ++layerIndex;
                             }
                         }
                     }
                     if (!biome.name.empty()) {
+                        validateRetainedCount(
+                            biomes.entries.size(), MaxBiomeEntries, sourceName,
+                            "biomes.entries");
                         biomes.entries.push_back(std::move(biome));
                     }
+                    ++biomeIndex;
                 }
             }
         }
@@ -547,28 +602,47 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
             ryml::ConstNodeRef features = structuresNode["features"];
             if (features.is_seq()) {
                 structures.features.clear();
+                size_t featureIndex = 0;
                 for (ryml::ConstNodeRef featureNode : features.children()) {
                     FeatureConfig feature;
                     feature.name = Util::readString(featureNode, "name", "");
                     feature.block = Util::readString(featureNode, "block", "");
                     feature.chance = Util::readFloat(featureNode, "chance", feature.chance);
-                    feature.minHeight = Util::readInt(featureNode, "min_height", feature.minHeight);
-                    feature.maxHeight = Util::readInt(featureNode, "max_height", feature.maxHeight);
-                    if (featureNode.has_child("biomes")) {
+                    const std::string featurePath = "structures.features[" +
+                        std::to_string(featureIndex) + "]";
+                    if (!feature.block.empty()) {
+                        feature.minHeight = Util::readIntWithMaximum(
+                            featureNode, "min_height", feature.minHeight,
+                            std::numeric_limits<int>::min(),
+                            MaxStructureHeight, sourceName, featurePath);
+                        feature.maxHeight = Util::readIntWithMaximum(
+                            featureNode, "max_height", feature.maxHeight,
+                            std::numeric_limits<int>::min(),
+                            MaxStructureHeight, sourceName, featurePath);
+                    }
+                    if (!feature.block.empty() && featureNode.has_child("biomes")) {
                         ryml::ConstNodeRef biomesNode = featureNode["biomes"];
                         if (biomesNode.is_seq()) {
                             for (ryml::ConstNodeRef biomeNode : biomesNode.children()) {
                                 std::string biomeName;
                                 biomeNode >> biomeName;
                                 if (!biomeName.empty()) {
+                                    validateRetainedCount(
+                                        feature.biomes.size(),
+                                        MaxFeatureBiomeFilters, sourceName,
+                                        featurePath + ".biomes");
                                     feature.biomes.push_back(std::move(biomeName));
                                 }
                             }
                         }
                     }
                     if (!feature.block.empty()) {
+                        validateRetainedCount(
+                            structures.features.size(), MaxStructureFeatures,
+                            sourceName, "structures.features");
                         structures.features.push_back(std::move(feature));
                     }
+                    ++featureIndex;
                 }
             }
         }
@@ -620,6 +694,104 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
 
 void WorldGenConfig::validate(const char* sourceName) const {
     validateWorldBounds(world, sourceName);
+
+    auto validateMaximum = [sourceName](int value,
+                                        int maximum,
+                                        const std::string& path) {
+        if (value > maximum) {
+            Util::throwConfigurationConstraint(
+                sourceName, path,
+                "must be no greater than " + std::to_string(maximum)
+            );
+        }
+    };
+    auto validateNoise = [&validateMaximum](const NoiseConfig& noise,
+                                            const std::string& path) {
+        validateMaximum(noise.octaves, MaxNoiseOctaves, path + ".octaves");
+    };
+
+    validateMaximum(
+        terrain.surfaceDepth, MaxSurfaceDepth, "terrain.surface_depth");
+    validateNoise(terrain.heightNoise, "terrain.noise");
+    validateNoise(terrain.densityNoise, "terrain.density_noise");
+    validateNoise(climate.global.temperature, "climate.global.temperature");
+    validateNoise(climate.global.humidity, "climate.global.humidity");
+    validateNoise(
+        climate.global.continentalness, "climate.global.continentalness");
+    validateNoise(climate.local.temperature, "climate.local.temperature");
+    validateNoise(climate.local.humidity, "climate.local.humidity");
+    validateNoise(
+        climate.local.continentalness, "climate.local.continentalness");
+
+    if (biomes.entries.size() > MaxBiomeEntries) {
+        Util::throwConfigurationConstraint(
+            sourceName, "biomes.entries",
+            "must contain no more than " +
+                std::to_string(MaxBiomeEntries) + " entries");
+    }
+    for (size_t biomeIndex = 0; biomeIndex < biomes.entries.size();
+         ++biomeIndex) {
+        const auto& biome = biomes.entries[biomeIndex];
+        const std::string surfacePath = "biomes.entries[" +
+            std::to_string(biomeIndex) + "].surface";
+        if (biome.surface.size() > MaxSurfaceLayers) {
+            Util::throwConfigurationConstraint(
+                sourceName, surfacePath,
+                "must contain no more than " +
+                    std::to_string(MaxSurfaceLayers) + " entries");
+        }
+        int totalDepth = 0;
+        for (size_t layerIndex = 0; layerIndex < biome.surface.size();
+             ++layerIndex) {
+            const auto& layer = biome.surface[layerIndex];
+            const std::string depthPath = surfacePath + "[" +
+                std::to_string(layerIndex) + "].depth";
+            if (!layer.block.empty()) {
+                validateMaximum(layer.depth, MaxSurfaceDepth, depthPath);
+            }
+            if (!layer.block.empty() && layer.depth > 0) {
+                if (layer.depth > MaxSurfaceDepth - totalDepth) {
+                    Util::throwConfigurationConstraint(
+                        sourceName, depthPath,
+                        "cumulative biome surface depth must not exceed " +
+                            std::to_string(MaxSurfaceDepth));
+                }
+                totalDepth += layer.depth;
+            }
+        }
+    }
+
+    for (size_t nodeIndex = 0; nodeIndex < densityGraph.nodes.size();
+         ++nodeIndex) {
+        validateNoise(
+            densityGraph.nodes[nodeIndex].noise,
+            "density_graph.nodes[" + std::to_string(nodeIndex) + "].noise");
+    }
+
+    if (structures.features.size() > MaxStructureFeatures) {
+        Util::throwConfigurationConstraint(
+            sourceName, "structures.features",
+            "must contain no more than " +
+                std::to_string(MaxStructureFeatures) + " entries");
+    }
+    for (size_t featureIndex = 0;
+         featureIndex < structures.features.size(); ++featureIndex) {
+        const auto& feature = structures.features[featureIndex];
+        const std::string featurePath = "structures.features[" +
+            std::to_string(featureIndex) + "]";
+        validateMaximum(
+            feature.minHeight, MaxStructureHeight,
+            featurePath + ".min_height");
+        validateMaximum(
+            feature.maxHeight, MaxStructureHeight,
+            featurePath + ".max_height");
+        if (feature.biomes.size() > MaxFeatureBiomeFilters) {
+            Util::throwConfigurationConstraint(
+                sourceName, featurePath + ".biomes",
+                "must contain no more than " +
+                    std::to_string(MaxFeatureBiomeFilters) + " entries");
+        }
+    }
 }
 
 bool WorldGenConfig::isStageEnabled(const std::string& stage) const {

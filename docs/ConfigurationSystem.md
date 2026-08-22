@@ -148,7 +148,7 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `world.version` | int | `1` | World generation version. |
 | `terrain.base_height` | float | `16.0` | Base terrain height. |
 | `terrain.height_variation` | float | `16.0` | Terrain height variation. |
-| `terrain.surface_depth` | int | `3` | Surface layer depth. |
+| `terrain.surface_depth` | int | `3` | Surface layer depth (maximum `32`, the fixed chunk edge). |
 | `terrain.density_strength` | float | `0.0` | Adds density noise influence. |
 | `terrain.gradient_strength` | float | `1.0` | Vertical density gradient. |
 | `terrain.noise.*` | object | - | Base height noise (see below). |
@@ -181,6 +181,20 @@ Noise objects (`terrain.noise`, `terrain.density_noise`, `climate.*.*`) use:
 | `persistence` | float | `0.5` |
 | `scale` | float | `1.0` |
 | `offset` | float | `0.0` |
+
+Biome `surface[].depth` values are also limited to `32`, and the positive depths
+in one biome must total at most `32`. Surface rules run only in the chunk that
+contains the surface, so larger depths add iteration without producing blocks.
+Structure `min_height`/`max_height` values may span vertical chunks and are
+limited above by the maximum world height (`1024`). Negative surface depths
+retain their no-output behavior; negative structure minima remain supported and
+use overflow-safe 64-bit range selection, including mixed-sign ranges.
+
+World generation accepts at most 32 biome entries, 32 surface layers per biome,
+16 structure features, and 32 biome filters per feature. At the scalar maxima,
+the structure stage intersects each pillar with the current chunk and performs
+at most 524,288 pillar-height iterations per chunk before chance and biome
+filtering; shipped configuration uses one feature.
 
 Key top-level fields (see `assets/config/world_generation.yaml` for examples):
 

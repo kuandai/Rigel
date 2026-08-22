@@ -81,7 +81,7 @@ Entity regions are stored as `.crbin` files:
 
 - Payload is written by `Entity::encodeEntityRegionPayload`.
 - Payload is read by `Entity::decodeEntityRegionPayload`.
-- CRBin is a schema-based binary format (see `CRBin`).
+- Payload uses a bounded, versioned entity-specific binary layout.
 
 ---
 

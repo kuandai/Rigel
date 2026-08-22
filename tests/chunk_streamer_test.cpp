@@ -775,13 +775,13 @@ TEST_CASE(ChunkStreamer_VersionReplacementStaysPendingThroughGeneration) {
     CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
     CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
 
-    streamer.update(coord.toWorldCenter());
+    streamer.update(outsideView.toWorldCenter());
     streamer.processCompletions();
     CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
     CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
 
     for (int update = 0; update < 57; ++update) {
-        streamer.update(coord.toWorldCenter());
+        streamer.update(outsideView.toWorldCenter());
         streamer.processCompletions();
         CHECK_EQ(streamer.diagnostics().eviction.pending,
                  static_cast<size_t>(1));
@@ -793,15 +793,102 @@ TEST_CASE(ChunkStreamer_VersionReplacementStaysPendingThroughGeneration) {
                  static_cast<uint64_t>(0));
     }
 
-    streamer.update(coord.toWorldCenter());
+    streamer.update(outsideView.toWorldCenter());
     CHECK_EQ(persistenceAttempts, static_cast<size_t>(2));
     CHECK(!manager.hasChunk(coord));
-    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
     CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
     CHECK(streamer.diagnostics().eviction.lastError.empty());
 
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
+
     streamer.processCompletions();
     CHECK(manager.hasChunk(coord));
+    CHECK_EQ(manager.getChunk(coord)->worldGenVersion(),
+             replacementGenerator->config().world.version);
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(0));
+}
+
+TEST_CASE(ChunkStreamer_OrdinaryEvictionPreservesVersionReplacement) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto originalGenerator = makeGenerator(registry);
+    WorldGenConfig replacementConfig = originalGenerator->config();
+    ++replacementConfig.world.version;
+    auto replacementGenerator =
+        std::make_shared<WorldGenerator>(registry, replacementConfig);
+    BlockID edited =
+        registerTestBlock(registry, "rigel:replacement_distance_eviction_edit");
+
+    const ChunkCoord coord{0, 0, 0};
+    Chunk& original = manager.getOrCreateChunk(coord);
+    original.setBlock(0, 0, 0, BlockState{edited}, registry);
+    original.setWorldGenVersion(originalGenerator->config().world.version);
+    original.setLoadedFromDisk(true);
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, originalGenerator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 2;
+    stream.genQueueLimit = 1;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord request) {
+        CHECK_EQ(request, coord);
+        ++persistenceAttempts;
+        return false;
+    });
+
+    streamer.setGenerator(replacementGenerator);
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(manager.hasChunk(coord));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
+
+    manager.getChunk(coord)->clearPersistDirty();
+    const ChunkCoord outsideUnload{4, 0, 0};
+    streamer.update(outsideUnload.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(!manager.hasChunk(coord));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
+    CHECK(streamer.diagnostics().eviction.lastError.empty());
+
+    for (int update = 0; update < 60; ++update) {
+        streamer.update(outsideUnload.toWorldCenter());
+        streamer.processCompletions();
+        CHECK_EQ(streamer.diagnostics().eviction.pending,
+                 static_cast<size_t>(1));
+        CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateDeferredEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+    }
+
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
+
+    streamer.processCompletions();
+    Chunk* replacement = manager.getChunk(coord);
+    CHECK(replacement != nullptr);
+    if (!replacement) {
+        return;
+    }
+    CHECK_EQ(replacement->worldGenVersion(), replacementConfig.world.version);
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
     CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(0));
 }

@@ -915,6 +915,11 @@ void ChunkStreamer::reset() {
 }
 
 bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
+    bool replacementPending = versionReplacement ||
+        m_versionReplacementRetries.find(coord) !=
+            m_versionReplacementRetries.end() ||
+        m_versionReplacementWaiting.find(coord) !=
+            m_versionReplacementWaiting.end();
     Chunk* chunk = m_chunkManager ? m_chunkManager->getChunk(coord) : nullptr;
     if (chunk && chunk->isPersistDirty()) {
         auto retryIt = m_evictionRetryAfter.find(coord);
@@ -923,12 +928,12 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
             return false;
         }
         if (!m_chunkEviction || !m_chunkEviction(coord)) {
-            deferEviction(coord, versionReplacement);
+            deferEviction(coord, replacementPending);
             return false;
         }
         chunk = m_chunkManager->getChunk(coord);
         if (chunk && chunk->isPersistDirty()) {
-            deferEviction(coord, versionReplacement);
+            deferEviction(coord, replacementPending);
             return false;
         }
     }
@@ -936,7 +941,9 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
     m_evictionRetryAfter.erase(coord);
     m_versionReplacementRetries.erase(coord);
     eraseFailure(m_evictionErrors, m_evictionFailureVersion, coord);
-    if (!versionReplacement) {
+    if (replacementPending) {
+        m_versionReplacementWaiting.insert(coord);
+    } else {
         m_versionReplacementWaiting.erase(coord);
     }
     if (m_meshStore) {

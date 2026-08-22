@@ -81,16 +81,15 @@ Formats implement `PersistenceFormat`:
 
 Each format provides a `FormatDescriptor`:
 
-- `id`, `version`, `extensions`
-- `FormatCapabilities`
+- `id` and on-disk `version`, used by registry selection and manifest checks
+- `FormatCapabilities::supportsEntityRegions`, used to reject entity
+  persistence when a backend does not implement that lifecycle
+- `FormatCapabilities::fillMissingChunkSpans`, used by asynchronous loading to
+  select generator base-fill for partial Memory-format chunk spans
 
-Capabilities advertise behavior like:
-
-- compression type (`None`, `Lz4`, `Custom`)
-- partial chunk support
-- random access support
-- entity region support
-- versioning support
+Compression, metadata encoding, region indexing, and chunk-span behavior belong
+to each backend implementation and its typed settings. They are not negotiated
+through unused capability descriptors.
 
 `FormatRegistry` resolves a format using:
 

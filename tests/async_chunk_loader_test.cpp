@@ -281,6 +281,43 @@ struct MemoryContext {
     }
 };
 
+class CapabilityOverrideFormat final : public PersistenceFormat {
+public:
+    CapabilityOverrideFormat(
+        FormatDescriptor descriptor,
+        std::unique_ptr<PersistenceFormat> delegate)
+        : m_descriptor(std::move(descriptor))
+        , m_delegate(std::move(delegate)) {}
+
+    const FormatDescriptor& descriptor() const override {
+        return m_descriptor;
+    }
+
+    WorldMetadataCodec& worldMetadataCodec() override {
+        return m_delegate->worldMetadataCodec();
+    }
+
+    ZoneMetadataCodec& zoneMetadataCodec() override {
+        return m_delegate->zoneMetadataCodec();
+    }
+
+    ChunkContainer& chunkContainer() override {
+        return m_delegate->chunkContainer();
+    }
+
+    EntityContainer& entityContainer() override {
+        return m_delegate->entityContainer();
+    }
+
+    RegionLayout& regionLayout() override {
+        return m_delegate->regionLayout();
+    }
+
+private:
+    FormatDescriptor m_descriptor;
+    std::unique_ptr<PersistenceFormat> m_delegate;
+};
+
 class TransientReadFailureStorage final : public StorageBackend {
 public:
     TransientReadFailureStorage(std::shared_ptr<StorageBackend> delegate,
@@ -2438,6 +2475,81 @@ TEST_CASE(AsyncChunkLoader_PartialSpan_BaseFill) {
 
     BlockState outside = loaded->getBlock(Chunk::SIZE - 1, Chunk::SIZE - 1, Chunk::SIZE - 1);
     CHECK(!outside.isAir());
+}
+
+TEST_CASE(AsyncChunkLoader_PartialSpan_RespectsDisabledBaseFillCapability) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    const BlockID testA =
+        registerTestBlock(registry, "rigel:test_partial_without_base_fill");
+    const ChunkCoord coord{5, 0, 0};
+    ChunkSpan span;
+    span.chunkX = coord.x;
+    span.chunkY = coord.y;
+    span.chunkZ = coord.z;
+    span.offsetX = 0;
+    span.offsetY = 0;
+    span.offsetZ = 0;
+    span.sizeX = Chunk::SIZE / 2;
+    span.sizeY = Chunk::SIZE / 2;
+    span.sizeZ = Chunk::SIZE / 2;
+
+    const ChunkData payload =
+        buildPayload(coord, registry, {testA}, false, span, false);
+
+    Rigel::Test::TemporaryDirectory directory("rigel_async_no_base_fill");
+    FormatRegistry formats;
+    FormatDescriptor descriptor = Backends::Memory::descriptor();
+    descriptor.id = "memory-no-base-fill";
+    descriptor.capabilities.fillMissingChunkSpans = false;
+    formats.registerFormat(
+        descriptor,
+        [descriptor](const PersistenceContext& context) {
+            return std::make_unique<CapabilityOverrideFormat>(
+                descriptor, Backends::Memory::factory()(context));
+        },
+        [](StorageBackend&, const PersistenceContext&) {
+            return std::optional<ProbeResult>();
+        });
+    PersistenceService service(formats);
+    PersistenceContext context;
+    context.rootPath = directory.path().string();
+    context.preferredFormat = descriptor.id;
+    context.storage = std::make_shared<FilesystemBackend>();
+    saveRegionForPayload(service, context, "rigel:default", coord, payload);
+
+    AsyncChunkLoader loader(
+        service,
+        context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)),
+             ChunkLoadRequestResult::Queued);
+    const auto completions = loader.drainCompletions(1);
+    CHECK_EQ(completions.size(), static_cast<size_t>(1));
+    CHECK_EQ(completions.front().outcome, ChunkLoadOutcome::Loaded);
+
+    const Chunk* loaded = world.chunkManager().getChunk(coord);
+    CHECK(loaded != nullptr);
+    if (!loaded) {
+        return;
+    }
+    CHECK_EQ(loaded->getBlock(0, 0, 0).id, testA);
+    CHECK(loaded->getBlock(
+                     Chunk::SIZE - 1,
+                     Chunk::SIZE - 1,
+                     Chunk::SIZE - 1)
+              .isAir());
 }
 
 TEST_CASE(AsyncChunkLoader_MissingRegion_UsesNegativeCache) {

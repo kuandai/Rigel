@@ -2196,15 +2196,7 @@ const FormatDescriptor& descriptor() {
         FormatDescriptor init;
         init.id = "cr";
         init.version = kFileVersion;
-        init.extensions = {"cosmicreach", "crbin", "json"};
-        init.capabilities.supportsPartialChunkSave = false;
-        init.capabilities.supportsRandomAccess = false;
         init.capabilities.supportsEntityRegions = true;
-        init.capabilities.supportsVersions = true;
-        init.capabilities.fillMissingChunkSpans = false;
-        init.capabilities.metadataFormat = "json";
-        init.capabilities.regionIndexType = "byte|short|int";
-        init.capabilities.compression = CompressionType::Lz4;
         return init;
     }();
     return desc;
@@ -2222,11 +2214,11 @@ FormatFactory factory() {
 FormatProbe probe() {
     return [](StorageBackend& storage, const PersistenceContext& context) -> std::optional<ProbeResult> {
         if (storage.exists(CRPaths::worldInfoPath(context))) {
-            return ProbeResult{descriptor().id, descriptor().version, 0.8f};
+            return ProbeResult{0.8f};
         }
         auto zonesPath = context.rootPath + "/zones";
         if (storage.exists(zonesPath)) {
-            return ProbeResult{descriptor().id, descriptor().version, 0.4f};
+            return ProbeResult{0.4f};
         }
         return std::nullopt;
     };

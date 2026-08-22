@@ -147,20 +147,6 @@ std::unique_ptr<PersistenceFormat> FormatRegistry::resolveFormat(const Persisten
     return bestEntry->factory(context);
 }
 
-std::optional<ProbeResult> FormatRegistry::probeFromManifest(const Entry& entry, const PersistenceContext& context) const {
-    if (!context.storage) {
-        return std::nullopt;
-    }
-    auto manifest = readManifest(*context.storage, context);
-    if (!manifest) {
-        return std::nullopt;
-    }
-    if (manifest->formatId != entry.descriptor.id || manifest->version != entry.descriptor.version) {
-        return std::nullopt;
-    }
-    return ProbeResult{entry.descriptor.id, entry.descriptor.version, 1.0f};
-}
-
 std::optional<ProbeResult> FormatRegistry::probeFromStorage(const Entry& entry, StorageBackend& storage, const PersistenceContext& context) const {
     if (!entry.probe) {
         return std::nullopt;

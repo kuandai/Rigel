@@ -19,7 +19,6 @@ private:
         FormatProbe probe;
     };
 
-    std::optional<ProbeResult> probeFromManifest(const Entry& entry, const PersistenceContext& context) const;
     std::optional<ProbeResult> probeFromStorage(const Entry& entry, StorageBackend& storage, const PersistenceContext& context) const;
 
     std::unordered_map<std::string, Entry> m_entries;

@@ -715,14 +715,8 @@ const FormatDescriptor& descriptor() {
         FormatDescriptor init;
         init.id = "memory";
         init.version = 1;
-        init.extensions = {"mem"};
-        init.capabilities.supportsPartialChunkSave = true;
-        init.capabilities.supportsRandomAccess = false;
         init.capabilities.supportsEntityRegions = true;
-        init.capabilities.supportsVersions = true;
         init.capabilities.fillMissingChunkSpans = true;
-        init.capabilities.metadataFormat = "binary";
-        init.capabilities.regionIndexType = "none";
         return init;
     }();
     return desc;

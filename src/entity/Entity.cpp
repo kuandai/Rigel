@@ -12,6 +12,12 @@ namespace Rigel::Entity {
 namespace {
 constexpr float kEpsilon = 1.0e-4f;
 
+enum class Axis {
+    X,
+    Y,
+    Z
+};
+
 bool isSolidAt(Voxel::World& world, int x, int y, int z) {
     Voxel::BlockState state = world.getBlock(x, y, z);
     if (state.isAir()) {
@@ -206,7 +212,6 @@ Entity::Entity(std::string typeId)
 
 void Entity::setPosition(const glm::vec3& pos) {
     m_position = pos;
-    m_lastPosition = pos;
     updateWorldBounds();
 }
 
@@ -219,48 +224,12 @@ void Entity::setLocalBounds(const Aabb& bounds) {
     updateWorldBounds();
 }
 
-void Entity::addUpdateComponent(IUpdateEntityComponent* component) {
-    if (!component) {
-        return;
-    }
-    if (std::find(m_updateComponents.begin(), m_updateComponents.end(), component) ==
-        m_updateComponents.end()) {
-        m_updateComponents.push_back(component);
-    }
-}
-
-void Entity::removeUpdateComponent(IUpdateEntityComponent* component) {
-    auto it = std::remove(m_updateComponents.begin(), m_updateComponents.end(), component);
-    m_updateComponents.erase(it, m_updateComponents.end());
-}
-
-void Entity::addRenderComponent(IRenderEntityComponent* component) {
-    if (!component) {
-        return;
-    }
-    if (std::find(m_renderComponents.begin(), m_renderComponents.end(), component) ==
-        m_renderComponents.end()) {
-        m_renderComponents.push_back(component);
-    }
-}
-
-void Entity::removeRenderComponent(IRenderEntityComponent* component) {
-    auto it = std::remove(m_renderComponents.begin(), m_renderComponents.end(), component);
-    m_renderComponents.erase(it, m_renderComponents.end());
-}
-
 void Entity::render(const EntityRenderContext& ctx,
                     const glm::mat4& modelMatrix,
                     bool shouldRender) {
     if (m_modelInstance) {
         m_modelInstance->setTint(m_renderTint);
         m_modelInstance->render(ctx, *this, modelMatrix, shouldRender);
-    }
-
-    for (IRenderEntityComponent* component : m_renderComponents) {
-        if (component) {
-            component->render(*this, ctx, modelMatrix, shouldRender);
-        }
     }
 }
 
@@ -335,13 +304,8 @@ void Entity::update(Voxel::World& world, float dt) {
         return;
     }
 
-    m_age += dt;
     if (glm::dot(m_viewDirection, m_viewDirection) < 1.0e-6f) {
         m_viewDirection = glm::vec3(0.0f, 0.0f, -1.0f);
-    }
-
-    for (IUpdateEntityComponent* component : m_updateComponents) {
-        component->update(world, *this, dt);
     }
 
     if (!isNoClip()) {

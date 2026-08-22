@@ -23,20 +23,11 @@ struct ShaderAsset;
 
 namespace Rigel::Entity {
 
-class IEntityModelInstance;
+class EntityModelInstance;
 
 enum class EntityLightingMode {
     Lit,
     Unlit
-};
-
-class IEntityModel {
-public:
-    virtual ~IEntityModel() = default;
-
-    virtual std::unique_ptr<IEntityModelInstance> createInstance(
-        Asset::AssetManager& assets,
-        const Asset::Handle<Asset::ShaderAsset>& shader) const = 0;
 };
 
 struct EntityModelCube {
@@ -64,7 +55,6 @@ struct EntityAnimationSetAsset : public Asset::AssetBase {
 };
 
 struct EntityModelAsset : public Asset::AssetBase,
-                          public IEntityModel,
                           public std::enable_shared_from_this<EntityModelAsset> {
     float texWidth = 16.0f;
     float texHeight = 16.0f;
@@ -80,9 +70,9 @@ struct EntityModelAsset : public Asset::AssetBase,
 
     const EntityBone* findBone(std::string_view name) const;
 
-    std::unique_ptr<IEntityModelInstance> createInstance(
+    std::unique_ptr<EntityModelInstance> createInstance(
         Asset::AssetManager& assets,
-        const Asset::Handle<Asset::ShaderAsset>& shader) const override;
+        const Asset::Handle<Asset::ShaderAsset>& shader) const;
 };
 
 } // namespace Rigel::Entity

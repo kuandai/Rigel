@@ -27,21 +27,9 @@ Entities are runtime objects with physics, rendering, and persistence hooks:
 - Bounds: `localBounds` and `worldBounds`
 - Tags: `EntityTags` (e.g. `NoClip`, `NoSaveInChunks`)
 - Render state: optional model handle, persistent model identifier, and tint
-- Components: update and render component lists
 
 Collision is axis-aligned (AABB) and resolved per-axis against voxel solids.
 Entities tagged `EntityTags::NoClip` bypass collision resolution.
-
-### 2.2 Components
-
-Two component interfaces exist:
-
-- `IUpdateEntityComponent` for update logic
-- `IRenderEntityComponent` for custom rendering hooks
-
-Components are attached to an entity and invoked during update/render.
-
----
 
 ## 3. World Ownership and Iteration
 
@@ -76,7 +64,7 @@ voxel blocks around the entity bounds center.
 
 ### 4.2 Model Instances
 
-Rendering is delegated to `IEntityModelInstance`:
+Rendering is delegated to `EntityModelInstance`:
 
 - Each entity lazily creates a model instance the first time it renders.
 - The instance stores CPU vertices and uploads to a dynamic VBO.

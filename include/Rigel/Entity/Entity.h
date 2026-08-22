@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Aabb.h"
-#include "EntityComponents.h"
 #include "EntityId.h"
 #include "EntityModel.h"
 #include "EntityModelInstance.h"
@@ -16,15 +15,12 @@
 
 #include <memory>
 #include <string>
-#include <vector>
+
+namespace Rigel::Voxel {
+class World;
+}
 
 namespace Rigel::Entity {
-
-enum class Axis : uint8_t {
-    X,
-    Y,
-    Z
-};
 
 class Entity {
 public:
@@ -62,12 +58,6 @@ public:
 
     bool isNoClip() const { return hasTag(EntityTags::NoClip); }
 
-    void addUpdateComponent(IUpdateEntityComponent* component);
-    void removeUpdateComponent(IUpdateEntityComponent* component);
-
-    void addRenderComponent(IRenderEntityComponent* component);
-    void removeRenderComponent(IRenderEntityComponent* component);
-
     virtual void update(Voxel::World& world, float dt);
     virtual void render(const EntityRenderContext& ctx,
                         const glm::mat4& modelMatrix,
@@ -78,7 +68,7 @@ public:
     void setModelIdentifier(std::string identifier);
     const std::string& modelIdentifier() const { return m_modelIdentifier; }
 
-    IEntityModelInstance* modelInstance() const { return m_modelInstance.get(); }
+    EntityModelInstance* modelInstance() const { return m_modelInstance.get(); }
     void clearModelInstance();
     bool ensureModelInstance(Asset::AssetManager& assets,
                              const Asset::Handle<Asset::ShaderAsset>& shader);
@@ -87,8 +77,6 @@ public:
     const glm::vec4& renderTint() const { return m_renderTint; }
 
 protected:
-    virtual void onCollide(Axis axis) { (void)axis; }
-
     void applyFloorFriction(float friction);
     void updateWorldBounds();
     void resolveCollisions(Voxel::World& world, float dt);
@@ -96,31 +84,23 @@ protected:
     EntityId m_id;
     std::string m_typeId;
     glm::vec3 m_position{0.0f};
-    glm::vec3 m_lastPosition{0.0f};
     glm::vec3 m_velocity{0.0f};
     glm::vec3 m_acceleration{0.0f};
     glm::vec3 m_viewDirection{0.0f, 0.0f, -1.0f};
     float m_gravityModifier = 1.0f;
-    float m_maxStepHeight = 0.5f;
     bool m_onGround = false;
     bool m_collidedX = false;
     bool m_collidedY = false;
     bool m_collidedZ = false;
-    float m_maxHitpoints = 10.0f;
-    float m_hitpoints = 10.0f;
-    float m_age = 0.0f;
     float m_floorFriction = 0.1f;
 
     Aabb m_localBounds{glm::vec3(-0.5f), glm::vec3(0.5f)};
     Aabb m_worldBounds{};
 
     EntityTagList m_tags;
-    std::vector<IUpdateEntityComponent*> m_updateComponents;
-    std::vector<IRenderEntityComponent*> m_renderComponents;
-
     Asset::Handle<EntityModelAsset> m_model;
     std::string m_modelIdentifier;
-    std::unique_ptr<IEntityModelInstance> m_modelInstance;
+    std::unique_ptr<EntityModelInstance> m_modelInstance;
     glm::vec4 m_renderTint{1.0f};
 };
 

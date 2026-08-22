@@ -13,7 +13,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -26,53 +25,25 @@ namespace Rigel::Entity {
 
 class Entity;
 
-class IEntityModelInstance {
-public:
-    virtual ~IEntityModelInstance() = default;
-
-    virtual void render(const EntityRenderContext& ctx,
-                        Entity& entity,
-                        const glm::mat4& modelMatrix,
-                        bool shouldRender) = 0;
-    virtual void renderShadow(const EntityRenderContext& ctx,
-                              Entity& entity,
-                              const glm::mat4& modelMatrix,
-                              const glm::mat4& lightViewProjection,
-                              const Asset::Handle<Asset::ShaderAsset>& shadowShader,
-                              bool shouldRender) = 0;
-
-    virtual void setTint(const glm::vec4& tint) = 0;
-    virtual void addAnimation(std::string_view name) = 0;
-    virtual void removeAnimation(std::string_view name) = 0;
-    virtual void removeAnimation(const EntityAnimation* animation) = 0;
-
-    virtual const EntityModelAsset* model() const = 0;
-};
-
-class EntityModelInstance : public IEntityModelInstance {
+class EntityModelInstance {
 public:
     EntityModelInstance(std::shared_ptr<const EntityModelAsset> model,
                         Asset::Handle<Asset::ShaderAsset> shader,
                         std::unordered_map<std::string, Asset::Handle<Asset::TextureAsset>> textures);
-    ~EntityModelInstance() override;
+    ~EntityModelInstance();
 
     void render(const EntityRenderContext& ctx,
                 Entity& entity,
                 const glm::mat4& modelMatrix,
-                bool shouldRender) override;
+                bool shouldRender);
     void renderShadow(const EntityRenderContext& ctx,
                       Entity& entity,
                       const glm::mat4& modelMatrix,
                       const glm::mat4& lightViewProjection,
                       const Asset::Handle<Asset::ShaderAsset>& shadowShader,
-                      bool shouldRender) override;
+                      bool shouldRender);
 
-    void setTint(const glm::vec4& tint) override { m_tint = tint; }
-    void addAnimation(std::string_view name) override;
-    void removeAnimation(std::string_view name) override;
-    void removeAnimation(const EntityAnimation* animation) override;
-
-    const EntityModelAsset* model() const override { return m_model.get(); }
+    void setTint(const glm::vec4& tint) { m_tint = tint; }
 
 private:
     struct Vertex {
@@ -91,7 +62,6 @@ private:
     void releaseGpuResources();
 
     std::shared_ptr<const EntityModelAsset> m_model;
-    const EntityAnimationSet* m_animationSet = nullptr;
     Asset::Handle<Asset::ShaderAsset> m_shader;
     std::unordered_map<std::string, Asset::Handle<Asset::TextureAsset>> m_textures;
 

@@ -7,7 +7,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <array>
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 
@@ -128,11 +127,12 @@ EntityModelInstance::EntityModelInstance(std::shared_ptr<const EntityModelAsset>
     , m_shader(std::move(shader))
     , m_textures(std::move(textures))
 {
+    const EntityAnimationSet* animationSet = nullptr;
     if (m_model && m_model->animationSet) {
-        m_animationSet = &m_model->animationSet->set;
+        animationSet = &m_model->animationSet->set;
     }
-    if (m_model && !m_model->defaultAnimation.empty() && m_animationSet) {
-        const EntityAnimation* anim = m_animationSet->find(m_model->defaultAnimation);
+    if (m_model && !m_model->defaultAnimation.empty() && animationSet) {
+        const EntityAnimation* anim = animationSet->find(m_model->defaultAnimation);
         if (anim) {
             m_activeAnimations.push_back(anim);
         }
@@ -141,37 +141,6 @@ EntityModelInstance::EntityModelInstance(std::shared_ptr<const EntityModelAsset>
 
 EntityModelInstance::~EntityModelInstance() {
     releaseGpuResources();
-}
-
-void EntityModelInstance::addAnimation(std::string_view name) {
-    if (!m_animationSet) {
-        return;
-    }
-    const EntityAnimation* anim = m_animationSet->find(name);
-    if (!anim) {
-        return;
-    }
-    if (std::find(m_activeAnimations.begin(), m_activeAnimations.end(), anim) == m_activeAnimations.end()) {
-        m_activeAnimations.push_back(anim);
-        m_meshDirty = true;
-    }
-}
-
-void EntityModelInstance::removeAnimation(std::string_view name) {
-    if (!m_animationSet) {
-        return;
-    }
-    const EntityAnimation* anim = m_animationSet->find(name);
-    if (!anim) {
-        return;
-    }
-    removeAnimation(anim);
-}
-
-void EntityModelInstance::removeAnimation(const EntityAnimation* animation) {
-    auto it = std::remove(m_activeAnimations.begin(), m_activeAnimations.end(), animation);
-    m_activeAnimations.erase(it, m_activeAnimations.end());
-    m_meshDirty = true;
 }
 
 void EntityModelInstance::render(const EntityRenderContext& ctx,

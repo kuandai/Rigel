@@ -16,7 +16,7 @@ const EntityBone* EntityModelAsset::findBone(std::string_view name) const {
     return &bones[it->second];
 }
 
-std::unique_ptr<IEntityModelInstance> EntityModelAsset::createInstance(
+std::unique_ptr<EntityModelInstance> EntityModelAsset::createInstance(
     Asset::AssetManager& assets,
     const Asset::Handle<Asset::ShaderAsset>& shader) const {
     Asset::Handle<Asset::ShaderAsset> resolvedShader = shader;

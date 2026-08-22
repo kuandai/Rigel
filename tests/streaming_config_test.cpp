@@ -2,7 +2,27 @@
 
 #include "Rigel/Voxel/StreamingConfig.h"
 
+#include <fstream>
+#include <sstream>
+
 using namespace Rigel::Voxel;
+
+TEST_CASE(StreamingConfig_ShippedStreamingDistances) {
+    const std::string path =
+        std::string(RIGEL_TEST_SOURCE_DIRECTORY) +
+        "/assets/config/world_generation.yaml";
+    std::ifstream input(path);
+    CHECK(input.good());
+
+    std::ostringstream yaml;
+    yaml << input.rdbuf();
+
+    StreamingConfig config;
+    config.applyYaml(path.c_str(), yaml.str());
+
+    CHECK_EQ(config.viewDistanceChunks, 12);
+    CHECK_EQ(config.unloadDistanceChunks, 12);
+}
 
 TEST_CASE(StreamingConfig_ApplyYaml) {
     StreamingConfig config;

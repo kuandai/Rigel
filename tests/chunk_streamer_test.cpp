@@ -4518,6 +4518,174 @@ TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {
     CHECK(largeViewBuildCoordinates > smallViewBuildCoordinates * 100);
 }
 
+TEST_CASE(ChunkStreamer_UnloadHysteresisAvoidsOneChunkReversalChurn) {
+    struct MovementResult {
+        size_t initialResidents = 0;
+        uint64_t entered = 0;
+        size_t moveEvicted = 0;
+        size_t movedResidents = 0;
+        uint64_t reloadedOrRegenerated = 0;
+        size_t reversalEvicted = 0;
+        uint64_t remeshed = 0;
+        size_t reversedResidents = 0;
+    };
+
+    auto run = [](int unloadDistance) {
+        ChunkManager manager;
+        BlockRegistry registry;
+        WorldMeshStore meshStore;
+        auto generator = makeGenerator(registry);
+        const BlockID solid =
+            registerTestBlock(registry, "rigel:hysteresis_boundary_solid");
+
+        constexpr int viewDistance = 12;
+        constexpr int viewRadiusSq = viewDistance * viewDistance;
+        const ChunkCoord origin{0, 0, 0};
+        const ChunkCoord boundaryNeighbor{-11, 0, 0};
+        for (int z = -viewDistance; z <= viewDistance; ++z) {
+            for (int y = -viewDistance; y <= viewDistance; ++y) {
+                for (int x = -viewDistance; x <= viewDistance; ++x) {
+                    if (x * x + y * y + z * z > viewRadiusSq) {
+                        continue;
+                    }
+                    const ChunkCoord coord{x, y, z};
+                    Chunk& chunk = manager.getOrCreateChunk(coord);
+                    chunk.setWorldGenVersion(generator->config().world.version);
+                    chunk.setLoadedFromDisk(true);
+                    chunk.clearDirty();
+                }
+            }
+        }
+        Chunk* remeshProbe = manager.getChunk(boundaryNeighbor);
+        CHECK(remeshProbe != nullptr);
+        if (remeshProbe) {
+            remeshProbe->setBlock(0, 0, 0, BlockState{solid}, registry);
+            remeshProbe->clearPersistDirty();
+        }
+
+        ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+        StreamingConfig stream;
+        stream.viewDistanceChunks = viewDistance;
+        stream.unloadDistanceChunks = unloadDistance;
+        stream.genQueueLimit = 0;
+        stream.meshQueueLimit = 0;
+        stream.updateBudgetPerFrame = 0;
+        stream.applyBudgetPerFrame = 0;
+        stream.workerThreads = 0;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.markSpawnDiscoveryComplete();
+
+        streamer.setChunkLoader([&](ChunkLoadRequest request) {
+            Chunk& chunk = manager.getOrCreateChunk(request.coord);
+            chunk.setWorldGenVersion(generator->config().world.version);
+            chunk.setLoadedFromDisk(true);
+            chunk.clearDirty();
+            return ChunkLoadRequestResult::Queued;
+        });
+
+        auto residentCoordinates = [&]() {
+            std::unordered_set<ChunkCoord, ChunkCoordHash> resident;
+            resident.reserve(manager.loadedChunkCount());
+            manager.forEachChunk([&](ChunkCoord coord, const Chunk&) {
+                resident.insert(coord);
+            });
+            return resident;
+        };
+        auto removedCoordinates = [](
+            const std::unordered_set<ChunkCoord, ChunkCoordHash>& before,
+            const std::unordered_set<ChunkCoord, ChunkCoordHash>& after) {
+            return static_cast<size_t>(std::count_if(
+                before.begin(), before.end(), [&](ChunkCoord coord) {
+                    return after.find(coord) == after.end();
+                }));
+        };
+        auto settle = [&](ChunkCoord center) {
+            bool quiescent = false;
+            for (int update = 0; update < 32; ++update) {
+                streamer.update(center.toWorldCenter());
+                streamer.processCompletions();
+                if (streamer.diagnostics().state ==
+                    StreamingLifecycleState::Quiescent) {
+                    quiescent = true;
+                    break;
+                }
+            }
+            CHECK(quiescent);
+
+            const ChunkStreamer::WorkMetrics settled = streamer.workMetrics();
+            const size_t settledResidents = manager.loadedChunkCount();
+            for (int update = 0; update < 3; ++update) {
+                streamer.update(center.toWorldCenter());
+                streamer.processCompletions();
+            }
+            const ChunkStreamer::WorkMetrics stationary = streamer.workMetrics();
+            CHECK_EQ(stationary.generationJobsStarted,
+                     settled.generationJobsStarted);
+            CHECK_EQ(stationary.chunkLoadRequestsStarted,
+                     settled.chunkLoadRequestsStarted);
+            CHECK_EQ(stationary.meshJobsStarted, settled.meshJobsStarted);
+            CHECK_EQ(stationary.desiredBuildCoordinatesInspected,
+                     settled.desiredBuildCoordinatesInspected);
+            CHECK_EQ(stationary.schedulerCoordinatesInspected,
+                     settled.schedulerCoordinatesInspected);
+            CHECK_EQ(stationary.residentEvictionCoordinatesInspected,
+                     settled.residentEvictionCoordinatesInspected);
+            CHECK_EQ(manager.loadedChunkCount(), settledResidents);
+        };
+
+        settle(origin);
+        const auto initial = residentCoordinates();
+        const ChunkStreamer::WorkMetrics initialWork = streamer.workMetrics();
+
+        const ChunkCoord moved{1, 0, 0};
+        settle(moved);
+        const auto afterMove = residentCoordinates();
+        const ChunkStreamer::WorkMetrics moveWork = streamer.workMetrics();
+
+        settle(origin);
+        const auto afterReversal = residentCoordinates();
+        const ChunkStreamer::WorkMetrics reversalWork = streamer.workMetrics();
+
+        MovementResult result;
+        result.initialResidents = initial.size();
+        result.entered = moveWork.chunkLoadRequestsStarted -
+            initialWork.chunkLoadRequestsStarted;
+        result.moveEvicted = removedCoordinates(initial, afterMove);
+        result.movedResidents = afterMove.size();
+        result.reloadedOrRegenerated =
+            reversalWork.chunkLoadRequestsStarted -
+                moveWork.chunkLoadRequestsStarted +
+            reversalWork.generationJobsStarted -
+                moveWork.generationJobsStarted;
+        result.reversalEvicted = removedCoordinates(afterMove, afterReversal);
+        result.remeshed = reversalWork.meshJobsStarted - moveWork.meshJobsStarted;
+        result.reversedResidents = afterReversal.size();
+        return result;
+    };
+
+    const MovementResult radius12 = run(12);
+    CHECK_EQ(radius12.initialResidents, static_cast<size_t>(7153));
+    CHECK_EQ(radius12.entered, static_cast<uint64_t>(441));
+    CHECK_EQ(radius12.moveEvicted, static_cast<size_t>(441));
+    CHECK_EQ(radius12.movedResidents, radius12.initialResidents);
+    CHECK_EQ(radius12.reloadedOrRegenerated, static_cast<uint64_t>(441));
+    CHECK_EQ(radius12.reversalEvicted, static_cast<size_t>(441));
+    CHECK_EQ(radius12.remeshed, static_cast<uint64_t>(537));
+    CHECK_EQ(radius12.reversedResidents, radius12.initialResidents);
+
+    const MovementResult radius13 = run(13);
+    CHECK_EQ(radius13.initialResidents, radius12.initialResidents);
+    CHECK_EQ(radius13.entered, radius12.entered);
+    CHECK_EQ(radius13.moveEvicted, static_cast<size_t>(0));
+    CHECK_EQ(radius13.movedResidents,
+             radius13.initialResidents + static_cast<size_t>(441));
+    CHECK_EQ(radius13.reloadedOrRegenerated, static_cast<uint64_t>(0));
+    CHECK_EQ(radius13.reversalEvicted, static_cast<size_t>(0));
+    CHECK_EQ(radius13.remeshed, static_cast<uint64_t>(0));
+    CHECK_EQ(radius13.reversedResidents, radius13.movedResidents);
+}
+
 TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
     ChunkManager manager;
     BlockRegistry registry;

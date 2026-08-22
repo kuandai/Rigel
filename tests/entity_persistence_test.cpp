@@ -2,8 +2,31 @@
 
 #include "Rigel/Entity/EntityPersistence.h"
 
+#include <cstdint>
+#include <vector>
+
 using namespace Rigel::Entity;
 using Rigel::Voxel::ChunkCoord;
+
+namespace {
+
+void appendU32(std::vector<uint8_t>& bytes, uint32_t value) {
+    bytes.push_back(static_cast<uint8_t>(value >> 24));
+    bytes.push_back(static_cast<uint8_t>(value >> 16));
+    bytes.push_back(static_cast<uint8_t>(value >> 8));
+    bytes.push_back(static_cast<uint8_t>(value));
+}
+
+std::vector<uint8_t> payloadHeader(uint32_t chunkCount) {
+    std::vector<uint8_t> bytes = {
+        0x52, 0x47, 0x45, 0x31,
+        0x00, 0x01,
+        0x00, 0x00};
+    appendU32(bytes, chunkCount);
+    return bytes;
+}
+
+} // namespace
 
 TEST_CASE(EntityPersistence_RoundTrip) {
     constexpr float kEpsilon = 1.0e-5f;
@@ -67,4 +90,24 @@ TEST_CASE(EntityPersistence_RoundTrip) {
     CHECK_NEAR(decoded[1].entities[0].viewDirection.y, b.viewDirection.y, kEpsilon);
     CHECK_NEAR(decoded[1].entities[0].viewDirection.z, b.viewDirection.z, kEpsilon);
     CHECK(decoded[1].entities[0].modelId == b.modelId);
+}
+
+TEST_CASE(EntityPersistence_RejectsUnboundedChunkDeclaration) {
+    const std::vector<uint8_t> payload = payloadHeader(UINT32_MAX);
+    std::vector<EntityPersistedChunk> decoded(1);
+
+    CHECK(!decodeEntityRegionPayload(payload, decoded));
+    CHECK_EQ(decoded.size(), static_cast<size_t>(1));
+}
+
+TEST_CASE(EntityPersistence_RejectsUnboundedEntityDeclaration) {
+    std::vector<uint8_t> payload = payloadHeader(1);
+    appendU32(payload, 0);
+    appendU32(payload, 0);
+    appendU32(payload, 0);
+    appendU32(payload, UINT32_MAX);
+    std::vector<EntityPersistedChunk> decoded(1);
+
+    CHECK(!decodeEntityRegionPayload(payload, decoded));
+    CHECK_EQ(decoded.size(), static_cast<size_t>(1));
 }

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstdint>
 #include <string>
 
 #include "Rigel/Persistence/Types.h"
@@ -15,12 +14,10 @@ class PersistenceService;
 
 std::string mainWorldRootPath(Voxel::WorldId id);
 
-void loadWorldFromDisk(Voxel::World& world,
-                       Asset::AssetManager& assets,
-                       PersistenceService& service,
-                       PersistenceContext context,
-                       uint32_t worldGenVersion,
-                       LoadScope scope = LoadScope::All);
+void loadBootstrapEntities(Voxel::World& world,
+                           Asset::AssetManager& assets,
+                           PersistenceService& service,
+                           PersistenceContext context);
 
 void saveWorldToDisk(const Voxel::World& world,
                      PersistenceService& service,
@@ -30,12 +27,6 @@ void saveChunkToDisk(const Voxel::World& world,
                      PersistenceService& service,
                      PersistenceContext context,
                      const Voxel::ChunkCoord& coord);
-
-bool loadChunkFromDisk(Voxel::World& world,
-                       PersistenceService& service,
-                       PersistenceContext context,
-                       const Voxel::ChunkCoord& coord,
-                       uint32_t worldGenVersion);
 
 } // namespace Persistence
 } // namespace Rigel

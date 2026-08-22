@@ -55,7 +55,8 @@ Shutdown persists world state and releases resources.
 7. Load world config and create `World` + `WorldView`.
    - `WorldGenerator` is created and attached to both.
 8. Load entity data from disk (chunks are lazy-loaded).
-   - `loadWorldFromDisk(..., LoadScope::EntitiesOnly)` loads only entities.
+   - `loadBootstrapEntities(...)` validates and adds persisted entities without
+     changing live chunks or unrelated entities.
 9. Create the async chunk loader (disk IO) and wire it into `WorldView`.
    - Loader provides non-blocking requests + budgeted apply callbacks.
 10. Load and apply render config, the profiling environment override, and
@@ -246,15 +247,18 @@ Synchronization:
 - If a chunk has a pending disk request, the streamer skips world-gen until the
   request completes or is canceled.
 
-### D) World Save / Load
+### D) World Save / Entity Bootstrap
 
-**Where**: `Persistence::saveWorldToDisk`, `loadWorldFromDisk`
+**Where**: `Persistence::saveWorldToDisk`, `loadBootstrapEntities`
 (`src/persistence/WorldPersistence.cpp`)
 
 **Behavior**:
 - Synchronous on the main thread.
-- Uses format containers + region layout to load/save spans.
-- Entities are loaded/saved only if supported by the format.
+- Uses format containers + region layout to save chunk spans.
+- Bootstrap loads entities only when supported by the format; chunks are
+  loaded through `AsyncChunkLoader`.
+- All persisted entity records and live-ID collisions are validated before any
+  entity is spawned.
 - Dirty chunk tracking controls what is written on save.
 
 ## Known Caveats

@@ -275,13 +275,11 @@ void Application::initialize() {
 
         Persistence::PersistenceContext persistenceContext =
             m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId);
-        Persistence::loadWorldFromDisk(
+        Persistence::loadBootstrapEntities(
             *m_impl->world.world,
             m_impl->assets,
             m_impl->world.worldSet.persistenceService(),
-            persistenceContext,
-            generator->config().world.version,
-            Persistence::LoadScope::EntitiesOnly);
+            persistenceContext);
 
         uint32_t worldGenVersion = generator->config().world.version;
         size_t ioThreads = static_cast<size_t>(

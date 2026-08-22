@@ -454,9 +454,8 @@ LoadedState loadRecords(const std::shared_ptr<SharedFiles>& files,
     auto context = makeContext(
         files, {}, std::move(preferredFormat));
     context.providers = world.persistenceProvidersHandle();
-    Persistence::loadWorldFromDisk(
-        world, assets, service, context, 0,
-        Persistence::LoadScope::EntitiesOnly);
+    Persistence::loadBootstrapEntities(
+        world, assets, service, context);
 
     LoadedState loaded;
     world.entities().forEach([&](const Entity::Entity& entity) {
@@ -650,7 +649,7 @@ void saveRawRegions(
     }
 }
 
-std::string loadFailure(
+void bootstrapEntities(
     const std::shared_ptr<SharedFiles>& files,
     Voxel::World& world,
     Asset::AssetManager& assets,
@@ -662,10 +661,19 @@ std::string loadFailure(
     auto context = makeContext(
         files, control, std::move(preferredFormat));
     context.providers = world.persistenceProvidersHandle();
+    Persistence::loadBootstrapEntities(
+        world, assets, service, context);
+}
+
+std::string loadFailure(
+    const std::shared_ptr<SharedFiles>& files,
+    Voxel::World& world,
+    Asset::AssetManager& assets,
+    std::string preferredFormat = "memory",
+    const std::shared_ptr<MutationControl>& control = {}) {
     try {
-        Persistence::loadWorldFromDisk(
-            world, assets, service, context, 0,
-            Persistence::LoadScope::EntitiesOnly);
+        bootstrapEntities(
+            files, world, assets, std::move(preferredFormat), control);
     } catch (const std::exception& error) {
         return error.what();
     }
@@ -850,12 +858,96 @@ TEST_CASE(Persistence_EntityLoadRejectsNullIdBeforeSpawning) {
 
     Voxel::WorldResources resources;
     Voxel::World world(resources);
+    const EntityRecord live{
+        Entity::EntityId{40, 41, 42},
+        "rigel:live",
+        glm::vec3(32.0f, 2.0f, 3.0f)};
+    populateWorld(world, {live});
+    const Voxel::ChunkCoord liveChunk{9, 0, 0};
+    Voxel::Chunk& chunk = world.chunkManager().getOrCreateChunk(liveChunk);
+    chunk.setWorldGenVersion(17);
+    chunk.clearDirty();
     Asset::AssetManager assets;
     const std::string error = loadFailure(files, world, assets);
 
-    CHECK_EQ(world.entities().size(), static_cast<size_t>(0));
+    CHECK_EQ(world.entities().size(), static_cast<size_t>(1));
+    CHECK(world.entities().get(live.id) != nullptr);
+    CHECK(world.chunkManager().getChunk(liveChunk) != nullptr);
+    CHECK_EQ(
+        world.chunkManager().getChunk(liveChunk)->worldGenVersion(),
+        static_cast<uint32_t>(17));
     CHECK(error.find("0:0:0") != std::string::npos);
     CHECK(error.find("rigel:default/(1, 0, 0)") != std::string::npos);
+}
+
+TEST_CASE(Persistence_EntityBootstrapPreservesLiveWorldState) {
+    auto files = std::make_shared<SharedFiles>();
+    const EntityRecord saved{
+        Entity::EntityId{150, 151, 152},
+        "rigel:saved",
+        glm::vec3(513.0f, 4.0f, 5.0f)};
+    saveRawRegions(files, {regionSnapshot(1, {saved})});
+
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    const EntityRecord live{
+        Entity::EntityId{140, 141, 142},
+        "rigel:live",
+        glm::vec3(1.0f, 2.0f, 3.0f)};
+    populateWorld(world, {live});
+    const Voxel::ChunkCoord liveChunk{4, 0, 0};
+    Voxel::Chunk& chunk = world.chunkManager().getOrCreateChunk(liveChunk);
+    chunk.setWorldGenVersion(23);
+    chunk.clearDirty();
+    Asset::AssetManager assets;
+
+    bootstrapEntities(files, world, assets);
+
+    CHECK_EQ(world.entities().size(), static_cast<size_t>(2));
+    CHECK(world.entities().get(live.id) != nullptr);
+    CHECK(world.entities().get(saved.id) != nullptr);
+    CHECK(world.chunkManager().getChunk(liveChunk) != nullptr);
+    CHECK_EQ(
+        world.chunkManager().getChunk(liveChunk)->worldGenVersion(),
+        static_cast<uint32_t>(23));
+}
+
+TEST_CASE(Persistence_EntityBootstrapRejectsLiveIdCollisionBeforeSpawning) {
+    auto files = std::make_shared<SharedFiles>();
+    const EntityRecord unique{
+        Entity::EntityId{160, 161, 162},
+        "rigel:unique",
+        glm::vec3(1.0f, 2.0f, 3.0f)};
+    const EntityRecord colliding{
+        Entity::EntityId{170, 171, 172},
+        "rigel:colliding",
+        glm::vec3(513.0f, 4.0f, 5.0f)};
+    saveRawRegions(files, {
+        regionSnapshot(0, {unique}),
+        regionSnapshot(1, {colliding})});
+
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    const EntityRecord live{
+        colliding.id,
+        "rigel:live",
+        glm::vec3(32.0f, 2.0f, 3.0f)};
+    populateWorld(world, {live});
+    const Voxel::ChunkCoord liveChunk{7, 0, 0};
+    world.chunkManager().getOrCreateChunk(liveChunk).setWorldGenVersion(29);
+    Asset::AssetManager assets;
+
+    const std::string error = loadFailure(files, world, assets);
+
+    CHECK(error.find("170:171:172") != std::string::npos);
+    CHECK(error.find("collides with a live entity") != std::string::npos);
+    CHECK_EQ(world.entities().size(), static_cast<size_t>(1));
+    CHECK(world.entities().get(live.id) != nullptr);
+    CHECK(world.entities().get(unique.id) == nullptr);
+    CHECK(world.chunkManager().getChunk(liveChunk) != nullptr);
+    CHECK_EQ(
+        world.chunkManager().getChunk(liveChunk)->worldGenVersion(),
+        static_cast<uint32_t>(29));
 }
 
 TEST_CASE(Persistence_EntityLoadRejectsDuplicateIdWithinRegion) {

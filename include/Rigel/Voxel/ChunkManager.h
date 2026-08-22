@@ -11,7 +11,6 @@
 #include "Chunk.h"
 #include "ChunkCoord.h"
 
-#include <atomic>
 #include <deque>
 #include <unordered_map>
 #include <unordered_set>
@@ -135,14 +134,6 @@ public:
 
     /// @}
 
-    /// @name Dirty Tracking
-    /// @{
-
-    std::vector<ChunkCoord> getDirtyChunks() const;
-    void clearDirtyFlags();
-
-    /// @}
-
     /// @name Iteration
     /// @{
 
@@ -166,10 +157,6 @@ public:
     /// Get number of loaded chunks
     size_t loadedChunkCount() const { return m_chunks.size(); }
 
-    uint64_t meshChangeVersion() const {
-        return m_meshChangeVersion.load(std::memory_order_relaxed);
-    }
-
     /// @}
 
     /**
@@ -186,7 +173,6 @@ private:
     void notifyMeshChange(ChunkCoord coord);
     std::vector<ChunkCoord> consumeDirtyMeshNotifications();
 
-    std::atomic<uint64_t> m_meshChangeVersion{0};
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> m_chunks;
     std::deque<ChunkCoord> m_dirtyMeshQueue;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;

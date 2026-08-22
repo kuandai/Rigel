@@ -1262,8 +1262,8 @@ TEST_CASE(CRBackend_entity_validation_precedes_live_world_mutation) {
     Rigel::Asset::AssetManager assets;
 
     checkCRRegionError(
-        [&]() { loadWorldFromDisk(
-            world, assets, service, context, 0, LoadScope::EntitiesOnly); },
+        [&]() { loadBootstrapEntities(
+            world, assets, service, context); },
         "CRFormat: failed to decode entity region");
     CHECK(world.entities().get(existingId) != nullptr);
 }

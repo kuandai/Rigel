@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
@@ -9,108 +10,11 @@
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 
-#include <limits>
 #include <string>
 
 using namespace Rigel;
 
-namespace {
-
-constexpr const char* kDefaultZoneId = "rigel:default";
-
-Voxel::BlockID registerBlock(Voxel::WorldResources& resources,
-                             const std::string& identifier) {
-    Voxel::BlockType block;
-    block.identifier = identifier;
-    block.model = "cube";
-    block.isOpaque = true;
-    block.isSolid = true;
-    return resources.registry().registerBlock(identifier, std::move(block));
-}
-
-Persistence::ChunkSnapshot makeUnitSnapshot(
-    Voxel::ChunkCoord coord,
-    int32_t offsetX,
-    Voxel::BlockID blockId) {
-    Persistence::ChunkSnapshot snapshot;
-    snapshot.key = Persistence::ChunkKey{
-        kDefaultZoneId, coord.x, coord.y, coord.z};
-    snapshot.data.span.chunkX = coord.x;
-    snapshot.data.span.chunkY = coord.y;
-    snapshot.data.span.chunkZ = coord.z;
-    snapshot.data.span.offsetX = offsetX;
-    snapshot.data.span.sizeX = 1;
-    snapshot.data.span.sizeY = 1;
-    snapshot.data.span.sizeZ = 1;
-    snapshot.data.blocks.push_back(Voxel::BlockState{blockId});
-    return snapshot;
-}
-
-template <typename Fn>
-void checkRuntimeError(Fn&& fn, const std::string& expected) {
-    try {
-        fn();
-    } catch (const std::runtime_error& error) {
-        CHECK_EQ(std::string(error.what()), expected);
-        return;
-    }
-    throw Test::TestFailure("Expected std::runtime_error");
-}
-
-struct MemoryPersistenceFixture {
-    MemoryPersistenceFixture()
-        : service(formats),
-          directory("rigel_world_persistence_validation") {
-        formats.registerFormat(
-            Persistence::Backends::Memory::descriptor(),
-            Persistence::Backends::Memory::factory(),
-            Persistence::Backends::Memory::probe());
-        context.rootPath = directory.path().string();
-        context.preferredFormat = "memory";
-        context.storage = std::make_shared<Persistence::FilesystemBackend>();
-    }
-
-    void saveRegion(std::vector<Persistence::ChunkSnapshot> chunks) {
-        Persistence::ChunkRegionSnapshot region;
-        region.key = Persistence::RegionKey{kDefaultZoneId, 0, 0, 0};
-        region.chunks = std::move(chunks);
-        service.saveRegion(region, context);
-    }
-
-    Persistence::FormatRegistry formats;
-    Persistence::PersistenceService service;
-    Test::TemporaryDirectory directory;
-    Persistence::PersistenceContext context;
-    Asset::AssetManager assets;
-};
-
-void prepareDestinationChunk(Voxel::World& world,
-                             Voxel::ChunkCoord coord,
-                             Voxel::BlockID blockId,
-                             uint32_t worldGenVersion) {
-    Voxel::Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
-    chunk.fill(Voxel::BlockState{blockId}, world.blockRegistry());
-    chunk.setWorldGenVersion(worldGenVersion);
-    chunk.clearDirty();
-    chunk.clearPersistDirty();
-}
-
-void checkDestinationChunk(const Voxel::World& world,
-                           Voxel::ChunkCoord coord,
-                           Voxel::BlockID blockId,
-                           uint32_t worldGenVersion) {
-    const Voxel::Chunk* chunk = world.chunkManager().getChunk(coord);
-    CHECK(chunk != nullptr);
-    CHECK_EQ(chunk->getBlock(0, 0, 0).id, blockId);
-    CHECK_EQ(chunk->getBlock(1, 0, 0).id, blockId);
-    CHECK_EQ(chunk->worldGenVersion(), worldGenVersion);
-    CHECK(!chunk->isDirty());
-    CHECK(!chunk->isPersistDirty());
-}
-
-} // namespace
-
-TEST_CASE(Persistence_WorldSaveLoad_MemoryFormat) {
+TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
     Voxel::WorldResources resources;
     std::string testIdentifier = "base:test";
     Voxel::BlockType testBlock;
@@ -177,128 +81,39 @@ TEST_CASE(Persistence_WorldSaveLoad_MemoryFormat) {
     loaded.setId(1);
     Asset::AssetManager assets;
 
-    Persistence::loadWorldFromDisk(loaded, assets, service, context, 0);
+    Persistence::loadBootstrapEntities(loaded, assets, service, context);
+    CHECK_EQ(loaded.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
+
+    Voxel::WorldGenConfig generatorConfig;
+    generatorConfig.solidBlock = testIdentifier;
+    generatorConfig.surfaceBlock = testIdentifier;
+    auto generator = std::make_shared<Voxel::WorldGenerator>(
+        resources.registry(), std::move(generatorConfig));
+    loaded.setGenerator(generator);
+    Persistence::AsyncChunkLoader loader(
+        service,
+        context,
+        loaded,
+        generator->config().world.version,
+        0,
+        0,
+        0,
+        generator);
+    loader.setPrefetchRadius(0);
+    const Voxel::ChunkCoord loadedCoord{0, 0, 0};
+    const Voxel::ChunkLoadRequest request{loadedCoord, 1};
+    CHECK_EQ(
+        loader.request(request),
+        Voxel::ChunkLoadRequestResult::Queued);
+    const auto completions = loader.drainCompletions(1);
 
     Voxel::BlockState loadedState = loaded.getBlock(0, 0, 0);
     CHECK_EQ(loadedState.id, testId);
-}
-
-TEST_CASE(Persistence_LoadChunkValidatesAllSnapshotsBeforeMutation) {
-    MemoryPersistenceFixture fixture;
-    Voxel::WorldResources resources;
-    const Voxel::BlockID originalId = registerBlock(resources, "base:original");
-    const Voxel::BlockID replacementId = registerBlock(resources, "base:replacement");
-    const Voxel::BlockID invalidId{std::numeric_limits<uint16_t>::max()};
-    const Voxel::ChunkCoord coord{0, 0, 0};
-
-    fixture.saveRegion({
-        makeUnitSnapshot(coord, 0, replacementId),
-        makeUnitSnapshot(coord, 1, invalidId)});
-
-    Voxel::World world(resources);
-    prepareDestinationChunk(world, coord, originalId, 7);
-    const uint64_t meshChangeVersion =
-        world.chunkManager().meshChangeVersion();
-
-    checkRuntimeError(
-        [&]() {
-            Persistence::loadChunkFromDisk(
-                world, fixture.service, fixture.context, coord, 99);
-        },
-        "ChunkSerializer: invalid block ID 65535");
-
-    CHECK_EQ(world.chunkManager().loadedChunkCount(), 1u);
-    CHECK_EQ(world.chunkManager().meshChangeVersion(), meshChangeVersion);
-    checkDestinationChunk(world, coord, originalId, 7);
-}
-
-TEST_CASE(Persistence_LoadChunkRejectsInvalidSnapshotBeforeCreation) {
-    MemoryPersistenceFixture fixture;
-    Voxel::WorldResources resources;
-    const Voxel::BlockID invalidId{std::numeric_limits<uint16_t>::max()};
-    const Voxel::ChunkCoord coord{1, 0, 0};
-
-    fixture.saveRegion({makeUnitSnapshot(coord, 0, invalidId)});
-
-    Voxel::World world(resources);
-    const uint64_t meshChangeVersion =
-        world.chunkManager().meshChangeVersion();
-
-    checkRuntimeError(
-        [&]() {
-            Persistence::loadChunkFromDisk(
-                world, fixture.service, fixture.context, coord, 99);
-        },
-        "ChunkSerializer: invalid block ID 65535");
-
-    CHECK(!world.chunkManager().hasChunk(coord));
-    CHECK_EQ(world.chunkManager().loadedChunkCount(), 0u);
-    CHECK_EQ(world.chunkManager().meshChangeVersion(), meshChangeVersion);
-}
-
-TEST_CASE(Persistence_LoadWorldValidatesAllSnapshotsBeforeMutation) {
-    MemoryPersistenceFixture fixture;
-    Voxel::WorldResources resources;
-    const Voxel::BlockID originalId = registerBlock(resources, "base:original");
-    const Voxel::BlockID replacementId = registerBlock(resources, "base:replacement");
-    const Voxel::BlockID invalidId{std::numeric_limits<uint16_t>::max()};
-    const Voxel::ChunkCoord coord{0, 0, 0};
-
-    fixture.saveRegion({
-        makeUnitSnapshot(coord, 0, replacementId),
-        makeUnitSnapshot(coord, 1, invalidId)});
-
-    Voxel::World world(resources);
-    prepareDestinationChunk(world, coord, originalId, 7);
-    const uint64_t meshChangeVersion =
-        world.chunkManager().meshChangeVersion();
-
-    checkRuntimeError(
-        [&]() {
-            Persistence::loadWorldFromDisk(
-                world,
-                fixture.assets,
-                fixture.service,
-                fixture.context,
-                99,
-                Persistence::LoadScope::ChunksOnly);
-        },
-        "ChunkSerializer: invalid block ID 65535");
-
-    CHECK_EQ(world.chunkManager().loadedChunkCount(), 1u);
-    CHECK_EQ(world.chunkManager().meshChangeVersion(), meshChangeVersion);
-    checkDestinationChunk(world, coord, originalId, 7);
-}
-
-TEST_CASE(Persistence_LoadWorldRejectsInvalidSnapshotBeforeCreation) {
-    MemoryPersistenceFixture fixture;
-    Voxel::WorldResources resources;
-    const Voxel::BlockID originalId = registerBlock(resources, "base:original");
-    const Voxel::BlockID invalidId{std::numeric_limits<uint16_t>::max()};
-    const Voxel::ChunkCoord existingCoord{0, 0, 0};
-    const Voxel::ChunkCoord savedCoord{1, 0, 0};
-
-    fixture.saveRegion({makeUnitSnapshot(savedCoord, 0, invalidId)});
-
-    Voxel::World world(resources);
-    prepareDestinationChunk(world, existingCoord, originalId, 7);
-    const uint64_t meshChangeVersion =
-        world.chunkManager().meshChangeVersion();
-
-    checkRuntimeError(
-        [&]() {
-            Persistence::loadWorldFromDisk(
-                world,
-                fixture.assets,
-                fixture.service,
-                fixture.context,
-                99,
-                Persistence::LoadScope::ChunksOnly);
-        },
-        "ChunkSerializer: invalid block ID 65535");
-
-    CHECK(!world.chunkManager().hasChunk(savedCoord));
-    CHECK_EQ(world.chunkManager().loadedChunkCount(), 1u);
-    CHECK_EQ(world.chunkManager().meshChangeVersion(), meshChangeVersion);
-    checkDestinationChunk(world, existingCoord, originalId, 7);
+    CHECK_EQ(completions.size(), static_cast<size_t>(1));
+    CHECK_EQ(completions.front().coord, loadedCoord);
+    CHECK_EQ(completions.front().requestId, request.requestId);
+    CHECK_EQ(
+        completions.front().outcome,
+        Voxel::ChunkLoadOutcome::Loaded);
+    CHECK(!loaded.chunkManager().getChunk(loadedCoord)->isPersistDirty());
 }

@@ -170,20 +170,6 @@ struct WorldSnapshot {
     std::vector<ZoneMetadata> zones;
 };
 
-enum class LoadScope {
-    ChunksOnly,
-    EntitiesOnly,
-    All
-};
-
-inline bool includesChunks(LoadScope scope) {
-    return scope == LoadScope::ChunksOnly || scope == LoadScope::All;
-}
-
-inline bool includesEntities(LoadScope scope) {
-    return scope == LoadScope::EntitiesOnly || scope == LoadScope::All;
-}
-
 enum class UnknownIdPolicy {
     Fail,
     Placeholder,

@@ -34,16 +34,6 @@ Core storage types live in `Rigel::Persistence::Types`:
 `ChunkSpan` allows partial chunk storage by addressing a sub-region inside a
 chunk. A region file can contain multiple spans for the same chunk.
 
-### 2.2 LoadScope
-
-World loading can be scoped:
-
-- `ChunksOnly`
-- `EntitiesOnly`
-- `All`
-
-Helper functions select chunk and entity payloads from the requested scope.
-
 ---
 
 ## 3. Persistence Context
@@ -170,9 +160,9 @@ Core APIs:
 
 `src/persistence/WorldPersistence.cpp` provides top-level helpers:
 
-- `loadWorldFromDisk`
+- `loadBootstrapEntities`
 - `saveWorldToDisk`
-- `loadChunkFromDisk`
+- `saveChunkToDisk`
 
 Current behavior:
 
@@ -186,6 +176,7 @@ Current behavior:
 - Metadata files are atomically replaced one at a time. A world metadata save
   does not provide a cross-file transaction.
 - `PersistenceService` chunk and entity payload writes require explicit region snapshots.
+- Runtime chunk loads use region snapshots through `AsyncChunkLoader`.
 - Only chunks marked `isPersistDirty()` are saved.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,
   and all-air spans are skipped.
@@ -202,6 +193,9 @@ Current behavior:
 - Journal declarations and nested entity payload counts are bounded and checked
   against remaining input before allocation. The complete desired entity
   snapshot is checked for null and duplicate persistent IDs before publication.
+- Entity bootstrap validates the complete persisted snapshot and collisions
+  with live persistent IDs before spawning any entity. It does not clear chunks
+  or unrelated live entities.
 - Entity journal replay is idempotent process-interruption recovery built on
   atomic file replacement. It does not provide fsync-backed survival of power
   loss or storage-device or filesystem failure.

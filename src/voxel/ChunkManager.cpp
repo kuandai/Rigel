@@ -8,8 +8,7 @@
 namespace Rigel::Voxel {
 
 ChunkManager::ChunkManager(ChunkManager&& other) noexcept
-    : m_meshChangeVersion(other.m_meshChangeVersion.load(std::memory_order_relaxed))
-    , m_chunks(std::move(other.m_chunks))
+    : m_chunks(std::move(other.m_chunks))
     , m_dirtyMeshQueue(std::move(other.m_dirtyMeshQueue))
     , m_dirtyMeshQueued(std::move(other.m_dirtyMeshQueued))
     , m_registry(other.m_registry) {
@@ -25,7 +24,6 @@ ChunkManager& ChunkManager::operator=(ChunkManager&& other) noexcept {
     m_dirtyMeshQueue = std::move(other.m_dirtyMeshQueue);
     m_dirtyMeshQueued = std::move(other.m_dirtyMeshQueued);
     m_registry = other.m_registry;
-    m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
     rebindMeshChangeTracking();
     return *this;
 }
@@ -49,7 +47,6 @@ void ChunkManager::invalidateFaceNeighbors(ChunkCoord coord) {
 }
 
 void ChunkManager::notifyMeshChange(ChunkCoord coord) {
-    m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
     if (m_dirtyMeshQueued.insert(coord).second) {
         m_dirtyMeshQueue.push_back(coord);
     }
@@ -173,37 +170,15 @@ void ChunkManager::unloadChunk(ChunkCoord coord) {
         invalidateFaceNeighbors(coord);
         m_chunks.erase(it);
         m_dirtyMeshQueued.erase(coord);
-        m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
         spdlog::debug("Unloaded chunk at ({}, {}, {})", coord.x, coord.y, coord.z);
     }
 }
 
 void ChunkManager::clear() {
-    if (!m_chunks.empty()) {
-        m_meshChangeVersion.fetch_add(1, std::memory_order_relaxed);
-    }
     m_chunks.clear();
     m_dirtyMeshQueue.clear();
     m_dirtyMeshQueued.clear();
     spdlog::debug("ChunkManager cleared");
-}
-
-std::vector<ChunkCoord> ChunkManager::getDirtyChunks() const {
-    std::vector<ChunkCoord> dirty;
-
-    for (const auto& [coord, chunk] : m_chunks) {
-        if (chunk->isDirty()) {
-            dirty.push_back(coord);
-        }
-    }
-
-    return dirty;
-}
-
-void ChunkManager::clearDirtyFlags() {
-    for (auto& [coord, chunk] : m_chunks) {
-        chunk->clearDirty();
-    }
 }
 
 void ChunkManager::forEachChunk(const std::function<void(ChunkCoord, Chunk&)>& fn) {

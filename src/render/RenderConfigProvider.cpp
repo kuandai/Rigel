@@ -74,13 +74,18 @@ void validateRenderConfigKeys(ryml::ConstNodeRef root,
 
 void applyShadowConfig(ryml::ConstNodeRef shadowNode,
                        Voxel::ShadowConfig& shadow,
-                       PcfRadiusState& pcfState) {
+                       PcfRadiusState& pcfState,
+                       const char* sourceName) {
     if (!shadowNode.readable()) {
         return;
     }
     shadow.enabled = Util::readBool(shadowNode, "enabled", shadow.enabled);
-    shadow.cascades = Util::readInt(shadowNode, "cascades", shadow.cascades);
-    shadow.mapSize = Util::readInt(shadowNode, "map_size", shadow.mapSize);
+    shadow.cascades = Util::readIntWithMaximum(
+        shadowNode, "cascades", shadow.cascades, 1,
+        Voxel::ShadowConfig::MaxCascades, sourceName, "render.shadow");
+    shadow.mapSize = Util::readIntWithMaximum(
+        shadowNode, "map_size", shadow.mapSize, 1,
+        Voxel::ShadowConfig::MaxMapSize, sourceName, "render.shadow");
     shadow.maxDistance = Util::readFloat(
         shadowNode, "max_distance", shadow.maxDistance);
     shadow.splitLambda = Util::readFloat(
@@ -90,18 +95,21 @@ void applyShadowConfig(ryml::ConstNodeRef shadowNode,
         shadowNode, "normal_bias", shadow.normalBias);
 
     const bool hasPcfRadius = shadowNode.has_child("pcf_radius");
-    shadow.pcfRadius = Util::readInt(
-        shadowNode, "pcf_radius", shadow.pcfRadius);
+    shadow.pcfRadius = Util::readIntWithMaximum(
+        shadowNode, "pcf_radius", shadow.pcfRadius, 0,
+        Voxel::ShadowConfig::MaxPcfRadius, sourceName, "render.shadow");
     if (shadowNode.has_child("pcf_radius_near")) {
-        shadow.pcfRadiusNear = Util::readInt(
-            shadowNode, "pcf_radius_near", shadow.pcfRadiusNear);
+        shadow.pcfRadiusNear = Util::readIntWithMaximum(
+            shadowNode, "pcf_radius_near", shadow.pcfRadiusNear, 0,
+            Voxel::ShadowConfig::MaxPcfRadius, sourceName, "render.shadow");
         pcfState.hasNearOverride = true;
     } else if (hasPcfRadius && !pcfState.hasNearOverride) {
         shadow.pcfRadiusNear = shadow.pcfRadius;
     }
     if (shadowNode.has_child("pcf_radius_far")) {
-        shadow.pcfRadiusFar = Util::readInt(
-            shadowNode, "pcf_radius_far", shadow.pcfRadiusFar);
+        shadow.pcfRadiusFar = Util::readIntWithMaximum(
+            shadowNode, "pcf_radius_far", shadow.pcfRadiusFar, 0,
+            Voxel::ShadowConfig::MaxPcfRadius, sourceName, "render.shadow");
         pcfState.hasFarOverride = true;
     } else if (hasPcfRadius && !pcfState.hasFarOverride) {
         shadow.pcfRadiusFar = shadow.pcfRadius;
@@ -114,12 +122,6 @@ void applyShadowConfig(ryml::ConstNodeRef shadowNode,
     shadow.fadePower = Util::readFloat(
         shadowNode, "fade_power", shadow.fadePower);
 
-    shadow.cascades = std::clamp(
-        shadow.cascades, 1, Voxel::ShadowConfig::MaxCascades);
-    shadow.mapSize = std::max(1, shadow.mapSize);
-    shadow.pcfRadius = std::max(0, shadow.pcfRadius);
-    shadow.pcfRadiusNear = std::max(0, shadow.pcfRadiusNear);
-    shadow.pcfRadiusFar = std::max(0, shadow.pcfRadiusFar);
     shadow.transparentScale = std::max(0.0f, shadow.transparentScale);
     shadow.strength = std::max(0.0f, shadow.strength);
     shadow.fadePower = std::max(0.0f, shadow.fadePower);
@@ -166,7 +168,8 @@ void applyRenderYaml(const char* sourceName,
         renderNode, "render_distance", config.renderDistance);
 
     if (renderNode.has_child("shadow")) {
-        applyShadowConfig(renderNode["shadow"], config.shadow, pcfState);
+        applyShadowConfig(
+            renderNode["shadow"], config.shadow, pcfState, sourceName);
     }
     if (renderNode.has_child("taa")) {
         applyTaaConfig(renderNode["taa"], config.taa);

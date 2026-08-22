@@ -527,8 +527,8 @@ void ChunkRenderer::releaseShadowResources() {
 }
 
 bool ChunkRenderer::ensureShadowResources(const ShadowConfig& config) {
-    int cascades = std::clamp(config.cascades, 1, kMaxShadowCascades);
-    int mapSize = std::max(1, config.mapSize);
+    const int cascades = config.cascades;
+    const int mapSize = config.mapSize;
 
     if (m_shadowState.depthArray != 0 &&
         m_shadowState.transmitArray != 0 &&

@@ -11,6 +11,8 @@ namespace Rigel::Voxel {
 
 struct ShadowConfig {
     static constexpr int MaxCascades = 4;
+    static constexpr int MaxMapSize = 8192;
+    static constexpr int MaxPcfRadius = 4;
 
     bool enabled = false;
     int cascades = 3;

@@ -329,15 +329,15 @@ config (`assets/config/render.yaml`) may override them.
 | `render.sun_direction` | vec3 | `[0.5, 1.0, 0.3]` | Directional light vector. |
 | `render.transparent_alpha` | float | `0.5` | Alpha for transparent pass. |
 | `render.shadow.enabled` | bool | `false` | Toggle cascaded shadows. |
-| `render.shadow.cascades` | int | `3` | Clamped to `[1,4]`. |
-| `render.shadow.map_size` | int | `1024` | Shadow map resolution. |
+| `render.shadow.cascades` | int | `3` | Cascade count (maximum `4`). |
+| `render.shadow.map_size` | int | `1024` | Shadow map resolution (maximum `8192`). |
 | `render.shadow.max_distance` | float | `200.0` | Shadow max distance. |
 | `render.shadow.split_lambda` | float | `0.5` | Log/linear split blend. |
 | `render.shadow.bias` | float | `0.0005` | Depth bias. |
 | `render.shadow.normal_bias` | float | `0.005` | Normal-based bias. |
-| `render.shadow.pcf_radius` | int | `1` | Fallback for near and far PCF radii. |
-| `render.shadow.pcf_radius_near` | int | `1` | Near PCF radius override. |
-| `render.shadow.pcf_radius_far` | int | `1` | Far PCF radius override. |
+| `render.shadow.pcf_radius` | int | `1` | Fallback for near and far PCF radii (maximum `4`). |
+| `render.shadow.pcf_radius_near` | int | `1` | Near PCF radius override (maximum `4`). |
+| `render.shadow.pcf_radius_far` | int | `1` | Far PCF radius override (maximum `4`). |
 | `render.shadow.transparent_scale` | float | `1.0` | Transparent attenuation. |
 | `render.shadow.strength` | float | `1.0` | Shadow strength multiplier. |
 | `render.shadow.fade_power` | float | `1.0` | Shadow fade exponent. |
@@ -365,9 +365,16 @@ Key fields:
 
 Values are clamped during load:
 
-- `shadow.cascades` is clamped to `[1, ShadowConfig::MaxCascades]`.
-- `pcf_radius` and related values are clamped to non-negative.
+- `shadow.cascades` and `shadow.map_size` are clamped to at least `1`.
+- `pcf_radius` and related values are clamped to at least zero.
 - `taa.blend` is clamped to `[0, 1]`.
+
+Shadow cascades, map dimensions, and PCF radii above their documented maxima
+are rejected before renderer or streaming workers are created. The 8,192 map
+limit leaves headroom above the shipped 6,144 maps while placing a fixed bound
+on both texture-array allocations. The PCF limit matches the implemented
+four-texel shader kernel instead of accepting values that would be silently
+reduced during rendering.
 
 When a near or far PCF radius is not configured, it follows `pcf_radius`.
 Specific near and far values take precedence across configuration layers, so a

@@ -238,6 +238,21 @@ void Application::initialize() {
         if (!persistenceConfig.format.empty()) {
             m_impl->world.worldSet.setPersistencePreferredFormat(persistenceConfig.format);
         }
+
+        Voxel::WorldConfigProvider configProvider =
+            Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
+        Voxel::WorldConfiguration config = configProvider.loadConfig();
+        Render::RenderConfigProvider renderConfigProvider =
+            Render::makeRenderConfigProvider(
+                m_impl->assets, m_impl->world.activeWorldId);
+        Voxel::WorldRenderConfig renderConfig = renderConfigProvider.load();
+        if (config.generation.solidBlock.empty()) {
+            config.generation.solidBlock = "base:stone_shale";
+        }
+        if (config.generation.surfaceBlock.empty()) {
+            config.generation.surfaceBlock = "base:grass";
+        }
+
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
         Input::loadInputBindings(m_impl->assets, m_impl->input);
@@ -245,16 +260,6 @@ void Application::initialize() {
         m_impl->input.addListener(&m_impl->debugOverlayListener);
         m_impl->imguiOverlayListener.enabled = &m_impl->renderer.profilerWindowEnabled();
         m_impl->input.addListener(&m_impl->imguiOverlayListener);
-
-        Voxel::WorldConfigProvider configProvider =
-            Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
-        Voxel::WorldConfiguration config = configProvider.loadConfig();
-        if (config.generation.solidBlock.empty()) {
-            config.generation.solidBlock = "base:stone_shale";
-        }
-        if (config.generation.surfaceBlock.empty()) {
-            config.generation.surfaceBlock = "base:grass";
-        }
 
         m_impl->world.world = &m_impl->world.worldSet.createWorld(m_impl->world.activeWorldId);
         m_impl->world.worldView = &m_impl->world.worldSet.createView(m_impl->world.activeWorldId, m_impl->assets);
@@ -347,10 +352,6 @@ void Application::initialize() {
                 return loader ? loader->persistChunk(coord) : false;
             });
 
-        Render::RenderConfigProvider renderConfigProvider =
-            Render::makeRenderConfigProvider(
-                m_impl->assets, m_impl->world.activeWorldId);
-        Voxel::WorldRenderConfig renderConfig = renderConfigProvider.load();
         const char* profileEnv = std::getenv("RIGEL_PROFILE");
         if (profileEnv && profileEnv[0] != '\0') {
             renderConfig.profilingEnabled = (profileEnv[0] != '0');

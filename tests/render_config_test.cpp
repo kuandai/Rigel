@@ -2,6 +2,9 @@
 
 #include "Rigel/Render/RenderConfigProvider.h"
 
+#include <functional>
+#include <stdexcept>
+
 using namespace Rigel::Config;
 using namespace Rigel::Render;
 using namespace Rigel::Voxel;
@@ -25,6 +28,15 @@ public:
 private:
     std::string m_yaml;
 };
+
+std::string exceptionMessage(const std::function<void()>& operation) {
+    try {
+        operation();
+    } catch (const std::invalid_argument& error) {
+        return error.what();
+    }
+    throw Rigel::Test::TestFailure("Expected invalid configuration");
+}
 
 } // namespace
 
@@ -164,4 +176,79 @@ render:
     CHECK_EQ(config.shadow.pcfRadius, 4);
     CHECK_EQ(config.shadow.pcfRadiusNear, 1);
     CHECK_EQ(config.shadow.pcfRadiusFar, 4);
+}
+
+TEST_CASE(RenderConfig_AcceptsShadowResourceMaxima) {
+    RenderConfigProvider provider;
+    provider.addSource(std::make_unique<StringConfigSource>(R"(
+render:
+  shadow:
+    cascades: 4
+    map_size: 8192
+    pcf_radius: 4
+    pcf_radius_near: 4
+    pcf_radius_far: 4
+)"));
+
+    const WorldRenderConfig config = provider.load();
+
+    CHECK_EQ(config.shadow.cascades, ShadowConfig::MaxCascades);
+    CHECK_EQ(config.shadow.mapSize, ShadowConfig::MaxMapSize);
+    CHECK_EQ(config.shadow.pcfRadius, ShadowConfig::MaxPcfRadius);
+    CHECK_EQ(config.shadow.pcfRadiusNear, ShadowConfig::MaxPcfRadius);
+    CHECK_EQ(config.shadow.pcfRadiusFar, ShadowConfig::MaxPcfRadius);
+}
+
+TEST_CASE(RenderConfig_RejectsShadowValuesAboveResourceMaxima) {
+    const std::string cascadeError = exceptionMessage([] {
+        RenderConfigProvider provider;
+        provider.addSource(std::make_unique<StringConfigSource>(
+            "render:\n  shadow:\n    cascades: 5\n"
+        ));
+        provider.load();
+    });
+    CHECK_EQ(
+        cascadeError,
+        "Invalid configuration value 'render.shadow.cascades' in 'string': "
+        "expected integer no greater than 4, got '5'"
+    );
+
+    const std::string mapError = exceptionMessage([] {
+        RenderConfigProvider provider;
+        provider.addSource(std::make_unique<StringConfigSource>(
+            "render:\n  shadow:\n    map_size: 8193\n"
+        ));
+        provider.load();
+    });
+    CHECK_EQ(
+        mapError,
+        "Invalid configuration value 'render.shadow.map_size' in 'string': "
+        "expected integer no greater than 8192, got '8193'"
+    );
+
+    const std::string pcfError = exceptionMessage([] {
+        RenderConfigProvider provider;
+        provider.addSource(std::make_unique<StringConfigSource>(
+            "render:\n  shadow:\n    pcf_radius_far: 2147483647\n"
+        ));
+        provider.load();
+    });
+    CHECK_EQ(
+        pcfError,
+        "Invalid configuration value 'render.shadow.pcf_radius_far' in "
+        "'string': expected integer no greater than 4, got '2147483647'"
+    );
+
+    const std::string unsignedError = exceptionMessage([] {
+        RenderConfigProvider provider;
+        provider.addSource(std::make_unique<StringConfigSource>(
+            "render:\n  shadow:\n    map_size: 4294967295\n"
+        ));
+        provider.load();
+    });
+    CHECK_EQ(
+        unsignedError,
+        "Invalid configuration value 'render.shadow.map_size' in 'string': "
+        "expected integer no greater than 8192, got '4294967295'"
+    );
 }

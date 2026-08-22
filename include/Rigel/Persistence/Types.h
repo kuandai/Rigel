@@ -178,7 +178,6 @@ struct PersistencePolicies {
 struct PersistenceContext {
     std::string rootPath;
     std::string preferredFormat;
-    std::string manifestPath;
     PersistencePolicies policies{};
     std::shared_ptr<StorageBackend> storage;
     std::shared_ptr<ProviderRegistry> providers;

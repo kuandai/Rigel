@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "Rigel/Persistence/PersistenceService.h"
+#include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/Block.h"
@@ -535,6 +536,50 @@ TEST_CASE(Persistence_MetadataRoundTrip) {
     auto loaded = service.loadWorldMetadata(context);
     CHECK_EQ(loaded, world);
     CHECK_EQ(service.loadZoneMetadata(ZoneKey{zone.zoneId}, context), zone);
+}
+
+TEST_CASE(Persistence_FormatResolutionIgnoresUnusedManifestFiles) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::Memory::descriptor(),
+        Backends::Memory::factory(),
+        Backends::Memory::probe());
+    registry.registerFormat(
+        Backends::CR::descriptor(),
+        Backends::CR::factory(),
+        Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    service.saveWorldMetadata(WorldMetadata{"world", "World"}, context);
+
+    const std::string hostileManifest =
+        "not-json {\"formatId\":\"memory\",\"version\":1}";
+    auto manifestSession = storage->openWrite("root/format.json");
+    manifestSession->writer().writeBytes(
+        reinterpret_cast<const uint8_t*>(hostileManifest.data()),
+        hostileManifest.size());
+    manifestSession->commit();
+
+    storage->clearCalls();
+    context.preferredFormat.clear();
+    auto detected = service.openFormat(context);
+    CHECK_EQ(detected->descriptor().id, std::string("cr"));
+    CHECK(std::none_of(
+        storage->calls().begin(),
+        storage->calls().end(),
+        [](const std::string& call) {
+            return call == "openRead root/format.json";
+        }));
+
+    context.preferredFormat = "memory";
+    auto preferred = service.openFormat(context);
+    CHECK_EQ(preferred->descriptor().id, std::string("memory"));
 }
 
 TEST_CASE(Persistence_MaximumMemoryMetadataDocumentRoundTrip) {

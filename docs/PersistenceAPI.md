@@ -42,7 +42,6 @@ chunk. A region file can contain multiple spans for the same chunk.
 
 - `rootPath`: base directory for saves.
 - `preferredFormat`: format ID hint (e.g. `"cr"`).
-- `manifestPath`: optional metadata file location.
 - `policies`: behavior for unsupported format features.
 - `storage`: `StorageBackend` instance (filesystem or custom).
 - `providers`: `ProviderRegistry` for passing runtime data (e.g. block registry).
@@ -81,7 +80,8 @@ Formats implement `PersistenceFormat`:
 
 Each format provides a `FormatDescriptor`:
 
-- `id` and on-disk `version`, used by registry selection and manifest checks
+- `id` and on-disk `version`, used by registry selection and format-owned
+  on-disk validation
 - `FormatCapabilities::supportsEntityRegions`, used to reject entity
   persistence when a backend does not implement that lifecycle
 - `FormatCapabilities::fillMissingChunkSpans`, used by asynchronous loading to
@@ -94,7 +94,6 @@ through unused capability descriptors.
 `FormatRegistry` resolves a format using:
 
 - preferred format from context
-- manifest probe (if any)
 - storage probe (format-specific)
 
 ---

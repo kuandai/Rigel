@@ -2,8 +2,6 @@
 
 #include "Rigel/Persistence/Types.h"
 
-#include <optional>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -23,14 +21,6 @@ public:
             }
         }
         return false;
-    }
-
-    virtual bool supportsChunkIO() const { return false; }
-    virtual void saveChunk(const ChunkSnapshot&) {
-        throw std::runtime_error("Chunk-level IO not supported by this container");
-    }
-    virtual ChunkSnapshot loadChunk(const ChunkKey&) {
-        throw std::runtime_error("Chunk-level IO not supported by this container");
     }
 };
 

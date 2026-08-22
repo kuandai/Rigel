@@ -152,13 +152,6 @@ std::string entityRegionPath(StorageBackend& storage,
         std::to_string(key.y) + "_" + std::to_string(key.z) + ".mem";
 }
 
-std::string chunkPath(StorageBackend& storage,
-                      const PersistenceContext& context,
-                      const ChunkKey& key) {
-    return zoneRoot(storage, context, key.zoneId) + "/chunks/chunk_" + std::to_string(key.x) + "_" +
-        std::to_string(key.y) + "_" + std::to_string(key.z) + ".mem";
-}
-
 void writeString(ByteWriter& writer, const std::string& value) {
     validateStringSize(value);
     writer.writeU32(static_cast<uint32_t>(value.size()));
@@ -312,22 +305,6 @@ public:
         return span;
     }
 
-    std::vector<Voxel::ChunkCoord> chunksForRegion(const RegionKey& key) const override {
-        detail::validateZoneIdentifier(key.zoneId);
-        std::vector<Voxel::ChunkCoord> coords;
-        coords.reserve(kMemoryRegionSpan * kMemoryRegionSpan * kMemoryRegionSpan);
-        int32_t baseX = key.x * kMemoryRegionSpan;
-        int32_t baseY = key.y * kMemoryRegionSpan;
-        int32_t baseZ = key.z * kMemoryRegionSpan;
-        for (int32_t z = 0; z < kMemoryRegionSpan; ++z) {
-            for (int32_t y = 0; y < kMemoryRegionSpan; ++y) {
-                for (int32_t x = 0; x < kMemoryRegionSpan; ++x) {
-                    coords.push_back(Voxel::ChunkCoord{baseX + x, baseY + y, baseZ + z});
-                }
-            }
-        }
-        return coords;
-    }
 };
 
 class MemoryWorldMetadataCodec final : public WorldMetadataCodec {
@@ -595,25 +572,6 @@ public:
             regions.push_back(RegionKey{zoneId, rx, ry, rz});
         }
         return regions;
-    }
-
-    bool supportsChunkIO() const override {
-        return true;
-    }
-
-    void saveChunk(const ChunkSnapshot& chunk) override {
-        auto path = chunkPath(*m_storage, m_context, chunk.key);
-        m_storage->mkdirs(parentPath(path));
-        auto session = m_storage->openWrite(path, AtomicWriteOptions{});
-        m_codec.write(chunk, session->writer());
-        session->writer().flush();
-        session->commit();
-    }
-
-    ChunkSnapshot loadChunk(const ChunkKey& key) override {
-        auto path = chunkPath(*m_storage, m_context, key);
-        auto reader = m_storage->openRead(path);
-        return m_codec.read(*reader, key);
     }
 
 private:

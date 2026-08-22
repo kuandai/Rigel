@@ -167,23 +167,6 @@ public:
         return span;
     }
 
-    std::vector<Voxel::ChunkCoord> chunksForRegion(const RegionKey& key) const override {
-        detail::validateZoneIdentifier(key.zoneId);
-        constexpr int32_t rigelRegionSpan = 8;
-        std::vector<Voxel::ChunkCoord> coords;
-        coords.reserve(rigelRegionSpan * rigelRegionSpan * rigelRegionSpan);
-        int32_t baseX = key.x * rigelRegionSpan;
-        int32_t baseY = key.y * rigelRegionSpan;
-        int32_t baseZ = key.z * rigelRegionSpan;
-        for (int32_t z = 0; z < rigelRegionSpan; ++z) {
-            for (int32_t y = 0; y < rigelRegionSpan; ++y) {
-                for (int32_t x = 0; x < rigelRegionSpan; ++x) {
-                    coords.push_back(Voxel::ChunkCoord{baseX + x, baseY + y, baseZ + z});
-                }
-            }
-        }
-        return coords;
-    }
 };
 
 std::string basename(const std::string& path) {

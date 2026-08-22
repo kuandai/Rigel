@@ -29,7 +29,7 @@ class ChunkStreamer;
  * ChunkManager handles:
  * - Chunk storage and lifecycle
  * - World-to-chunk coordinate translation
- * - Dirty chunk tracking for mesh updates
+ * - Mesh invalidation notifications
  *
  * @section usage Usage
  *
@@ -43,11 +43,6 @@ class ChunkStreamer;
  * manager.setBlock(10, 5, 20, someState);
  * BlockState state = manager.getBlock(10, 5, 20);
  *
- * // Process dirty chunks
- * for (ChunkCoord coord : manager.getDirtyChunks()) {
- *     rebuildMesh(coord, *manager.getChunk(coord));
- * }
- * manager.clearDirtyFlags();
  * @endcode
  */
 class ChunkManager {
@@ -126,18 +121,10 @@ public:
     /// @{
 
     /**
-     * @brief Load chunk from serialized data.
-     *
-     * @param coord The chunk coordinate
-     * @param data Serialized chunk data
-     */
-    void loadChunk(ChunkCoord coord, std::span<const uint8_t> data);
-
-    /**
      * @brief Unload a chunk.
      *
      * @param coord The chunk coordinate
-     * @note Does not save the chunk. Call serialize() first if needed.
+     * @note Does not save the chunk.
      */
     void unloadChunk(ChunkCoord coord);
 
@@ -151,17 +138,7 @@ public:
     /// @name Dirty Tracking
     /// @{
 
-    /**
-     * @brief Get list of dirty chunk coordinates.
-     * @return Vector of coordinates for chunks needing mesh rebuild
-     */
     std::vector<ChunkCoord> getDirtyChunks() const;
-
-    /**
-     * @brief Clear dirty flags on all chunks.
-     *
-     * Call after rebuilding meshes for dirty chunks.
-     */
     void clearDirtyFlags();
 
     /// @}
@@ -189,7 +166,6 @@ public:
     /// Get number of loaded chunks
     size_t loadedChunkCount() const { return m_chunks.size(); }
 
-    /// Monotonic version of chunk lifecycle and mesh-relevant changes.
     uint64_t meshChangeVersion() const {
         return m_meshChangeVersion.load(std::memory_order_relaxed);
     }

@@ -112,7 +112,6 @@ with a configuration error instead of choosing one and hiding the other.
 - `zones/<zoneId>/zone.meta` (zone metadata)
 - `zones/<zoneId>/regions/region_<x>_<y>_<z>.mem`
 - `zones/<zoneId>/entities/entityRegion_<x>_<y>_<z>.mem`
-- `zones/<zoneId>/chunks/chunk_<x>_<y>_<z>.mem` (chunk-level IO)
 
 ### 2.3 Region Layout
 

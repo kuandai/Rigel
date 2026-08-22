@@ -4,7 +4,6 @@
 
 #include <cassert>
 #include <stdexcept>
-#include <cstring>
 #include <algorithm>
 
 namespace Rigel::Voxel {
@@ -183,74 +182,6 @@ void Chunk::copyFromInternal(std::span<const BlockState> data, const BlockRegist
 
     m_persistDirty = true;
     invalidateMesh();
-}
-
-std::vector<uint8_t> Chunk::serialize() const {
-    // Simple format: magic + position + worldgen version + raw block data
-    // Format: "RCHK" (4) + x,y,z (12) + worldgen (4) + blocks (VOLUME * 4)
-    constexpr size_t headerSize = 4 + 12 + 4;
-    constexpr size_t blockDataSize = VOLUME * sizeof(BlockState);
-
-    std::vector<uint8_t> data(headerSize + blockDataSize);
-
-    // Magic
-    data[0] = 'R';
-    data[1] = 'C';
-    data[2] = 'H';
-    data[3] = 'K';
-
-    // Position
-    std::memcpy(data.data() + 4, &m_position.x, 4);
-    std::memcpy(data.data() + 8, &m_position.y, 4);
-    std::memcpy(data.data() + 12, &m_position.z, 4);
-    std::memcpy(data.data() + 16, &m_worldGenVersion, 4);
-
-    // Block data
-    std::vector<BlockState> blocks(VOLUME);
-    copyBlocks(std::span<BlockState>(blocks));
-    std::memcpy(data.data() + headerSize, blocks.data(), blockDataSize);
-
-    return data;
-}
-
-Chunk Chunk::deserialize(std::span<const uint8_t> data) {
-    constexpr size_t headerSize = 4 + 12 + 4;
-    constexpr size_t legacyHeaderSize = 4 + 12;
-    constexpr size_t blockDataSize = VOLUME * sizeof(BlockState);
-    constexpr size_t expectedSize = headerSize + blockDataSize;
-    constexpr size_t legacySize = legacyHeaderSize + blockDataSize;
-
-    if (data.size() != expectedSize && data.size() != legacySize) {
-        throw std::runtime_error(
-            "Chunk::deserialize: invalid data size (expected " +
-            std::to_string(expectedSize) + ", got " +
-            std::to_string(data.size()) + ")"
-        );
-    }
-
-    // Check magic
-    if (data[0] != 'R' || data[1] != 'C' || data[2] != 'H' || data[3] != 'K') {
-        throw std::runtime_error("Chunk::deserialize: invalid magic");
-    }
-
-    // Read position
-    ChunkCoord position;
-    std::memcpy(&position.x, data.data() + 4, 4);
-    std::memcpy(&position.y, data.data() + 8, 4);
-    std::memcpy(&position.z, data.data() + 12, 4);
-
-    Chunk chunk(position);
-    if (data.size() >= headerSize) {
-        std::memcpy(&chunk.m_worldGenVersion, data.data() + 16, 4);
-    }
-
-    // Read block data
-    std::array<BlockState, VOLUME> blocks{};
-    size_t dataOffset = (data.size() == legacySize) ? legacyHeaderSize : headerSize;
-    std::memcpy(blocks.data(), data.data() + dataOffset, blockDataSize);
-    chunk.copyFrom(blocks);
-
-    return chunk;
 }
 
 void Chunk::copyBlocks(std::span<BlockState> out) const {

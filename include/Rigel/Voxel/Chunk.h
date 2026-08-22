@@ -15,7 +15,6 @@
 #include <atomic>
 #include <memory>
 #include <span>
-#include <vector>
 #include <cstdint>
 
 namespace Rigel::Voxel {
@@ -200,25 +199,6 @@ public:
      * The output span must be VOLUME in size.
      */
     void copyBlocks(std::span<BlockState> out) const;
-
-    /// @name Serialization
-    /// @{
-
-    /**
-     * @brief Serialize chunk to binary format.
-     * @return Binary data suitable for storage
-     */
-    std::vector<uint8_t> serialize() const;
-
-    /**
-     * @brief Deserialize chunk from binary format.
-     * @param data Binary data from serialize()
-     * @return The deserialized chunk
-     * @throws std::runtime_error on invalid data
-     */
-    static Chunk deserialize(std::span<const uint8_t> data);
-
-    /// @}
 
 private:
     friend class ChunkManager;

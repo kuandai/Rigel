@@ -16,7 +16,6 @@ public:
     virtual std::vector<ChunkKey> storageKeysForChunk(const std::string& zoneId,
                                                       Voxel::ChunkCoord coord) const = 0;
     virtual ChunkSpan spanForStorageKey(const ChunkKey& key) const = 0;
-    virtual std::vector<Voxel::ChunkCoord> chunksForRegion(const RegionKey& key) const = 0;
 };
 
 } // namespace Rigel::Persistence

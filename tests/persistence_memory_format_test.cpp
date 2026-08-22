@@ -94,10 +94,15 @@ public:
         m_format = Backends::Memory::factory()(m_context);
     }
 
-    ChunkSnapshot loadChunk(std::vector<uint8_t> bytes) {
-        const ChunkKey key{"zone", 1, 2, 3};
-        write(chunkPath(key), std::move(bytes));
-        return m_format->chunkContainer().loadChunk(key);
+    ChunkSnapshot loadChunk(std::vector<uint8_t> bytes,
+                            bool satisfyRegionMinimum = false) {
+        if (satisfyRegionMinimum) {
+            appendBlock(bytes);
+        }
+        std::vector<uint8_t> regionBytes;
+        appendU32(regionBytes, 1);
+        regionBytes.insert(regionBytes.end(), bytes.begin(), bytes.end());
+        return loadRegion(std::move(regionBytes)).chunks.front();
     }
 
     WorldMetadata loadWorldMetadata(std::vector<uint8_t> bytes) {
@@ -135,12 +140,15 @@ public:
         return m_format->worldMetadataCodec().read(*reader);
     }
 
-    void saveChunk(const ChunkSnapshot& chunk) {
-        m_format->chunkContainer().saveChunk(chunk);
+    void saveSingleChunkRegion(const ChunkSnapshot& chunk) {
+        m_format->chunkContainer().saveRegion(ChunkRegionSnapshot{
+            RegionKey{chunk.key.zoneId, 0, 0, 0}, {chunk}});
     }
 
-    ChunkSnapshot loadSavedChunk(const ChunkKey& key) {
-        return m_format->chunkContainer().loadChunk(key);
+    ChunkSnapshot loadSavedSingleChunkRegion(const ChunkKey& key) {
+        return m_format->chunkContainer()
+            .loadRegion(RegionKey{key.zoneId, 0, 0, 0})
+            .chunks.front();
     }
 
     void saveRegion(const ChunkRegionSnapshot& region) {
@@ -160,12 +168,6 @@ public:
     }
 
 private:
-    std::string chunkPath(const ChunkKey& key) const {
-        return m_context.rootPath + "/zones/" + key.zoneId +
-            "/chunks/chunk_" + std::to_string(key.x) + "_" +
-            std::to_string(key.y) + "_" + std::to_string(key.z) + ".mem";
-    }
-
     std::string regionPath(const RegionKey& key) const {
         return m_context.rootPath + "/zones/" + key.zoneId +
             "/regions/region_" + std::to_string(key.x) + "_" +
@@ -262,14 +264,14 @@ TEST_CASE(MemoryFormat_WriterRejectsUnreadableChunkBeforeCommit) {
     valid.data.span.sizeY = 1;
     valid.data.span.sizeZ = 1;
     valid.data.blocks.emplace_back();
-    fixture.saveChunk(valid);
+    fixture.saveSingleChunkRegion(valid);
 
     ChunkSnapshot invalid = valid;
     invalid.data.blocks.clear();
     checkFormatError(
-        [&]() { fixture.saveChunk(invalid); },
+        [&]() { fixture.saveSingleChunkRegion(invalid); },
         "ChunkSerializer: block data size mismatch");
-    CHECK(fixture.loadSavedChunk(valid.key) == valid);
+    CHECK(fixture.loadSavedSingleChunkRegion(valid.key) == valid);
 }
 
 TEST_CASE(MemoryFormat_RejectsUnboundedStringLengths) {
@@ -350,7 +352,7 @@ TEST_CASE(MemoryFormat_RejectsInvalidChunkSpans) {
     negative.sizeY = 1;
     negative.sizeZ = 1;
     checkFormatError(
-        [&]() { fixture.loadChunk(chunkFixture(negative, 0)); },
+        [&]() { fixture.loadChunk(chunkFixture(negative, 0), true); },
         "ChunkSerializer: span size must be positive");
 
     ChunkSpan oversized;
@@ -358,7 +360,7 @@ TEST_CASE(MemoryFormat_RejectsInvalidChunkSpans) {
     oversized.sizeY = 1;
     oversized.sizeZ = 1;
     checkFormatError(
-        [&]() { fixture.loadChunk(chunkFixture(oversized, 0)); },
+        [&]() { fixture.loadChunk(chunkFixture(oversized, 0), true); },
         "ChunkSerializer: span out of chunk bounds");
 
     ChunkSpan overflowing;
@@ -367,7 +369,7 @@ TEST_CASE(MemoryFormat_RejectsInvalidChunkSpans) {
     overflowing.sizeY = 1;
     overflowing.sizeZ = 1;
     checkFormatError(
-        [&]() { fixture.loadChunk(chunkFixture(overflowing, 0)); },
+        [&]() { fixture.loadChunk(chunkFixture(overflowing, 0), true); },
         "ChunkSerializer: span out of chunk bounds");
 }
 
@@ -390,14 +392,15 @@ TEST_CASE(MemoryFormat_RejectsMismatchedBlockCount) {
     single.sizeZ = 1;
     checkFormatError(
         [&]() {
-            fixture.loadChunk(chunkFixture(
-                single, std::numeric_limits<uint32_t>::max()));
+            fixture.loadChunk(
+                chunkFixture(single, std::numeric_limits<uint32_t>::max()),
+                true);
         },
         "ChunkSerializer: block data size mismatch");
 
     checkFormatError(
         [&]() { fixture.loadChunk(chunkFixture(single, 1)); },
-        "MemoryFormat: chunk block count exceeds remaining input");
+        "MemoryFormat: chunk count exceeds remaining input");
 }
 
 TEST_CASE(MemoryFormat_InvalidNumericBlockIdDoesNotMutateChunk) {

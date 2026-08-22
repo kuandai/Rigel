@@ -167,32 +167,6 @@ void ChunkManager::setBlock(int wx, int wy, int wz, BlockState state) {
     }
 }
 
-void ChunkManager::loadChunk(ChunkCoord coord, std::span<const uint8_t> data) {
-    Chunk chunk = Chunk::deserialize(data);
-
-    // Override position from coordinate (in case data has wrong position)
-    // Note: This requires making a new chunk since position is set in constructor
-    auto newChunk = std::make_unique<Chunk>(coord);
-    newChunk->trackMeshChanges(this);
-    std::array<BlockState, Chunk::VOLUME> blocks{};
-    chunk.copyBlocks(blocks);
-    if (m_registry) {
-        newChunk->copyFrom(blocks, *m_registry);
-    } else {
-        newChunk->copyFrom(blocks);
-    }
-
-    auto existing = m_chunks.find(coord);
-    if (existing != m_chunks.end()) {
-        invalidateFaceNeighbors(coord);
-        existing->second = std::move(newChunk);
-    } else {
-        m_chunks.emplace(coord, std::move(newChunk));
-    }
-
-    spdlog::debug("Loaded chunk at ({}, {}, {})", coord.x, coord.y, coord.z);
-}
-
 void ChunkManager::unloadChunk(ChunkCoord coord) {
     auto it = m_chunks.find(coord);
     if (it != m_chunks.end()) {

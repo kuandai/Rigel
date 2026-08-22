@@ -207,13 +207,6 @@ TEST_CASE(Persistence_ZoneIdentifierValidationPrecedesStorageOperations) {
                     ChunkKey{invalid, 0, 0, 0});
             },
             invalid);
-        checkIdentifierError(
-            [&]() {
-                format->regionLayout().chunksForRegion(
-                    RegionKey{invalid, 0, 0, 0});
-            },
-            invalid);
-
         const RegionKey regionKey{invalid, 0, 0, 0};
         checkIdentifierError(
             [&]() { format->chunkContainer().regionExists(regionKey); },
@@ -238,15 +231,6 @@ TEST_CASE(Persistence_ZoneIdentifierValidationPrecedesStorageOperations) {
                     RegionKey{"rigel:default", 0, 0, 0}, {invalidChunk}});
             },
             invalid);
-        if (format->chunkContainer().supportsChunkIO()) {
-            checkIdentifierError(
-                [&]() { format->chunkContainer().saveChunk(invalidChunk); },
-                invalid);
-            checkIdentifierError(
-                [&]() { format->chunkContainer().loadChunk(invalidChunk.key); },
-                invalid);
-        }
-
         const EntityRegionKey entityKey{invalid, 0, 0, 0};
         checkIdentifierError(
             [&]() {
@@ -368,8 +352,6 @@ TEST_CASE(MemoryFormat_LoadsNamespacedZonesFromPreviousStorageLayout) {
     service.saveZoneMetadata(metadata, context);
     service.saveRegion(region, context);
     service.saveEntities(entities, context);
-    service.openFormat(context)->chunkContainer().saveChunk(chunk);
-
     const auto canonicalRoot =
         directory.path() / "zones" / "rigel" / "default";
     const auto previousRoot =
@@ -379,10 +361,6 @@ TEST_CASE(MemoryFormat_LoadsNamespacedZonesFromPreviousStorageLayout) {
     CHECK_EQ(service.loadZoneMetadata(ZoneKey{zoneId}, context), metadata);
     CHECK_EQ(service.loadRegion(region.key, context), region);
     CHECK_EQ(service.loadEntities(entities.key, context), entities);
-    CHECK_EQ(
-        service.openFormat(context)->chunkContainer().loadChunk(chunk.key),
-        chunk);
-
     const ZoneMetadata updated{zoneId, "Updated Zone"};
     service.saveZoneMetadata(updated, context);
     CHECK_EQ(service.loadZoneMetadata(ZoneKey{zoneId}, context), updated);
@@ -395,8 +373,6 @@ TEST_CASE(MemoryFormat_LoadsNamespacedZonesFromPreviousStorageLayout) {
     CHECK(std::filesystem::exists(previousRoot / "zone.meta"));
     CHECK(std::filesystem::exists(
         previousRoot / "regions" / "region_0_0_0.mem"));
-    CHECK(std::filesystem::exists(
-        previousRoot / "chunks" / "chunk_1_2_3.mem"));
     CHECK(!std::filesystem::exists(
         previousRoot / "entities" / "entityRegion_0_0_0.mem"));
     CHECK(!std::filesystem::exists(canonicalRoot));

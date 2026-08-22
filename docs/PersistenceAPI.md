@@ -107,8 +107,6 @@ Required methods:
 - `loadRegion(const RegionKey&)`
 - `listRegions(const std::string& zoneId)`
 
-Chunk-level IO is optional and gated by `supportsChunkIO()`.
-
 ### 5.2 EntityContainer
 
 Required methods:
@@ -135,7 +133,6 @@ Codecs are used by formats to encode/decode metadata and region payloads:
 - `regionForChunk`: chunk -> region
 - `storageKeysForChunk`: chunk -> one or more storage keys
 - `spanForStorageKey`: storage key -> span metadata
-- `chunksForRegion`: region -> chunks
 
 Layouts define how partial chunk spans are packed into region files.
 

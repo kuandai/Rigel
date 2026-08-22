@@ -82,25 +82,6 @@ TEST_CASE(Chunk_OpacityCounts) {
     CHECK_EQ(chunk.opaqueCount(), 0u);
 }
 
-TEST_CASE(Chunk_SerializeRoundTrip) {
-    Chunk chunk({-1, 2, 3});
-    chunk.setWorldGenVersion(42);
-    BlockState state;
-    state.id.type = 7;
-    chunk.setBlock(0, 0, 0, state);
-    chunk.setBlock(Chunk::SIZE - 1, 0, 0, state);
-
-    auto data = chunk.serialize();
-    Chunk loaded = Chunk::deserialize(data);
-
-    CHECK_EQ(loaded.position().x, -1);
-    CHECK_EQ(loaded.position().y, 2);
-    CHECK_EQ(loaded.position().z, 3);
-    CHECK_EQ(loaded.worldGenVersion(), static_cast<uint32_t>(42));
-    CHECK_EQ(loaded.getBlock(0, 0, 0).id.type, static_cast<uint16_t>(7));
-    CHECK_EQ(loaded.getBlock(Chunk::SIZE - 1, 0, 0).id.type, static_cast<uint16_t>(7));
-}
-
 TEST_CASE(Chunk_CopyBlocks) {
     Chunk chunk({0, 0, 0});
     BlockState state;

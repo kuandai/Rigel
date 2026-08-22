@@ -333,9 +333,6 @@ public:
         return span;
     }
 
-    std::vector<Rigel::Voxel::ChunkCoord> chunksForRegion(const RegionKey& key) const override {
-        return {Rigel::Voxel::ChunkCoord{key.x, key.y, key.z}};
-    }
 };
 
 class NoEntityFormat final : public PersistenceFormat {
@@ -854,36 +851,6 @@ TEST_CASE(MemoryFormat_region_discovery_requires_canonical_filenames) {
     CHECK_EQ(regions.front(), (RegionKey{zoneId, -12, 3, 0}));
     CHECK_EQ(entityRegions.size(), 1u);
     CHECK_EQ(entityRegions.front(), (EntityRegionKey{zoneId, 6, -7, 8}));
-}
-
-TEST_CASE(Persistence_PartialChunkSupport) {
-    auto storage = std::make_shared<InMemoryStorageBackend>();
-
-    FormatRegistry registry;
-    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
-
-    PersistenceContext context;
-    context.rootPath = "root";
-    context.preferredFormat = "memory";
-    context.storage = storage;
-
-    auto format = registry.resolveFormat(context);
-    auto& container = format->chunkContainer();
-    CHECK(container.supportsChunkIO());
-
-    ChunkSnapshot chunk;
-    chunk.key = ChunkKey{"zone-main", 5, 6, 7};
-    chunk.data.span.chunkX = 5;
-    chunk.data.span.chunkY = 6;
-    chunk.data.span.chunkZ = 7;
-    chunk.data.span.sizeX = 1;
-    chunk.data.span.sizeY = 1;
-    chunk.data.span.sizeZ = 1;
-    chunk.data.blocks.push_back(Rigel::Voxel::BlockState{Rigel::Voxel::BlockID{2}, 0, 0});
-
-    container.saveChunk(chunk);
-    auto loaded = container.loadChunk(chunk.key);
-    CHECK_EQ(loaded, chunk);
 }
 
 TEST_CASE(Persistence_UnsupportedEntityPolicy) {

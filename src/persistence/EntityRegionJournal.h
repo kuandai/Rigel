@@ -16,7 +16,8 @@ void validateEntityRegionSnapshots(
 
 void replayEntityRegionJournal(
     PersistenceFormat& format,
-    const PersistenceContext& context);
+    const PersistenceContext& context,
+    const std::string& zoneId);
 
 void saveEntityRegionsRecoverably(
     PersistenceFormat& format,

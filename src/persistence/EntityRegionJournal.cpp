@@ -19,8 +19,13 @@ namespace Rigel::Persistence::detail {
 namespace {
 
 constexpr uint32_t kJournalMagic = 0x5247454A; // "RGEJ"
-constexpr uint16_t kJournalVersion = 1;
+constexpr uint16_t kJournalVersion = 2;
 constexpr const char* kJournalFilename = "entity-regions.journal";
+constexpr uint32_t kMaxJournalRegions = 1'048'576;
+constexpr uint32_t kMaxJournalPayloadBytes = 256 * 1024 * 1024;
+constexpr uint32_t kMaxJournalStringBytes = 1'048'576;
+constexpr uint64_t kMinDesiredRegionBytes = 32;
+constexpr uint64_t kMinObsoleteRegionBytes = 16;
 
 struct EntityRegionKeyLess {
     bool operator()(const EntityRegionKey& lhs,
@@ -61,8 +66,24 @@ std::string describeRegion(const EntityRegionKey& key) {
         std::to_string(key.y) + ", " + std::to_string(key.z) + ")";
 }
 
+size_t remaining(const ByteReader& reader) {
+    if (reader.tell() > reader.size()) {
+        throw std::runtime_error("Invalid entity region journal reader position");
+    }
+    return reader.size() - reader.tell();
+}
+
+void requireRemaining(const ByteReader& reader,
+                      size_t required,
+                      const char* diagnostic) {
+    if (required > remaining(reader)) {
+        throw std::runtime_error(diagnostic);
+    }
+}
+
 void writeString(ByteWriter& writer, const std::string& value) {
-    if (value.size() > std::numeric_limits<uint32_t>::max()) {
+    if (value.size() > kMaxJournalStringBytes ||
+        value.size() > std::numeric_limits<uint32_t>::max()) {
         throw std::runtime_error("Entity region journal string is too large");
     }
     writer.writeU32(static_cast<uint32_t>(value.size()));
@@ -73,8 +94,15 @@ void writeString(ByteWriter& writer, const std::string& value) {
 }
 
 std::string readString(ByteReader& reader) {
+    requireRemaining(
+        reader, sizeof(uint32_t),
+        "Truncated string length in entity region journal");
     const uint32_t size = reader.readU32();
-    if (reader.tell() > reader.size() || size > reader.size() - reader.tell()) {
+    if (size > kMaxJournalStringBytes) {
+        throw std::runtime_error(
+            "Entity region journal string exceeds size limit");
+    }
+    if (size > remaining(reader)) {
         throw std::runtime_error("Truncated string in entity region journal");
     }
     std::string value(size, '\0');
@@ -94,6 +122,9 @@ void writeKey(ByteWriter& writer, const EntityRegionKey& key) {
 EntityRegionKey readKey(ByteReader& reader) {
     EntityRegionKey key;
     key.zoneId = readString(reader);
+    requireRemaining(
+        reader, 3 * sizeof(uint32_t),
+        "Truncated entity region key in recovery journal");
     key.x = reader.readI32();
     key.y = reader.readI32();
     key.z = reader.readI32();
@@ -151,22 +182,33 @@ void sortAndValidateJournal(EntityRegionJournal& journal) {
     validateEntityRegionSnapshots(journal.desiredRegions);
 }
 
-void writeJournal(ByteWriter& writer, const EntityRegionJournal& journal) {
-    if (journal.desiredRegions.size() > std::numeric_limits<uint32_t>::max() ||
+void writeJournal(ByteWriter& writer,
+                  const EntityRegionJournal& journal,
+                  const FormatDescriptor& format) {
+    if (journal.desiredRegions.size() > kMaxJournalRegions ||
+        journal.obsoleteRegions.size() > kMaxJournalRegions ||
+        journal.desiredRegions.size() > std::numeric_limits<uint32_t>::max() ||
         journal.obsoleteRegions.size() > std::numeric_limits<uint32_t>::max()) {
         throw std::runtime_error("Entity region journal has too many regions");
+    }
+    if (format.id.empty()) {
+        throw std::runtime_error(
+            "Entity region journal requires a persistence format identity");
     }
 
     writer.writeU32(kJournalMagic);
     writer.writeU16(kJournalVersion);
     writer.writeU16(0);
+    writeString(writer, format.id);
+    writer.writeI32(format.version);
     writer.writeU32(static_cast<uint32_t>(journal.desiredRegions.size()));
     writer.writeU32(static_cast<uint32_t>(journal.obsoleteRegions.size()));
 
     for (const auto& region : journal.desiredRegions) {
         writeKey(writer, region.key);
         const auto payload = Entity::encodeEntityRegionPayload(region.chunks);
-        if (payload.size() > std::numeric_limits<uint32_t>::max()) {
+        if (payload.size() > kMaxJournalPayloadBytes ||
+            payload.size() > std::numeric_limits<uint32_t>::max()) {
             throw std::runtime_error(
                 "Entity region payload is too large for recovery journal");
         }
@@ -180,27 +222,64 @@ void writeJournal(ByteWriter& writer, const EntityRegionJournal& journal) {
     }
 }
 
-EntityRegionJournal readJournal(ByteReader& reader) {
+EntityRegionJournal readJournal(ByteReader& reader,
+                                const FormatDescriptor& format) {
+    requireRemaining(
+        reader, 2 * sizeof(uint32_t),
+        "Truncated entity region journal header");
     if (reader.readU32() != kJournalMagic) {
         throw std::runtime_error("Invalid entity region journal magic");
     }
     if (reader.readU16() != kJournalVersion) {
         throw std::runtime_error("Unsupported entity region journal version");
     }
-    reader.readU16();
+    if (reader.readU16() != 0) {
+        throw std::runtime_error("Invalid entity region journal header flags");
+    }
+
+    const std::string formatId = readString(reader);
+    requireRemaining(
+        reader, 3 * sizeof(uint32_t),
+        "Truncated entity region journal format and counts");
+    const int32_t formatVersion = reader.readI32();
+    if (formatId != format.id || formatVersion != format.version) {
+        throw std::runtime_error(
+            "Entity recovery journal persistence format mismatch: journal uses " +
+            formatId + " version " + std::to_string(formatVersion) +
+            ", opened " + format.id + " version " +
+            std::to_string(format.version));
+    }
 
     EntityRegionJournal journal;
     const uint32_t desiredCount = reader.readU32();
     const uint32_t obsoleteCount = reader.readU32();
+    if (desiredCount > kMaxJournalRegions ||
+        obsoleteCount > kMaxJournalRegions) {
+        throw std::runtime_error(
+            "Entity region journal region count exceeds limit");
+    }
+    const uint64_t minimumBytes =
+        static_cast<uint64_t>(desiredCount) * kMinDesiredRegionBytes +
+        static_cast<uint64_t>(obsoleteCount) * kMinObsoleteRegionBytes;
+    if (minimumBytes > remaining(reader)) {
+        throw std::runtime_error(
+            "Entity region journal counts exceed remaining data");
+    }
     journal.desiredRegions.reserve(desiredCount);
     journal.obsoleteRegions.reserve(obsoleteCount);
 
     for (uint32_t i = 0; i < desiredCount; ++i) {
         EntityRegionSnapshot region;
         region.key = readKey(reader);
+        requireRemaining(
+            reader, sizeof(uint32_t),
+            "Truncated entity region payload size in recovery journal");
         const uint32_t payloadSize = reader.readU32();
-        if (reader.tell() > reader.size() ||
-            payloadSize > reader.size() - reader.tell()) {
+        if (payloadSize > kMaxJournalPayloadBytes) {
+            throw std::runtime_error(
+                "Entity region journal payload exceeds size limit");
+        }
+        if (payloadSize > remaining(reader)) {
             throw std::runtime_error(
                 "Truncated entity region payload in recovery journal");
         }
@@ -227,11 +306,12 @@ EntityRegionJournal readJournal(ByteReader& reader) {
 }
 
 void publishJournal(const EntityRegionJournal& journal,
+                    const FormatDescriptor& format,
                     const PersistenceContext& context) {
     const std::string path = journalPath(context);
     context.storage->mkdirs(parentPath(path));
     auto session = context.storage->openWrite(path, AtomicWriteOptions{});
-    writeJournal(session->writer(), journal);
+    writeJournal(session->writer(), journal, format);
     session->writer().flush();
     session->commit();
 }
@@ -267,6 +347,24 @@ void applyJournal(PersistenceFormat& format,
     }
 }
 
+void validateJournalZone(const EntityRegionJournal& journal,
+                         const std::string& zoneId) {
+    for (const auto& region : journal.desiredRegions) {
+        if (region.key.zoneId != zoneId) {
+            throw std::runtime_error(
+                "Entity recovery journal desired region belongs to unexpected zone " +
+                describeRegion(region.key));
+        }
+    }
+    for (const auto& key : journal.obsoleteRegions) {
+        if (key.zoneId != zoneId) {
+            throw std::runtime_error(
+                "Entity recovery journal obsolete region belongs to unexpected zone " +
+                describeRegion(key));
+        }
+    }
+}
+
 } // namespace
 
 void validateEntityRegionSnapshots(
@@ -298,7 +396,8 @@ void validateEntityRegionSnapshots(
 
 void replayEntityRegionJournal(
     PersistenceFormat& format,
-    const PersistenceContext& context) {
+    const PersistenceContext& context,
+    const std::string& zoneId) {
     const std::string path = journalPath(context);
     if (!context.storage->exists(path)) {
         return;
@@ -306,7 +405,9 @@ void replayEntityRegionJournal(
 
     try {
         auto reader = context.storage->openRead(path);
-        const EntityRegionJournal journal = readJournal(*reader);
+        const EntityRegionJournal journal =
+            readJournal(*reader, format.descriptor());
+        validateJournalZone(journal, zoneId);
         applyJournal(format, context, journal);
     } catch (const std::exception& error) {
         throw std::runtime_error(
@@ -320,7 +421,7 @@ void saveEntityRegionsRecoverably(
     const PersistenceContext& context,
     const std::string& zoneId,
     std::vector<EntityRegionSnapshot> desiredRegions) {
-    replayEntityRegionJournal(format, context);
+    replayEntityRegionJournal(format, context, zoneId);
 
     EntityRegionJournal journal;
     journal.desiredRegions = std::move(desiredRegions);
@@ -336,7 +437,8 @@ void saveEntityRegionsRecoverably(
     }
 
     sortAndValidateJournal(journal);
-    publishJournal(journal, context);
+    validateJournalZone(journal, zoneId);
+    publishJournal(journal, format.descriptor(), context);
     applyJournal(format, context, journal);
 }
 

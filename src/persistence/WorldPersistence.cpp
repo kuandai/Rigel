@@ -162,7 +162,7 @@ void loadWorldFromDisk(Voxel::World& world,
         return;
     }
 
-    detail::replayEntityRegionJournal(*format, context);
+    detail::replayEntityRegionJournal(*format, context, zoneId);
 
     std::vector<EntityRegionSnapshot> entityRegions;
     for (const auto& key : format->entityContainer().listRegions(zoneId)) {

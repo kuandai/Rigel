@@ -3,6 +3,7 @@
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Entity/EntityRegion.h"
+#include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
@@ -28,6 +29,8 @@ namespace {
 
 constexpr const char* kRootPath = "entity-recovery-world";
 constexpr const char* kZoneId = "rigel:default";
+constexpr const char* kJournalPath =
+    "entity-recovery-world/entity-regions.journal";
 
 struct SharedFiles {
     std::unordered_map<std::string, std::vector<uint8_t>> files;
@@ -312,10 +315,11 @@ void sortRecords(std::vector<EntityRecord>& records) {
 
 Persistence::PersistenceContext makeContext(
     const std::shared_ptr<SharedFiles>& files,
-    const std::shared_ptr<MutationControl>& control = {}) {
+    const std::shared_ptr<MutationControl>& control = {},
+    std::string preferredFormat = "memory") {
     Persistence::PersistenceContext context;
     context.rootPath = kRootPath;
-    context.preferredFormat = "memory";
+    context.preferredFormat = std::move(preferredFormat);
     context.storage = std::make_shared<SharedStorage>(files, control);
     return context;
 }
@@ -325,6 +329,14 @@ void registerMemoryFormat(Persistence::FormatRegistry& formats) {
         Persistence::Backends::Memory::descriptor(),
         Persistence::Backends::Memory::factory(),
         Persistence::Backends::Memory::probe());
+}
+
+void registerFormats(Persistence::FormatRegistry& formats) {
+    registerMemoryFormat(formats);
+    formats.registerFormat(
+        Persistence::Backends::CR::descriptor(),
+        Persistence::Backends::CR::factory(),
+        Persistence::Backends::CR::probe());
 }
 
 void populateWorld(Voxel::World& world,
@@ -415,8 +427,54 @@ std::vector<Persistence::EntityRegionKey> expectedRegions(
 }
 
 bool journalExists(const std::shared_ptr<SharedFiles>& files) {
-    return files->files.contains(
-        std::string(kRootPath) + "/entity-regions.journal");
+    return files->files.contains(kJournalPath);
+}
+
+void appendU16(std::vector<uint8_t>& bytes, uint16_t value) {
+    bytes.push_back(static_cast<uint8_t>(value >> 8));
+    bytes.push_back(static_cast<uint8_t>(value));
+}
+
+void appendU32(std::vector<uint8_t>& bytes, uint32_t value) {
+    bytes.push_back(static_cast<uint8_t>(value >> 24));
+    bytes.push_back(static_cast<uint8_t>(value >> 16));
+    bytes.push_back(static_cast<uint8_t>(value >> 8));
+    bytes.push_back(static_cast<uint8_t>(value));
+}
+
+void appendString(std::vector<uint8_t>& bytes, const std::string& value) {
+    appendU32(bytes, static_cast<uint32_t>(value.size()));
+    bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+std::vector<uint8_t> journalHeader(uint32_t desiredCount,
+                                   uint32_t obsoleteCount,
+                                   uint32_t formatVersion = 1) {
+    std::vector<uint8_t> bytes;
+    appendU32(bytes, 0x5247454A);
+    appendU16(bytes, 2);
+    appendU16(bytes, 0);
+    appendString(bytes, "memory");
+    appendU32(bytes, formatVersion);
+    appendU32(bytes, desiredCount);
+    appendU32(bytes, obsoleteCount);
+    return bytes;
+}
+
+void appendKey(std::vector<uint8_t>& bytes,
+               const std::string& zoneId,
+               uint32_t x = 0,
+               uint32_t y = 0,
+               uint32_t z = 0) {
+    appendString(bytes, zoneId);
+    appendU32(bytes, x);
+    appendU32(bytes, y);
+    appendU32(bytes, z);
+}
+
+void installJournal(const std::shared_ptr<SharedFiles>& files,
+                    std::vector<uint8_t> bytes) {
+    files->files[kJournalPath] = std::move(bytes);
 }
 
 void checkExactState(const std::shared_ptr<SharedFiles>& files,
@@ -502,11 +560,14 @@ void saveRawRegions(
 std::string loadFailure(
     const std::shared_ptr<SharedFiles>& files,
     Voxel::World& world,
-    Asset::AssetManager& assets) {
+    Asset::AssetManager& assets,
+    std::string preferredFormat = "memory",
+    const std::shared_ptr<MutationControl>& control = {}) {
     Persistence::FormatRegistry formats;
-    registerMemoryFormat(formats);
+    registerFormats(formats);
     Persistence::PersistenceService service(formats);
-    auto context = makeContext(files);
+    auto context = makeContext(
+        files, control, std::move(preferredFormat));
     context.providers = world.persistenceProvidersHandle();
     try {
         Persistence::loadWorldFromDisk(
@@ -622,4 +683,179 @@ TEST_CASE(Persistence_EntityLoadRejectsDuplicateIdAcrossRegions) {
     CHECK(error.find("70:71:72") != std::string::npos);
     CHECK(error.find("rigel:default/(0, 0, 0)") != std::string::npos);
     CHECK(error.find("rigel:default/(1, 0, 0)") != std::string::npos);
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsUnboundedRegionCounts) {
+    const std::vector<std::pair<uint32_t, uint32_t>> declarations = {
+        {UINT32_MAX, 0},
+        {0, UINT32_MAX}};
+
+    for (const auto& [desiredCount, obsoleteCount] : declarations) {
+        auto files = std::make_shared<SharedFiles>();
+        installJournal(files, journalHeader(desiredCount, obsoleteCount));
+        Voxel::WorldResources resources;
+        Voxel::World world(resources);
+        Asset::AssetManager assets;
+
+        const std::string error = loadFailure(files, world, assets);
+
+        CHECK(error.find("region count exceeds limit") != std::string::npos);
+        CHECK(journalExists(files));
+        CHECK_EQ(world.entities().size(), static_cast<size_t>(0));
+    }
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsCountsBeyondRemainingData) {
+    auto files = std::make_shared<SharedFiles>();
+    installJournal(files, journalHeader(1, 0));
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    Asset::AssetManager assets;
+
+    const std::string error = loadFailure(files, world, assets);
+
+    CHECK(error.find("counts exceed remaining data") != std::string::npos);
+    CHECK(journalExists(files));
+    CHECK_EQ(world.entities().size(), static_cast<size_t>(0));
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsUnboundedPayloadSize) {
+    auto files = std::make_shared<SharedFiles>();
+    std::vector<uint8_t> journal = journalHeader(1, 0);
+    appendKey(journal, "");
+    appendU32(journal, UINT32_MAX);
+    journal.resize(journal.size() + 12);
+    installJournal(files, std::move(journal));
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    Asset::AssetManager assets;
+
+    const std::string error = loadFailure(files, world, assets);
+
+    CHECK(error.find("payload exceeds size limit") != std::string::npos);
+    CHECK(journalExists(files));
+    CHECK_EQ(world.entities().size(), static_cast<size_t>(0));
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsUnboundedPayloadCounts) {
+    std::vector<std::vector<uint8_t>> payloads;
+
+    std::vector<uint8_t> chunks = {
+        0x52, 0x47, 0x45, 0x31,
+        0x00, 0x01,
+        0x00, 0x00};
+    appendU32(chunks, UINT32_MAX);
+    payloads.push_back(std::move(chunks));
+
+    std::vector<uint8_t> entities = {
+        0x52, 0x47, 0x45, 0x31,
+        0x00, 0x01,
+        0x00, 0x00};
+    appendU32(entities, 1);
+    appendU32(entities, 0);
+    appendU32(entities, 0);
+    appendU32(entities, 0);
+    appendU32(entities, UINT32_MAX);
+    payloads.push_back(std::move(entities));
+
+    for (const auto& payload : payloads) {
+        auto files = std::make_shared<SharedFiles>();
+        std::vector<uint8_t> journal = journalHeader(1, 0);
+        appendKey(journal, "");
+        appendU32(journal, static_cast<uint32_t>(payload.size()));
+        journal.insert(journal.end(), payload.begin(), payload.end());
+        installJournal(files, std::move(journal));
+        Voxel::WorldResources resources;
+        Voxel::World world(resources);
+        Asset::AssetManager assets;
+
+        const std::string error = loadFailure(files, world, assets);
+
+        CHECK(error.find("Invalid entity payload for journal region") !=
+              std::string::npos);
+        CHECK(journalExists(files));
+        CHECK_EQ(world.entities().size(), static_cast<size_t>(0));
+    }
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsUnsupportedVersionBeforeMutation) {
+    auto files = std::make_shared<SharedFiles>();
+    std::vector<uint8_t> journal = journalHeader(0, 0);
+    journal[5] = 1;
+    installJournal(files, std::move(journal));
+    auto control = std::make_shared<MutationControl>();
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    Asset::AssetManager assets;
+
+    const std::string error = loadFailure(
+        files, world, assets, "memory", control);
+
+    CHECK(error.find("Unsupported entity region journal version") !=
+          std::string::npos);
+    CHECK(control->attempted.empty());
+    CHECK(journalExists(files));
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsUnexpectedZoneBeforeMutation) {
+    auto files = std::make_shared<SharedFiles>();
+    std::vector<uint8_t> journal = journalHeader(0, 1);
+    appendKey(journal, "../../foreign");
+    installJournal(files, std::move(journal));
+    auto control = std::make_shared<MutationControl>();
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    Asset::AssetManager assets;
+
+    const std::string error = loadFailure(
+        files, world, assets, "memory", control);
+
+    CHECK(error.find("belongs to unexpected zone") != std::string::npos);
+    CHECK(control->attempted.empty());
+    CHECK(journalExists(files));
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsDifferentPersistenceFormat) {
+    auto files = std::make_shared<SharedFiles>();
+    const EntityRecord desired{
+        Entity::EntityId{80, 81, 82},
+        "rigel:format_guard",
+        glm::vec3(1.0f, 2.0f, 3.0f)};
+    auto publishControl = std::make_shared<MutationControl>();
+    publishControl->failAt = 1;
+    CHECK_THROWS(saveRecords(files, {desired}, publishControl));
+    CHECK(journalExists(files));
+
+    auto replayControl = std::make_shared<MutationControl>();
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    Asset::AssetManager assets;
+    const std::string error = loadFailure(
+        files, world, assets, "cr", replayControl);
+
+    CHECK(error.find("persistence format mismatch") != std::string::npos);
+    CHECK(replayControl->attempted.empty());
+    CHECK(journalExists(files));
+    CHECK(std::none_of(
+        files->files.begin(), files->files.end(),
+        [](const auto& entry) {
+            return entry.first.ends_with(".crbin");
+        }));
+    checkExactState(files, {desired});
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsDifferentPersistenceFormatVersion) {
+    auto files = std::make_shared<SharedFiles>();
+    installJournal(files, journalHeader(0, 0, 2));
+    auto control = std::make_shared<MutationControl>();
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    Asset::AssetManager assets;
+
+    const std::string error = loadFailure(
+        files, world, assets, "memory", control);
+
+    CHECK(error.find("persistence format mismatch") != std::string::npos);
+    CHECK(control->attempted.empty());
+    CHECK(journalExists(files));
 }

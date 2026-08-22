@@ -2,7 +2,23 @@
 
 #include "Rigel/Voxel/WorldGenConfig.h"
 
+#include <functional>
+#include <stdexcept>
+
 using namespace Rigel::Voxel;
+
+namespace {
+
+std::string exceptionMessage(const std::function<void()>& operation) {
+    try {
+        operation();
+    } catch (const std::invalid_argument& error) {
+        return error.what();
+    }
+    throw Rigel::Test::TestFailure("Expected invalid configuration");
+}
+
+} // namespace
 
 TEST_CASE(WorldGenConfig_ApplyYaml) {
     WorldGenConfig config;
@@ -242,4 +258,126 @@ overlays:
     CHECK(config.biomes.entries.empty());
     CHECK(config.structures.features.empty());
     CHECK(config.overlays.empty());
+}
+
+TEST_CASE(WorldGenConfig_AcceptsWorldAndOctaveMaxima) {
+    WorldGenConfig config;
+    config.applyYaml(
+        "limits.yaml",
+        "world:\n"
+        "  min_y: 3073\n"
+        "  max_y: 4096\n"
+        "  sea_level: 4096\n"
+        "terrain:\n"
+        "  noise:\n"
+        "    octaves: 16\n"
+        "density_graph:\n"
+        "  nodes:\n"
+        "    - id: bounded_noise\n"
+        "      type: noise3d\n"
+        "      noise:\n"
+        "        octaves: 16\n"
+    );
+
+    CHECK_EQ(config.world.maxY, WorldGenConfig::MaxWorldY);
+    CHECK_EQ(config.world.maxY - config.world.minY + 1,
+             WorldGenConfig::MaxWorldHeight);
+    CHECK_EQ(config.terrain.heightNoise.octaves,
+             WorldGenConfig::MaxNoiseOctaves);
+    CHECK_EQ(config.densityGraph.nodes[0].noise.octaves,
+             WorldGenConfig::MaxNoiseOctaves);
+}
+
+TEST_CASE(WorldGenConfig_RejectsWorldAndOctaveValuesAboveMaxima) {
+    const std::string worldError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "limits.yaml",
+            "world:\n"
+            "  min_y: 4096\n"
+            "  max_y: 4097\n"
+            "  sea_level: 4096\n"
+        );
+    });
+    CHECK_EQ(
+        worldError,
+        "Invalid configuration value 'world.max_y' in 'limits.yaml': "
+        "expected integer in [-4096, 4096], got '4097'"
+    );
+
+    const std::string octaveError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "limits.yaml",
+            "terrain:\n  noise:\n    octaves: 17\n"
+        );
+    });
+    CHECK_EQ(
+        octaveError,
+        "Invalid configuration value 'terrain.noise.octaves' in "
+        "'limits.yaml': expected integer no greater than 16, got '17'"
+    );
+
+    const std::string integerError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "limits.yaml",
+            "world:\n  max_y: 2147483647\n"
+        );
+    });
+    CHECK_EQ(
+        integerError,
+        "Invalid configuration value 'world.max_y' in 'limits.yaml': "
+        "expected integer in [-4096, 4096], got '2147483647'"
+    );
+}
+
+TEST_CASE(WorldGenConfig_RejectsWorldCrossFieldViolations) {
+    const std::string orderingError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "constraints.yaml",
+            "world:\n"
+            "  min_y: 10\n"
+            "  max_y: 9\n"
+            "  sea_level: 9\n"
+        );
+    });
+    CHECK_EQ(
+        orderingError,
+        "Invalid configuration value 'world.max_y' in 'constraints.yaml': "
+        "must be greater than or equal to 'world.min_y'"
+    );
+
+    const std::string heightError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "constraints.yaml",
+            "world:\n"
+            "  min_y: 0\n"
+            "  max_y: 1024\n"
+            "  sea_level: 0\n"
+        );
+    });
+    CHECK_EQ(
+        heightError,
+        "Invalid configuration value 'world.max_y' in 'constraints.yaml': "
+        "inclusive world height must not exceed 1024"
+    );
+
+    const std::string seaError = exceptionMessage([] {
+        WorldGenConfig config;
+        config.applyYaml(
+            "constraints.yaml",
+            "world:\n"
+            "  min_y: 0\n"
+            "  max_y: 10\n"
+            "  sea_level: 11\n"
+        );
+    });
+    CHECK_EQ(
+        seaError,
+        "Invalid configuration value 'world.sea_level' in "
+        "'constraints.yaml': must be between 'world.min_y' and 'world.max_y'"
+    );
 }

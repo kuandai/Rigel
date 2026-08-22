@@ -6,8 +6,21 @@
 #include <ryml_std.hpp>
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace Rigel::Voxel {
+namespace {
+
+[[noreturn]] void throwConstraint(const char* sourceName,
+                                  const char* key,
+                                  const std::string& requirement) {
+    throw std::invalid_argument(
+        "Invalid configuration value '" + std::string(key) + "' in '" +
+        sourceName + "': " + requirement
+    );
+}
+
+} // namespace
 
 void StreamingConfig::applyYaml(const char* sourceName, const std::string& yaml) {
     if (yaml.empty()) {
@@ -39,58 +52,92 @@ void StreamingConfig::applyYaml(const char* sourceName, const std::string& yaml)
         }
     );
 
-    viewDistanceChunks = Util::readInt(
-        streamNode, "view_distance_chunks", viewDistanceChunks);
-    unloadDistanceChunks = Util::readInt(
-        streamNode, "unload_distance_chunks", unloadDistanceChunks);
+    viewDistanceChunks = Util::readIntWithMaximum(
+        streamNode, "view_distance_chunks", viewDistanceChunks, 0,
+        MaxViewDistanceChunks, sourceName, "streaming");
+    unloadDistanceChunks = Util::readIntWithMaximum(
+        streamNode, "unload_distance_chunks", unloadDistanceChunks, 0,
+        MaxUnloadDistanceChunks, sourceName, "streaming");
 
-    int genLimit = Util::readInt(
-        streamNode, "gen_queue_limit", static_cast<int>(genQueueLimit));
-    genQueueLimit = static_cast<size_t>(genLimit < 0 ? 0 : genLimit);
+    int genLimit = Util::readIntWithMaximum(
+        streamNode, "gen_queue_limit", static_cast<int>(genQueueLimit), 0,
+        MaxQueueLimit, sourceName, "streaming");
+    genQueueLimit = static_cast<size_t>(genLimit);
 
-    int meshLimit = Util::readInt(
-        streamNode, "mesh_queue_limit", static_cast<int>(meshQueueLimit));
-    meshQueueLimit = static_cast<size_t>(meshLimit < 0 ? 0 : meshLimit);
+    int meshLimit = Util::readIntWithMaximum(
+        streamNode, "mesh_queue_limit", static_cast<int>(meshQueueLimit), 0,
+        MaxQueueLimit, sourceName, "streaming");
+    meshQueueLimit = static_cast<size_t>(meshLimit);
 
-    updateBudgetPerFrame = Util::readInt(
-        streamNode, "update_budget_per_frame", updateBudgetPerFrame);
-    applyBudgetPerFrame = Util::readInt(
-        streamNode, "apply_budget_per_frame", applyBudgetPerFrame);
-    workerThreads = Util::readInt(streamNode, "worker_threads", workerThreads);
-    ioThreads = Util::readInt(streamNode, "io_threads", ioThreads);
-    loadWorkerThreads = Util::readInt(
-        streamNode, "load_worker_threads", loadWorkerThreads);
-    loadApplyBudgetPerFrame = Util::readInt(
-        streamNode, "load_apply_budget_per_frame", loadApplyBudgetPerFrame);
-    loadRegionDrainBudget = Util::readInt(
-        streamNode, "load_region_drain_budget", loadRegionDrainBudget);
-    loadQueueLimit = Util::readInt(
-        streamNode, "load_queue_limit", loadQueueLimit);
-    loadMaxCachedRegions = Util::readInt(
-        streamNode, "load_max_cached_regions", loadMaxCachedRegions);
-    loadMaxInFlightRegions = Util::readInt(
-        streamNode, "load_max_inflight_regions", loadMaxInFlightRegions);
-    loadPrefetchRadius = Util::readInt(
-        streamNode, "load_prefetch_radius", loadPrefetchRadius);
-    loadPrefetchPerRequest = Util::readInt(
-        streamNode, "load_prefetch_per_request", loadPrefetchPerRequest);
+    updateBudgetPerFrame = Util::readIntWithMaximum(
+        streamNode, "update_budget_per_frame", updateBudgetPerFrame, 0,
+        MaxBudgetPerFrame, sourceName, "streaming");
+    applyBudgetPerFrame = Util::readIntWithMaximum(
+        streamNode, "apply_budget_per_frame", applyBudgetPerFrame, 0,
+        MaxBudgetPerFrame, sourceName, "streaming");
+    workerThreads = Util::readIntWithMaximum(
+        streamNode, "worker_threads", workerThreads, 0,
+        MaxWorkerThreads, sourceName, "streaming");
+    ioThreads = Util::readIntWithMaximum(
+        streamNode, "io_threads", ioThreads, 0,
+        MaxWorkerThreads, sourceName, "streaming");
+    loadWorkerThreads = Util::readIntWithMaximum(
+        streamNode, "load_worker_threads", loadWorkerThreads, 0,
+        MaxWorkerThreads, sourceName, "streaming");
+    loadApplyBudgetPerFrame = Util::readIntWithMaximum(
+        streamNode, "load_apply_budget_per_frame", loadApplyBudgetPerFrame, 0,
+        MaxBudgetPerFrame, sourceName, "streaming");
+    loadRegionDrainBudget = Util::readIntWithMaximum(
+        streamNode, "load_region_drain_budget", loadRegionDrainBudget, 0,
+        MaxBudgetPerFrame, sourceName, "streaming");
+    loadQueueLimit = Util::readIntWithMaximum(
+        streamNode, "load_queue_limit", loadQueueLimit, 0,
+        MaxQueueLimit, sourceName, "streaming");
+    loadMaxCachedRegions = Util::readIntWithMaximum(
+        streamNode, "load_max_cached_regions", loadMaxCachedRegions, 0,
+        MaxCachedRegions, sourceName, "streaming");
+    loadMaxInFlightRegions = Util::readIntWithMaximum(
+        streamNode, "load_max_inflight_regions", loadMaxInFlightRegions, 0,
+        MaxInFlightRegions, sourceName, "streaming");
+    loadPrefetchRadius = Util::readIntWithMaximum(
+        streamNode, "load_prefetch_radius", loadPrefetchRadius, 0,
+        MaxPrefetchRadius, sourceName, "streaming");
+    loadPrefetchPerRequest = Util::readIntWithMaximum(
+        streamNode, "load_prefetch_per_request", loadPrefetchPerRequest, 0,
+        MaxPrefetchPerRequest, sourceName, "streaming");
 
-    updateBudgetPerFrame = std::max(0, updateBudgetPerFrame);
-    applyBudgetPerFrame = std::max(0, applyBudgetPerFrame);
-    workerThreads = std::max(0, workerThreads);
-    ioThreads = std::max(0, ioThreads);
-    loadWorkerThreads = std::max(0, loadWorkerThreads);
-    loadApplyBudgetPerFrame = std::max(0, loadApplyBudgetPerFrame);
-    loadRegionDrainBudget = std::max(0, loadRegionDrainBudget);
-    loadQueueLimit = std::max(0, loadQueueLimit);
-    loadMaxCachedRegions = std::max(0, loadMaxCachedRegions);
-    loadMaxInFlightRegions = std::max(0, loadMaxInFlightRegions);
-    loadPrefetchRadius = std::max(0, loadPrefetchRadius);
-    loadPrefetchPerRequest = std::max(0, loadPrefetchPerRequest);
+    int resident = Util::readIntWithMaximum(
+        streamNode, "max_resident_chunks", static_cast<int>(maxResidentChunks),
+        0, MaxResidentChunks, sourceName, "streaming");
+    maxResidentChunks = static_cast<size_t>(resident);
 
-    int resident = Util::readInt(
-        streamNode, "max_resident_chunks", static_cast<int>(maxResidentChunks));
-    maxResidentChunks = static_cast<size_t>(resident < 0 ? 0 : resident);
+    if (unloadDistanceChunks < viewDistanceChunks) {
+        throwConstraint(
+            sourceName,
+            "streaming.unload_distance_chunks",
+            "must be greater than or equal to 'streaming.view_distance_chunks'"
+        );
+    }
+    if (workerThreads + ioThreads + loadWorkerThreads > MaxWorkerThreads) {
+        throwConstraint(
+            sourceName,
+            "streaming.worker_threads",
+            "combined worker_threads, io_threads, and load_worker_threads "
+            "must not exceed " + std::to_string(MaxWorkerThreads)
+        );
+    }
+    if (loadPrefetchRadius > 0) {
+        const int diameter = loadPrefetchRadius * 2 + 1;
+        const int candidateCount = diameter * diameter * diameter - 1;
+        if (loadPrefetchPerRequest > candidateCount) {
+            throwConstraint(
+                sourceName,
+                "streaming.load_prefetch_per_request",
+                "must not exceed the neighbor count selected by "
+                "'streaming.load_prefetch_radius'"
+            );
+        }
+    }
 }
 
 } // namespace Rigel::Voxel

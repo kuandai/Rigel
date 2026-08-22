@@ -17,6 +17,11 @@ class WorldConfigProvider;
  * Loaded via a layered config provider and applied to WorldGenerator.
  */
 struct WorldGenConfig {
+    static constexpr int MinWorldY = -4096;
+    static constexpr int MaxWorldY = 4096;
+    static constexpr int MaxWorldHeight = 1024;
+    static constexpr int MaxNoiseOctaves = 16;
+
     struct WorldConfig {
         int minY = -64;
         int maxY = 320;

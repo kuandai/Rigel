@@ -3,9 +3,24 @@
 #include "Rigel/Voxel/StreamingConfig.h"
 
 #include <fstream>
+#include <functional>
 #include <sstream>
+#include <stdexcept>
 
 using namespace Rigel::Voxel;
+
+namespace {
+
+std::string exceptionMessage(const std::function<void()>& operation) {
+    try {
+        operation();
+    } catch (const std::invalid_argument& error) {
+        return error.what();
+    }
+    throw Rigel::Test::TestFailure("Expected invalid configuration");
+}
+
+} // namespace
 
 TEST_CASE(StreamingConfig_ShippedStreamingDistances) {
     const std::string path =
@@ -71,6 +86,7 @@ TEST_CASE(StreamingConfig_LayeredMergeAndClamp) {
     config.applyYaml("base", R"(
 streaming:
   view_distance_chunks: 9
+  unload_distance_chunks: 9
   worker_threads: 4
   load_queue_limit: 20
 )");
@@ -85,4 +101,134 @@ streaming:
     CHECK_EQ(config.workerThreads, 0);
     CHECK_EQ(config.loadQueueLimit, 0);
     CHECK_EQ(config.maxResidentChunks, static_cast<size_t>(0));
+}
+
+TEST_CASE(StreamingConfig_AcceptsOperationalMaxima) {
+    StreamingConfig config;
+    config.applyYaml("limits.yaml", R"(
+streaming:
+  view_distance_chunks: 16
+  unload_distance_chunks: 24
+  gen_queue_limit: 32768
+  mesh_queue_limit: 32768
+  update_budget_per_frame: 32768
+  apply_budget_per_frame: 32768
+  worker_threads: 60
+  io_threads: 2
+  load_worker_threads: 2
+  load_apply_budget_per_frame: 32768
+  load_region_drain_budget: 32768
+  load_queue_limit: 32768
+  load_max_cached_regions: 256
+  load_max_inflight_regions: 64
+  load_prefetch_radius: 4
+  load_prefetch_per_request: 512
+  max_resident_chunks: 65536
+)");
+
+    CHECK_EQ(config.viewDistanceChunks, StreamingConfig::MaxViewDistanceChunks);
+    CHECK_EQ(config.unloadDistanceChunks, StreamingConfig::MaxUnloadDistanceChunks);
+    CHECK_EQ(config.genQueueLimit,
+             static_cast<size_t>(StreamingConfig::MaxQueueLimit));
+    CHECK_EQ(config.meshQueueLimit,
+             static_cast<size_t>(StreamingConfig::MaxQueueLimit));
+    CHECK_EQ(config.workerThreads + config.ioThreads + config.loadWorkerThreads,
+             StreamingConfig::MaxWorkerThreads);
+    CHECK_EQ(config.loadPrefetchRadius, StreamingConfig::MaxPrefetchRadius);
+    CHECK_EQ(config.loadPrefetchPerRequest,
+             StreamingConfig::MaxPrefetchPerRequest);
+}
+
+TEST_CASE(StreamingConfig_RejectsValuesAboveOperationalMaxima) {
+    const std::string radiusError = exceptionMessage([] {
+        StreamingConfig config;
+        config.applyYaml(
+            "limits.yaml",
+            "streaming:\n  view_distance_chunks: 17\n"
+        );
+    });
+    CHECK_EQ(
+        radiusError,
+        "Invalid configuration value 'streaming.view_distance_chunks' in "
+        "'limits.yaml': expected integer no greater than 16, got '17'"
+    );
+
+    const std::string queueError = exceptionMessage([] {
+        StreamingConfig config;
+        config.applyYaml(
+            "limits.yaml",
+            "streaming:\n  gen_queue_limit: 2147483647\n"
+        );
+    });
+    CHECK_EQ(
+        queueError,
+        "Invalid configuration value 'streaming.gen_queue_limit' in "
+        "'limits.yaml': expected integer no greater than 32768, got "
+        "'2147483647'"
+    );
+
+    const std::string unsignedError = exceptionMessage([] {
+        StreamingConfig config;
+        config.applyYaml(
+            "limits.yaml",
+            "streaming:\n  load_queue_limit: 4294967295\n"
+        );
+    });
+    CHECK_EQ(
+        unsignedError,
+        "Invalid configuration value 'streaming.load_queue_limit' in "
+        "'limits.yaml': expected integer no greater than 32768, got "
+        "'4294967295'"
+    );
+}
+
+TEST_CASE(StreamingConfig_RejectsCrossFieldViolations) {
+    const std::string unloadError = exceptionMessage([] {
+        StreamingConfig config;
+        config.applyYaml(
+            "constraints.yaml",
+            "streaming:\n"
+            "  view_distance_chunks: 9\n"
+            "  unload_distance_chunks: 8\n"
+        );
+    });
+    CHECK_EQ(
+        unloadError,
+        "Invalid configuration value 'streaming.unload_distance_chunks' in "
+        "'constraints.yaml': must be greater than or equal to "
+        "'streaming.view_distance_chunks'"
+    );
+
+    const std::string workerError = exceptionMessage([] {
+        StreamingConfig config;
+        config.applyYaml(
+            "constraints.yaml",
+            "streaming:\n"
+            "  worker_threads: 61\n"
+            "  io_threads: 2\n"
+            "  load_worker_threads: 2\n"
+        );
+    });
+    CHECK_EQ(
+        workerError,
+        "Invalid configuration value 'streaming.worker_threads' in "
+        "'constraints.yaml': combined worker_threads, io_threads, and "
+        "load_worker_threads must not exceed 64"
+    );
+
+    const std::string prefetchError = exceptionMessage([] {
+        StreamingConfig config;
+        config.applyYaml(
+            "constraints.yaml",
+            "streaming:\n"
+            "  load_prefetch_radius: 1\n"
+            "  load_prefetch_per_request: 27\n"
+        );
+    });
+    CHECK_EQ(
+        prefetchError,
+        "Invalid configuration value 'streaming.load_prefetch_per_request' "
+        "in 'constraints.yaml': must not exceed the neighbor count selected "
+        "by 'streaming.load_prefetch_radius'"
+    );
 }

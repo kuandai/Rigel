@@ -4,6 +4,8 @@
 #include <ryml_std.hpp>
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <cstdint>
+#include <stdexcept>
 
 #include "Rigel/Util/Yaml.h"
 #include "Rigel/Util/Ryml.h"
@@ -248,8 +250,13 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
     }
 }
 
-void applyNoise(ryml::ConstNodeRef node, WorldGenConfig::NoiseConfig& noise) {
-    noise.octaves = Util::readInt(node, "octaves", noise.octaves);
+void applyNoise(ryml::ConstNodeRef node,
+                WorldGenConfig::NoiseConfig& noise,
+                const char* sourceName,
+                std::string_view path) {
+    noise.octaves = Util::readIntWithMaximum(
+        node, "octaves", noise.octaves, 0,
+        WorldGenConfig::MaxNoiseOctaves, sourceName, path);
     noise.frequency = Util::readFloat(node, "frequency", noise.frequency);
     noise.lacunarity = Util::readFloat(node, "lacunarity", noise.lacunarity);
     noise.persistence = Util::readFloat(node, "persistence", noise.persistence);
@@ -257,18 +264,64 @@ void applyNoise(ryml::ConstNodeRef node, WorldGenConfig::NoiseConfig& noise) {
     noise.offset = Util::readFloat(node, "offset", noise.offset);
 }
 
-void applyClimateLayer(ryml::ConstNodeRef node, WorldGenConfig::ClimateLayerConfig& layer) {
+void applyClimateLayer(ryml::ConstNodeRef node,
+                       WorldGenConfig::ClimateLayerConfig& layer,
+                       const char* sourceName,
+                       std::string_view path) {
     if (!node.readable()) {
         return;
     }
     if (node.has_child("temperature")) {
-        applyNoise(node["temperature"], layer.temperature);
+        applyNoise(
+            node["temperature"], layer.temperature, sourceName,
+            std::string(path) + ".temperature");
     }
     if (node.has_child("humidity")) {
-        applyNoise(node["humidity"], layer.humidity);
+        applyNoise(
+            node["humidity"], layer.humidity, sourceName,
+            std::string(path) + ".humidity");
     }
     if (node.has_child("continentalness")) {
-        applyNoise(node["continentalness"], layer.continentalness);
+        applyNoise(
+            node["continentalness"], layer.continentalness, sourceName,
+            std::string(path) + ".continentalness");
+    }
+}
+
+[[noreturn]] void throwConstraint(const char* sourceName,
+                                  const char* key,
+                                  const std::string& requirement) {
+    throw std::invalid_argument(
+        "Invalid configuration value '" + std::string(key) + "' in '" +
+        sourceName + "': " + requirement
+    );
+}
+
+void validateWorldBounds(const WorldGenConfig::WorldConfig& world,
+                         const char* sourceName) {
+    if (world.maxY < world.minY) {
+        throwConstraint(
+            sourceName,
+            "world.max_y",
+            "must be greater than or equal to 'world.min_y'"
+        );
+    }
+    const int64_t height =
+        static_cast<int64_t>(world.maxY) - world.minY + 1;
+    if (height > WorldGenConfig::MaxWorldHeight) {
+        throwConstraint(
+            sourceName,
+            "world.max_y",
+            "inclusive world height must not exceed " +
+                std::to_string(WorldGenConfig::MaxWorldHeight)
+        );
+    }
+    if (world.seaLevel < world.minY || world.seaLevel > world.maxY) {
+        throwConstraint(
+            sourceName,
+            "world.sea_level",
+            "must be between 'world.min_y' and 'world.max_y'"
+        );
     }
 }
 
@@ -310,11 +363,18 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
 
     if (root.has_child("world")) {
         ryml::ConstNodeRef worldNode = root["world"];
-        world.minY = Util::readInt(worldNode, "min_y", world.minY);
-        world.maxY = Util::readInt(worldNode, "max_y", world.maxY);
-        world.seaLevel = Util::readInt(worldNode, "sea_level", world.seaLevel);
+        world.minY = Util::readIntInRange(
+            worldNode, "min_y", world.minY, MinWorldY, MaxWorldY,
+            sourceName, "world");
+        world.maxY = Util::readIntInRange(
+            worldNode, "max_y", world.maxY, MinWorldY, MaxWorldY,
+            sourceName, "world");
+        world.seaLevel = Util::readIntInRange(
+            worldNode, "sea_level", world.seaLevel, MinWorldY, MaxWorldY,
+            sourceName, "world");
         world.version = static_cast<uint32_t>(Util::readInt(worldNode, "version",
                                                       static_cast<int>(world.version)));
+        validateWorldBounds(world, sourceName);
     }
 
     if (root.has_child("terrain")) {
@@ -325,10 +385,14 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         terrain.densityStrength = Util::readFloat(terrainNode, "density_strength", terrain.densityStrength);
         terrain.gradientStrength = Util::readFloat(terrainNode, "gradient_strength", terrain.gradientStrength);
         if (terrainNode.has_child("noise")) {
-            applyNoise(terrainNode["noise"], terrain.heightNoise);
+            applyNoise(
+                terrainNode["noise"], terrain.heightNoise,
+                sourceName, "terrain.noise");
         }
         if (terrainNode.has_child("density_noise")) {
-            applyNoise(terrainNode["density_noise"], terrain.densityNoise);
+            applyNoise(
+                terrainNode["density_noise"], terrain.densityNoise,
+                sourceName, "terrain.density_noise");
         }
     }
 
@@ -338,10 +402,14 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         climate.latitudeScale = Util::readFloat(climateNode, "latitude_scale", climate.latitudeScale);
         climate.latitudeStrength = Util::readFloat(climateNode, "latitude_strength", climate.latitudeStrength);
         if (climateNode.has_child("global")) {
-            applyClimateLayer(climateNode["global"], climate.global);
+            applyClimateLayer(
+                climateNode["global"], climate.global,
+                sourceName, "climate.global");
         }
         if (climateNode.has_child("local")) {
-            applyClimateLayer(climateNode["local"], climate.local);
+            applyClimateLayer(
+                climateNode["local"], climate.local,
+                sourceName, "climate.local");
         }
     }
 
@@ -443,9 +511,13 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
                         }
                     }
                     if (node.has_child("noise")) {
-                        applyNoise(node["noise"], config.noise);
+                        applyNoise(
+                            node["noise"], config.noise,
+                            sourceName, "density_graph.nodes.noise");
                     } else {
-                        applyNoise(node, config.noise);
+                        applyNoise(
+                            node, config.noise,
+                            sourceName, "density_graph.nodes");
                     }
                     if (node.has_child("spline")) {
                         ryml::ConstNodeRef spline = node["spline"];

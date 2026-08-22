@@ -6,6 +6,17 @@
 namespace Rigel::Voxel {
 
 struct StreamingConfig {
+    static constexpr int MaxViewDistanceChunks = 16;
+    static constexpr int MaxUnloadDistanceChunks = 24;
+    static constexpr int MaxQueueLimit = 32768;
+    static constexpr int MaxWorkerThreads = 64;
+    static constexpr int MaxBudgetPerFrame = 32768;
+    static constexpr int MaxCachedRegions = 256;
+    static constexpr int MaxInFlightRegions = 64;
+    static constexpr int MaxPrefetchRadius = 4;
+    static constexpr int MaxPrefetchPerRequest = 512;
+    static constexpr int MaxResidentChunks = 65536;
+
     int viewDistanceChunks = 6;
     int unloadDistanceChunks = 8;
     size_t genQueueLimit = 0;

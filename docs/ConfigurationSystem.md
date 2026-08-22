@@ -142,9 +142,9 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `seed` | int | `1337` | Global world seed. |
 | `solid_block` | string | `base:debug` | Block ID used for solid fill. |
 | `surface_block` | string | `base:debug` | Block ID used for surface fill. |
-| `world.min_y` | int | `-64` | Minimum world Y coordinate. |
-| `world.max_y` | int | `320` | Maximum world Y coordinate. |
-| `world.sea_level` | int | `0` | Sea level for water placement. |
+| `world.min_y` | int | `-64` | Minimum world Y coordinate; supported range is `[-4096,4096]`. |
+| `world.max_y` | int | `320` | Maximum world Y coordinate; supported range is `[-4096,4096]`. |
+| `world.sea_level` | int | `0` | Sea level for water placement; must be inside the world bounds. |
 | `world.version` | int | `1` | World generation version. |
 | `terrain.base_height` | float | `16.0` | Base terrain height. |
 | `terrain.height_variation` | float | `16.0` | Terrain height variation. |
@@ -175,7 +175,7 @@ Noise objects (`terrain.noise`, `terrain.density_noise`, `climate.*.*`) use:
 
 | Key | Type | Default |
 | --- | --- | --- |
-| `octaves` | int | `5` |
+| `octaves` | int | `5` (maximum `16`) |
 | `frequency` | float | `0.005` |
 | `lacunarity` | float | `2.0` |
 | `persistence` | float | `0.5` |
@@ -195,6 +195,13 @@ Key top-level fields (see `assets/config/world_generation.yaml` for examples):
 - `structures`: simple feature generation
 - `generation.stages`: stage enable map
 - `overlays`: conditional config overlays
+
+World bounds are inclusive, ordered, and limited to 1,024 blocks of vertical
+span. The coordinate limit allows worlds to be placed within 128 vertical
+chunks on either side of the origin, while the span limit bounds the global
+surface search to 1,024 density samples per column. Noise declarations are
+limited to 16 octaves so every fBm sample has a fixed product-level work bound.
+These values are validated before a `WorldGenerator` is constructed.
 
 ### Pipeline Stages
 
@@ -244,30 +251,29 @@ precedence.
 
 | Key | Type | Code fallback | Notes |
 | --- | --- | --- | --- |
-| `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera. |
-| `streaming.unload_distance_chunks` | int | `8` | Unload radius, with the view radius as its effective minimum. |
-| `streaming.gen_queue_limit` | int | `0` | In-flight generation cap (0 = unlimited). |
-| `streaming.mesh_queue_limit` | int | `0` | In-flight mesh cap (0 = unlimited). |
+| `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera (maximum `16`). |
+| `streaming.unload_distance_chunks` | int | `8` | Unload radius (maximum `24`); must be at least the view radius. |
+| `streaming.gen_queue_limit` | int | `0` | In-flight generation cap (0 = unlimited; maximum explicit cap `32768`). |
+| `streaming.mesh_queue_limit` | int | `0` | In-flight mesh cap (0 = unlimited; maximum explicit cap `32768`). |
 | `streaming.update_budget_per_frame` | int | `0` | Load/generation/missing-mesh requests advanced per update (0 = unlimited). |
 | `streaming.apply_budget_per_frame` | int | `0` | Generation and mesh results applied per category (0 = unlimited). |
 | `streaming.worker_threads` | int | `2` | Total worker count partitioned between generation and meshing. |
 | `streaming.io_threads` | int | `1` | Region IO thread count. |
-| `streaming.load_worker_threads` | int | `2` | Chunk payload build thread count. |
+| `streaming.load_worker_threads` | int | `2` | Chunk payload build thread count; all three worker settings total at most `64`. |
 | `streaming.load_apply_budget_per_frame` | int | `8` | Disk payload apply budget (0 = unlimited). |
 | `streaming.load_region_drain_budget` | int | `32` | Region completion drain budget. |
-| `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited). |
-| `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = disabled). |
-| `streaming.load_max_inflight_regions` | int | `8` | Concurrent region read cap (0 = disabled). |
-| `streaming.load_prefetch_radius` | int | `1` | Region prefetch radius. |
-| `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request. |
-| `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited). |
+| `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited; maximum explicit cap `32768`). |
+| `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = disabled, maximum `256`). |
+| `streaming.load_max_inflight_regions` | int | `8` | Concurrent region read cap (0 = disabled, maximum `64`). |
+| `streaming.load_prefetch_radius` | int | `1` | Region prefetch radius (maximum `4`). |
+| `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request (maximum `512` and no more than the selected neighbor cube). |
+| `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited, maximum explicit cap `65536`). |
 
 The embedded configuration shipped with Rigel sets the view distance to 12
-chunks and the unload distance to 13 chunks. The effective unload distance is
-the greater of the configured view and unload distances. Hysteresis therefore
-exists only when `unload_distance_chunks` is greater than
-`view_distance_chunks`; equal values evict residents as soon as they leave the
-desired sphere.
+chunks and the unload distance to 13 chunks. Configurations with an unload
+distance below the view distance are rejected. Hysteresis exists only when
+`unload_distance_chunks` is greater than `view_distance_chunks`; equal values
+evict residents as soon as they leave the desired sphere.
 
 The one-chunk hysteresis was selected with a deterministic lifecycle regression.
 It preloads a sparse radius-12 sphere with one solid boundary probe, settles to
@@ -291,6 +297,14 @@ deltas are 55.125 MiB and 252.250 MiB, respectively. Chunks allocate block
 subchunks sparsely, and these figures exclude chunk and allocator overhead,
 asynchronous copies, and currently unmetered CPU and GPU mesh memory. They are
 block-storage bounds, not measurements of total resident memory.
+
+The view limit bounds a synchronous desired-set rebuild to 35,937 cube
+candidates and 17,077 selected sphere coordinates. The unload limit bounds its
+distance-retention sphere to 57,777 coordinates. Prefetch scans at most 728
+neighbors, and the per-request cap cannot exceed the neighbor count selected
+by its radius. Per-frame budgets are limited to 32,768. These are operational
+ceilings for Rigel's fixed 32-cubed chunks rather than integer or address-space
+maxima.
 
 Negative queue, budget, thread, cache, and prefetch values are clamped to zero.
 The desired set is rebuilt only when the camera enters a different chunk or a

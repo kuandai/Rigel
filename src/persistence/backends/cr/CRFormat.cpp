@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -70,6 +71,34 @@ constexpr size_t kLayerBytesHalfNibble = kLayerBlocks / 4;
 constexpr size_t kLayerBytesNibble = kLayerBlocks / 2;
 constexpr size_t kLayerBytesByte = kLayerBlocks;
 constexpr size_t kLayerBytesShort = kLayerBlocks * 2;
+
+constexpr size_t kRegionSpan = 16;
+constexpr size_t kRegionColumnCount = kRegionSpan * kRegionSpan;
+constexpr size_t kMaxChunksPerColumn = kRegionSpan;
+constexpr size_t kColumnHeaderBytes = 2 * sizeof(int32_t) + sizeof(uint8_t);
+constexpr size_t kMinChunkRecordBytes = 3 * sizeof(int32_t) + 4 * sizeof(uint8_t);
+constexpr size_t kMaxDecompressedRegionBytes = 64 * 1024 * 1024;
+constexpr size_t kMaxCompressedRegionBytes =
+    kMaxDecompressedRegionBytes + kMaxDecompressedRegionBytes / 255 + 16;
+constexpr size_t kMaxColumnBytes = kMaxDecompressedRegionBytes;
+constexpr int32_t kMaxPaletteEntries = 16 * 16 * 16;
+
+size_t remainingInput(const ByteReader& reader) {
+    const size_t position = reader.tell();
+    const size_t size = reader.size();
+    if (position > size) {
+        throw std::runtime_error("CRRegion: invalid reader position");
+    }
+    return size - position;
+}
+
+void requireRemaining(const ByteReader& reader,
+                      size_t required,
+                      const char* diagnostic) {
+    if (required > remainingInput(reader)) {
+        throw std::runtime_error(diagnostic);
+    }
+}
 
 int32_t floorDiv(int32_t value, int32_t divisor) {
     int32_t q = value / divisor;
@@ -236,6 +265,9 @@ public:
         if (len == 0) {
             return;
         }
+        if (len > remaining()) {
+            throw std::runtime_error("CRChunkCodec: payload exceeds column extent");
+        }
         std::vector<uint8_t> buffer(len);
         readBytes(buffer.data(), len);
     }
@@ -246,6 +278,10 @@ public:
         }
         m_reader.readBytes(dst, len);
         m_bytes.insert(m_bytes.end(), dst, dst + len);
+    }
+
+    size_t remaining() const {
+        return remainingInput(m_reader);
     }
 
     std::vector<uint8_t> takeBytes() {
@@ -405,8 +441,14 @@ private:
 
 std::string readString(TrackingReader& reader) {
     int32_t len = reader.readI32();
-    if (len <= 0) {
+    if (len < 0) {
+        throw std::runtime_error("CRChunkCodec: invalid string length");
+    }
+    if (len == 0) {
         return std::string();
+    }
+    if (static_cast<size_t>(len) > reader.remaining()) {
+        throw std::runtime_error("CRChunkCodec: string length exceeds column extent");
     }
     std::string out;
     out.resize(static_cast<size_t>(len));
@@ -654,6 +696,12 @@ std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
 
     if (blockType == kBlockLayered) {
         int32_t paletteSize = reader.readI32();
+        if (paletteSize <= 0 || paletteSize > kMaxPaletteEntries) {
+            throw std::runtime_error("CRChunkCodec: invalid palette size");
+        }
+        if (static_cast<size_t>(paletteSize) > reader.remaining() / sizeof(int32_t)) {
+            throw std::runtime_error("CRChunkCodec: palette exceeds column extent");
+        }
         paletteIds.reserve(static_cast<size_t>(paletteSize));
         for (int32_t i = 0; i < paletteSize; ++i) {
             std::string id = readString(reader);
@@ -909,7 +957,10 @@ private:
         if (entityFlag == kBlockEntityData) {
             decoded.hasUnsupportedPayload = true;
             int32_t size = tracker.readI32();
-            if (size > 0) {
+            if (size < 0) {
+                throw std::runtime_error("CRChunkCodec: invalid block entity size");
+            }
+            if (size != 0) {
                 tracker.readBytes(static_cast<size_t>(size));
             }
         } else if (entityFlag != kBlockEntityNull) {
@@ -1002,6 +1053,125 @@ public:
         return out;
     }
 };
+
+struct CRColumnEnvelope {
+    size_t tableIndex = 0;
+    size_t offset = 0;
+    size_t extent = 0;
+    uint8_t chunkCount = 0;
+};
+
+int32_t readColumnOffset(ByteReader& reader, uint8_t offsetType) {
+    switch (offsetType) {
+    case 1:
+        return static_cast<int8_t>(reader.readU8());
+    case 2:
+        return static_cast<int16_t>(reader.readU16());
+    case 3:
+        return reader.readI32();
+    default:
+        throw std::runtime_error("CRRegion: unsupported offset type");
+    }
+}
+
+std::vector<CRColumnEnvelope> validateRegionPayload(
+    ByteReader& reader,
+    int32_t declaredColumnCount) {
+    requireRemaining(reader, sizeof(uint8_t), "CRRegion: truncated offset type");
+    const uint8_t offsetType = reader.readU8();
+    if (offsetType < 1 || offsetType > 3) {
+        throw std::runtime_error("CRRegion: unsupported offset type");
+    }
+
+    const size_t offsetWidth = static_cast<size_t>(offsetType == 3 ? 4 : offsetType);
+    const size_t offsetTableBytes = kRegionColumnCount * offsetWidth;
+    requireRemaining(
+        reader, offsetTableBytes,
+        "CRRegion: offset table exceeds payload");
+    const size_t tableStart = reader.tell();
+    const size_t columnsStart = tableStart + offsetTableBytes;
+    const size_t columnPayloadBytes = reader.size() - columnsStart;
+
+    std::vector<CRColumnEnvelope> columns;
+    columns.reserve(static_cast<size_t>(declaredColumnCount));
+    std::unordered_set<size_t> referencedOffsets;
+    for (size_t index = 0; index < kRegionColumnCount; ++index) {
+        const int32_t relativeOffset = readColumnOffset(reader, offsetType);
+        if (relativeOffset == -1) {
+            continue;
+        }
+        if (relativeOffset < 0) {
+            throw std::runtime_error("CRRegion: invalid negative column offset");
+        }
+        const size_t relative = static_cast<size_t>(relativeOffset);
+        if (relative > columnPayloadBytes ||
+            kColumnHeaderBytes > columnPayloadBytes - relative) {
+            throw std::runtime_error("CRRegion: column offset exceeds payload");
+        }
+        const size_t absoluteOffset = columnsStart + relative;
+        if (!referencedOffsets.insert(absoluteOffset).second) {
+            throw std::runtime_error("CRRegion: duplicate column offset");
+        }
+        columns.push_back(CRColumnEnvelope{index, absoluteOffset, 0, 0});
+    }
+
+    if (static_cast<size_t>(declaredColumnCount) != columns.size()) {
+        throw std::runtime_error(
+            "CRRegion: column count does not match offset table");
+    }
+
+    for (auto& column : columns) {
+        reader.seek(column.offset);
+        const int32_t declaredExtent = reader.readI32();
+        if (declaredExtent < static_cast<int32_t>(kColumnHeaderBytes)) {
+            throw std::runtime_error(
+                "CRRegion: column extent is smaller than header");
+        }
+        column.extent = static_cast<size_t>(declaredExtent);
+        if (column.extent > kMaxColumnBytes) {
+            throw std::runtime_error("CRRegion: column extent exceeds format limit");
+        }
+        if (column.extent > reader.size() - column.offset) {
+            throw std::runtime_error("CRRegion: column extent exceeds payload");
+        }
+
+        const int32_t columnVersion = reader.readI32();
+        if (columnVersion != kFileVersion) {
+            throw std::runtime_error("CRRegion: unsupported column version");
+        }
+        column.chunkCount = reader.readU8();
+        if (column.chunkCount > kMaxChunksPerColumn) {
+            throw std::runtime_error(
+                "CRRegion: column chunk count exceeds format limit");
+        }
+        const size_t columnPayloadSize = column.extent - kColumnHeaderBytes;
+        if (static_cast<size_t>(column.chunkCount) >
+            columnPayloadSize / kMinChunkRecordBytes) {
+            throw std::runtime_error(
+                "CRRegion: column chunk count exceeds payload");
+        }
+    }
+
+    std::vector<const CRColumnEnvelope*> sortedColumns;
+    sortedColumns.reserve(columns.size());
+    for (const auto& column : columns) {
+        sortedColumns.push_back(&column);
+    }
+    std::sort(
+        sortedColumns.begin(), sortedColumns.end(),
+        [](const CRColumnEnvelope* lhs, const CRColumnEnvelope* rhs) {
+            return lhs->offset < rhs->offset;
+        });
+    for (size_t i = 1; i < sortedColumns.size(); ++i) {
+        const auto& previous = *sortedColumns[i - 1];
+        const auto& current = *sortedColumns[i];
+        if (current.offset < previous.offset + previous.extent) {
+            throw std::runtime_error("CRRegion: overlapping column extents");
+        }
+    }
+
+    return columns;
+}
 
 class CRChunkContainer final : public ChunkContainer {
 public:
@@ -1148,26 +1318,50 @@ public:
             return region;
         }
         auto reader = m_storage->openRead(path);
+        requireRemaining(*reader, 4 * sizeof(int32_t), "CRRegion: truncated file header");
         int32_t magic = reader->readI32();
         if (magic != kMagic) {
             throw std::runtime_error("CRRegion: invalid magic");
         }
         int32_t version = reader->readI32();
-        if (version > kFileVersion) {
-            throw std::runtime_error("CRRegion: unsupported version");
+        if (version != kFileVersion) {
+            throw std::runtime_error("CRRegion: unsupported file version");
         }
         int32_t compressionType = reader->readI32();
-        reader->readI32();
+        int32_t declaredColumnCount = reader->readI32();
+        if (declaredColumnCount < 0 ||
+            declaredColumnCount > static_cast<int32_t>(kRegionColumnCount)) {
+            throw std::runtime_error("CRRegion: invalid column count");
+        }
 
         std::unique_ptr<ByteReader> payloadReader;
         if (compressionType == kCompressionLz4) {
+            requireRemaining(
+                *reader, 2 * sizeof(int32_t),
+                "CRRegion: truncated compression header");
             int32_t compressedSize = reader->readI32();
             int32_t decompressedSize = reader->readI32();
-            if (!CRLz4::available()) {
-                throw std::runtime_error("CRRegion: LZ4 compression unavailable");
-            }
             if (compressedSize <= 0 || decompressedSize <= 0) {
                 throw std::runtime_error("CRRegion: invalid compressed sizes");
+            }
+            if (static_cast<size_t>(compressedSize) > kMaxCompressedRegionBytes) {
+                throw std::runtime_error(
+                    "CRRegion: compressed size exceeds format limit");
+            }
+            if (static_cast<size_t>(decompressedSize) > kMaxDecompressedRegionBytes) {
+                throw std::runtime_error(
+                    "CRRegion: decompressed size exceeds format limit");
+            }
+            if (static_cast<size_t>(compressedSize) > remainingInput(*reader)) {
+                throw std::runtime_error(
+                    "CRRegion: compressed size exceeds remaining input");
+            }
+            if (static_cast<size_t>(compressedSize) != remainingInput(*reader)) {
+                throw std::runtime_error(
+                    "CRRegion: compressed size does not consume input");
+            }
+            if (!CRLz4::available()) {
+                throw std::runtime_error("CRRegion: LZ4 compression unavailable");
             }
             std::vector<uint8_t> compressed(static_cast<size_t>(compressedSize));
             reader->readBytes(compressed.data(), compressed.size());
@@ -1176,54 +1370,62 @@ public:
             if (result < 0) {
                 throw std::runtime_error("CRRegion: LZ4 decompression failed");
             }
+            if (result != decompressedSize) {
+                throw std::runtime_error(
+                    "CRRegion: decompressed size does not match declaration");
+            }
             payloadReader = std::make_unique<MemoryByteReader>(std::move(decompressed));
         } else if (compressionType != kCompressionNone) {
             throw std::runtime_error("CRRegion: unknown compression type");
+        } else if (remainingInput(*reader) > kMaxDecompressedRegionBytes) {
+            throw std::runtime_error("CRRegion: region payload exceeds format limit");
         }
 
         ByteReader* dataReader = payloadReader ? payloadReader.get() : reader.get();
-        uint8_t offsetType = dataReader->readU8();
-        std::vector<int32_t> offsets(16 * 16, -1);
-        size_t tableStart = dataReader->tell();
-        size_t offsetTableSize = 0;
-        if (offsetType == 1) {
-            offsetTableSize = offsets.size();
-        } else if (offsetType == 2) {
-            offsetTableSize = offsets.size() * 2;
-        } else {
-            offsetTableSize = offsets.size() * 4;
+        auto columns = validateRegionPayload(*dataReader, declaredColumnCount);
+        size_t totalChunkCount = 0;
+        for (const auto& column : columns) {
+            totalChunkCount += column.chunkCount;
         }
-        size_t offsetOffset = tableStart + offsetTableSize;
-
-        for (size_t i = 0; i < offsets.size(); ++i) {
-            int32_t value = -1;
-            if (offsetType == 1) {
-                value = static_cast<int8_t>(dataReader->readU8());
-            } else if (offsetType == 2) {
-                value = static_cast<int16_t>(dataReader->readU16());
-            } else {
-                value = dataReader->readI32();
-            }
-            if (value != -1) {
-                offsets[i] = static_cast<int32_t>(offsetOffset + value);
-            }
-        }
+        region.chunks.reserve(totalChunkCount);
 
         ChunkKey hint{key.zoneId, 0, 0, 0};
-        for (size_t index = 0; index < offsets.size(); ++index) {
-            int32_t offset = offsets[index];
-            if (offset < 0) {
-                continue;
+        for (const auto& column : columns) {
+            auto columnBytes = dataReader->readAt(
+                column.offset + kColumnHeaderBytes,
+                column.extent - kColumnHeaderBytes);
+            MemoryByteReader columnReader(std::move(columnBytes));
+            const int64_t expectedX =
+                static_cast<int64_t>(key.x) * static_cast<int64_t>(kRegionSpan) +
+                static_cast<int64_t>(column.tableIndex % kRegionSpan);
+            const int64_t expectedZ =
+                static_cast<int64_t>(key.z) * static_cast<int64_t>(kRegionSpan) +
+                static_cast<int64_t>(column.tableIndex / kRegionSpan);
+            const int64_t minimumY =
+                static_cast<int64_t>(key.y) * static_cast<int64_t>(kRegionSpan);
+            const int64_t maximumY = minimumY + static_cast<int64_t>(kRegionSpan);
+
+            for (uint8_t i = 0; i < column.chunkCount; ++i) {
+                requireRemaining(
+                    columnReader, kMinChunkRecordBytes,
+                    "CRRegion: column chunk count exceeds payload");
+                const size_t recordStart = columnReader.tell();
+                const int32_t chunkX = columnReader.readI32();
+                const int32_t chunkY = columnReader.readI32();
+                const int32_t chunkZ = columnReader.readI32();
+                if (static_cast<int64_t>(chunkX) != expectedX ||
+                    static_cast<int64_t>(chunkZ) != expectedZ ||
+                    static_cast<int64_t>(chunkY) < minimumY ||
+                    static_cast<int64_t>(chunkY) >= maximumY) {
+                    throw std::runtime_error(
+                        "CRRegion: chunk coordinates do not match region column");
+                }
+                columnReader.seek(recordStart);
+                region.chunks.push_back(m_codec.read(columnReader, hint));
             }
-            dataReader->seek(static_cast<size_t>(offset));
-            int32_t columnByteSize = dataReader->readI32();
-            if (columnByteSize <= 0) {
-                continue;
-            }
-            dataReader->readI32();
-            uint8_t numChunks = dataReader->readU8();
-            for (uint8_t i = 0; i < numChunks; ++i) {
-                region.chunks.push_back(m_codec.read(*dataReader, hint));
+            if (columnReader.tell() != columnReader.size()) {
+                throw std::runtime_error(
+                    "CRRegion: column chunk count does not consume payload");
             }
         }
         return region;

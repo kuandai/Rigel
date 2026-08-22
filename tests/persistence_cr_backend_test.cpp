@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <limits>
 #include <unordered_map>
 
 using namespace Rigel::Persistence;
@@ -439,6 +440,154 @@ std::vector<uint8_t> readOnlyRecordInColumn(StorageBackend& storage,
     return reader.readAt(columnStart + 9, static_cast<size_t>(columnSize) - 9);
 }
 
+template <typename Fn>
+void checkCRRegionError(Fn&& fn, const std::string& expected) {
+    try {
+        fn();
+    } catch (const std::runtime_error& error) {
+        CHECK_EQ(std::string(error.what()), expected);
+        return;
+    }
+    throw Rigel::Test::TestFailure("Expected CR region format error");
+}
+
+std::vector<uint8_t> makeEmptyFixtureRecord(int32_t x, int32_t y, int32_t z) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeI32(x);
+    writer.writeI32(y);
+    writer.writeI32(z);
+    writer.writeU8(0);
+    writer.writeU8(1);
+    writer.writeU8(1);
+    writer.writeU8(0);
+    return bytes;
+}
+
+std::vector<uint8_t> makeFixtureColumn(
+    int32_t version,
+    uint8_t chunkCount,
+    const std::vector<std::vector<uint8_t>>& records = {},
+    const std::vector<uint8_t>& trailing = {}) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeI32(0);
+    writer.writeI32(version);
+    writer.writeU8(chunkCount);
+    for (const auto& record : records) {
+        writer.writeBytes(record.data(), record.size());
+    }
+    writer.writeBytes(trailing.data(), trailing.size());
+
+    std::array<uint8_t, 4> sizeBytes{
+        static_cast<uint8_t>((bytes.size() >> 24) & 0xFF),
+        static_cast<uint8_t>((bytes.size() >> 16) & 0xFF),
+        static_cast<uint8_t>((bytes.size() >> 8) & 0xFF),
+        static_cast<uint8_t>(bytes.size() & 0xFF)
+    };
+    writer.writeAt(0, sizeBytes.data(), sizeBytes.size());
+    return bytes;
+}
+
+void overwriteFixtureI32(std::vector<uint8_t>& bytes, size_t offset, int32_t value) {
+    CHECK(offset <= bytes.size());
+    CHECK(sizeof(value) <= bytes.size() - offset);
+    bytes[offset] = static_cast<uint8_t>((static_cast<uint32_t>(value) >> 24) & 0xFF);
+    bytes[offset + 1] = static_cast<uint8_t>((static_cast<uint32_t>(value) >> 16) & 0xFF);
+    bytes[offset + 2] = static_cast<uint8_t>((static_cast<uint32_t>(value) >> 8) & 0xFF);
+    bytes[offset + 3] = static_cast<uint8_t>(static_cast<uint32_t>(value) & 0xFF);
+}
+
+std::vector<uint8_t> makeFixturePayload(
+    uint8_t offsetType,
+    const std::array<int32_t, 16 * 16>& offsets,
+    const std::vector<uint8_t>& columns = {}) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeU8(offsetType);
+    for (int32_t offset : offsets) {
+        switch (offsetType) {
+        case 1:
+            writer.writeU8(static_cast<uint8_t>(offset));
+            break;
+        case 2:
+            writer.writeU16(static_cast<uint16_t>(offset));
+            break;
+        case 3:
+            writer.writeI32(offset);
+            break;
+        default:
+            break;
+        }
+    }
+    writer.writeBytes(columns.data(), columns.size());
+    return bytes;
+}
+
+std::vector<uint8_t> makeUncompressedFixtureRegion(
+    const std::vector<uint8_t>& payload,
+    int32_t columnCount,
+    int32_t fileVersion = 4) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeI32(static_cast<int32_t>(0xFFECCEAC));
+    writer.writeI32(fileVersion);
+    writer.writeI32(0);
+    writer.writeI32(columnCount);
+    writer.writeBytes(payload.data(), payload.size());
+    return bytes;
+}
+
+std::vector<uint8_t> makeCompressedFixtureRegion(
+    const std::vector<uint8_t>& compressed,
+    int32_t decompressedSize,
+    int32_t columnCount = 0) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeI32(static_cast<int32_t>(0xFFECCEAC));
+    writer.writeI32(4);
+    writer.writeI32(1);
+    writer.writeI32(columnCount);
+    writer.writeI32(static_cast<int32_t>(compressed.size()));
+    writer.writeI32(decompressedSize);
+    writer.writeBytes(compressed.data(), compressed.size());
+    return bytes;
+}
+
+ChunkRegionSnapshot loadFixtureRegion(std::vector<uint8_t> bytes) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "worlds/envelope_fixture";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    const RegionKey key{"zone:default", 0, 0, 0};
+    const std::string path = CRPaths::regionPath(key, context);
+    auto session = storage->openWrite(path, AtomicWriteOptions{});
+    session->writer().writeBytes(bytes.data(), bytes.size());
+    session->commit();
+
+    auto format = Backends::CR::factory()(context);
+    return format->chunkContainer().loadRegion(key);
+}
+
+std::array<int32_t, 16 * 16> absentFixtureOffsets() {
+    std::array<int32_t, 16 * 16> offsets;
+    offsets.fill(-1);
+    return offsets;
+}
+
+std::vector<uint8_t> makeSingleColumnFixtureRegion(
+    uint8_t offsetType,
+    const std::vector<uint8_t>& column,
+    size_t columnIndex = 0,
+    int32_t headerColumnCount = 1) {
+    auto offsets = absentFixtureOffsets();
+    offsets[columnIndex] = 0;
+    return makeUncompressedFixtureRegion(
+        makeFixturePayload(offsetType, offsets, column),
+        headerColumnCount);
+}
+
 const CRBinValue& requireField(const CRBinObject& obj, const std::string& name) {
     auto it = obj.fields.find(name);
     if (it == obj.fields.end()) {
@@ -526,6 +675,231 @@ TEST_CASE(CRBackend_region_roundtrip_minimal) {
     CHECK_EQ(loaded.chunks.size(), 1u);
     CHECK_EQ(loaded.chunks[0].key, chunk.key);
     CHECK_EQ(loaded.chunks[0].data, chunk.data);
+}
+
+TEST_CASE(CRBackend_region_accepts_supported_offset_widths) {
+    const auto column = makeFixtureColumn(
+        4, 1, {makeEmptyFixtureRecord(0, 0, 0)});
+
+    for (uint8_t offsetType : {uint8_t{1}, uint8_t{2}, uint8_t{3}}) {
+        auto loaded = loadFixtureRegion(
+            makeSingleColumnFixtureRegion(offsetType, column));
+        CHECK_EQ(loaded.chunks.size(), 1u);
+        CHECK_EQ(loaded.chunks.front().key,
+                 (ChunkKey{"zone:default", 0, 0, 0}));
+    }
+}
+
+TEST_CASE(CRBackend_region_rejects_unsupported_versions_and_offset_types) {
+    auto offsets = absentFixtureOffsets();
+    const auto emptyPayload = makeFixturePayload(1, offsets);
+    for (int32_t version : {3, 5}) {
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeUncompressedFixtureRegion(
+                emptyPayload, 0, version)); },
+            "CRRegion: unsupported file version");
+    }
+
+    for (int32_t version : {3, 5}) {
+        const auto column = makeFixtureColumn(
+            version, 1, {makeEmptyFixtureRecord(0, 0, 0)});
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(1, column)); },
+            "CRRegion: unsupported column version");
+    }
+
+    for (uint8_t offsetType : {uint8_t{0}, uint8_t{4}}) {
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeUncompressedFixtureRegion(
+                makeFixturePayload(offsetType, offsets), 0)); },
+            "CRRegion: unsupported offset type");
+    }
+
+    for (int32_t compressionType : {-1, 2}) {
+        auto region = makeUncompressedFixtureRegion(emptyPayload, 0);
+        overwriteFixtureI32(region, 8, compressionType);
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(region); },
+            "CRRegion: unknown compression type");
+    }
+}
+
+TEST_CASE(CRBackend_region_rejects_invalid_offsets_and_column_extents) {
+    const auto column = makeFixtureColumn(
+        4, 1, {makeEmptyFixtureRecord(0, 0, 0)});
+
+    auto negativeOffsets = absentFixtureOffsets();
+    negativeOffsets[0] = -2;
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeUncompressedFixtureRegion(
+            makeFixturePayload(3, negativeOffsets, column), 1)); },
+        "CRRegion: invalid negative column offset");
+
+    auto outsideOffsets = absentFixtureOffsets();
+    outsideOffsets[0] = static_cast<int32_t>(column.size());
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeUncompressedFixtureRegion(
+            makeFixturePayload(3, outsideOffsets, column), 1)); },
+        "CRRegion: column offset exceeds payload");
+
+    auto unboundedOffsets = absentFixtureOffsets();
+    unboundedOffsets[0] = std::numeric_limits<int32_t>::max();
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeUncompressedFixtureRegion(
+            makeFixturePayload(3, unboundedOffsets, column), 1)); },
+        "CRRegion: column offset exceeds payload");
+
+    for (int32_t extent : {-1, 0, 8}) {
+        auto invalidColumn = column;
+        overwriteFixtureI32(invalidColumn, 0, extent);
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+                1, invalidColumn)); },
+            "CRRegion: column extent is smaller than header");
+    }
+
+    auto oversizedColumn = column;
+    overwriteFixtureI32(
+        oversizedColumn, 0, static_cast<int32_t>(oversizedColumn.size() + 1));
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, oversizedColumn)); },
+        "CRRegion: column extent exceeds payload");
+
+    auto unboundedColumn = column;
+    overwriteFixtureI32(
+        unboundedColumn, 0, std::numeric_limits<int32_t>::max());
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, unboundedColumn)); },
+        "CRRegion: column extent exceeds format limit");
+}
+
+TEST_CASE(CRBackend_region_rejects_duplicate_and_overlapping_columns) {
+    const auto column = makeFixtureColumn(
+        4, 1, {makeEmptyFixtureRecord(0, 0, 0)});
+    std::array<int32_t, 16 * 16> repeatedOffsets;
+    repeatedOffsets.fill(0);
+    const auto repeated = makeUncompressedFixtureRegion(
+        makeFixturePayload(1, repeatedOffsets, column), 16 * 16);
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(repeated); },
+            "CRRegion: duplicate column offset");
+    }
+
+    auto overlappingBytes = column;
+    const auto secondColumn = makeFixtureColumn(4, 0);
+    overlappingBytes.insert(
+        overlappingBytes.end(), secondColumn.begin(), secondColumn.end());
+    overwriteFixtureI32(
+        overlappingBytes, 0, static_cast<int32_t>(overlappingBytes.size()));
+    auto overlappingOffsets = absentFixtureOffsets();
+    overlappingOffsets[0] = 0;
+    overlappingOffsets[1] = static_cast<int32_t>(column.size());
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeUncompressedFixtureRegion(
+            makeFixturePayload(2, overlappingOffsets, overlappingBytes), 2)); },
+        "CRRegion: overlapping column extents");
+}
+
+TEST_CASE(CRBackend_region_rejects_header_and_chunk_count_mismatches) {
+    auto offsets = absentFixtureOffsets();
+    const auto emptyPayload = makeFixturePayload(1, offsets);
+    for (int32_t columnCount : {-1, 16 * 16 + 1}) {
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeUncompressedFixtureRegion(
+                emptyPayload, columnCount)); },
+            "CRRegion: invalid column count");
+    }
+
+    const auto validColumn = makeFixtureColumn(
+        4, 1, {makeEmptyFixtureRecord(0, 0, 0)});
+    for (int32_t columnCount : {0, 2}) {
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+                1, validColumn, 0, columnCount)); },
+            "CRRegion: column count does not match offset table");
+    }
+
+    std::vector<std::vector<uint8_t>> boundaryRecords;
+    for (int32_t y = 0; y < 16; ++y) {
+        boundaryRecords.push_back(makeEmptyFixtureRecord(0, y, 0));
+    }
+    auto boundary = loadFixtureRegion(makeSingleColumnFixtureRegion(
+        2, makeFixtureColumn(4, 16, boundaryRecords)));
+    CHECK_EQ(boundary.chunks.size(), 16u);
+
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, makeFixtureColumn(4, 17))); },
+        "CRRegion: column chunk count exceeds format limit");
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, makeFixtureColumn(4, 1))); },
+        "CRRegion: column chunk count exceeds payload");
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, makeFixtureColumn(4, 0, {}, {0}))); },
+        "CRRegion: column chunk count does not consume payload");
+}
+
+TEST_CASE(CRBackend_region_rejects_out_of_region_chunk_coordinates) {
+    for (const auto& record : {
+             makeEmptyFixtureRecord(1, 0, 0),
+             makeEmptyFixtureRecord(0, 16, 0),
+             makeEmptyFixtureRecord(0, 0, 1)}) {
+        const auto column = makeFixtureColumn(4, 1, {record});
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(1, column)); },
+            "CRRegion: chunk coordinates do not match region column");
+    }
+}
+
+TEST_CASE(CRBackend_region_rejects_unbounded_compression_declarations) {
+    auto compressedLimit = makeCompressedFixtureRegion({}, 1);
+    overwriteFixtureI32(
+        compressedLimit, 16, std::numeric_limits<int32_t>::max());
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(compressedLimit); },
+        "CRRegion: compressed size exceeds format limit");
+
+    auto decompressedLimit = makeCompressedFixtureRegion({0}, 1);
+    overwriteFixtureI32(
+        decompressedLimit, 20, std::numeric_limits<int32_t>::max());
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(decompressedLimit); },
+        "CRRegion: decompressed size exceeds format limit");
+
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeCompressedFixtureRegion({}, 1)); },
+        "CRRegion: invalid compressed sizes");
+
+    auto truncated = makeCompressedFixtureRegion({0}, 1);
+    overwriteFixtureI32(truncated, 16, 2);
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(truncated); },
+        "CRRegion: compressed size exceeds remaining input");
+}
+
+TEST_CASE(CRBackend_region_requires_exact_lz4_output_size) {
+    if (!CRLz4::available()) {
+        SKIP_TEST("LZ4 not available");
+    }
+
+    const auto payload = makeFixturePayload(1, absentFixtureOffsets());
+    std::vector<uint8_t> compressed(
+        static_cast<size_t>(CRLz4::compressBound(static_cast<int>(payload.size()))));
+    int compressedSize = CRLz4::compress(
+        payload.data(), payload.size(), compressed.data(), compressed.size());
+    CHECK(compressedSize > 0);
+    compressed.resize(static_cast<size_t>(compressedSize));
+
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeCompressedFixtureRegion(
+            compressed, static_cast<int32_t>(payload.size() + 1))); },
+        "CRRegion: decompressed size does not match declaration");
 }
 
 TEST_CASE(CRBackend_dirty_save_preserves_untouched_record_bytes) {

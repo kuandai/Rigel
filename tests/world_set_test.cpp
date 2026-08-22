@@ -21,6 +21,26 @@ public:
     }
 };
 
+class ThrowOnceShaderLoader final : public Rigel::Asset::IAssetLoader {
+public:
+    std::string_view category() const override { return "shaders"; }
+
+    std::shared_ptr<Rigel::Asset::AssetBase> load(
+        const Rigel::Asset::LoadContext& ctx) override {
+        if (ctx.id == "shaders/voxel") {
+            ++voxelLoadCount;
+            if (!hasThrown) {
+                hasThrown = true;
+                throw std::runtime_error("injected voxel shader failure");
+            }
+        }
+        return std::make_shared<Rigel::Asset::ShaderAsset>();
+    }
+
+    int voxelLoadCount = 0;
+    bool hasThrown = false;
+};
+
 } // namespace
 
 template<typename T>
@@ -56,6 +76,47 @@ TEST_CASE(WorldSet_MultipleWorldsHaveIndependentChunks) {
 
     CHECK_EQ(first.getBlock(0, 0, 0).id, state.id);
     CHECK(second.getBlock(0, 0, 0).isAir());
+}
+
+TEST_CASE(WorldSet_CreateViewPublishesOnlyAfterInitialization) {
+    Rigel::Asset::AssetManager assets;
+    auto loader = std::make_unique<ThrowOnceShaderLoader>();
+    auto* loaderProbe = loader.get();
+    assets.registerLoader("shaders", std::move(loader));
+    assets.loadManifest("manifest.yaml");
+
+    WorldSet worldSet;
+    BlockType solid;
+    solid.identifier = "rigel:create_view_sentinel";
+    const BlockID solidId =
+        worldSet.resources().registry().registerBlock(solid.identifier, solid);
+    World& originalWorld = worldSet.createWorld(9);
+    originalWorld.setBlock(0, 0, 0, BlockState{solidId});
+
+    std::string diagnostic;
+    try {
+        worldSet.createView(9, assets);
+    } catch (const std::runtime_error& error) {
+        diagnostic = error.what();
+    }
+    CHECK_EQ(diagnostic, "injected voxel shader failure");
+    CHECK(worldSet.findView(9) == nullptr);
+    CHECK_EQ(&worldSet.world(9), &originalWorld);
+    CHECK_EQ(worldSet.world(9).getBlock(0, 0, 0).id, solidId);
+    CHECK_EQ(loaderProbe->voxelLoadCount, 1);
+
+    WorldView& initialized = worldSet.createView(9, assets);
+    CHECK_EQ(worldSet.findView(9), &initialized);
+    CHECK_EQ(&initialized.world(), &originalWorld);
+    CHECK_EQ(loaderProbe->voxelLoadCount, 2);
+
+    WorldView& duplicate = worldSet.createView(9, assets);
+    CHECK_EQ(&duplicate, &initialized);
+    CHECK_EQ(loaderProbe->voxelLoadCount, 2);
+
+    initialized.clear();
+    worldSet.clear();
+    CHECK(!worldSet.hasWorld(9));
 }
 
 TEST_CASE(WorldSet_ClearDestroysAllWorldsAndCanRepeatDuringTeardown) {

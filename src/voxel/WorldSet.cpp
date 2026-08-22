@@ -17,12 +17,19 @@ void WorldSet::initializeResources(Asset::AssetManager& assets) {
 }
 
 World& WorldSet::createWorld(WorldId id) {
-    auto [it, inserted] = m_worlds.emplace(id, nullptr);
-    if (inserted || !it->second) {
-        it->second = std::make_unique<WorldEntry>();
-        it->second->world.setId(id);
-        it->second->world.initialize(m_resources);
+    auto existing = m_worlds.find(id);
+    if (existing != m_worlds.end() && existing->second) {
+        return existing->second->world;
     }
+
+    auto candidate = std::make_unique<WorldEntry>();
+    candidate->world.setId(id);
+    candidate->world.initialize(m_resources);
+    if (existing != m_worlds.end()) {
+        existing->second = std::move(candidate);
+        return existing->second->world;
+    }
+    auto it = m_worlds.emplace(id, std::move(candidate)).first;
     return it->second->world;
 }
 
@@ -30,11 +37,12 @@ WorldView& WorldSet::createView(WorldId id, Asset::AssetManager& assets) {
     World& world = createWorld(id);
     WorldEntry& entry = *m_worlds.at(id);
     if (!entry.view) {
-        entry.view = std::make_unique<WorldView>(world, m_resources);
-        entry.view->initialize(assets);
+        auto candidate = std::make_unique<WorldView>(world, m_resources);
+        candidate->initialize(assets);
         if (world.generator()) {
-            entry.view->setGenerator(world.generator());
+            candidate->setGenerator(world.generator());
         }
+        entry.view = std::move(candidate);
     }
     return *entry.view;
 }

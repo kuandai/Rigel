@@ -1086,15 +1086,20 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             flight.workEpoch != m_workEpoch.load(std::memory_order_relaxed) ||
             meshResult.workEpoch != flight.workEpoch) {
             ++m_workMetrics.meshJobsRejectedStale;
+            auto stateIt = m_states.find(meshResult.coord);
+            bool ownsState = stateIt != m_states.end() &&
+                stateIt->second == ChunkState::QueuedMesh;
             Chunk* chunk = m_chunkManager->getChunk(meshResult.coord);
             if (chunk &&
                 m_desiredSet.find(meshResult.coord) != m_desiredSet.end() &&
                 !chunk->isEmpty()) {
-                m_states[meshResult.coord] = ChunkState::ReadyData;
+                if (ownsState) {
+                    stateIt->second = ChunkState::ReadyData;
+                }
                 chunk->markDirty();
                 queueDirtyMesh(meshResult.coord, flight.prioritized);
-            } else {
-                m_states.erase(meshResult.coord);
+            } else if (ownsState) {
+                m_states.erase(stateIt);
             }
             queueLoadGen(meshResult.coord);
             continue;

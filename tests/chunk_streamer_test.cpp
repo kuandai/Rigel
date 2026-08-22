@@ -2806,6 +2806,104 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDirtyMeshCapacity) {
              static_cast<uint64_t>(0));
 }
 
+TEST_CASE(ChunkStreamer_ObsoleteMeshPreservesReplacementGenerationFlight) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto originalGenerator = makeGenerator(registry);
+    BlockID originalSolid =
+        registerTestBlock(registry, "rigel:overlap_original_solid");
+    BlockID replacementSolid =
+        registerTestBlock(registry, "rigel:overlap_replacement_solid");
+
+    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
+    WorldGenConfig replacementConfig = originalGenerator->config();
+    ++replacementConfig.world.version;
+    replacementConfig.solidBlock = "rigel:overlap_replacement_solid";
+    replacementConfig.surfaceBlock = "rigel:overlap_replacement_solid";
+    replacementConfig.terrain.baseHeight = 64.0f;
+    replacementGenerator->setConfig(replacementConfig);
+
+    const ChunkCoord coord{0, 0, 0};
+    Chunk& original = manager.getOrCreateChunk(coord);
+    original.setBlock(0, 0, 0, BlockState{originalSolid}, registry);
+    original.setWorldGenVersion(originalGenerator->config().world.version);
+    original.setLoadedFromDisk(true);
+    original.clearPersistDirty();
+    meshStore.set(coord, {});
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, originalGenerator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 1;
+    stream.meshQueueLimit = 2;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 4;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+
+    auto meshGate = std::make_shared<WorkerGate>();
+    auto generationGate = std::make_shared<WorkerGate>();
+    WorkerGateRelease releaseMeshOnExit(meshGate);
+    WorkerGateRelease releaseGenerationOnExit(generationGate);
+    std::atomic<size_t> meshBuildsEntered{0};
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer,
+        [meshGate, &meshBuildsEntered]() {
+            if (meshBuildsEntered.fetch_add(1, std::memory_order_relaxed) == 0) {
+                meshGate->enterAndWait();
+            }
+        });
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [generationGate]() { generationGate->enterAndWait(); });
+
+    streamer.update(coord.toWorldCenter());
+    CHECK(meshGate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+
+    streamer.setGenerator(replacementGenerator);
+    streamer.update(coord.toWorldCenter());
+    CHECK(generationGate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(1));
+
+    meshGate->release();
+    CHECK(waitForMeshCompletions(streamer, 1));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(1));
+
+    generationGate->release();
+    CHECK(waitForGenerationCompletion(streamer));
+    streamer.processCompletions();
+
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(1));
+    Chunk* replacement = manager.getChunk(coord);
+    CHECK(replacement != nullptr);
+    if (!replacement) {
+        return;
+    }
+    CHECK_EQ(replacement->worldGenVersion(), replacementConfig.world.version);
+    CHECK_EQ(replacement->getBlock(0, 0, 0).id, replacementSolid);
+
+    streamer.update(coord.toWorldCenter());
+    CHECK(waitForMeshCompletions(streamer, 2));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+             static_cast<uint64_t>(1));
+}
+
 TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {
     ChunkManager manager;
     BlockRegistry registry;

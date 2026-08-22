@@ -54,6 +54,46 @@ void checkMemoryRandomReadFailure(MemoryByteReader& reader,
     throw Rigel::Test::TestFailure("Expected random read to fail");
 }
 
+void checkSequentialReadFailure(ByteReader& reader,
+                                size_t length,
+                                const std::string& diagnostic) {
+    const size_t position = reader.tell();
+    const std::array<uint8_t, 4> expected{91, 92, 93, 94};
+    auto destination = expected;
+    try {
+        reader.readBytes(destination.data(), length);
+    } catch (const std::runtime_error& error) {
+        CHECK_EQ(std::string(error.what()), diagnostic);
+        CHECK_EQ(reader.tell(), position);
+        CHECK_EQ(destination, expected);
+        return;
+    } catch (const std::exception& error) {
+        throw Rigel::Test::TestFailure(
+            std::string("Unexpected sequential read exception: ") + error.what());
+    }
+    throw Rigel::Test::TestFailure("Expected sequential read to fail");
+}
+
+void checkSequentialReadBounds(ByteReader& reader,
+                               const std::string& diagnostic) {
+    const std::array<uint8_t, 4> initial{91, 92, 93, 94};
+    std::array<uint8_t, 4> destination = initial;
+
+    reader.readBytes(destination.data(), 0);
+    CHECK_EQ(reader.tell(), static_cast<size_t>(0));
+    CHECK_EQ(destination, initial);
+
+    reader.seek(1);
+    checkSequentialReadFailure(reader, destination.size(), diagnostic);
+    checkSequentialReadFailure(
+        reader, std::numeric_limits<size_t>::max(), diagnostic);
+
+    reader.seek(0);
+    reader.readBytes(destination.data(), destination.size());
+    CHECK_EQ(destination, (std::array<uint8_t, 4>{10, 20, 30, 40}));
+    CHECK_EQ(reader.tell(), destination.size());
+}
+
 class InMemoryByteReader final : public ByteReader {
 public:
     explicit InMemoryByteReader(std::vector<uint8_t> data)
@@ -118,7 +158,7 @@ public:
 
 private:
     void ensureAvailable(size_t len) {
-        if (m_pos + len > m_data.size()) {
+        if (m_pos > m_data.size() || len > m_data.size() - m_pos) {
             throw std::runtime_error("InMemoryByteReader read out of range");
         }
     }
@@ -794,6 +834,17 @@ TEST_CASE(CRMemoryByteReader_bounds_random_access_reads) {
         std::numeric_limits<size_t>::max(),
         std::numeric_limits<size_t>::max());
     CHECK_EQ(reader.readU8(), static_cast<uint8_t>(20));
+}
+
+TEST_CASE(CRMemoryByteReader_bounds_sequential_reads) {
+    MemoryByteReader reader({10, 20, 30, 40});
+    checkSequentialReadBounds(reader, "CRMemoryReader read out of range");
+}
+
+TEST_CASE(CRBackendInMemoryByteReader_bounds_sequential_reads) {
+    InMemoryByteReader reader({10, 20, 30, 40});
+    checkSequentialReadBounds(
+        reader, "InMemoryByteReader read out of range");
 }
 
 TEST_CASE(CRPaths_normalize_zone) {

@@ -8,6 +8,8 @@
 #include <glm/vec3.hpp>
 
 #include <algorithm>
+#include <array>
+#include <limits>
 #include <unordered_map>
 
 using namespace Rigel::Persistence;
@@ -83,7 +85,7 @@ public:
 
 private:
     void ensureAvailable(size_t len) {
-        if (m_pos + len > m_data.size()) {
+        if (m_pos > m_data.size() || len > m_data.size() - m_pos) {
             throw std::runtime_error("InMemoryByteReader read out of range");
         }
     }
@@ -164,6 +166,48 @@ private:
     std::vector<uint8_t>& m_target;
     size_t m_pos = 0;
 };
+
+void checkSequentialReadFailure(ByteReader& reader,
+                                size_t length,
+                                const std::string& diagnostic) {
+    const size_t position = reader.tell();
+    const std::array<uint8_t, 4> expected{91, 92, 93, 94};
+    auto destination = expected;
+    try {
+        reader.readBytes(destination.data(), length);
+    } catch (const std::runtime_error& error) {
+        CHECK_EQ(std::string(error.what()), diagnostic);
+        CHECK_EQ(reader.tell(), position);
+        CHECK_EQ(destination, expected);
+        return;
+    } catch (const std::exception& error) {
+        throw Rigel::Test::TestFailure(
+            std::string("Unexpected sequential read exception: ") + error.what());
+    }
+    throw Rigel::Test::TestFailure("Expected sequential read to fail");
+}
+
+void checkSequentialReadBounds(ByteReader& reader) {
+    const std::array<uint8_t, 4> initial{91, 92, 93, 94};
+    std::array<uint8_t, 4> destination = initial;
+
+    reader.readBytes(destination.data(), 0);
+    CHECK_EQ(reader.tell(), static_cast<size_t>(0));
+    CHECK_EQ(destination, initial);
+
+    reader.seek(1);
+    checkSequentialReadFailure(
+        reader, destination.size(), "InMemoryByteReader read out of range");
+    checkSequentialReadFailure(
+        reader,
+        std::numeric_limits<size_t>::max(),
+        "InMemoryByteReader read out of range");
+
+    reader.seek(0);
+    reader.readBytes(destination.data(), destination.size());
+    CHECK_EQ(destination, (std::array<uint8_t, 4>{10, 20, 30, 40}));
+    CHECK_EQ(reader.tell(), destination.size());
+}
 
 class InMemoryWriteSession final : public AtomicWriteSession {
 public:
@@ -378,6 +422,11 @@ private:
 };
 
 } // namespace
+
+TEST_CASE(PersistenceInMemoryByteReader_bounds_sequential_reads) {
+    InMemoryByteReader reader({10, 20, 30, 40});
+    checkSequentialReadBounds(reader);
+}
 
 TEST_CASE(PersistenceInMemoryStorage_abandoned_write_does_not_create_destination) {
     InMemoryStorageBackend storage;

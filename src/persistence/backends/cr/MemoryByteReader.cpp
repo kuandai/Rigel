@@ -67,7 +67,7 @@ std::vector<uint8_t> MemoryByteReader::readAt(size_t offset, size_t len) {
 }
 
 void MemoryByteReader::ensureAvailable(size_t len) {
-    if (m_pos + len > m_data.size()) {
+    if (m_pos > m_data.size() || len > m_data.size() - m_pos) {
         throw std::runtime_error("CRMemoryReader read out of range");
     }
 }

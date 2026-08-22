@@ -12,8 +12,10 @@
 #include "Rigel/Voxel/WorldResources.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -138,6 +140,25 @@ private:
     std::vector<uint8_t> m_data;
     size_t m_position = 0;
 };
+
+void checkSharedReaderFailure(Persistence::ByteReader& reader,
+                              size_t length) {
+    const size_t position = reader.tell();
+    const std::array<uint8_t, 4> expected{91, 92, 93, 94};
+    auto destination = expected;
+    try {
+        reader.readBytes(destination.data(), length);
+    } catch (const std::runtime_error& error) {
+        CHECK_EQ(std::string(error.what()), "Test storage read past end");
+        CHECK_EQ(reader.tell(), position);
+        CHECK_EQ(destination, expected);
+        return;
+    } catch (const std::exception& error) {
+        throw Test::TestFailure(
+            std::string("Unexpected sequential read exception: ") + error.what());
+    }
+    throw Test::TestFailure("Expected sequential read to fail");
+}
 
 class SharedByteWriter final : public Persistence::ByteWriter {
 public:
@@ -681,6 +702,25 @@ std::string loadFailure(
 }
 
 } // namespace
+
+TEST_CASE(Persistence_SharedByteReader_bounds_sequential_reads) {
+    const std::vector<uint8_t> fixture{10, 20, 30, 40};
+    SharedByteReader reader(fixture);
+    std::array<uint8_t, 4> destination{91, 92, 93, 94};
+
+    reader.readBytes(destination.data(), 0);
+    CHECK_EQ(reader.tell(), static_cast<size_t>(0));
+    CHECK_EQ(destination, (std::array<uint8_t, 4>{91, 92, 93, 94}));
+
+    reader.seek(1);
+    checkSharedReaderFailure(reader, fixture.size());
+    checkSharedReaderFailure(reader, std::numeric_limits<size_t>::max());
+
+    reader.seek(0);
+    reader.readBytes(destination.data(), fixture.size());
+    CHECK_EQ(destination, (std::array<uint8_t, 4>{10, 20, 30, 40}));
+    CHECK_EQ(reader.tell(), fixture.size());
+}
 
 TEST_CASE(Persistence_EntityRegionMoveRecoversAtEveryMutation) {
     const Entity::EntityId id{1, 2, 3};

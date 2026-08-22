@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <spdlog/spdlog.h>
 
 namespace Rigel::Voxel {
@@ -889,11 +890,29 @@ WorldGenerator::WorldGenerator(const BlockRegistry& registry)
 }
 
 void WorldGenerator::setConfig(WorldGenConfig config) {
-    m_config = std::move(config);
-    std::string graphError;
-    if (!buildDensityGraph(m_config, m_densityGraph, graphError) && !graphError.empty()) {
-        spdlog::warn("WorldGenerator: density graph issue: {}", graphError);
+    auto requireBlock = [this](const std::string& identifier, const char* role) {
+        if (!m_registry.findByIdentifier(identifier)) {
+            throw std::runtime_error(
+                "WorldGenerator: required " + std::string(role) + " block '" +
+                identifier + "' is not registered");
+        }
+    };
+    if (config.isStageEnabled("terrain_density")) {
+        requireBlock(config.solidBlock, "solid");
     }
+    if (config.isStageEnabled("surface_rules")) {
+        requireBlock(config.surfaceBlock, "surface");
+    }
+
+    DensityGraph densityGraph;
+    std::string graphError;
+    if (!buildDensityGraph(config, densityGraph, graphError)) {
+        throw std::runtime_error(
+            "WorldGenerator: invalid density graph: " + graphError);
+    }
+
+    m_config = std::move(config);
+    m_densityGraph = std::move(densityGraph);
     rebuildStages();
 }
 

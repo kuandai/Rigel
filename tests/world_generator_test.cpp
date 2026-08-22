@@ -114,3 +114,59 @@ TEST_CASE(WorldGenerator_Deterministic) {
 
     CHECK_EQ(a.blocks, b.blocks);
 }
+
+TEST_CASE(WorldGenerator_RejectsMissingRequiredBlock) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenerator generator(registry);
+
+    WorldGenConfig config = makeFlatConfig();
+    config.solidBlock = "rigel:missing";
+
+    std::string diagnostic;
+    try {
+        generator.setConfig(config);
+    } catch (const std::exception& e) {
+        diagnostic = e.what();
+    }
+
+    CHECK(diagnostic.find("required solid block") != std::string::npos);
+    CHECK(diagnostic.find("rigel:missing") != std::string::npos);
+}
+
+TEST_CASE(WorldGenerator_DisabledStagesDoNotRequireMaterials) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenerator generator(registry);
+
+    WorldGenConfig config = makeFlatConfig();
+    config.solidBlock = "rigel:missing_solid";
+    config.surfaceBlock = "rigel:missing_surface";
+    config.stageEnabled["terrain_density"] = false;
+    config.stageEnabled["surface_rules"] = false;
+
+    CHECK_NO_THROW(generator.setConfig(config));
+}
+
+TEST_CASE(WorldGenerator_RejectsInvalidDensityGraph) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenerator generator(registry);
+
+    WorldGenConfig config = makeFlatConfig();
+    config.densityGraph.outputs["base_density"] = "sum";
+    config.densityGraph.nodes = {
+        WorldGenConfig::DensityNodeConfig{
+            .id = "sum",
+            .type = "add",
+            .inputs = {"missing"}
+        }
+    };
+
+    std::string diagnostic;
+    try {
+        generator.setConfig(config);
+    } catch (const std::exception& e) {
+        diagnostic = e.what();
+    }
+
+    CHECK(diagnostic.find("invalid density graph") != std::string::npos);
+    CHECK(diagnostic.find("missing") != std::string::npos);
+}

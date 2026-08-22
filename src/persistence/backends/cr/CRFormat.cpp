@@ -89,6 +89,8 @@ constexpr size_t kMaxColumnBytes = kMaxDecompressedRegionBytes;
 constexpr size_t kMaxChunkRecordBytes = 4 * 1024 * 1024;
 constexpr size_t kMaxChunkStringBytes = 1024 * 1024;
 constexpr size_t kMaxBlockEntityBytes = 1024 * 1024;
+constexpr size_t kMaxMetadataStringBytes = 1024 * 1024;
+constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
 constexpr int32_t kMaxPaletteEntries = 16 * 16 * 16;
 
 size_t remainingInput(const ByteReader& reader) {
@@ -203,25 +205,311 @@ std::array<uint8_t, 4> encodeI32(int32_t value) {
     };
 }
 
-std::optional<std::string> extractJsonString(const std::string& text, const std::string& key) {
-    std::string needle = "\"" + key + "\"";
-    auto pos = text.find(needle);
-    if (pos == std::string::npos) {
-        return std::nullopt;
+[[noreturn]] void throwInvalidJsonString() {
+    throw std::runtime_error("CRMetadata: invalid JSON string");
+}
+
+void requireMetadataStringSize(size_t size) {
+    if (size > kMaxMetadataStringBytes) {
+        throw std::runtime_error(
+            "CRMetadata: string exceeds format limit");
     }
-    pos = text.find(':', pos);
-    if (pos == std::string::npos) {
-        return std::nullopt;
+}
+
+void requireMetadataDocumentSize(size_t size) {
+    if (size > kMaxMetadataDocumentBytes) {
+        throw std::runtime_error(
+            "CRMetadata: document exceeds format limit");
     }
-    pos = text.find('"', pos);
-    if (pos == std::string::npos) {
-        return std::nullopt;
+}
+
+size_t encodedJsonStringSize(std::string_view value) {
+    requireMetadataStringSize(value.size());
+    size_t encodedSize = 2;
+    for (const unsigned char byte : value) {
+        size_t byteSize = 1;
+        if (byte == '"' || byte == '\\' || byte == '\b' || byte == '\f' ||
+            byte == '\n' || byte == '\r' || byte == '\t') {
+            byteSize = 2;
+        } else if (byte < 0x20) {
+            byteSize = 6;
+        }
+        if (encodedSize > kMaxMetadataDocumentBytes ||
+            byteSize > kMaxMetadataDocumentBytes - encodedSize) {
+            throw std::runtime_error(
+                "CRMetadata: document exceeds format limit");
+        }
+        encodedSize += byteSize;
     }
-    auto end = text.find('"', pos + 1);
-    if (end == std::string::npos || end <= pos + 1) {
-        return std::nullopt;
+    return encodedSize;
+}
+
+void appendJsonString(std::string& output, std::string_view value) {
+    constexpr char kHex[] = "0123456789abcdef";
+    output.push_back('"');
+    for (const unsigned char byte : value) {
+        switch (byte) {
+        case '"':
+            output += "\\\"";
+            break;
+        case '\\':
+            output += "\\\\";
+            break;
+        case '\b':
+            output += "\\b";
+            break;
+        case '\f':
+            output += "\\f";
+            break;
+        case '\n':
+            output += "\\n";
+            break;
+        case '\r':
+            output += "\\r";
+            break;
+        case '\t':
+            output += "\\t";
+            break;
+        default:
+            if (byte < 0x20) {
+                output += "\\u00";
+                output.push_back(kHex[(byte >> 4) & 0x0F]);
+                output.push_back(kHex[byte & 0x0F]);
+            } else {
+                output.push_back(static_cast<char>(byte));
+            }
+            break;
+        }
     }
-    return text.substr(pos + 1, end - pos - 1);
+    output.push_back('"');
+}
+
+std::string encodeMetadataDocument(std::string_view prefix,
+                                   std::string_view value,
+                                   std::string_view suffix) {
+    const size_t valueSize = encodedJsonStringSize(value);
+    if (prefix.size() > kMaxMetadataDocumentBytes ||
+        valueSize > kMaxMetadataDocumentBytes - prefix.size()) {
+        throw std::runtime_error(
+            "CRMetadata: document exceeds format limit");
+    }
+    const size_t prefixAndValueSize = prefix.size() + valueSize;
+    if (suffix.size() > kMaxMetadataDocumentBytes - prefixAndValueSize) {
+        throw std::runtime_error(
+            "CRMetadata: document exceeds format limit");
+    }
+
+    std::string document;
+    document.reserve(prefixAndValueSize + suffix.size());
+    document.append(prefix);
+    appendJsonString(document, value);
+    document.append(suffix);
+    return document;
+}
+
+std::string readMetadataDocument(ByteReader& reader) {
+    const size_t size = reader.size();
+    requireMetadataDocumentSize(size);
+    std::string text(size, '\0');
+    reader.seek(0);
+    if (!text.empty()) {
+        reader.readBytes(
+            reinterpret_cast<uint8_t*>(text.data()), text.size());
+    }
+    return text;
+}
+
+uint32_t readHexCodeUnit(std::string_view text, size_t& position) {
+    if (position > text.size() || text.size() - position < 4) {
+        throwInvalidJsonString();
+    }
+    uint32_t value = 0;
+    for (size_t index = 0; index < 4; ++index) {
+        const char digit = text[position++];
+        value <<= 4;
+        if (digit >= '0' && digit <= '9') {
+            value |= static_cast<uint32_t>(digit - '0');
+        } else if (digit >= 'a' && digit <= 'f') {
+            value |= static_cast<uint32_t>(digit - 'a' + 10);
+        } else if (digit >= 'A' && digit <= 'F') {
+            value |= static_cast<uint32_t>(digit - 'A' + 10);
+        } else {
+            throwInvalidJsonString();
+        }
+    }
+    return value;
+}
+
+void appendDecodedBytes(std::string& output,
+                        const char* bytes,
+                        size_t size) {
+    if (output.size() > kMaxMetadataStringBytes ||
+        size > kMaxMetadataStringBytes - output.size()) {
+        throw std::runtime_error(
+            "CRMetadata: string exceeds format limit");
+    }
+    output.append(bytes, size);
+}
+
+void appendCodePoint(std::string& output, uint32_t codePoint) {
+    std::array<char, 4> bytes{};
+    size_t size = 0;
+    if (codePoint <= 0x7F) {
+        bytes[0] = static_cast<char>(codePoint);
+        size = 1;
+    } else if (codePoint <= 0x7FF) {
+        bytes[0] = static_cast<char>(0xC0 | (codePoint >> 6));
+        bytes[1] = static_cast<char>(0x80 | (codePoint & 0x3F));
+        size = 2;
+    } else if (codePoint <= 0xFFFF) {
+        bytes[0] = static_cast<char>(0xE0 | (codePoint >> 12));
+        bytes[1] = static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F));
+        bytes[2] = static_cast<char>(0x80 | (codePoint & 0x3F));
+        size = 3;
+    } else {
+        bytes[0] = static_cast<char>(0xF0 | (codePoint >> 18));
+        bytes[1] = static_cast<char>(0x80 | ((codePoint >> 12) & 0x3F));
+        bytes[2] = static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F));
+        bytes[3] = static_cast<char>(0x80 | (codePoint & 0x3F));
+        size = 4;
+    }
+    appendDecodedBytes(output, bytes.data(), size);
+}
+
+size_t consumeJsonString(std::string_view text,
+                         size_t start,
+                         std::string* decoded) {
+    if (start >= text.size() || text[start] != '"') {
+        throwInvalidJsonString();
+    }
+    size_t position = start + 1;
+    while (position < text.size()) {
+        const unsigned char byte =
+            static_cast<unsigned char>(text[position++]);
+        if (byte == '"') {
+            return position;
+        }
+        if (byte < 0x20) {
+            throwInvalidJsonString();
+        }
+        if (byte != '\\') {
+            if (decoded) {
+                const char value = static_cast<char>(byte);
+                appendDecodedBytes(*decoded, &value, 1);
+            }
+            continue;
+        }
+        if (position >= text.size()) {
+            throwInvalidJsonString();
+        }
+
+        const char escape = text[position++];
+        char decodedEscape = '\0';
+        switch (escape) {
+        case '"':
+        case '\\':
+        case '/':
+            decodedEscape = escape;
+            break;
+        case 'b':
+            decodedEscape = '\b';
+            break;
+        case 'f':
+            decodedEscape = '\f';
+            break;
+        case 'n':
+            decodedEscape = '\n';
+            break;
+        case 'r':
+            decodedEscape = '\r';
+            break;
+        case 't':
+            decodedEscape = '\t';
+            break;
+        case 'u': {
+            uint32_t codePoint = readHexCodeUnit(text, position);
+            if (codePoint >= 0xD800 && codePoint <= 0xDBFF) {
+                if (position > text.size() || text.size() - position < 6 ||
+                    text[position] != '\\' || text[position + 1] != 'u') {
+                    throwInvalidJsonString();
+                }
+                position += 2;
+                const uint32_t lowSurrogate =
+                    readHexCodeUnit(text, position);
+                if (lowSurrogate < 0xDC00 || lowSurrogate > 0xDFFF) {
+                    throwInvalidJsonString();
+                }
+                codePoint = 0x10000 +
+                    ((codePoint - 0xD800) << 10) +
+                    (lowSurrogate - 0xDC00);
+            } else if (codePoint >= 0xDC00 && codePoint <= 0xDFFF) {
+                throwInvalidJsonString();
+            }
+            if (decoded) {
+                appendCodePoint(*decoded, codePoint);
+            }
+            continue;
+        }
+        default:
+            throwInvalidJsonString();
+        }
+        if (decoded) {
+            appendDecodedBytes(*decoded, &decodedEscape, 1);
+        }
+    }
+    throwInvalidJsonString();
+}
+
+bool isJsonWhitespace(char value) {
+    return value == ' ' || value == '\t' || value == '\n' || value == '\r';
+}
+
+std::optional<std::string> extractJsonString(std::string_view text,
+                                             std::string_view key) {
+    const std::string needle = "\"" + std::string(key) + "\"";
+    std::optional<std::string> result;
+    size_t position = 0;
+    while (position < text.size()) {
+        if (text[position] != '"') {
+            ++position;
+            continue;
+        }
+
+        const size_t tokenStart = position;
+        const size_t tokenEnd = consumeJsonString(text, tokenStart, nullptr);
+        const bool matchesKey =
+            tokenEnd - tokenStart == needle.size() &&
+            text.compare(tokenStart, needle.size(), needle) == 0;
+        if (!matchesKey) {
+            position = tokenEnd;
+            continue;
+        }
+
+        size_t valueStart = tokenEnd;
+        while (valueStart < text.size() && isJsonWhitespace(text[valueStart])) {
+            ++valueStart;
+        }
+        if (valueStart >= text.size() || text[valueStart] != ':') {
+            position = tokenEnd;
+            continue;
+        }
+        ++valueStart;
+        while (valueStart < text.size() && isJsonWhitespace(text[valueStart])) {
+            ++valueStart;
+        }
+        if (valueStart >= text.size() || text[valueStart] != '"') {
+            position = tokenEnd;
+            continue;
+        }
+
+        std::string value;
+        const size_t valueEnd = consumeJsonString(text, valueStart, &value);
+        if (!result) {
+            result = std::move(value);
+        }
+        position = valueEnd;
+    }
+    return result;
 }
 
 class TrackingReader {
@@ -979,25 +1267,27 @@ public:
     }
 
     void write(const WorldMetadata& metadata, ByteWriter& writer) override {
-        std::string text = "{\n";
-        text += "  \"latestRegionFileVersion\": " + std::to_string(kFileVersion) + ",\n";
-        text += "  \"defaultZoneId\": \"rigel:default\",\n";
-        text += "  \"worldDisplayName\": \"" + metadata.displayName + "\",\n";
-        text += "  \"worldSeed\": 0,\n";
-        text += "  \"worldCreatedEpochMillis\": 0,\n";
-        text += "  \"lastPlayedEpochMillis\": 0,\n";
-        text += "  \"worldTick\": 0\n";
-        text += "}\n";
+        const std::string prefix =
+            "{\n"
+            "  \"latestRegionFileVersion\": " +
+            std::to_string(kFileVersion) +
+            ",\n"
+            "  \"defaultZoneId\": \"rigel:default\",\n"
+            "  \"worldDisplayName\": ";
+        constexpr std::string_view suffix =
+            ",\n"
+            "  \"worldSeed\": 0,\n"
+            "  \"worldCreatedEpochMillis\": 0,\n"
+            "  \"lastPlayedEpochMillis\": 0,\n"
+            "  \"worldTick\": 0\n"
+            "}\n";
+        const std::string text = encodeMetadataDocument(
+            prefix, metadata.displayName, suffix);
         writer.writeBytes(reinterpret_cast<const uint8_t*>(text.data()), text.size());
     }
 
     WorldMetadata read(ByteReader& reader) override {
-        std::vector<uint8_t> bytes(reader.size());
-        reader.seek(0);
-        if (!bytes.empty()) {
-            reader.readBytes(bytes.data(), bytes.size());
-        }
-        std::string text(bytes.begin(), bytes.end());
+        const std::string text = readMetadataDocument(reader);
         WorldMetadata out;
         out.worldId = basename(m_context.rootPath);
         auto displayName = extractJsonString(text, "worldDisplayName");
@@ -1025,24 +1315,24 @@ public:
 
     void write(const ZoneMetadata& metadata, ByteWriter& writer) override {
         detail::validateZoneIdentifier(metadata.zoneId);
-        std::string text = "{\n";
-        text += "  \"zoneId\": \"" + metadata.zoneId + "\",\n";
-        text += "  \"worldGenSaveKey\": \"rigel:default\",\n";
-        text += "  \"seed\": 0,\n";
-        text += "  \"respawnHeight\": 0,\n";
-        text += "  \"spawnPoint\": {\"x\":0,\"y\":0,\"z\":0},\n";
-        text += "  \"skyId\": \"rigel:default\"\n";
-        text += "}\n";
+        constexpr std::string_view prefix =
+            "{\n"
+            "  \"zoneId\": ";
+        constexpr std::string_view suffix =
+            ",\n"
+            "  \"worldGenSaveKey\": \"rigel:default\",\n"
+            "  \"seed\": 0,\n"
+            "  \"respawnHeight\": 0,\n"
+            "  \"spawnPoint\": {\"x\":0,\"y\":0,\"z\":0},\n"
+            "  \"skyId\": \"rigel:default\"\n"
+            "}\n";
+        const std::string text = encodeMetadataDocument(
+            prefix, metadata.zoneId, suffix);
         writer.writeBytes(reinterpret_cast<const uint8_t*>(text.data()), text.size());
     }
 
     ZoneMetadata read(ByteReader& reader) override {
-        std::vector<uint8_t> bytes(reader.size());
-        reader.seek(0);
-        if (!bytes.empty()) {
-            reader.readBytes(bytes.data(), bytes.size());
-        }
-        std::string text(bytes.begin(), bytes.end());
+        const std::string text = readMetadataDocument(reader);
         ZoneMetadata out;
         auto zoneId = extractJsonString(text, "zoneId");
         if (zoneId) {
@@ -1722,11 +2012,7 @@ void requireSupportedDefaultZone(const PersistenceContext& context,
     }
 
     auto reader = context.storage->openRead(path);
-    std::vector<uint8_t> bytes(reader->size());
-    if (!bytes.empty()) {
-        reader->readBytes(bytes.data(), bytes.size());
-    }
-    const std::string text(bytes.begin(), bytes.end());
+    const std::string text = readMetadataDocument(*reader);
     const auto defaultZoneId = extractJsonString(text, "defaultZoneId");
     if (!defaultZoneId || defaultZoneId->empty()) {
         throw std::runtime_error(

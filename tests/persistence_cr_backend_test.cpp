@@ -34,6 +34,7 @@ using namespace Rigel::Persistence::Backends::CR;
 namespace {
 
 constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
+constexpr size_t kMaxMetadataStringBytes = 1024 * 1024;
 
 void checkMemoryRandomReadFailure(MemoryByteReader& reader,
                                   size_t offset,
@@ -532,6 +533,17 @@ void checkCRRegionError(Fn&& fn, const std::string& expected) {
         return;
     }
     throw Rigel::Test::TestFailure("Expected CR region format error");
+}
+
+template <typename Fn>
+void checkCRMetadataError(Fn&& fn, const std::string& expected) {
+    try {
+        fn();
+    } catch (const std::runtime_error& error) {
+        CHECK_EQ(std::string(error.what()), expected);
+        return;
+    }
+    throw Rigel::Test::TestFailure("Expected CR metadata format error");
 }
 
 template <typename Fn>
@@ -1630,7 +1642,62 @@ TEST_CASE(CRBackend_world_metadata_roundtrip) {
     CHECK_EQ(loaded.displayName, "Demo World");
 }
 
-TEST_CASE(CRBackend_world_metadata_staging_boundary) {
+TEST_CASE(CRBackend_world_metadata_escapes_json_strings) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/escaped_metadata";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+
+    WorldSnapshot world;
+    world.metadata.worldId = "escaped_metadata";
+    world.metadata.displayName =
+        std::string("Quoted \"world\" at C:\\saves\nnext") +
+        '\b' + '\f' + '\r' + '\t' + '\x01';
+
+    service.saveWorld(world, context);
+
+    const auto bytes = readAll(*storage, CRPaths::worldInfoPath(context));
+    const std::string document(bytes.begin(), bytes.end());
+    CHECK(document.find("\\\"") != std::string::npos);
+    CHECK(document.find("\\\\") != std::string::npos);
+    CHECK(document.find("\\n") != std::string::npos);
+    CHECK(document.find("\\b") != std::string::npos);
+    CHECK(document.find("\\f") != std::string::npos);
+    CHECK(document.find("\\r") != std::string::npos);
+    CHECK(document.find("\\t") != std::string::npos);
+    CHECK(document.find("\\u0001") != std::string::npos);
+    CHECK(document.find('\x01') == std::string::npos);
+    CHECK_EQ(service.loadWorldMetadata(context), world.metadata);
+}
+
+TEST_CASE(CRBackend_zone_metadata_decodes_json_unicode_escape) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/escaped_zone_metadata";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+
+    const ZoneKey key{"rigel:default"};
+    writeText(
+        *storage,
+        CRPaths::zoneInfoPath(key, context),
+        R"({"zoneId":"rigel\u003adefault"})");
+
+    CHECK_EQ(
+        service.loadZoneMetadata(key, context),
+        (ZoneMetadata{"rigel:default", "rigel:default"}));
+}
+
+TEST_CASE(CRBackend_world_metadata_enforces_string_and_document_boundaries) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
     FormatRegistry registry;
     registry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
@@ -1648,34 +1715,96 @@ TEST_CASE(CRBackend_world_metadata_staging_boundary) {
         WorldMetadata{"metadata_limit", ""}, emptyWriter);
     CHECK(emptyDocument.size() < kMaxMetadataDocumentBytes);
 
-    WorldSnapshot boundary;
-    boundary.metadata.worldId = "metadata_limit";
-    boundary.metadata.displayName = std::string(
-        kMaxMetadataDocumentBytes - emptyDocument.size(), 'x');
-    service.saveWorld(boundary, context);
-
     const auto worldPath = CRPaths::worldInfoPath(context);
-    const auto boundaryPayload = readAll(*storage, worldPath);
-    CHECK_EQ(boundaryPayload.size(), kMaxMetadataDocumentBytes);
-    CHECK_EQ(service.loadWorldMetadata(context), boundary.metadata);
+    WorldSnapshot stringBoundary;
+    stringBoundary.metadata.worldId = "metadata_limit";
+    stringBoundary.metadata.displayName =
+        std::string(kMaxMetadataStringBytes, 'x');
+    service.saveWorld(stringBoundary, context);
+    CHECK_EQ(service.loadWorldMetadata(context), stringBoundary.metadata);
 
     const size_t mkdirCount = storage->mkdirCount();
     const size_t writeSessionCount = storage->writeSessionCount();
-    WorldSnapshot oversized = boundary;
-    oversized.metadata.displayName.push_back('x');
-    std::string diagnostic;
-    try {
-        service.saveWorld(oversized, context);
-    } catch (const std::exception& error) {
-        diagnostic = error.what();
-    }
-
-    CHECK_EQ(
-        diagnostic,
-        "Persistence metadata document exceeds staging limit");
+    const auto stringBoundaryPayload = readAll(*storage, worldPath);
+    WorldSnapshot oversizedString = stringBoundary;
+    oversizedString.metadata.displayName.push_back('x');
+    checkCRMetadataError(
+        [&]() { service.saveWorld(oversizedString, context); },
+        "CRMetadata: string exceeds format limit");
     CHECK_EQ(storage->mkdirCount(), mkdirCount);
     CHECK_EQ(storage->writeSessionCount(), writeSessionCount);
-    CHECK_EQ(readAll(*storage, worldPath), boundaryPayload);
+    CHECK_EQ(readAll(*storage, worldPath), stringBoundaryPayload);
+
+    const size_t encodedValueBytes =
+        kMaxMetadataDocumentBytes - emptyDocument.size();
+    CHECK(encodedValueBytes >= kMaxMetadataStringBytes);
+    const size_t extraEncodedBytes =
+        encodedValueBytes - kMaxMetadataStringBytes;
+    const size_t unicodeEscapeCount = extraEncodedBytes / 5;
+    const size_t quoteEscapeCount = extraEncodedBytes % 5;
+    CHECK(unicodeEscapeCount + quoteEscapeCount <= kMaxMetadataStringBytes);
+
+    WorldSnapshot documentBoundary;
+    documentBoundary.metadata.worldId = "metadata_limit";
+    documentBoundary.metadata.displayName.assign(
+        kMaxMetadataStringBytes, 'x');
+    std::fill_n(
+        documentBoundary.metadata.displayName.begin(),
+        unicodeEscapeCount,
+        '\x01');
+    std::fill_n(
+        documentBoundary.metadata.displayName.begin() + unicodeEscapeCount,
+        quoteEscapeCount,
+        '"');
+
+    service.saveWorld(documentBoundary, context);
+    const auto documentBoundaryPayload = readAll(*storage, worldPath);
+    CHECK_EQ(documentBoundaryPayload.size(), kMaxMetadataDocumentBytes);
+    CHECK_EQ(service.loadWorldMetadata(context), documentBoundary.metadata);
+
+    WorldSnapshot oversizedDocument = documentBoundary;
+    oversizedDocument.metadata.displayName.back() = '\x01';
+    checkCRMetadataError(
+        [&]() { service.saveWorld(oversizedDocument, context); },
+        "CRMetadata: document exceeds format limit");
+    CHECK_EQ(readAll(*storage, worldPath), documentBoundaryPayload);
+}
+
+TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
+    const std::vector<std::string> invalidDocuments{
+        R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\q"})",
+        R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\u12xz"})",
+        R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\ud800"})",
+        std::string(kMaxMetadataDocumentBytes + 1, 'x')
+    };
+    const std::vector<std::string> diagnostics{
+        "CRMetadata: invalid JSON string",
+        "CRMetadata: invalid JSON string",
+        "CRMetadata: invalid JSON string",
+        "CRMetadata: document exceeds format limit"
+    };
+
+    for (size_t index = 0; index < invalidDocuments.size(); ++index) {
+        auto storage = std::make_shared<InMemoryStorageBackend>();
+        PersistenceContext context;
+        context.rootPath = "worlds/invalid_metadata_" + std::to_string(index);
+        context.storage = storage;
+        const auto worldPath = CRPaths::worldInfoPath(context);
+        const auto zonePath = CRPaths::zoneInfoPath(
+            ZoneKey{"rigel:default"}, context);
+        const auto regionPath = CRPaths::regionPath(
+            RegionKey{"rigel:default", 0, 0, 0}, context);
+        writeText(*storage, worldPath, invalidDocuments[index]);
+        const auto previousPayload = readAll(*storage, worldPath);
+
+        checkCRMetadataError(
+            [&]() { saveCRWorld(storage, context.rootPath, true); },
+            diagnostics[index]);
+
+        CHECK_EQ(readAll(*storage, worldPath), previousPayload);
+        CHECK(!storage->exists(zonePath));
+        CHECK(!storage->exists(regionPath));
+    }
 }
 
 TEST_CASE(CRBackend_world_save_preserves_existing_metadata_bytes) {

@@ -9,7 +9,7 @@ void FormatRegistry::registerFormat(const FormatDescriptor& descriptor, FormatFa
     if (!factory) {
         throw std::runtime_error("FormatRegistry: factory is required");
     }
-    Entry entry{descriptor, std::move(factory), std::move(probe)};
+    Entry entry{std::move(factory), std::move(probe)};
     m_entries[descriptor.id] = std::move(entry);
 }
 

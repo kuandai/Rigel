@@ -14,7 +14,6 @@ public:
 
 private:
     struct Entry {
-        FormatDescriptor descriptor;
         FormatFactory factory;
         FormatProbe probe;
     };

@@ -52,10 +52,21 @@ struct ChunkStreamerTestAccess {
     static bool evictChunk(ChunkStreamer& streamer, ChunkCoord coord) {
         return streamer.evictChunk(coord);
     }
+
+    static void reset(ChunkStreamer& streamer) {
+        streamer.reset();
+    }
 };
 }
 
 namespace {
+template<typename T>
+concept HasPublicReset = requires(T& streamer) {
+    streamer.reset();
+};
+
+static_assert(!HasPublicReset<ChunkStreamer>);
+
 class WorkerGate {
 public:
     void enterAndWait() {
@@ -1619,7 +1630,7 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     CHECK(originalGate->waitUntilEntered());
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
 
-    streamer.reset();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::reset(streamer);
     CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
     streamer.setGenerator(replacementGenerator);
@@ -3451,7 +3462,7 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
     CHECK(firstBuildEntered);
     const uint32_t queuedRevision = original.meshRevision();
 
-    streamer.reset();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::reset(streamer);
     original.clearPersistDirty();
     CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::evictChunk(
         streamer, coord));

@@ -29,6 +29,8 @@
 
 namespace Rigel::Voxel {
 
+class WorldView;
+
 namespace detail {
 struct ChunkStreamerTestAccess;
 }
@@ -113,14 +115,16 @@ public:
 
     void update(const glm::vec3& cameraPos);
     void processCompletions();
-    void reset();
     void getDebugStates(std::vector<DebugChunkState>& out) const;
     int viewDistanceChunks() const { return m_config.viewDistanceChunks; }
     const WorkMetrics& workMetrics() const { return m_workMetrics; }
     const StreamingDiagnosticSnapshot& diagnostics() const { return m_diagnostics; }
 
 private:
+    friend class WorldView;
     friend struct detail::ChunkStreamerTestAccess;
+
+    void reset();
 
     static constexpr int kPaddedSize = Chunk::SIZE + 2;
     static constexpr int kPaddedVolume = kPaddedSize * kPaddedSize * kPaddedSize;

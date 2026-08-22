@@ -71,6 +71,12 @@ public:
     int viewDistanceChunks() const;
     void prioritizeChunkMesh(ChunkCoord coord);
 
+    /**
+     * @brief Reset view-owned streaming and mesh state.
+     *
+     * Authoritative chunks remain in the world and will be reconsidered for
+     * meshing on the next streaming update.
+     */
     void clear();
     void releaseRenderResources();
 

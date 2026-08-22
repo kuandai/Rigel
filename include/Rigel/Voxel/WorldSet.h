@@ -39,9 +39,13 @@ public:
     /**
      * @brief Destroy every view and world during application teardown.
      *
-     * Asynchronous chunk loaders must be stopped and their callbacks detached
-     * from each view before this is called. Views are destroyed before the
-     * worlds and chunk managers to which they are bound.
+     * @pre Asynchronous chunk loaders are stopped and their callbacks detached
+     * from every view.
+     * @pre Active views have been cleared, and no world or view references will
+     * be used after this call.
+     *
+     * Views are destroyed before the worlds and chunk managers to which they
+     * are bound.
      */
     void clear();
 

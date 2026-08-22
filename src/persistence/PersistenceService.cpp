@@ -13,6 +13,10 @@ namespace Rigel::Persistence {
 
 namespace {
 
+constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
+constexpr size_t kMaxAggregateMetadataBytes = 8 * 1024 * 1024;
+constexpr size_t kMaxWorldMetadataZones = 4096;
+
 class MetadataBufferWriter final : public ByteWriter {
 public:
     explicit MetadataBufferWriter(std::vector<uint8_t>& payload)
@@ -89,9 +93,10 @@ public:
 
 private:
     void requireCapacity(size_t offset, size_t len) const {
-        if (offset > m_payload.max_size() ||
-            len > m_payload.max_size() - offset) {
-            throw std::length_error("Metadata payload exceeds staging capacity");
+        if (offset > kMaxMetadataDocumentBytes ||
+            len > kMaxMetadataDocumentBytes - offset) {
+            throw std::length_error(
+                "Persistence metadata document exceeds staging limit");
         }
     }
 
@@ -113,6 +118,20 @@ std::vector<uint8_t> encodeMetadata(Codec& codec, const Metadata& metadata) {
     MetadataBufferWriter writer(payload);
     codec.write(metadata, writer);
     writer.flush();
+    return payload;
+}
+
+template <typename Codec, typename Metadata>
+std::vector<uint8_t> stageMetadata(Codec& codec,
+                                   const Metadata& metadata,
+                                   size_t& stagedBytes) {
+    auto payload = encodeMetadata(codec, metadata);
+    if (stagedBytes > kMaxAggregateMetadataBytes ||
+        payload.size() > kMaxAggregateMetadataBytes - stagedBytes) {
+        throw std::length_error(
+            "Persistence world metadata exceeds aggregate staging limit");
+    }
+    stagedBytes += payload.size();
     return payload;
 }
 
@@ -163,6 +182,10 @@ void PersistenceService::handleUnsupportedFeature(const PersistenceContext& cont
 }
 
 void PersistenceService::saveWorld(const WorldSnapshot& snapshot, const PersistenceContext& context) {
+    if (snapshot.zones.size() > kMaxWorldMetadataZones) {
+        throw std::length_error(
+            "Persistence world metadata exceeds zone-count staging limit");
+    }
     for (const auto& zone : snapshot.zones) {
         detail::validateZoneIdentifier(zone.zoneId);
     }
@@ -178,11 +201,14 @@ void PersistenceService::saveWorld(const WorldSnapshot& snapshot, const Persiste
             zoneCodec.metadataPath(ZoneKey{zone.zoneId}, context));
     }
 
-    auto worldPayload = encodeMetadata(worldCodec, snapshot.metadata);
+    size_t stagedBytes = 0;
+    auto worldPayload = stageMetadata(
+        worldCodec, snapshot.metadata, stagedBytes);
     std::vector<std::vector<uint8_t>> zonePayloads;
     zonePayloads.reserve(snapshot.zones.size());
     for (const auto& zone : snapshot.zones) {
-        zonePayloads.push_back(encodeMetadata(zoneCodec, zone));
+        zonePayloads.push_back(
+            stageMetadata(zoneCodec, zone, stagedBytes));
     }
 
     publishMetadata(*context.storage, worldPayload, worldPath);

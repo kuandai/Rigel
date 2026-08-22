@@ -14,6 +14,11 @@ using namespace Rigel::Persistence;
 
 namespace {
 
+constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
+constexpr size_t kMaxAggregateMetadataBytes = 8 * 1024 * 1024;
+constexpr size_t kMaxWorldMetadataZones = 4096;
+constexpr size_t kMaxMemoryStringBytes = 1'048'576;
+
 class InMemoryByteReader final : public ByteReader {
 public:
     explicit InMemoryByteReader(std::vector<uint8_t> data)
@@ -398,6 +403,32 @@ TEST_CASE(Persistence_MetadataRoundTrip) {
     CHECK_EQ(loaded.displayName, world.metadata.displayName);
 }
 
+TEST_CASE(Persistence_MaximumMemoryMetadataDocumentRoundTrip) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
+
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    WorldSnapshot world;
+    world.metadata.worldId = std::string(kMaxMemoryStringBytes, 'w');
+    world.metadata.displayName = std::string(kMaxMemoryStringBytes, 'd');
+
+    service.saveWorld(world, context);
+
+    CHECK_EQ(service.loadWorldMetadata(context), world.metadata);
+    CHECK_EQ(
+        storage->files().at("root/world.meta").size(),
+        2 * kMaxMemoryStringBytes + 2 * sizeof(uint32_t));
+    CHECK(storage->files().at("root/world.meta").size() <
+          kMaxMetadataDocumentBytes);
+}
+
 #ifndef _WIN32
 TEST_CASE(Persistence_AggregateMetadataSavePreflightsMemoryLayouts) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
@@ -563,6 +594,84 @@ TEST_CASE(Persistence_AggregateMetadataSaveValidatesAllPayloadsBeforeWrites) {
     CHECK(storage->calls().empty());
     CHECK(diagnostic.find("MemoryFormat: string length exceeds format limit") !=
           std::string::npos);
+}
+
+TEST_CASE(Persistence_AggregateMetadataByteLimitPrecedesWrites) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
+
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    WorldSnapshot original;
+    original.metadata = WorldMetadata{"original", "Original World"};
+    original.zones.push_back(ZoneMetadata{"original-zone", "Original Zone"});
+    service.saveWorld(original, context);
+
+    const auto originalFiles = storage->files();
+    storage->clearCalls();
+
+    WorldSnapshot oversized;
+    oversized.metadata = WorldMetadata{"replacement", "Replacement World"};
+    for (size_t index = 0;
+         index < kMaxAggregateMetadataBytes / kMaxMemoryStringBytes;
+         ++index) {
+        oversized.zones.push_back(ZoneMetadata{
+            "zone-" + std::to_string(index),
+            std::string(kMaxMemoryStringBytes, 'x')});
+    }
+
+    std::string diagnostic;
+    try {
+        service.saveWorld(oversized, context);
+    } catch (const std::exception& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK_EQ(
+        diagnostic,
+        "Persistence world metadata exceeds aggregate staging limit");
+    CHECK_EQ(storage->files(), originalFiles);
+    CHECK(storage->calls().empty());
+}
+
+TEST_CASE(Persistence_AggregateMetadataZoneLimitPrecedesPreflight) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
+
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    WorldSnapshot oversized;
+    oversized.metadata = WorldMetadata{"world", "World"};
+    oversized.zones.reserve(kMaxWorldMetadataZones + 1);
+    for (size_t index = 0; index <= kMaxWorldMetadataZones; ++index) {
+        oversized.zones.push_back(
+            ZoneMetadata{"zone-" + std::to_string(index), "Zone"});
+    }
+
+    std::string diagnostic;
+    try {
+        service.saveWorld(oversized, context);
+    } catch (const std::exception& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK_EQ(
+        diagnostic,
+        "Persistence world metadata exceeds zone-count staging limit");
+    CHECK(storage->calls().empty());
+    CHECK(storage->files().empty());
 }
 
 TEST_CASE(Persistence_ZoneMetadataRoundTrip) {

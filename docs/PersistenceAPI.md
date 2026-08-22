@@ -183,6 +183,11 @@ Current behavior:
 - The world root path is `saves/world_<worldId>`.
 - `PersistenceService::saveWorld` writes world and zone metadata only.
 - `PersistenceService::saveZoneMetadata` writes one zone's metadata only.
+- Metadata writes stage documents up to 4 MiB each. A world metadata save
+  preflights at most 4,096 zones and 8 MiB of encoded metadata before opening
+  any output file.
+- Metadata files are atomically replaced one at a time. A world metadata save
+  does not provide a cross-file transaction.
 - `PersistenceService` chunk and entity payload writes require explicit region snapshots.
 - Only chunks marked `isPersistDirty()` are saved.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,

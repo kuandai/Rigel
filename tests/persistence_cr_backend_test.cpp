@@ -32,6 +32,8 @@ using namespace Rigel::Persistence::Backends::CR;
 
 namespace {
 
+constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
+
 class InMemoryByteReader final : public ByteReader {
 public:
     explicit InMemoryByteReader(std::vector<uint8_t> data)
@@ -228,6 +230,7 @@ public:
     }
 
     void mkdirs(const std::string&) override {
+        ++m_mkdirCount;
     }
 
     void remove(const std::string& path) override {
@@ -238,9 +241,14 @@ public:
         return m_writeSessionCount;
     }
 
+    size_t mkdirCount() const {
+        return m_mkdirCount;
+    }
+
 private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
     size_t m_writeSessionCount = 0;
+    size_t m_mkdirCount = 0;
 };
 
 void createEmptyFile(StorageBackend& storage, const std::string& path) {
@@ -1499,6 +1507,54 @@ TEST_CASE(CRBackend_world_metadata_roundtrip) {
 
     CHECK_EQ(loaded.worldId, "demo");
     CHECK_EQ(loaded.displayName, "Demo World");
+}
+
+TEST_CASE(CRBackend_world_metadata_staging_boundary) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/metadata_limit";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+
+    auto format = Backends::CR::factory()(context);
+    std::vector<uint8_t> emptyDocument;
+    InMemoryByteWriter emptyWriter(emptyDocument);
+    format->worldMetadataCodec().write(
+        WorldMetadata{"metadata_limit", ""}, emptyWriter);
+    CHECK(emptyDocument.size() < kMaxMetadataDocumentBytes);
+
+    WorldSnapshot boundary;
+    boundary.metadata.worldId = "metadata_limit";
+    boundary.metadata.displayName = std::string(
+        kMaxMetadataDocumentBytes - emptyDocument.size(), 'x');
+    service.saveWorld(boundary, context);
+
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const auto boundaryPayload = readAll(*storage, worldPath);
+    CHECK_EQ(boundaryPayload.size(), kMaxMetadataDocumentBytes);
+    CHECK_EQ(service.loadWorldMetadata(context), boundary.metadata);
+
+    const size_t mkdirCount = storage->mkdirCount();
+    const size_t writeSessionCount = storage->writeSessionCount();
+    WorldSnapshot oversized = boundary;
+    oversized.metadata.displayName.push_back('x');
+    std::string diagnostic;
+    try {
+        service.saveWorld(oversized, context);
+    } catch (const std::exception& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK_EQ(
+        diagnostic,
+        "Persistence metadata document exceeds staging limit");
+    CHECK_EQ(storage->mkdirCount(), mkdirCount);
+    CHECK_EQ(storage->writeSessionCount(), writeSessionCount);
+    CHECK_EQ(readAll(*storage, worldPath), boundaryPayload);
 }
 
 TEST_CASE(CRBackend_world_save_preserves_existing_metadata_bytes) {

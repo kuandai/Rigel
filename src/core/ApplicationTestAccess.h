@@ -42,6 +42,9 @@ public:
         ApplicationConstructionHooks hooks,
         void (*runLoop)(Application&));
     static void closeReadyWorld(ApplicationCloseHooks hooks);
+    static bool initializeOptionalUserInterface(
+        GLFWwindow* window,
+        bool (*initialize)(GLFWwindow*)) noexcept;
 };
 
 } // namespace Rigel

@@ -27,11 +27,28 @@ void WorldView::initialize(Asset::AssetManager& assets) {
         spdlog::error("Failed to load voxel shader: {}", e.what());
         throw;
     }
-    try {
-        m_shadowDepthShader = assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_depth");
-        m_shadowTransmitShader = assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_transmit");
-    } catch (const std::exception& e) {
-        spdlog::warn("Shadow shaders unavailable: {}", e.what());
+    const auto loadOptionalShadow = [&assets](const char* id) {
+        if (!assets.exists(id)) {
+            spdlog::warn("Optional startup resource '{}' is absent", id);
+            return Asset::Handle<Asset::ShaderAsset>{};
+        }
+        try {
+            return assets.get<Asset::ShaderAsset>(id);
+        } catch (const std::exception& error) {
+            spdlog::warn(
+                "Optional startup resource '{}' failed to load: {}",
+                id,
+                error.what());
+            return Asset::Handle<Asset::ShaderAsset>{};
+        }
+    };
+    auto shadowDepth = loadOptionalShadow("shaders/voxel_shadow_depth");
+    auto shadowTransmit = loadOptionalShadow("shaders/voxel_shadow_transmit");
+    if (shadowDepth) {
+        m_shadowDepthShader = std::move(shadowDepth);
+    }
+    if (shadowTransmit) {
+        m_shadowTransmitShader = std::move(shadowTransmit);
     }
 
     m_entityRenderer.initialize(assets);

@@ -1,4 +1,5 @@
 #include "TestFramework.h"
+#include "LogCapture.h"
 
 #include "Rigel/Asset/AssetLoader.h"
 #include "Rigel/Voxel/BlockType.h"
@@ -39,6 +40,24 @@ public:
 
     int voxelLoadCount = 0;
     bool hasThrown = false;
+};
+
+class OptionalShadowFailureLoader final : public Rigel::Asset::IAssetLoader {
+public:
+    std::string_view category() const override { return "shaders"; }
+
+    std::shared_ptr<Rigel::Asset::AssetBase> load(
+        const Rigel::Asset::LoadContext& ctx) override {
+        if (ctx.id == "shaders/voxel_shadow_depth" ||
+            ctx.id == "shaders/voxel_shadow_transmit") {
+            ++failureCount;
+            throw std::runtime_error(
+                "injected optional shadow failure for " + ctx.id);
+        }
+        return std::make_shared<Rigel::Asset::ShaderAsset>();
+    }
+
+    size_t failureCount = 0;
 };
 
 } // namespace
@@ -117,6 +136,36 @@ TEST_CASE(WorldSet_CreateViewPublishesOnlyAfterInitialization) {
     initialized.clear();
     worldSet.clear();
     CHECK(!worldSet.hasWorld(9));
+}
+
+TEST_CASE(WorldSet_OptionalShadowFailuresPublishDegradedView) {
+    Rigel::Test::LogCapture logs("voxel-shadow-failure-test");
+    Rigel::Asset::AssetManager assets;
+    auto loader = std::make_unique<OptionalShadowFailureLoader>();
+    auto* loaderProbe = loader.get();
+    assets.registerLoader("shaders", std::move(loader));
+    assets.loadManifest("manifest.yaml");
+
+    WorldSet worldSet;
+    World& world = worldSet.createWorld(10);
+    WorldView* view = nullptr;
+    CHECK_NO_THROW(view = &worldSet.createView(10, assets));
+    CHECK(view != nullptr);
+    CHECK_EQ(worldSet.findView(10), view);
+    CHECK_EQ(&view->world(), &world);
+    CHECK_EQ(loaderProbe->failureCount, static_cast<size_t>(2));
+    const auto output = logs.output();
+    CHECK_EQ(Rigel::Test::countOccurrences(
+                 output,
+                 "Optional startup resource 'shaders/voxel_shadow_depth'"),
+             static_cast<size_t>(1));
+    CHECK_EQ(Rigel::Test::countOccurrences(
+                 output,
+                 "Optional startup resource 'shaders/voxel_shadow_transmit'"),
+             static_cast<size_t>(1));
+
+    view->clear();
+    worldSet.clear();
 }
 
 TEST_CASE(WorldSet_ClearDestroysAllWorldsAndCanRepeatDuringTeardown) {

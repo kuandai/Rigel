@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <utility>
 
@@ -238,8 +239,16 @@ void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) 
 void loadInputBindings(Asset::AssetManager& assets, InputState& input) {
     std::shared_ptr<InputBindings> bindings;
     if (assets.exists("input/default")) {
-        auto bindingsHandle = assets.get<InputBindings>("input/default");
-        bindings = bindingsHandle.shared();
+        try {
+            auto bindingsHandle = assets.get<InputBindings>("input/default");
+            bindings = bindingsHandle.shared();
+        } catch (const std::exception& error) {
+            spdlog::warn(
+                "Optional startup resource 'input/default' failed to load: {}",
+                error.what());
+        }
+    } else {
+        spdlog::warn("Optional startup resource 'input/default' is absent");
     }
     if (!bindings) {
         bindings = std::make_shared<InputBindings>();

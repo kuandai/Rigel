@@ -3,6 +3,7 @@
 #include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
 #include "Rigel/Persistence/Storage.h"
+#include "Rigel/UI/ImGuiLayer.h"
 
 #include <cstdlib>
 #include <memory>
@@ -108,6 +109,26 @@ void recordRunLoopEntry(Rigel::Application&) {
 
 void recordShutdownStage(Rigel::ApplicationShutdownStage stage) noexcept {
     g_calls->shutdown.push_back(stage);
+}
+
+bool initializeUiSuccessfully(GLFWwindow*) {
+    return true;
+}
+
+bool failUiInitialization(GLFWwindow*) {
+    return false;
+}
+
+bool throwDuringUiInitialization(GLFWwindow*) {
+    throw std::runtime_error("injected ImGui backend failure");
+}
+
+void runWithOptionalUiFailure() {
+    if (Rigel::ApplicationTestAccess::initializeOptionalUserInterface(
+            g_calls->window, &throwDuringUiInitialization)) {
+        throw std::runtime_error("optional UI failure was accepted");
+    }
+    g_calls->runLoopEntered = true;
 }
 
 enum class PersistenceFailurePoint {
@@ -269,6 +290,37 @@ TEST_CASE(Application_BootstrapFailureReturnsFailureBeforeRunLoop) {
     CHECK(!calls.runLoopEntered);
     CHECK(logs.output().find("required bootstrap data unavailable") !=
           std::string::npos);
+}
+
+TEST_CASE(Application_OptionalUserInterfaceFailuresContinueOnce) {
+    LifecycleCalls calls;
+    ScopedLifecycleCalls scopedCalls(calls);
+    LogCapture logs;
+
+    CHECK(Rigel::ApplicationTestAccess::initializeOptionalUserInterface(
+        calls.window, &initializeUiSuccessfully));
+    CHECK(!Rigel::ApplicationTestAccess::initializeOptionalUserInterface(
+        calls.window, &failUiInitialization));
+    CHECK(!Rigel::ApplicationTestAccess::initializeOptionalUserInterface(
+        calls.window, &throwDuringUiInitialization));
+    Rigel::UI::shutdown();
+    Rigel::UI::shutdown();
+
+    const int result = Rigel::runApplication(&runWithOptionalUiFailure);
+    CHECK_EQ(result, EXIT_SUCCESS);
+    CHECK(calls.runLoopEntered);
+
+    const std::string output = logs.output();
+    const std::string identifier = "Optional startup resource 'ImGui'";
+    size_t warningCount = 0;
+    size_t position = 0;
+    while ((position = output.find(identifier, position)) !=
+           std::string::npos) {
+        ++warningCount;
+        position += identifier.size();
+    }
+    CHECK_EQ(warningCount, static_cast<size_t>(3));
+    CHECK(output.find("injected ImGui backend failure") != std::string::npos);
 }
 
 TEST_CASE(Application_ClosePersistenceFailuresRetryDuringCleanup) {

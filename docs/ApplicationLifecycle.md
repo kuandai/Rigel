@@ -43,6 +43,19 @@ Shutdown persists world state and releases resources.
      state as applicable.
 4. Load the asset manifest and register loaders.
    - `input`, `entity_models`, `entity_anims` loaders are registered.
+   - `shaders/voxel` is required. Failure to load it aborts view creation; the
+     failed candidate is not published, so a later call can retry normally.
+   - Voxel depth and transmission shadow shaders are optional independently.
+     A missing or unloadable shader emits one warning naming its asset id and
+     disables only the pass that consumes it.
+   - Entity and entity-shadow shaders are optional independently. A missing or
+     unloadable main shader disables entity rendering; a missing or unloadable
+     shadow shader disables entity shadow casting.
+   - A missing or unloadable `input/default` asset emits one warning and uses
+     the built-in bindings. Bindings are published only after this fallback is
+     complete.
+   - ImGui initialization is optional. A false result or exception emits one
+     warning naming ImGui, cleans partial UI state, and continues without UI.
 5. Register persistence formats and configure persistence root.
    - Formats are registered with `WorldSet::persistenceFormats()`.
    - Root path is resolved from the world id.

@@ -9,6 +9,7 @@
 #include <glm/gtc/matrix_access.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
+#include <exception>
 #include <spdlog/spdlog.h>
 
 namespace Rigel::Entity {
@@ -48,16 +49,24 @@ float computeEntityAo(const Voxel::World& world, const Aabb& bounds) {
 
 void EntityRenderer::initialize(Asset::AssetManager& assets) {
     m_assets = &assets;
-    if (assets.exists("shaders/entity")) {
-        m_shader = assets.get<Asset::ShaderAsset>("shaders/entity");
-    } else {
-        spdlog::warn("EntityRenderer: entity shader not found in manifest");
-    }
-    if (assets.exists("shaders/entity_shadow_depth")) {
-        m_shadowShader = assets.get<Asset::ShaderAsset>("shaders/entity_shadow_depth");
-    } else {
-        spdlog::warn("EntityRenderer: entity shadow shader not found in manifest");
-    }
+    const auto loadOptionalShader = [&assets](
+        const char* id,
+        Asset::Handle<Asset::ShaderAsset>& destination) {
+        if (!assets.exists(id)) {
+            spdlog::warn("Optional startup resource '{}' is absent", id);
+            return;
+        }
+        try {
+            destination = assets.get<Asset::ShaderAsset>(id);
+        } catch (const std::exception& error) {
+            spdlog::warn(
+                "Optional startup resource '{}' failed to load: {}",
+                id,
+                error.what());
+        }
+    };
+    loadOptionalShader("shaders/entity", m_shader);
+    loadOptionalShader("shaders/entity_shadow_depth", m_shadowShader);
 }
 
 void EntityRenderer::render(Voxel::World& world, const EntityRenderContext& ctx) {

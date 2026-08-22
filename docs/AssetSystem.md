@@ -120,7 +120,12 @@ The asset system throws typed exceptions:
 - `AssetLoadError`: Missing path, invalid config, or loader failure.
 - `ShaderCompileError` / `ShaderLinkError`: GLSL compilation/link failures.
 
-Most loader errors are fatal at call-site and should be handled by the caller.
+Loader errors are classified by their owning startup lifecycle. The voxel shader
+is required and aborts view creation on failure. Voxel-shadow, entity-shader,
+entity-shadow, and default-input assets are optional: absence and load failure
+take the same documented fallback, emit one warning naming the asset id, and do
+not publish partially initialized optional state. ImGui follows the same
+optional startup policy at its application boundary.
 
 ## Threading + GL Context Requirements
 

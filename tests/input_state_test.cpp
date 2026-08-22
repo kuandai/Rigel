@@ -1,6 +1,9 @@
 #include "TestFramework.h"
+#include "LogCapture.h"
 
+#include "Rigel/Asset/AssetManager.h"
 #include "Rigel/input/InputState.h"
+#include "Rigel/input/GameplayInput.h"
 
 #include <GLFW/glfw3.h>
 
@@ -12,6 +15,22 @@
 using namespace Rigel::Input;
 
 namespace {
+
+class ThrowingInputLoader final : public Rigel::Asset::IAssetLoader {
+public:
+    std::string_view category() const override {
+        return "input";
+    }
+
+    std::shared_ptr<Rigel::Asset::AssetBase> load(
+        const Rigel::Asset::LoadContext& context) override {
+        ++loadCount;
+        throw std::runtime_error(
+            "injected input failure for " + context.id);
+    }
+
+    size_t loadCount = 0;
+};
 
 struct RecordingListener : InputListener {
     std::vector<std::string> pressed;
@@ -124,4 +143,42 @@ TEST_CASE(InputState_InstancesDoNotShareDeviceState) {
     CHECK(first.isMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT));
     CHECK(!second.isKeyPressed(GLFW_KEY_A));
     CHECK(!second.isMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT));
+}
+
+TEST_CASE(InputState_DefaultBindingsCoverAbsentAndFailedAssets) {
+    {
+        Rigel::Test::LogCapture logs("input-optional-absent-test");
+        Rigel::Asset::AssetManager assets;
+        InputState input;
+        loadInputBindings(assets, input);
+        input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
+        input.beginFrame();
+        CHECK(input.isActionPressed("move_forward"));
+        CHECK_EQ(
+            Rigel::Test::countOccurrences(
+                logs.output(), "Optional startup resource 'input/default'"),
+            static_cast<size_t>(1));
+    }
+
+    {
+        Rigel::Test::LogCapture logs("input-optional-failure-test");
+        Rigel::Asset::AssetManager assets;
+        auto loader = std::make_unique<ThrowingInputLoader>();
+        auto* loaderProbe = loader.get();
+        assets.registerLoader("input", std::move(loader));
+        assets.loadManifest("manifest.yaml");
+
+        InputState input;
+        CHECK_NO_THROW(loadInputBindings(assets, input));
+        CHECK_EQ(loaderProbe->loadCount, static_cast<size_t>(1));
+        input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
+        input.beginFrame();
+        CHECK(input.isActionPressed("move_forward"));
+        const auto output = logs.output();
+        CHECK_EQ(
+            Rigel::Test::countOccurrences(
+                output, "Optional startup resource 'input/default'"),
+            static_cast<size_t>(1));
+        CHECK(output.find("injected input failure") != std::string::npos);
+    }
 }

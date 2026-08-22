@@ -53,6 +53,28 @@ namespace {
 
 constexpr float kMaxFrameTime = 0.05f;
 
+bool initializeOptionalUserInterface(
+    GLFWwindow* window,
+    bool (*initialize)(GLFWwindow*)) noexcept {
+    try {
+        if (initialize(window)) {
+            return true;
+        }
+        UI::shutdown();
+        spdlog::warn("Optional startup resource 'ImGui' failed to initialize");
+    } catch (const std::exception& error) {
+        UI::shutdown();
+        spdlog::warn(
+            "Optional startup resource 'ImGui' failed to initialize: {}",
+            error.what());
+    } catch (...) {
+        UI::shutdown();
+        spdlog::warn(
+            "Optional startup resource 'ImGui' failed to initialize: unknown error");
+    }
+    return false;
+}
+
 } // namespace
 
 struct Application::Impl {
@@ -193,9 +215,7 @@ void Application::initialize() {
     spdlog::info("OpenGL Version: {}", (char*)glGetString(GL_VERSION));
 
 #if defined(RIGEL_ENABLE_IMGUI)
-    if (!UI::init(m_impl->window.window)) {
-        spdlog::warn("ImGui initialization failed");
-    }
+    initializeOptionalUserInterface(m_impl->window.window, &UI::init);
 #endif
 
     // Set initial viewport
@@ -548,6 +568,12 @@ void ApplicationTestAccess::closeReadyWorld(ApplicationCloseHooks hooks) {
         }
         throw;
     }
+}
+
+bool ApplicationTestAccess::initializeOptionalUserInterface(
+    GLFWwindow* window,
+    bool (*initialize)(GLFWwindow*)) noexcept {
+    return Rigel::initializeOptionalUserInterface(window, initialize);
 }
 
 int runApplication(ApplicationMain applicationMain) noexcept {

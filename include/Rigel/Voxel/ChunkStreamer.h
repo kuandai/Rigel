@@ -57,9 +57,15 @@ public:
         uint64_t schedulerCoordinatesInspected = 0;
         // Resident cache entries considered for capacity eviction.
         uint64_t cacheEvictionCoordinatesInspected = 0;
+        // Resident chunks considered for distance eviction.
+        uint64_t residentEvictionCoordinatesInspected = 0;
+        // Deferred evictions reconsidered after camera or configuration changes.
+        uint64_t deferredEvictionCoordinatesInspected = 0;
         uint64_t lastUpdateDesiredBuildCoordinatesInspected = 0;
         uint64_t lastUpdateSchedulerCoordinatesInspected = 0;
         uint64_t lastUpdateCacheEvictionCoordinatesInspected = 0;
+        uint64_t lastUpdateResidentEvictionCoordinatesInspected = 0;
+        uint64_t lastUpdateDeferredEvictionCoordinatesInspected = 0;
     };
 
     enum class DebugState : uint8_t {
@@ -288,6 +294,9 @@ private:
     void refreshDiagnostics(bool advanceWindow);
     bool evictChunk(ChunkCoord coord, bool versionReplacement = false);
     void deferEviction(ChunkCoord coord, bool versionReplacement);
+    uint64_t retireIneligibleEvictions(ChunkCoord center,
+                                       int viewRadiusSq,
+                                       int unloadRadiusSq);
     void retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq);
 
     ChunkCoord cameraToChunk(const glm::vec3& cameraPos) const;

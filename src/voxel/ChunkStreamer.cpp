@@ -64,8 +64,25 @@ ChunkStreamer::~ChunkStreamer() {
 }
 
 void ChunkStreamer::setConfig(const StreamingConfig& config) {
+    bool activeStream = m_initialStreamingBegun && m_lastCenter.has_value();
     m_config = config;
     m_cache.setMaxChunks(m_config.maxResidentChunks);
+    if (activeStream) {
+        int viewDistance = std::max(0, m_config.viewDistanceChunks);
+        int unloadDistance = std::max(
+            viewDistance, m_config.unloadDistanceChunks);
+        m_workMetrics.deferredEvictionCoordinatesInspected +=
+            retireIneligibleEvictions(
+                *m_lastCenter,
+                viewDistance * viewDistance,
+                unloadDistance * unloadDistance);
+        m_lastViewDistance = -1;
+        m_lastUnloadDistance = -1;
+        ensureThreadPool();
+        refreshDiagnostics(false);
+        return;
+    }
+
     m_desired.clear();
     m_desiredSet.clear();
     m_desiredPriority.clear();
@@ -189,6 +206,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected = 0;
     m_workMetrics.lastUpdateSchedulerCoordinatesInspected = 0;
     m_workMetrics.lastUpdateCacheEvictionCoordinatesInspected = 0;
+    m_workMetrics.lastUpdateResidentEvictionCoordinatesInspected = 0;
+    m_workMetrics.lastUpdateDeferredEvictionCoordinatesInspected = 0;
     if (!m_chunkManager || !m_generator || !m_meshStore) {
         return;
     }
@@ -202,6 +221,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     uint64_t desiredBuildCoordinatesInspected = 0;
     uint64_t schedulerCoordinatesInspected = 0;
     uint64_t cacheEvictionCoordinatesInspected = 0;
+    uint64_t residentEvictionCoordinatesInspected = 0;
+    uint64_t deferredEvictionCoordinatesInspected = 0;
 
     ChunkCoord center = cameraToChunk(cameraPos);
     int viewDistance = std::max(0, m_config.viewDistanceChunks);
@@ -256,15 +277,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             m_desiredSet.insert(entry.second);
             m_desiredPriority.emplace(entry.second, priority);
         }
+        deferredEvictionCoordinatesInspected = retireIneligibleEvictions(
+            center, viewRadiusSq, unloadRadiusSq);
         reprioritizeDirtyMeshes();
         for (const ChunkCoord& coord : m_desired) {
-            if (m_versionReplacementWaiting.find(coord) ==
-                    m_versionReplacementWaiting.end() &&
-                m_versionReplacementRetries.find(coord) ==
-                    m_versionReplacementRetries.end()) {
-                m_evictionRetryAfter.erase(coord);
-                m_evictionErrors.erase(coord);
-            }
             if (previouslyQueued.find(coord) != previouslyQueued.end() ||
                 previousDesired.find(coord) == previousDesired.end()) {
                 queueLoadGen(coord);
@@ -278,15 +294,6 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 m_generationErrors.erase(coord);
                 m_loadErrors.erase(coord);
                 m_meshErrors.erase(coord);
-                bool replacementCanceled =
-                    m_versionReplacementWaiting.erase(coord) > 0;
-                replacementCanceled =
-                    m_versionReplacementRetries.erase(coord) > 0 ||
-                    replacementCanceled;
-                if (replacementCanceled) {
-                    m_evictionRetryAfter.erase(coord);
-                    m_evictionErrors.erase(coord);
-                }
                 queueLoadedNeighbors(coord);
             }
         }
@@ -648,6 +655,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         PROFILE_SCOPE("Streaming/Update/Evict");
         std::vector<ChunkCoord> toEvict;
         m_chunkManager->forEachChunk([&](ChunkCoord coord, const Chunk&) {
+            ++residentEvictionCoordinatesInspected;
             int distSq = distanceSquared(center, coord);
             if (distSq > unloadRadiusSq) {
                 toEvict.push_back(coord);
@@ -676,11 +684,19 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         schedulerCoordinatesInspected;
     m_workMetrics.lastUpdateCacheEvictionCoordinatesInspected =
         cacheEvictionCoordinatesInspected;
+    m_workMetrics.lastUpdateResidentEvictionCoordinatesInspected =
+        residentEvictionCoordinatesInspected;
+    m_workMetrics.lastUpdateDeferredEvictionCoordinatesInspected =
+        deferredEvictionCoordinatesInspected;
     m_workMetrics.desiredBuildCoordinatesInspected +=
         desiredBuildCoordinatesInspected;
     m_workMetrics.schedulerCoordinatesInspected += schedulerCoordinatesInspected;
     m_workMetrics.cacheEvictionCoordinatesInspected +=
         cacheEvictionCoordinatesInspected;
+    m_workMetrics.residentEvictionCoordinatesInspected +=
+        residentEvictionCoordinatesInspected;
+    m_workMetrics.deferredEvictionCoordinatesInspected +=
+        deferredEvictionCoordinatesInspected;
     StreamingDiagnosticSnapshot afterUpdate = collectDiagnostics();
     m_workObservedThisUpdate = m_workObservedThisUpdate || !afterUpdate.workEmpty();
     m_workStartedThisUpdate =
@@ -915,6 +931,45 @@ void ChunkStreamer::deferEviction(ChunkCoord coord, bool versionReplacement) {
     }
 }
 
+uint64_t ChunkStreamer::retireIneligibleEvictions(ChunkCoord center,
+                                                  int viewRadiusSq,
+                                                  int unloadRadiusSq) {
+    uint64_t inspected = 0;
+    m_nextEvictionRetrySequence = 0;
+    for (auto it = m_evictionRetryAfter.begin();
+         it != m_evictionRetryAfter.end();) {
+        ++inspected;
+        const ChunkCoord coord = it->first;
+        if (m_versionReplacementRetries.find(coord) !=
+            m_versionReplacementRetries.end()) {
+            if (m_nextEvictionRetrySequence == 0 ||
+                it->second < m_nextEvictionRetrySequence) {
+                m_nextEvictionRetrySequence = it->second;
+            }
+            ++it;
+            continue;
+        }
+
+        int distSq = distanceSquared(center, coord);
+        bool desired = distSq <= viewRadiusSq;
+        bool outsideUnloadRadius = distSq > unloadRadiusSq;
+        bool cachePressure = m_cache.maxChunks() > 0 &&
+            m_cache.size() > m_cache.maxChunks() && !desired;
+        if (!outsideUnloadRadius && !cachePressure) {
+            m_evictionErrors.erase(coord);
+            it = m_evictionRetryAfter.erase(it);
+            continue;
+        }
+
+        if (m_nextEvictionRetrySequence == 0 ||
+            it->second < m_nextEvictionRetrySequence) {
+            m_nextEvictionRetrySequence = it->second;
+        }
+        ++it;
+    }
+    return inspected;
+}
+
 void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq) {
     if (m_nextEvictionRetrySequence == 0 ||
         m_streamingUpdateSequence < m_nextEvictionRetrySequence) {
@@ -940,15 +995,15 @@ void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq
     }
 
     for (const auto& [coord, versionReplacement] : due) {
-        Chunk* chunk = m_chunkManager ? m_chunkManager->getChunk(coord) : nullptr;
-        bool replacementIncomplete = !chunk ||
-            (m_generator &&
-             chunk->worldGenVersion() != m_generator->config().world.version);
-        if (versionReplacement &&
-            m_desiredSet.find(coord) != m_desiredSet.end() &&
-            replacementIncomplete) {
-            m_versionReplacementWaiting.insert(coord);
-            queueLoadGen(coord);
+        if (versionReplacement) {
+            if (m_desiredSet.find(coord) != m_desiredSet.end()) {
+                m_versionReplacementWaiting.insert(coord);
+                queueLoadGen(coord);
+                continue;
+            }
+            if (evictChunk(coord, true)) {
+                m_cache.erase(coord);
+            }
             continue;
         }
 

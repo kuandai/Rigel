@@ -481,6 +481,110 @@ TEST_CASE(ChunkStreamer_RetriesFailedEvictionPersistenceAtBoundedIntervals) {
              StreamingLifecycleState::Quiescent);
 }
 
+TEST_CASE(ChunkStreamer_StreamingEventsRetireIneligibleEvictionRetry) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID edited = registerTestBlock(registry, "rigel:retired_eviction_edit");
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 2;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    const ChunkCoord origin{0, 0, 0};
+    streamer.update(origin.toWorldCenter());
+    streamer.processCompletions();
+    Chunk* originChunk = manager.getChunk(origin);
+    CHECK(originChunk != nullptr);
+    if (!originChunk) {
+        return;
+    }
+    originChunk->setBlock(0, 0, 0, BlockState{edited}, registry);
+
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord request) {
+        CHECK_EQ(request, origin);
+        ++persistenceAttempts;
+        return false;
+    });
+
+    const ChunkCoord outsideUnload{4, 0, 0};
+    streamer.update(outsideUnload.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(manager.hasChunk(origin));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
+    CHECK(!streamer.diagnostics().eviction.lastError.empty());
+
+    const ChunkCoord insideUnloadOutsideView{1, 0, 0};
+    streamer.update(insideUnloadOutsideView.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(manager.hasChunk(origin));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(0));
+    CHECK(streamer.diagnostics().eviction.lastError.empty());
+    CHECK_EQ(
+        streamer.workMetrics().lastUpdateDeferredEvictionCoordinatesInspected,
+        static_cast<uint64_t>(1));
+
+    for (uint32_t update = 0;
+         update <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++update) {
+        streamer.update(insideUnloadOutsideView.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::Quiescent);
+
+    const uint64_t generationJobs = streamer.workMetrics().generationJobsStarted;
+    const uint64_t meshJobs = streamer.workMetrics().meshJobsStarted;
+    for (int update = 0; update < 60; ++update) {
+        streamer.update(insideUnloadOutsideView.toWorldCenter());
+        streamer.processCompletions();
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateCacheEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateResidentEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateDeferredEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+    }
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, generationJobs);
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, meshJobs);
+
+    streamer.update(outsideUnload.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(2));
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
+
+    const uint64_t eligibilityChecks =
+        streamer.workMetrics().deferredEvictionCoordinatesInspected;
+    stream.unloadDistanceChunks = 5;
+    streamer.setConfig(stream);
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(2));
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(0));
+    CHECK(streamer.diagnostics().eviction.lastError.empty());
+    CHECK_EQ(streamer.workMetrics().deferredEvictionCoordinatesInspected,
+             eligibilityChecks + 1);
+}
+
 TEST_CASE(ChunkStreamer_CachePressureRetainsChunkWhenPersistenceDefers) {
     ChunkManager manager;
     BlockRegistry registry;
@@ -633,7 +737,7 @@ TEST_CASE(ChunkStreamer_VersionReplacementStaysPendingThroughGeneration) {
         manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
-    stream.unloadDistanceChunks = 0;
+    stream.unloadDistanceChunks = 2;
     stream.genQueueLimit = 1;
     stream.meshQueueLimit = 0;
     stream.updateBudgetPerFrame = 0;
@@ -665,7 +769,18 @@ TEST_CASE(ChunkStreamer_VersionReplacementStaysPendingThroughGeneration) {
     CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
     CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
 
-    for (int update = 0; update < 59; ++update) {
+    const ChunkCoord outsideView{1, 0, 0};
+    streamer.update(outsideView.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(1));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+
+    for (int update = 0; update < 57; ++update) {
         streamer.update(coord.toWorldCenter());
         streamer.processCompletions();
         CHECK_EQ(streamer.diagnostics().eviction.pending,

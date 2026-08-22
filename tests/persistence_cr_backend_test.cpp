@@ -209,6 +209,7 @@ public:
     }
 
     std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path, AtomicWriteOptions) override {
+        ++m_writeSessionCount;
         return std::make_unique<InMemoryWriteSession>(m_files[path]);
     }
 
@@ -233,8 +234,13 @@ public:
         m_files.erase(path);
     }
 
+    size_t writeSessionCount() const {
+        return m_writeSessionCount;
+    }
+
 private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
+    size_t m_writeSessionCount = 0;
 };
 
 void createEmptyFile(StorageBackend& storage, const std::string& path) {
@@ -1101,6 +1107,58 @@ TEST_CASE(CRBackend_writer_enforces_string_and_record_limits_before_commit) {
         [&]() { format->chunkContainer().saveRegion(oversizedRecord); },
         "CRChunkCodec: record exceeds format limit");
     CHECK_EQ(readAll(*storage, path), original);
+}
+
+TEST_CASE(CRBackend_writer_enforces_aggregate_region_limit_before_commit) {
+    constexpr size_t kIdentifierBytes = 1'048'200;
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::BlockRegistry registry;
+    std::array<Rigel::Voxel::BlockID, 4> blockIds;
+    for (size_t i = 0; i < blockIds.size(); ++i) {
+        blockIds[i] = registerTestBlock(
+            registry,
+            std::string(kIdentifierBytes, static_cast<char>('a' + i)));
+    }
+    auto providers = std::make_shared<ProviderRegistry>();
+    providers->add(
+        kBlockRegistryProviderId,
+        std::make_shared<BlockRegistryProvider>(&registry));
+
+    PersistenceContext context;
+    context.rootPath = "worlds/writer_region_limit";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = providers;
+    auto format = Backends::CR::factory()(context);
+
+    ChunkSnapshot originalChunk;
+    originalChunk.key = ChunkKey{"zone:default", 0, 0, 0};
+    originalChunk.data = makeMinimalChunkData(originalChunk.key);
+    ChunkRegionSnapshot originalRegion{
+        RegionKey{"zone:default", 0, 0, 0}, {originalChunk}};
+    format->chunkContainer().saveRegion(originalRegion);
+    const auto path = CRPaths::regionPath(originalRegion.key, context);
+    const auto originalBytes = readAll(*storage, path);
+    const size_t originalWriteSessions = storage->writeSessionCount();
+
+    ChunkRegionSnapshot oversized;
+    oversized.key = originalRegion.key;
+    for (int32_t i = 0; i < 17; ++i) {
+        ChunkSnapshot chunk;
+        chunk.key = ChunkKey{
+            "zone:default", i % 16, 0, i / 16};
+        chunk.data = makeMinimalChunkData(chunk.key);
+        for (size_t block = 0; block < chunk.data.blocks.size(); ++block) {
+            chunk.data.blocks[block].id = blockIds[block % blockIds.size()];
+        }
+        oversized.chunks.push_back(std::move(chunk));
+    }
+
+    checkCRRegionError(
+        [&]() { format->chunkContainer().saveRegion(oversized); },
+        "CRRegion: region payload exceeds format limit");
+    CHECK_EQ(storage->writeSessionCount(), originalWriteSessions);
+    CHECK_EQ(readAll(*storage, path), originalBytes);
 }
 
 TEST_CASE(CRBackend_entity_regions_validate_records_before_commit) {

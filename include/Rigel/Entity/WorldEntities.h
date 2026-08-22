@@ -1,10 +1,10 @@
 #pragma once
 
 #include "Entity.h"
-#include "EntityRegion.h"
 
-#include <unordered_map>
+#include <functional>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace Rigel::Voxel {
@@ -13,14 +13,8 @@ class World;
 
 namespace Rigel::Entity {
 
-namespace detail {
-struct WorldEntitiesTestAccess;
-}
-
 class WorldEntities {
 public:
-    ~WorldEntities();
-
     void bind(Voxel::World* world);
 
     EntityId spawn(std::unique_ptr<Entity> entity);
@@ -31,24 +25,12 @@ public:
     void forEach(const std::function<void(Entity&)>& fn);
     void forEach(const std::function<void(const Entity&)>& fn) const;
     void tick(float dt);
-    void clear();
 
     size_t size() const { return m_entities.size(); }
 
-    void updateEntityChunk(Entity& entity);
-
 private:
-    friend struct detail::WorldEntitiesTestAccess;
-
-    EntityRegion& getOrCreateRegion(Voxel::ChunkCoord coord);
-    EntityChunk& getOrCreateChunk(Voxel::ChunkCoord coord);
-    EntityChunk* findChunk(Voxel::ChunkCoord coord) const;
-    void removeFromChunk(Entity& entity);
-
     Voxel::World* m_world = nullptr;
     std::unordered_map<EntityId, std::unique_ptr<Entity>, EntityIdHash> m_entities;
-    std::unordered_map<EntityRegionCoord, std::unique_ptr<EntityRegion>, EntityRegionCoordHash> m_regions;
-    std::unordered_map<Voxel::ChunkCoord, EntityChunk*, Voxel::ChunkCoordHash> m_chunkIndex;
     std::vector<EntityId> m_pendingDespawns;
     bool m_isTicking = false;
 };

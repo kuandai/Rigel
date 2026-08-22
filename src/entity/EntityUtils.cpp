@@ -1,7 +1,5 @@
 #include "Rigel/Entity/EntityUtils.h"
 
-#include "Rigel/Entity/WorldEntities.h"
-
 #include <algorithm>
 #include <cmath>
 
@@ -18,10 +16,6 @@ void applyFriction(float friction, glm::vec3& velocity) {
     if (std::abs(velocity.z) < 1.0e-4f) {
         velocity.z = 0.0f;
     }
-}
-
-void updateEntityChunk(WorldEntities& entities, Entity& entity) {
-    entities.updateEntityChunk(entity);
 }
 
 } // namespace Rigel::Entity

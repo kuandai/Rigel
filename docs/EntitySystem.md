@@ -43,7 +43,7 @@ Components are attached to an entity and invoked during update/render.
 
 ---
 
-## 3. World Ownership and Spatial Partitioning
+## 3. World Ownership and Iteration
 
 ### 3.1 WorldEntities
 
@@ -53,16 +53,11 @@ Components are attached to an entity and invoked during update/render.
 - `tick(dt)` to update entities
 - iteration over all entities
 
-### 3.2 Regions and Chunks
+### 3.2 Persistence Grouping
 
-Entities are indexed into spatial buckets for persistence:
-
-- `EntityRegion` groups chunks into a 16x16x16 chunk region.
-- `EntityChunk` holds pointers to entities within a chunk.
-- `WorldEntities::updateEntityChunk` keeps an entity in the correct bucket.
-
-`EntityRegion` keeps active and inactive chunks to allow serialization without
-forcing every chunk to stay loaded.
+`WorldEntities` keeps one authoritative collection. Saving derives each
+entity's chunk from its current position and groups those chunks into 16x16x16
+persistence regions.
 
 ---
 

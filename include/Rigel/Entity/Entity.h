@@ -20,8 +20,6 @@
 
 namespace Rigel::Entity {
 
-class EntityChunk;
-
 enum class Axis : uint8_t {
     X,
     Y,
@@ -86,9 +84,6 @@ public:
     void setRenderTint(const glm::vec4& tint) { m_renderTint = tint; }
     const glm::vec4& renderTint() const { return m_renderTint; }
 
-    EntityChunk* currentChunk() const { return m_currentChunk; }
-    void setCurrentChunk(EntityChunk* chunk) { m_currentChunk = chunk; }
-
 protected:
     virtual void onCollide(Axis axis) { (void)axis; }
 
@@ -121,7 +116,6 @@ protected:
     std::vector<IUpdateEntityComponent*> m_updateComponents;
     std::vector<IRenderEntityComponent*> m_renderComponents;
 
-    EntityChunk* m_currentChunk = nullptr;
     Asset::Handle<EntityModelAsset> m_model;
     std::unique_ptr<IEntityModelInstance> m_modelInstance;
     glm::vec4 m_renderTint{1.0f};

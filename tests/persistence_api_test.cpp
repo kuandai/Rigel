@@ -256,6 +256,17 @@ public:
         return m_files.find(path) != m_files.end();
     }
 
+    void forEachEntry(
+        const std::string& path,
+        const StorageEntryVisitor& visitor) override {
+        m_calls.push_back("list " + path);
+        for (const auto& [key, value] : m_files) {
+            if (key.rfind(path, 0) == 0 && !visitor(key)) {
+                return;
+            }
+        }
+    }
+
     std::vector<std::string> list(const std::string& path) override {
         m_calls.push_back("list " + path);
         std::vector<std::string> results;
@@ -350,6 +361,11 @@ public:
 
     EntityRegionSnapshot loadRegion(const EntityRegionKey& key) override {
         return EntityRegionSnapshot{key, {}};
+    }
+
+    void forEachRegion(
+        const std::string&,
+        const EntityRegionVisitor&) override {
     }
 
     std::vector<EntityRegionKey> listRegions(const std::string&) override {

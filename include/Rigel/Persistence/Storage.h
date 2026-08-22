@@ -1,12 +1,15 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace Rigel::Persistence {
+
+using StorageEntryVisitor = std::function<bool(const std::string&)>;
 
 class StorageReadError : public std::runtime_error {
 public:
@@ -64,7 +67,9 @@ public:
     // session leaves the destination unchanged.
     virtual std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path) = 0;
     virtual bool exists(const std::string& path) = 0;
-    virtual std::vector<std::string> list(const std::string& path) = 0;
+    virtual void forEachEntry(const std::string& path,
+                              const StorageEntryVisitor& visitor) = 0;
+    virtual std::vector<std::string> list(const std::string& path);
     virtual void mkdirs(const std::string& path) = 0;
     virtual void remove(const std::string& path) = 0;
 };
@@ -74,7 +79,8 @@ public:
     std::unique_ptr<ByteReader> openRead(const std::string& path) override;
     std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path) override;
     bool exists(const std::string& path) override;
-    std::vector<std::string> list(const std::string& path) override;
+    void forEachEntry(const std::string& path,
+                      const StorageEntryVisitor& visitor) override;
     void mkdirs(const std::string& path) override;
     void remove(const std::string& path) override;
 };

@@ -451,15 +451,27 @@ bool FilesystemBackend::exists(const std::string& path) {
     return std::filesystem::exists(path);
 }
 
-std::vector<std::string> FilesystemBackend::list(const std::string& path) {
-    std::vector<std::string> result;
+std::vector<std::string> StorageBackend::list(const std::string& path) {
+    std::vector<std::string> entries;
+    forEachEntry(path, [&](const std::string& entry) {
+        entries.push_back(entry);
+        return true;
+    });
+    return entries;
+}
+
+void FilesystemBackend::forEachEntry(
+    const std::string& path,
+    const StorageEntryVisitor& visitor) {
     if (!std::filesystem::exists(path)) {
-        return result;
+        return;
     }
     for (const auto& entry : std::filesystem::directory_iterator(path)) {
-        result.push_back(entry.path().string());
+        const std::string entryPath = entry.path().string();
+        if (!visitor(entryPath)) {
+            return;
+        }
     }
-    return result;
 }
 
 void FilesystemBackend::mkdirs(const std::string& path) {

@@ -94,12 +94,15 @@ bool hasStoredZone(StorageBackend& storage, const std::string& root) {
         return true;
     }
     const auto childPrefix = root + "/";
-    for (const auto& entry : storage.list(root)) {
+    bool found = false;
+    storage.forEachEntry(root, [&](const std::string& entry) {
         if (entry == root || entry.rfind(childPrefix, 0) == 0) {
-            return true;
+            found = true;
+            return false;
         }
-    }
-    return false;
+        return true;
+    });
+    return found;
 }
 #endif
 
@@ -611,23 +614,23 @@ public:
         return m_codec.read(*reader, key);
     }
 
-    std::vector<EntityRegionKey> listRegions(const std::string& zoneId) override {
-        std::vector<EntityRegionKey> regions;
+    void forEachRegion(
+        const std::string& zoneId,
+        const EntityRegionVisitor& visitor) override {
         std::string dir = zoneRoot(*m_storage, m_context, zoneId) + "/entities";
         if (!m_storage->exists(dir)) {
-            return regions;
+            return;
         }
-        for (const auto& entry : m_storage->list(dir)) {
+        m_storage->forEachEntry(dir, [&](const std::string& entry) {
             std::string name = std::filesystem::path(entry).filename().string();
             int32_t rx = 0;
             int32_t ry = 0;
             int32_t rz = 0;
             if (!parseEntityRegionFilename(name, rx, ry, rz)) {
-                continue;
+                return true;
             }
-            regions.push_back(EntityRegionKey{zoneId, rx, ry, rz});
-        }
-        return regions;
+            return visitor(EntityRegionKey{zoneId, rx, ry, rz});
+        });
     }
 
 private:

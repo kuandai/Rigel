@@ -31,6 +31,12 @@ public:
         return reject<bool>();
     }
 
+    void forEachEntry(
+        const std::string&,
+        const StorageEntryVisitor&) override {
+        reject<void>();
+    }
+
     std::vector<std::string> list(const std::string&) override {
         return reject<std::vector<std::string>>();
     }

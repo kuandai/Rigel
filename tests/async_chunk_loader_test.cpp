@@ -310,6 +310,12 @@ public:
         return m_delegate->exists(path);
     }
 
+    void forEachEntry(
+        const std::string& path,
+        const StorageEntryVisitor& visitor) override {
+        m_delegate->forEachEntry(path, visitor);
+    }
+
     std::vector<std::string> list(const std::string& path) override {
         return m_delegate->list(path);
     }
@@ -367,6 +373,12 @@ public:
 
     bool exists(const std::string& path) override {
         return m_delegate->exists(path);
+    }
+
+    void forEachEntry(
+        const std::string& path,
+        const StorageEntryVisitor& visitor) override {
+        m_delegate->forEachEntry(path, visitor);
     }
 
     std::vector<std::string> list(const std::string& path) override {
@@ -436,6 +448,12 @@ public:
 
     bool exists(const std::string& path) override {
         return m_delegate->exists(path);
+    }
+
+    void forEachEntry(
+        const std::string& path,
+        const StorageEntryVisitor& visitor) override {
+        m_delegate->forEachEntry(path, visitor);
     }
 
     std::vector<std::string> list(const std::string& path) override {

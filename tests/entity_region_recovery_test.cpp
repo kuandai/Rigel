@@ -24,6 +24,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <new>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -52,6 +53,9 @@ struct SharedFiles {
     std::set<std::string> directories;
     std::set<std::string> durableDirectories;
     std::vector<std::string> durabilityOperations;
+    std::unordered_map<std::string, size_t> materializedListCalls;
+    std::unordered_map<std::string, size_t> visitedEntries;
+    std::set<std::string> rejectedMaterializedLists;
 };
 
 enum class FailureTiming {
@@ -344,7 +348,24 @@ public:
             });
     }
 
+    void forEachEntry(
+        const std::string& path,
+        const Persistence::StorageEntryVisitor& visitor) override {
+        for (const auto& [candidate, _] : m_files->files) {
+            if (candidate.starts_with(path + "/")) {
+                ++m_files->visitedEntries[path];
+                if (!visitor(candidate)) {
+                    return;
+                }
+            }
+        }
+    }
+
     std::vector<std::string> list(const std::string& path) override {
+        ++m_files->materializedListCalls[path];
+        if (m_files->rejectedMaterializedLists.contains(path)) {
+            throw std::bad_alloc();
+        }
         std::vector<std::string> entries;
         for (const auto& [candidate, _] : m_files->files) {
             if (candidate.starts_with(path + "/")) {
@@ -1891,6 +1912,62 @@ TEST_CASE(Persistence_EntityJournalBoundsDesiredAndObsoleteRegionsTogether) {
     CHECK_EQ(files->files, filesBefore);
     CHECK_EQ(files->durableFiles, durableFilesBefore);
     CHECK(!journalExists(files));
+}
+
+TEST_CASE(Persistence_EntityJournalStopsObsoleteRegionEnumerationAtLimit) {
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        const std::string entityDirectory =
+            std::string(kRootPath) + "/zones/rigel/default/entities";
+        const std::string extension =
+            preferredFormat == "memory" ? ".mem" : ".crbin";
+        files->rejectedMaterializedLists.insert(entityDirectory);
+        for (uint32_t i = 0;
+             i <= Persistence::detail::MaxEntityJournalRegions;
+             ++i) {
+            const std::string path =
+                entityDirectory + "/entityRegion_" + std::to_string(i) +
+                "_0_0" + extension;
+            files->files.emplace(path, std::vector<uint8_t>{});
+            files->durableFiles.emplace(path, std::vector<uint8_t>{});
+        }
+        const auto filesBefore = files->files;
+        const auto durableFilesBefore = files->durableFiles;
+        const auto directoriesBefore = files->directories;
+        const auto durableDirectoriesBefore = files->durableDirectories;
+        auto control = std::make_shared<MutationControl>();
+
+        Persistence::FormatRegistry formats;
+        registerFormats(formats);
+        Persistence::PersistenceService service(formats);
+        auto context = makeContext(files, control, preferredFormat);
+        auto format = service.openFormat(context);
+
+        std::string error;
+        try {
+            Persistence::detail::saveEntityRegionsRecoverably(
+                *format, context, kZoneId, {});
+        } catch (const std::exception& caught) {
+            error = caught.what();
+        }
+
+        CHECK_EQ(
+            error,
+            "Entity region journal aggregate region count exceeds limit");
+        CHECK_EQ(
+            files->materializedListCalls[entityDirectory],
+            static_cast<size_t>(0));
+        CHECK_EQ(
+            files->visitedEntries[entityDirectory],
+            static_cast<size_t>(
+                Persistence::detail::MaxEntityJournalRegions) + 1);
+        CHECK(control->attempted.empty());
+        CHECK_EQ(files->files, filesBefore);
+        CHECK_EQ(files->durableFiles, durableFilesBefore);
+        CHECK_EQ(files->directories, directoriesBefore);
+        CHECK_EQ(files->durableDirectories, durableDirectoriesBefore);
+        CHECK(!journalExists(files));
+    }
 }
 
 TEST_CASE(Persistence_EntityJournalRecoversAtAggregateRegionBoundary) {

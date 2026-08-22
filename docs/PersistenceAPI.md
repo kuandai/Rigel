@@ -103,7 +103,12 @@ Required methods:
 
 - `saveRegion(const EntityRegionSnapshot&)`
 - `loadRegion(const EntityRegionKey&)`
+- `forEachRegion(const std::string& zoneId, const EntityRegionVisitor&)`
 - `listRegions(const std::string& zoneId)`
+
+`forEachRegion` visits stored region keys without first retaining the complete
+result and may be stopped by returning `false`. `listRegions` is the
+materialized convenience form.
 
 ### 5.3 Codecs
 
@@ -149,7 +154,10 @@ implementations.
 Core APIs:
 
 - `openRead` / `openWrite` (with `AtomicWriteSession`)
-- `exists`, `list`, `mkdirs`, `remove`
+- `exists`, `forEachEntry`, `list`, `mkdirs`, `remove`
+
+`forEachEntry` provides stoppable directory enumeration. `list` collects the
+same enumeration when a complete result is required.
 
 `ByteReader`/`ByteWriter` supports random access via `seek`, `readAt`, and
 `writeAt` for formats that require region indexes.

@@ -145,6 +145,12 @@ public:
         return m_storage.exists(path);
     }
 
+    void forEachEntry(
+        const std::string& path,
+        const Rigel::Persistence::StorageEntryVisitor& visitor) override {
+        m_storage.forEachEntry(path, visitor);
+    }
+
     std::vector<std::string> list(const std::string& path) override {
         return m_storage.list(path);
     }

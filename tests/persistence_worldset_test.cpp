@@ -24,6 +24,11 @@ public:
         return false;
     }
 
+    void forEachEntry(
+        const std::string&,
+        const Persistence::StorageEntryVisitor&) override {
+    }
+
     std::vector<std::string> list(const std::string&) override {
         return {};
     }

@@ -757,13 +757,14 @@ void saveEntityRegionsRecoverably(
     for (const auto& region : journal.desiredRegions) {
         desiredKeys.insert(region.key);
     }
-    for (const auto& key : format.entityContainer().listRegions(zoneId)) {
+    format.entityContainer().forEachRegion(zoneId, [&](const auto& key) {
         if (!desiredKeys.contains(key)) {
             consumeRegion(usage);
             consumeKey(usage, key);
             journal.obsoleteRegions.push_back(key);
         }
-    }
+        return true;
+    });
 
     sortAndValidateJournal(journal);
     validateJournalZone(journal, zoneId);

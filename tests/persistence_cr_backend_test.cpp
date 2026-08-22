@@ -285,6 +285,16 @@ public:
         return m_files.find(path) != m_files.end();
     }
 
+    void forEachEntry(
+        const std::string& path,
+        const StorageEntryVisitor& visitor) override {
+        for (const auto& [key, value] : m_files) {
+            if (key.rfind(path, 0) == 0 && !visitor(key)) {
+                return;
+            }
+        }
+    }
+
     std::vector<std::string> list(const std::string& path) override {
         std::vector<std::string> out;
         for (const auto& [key, value] : m_files) {

@@ -1,6 +1,7 @@
 #include "Rigel/Persistence/ChunkSpanMerge.h"
 
 #include "Rigel/Persistence/ChunkSerializer.h"
+#include "ChunkValidation.h"
 
 namespace Rigel::Persistence {
 
@@ -32,6 +33,12 @@ ChunkSpanMergeResult mergeChunkSpans(
     ChunkSpanMergeResult result;
     if (spans.empty()) {
         return result;
+    }
+
+    for (const ChunkSnapshot* snapshot : spans) {
+        if (snapshot) {
+            detail::validateChunkData(snapshot->data, registry);
+        }
     }
 
     result.loadedFromDisk = true;

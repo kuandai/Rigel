@@ -4527,6 +4527,135 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDirtyMeshCapacity) {
              static_cast<uint64_t>(0));
 }
 
+TEST_CASE(ChunkStreamer_ObsoleteDirtyFlightDoesNotBlockUnrelatedDirtyMesh) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto originalGenerator = makeGenerator(registry);
+    auto replacementGenerator = std::make_shared<WorldGenerator>(
+        registry, originalGenerator->config());
+    const BlockID solid = registerTestBlock(
+        registry, "rigel:obsolete_head_unrelated_solid");
+    const ChunkCoord obsoleteCoord{0, 0, 0};
+    const ChunkCoord unrelatedCoord{1, 0, 0};
+
+    Chunk& obsolete = manager.getOrCreateChunk(obsoleteCoord);
+    obsolete.setBlock(0, 0, 0, BlockState{solid}, registry);
+    obsolete.setWorldGenVersion(originalGenerator->config().world.version);
+    obsolete.setLoadedFromDisk(true);
+    obsolete.clearPersistDirty();
+    meshStore.set(obsoleteCoord, {});
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, originalGenerator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 8;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 4;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    auto obsoleteGate = std::make_shared<WorkerGate>();
+    auto unrelatedGate = std::make_shared<WorkerGate>();
+    WorkerGateRelease releaseObsoleteOnExit(obsoleteGate);
+    WorkerGateRelease releaseUnrelatedOnExit(unrelatedGate);
+    std::atomic<size_t> buildsEntered{0};
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer,
+        [obsoleteGate, unrelatedGate, &buildsEntered]() {
+            const size_t buildIndex =
+                buildsEntered.fetch_add(1, std::memory_order_relaxed);
+            if (buildIndex == 0) {
+                obsoleteGate->enterAndWait();
+            } else if (buildIndex == 1) {
+                unrelatedGate->enterAndWait();
+            }
+        });
+
+    streamer.update(obsoleteCoord.toWorldCenter());
+    CHECK(obsoleteGate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshDirty(streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshMissing(streamer),
+        static_cast<size_t>(0));
+
+    streamer.setGenerator(replacementGenerator);
+    Chunk& unrelated = manager.getOrCreateChunk(unrelatedCoord);
+    unrelated.setBlock(0, 0, 0, BlockState{solid}, registry);
+    unrelated.setWorldGenVersion(replacementGenerator->config().world.version);
+    unrelated.setLoadedFromDisk(true);
+    unrelated.clearPersistDirty();
+    meshStore.set(unrelatedCoord, {});
+
+    streamer.update(obsoleteCoord.toWorldCenter());
+    CHECK(unrelatedGate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(2));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(2));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshDirty(streamer),
+        static_cast<size_t>(2));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshMissing(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+
+    unrelatedGate->release();
+    CHECK(waitForMeshCompletions(streamer, 1));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale, static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshDirty(streamer),
+        static_cast<size_t>(1));
+    CHECK(!unrelated.isDirty());
+    CHECK(obsolete.isDirty());
+    CHECK(meshStore.contains(unrelatedCoord));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+
+    obsoleteGate->release();
+    CHECK(waitForMeshCompletions(streamer, 2));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(0));
+    CHECK(obsolete.isDirty());
+
+    streamer.update(obsoleteCoord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
+    CHECK(waitForMeshCompletions(streamer, 3));
+    CHECK_EQ(streamer.workMetrics().meshJobsCompleted, static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale, static_cast<uint64_t>(1));
+    CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(3));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshDirty(streamer),
+        static_cast<size_t>(0));
+    CHECK(!obsolete.isDirty());
+    CHECK(meshStore.contains(obsoleteCoord));
+
+    const uint64_t settledMeshJobs = streamer.workMetrics().meshJobsStarted;
+    for (int update = 0; update < 5; ++update) {
+        streamer.update(obsoleteCoord.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, settledMeshJobs);
+    CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Quiescent);
+}
+
 TEST_CASE(ChunkStreamer_GeneratorReplacementInstallsOnlyCurrentMesh) {
     ChunkManager manager;
     BlockRegistry registry;
@@ -4618,7 +4747,7 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementInstallsOnlyCurrentMesh) {
     CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
              static_cast<uint64_t>(0));
     CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
-             static_cast<uint64_t>(0));
+             static_cast<uint64_t>(1));
 
     meshGate->release();
     CHECK(waitForMeshCompletions(streamer, 1));

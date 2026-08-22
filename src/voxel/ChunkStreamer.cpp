@@ -458,6 +458,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         !m_dirtyMeshQueue.empty();
     bool meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
     bool meshFullDirty = m_inFlightMeshDirty >= meshLimitDirty;
+    std::vector<PendingDirtyMesh> obsoleteFlightBlocked;
 
     auto scheduleDirtyMeshes = [&]() {
         if (m_dirtyMeshQueue.empty()) {
@@ -471,7 +472,24 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             if (m_dirtyMeshQueued.find(pendingCoord) != m_dirtyMeshQueued.end() &&
                 pendingFlightIt != m_meshInFlight.end() &&
                 pendingFlightIt->second.obsolete) {
-                break;
+                PendingDirtyMesh blocked = m_dirtyMeshQueue.top();
+                m_dirtyMeshQueue.pop();
+                auto existing = std::find_if(
+                    obsoleteFlightBlocked.begin(),
+                    obsoleteFlightBlocked.end(),
+                    [&](const PendingDirtyMesh& request) {
+                        return request.coord == blocked.coord;
+                    });
+                if (existing == obsoleteFlightBlocked.end()) {
+                    ++schedulerCoordinatesInspected;
+                    obsoleteFlightBlocked.push_back(blocked);
+                } else {
+                    existing->priority = std::min(
+                        existing->priority, blocked.priority);
+                    existing->prioritized =
+                        existing->prioritized || blocked.prioritized;
+                }
+                continue;
             }
             if (meshFull ||
                 (meshFullDirty &&
@@ -702,6 +720,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     }
 
     scheduleDirtyMeshes();
+    for (const PendingDirtyMesh& blocked : obsoleteFlightBlocked) {
+        m_dirtyMeshQueue.push(blocked);
+    }
 
     if (rebuildDesired) {
         PROFILE_SCOPE("Streaming/Update/Evict");

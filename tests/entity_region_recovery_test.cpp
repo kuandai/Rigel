@@ -934,21 +934,34 @@ TEST_CASE(Persistence_EntityJournalRejectsCountsBeyondRemainingData) {
 }
 
 TEST_CASE(Persistence_EntityJournalRejectsUnboundedPayloadSize) {
-    auto files = std::make_shared<SharedFiles>();
-    std::vector<uint8_t> journal = journalHeader(1, 0);
-    appendKey(journal, "");
-    appendU32(journal, UINT32_MAX);
-    journal.resize(journal.size() + 12);
-    installJournal(files, std::move(journal));
-    Voxel::WorldResources resources;
-    Voxel::World world(resources);
-    Asset::AssetManager assets;
+    constexpr uint32_t kMaxEntityRegionBytes = 64 * 1024 * 1024;
+    for (uint32_t payloadSize : {kMaxEntityRegionBytes + 1, UINT32_MAX}) {
+        auto files = std::make_shared<SharedFiles>();
+        std::vector<uint8_t> journal = journalHeader(1, 0);
+        appendKey(journal, "");
+        appendU32(journal, payloadSize);
+        journal.resize(journal.size() + 12);
+        installJournal(files, std::move(journal));
+        Voxel::WorldResources resources;
+        Voxel::World world(resources);
+        const EntityRecord live{
+            Entity::EntityId{90, 91, 92},
+            "rigel:live",
+            glm::vec3(1.0f, 2.0f, 3.0f)};
+        populateWorld(world, {live});
+        Asset::AssetManager assets;
 
-    const std::string error = loadFailure(files, world, assets);
+        const std::string error = loadFailure(files, world, assets);
 
-    CHECK(error.find("payload exceeds size limit") != std::string::npos);
-    CHECK(journalExists(files));
-    CHECK_EQ(world.entities().size(), static_cast<size_t>(0));
+        CHECK(error.find("payload exceeds size limit") != std::string::npos);
+        CHECK(journalExists(files));
+        CHECK_EQ(world.entities().size(), static_cast<size_t>(1));
+        world.entities().forEach([&](const Entity::Entity& entity) {
+            CHECK_EQ(entity.id(), live.id);
+            CHECK_EQ(entity.typeId(), live.typeId);
+            CHECK_EQ(entity.position(), live.position);
+        });
+    }
 }
 
 TEST_CASE(Persistence_EntityJournalRejectsUnboundedPayloadCounts) {

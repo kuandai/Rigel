@@ -27,7 +27,8 @@ constexpr uint32_t kJournalMagic = 0x5247454A; // "RGEJ"
 constexpr uint16_t kJournalVersion = 2;
 constexpr const char* kJournalFilename = "entity-regions.journal";
 constexpr uint32_t kMaxJournalRegions = 1'048'576;
-constexpr uint32_t kMaxJournalPayloadBytes = 256 * 1024 * 1024;
+constexpr size_t kMaxJournalPayloadBytes =
+    Entity::detail::MaxEntityRegionBytes;
 constexpr uint32_t kMaxJournalStringBytes = 1'048'576;
 constexpr uint64_t kMinDesiredRegionBytes = 32;
 constexpr uint64_t kMinObsoleteRegionBytes = 16;

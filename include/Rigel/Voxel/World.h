@@ -48,13 +48,11 @@ public:
     explicit World(WorldResources& resources);
     ~World();
 
-    /// Non-copyable
+    /// World-owned components retain pointers to this instance.
     World(const World&) = delete;
     World& operator=(const World&) = delete;
-
-    /// Movable
-    World(World&&) = default;
-    World& operator=(World&&) = default;
+    World(World&&) = delete;
+    World& operator=(World&&) = delete;
 
     /**
      * @brief Initialize with shared resources.
@@ -109,16 +107,6 @@ public:
      * Returns air if chunk is not loaded.
      */
     BlockState getBlock(int wx, int wy, int wz) const;
-
-    /// @}
-
-    /// @name Lifecycle
-    /// @{
-
-    /**
-     * @brief Unload all chunks.
-     */
-    void clear();
 
     /// @}
 

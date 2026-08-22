@@ -2,10 +2,18 @@
 
 #include "Rigel/Voxel/ChunkManager.h"
 
-#include <array>
-#include <utility>
+#include <type_traits>
 
 using namespace Rigel::Voxel;
+
+template<typename T>
+concept HasPublicChunkUnload = requires(T& manager, ChunkCoord coord) {
+    manager.unloadChunk(coord);
+};
+
+static_assert(!HasPublicChunkUnload<ChunkManager>);
+static_assert(!std::is_move_constructible_v<ChunkManager>);
+static_assert(!std::is_move_assignable_v<ChunkManager>);
 
 TEST_CASE(ChunkManager_BlockAccess) {
     ChunkManager manager;
@@ -30,80 +38,6 @@ TEST_CASE(ChunkManager_ChunkBoundary) {
 
     BlockState missing = manager.getBlock(-999, 0, 0);
     CHECK(missing.isAir());
-}
-
-TEST_CASE(ChunkManager_Unload) {
-    ChunkManager manager;
-    ChunkCoord coord{2, 0, 0};
-    BlockState state;
-    state.id.type = 5;
-    manager.getOrCreateChunk(coord).setBlock(0, 0, 0, state);
-    CHECK(manager.hasChunk(coord));
-    CHECK_EQ(manager.getBlock(coord.x * ChunkSize, 0, 0).id.type, static_cast<uint16_t>(5));
-
-    manager.unloadChunk(coord);
-    CHECK(!manager.hasChunk(coord));
-}
-
-TEST_CASE(ChunkManager_UnloadInvalidatesSurvivingFaceNeighborsOnce) {
-    ChunkManager manager;
-    const ChunkCoord center{0, 0, 0};
-    manager.getOrCreateChunk(center).clearDirty();
-
-    std::array<ChunkCoord, DirectionCount> neighborCoords{};
-    std::array<uint32_t, DirectionCount> neighborRevisions{};
-    for (size_t i = 0; i < DirectionCount; ++i) {
-        int dx = 0;
-        int dy = 0;
-        int dz = 0;
-        directionOffset(static_cast<Direction>(i), dx, dy, dz);
-        neighborCoords[i] = center.offset(dx, dy, dz);
-        Chunk& neighbor = manager.getOrCreateChunk(neighborCoords[i]);
-        neighbor.clearDirty();
-        neighborRevisions[i] = neighbor.meshRevision();
-    }
-
-    manager.unloadChunk(center);
-
-    CHECK(!manager.hasChunk(center));
-    for (size_t i = 0; i < DirectionCount; ++i) {
-        const Chunk* neighbor = manager.getChunk(neighborCoords[i]);
-        CHECK(neighbor != nullptr);
-        if (neighbor) {
-            CHECK(neighbor->isDirty());
-            CHECK_EQ(neighbor->meshRevision(), neighborRevisions[i] + 1);
-        }
-    }
-
-    manager.unloadChunk(center);
-    for (size_t i = 0; i < DirectionCount; ++i) {
-        CHECK_EQ(
-            manager.getChunk(neighborCoords[i])->meshRevision(),
-            neighborRevisions[i] + 1);
-    }
-}
-
-TEST_CASE(ChunkManager_MoveRetainsChunks) {
-    ChunkManager source;
-    source.getOrCreateChunk({0, 0, 0}).clearDirty();
-
-    ChunkManager moved(std::move(source));
-    const uint32_t beforeConstructedMutation =
-        moved.getChunk({0, 0, 0})->meshRevision();
-    moved.getChunk({0, 0, 0})->invalidateMesh();
-    CHECK_EQ(
-        moved.getChunk({0, 0, 0})->meshRevision(),
-        beforeConstructedMutation + 1);
-
-    moved.getChunk({0, 0, 0})->clearDirty();
-    ChunkManager assigned;
-    assigned = std::move(moved);
-    const uint32_t beforeAssignedMutation =
-        assigned.getChunk({0, 0, 0})->meshRevision();
-    assigned.getChunk({0, 0, 0})->invalidateMesh();
-    CHECK_EQ(
-        assigned.getChunk({0, 0, 0})->meshRevision(),
-        beforeAssignedMutation + 1);
 }
 
 TEST_CASE(ChunkManager_DirtyStateCoalescesMeshRevision) {

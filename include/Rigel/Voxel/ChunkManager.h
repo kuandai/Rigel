@@ -47,8 +47,10 @@ class ChunkStreamer;
 class ChunkManager {
 public:
     ChunkManager() = default;
-    ChunkManager(ChunkManager&& other) noexcept;
-    ChunkManager& operator=(ChunkManager&& other) noexcept;
+    ChunkManager(const ChunkManager&) = delete;
+    ChunkManager& operator=(const ChunkManager&) = delete;
+    ChunkManager(ChunkManager&&) = delete;
+    ChunkManager& operator=(ChunkManager&&) = delete;
 
     /// @name Chunk Access
     /// @{
@@ -116,24 +118,6 @@ public:
 
     /// @}
 
-    /// @name Lifecycle
-    /// @{
-
-    /**
-     * @brief Unload a chunk.
-     *
-     * @param coord The chunk coordinate
-     * @note Does not save the chunk.
-     */
-    void unloadChunk(ChunkCoord coord);
-
-    /**
-     * @brief Unload all chunks.
-     */
-    void clear();
-
-    /// @}
-
     /// @name Iteration
     /// @{
 
@@ -168,7 +152,7 @@ private:
     friend class Chunk;
     friend class ChunkStreamer;
 
-    void rebindMeshChangeTracking();
+    void unloadChunk(ChunkCoord coord);
     void invalidateFaceNeighbors(ChunkCoord coord);
     void notifyMeshChange(ChunkCoord coord);
     std::vector<ChunkCoord> consumeDirtyMeshNotifications();

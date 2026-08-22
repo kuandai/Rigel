@@ -5,13 +5,21 @@
 #include "Rigel/Voxel/WorldView.h"
 
 #include <type_traits>
+#include <vector>
 
 using namespace Rigel::Voxel;
 
-static_assert(std::is_move_constructible_v<ChunkManager>);
-static_assert(std::is_move_assignable_v<ChunkManager>);
-static_assert(std::is_move_constructible_v<World>);
-static_assert(std::is_move_assignable_v<World>);
+template<typename T>
+concept PubliclyClearable = requires(T& value) {
+    value.clear();
+};
+
+static_assert(!std::is_move_constructible_v<ChunkManager>);
+static_assert(!std::is_move_assignable_v<ChunkManager>);
+static_assert(!std::is_move_constructible_v<World>);
+static_assert(!std::is_move_assignable_v<World>);
+static_assert(!PubliclyClearable<ChunkManager>);
+static_assert(!PubliclyClearable<World>);
 
 TEST_CASE(World_StreamingPopulatesChunks) {
     WorldResources resources;
@@ -49,6 +57,72 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     view.updateStreaming(glm::vec3(0.0f));
     view.updateMeshes();
     CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(1));
+}
+
+TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    BlockType solid;
+    solid.identifier = "rigel:view_clear_solid";
+    solid.isOpaque = true;
+    solid.isSolid = true;
+    const BlockID solidId =
+        resources.registry().registerBlock(solid.identifier, solid);
+
+    WorldGenConfig generation;
+    generation.solidBlock = solid.identifier;
+    generation.surfaceBlock = solid.identifier;
+    auto generator = std::make_shared<WorldGenerator>(
+        resources.registry(), generation);
+    world.setGenerator(generator);
+    view.setGenerator(generator);
+
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 0;
+    streaming.unloadDistanceChunks = 0;
+    streaming.genQueueLimit = 0;
+    streaming.meshQueueLimit = 0;
+    streaming.updateBudgetPerFrame = 0;
+    streaming.applyBudgetPerFrame = 0;
+    streaming.workerThreads = 0;
+    streaming.maxResidentChunks = 0;
+    view.setStreamConfig(streaming);
+
+    const ChunkCoord coord{0, 0, 0};
+    Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solidId}, resources.registry());
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+
+    view.updateStreaming(coord.toWorldCenter());
+    view.updateMeshes();
+    CHECK(world.chunkManager().hasChunk(coord));
+    CHECK(view.meshStore().contains(coord));
+
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    view.getChunkDebugStates(states);
+    CHECK_EQ(states.size(), static_cast<size_t>(1));
+    CHECK_EQ(states.front().coord, coord);
+    CHECK_EQ(states.front().state, ChunkStreamer::DebugState::ReadyMesh);
+
+    view.clear();
+
+    CHECK(world.chunkManager().hasChunk(coord));
+    CHECK(!view.meshStore().contains(coord));
+    view.getChunkDebugStates(states);
+    CHECK(states.empty());
+
+    view.updateStreaming(coord.toWorldCenter());
+    view.updateMeshes();
+
+    CHECK(world.chunkManager().hasChunk(coord));
+    CHECK(view.meshStore().contains(coord));
+    view.getChunkDebugStates(states);
+    CHECK_EQ(states.size(), static_cast<size_t>(1));
+    CHECK_EQ(states.front().coord, coord);
+    CHECK_EQ(states.front().state, ChunkStreamer::DebugState::ReadyMesh);
 }
 
 TEST_CASE(WorldView_StreamAndRenderDistancesRemainIndependent) {

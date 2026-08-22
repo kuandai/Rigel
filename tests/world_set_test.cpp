@@ -5,6 +5,13 @@
 
 using namespace Rigel::Voxel;
 
+template<typename T>
+concept HasPublicWorldRemoval = requires(T& worlds, WorldId id) {
+    worlds.removeWorld(id);
+};
+
+static_assert(!HasPublicWorldRemoval<WorldSet>);
+
 TEST_CASE(WorldSet_DefaultWorldUsesSharedRegistry) {
     WorldSet worldSet;
     World& world = worldSet.createWorld(WorldSet::defaultWorldId());
@@ -31,4 +38,18 @@ TEST_CASE(WorldSet_MultipleWorldsHaveIndependentChunks) {
 
     CHECK_EQ(first.getBlock(0, 0, 0).id, state.id);
     CHECK(second.getBlock(0, 0, 0).isAir());
+}
+
+TEST_CASE(WorldSet_ClearDestroysAllWorldsAndCanRepeatDuringTeardown) {
+    WorldSet worldSet;
+    worldSet.createWorld(1).setBlock(0, 0, 0, BlockState{});
+    worldSet.createWorld(2).setBlock(ChunkSize, 0, 0, BlockState{});
+
+    worldSet.clear();
+
+    CHECK(!worldSet.hasWorld(1));
+    CHECK(!worldSet.hasWorld(2));
+    CHECK(worldSet.findView(1) == nullptr);
+    CHECK(worldSet.findView(2) == nullptr);
+    CHECK_NO_THROW(worldSet.clear());
 }

@@ -79,11 +79,6 @@ BlockState World::getBlock(int wx, int wy, int wz) const {
     return m_chunkManager.getBlock(wx, wy, wz);
 }
 
-void World::clear() {
-    m_chunkManager.clear();
-    m_entities.clear();
-}
-
 void World::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
     m_generator = std::move(generator);
 }

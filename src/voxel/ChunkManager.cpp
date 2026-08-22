@@ -3,36 +3,7 @@
 
 #include <spdlog/spdlog.h>
 
-#include <utility>
-
 namespace Rigel::Voxel {
-
-ChunkManager::ChunkManager(ChunkManager&& other) noexcept
-    : m_chunks(std::move(other.m_chunks))
-    , m_dirtyMeshQueue(std::move(other.m_dirtyMeshQueue))
-    , m_dirtyMeshQueued(std::move(other.m_dirtyMeshQueued))
-    , m_registry(other.m_registry) {
-    rebindMeshChangeTracking();
-}
-
-ChunkManager& ChunkManager::operator=(ChunkManager&& other) noexcept {
-    if (this == &other) {
-        return *this;
-    }
-
-    m_chunks = std::move(other.m_chunks);
-    m_dirtyMeshQueue = std::move(other.m_dirtyMeshQueue);
-    m_dirtyMeshQueued = std::move(other.m_dirtyMeshQueued);
-    m_registry = other.m_registry;
-    rebindMeshChangeTracking();
-    return *this;
-}
-
-void ChunkManager::rebindMeshChangeTracking() {
-    for (auto& [coord, chunk] : m_chunks) {
-        chunk->trackMeshChanges(this);
-    }
-}
 
 void ChunkManager::invalidateFaceNeighbors(ChunkCoord coord) {
     for (size_t i = 0; i < DirectionCount; ++i) {
@@ -172,13 +143,6 @@ void ChunkManager::unloadChunk(ChunkCoord coord) {
         m_dirtyMeshQueued.erase(coord);
         spdlog::debug("Unloaded chunk at ({}, {}, {})", coord.x, coord.y, coord.z);
     }
-}
-
-void ChunkManager::clear() {
-    m_chunks.clear();
-    m_dirtyMeshQueue.clear();
-    m_dirtyMeshQueued.clear();
-    spdlog::debug("ChunkManager cleared");
 }
 
 void ChunkManager::forEachChunk(const std::function<void(ChunkCoord, Chunk&)>& fn) {

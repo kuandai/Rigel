@@ -580,6 +580,31 @@ void streamChunk(ChunkStreamer& streamer, ChunkCoord coord) {
     streamer.update(coord.toWorldCenter());
     streamer.processCompletions();
 }
+
+void evictCleanChunk(World& world,
+                     BlockRegistry& registry,
+                     const std::shared_ptr<WorldGenerator>& generator,
+                     ChunkCoord coord) {
+    WorldMeshStore meshStore;
+    ChunkStreamer streamer(
+        world.chunkManager(), meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.setChunkLoader([](ChunkLoadRequest) {
+        return ChunkLoadRequestResult::Deferred;
+    });
+
+    streamer.update(coord.offset(2, 0, 0).toWorldCenter());
+    CHECK(!world.chunkManager().hasChunk(coord));
+}
 }
 
 TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
@@ -862,7 +887,7 @@ TEST_CASE(AsyncChunkLoader_PersistenceInvalidatesInFlightRegionSnapshot) {
     dirty.setWorldGenVersion(generator->config().world.version);
     CHECK(loader.persistChunk(coord));
     CHECK(!dirty.isPersistDirty());
-    world.chunkManager().unloadChunk(coord);
+    evictCleanChunk(world, registry, generator, coord);
 
     regionGate->release();
     CHECK(waitForRegionCompletion(loader));
@@ -936,7 +961,7 @@ TEST_CASE(AsyncChunkLoader_StalePayloadRestartsFromReplacementRegionCache) {
     dirty.fill(BlockState{edited}, registry);
     dirty.setWorldGenVersion(generator->config().world.version);
     CHECK(loader.persistChunk(persistedCoord));
-    world.chunkManager().unloadChunk(persistedCoord);
+    evictCleanChunk(world, registry, generator, persistedCoord);
 
     CHECK_EQ(loader.request(makeLoadRequest(refillCoord)), ChunkLoadRequestResult::Queued);
     loader.drainCompletions(1);

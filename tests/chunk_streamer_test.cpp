@@ -48,6 +48,10 @@ struct ChunkStreamerTestAccess {
     static size_t inFlightMeshDirty(const ChunkStreamer& streamer) {
         return streamer.m_inFlightMeshDirty;
     }
+
+    static bool evictChunk(ChunkStreamer& streamer, ChunkCoord coord) {
+        return streamer.evictChunk(coord);
+    }
 };
 }
 
@@ -3331,7 +3335,7 @@ TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
     CHECK_EQ(installedIndexCount, static_cast<size_t>(54));
 }
 
-TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterChunkUnload) {
+TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     ChunkManager manager;
     BlockRegistry registry;
     WorldMeshStore meshStore;
@@ -3350,6 +3354,7 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterChunkUnload) {
     removed.setBlock(0, 1, 1, BlockState{solid}, registry);
     removed.setWorldGenVersion(generator->config().world.version);
     removed.setLoadedFromDisk(true);
+    removed.clearPersistDirty();
 
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
@@ -3377,11 +3382,13 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterChunkUnload) {
     CHECK_EQ(hiddenBoundaryIndexCount, static_cast<size_t>(30));
 
     const uint32_t revisionBeforeRemoval = surviving.meshRevision();
-    manager.unloadChunk(removedCoord);
-    manager.unloadChunk(removedCoord);
-    manager.unloadChunk(removedCoord);
+    stream.unloadDistanceChunks = 0;
+    streamer.setConfig(stream);
+    streamer.update(survivingCoord.toWorldCenter());
+
     CHECK(!manager.hasChunk(removedCoord));
     CHECK_EQ(surviving.meshRevision(), revisionBeforeRemoval + 1);
+    CHECK(!meshStore.contains(removedCoord));
 
     streamer.update(survivingCoord.toWorldCenter());
     streamer.processCompletions();
@@ -3445,7 +3452,9 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
     const uint32_t queuedRevision = original.meshRevision();
 
     streamer.reset();
-    manager.unloadChunk(coord);
+    original.clearPersistDirty();
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::evictChunk(
+        streamer, coord));
     Chunk& replacement = manager.getOrCreateChunk(coord);
     std::array<BlockState, Chunk::VOLUME> replacementBlocks{};
     replacementBlocks[1] = BlockState{solid};

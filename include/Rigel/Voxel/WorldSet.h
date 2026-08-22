@@ -36,7 +36,13 @@ public:
     const WorldView* findView(WorldId id) const;
     WorldView& view(WorldId id);
 
-    void removeWorld(WorldId id);
+    /**
+     * @brief Destroy every view and world during application teardown.
+     *
+     * Asynchronous chunk loaders must be stopped and their callbacks detached
+     * from each view before this is called. Views are destroyed before the
+     * worlds and chunk managers to which they are bound.
+     */
     void clear();
 
     Persistence::FormatRegistry& persistenceFormats() { return m_persistenceFormats; }

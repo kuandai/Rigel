@@ -83,10 +83,6 @@ WorldView& WorldSet::view(WorldId id) {
     return *view;
 }
 
-void WorldSet::removeWorld(WorldId id) {
-    m_worlds.erase(id);
-}
-
 void WorldSet::clear() {
     for (auto& world : m_worlds) {
         if (world.second) {

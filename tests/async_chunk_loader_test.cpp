@@ -59,7 +59,8 @@ struct AsyncChunkLoaderTestAccess {
                                        Voxel::ChunkCoord coord,
                                        Voxel::ChunkLoadRequestId requestId) {
         auto it = loader.m_payloadInFlight.find(coord);
-        return it != loader.m_payloadInFlight.end() && it->second == requestId;
+        return it != loader.m_payloadInFlight.end() &&
+            it->second.requestId == requestId;
     }
 
     static void setRetryClock(
@@ -1009,7 +1010,8 @@ TEST_CASE(AsyncChunkLoader_StalePayloadRestartsFromReplacementRegionCache) {
     CHECK(world.chunkManager().hasChunk(refillCoord));
 }
 
-TEST_CASE(AsyncChunkLoader_CancelledPayloadCannotCompleteNewRequest) {
+void checkCancelledPayloadCannotCompleteReplacement(
+    ChunkLoadRequestId requestId) {
     WorldResources resources;
     World world;
     world.initialize(resources);
@@ -1036,42 +1038,55 @@ TEST_CASE(AsyncChunkLoader_CancelledPayloadCannotCompleteNewRequest) {
         generator);
     loader.setPrefetchRadius(0);
 
-    auto payloadGate = std::make_shared<LoaderWorkGate>();
-    auto unusedGate = std::make_shared<LoaderWorkGate>();
-    LoaderWorkRelease releaseOnExit(unusedGate, payloadGate);
+    auto stalePayloadGate = std::make_shared<LoaderWorkGate>();
+    auto replacementPayloadGate = std::make_shared<LoaderWorkGate>();
+    LoaderWorkRelease releaseOnExit(stalePayloadGate, replacementPayloadGate);
     std::atomic<size_t> payloadStarts = 0;
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
-        setPayloadBuildStartCallback(loader, [payloadGate, &payloadStarts]() {
-            if (payloadStarts.fetch_add(1) == 0) {
-                payloadGate->enterAndWait();
-            }
-        });
+        setPayloadBuildStartCallback(
+            loader,
+            [stalePayloadGate, replacementPayloadGate, &payloadStarts]() {
+                size_t startIndex = payloadStarts.fetch_add(1);
+                if (startIndex == 0) {
+                    stalePayloadGate->enterAndWait();
+                } else if (startIndex == 1) {
+                    replacementPayloadGate->enterAndWait();
+                }
+            });
 
-    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
+    const ChunkLoadRequest request{coord, requestId};
+    CHECK_EQ(loader.request(request), ChunkLoadRequestResult::Queued);
     CHECK(loader.drainCompletions(1).empty());
-    CHECK(payloadGate->waitUntilEntered());
+    CHECK(stalePayloadGate->waitUntilEntered());
 
     loader.cancel(coord);
     CHECK(!loader.isPending(coord));
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+    CHECK_EQ(loader.workCount().started, static_cast<uint64_t>(1));
 
-    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(request), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(coord));
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+    CHECK_EQ(loader.workCount().started, static_cast<uint64_t>(2));
 
-    payloadGate->release();
+    stalePayloadGate->release();
     CHECK(waitForPayloadCompletions(loader, 1));
     CHECK(loader.drainCompletions(8).empty());
+    CHECK(replacementPayloadGate->waitUntilEntered());
+    CHECK_EQ(payloadStarts.load(), static_cast<size_t>(2));
     CHECK(loader.isPending(coord));
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+    CHECK(!world.chunkManager().hasChunk(coord));
 
+    replacementPayloadGate->release();
     CHECK(waitForPayloadCompletions(loader, 1));
     std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(8);
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));
     CHECK_EQ(resolved.front().coord, coord);
+    CHECK_EQ(resolved.front().requestId, requestId);
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
     CHECK_EQ(payloadStarts.load(), static_cast<size_t>(2));
     CHECK(!loader.isPending(coord));
@@ -1084,6 +1099,15 @@ TEST_CASE(AsyncChunkLoader_CancelledPayloadCannotCompleteNewRequest) {
         CHECK_EQ(loaded->getBlock(0, 0, 0).id, persisted);
         CHECK(loaded->loadedFromDisk());
     }
+    CHECK(loader.drainCompletions(8).empty());
+}
+
+TEST_CASE(AsyncChunkLoader_CancelledPayloadCannotCompleteReusedRequestId) {
+    checkCancelledPayloadCannotCompleteReplacement(41);
+}
+
+TEST_CASE(AsyncChunkLoader_CancelledPayloadCannotCompleteZeroRequestId) {
+    checkCancelledPayloadCannotCompleteReplacement(0);
 }
 
 TEST_CASE(AsyncChunkLoader_CancelledActiveRequestWakesDeferredCapacity) {

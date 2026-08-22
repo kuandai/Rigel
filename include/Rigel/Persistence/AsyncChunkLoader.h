@@ -64,9 +64,15 @@ private:
     };
 
     using ChunkLoadRequestId = Voxel::ChunkLoadRequestId;
+    struct ChunkRequestIdentity {
+        ChunkLoadRequestId requestId = 0;
+        uint64_t incarnation = 0;
+
+        bool operator==(const ChunkRequestIdentity&) const = default;
+    };
     using ChunkRequestMap =
         std::unordered_map<Voxel::ChunkCoord,
-                           ChunkLoadRequestId,
+                           ChunkRequestIdentity,
                            Voxel::ChunkCoordHash>;
 
     struct RegionEntry {
@@ -89,7 +95,7 @@ private:
 
     struct ChunkPayload {
         Voxel::ChunkCoord coord;
-        ChunkLoadRequestId requestId = 0;
+        ChunkRequestIdentity request;
         RegionKey regionKey;
         uint64_t regionRevision = 0;
         Voxel::ChunkBuffer blocks;
@@ -107,25 +113,25 @@ private:
                                  std::vector<Voxel::ChunkLoadCompletion>& resolved);
     Voxel::ChunkLoadRequestResult queueChunkLoad(
         Voxel::ChunkCoord coord,
-        ChunkLoadRequestId requestId);
+        ChunkRequestIdentity request);
     void deferChunkLoad(Voxel::ChunkCoord coord,
-                        ChunkLoadRequestId requestId);
+                        ChunkRequestIdentity request);
     void startDeferredChunkLoads(
         std::vector<Voxel::ChunkLoadCompletion>* resolved = nullptr);
     void startRetryChunkLoads(
         std::vector<Voxel::ChunkLoadCompletion>* resolved = nullptr);
     void completeChunkLoad(Voxel::ChunkCoord coord,
-                           ChunkLoadRequestId requestId,
+                           ChunkRequestIdentity request,
                            Voxel::ChunkLoadOutcome outcome,
                            std::vector<Voxel::ChunkLoadCompletion>& resolved);
     void restartChunkLoad(Voxel::ChunkCoord coord,
-                          ChunkLoadRequestId requestId,
+                          ChunkRequestIdentity request,
                           std::vector<Voxel::ChunkLoadCompletion>& resolved);
     void scheduleRegionRetry(const RegionKey& key,
                              ChunkRequestMap pending,
                              const std::string& error);
     void markTerminalChunkLoad(Voxel::ChunkCoord coord,
-                               ChunkLoadRequestId requestId,
+                               ChunkRequestIdentity request,
                                std::string diagnostic);
     void clearTerminalChunkLoad(Voxel::ChunkCoord coord);
     void refreshLastTerminalError();
@@ -134,7 +140,7 @@ private:
     bool queueRegionLoad(const RegionKey& key);
     void queuePayloadBuild(const RegionEntry& entry,
                            Voxel::ChunkCoord coord,
-                           ChunkLoadRequestId requestId);
+                           ChunkRequestIdentity request);
     void prefetchNeighbors(const RegionKey& center);
     void touch(const RegionKey& key);
     void evictIfNeeded();
@@ -183,13 +189,13 @@ private:
     ChunkRequestMap m_deferredChunkRequests;
 
     struct ChunkRetryState {
-        ChunkLoadRequestId requestId = 0;
+        ChunkRequestIdentity request;
         RetryClock::time_point retryAfter{};
     };
 
     struct ChunkRetrySchedule {
         Voxel::ChunkCoord coord;
-        ChunkLoadRequestId requestId = 0;
+        ChunkRequestIdentity request;
         RetryClock::time_point retryAfter{};
     };
 
@@ -214,6 +220,7 @@ private:
     uint64_t m_terminalFailureVersion = 0;
     std::deque<Voxel::ChunkLoadCompletion> m_resolvedChunks;
     ChunkRequestMap m_payloadInFlight;
+    uint64_t m_nextRequestIncarnation = 1;
     uint64_t m_requestsStarted = 0;
     std::deque<RegionKey> m_lru;
 

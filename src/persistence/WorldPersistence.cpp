@@ -381,11 +381,11 @@ void saveWorldToDisk(const Voxel::World& world,
             *format, context, entityJournalPlan);
     }
 
-    WorldSnapshot worldSnapshot;
-    worldSnapshot.metadata.worldId = "world_" + std::to_string(world.id());
-    worldSnapshot.metadata.displayName = worldSnapshot.metadata.worldId;
+    WorldMetadata worldMetadata;
+    worldMetadata.worldId = "world_" + std::to_string(world.id());
+    worldMetadata.displayName = worldMetadata.worldId;
     if (!worldMetadataExists) {
-        service.saveWorld(worldSnapshot, context);
+        service.saveWorldMetadata(worldMetadata, context);
     }
     if (!zoneMetadataExists) {
         service.saveZoneMetadata(ZoneMetadata{zoneId, zoneId}, context);

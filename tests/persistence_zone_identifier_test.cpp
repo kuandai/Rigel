@@ -183,12 +183,6 @@ TEST_CASE(Persistence_ZoneIdentifierValidationPrecedesStorageOperations) {
             },
             conflicting);
 
-        WorldSnapshot world;
-        world.metadata = WorldMetadata{"world", "World"};
-        world.zones.push_back(ZoneMetadata{"rigel:valid", "Valid Zone"});
-        world.zones.push_back(ZoneMetadata{invalid, "Unsafe Zone"});
-        checkIdentifierError([&]() { service.saveWorld(world, context); }, invalid);
-
         checkIdentifierError(
             [&]() {
                 format->zoneMetadataCodec().metadataPath(

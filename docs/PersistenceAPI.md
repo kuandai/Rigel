@@ -222,13 +222,11 @@ Current behavior:
 
 - The default zone ID is `rigel:default`.
 - The world root path is `saves/world_<worldId>`.
-- `PersistenceService::saveWorld` writes world and zone metadata only.
+- `PersistenceService::saveWorldMetadata` writes one world-metadata document.
 - `PersistenceService::saveZoneMetadata` writes one zone's metadata only.
-- Metadata writes stage documents up to 4 MiB each. A world metadata save
-  preflights at most 4,096 zones and 8 MiB of encoded metadata before opening
-  any output file.
-- Metadata files are atomically replaced one at a time. A world metadata save
-  does not provide a cross-file transaction.
+- Metadata writes stage and validate one document, up to 4 MiB, before opening
+  its output file. Each metadata file is atomically replaced independently;
+  there is no aggregate world-plus-zone publication lifecycle.
 - `PersistenceService` chunk and entity payload writes require explicit region snapshots.
 - Runtime chunk loads use region snapshots through `AsyncChunkLoader`.
 - Only chunks marked `isPersistDirty()` are saved.

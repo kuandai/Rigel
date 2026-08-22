@@ -1619,11 +1619,11 @@ TEST_CASE(CRBackend_world_metadata_roundtrip) {
     context.preferredFormat = "cr";
     context.storage = storage;
 
-    WorldSnapshot world;
-    world.metadata.worldId = "demo";
-    world.metadata.displayName = "Demo World";
+    WorldMetadata world;
+    world.worldId = "demo";
+    world.displayName = "Demo World";
 
-    service.saveWorld(world, context);
+    service.saveWorldMetadata(world, context);
     auto loaded = service.loadWorldMetadata(context);
 
     CHECK_EQ(loaded.worldId, "demo");
@@ -1641,13 +1641,13 @@ TEST_CASE(CRBackend_world_metadata_escapes_json_strings) {
     context.preferredFormat = "cr";
     context.storage = storage;
 
-    WorldSnapshot world;
-    world.metadata.worldId = "escaped_metadata";
-    world.metadata.displayName =
+    WorldMetadata world;
+    world.worldId = "escaped_metadata";
+    world.displayName =
         std::string("Quoted \"world\" at C:\\saves\nnext") +
         '\b' + '\f' + '\r' + '\t' + '\x01';
 
-    service.saveWorld(world, context);
+    service.saveWorldMetadata(world, context);
 
     const auto bytes = readAll(*storage, CRPaths::worldInfoPath(context));
     const std::string document(bytes.begin(), bytes.end());
@@ -1660,7 +1660,7 @@ TEST_CASE(CRBackend_world_metadata_escapes_json_strings) {
     CHECK(document.find("\\t") != std::string::npos);
     CHECK(document.find("\\u0001") != std::string::npos);
     CHECK(document.find('\x01') == std::string::npos);
-    CHECK_EQ(service.loadWorldMetadata(context), world.metadata);
+    CHECK_EQ(service.loadWorldMetadata(context), world);
 }
 
 TEST_CASE(CRBackend_zone_metadata_decodes_json_unicode_escape) {
@@ -1826,16 +1826,16 @@ TEST_CASE(CRBackend_world_metadata_preserves_utf8_and_decodes_unicode) {
     const std::string utf8Name =
         std::string("Caf\xc3\xa9 \xe4\xb8\x96\xe7\x95\x8c ") +
         "\xf0\x9f\x9a\x80";
-    WorldSnapshot world;
-    world.metadata = WorldMetadata{"unicode_metadata", utf8Name};
-    service.saveWorld(world, context);
+    WorldMetadata world;
+    world = WorldMetadata{"unicode_metadata", utf8Name};
+    service.saveWorldMetadata(world, context);
 
     const auto worldPath = CRPaths::worldInfoPath(context);
     const auto rawDocument = readAll(*storage, worldPath);
     CHECK(
         std::string(rawDocument.begin(), rawDocument.end()).find(utf8Name) !=
         std::string::npos);
-    CHECK_EQ(service.loadWorldMetadata(context), world.metadata);
+    CHECK_EQ(service.loadWorldMetadata(context), world);
 
     writeText(
         *storage,
@@ -1849,11 +1849,11 @@ TEST_CASE(CRBackend_world_metadata_preserves_utf8_and_decodes_unicode) {
         std::string("\x7f\xc2\x80\xdf\xbf") +
         "\xe0\xa0\x80\xed\x9f\xbf\xee\x80\x80\xef\xbf\xbf" +
         "\xf0\x90\x80\x80\xf4\x8f\xbf\xbf";
-    WorldSnapshot boundaryWorld;
-    boundaryWorld.metadata =
+    WorldMetadata boundaryWorld;
+    boundaryWorld =
         WorldMetadata{"unicode_metadata", utf8Boundaries};
-    service.saveWorld(boundaryWorld, context);
-    CHECK_EQ(service.loadWorldMetadata(context), boundaryWorld.metadata);
+    service.saveWorldMetadata(boundaryWorld, context);
+    CHECK_EQ(service.loadWorldMetadata(context), boundaryWorld);
 
     const ZoneKey zoneKey{"rigel:default"};
     const auto zonePath = CRPaths::zoneInfoPath(zoneKey, context);
@@ -1897,14 +1897,14 @@ TEST_CASE(CRBackend_world_metadata_preserves_utf8_and_decodes_unicode) {
             "CRMetadata: invalid JSON string");
     }
 
-    service.saveWorld(boundaryWorld, context);
+    service.saveWorldMetadata(boundaryWorld, context);
     const auto validPayload = readAll(*storage, worldPath);
     const size_t mkdirCount = storage->mkdirCount();
     const size_t writeSessionCount = storage->writeSessionCount();
-    WorldSnapshot invalidWorld = boundaryWorld;
-    invalidWorld.metadata.displayName = std::string("\xed\xa0\x80", 3);
+    WorldMetadata invalidWorld = boundaryWorld;
+    invalidWorld.displayName = std::string("\xed\xa0\x80", 3);
     checkCRMetadataError(
-        [&]() { service.saveWorld(invalidWorld, context); },
+        [&]() { service.saveWorldMetadata(invalidWorld, context); },
         "CRMetadata: invalid JSON string");
     CHECK_EQ(storage->mkdirCount(), mkdirCount);
     CHECK_EQ(storage->writeSessionCount(), writeSessionCount);
@@ -1930,20 +1930,20 @@ TEST_CASE(CRBackend_world_metadata_enforces_string_and_document_boundaries) {
     CHECK(emptyDocument.size() < kMaxMetadataDocumentBytes);
 
     const auto worldPath = CRPaths::worldInfoPath(context);
-    WorldSnapshot stringBoundary;
-    stringBoundary.metadata.worldId = "metadata_limit";
-    stringBoundary.metadata.displayName =
+    WorldMetadata stringBoundary;
+    stringBoundary.worldId = "metadata_limit";
+    stringBoundary.displayName =
         std::string(kMaxMetadataStringBytes, 'x');
-    service.saveWorld(stringBoundary, context);
-    CHECK_EQ(service.loadWorldMetadata(context), stringBoundary.metadata);
+    service.saveWorldMetadata(stringBoundary, context);
+    CHECK_EQ(service.loadWorldMetadata(context), stringBoundary);
 
     const size_t mkdirCount = storage->mkdirCount();
     const size_t writeSessionCount = storage->writeSessionCount();
     const auto stringBoundaryPayload = readAll(*storage, worldPath);
-    WorldSnapshot oversizedString = stringBoundary;
-    oversizedString.metadata.displayName.push_back('x');
+    WorldMetadata oversizedString = stringBoundary;
+    oversizedString.displayName.push_back('x');
     checkCRMetadataError(
-        [&]() { service.saveWorld(oversizedString, context); },
+        [&]() { service.saveWorldMetadata(oversizedString, context); },
         "CRMetadata: string exceeds format limit");
     CHECK_EQ(storage->mkdirCount(), mkdirCount);
     CHECK_EQ(storage->writeSessionCount(), writeSessionCount);
@@ -1958,28 +1958,28 @@ TEST_CASE(CRBackend_world_metadata_enforces_string_and_document_boundaries) {
     const size_t quoteEscapeCount = extraEncodedBytes % 5;
     CHECK(unicodeEscapeCount + quoteEscapeCount <= kMaxMetadataStringBytes);
 
-    WorldSnapshot documentBoundary;
-    documentBoundary.metadata.worldId = "metadata_limit";
-    documentBoundary.metadata.displayName.assign(
+    WorldMetadata documentBoundary;
+    documentBoundary.worldId = "metadata_limit";
+    documentBoundary.displayName.assign(
         kMaxMetadataStringBytes, 'x');
     std::fill_n(
-        documentBoundary.metadata.displayName.begin(),
+        documentBoundary.displayName.begin(),
         unicodeEscapeCount,
         '\x01');
     std::fill_n(
-        documentBoundary.metadata.displayName.begin() + unicodeEscapeCount,
+        documentBoundary.displayName.begin() + unicodeEscapeCount,
         quoteEscapeCount,
         '"');
 
-    service.saveWorld(documentBoundary, context);
+    service.saveWorldMetadata(documentBoundary, context);
     const auto documentBoundaryPayload = readAll(*storage, worldPath);
     CHECK_EQ(documentBoundaryPayload.size(), kMaxMetadataDocumentBytes);
-    CHECK_EQ(service.loadWorldMetadata(context), documentBoundary.metadata);
+    CHECK_EQ(service.loadWorldMetadata(context), documentBoundary);
 
-    WorldSnapshot oversizedDocument = documentBoundary;
-    oversizedDocument.metadata.displayName.back() = '\x01';
+    WorldMetadata oversizedDocument = documentBoundary;
+    oversizedDocument.displayName.back() = '\x01';
     checkCRMetadataError(
-        [&]() { service.saveWorld(oversizedDocument, context); },
+        [&]() { service.saveWorldMetadata(oversizedDocument, context); },
         "CRMetadata: document exceeds format limit");
     CHECK_EQ(readAll(*storage, worldPath), documentBoundaryPayload);
 }
@@ -2271,10 +2271,9 @@ TEST_CASE(CRBackend_metadata_saves_preserve_existing_payloads) {
     CHECK_EQ(readAll(*storage, chunkPath), chunkPayload);
     CHECK_EQ(readAll(*storage, entityPath), entityPayload);
 
-    WorldSnapshot world;
-    world.metadata = WorldMetadata{"demo", "Demo World"};
-    world.zones.push_back(zone);
-    service.saveWorld(world, context);
+    WorldMetadata world;
+    world = WorldMetadata{"demo", "Demo World"};
+    service.saveWorldMetadata(world, context);
 
     CHECK_EQ(readAll(*storage, chunkPath), chunkPayload);
     CHECK_EQ(readAll(*storage, entityPath), entityPayload);

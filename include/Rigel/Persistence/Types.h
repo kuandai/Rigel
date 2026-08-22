@@ -165,11 +165,6 @@ struct EntityRegionSnapshot {
     }
 };
 
-struct WorldSnapshot {
-    WorldMetadata metadata;
-    std::vector<ZoneMetadata> zones;
-};
-
 enum class UnsupportedFeaturePolicy {
     Fail,
     NoOp,

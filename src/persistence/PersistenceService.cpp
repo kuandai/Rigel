@@ -14,9 +14,6 @@ namespace Rigel::Persistence {
 namespace {
 
 constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
-constexpr size_t kMaxAggregateMetadataBytes = 8 * 1024 * 1024;
-constexpr size_t kMaxWorldMetadataZones = 4096;
-
 class MetadataBufferWriter final : public ByteWriter {
 public:
     explicit MetadataBufferWriter(std::vector<uint8_t>& payload)
@@ -121,20 +118,6 @@ std::vector<uint8_t> encodeMetadata(Codec& codec, const Metadata& metadata) {
     return payload;
 }
 
-template <typename Codec, typename Metadata>
-std::vector<uint8_t> stageMetadata(Codec& codec,
-                                   const Metadata& metadata,
-                                   size_t& stagedBytes) {
-    auto payload = encodeMetadata(codec, metadata);
-    if (stagedBytes > kMaxAggregateMetadataBytes ||
-        payload.size() > kMaxAggregateMetadataBytes - stagedBytes) {
-        throw std::length_error(
-            "Persistence world metadata exceeds aggregate staging limit");
-    }
-    stagedBytes += payload.size();
-    return payload;
-}
-
 void publishMetadata(StorageBackend& storage,
                      const std::vector<uint8_t>& payload,
                      const std::string& path) {
@@ -181,44 +164,13 @@ void PersistenceService::handleUnsupportedFeature(const PersistenceContext& cont
     }
 }
 
-void PersistenceService::saveWorld(const WorldSnapshot& snapshot, const PersistenceContext& context) {
-    if (snapshot.zones.size() > kMaxWorldMetadataZones) {
-        throw std::length_error(
-            "Persistence world metadata exceeds zone-count staging limit");
-    }
-    for (const auto& zone : snapshot.zones) {
-        detail::validateZoneIdentifier(zone.zoneId);
-    }
+void PersistenceService::saveWorldMetadata(
+    const WorldMetadata& metadata,
+    const PersistenceContext& context) {
     auto format = resolve(context);
-
     auto& worldCodec = format->worldMetadataCodec();
-    auto& zoneCodec = format->zoneMetadataCodec();
     const auto worldPath = worldCodec.metadataPath(context);
-    std::vector<std::string> zonePaths;
-    zonePaths.reserve(snapshot.zones.size());
-    for (const auto& zone : snapshot.zones) {
-        zonePaths.push_back(
-            zoneCodec.metadataPath(ZoneKey{zone.zoneId}, context));
-    }
-
-    size_t stagedBytes = 0;
-    auto worldPayload = stageMetadata(
-        worldCodec, snapshot.metadata, stagedBytes);
-    std::vector<std::vector<uint8_t>> zonePayloads;
-    zonePayloads.reserve(snapshot.zones.size());
-    for (const auto& zone : snapshot.zones) {
-        zonePayloads.push_back(
-            stageMetadata(zoneCodec, zone, stagedBytes));
-    }
-
-    publishMetadata(*context.storage, worldPayload, worldPath);
-
-    for (size_t index = 0; index < snapshot.zones.size(); ++index) {
-        publishMetadata(
-            *context.storage,
-            zonePayloads[index],
-            zonePaths[index]);
-    }
+    writeMetadata(*context.storage, worldCodec, metadata, worldPath);
 }
 
 WorldMetadata PersistenceService::loadWorldMetadata(const PersistenceContext& context) {

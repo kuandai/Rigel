@@ -18,8 +18,6 @@ using namespace Rigel::Persistence;
 namespace {
 
 constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
-constexpr size_t kMaxAggregateMetadataBytes = 8 * 1024 * 1024;
-constexpr size_t kMaxWorldMetadataZones = 4096;
 constexpr size_t kMaxMemoryStringBytes = 1'048'576;
 
 struct StorageMutationCounts {
@@ -528,16 +526,15 @@ TEST_CASE(Persistence_MetadataRoundTrip) {
     context.preferredFormat = "memory";
     context.storage = storage;
 
-    WorldSnapshot world;
-    world.metadata.worldId = "world-alpha";
-    world.metadata.displayName = "World Alpha";
-    world.zones.push_back(ZoneMetadata{"zone-main", "Main"});
+    WorldMetadata world{"world-alpha", "World Alpha"};
+    const ZoneMetadata zone{"zone-main", "Main"};
 
-    service.saveWorld(world, context);
+    service.saveWorldMetadata(world, context);
+    service.saveZoneMetadata(zone, context);
 
     auto loaded = service.loadWorldMetadata(context);
-    CHECK_EQ(loaded.worldId, world.metadata.worldId);
-    CHECK_EQ(loaded.displayName, world.metadata.displayName);
+    CHECK_EQ(loaded, world);
+    CHECK_EQ(service.loadZoneMetadata(ZoneKey{zone.zoneId}, context), zone);
 }
 
 TEST_CASE(Persistence_MaximumMemoryMetadataDocumentRoundTrip) {
@@ -552,263 +549,18 @@ TEST_CASE(Persistence_MaximumMemoryMetadataDocumentRoundTrip) {
     context.preferredFormat = "memory";
     context.storage = storage;
 
-    WorldSnapshot world;
-    world.metadata.worldId = std::string(kMaxMemoryStringBytes, 'w');
-    world.metadata.displayName = std::string(kMaxMemoryStringBytes, 'd');
+    WorldMetadata world;
+    world.worldId = std::string(kMaxMemoryStringBytes, 'w');
+    world.displayName = std::string(kMaxMemoryStringBytes, 'd');
 
-    service.saveWorld(world, context);
+    service.saveWorldMetadata(world, context);
 
-    CHECK_EQ(service.loadWorldMetadata(context), world.metadata);
+    CHECK_EQ(service.loadWorldMetadata(context), world);
     CHECK_EQ(
         storage->files().at("root/world.meta").size(),
         2 * kMaxMemoryStringBytes + 2 * sizeof(uint32_t));
     CHECK(storage->files().at("root/world.meta").size() <
           kMaxMetadataDocumentBytes);
-}
-
-#ifndef _WIN32
-TEST_CASE(Persistence_AggregateMetadataSavePreflightsMemoryLayouts) {
-    auto storage = std::make_shared<InMemoryStorageBackend>();
-
-    FormatRegistry registry;
-    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
-
-    PersistenceService service(registry);
-    PersistenceContext context;
-    context.rootPath = "root";
-    context.preferredFormat = "memory";
-    context.storage = storage;
-
-    const std::string canonicalId = "rigel:canonical";
-    const std::string legacyId = "rigel:legacy";
-    createEmptyFile(
-        *storage, "root/zones/rigel/canonical/regions/existing.mem");
-    createEmptyFile(
-        *storage, "root/zones/rigel:legacy/regions/existing.mem");
-    storage->clearCalls();
-
-    WorldSnapshot world;
-    world.metadata = WorldMetadata{"world", "World"};
-    world.zones = {
-        ZoneMetadata{canonicalId, "Canonical"},
-        ZoneMetadata{legacyId, "Legacy"}
-    };
-
-    service.saveWorld(world, context);
-
-    const std::vector<std::string> expectedPrefix = {
-        "exists root/zones/rigel/canonical",
-        "list root/zones/rigel/canonical",
-        "exists root/zones/rigel:canonical",
-        "list root/zones/rigel:canonical",
-        "exists root/zones/rigel/legacy",
-        "list root/zones/rigel/legacy",
-        "exists root/zones/rigel:legacy",
-        "list root/zones/rigel:legacy",
-        "mkdirs root",
-        "openWrite root/world.meta"
-    };
-    CHECK(storage->calls().size() >= expectedPrefix.size());
-    CHECK(std::equal(
-        expectedPrefix.begin(), expectedPrefix.end(), storage->calls().begin()));
-    CHECK(storage->files().contains(
-        "root/zones/rigel/canonical/zone.meta"));
-    CHECK(storage->files().contains(
-        "root/zones/rigel:legacy/zone.meta"));
-    CHECK(!storage->files().contains(
-        "root/zones/rigel/legacy/zone.meta"));
-    CHECK(!storage->files().contains(
-        "root/zones/rigel:canonical/zone.meta"));
-    CHECK_EQ(service.loadWorldMetadata(context), world.metadata);
-    CHECK_EQ(
-        service.loadZoneMetadata(ZoneKey{canonicalId}, context),
-        world.zones[0]);
-    CHECK_EQ(
-        service.loadZoneMetadata(ZoneKey{legacyId}, context),
-        world.zones[1]);
-}
-
-TEST_CASE(Persistence_AggregateMetadataSaveRejectsSplitMemoryLayoutsBeforeWrites) {
-    auto storage = std::make_shared<InMemoryStorageBackend>();
-
-    FormatRegistry registry;
-    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
-
-    PersistenceService service(registry);
-    PersistenceContext context;
-    context.rootPath = "root";
-    context.preferredFormat = "memory";
-    context.storage = storage;
-
-    const std::string earlierId = "rigel:earlier";
-    const std::string splitId = "rigel:split";
-    WorldSnapshot original;
-    original.metadata = WorldMetadata{"original", "Original World"};
-    original.zones = {
-        ZoneMetadata{earlierId, "Original Earlier Zone"},
-        ZoneMetadata{splitId, "Original Split Zone"}
-    };
-    service.saveWorld(original, context);
-    createEmptyFile(
-        *storage, "root/zones/rigel:split/regions/existing.mem");
-
-    const auto originalFiles = storage->files();
-    storage->clearCalls();
-
-    WorldSnapshot replacement;
-    replacement.metadata = WorldMetadata{"replacement", "Replacement World"};
-    replacement.zones = {
-        ZoneMetadata{earlierId, "Replacement Earlier Zone"},
-        ZoneMetadata{splitId, "Replacement Split Zone"}
-    };
-
-    std::string diagnostic;
-    try {
-        service.saveWorld(replacement, context);
-    } catch (const std::runtime_error& error) {
-        diagnostic = error.what();
-    }
-
-    const std::vector<std::string> expectedCalls = {
-        "exists root/zones/rigel/earlier",
-        "list root/zones/rigel/earlier",
-        "exists root/zones/rigel:earlier",
-        "list root/zones/rigel:earlier",
-        "exists root/zones/rigel/split",
-        "list root/zones/rigel/split",
-        "exists root/zones/rigel:split",
-        "list root/zones/rigel:split"
-    };
-    CHECK_EQ(storage->calls(), expectedCalls);
-    CHECK_EQ(storage->files(), originalFiles);
-    CHECK(diagnostic.find("MemoryFormat configuration error") !=
-          std::string::npos);
-    CHECK(diagnostic.find(splitId) != std::string::npos);
-    CHECK(diagnostic.find("both") != std::string::npos);
-    CHECK(diagnostic.find("consolidate") != std::string::npos);
-    CHECK(diagnostic.find("root/zones/rigel/split") != std::string::npos);
-}
-#endif
-
-TEST_CASE(Persistence_AggregateMetadataSaveValidatesAllPayloadsBeforeWrites) {
-    auto storage = std::make_shared<InMemoryStorageBackend>();
-
-    FormatRegistry registry;
-    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
-
-    PersistenceService service(registry);
-    PersistenceContext context;
-    context.rootPath = "root";
-    context.preferredFormat = "memory";
-    context.storage = storage;
-
-    WorldSnapshot original;
-    original.metadata = WorldMetadata{"original", "Original World"};
-    original.zones = {
-        ZoneMetadata{"zone-earlier", "Original Earlier Zone"},
-        ZoneMetadata{"zone-later", "Original Later Zone"}
-    };
-    service.saveWorld(original, context);
-
-    const auto originalFiles = storage->files();
-    storage->clearCalls();
-
-    WorldSnapshot replacement;
-    replacement.metadata = WorldMetadata{"replacement", "Replacement World"};
-    replacement.zones = {
-        ZoneMetadata{"zone-earlier", "Replacement Earlier Zone"},
-        ZoneMetadata{"zone-later", std::string(1'048'577, 'x')}
-    };
-
-    std::string diagnostic;
-    try {
-        service.saveWorld(replacement, context);
-    } catch (const std::runtime_error& error) {
-        diagnostic = error.what();
-    }
-
-    CHECK_EQ(storage->files(), originalFiles);
-    CHECK(storage->calls().empty());
-    CHECK(diagnostic.find("MemoryFormat: string length exceeds format limit") !=
-          std::string::npos);
-}
-
-TEST_CASE(Persistence_AggregateMetadataByteLimitPrecedesWrites) {
-    auto storage = std::make_shared<InMemoryStorageBackend>();
-
-    FormatRegistry registry;
-    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
-
-    PersistenceService service(registry);
-    PersistenceContext context;
-    context.rootPath = "root";
-    context.preferredFormat = "memory";
-    context.storage = storage;
-
-    WorldSnapshot original;
-    original.metadata = WorldMetadata{"original", "Original World"};
-    original.zones.push_back(ZoneMetadata{"original-zone", "Original Zone"});
-    service.saveWorld(original, context);
-
-    const auto originalFiles = storage->files();
-    storage->clearCalls();
-
-    WorldSnapshot oversized;
-    oversized.metadata = WorldMetadata{"replacement", "Replacement World"};
-    for (size_t index = 0;
-         index < kMaxAggregateMetadataBytes / kMaxMemoryStringBytes;
-         ++index) {
-        oversized.zones.push_back(ZoneMetadata{
-            "zone-" + std::to_string(index),
-            std::string(kMaxMemoryStringBytes, 'x')});
-    }
-
-    std::string diagnostic;
-    try {
-        service.saveWorld(oversized, context);
-    } catch (const std::exception& error) {
-        diagnostic = error.what();
-    }
-
-    CHECK_EQ(
-        diagnostic,
-        "Persistence world metadata exceeds aggregate staging limit");
-    CHECK_EQ(storage->files(), originalFiles);
-    CHECK(storage->calls().empty());
-}
-
-TEST_CASE(Persistence_AggregateMetadataZoneLimitPrecedesPreflight) {
-    auto storage = std::make_shared<InMemoryStorageBackend>();
-
-    FormatRegistry registry;
-    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
-
-    PersistenceService service(registry);
-    PersistenceContext context;
-    context.rootPath = "root";
-    context.preferredFormat = "memory";
-    context.storage = storage;
-
-    WorldSnapshot oversized;
-    oversized.metadata = WorldMetadata{"world", "World"};
-    oversized.zones.reserve(kMaxWorldMetadataZones + 1);
-    for (size_t index = 0; index <= kMaxWorldMetadataZones; ++index) {
-        oversized.zones.push_back(
-            ZoneMetadata{"zone-" + std::to_string(index), "Zone"});
-    }
-
-    std::string diagnostic;
-    try {
-        service.saveWorld(oversized, context);
-    } catch (const std::exception& error) {
-        diagnostic = error.what();
-    }
-
-    CHECK_EQ(
-        diagnostic,
-        "Persistence world metadata exceeds zone-count staging limit");
-    CHECK(storage->calls().empty());
-    CHECK(storage->files().empty());
 }
 
 TEST_CASE(Persistence_ZoneMetadataRoundTrip) {
@@ -832,6 +584,47 @@ TEST_CASE(Persistence_ZoneMetadataRoundTrip) {
     auto loaded = service.loadZoneMetadata(ZoneKey{"zone-main"}, context);
     CHECK_EQ(loaded.zoneId, zone.zoneId);
     CHECK_EQ(loaded.displayName, zone.displayName);
+}
+
+TEST_CASE(Persistence_ZoneMetadataValidationPrecedesReplacement) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::Memory::descriptor(),
+        Backends::Memory::factory(),
+        Backends::Memory::probe());
+
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    const ZoneMetadata original{"zone-main", "Main Zone"};
+    service.saveZoneMetadata(original, context);
+    const auto originalFiles = storage->files();
+    storage->clearMutations();
+
+    std::string diagnostic;
+    try {
+        service.saveZoneMetadata(
+            ZoneMetadata{
+                original.zoneId,
+                std::string(kMaxMemoryStringBytes + 1, 'x')},
+            context);
+    } catch (const std::runtime_error& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK_EQ(
+        diagnostic,
+        "MemoryFormat: string length exceeds format limit");
+    CHECK_EQ(storage->mutations(), StorageMutationCounts{});
+    CHECK_EQ(storage->files(), originalFiles);
+    CHECK_EQ(
+        service.loadZoneMetadata(ZoneKey{original.zoneId}, context),
+        original);
 }
 
 TEST_CASE(Persistence_MetadataSavesPreserveExistingPayloads) {
@@ -879,17 +672,20 @@ TEST_CASE(Persistence_MetadataSavesPreserveExistingPayloads) {
 
     ZoneMetadata zone{"zone-main", "Main Zone"};
     service.saveZoneMetadata(zone, context);
+    auto format = service.openFormat(context);
+    const auto zonePath = format->zoneMetadataCodec().metadataPath(
+        ZoneKey{zone.zoneId}, context);
+    const auto zonePayload = storage->files().at(zonePath);
 
     CHECK_EQ(service.loadRegion(chunkRegion.key, context), chunkRegion);
     CHECK_EQ(service.loadEntities(entityRegion.key, context), entityRegion);
 
-    WorldSnapshot world;
-    world.metadata = WorldMetadata{"world-main", "Main World"};
-    world.zones.push_back(zone);
-    service.saveWorld(world, context);
+    service.saveWorldMetadata(
+        WorldMetadata{"world-main", "Main World"}, context);
 
     CHECK_EQ(service.loadRegion(chunkRegion.key, context), chunkRegion);
     CHECK_EQ(service.loadEntities(entityRegion.key, context), entityRegion);
+    CHECK_EQ(storage->files().at(zonePath), zonePayload);
 }
 
 TEST_CASE(Persistence_RegionRoundTrip) {

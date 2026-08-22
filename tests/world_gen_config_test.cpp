@@ -781,3 +781,178 @@ TEST_CASE(WorldGenConfig_IgnoresUnretainedGeneratorListEntries) {
     CHECK(config.biomes.entries.empty());
     CHECK(config.structures.features.empty());
 }
+
+TEST_CASE(WorldGenConfig_AcceptsDensityGraphFanoutMaximaAndReplacement) {
+    std::ostringstream yaml;
+    yaml << "density_graph:\n  nodes:\n";
+    for (size_t node = 0; node < WorldGenConfig::MaxDensityGraphNodes; ++node) {
+        yaml << "    - id: node" << node << "\n"
+             << "      type: " << (node == 0 ? "spline" : "constant") << "\n";
+        if (node == 0) {
+            yaml << "      inputs:\n";
+            for (size_t input = 0; input < WorldGenConfig::MaxDensityNodeInputs;
+                 ++input) {
+                yaml << "        - node" << input + 1 << "\n";
+            }
+            yaml << "        - ''\n";
+            yaml << "      spline:\n";
+            for (size_t point = 0; point < WorldGenConfig::MaxDensitySplinePoints;
+                 ++point) {
+                yaml << "        - [" << point << ", " << point << "]\n";
+            }
+        }
+    }
+
+    WorldGenConfig config;
+    config.applyYaml("density-limits.yaml", yaml.str());
+    CHECK_EQ(config.densityGraph.nodes.size(),
+             WorldGenConfig::MaxDensityGraphNodes);
+    CHECK_EQ(config.densityGraph.nodes[0].inputs.size(),
+             WorldGenConfig::MaxDensityNodeInputs);
+    CHECK_EQ(config.densityGraph.nodes[0].splinePoints.size(),
+             WorldGenConfig::MaxDensitySplinePoints);
+
+    config.applyYaml(
+        "density-overlay.yaml",
+        "density_graph:\n"
+        "  nodes:\n"
+        "    - id: node0\n"
+        "      type: constant\n"
+        "      value: 7\n");
+    CHECK_EQ(config.densityGraph.nodes.size(),
+             WorldGenConfig::MaxDensityGraphNodes);
+    CHECK_EQ(config.densityGraph.nodes[0].type, "constant");
+    CHECK_NEAR(config.densityGraph.nodes[0].value, 7.0f, 0.001f);
+    CHECK(config.densityGraph.nodes[0].inputs.empty());
+    CHECK(config.densityGraph.nodes[0].splinePoints.empty());
+}
+
+TEST_CASE(WorldGenConfig_RejectsDensityGraphFanoutAboveMaxima) {
+    const std::string nodeError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "density_graph:\n  nodes:\n";
+        for (size_t node = 0; node <= WorldGenConfig::MaxDensityGraphNodes;
+             ++node) {
+            yaml << "    - id: node" << node << "\n"
+                 << "      type: constant\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("density-limits.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        nodeError,
+        "Invalid configuration value 'density_graph.nodes[32]' in "
+        "'density-limits.yaml': must contain no more than 32 entries");
+
+    const std::string inputError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "density_graph:\n  nodes:\n"
+             << "    - id: bounded\n"
+             << "      type: add\n"
+             << "      inputs:\n";
+        for (size_t input = 0; input <= WorldGenConfig::MaxDensityNodeInputs;
+             ++input) {
+            yaml << "        - input" << input << "\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("density-limits.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        inputError,
+        "Invalid configuration value 'density_graph.nodes[0].inputs' in "
+        "'density-limits.yaml': must contain no more than 8 entries");
+
+    const std::string splineError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "density_graph:\n  nodes:\n"
+             << "    - id: bounded\n"
+             << "      type: spline\n"
+             << "      spline:\n";
+        for (size_t point = 0; point <= WorldGenConfig::MaxDensitySplinePoints;
+             ++point) {
+            yaml << "        - [" << point << ", " << point << "]\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("density-limits.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        splineError,
+        "Invalid configuration value 'density_graph.nodes[0].spline' in "
+        "'density-limits.yaml': must contain no more than 16 entries");
+}
+
+TEST_CASE(WorldGenConfig_IgnoresUnretainedDensityGraphFanout) {
+    std::ostringstream yaml;
+    yaml << "density_graph:\n  nodes:\n";
+    for (size_t node = 0; node <= WorldGenConfig::MaxDensityGraphNodes; ++node) {
+        yaml << "    - id: ''\n"
+             << "      type: spline\n"
+             << "      inputs:\n";
+        for (size_t input = 0; input <= WorldGenConfig::MaxDensityNodeInputs;
+             ++input) {
+            yaml << "        - input" << input << "\n";
+        }
+        yaml << "      spline:\n";
+        for (size_t point = 0; point <= WorldGenConfig::MaxDensitySplinePoints;
+             ++point) {
+            yaml << "        - [" << point << ", " << point << "]\n";
+        }
+    }
+
+    WorldGenConfig config;
+    config.applyYaml("inert-density.yaml", yaml.str());
+    CHECK(config.densityGraph.nodes.empty());
+}
+
+TEST_CASE(WorldGenConfig_RejectsHostileDensityGraphFanoutAtFirstExcess) {
+    constexpr size_t hostileCount = 1024;
+
+    const std::string nodeError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "density_graph:\n  nodes:\n";
+        for (size_t node = 0; node < hostileCount; ++node) {
+            yaml << "    - id: hostile" << node << "\n"
+                 << "      type: constant\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("hostile-density.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        nodeError,
+        "Invalid configuration value 'density_graph.nodes[32]' in "
+        "'hostile-density.yaml': must contain no more than 32 entries");
+
+    const std::string inputError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "density_graph:\n  nodes:\n"
+             << "    - id: hostile\n"
+             << "      type: add\n"
+             << "      inputs:\n";
+        for (size_t input = 0; input < hostileCount; ++input) {
+            yaml << "        - input" << input << "\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("hostile-density.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        inputError,
+        "Invalid configuration value 'density_graph.nodes[0].inputs' in "
+        "'hostile-density.yaml': must contain no more than 8 entries");
+
+    const std::string splineError = exceptionMessage([] {
+        std::ostringstream yaml;
+        yaml << "density_graph:\n  nodes:\n"
+             << "    - id: hostile\n"
+             << "      type: spline\n"
+             << "      spline:\n";
+        for (size_t point = 0; point < hostileCount; ++point) {
+            yaml << "        - [" << point << ", " << point << "]\n";
+        }
+        WorldGenConfig config;
+        config.applyYaml("hostile-density.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        splineError,
+        "Invalid configuration value 'density_graph.nodes[0].spline' in "
+        "'hostile-density.yaml': must contain no more than 16 entries");
+}

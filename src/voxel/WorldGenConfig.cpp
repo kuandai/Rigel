@@ -525,10 +525,17 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         if (graphNode.has_child("nodes")) {
             ryml::ConstNodeRef nodes = graphNode["nodes"];
             if (nodes.is_seq()) {
+                size_t nodeIndex = 0;
                 for (ryml::ConstNodeRef node : nodes.children()) {
                     DensityNodeConfig config;
                     config.id = Util::readString(node, "id", "");
                     config.type = Util::readString(node, "type", "");
+                    if (config.id.empty() || config.type.empty()) {
+                        ++nodeIndex;
+                        continue;
+                    }
+                    const std::string nodePath = "density_graph.nodes[" +
+                        std::to_string(nodeIndex) + "]";
                     config.field = Util::readString(node, "field", "");
                     config.value = Util::readFloat(node, "value", config.value);
                     config.minValue = Util::readFloat(node, "min", config.minValue);
@@ -542,6 +549,11 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
                                 std::string name;
                                 input >> name;
                                 if (!name.empty()) {
+                                    validateRetainedCount(
+                                        config.inputs.size(),
+                                        MaxDensityNodeInputs,
+                                        sourceName,
+                                        nodePath + ".inputs");
                                     config.inputs.push_back(std::move(name));
                                 }
                             }
@@ -569,22 +581,32 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
                                     x = Util::readFloat(point, "x", x);
                                     y = Util::readFloat(point, "y", y);
                                 }
+                                validateRetainedCount(
+                                    config.splinePoints.size(),
+                                    MaxDensitySplinePoints,
+                                    sourceName,
+                                    nodePath + ".spline");
                                 config.splinePoints.emplace_back(x, y);
                             }
                         }
                     }
-                    if (!config.id.empty() && !config.type.empty()) {
-                        auto it = std::find_if(
-                            densityGraph.nodes.begin(),
-                            densityGraph.nodes.end(),
-                            [&](const DensityNodeConfig& existing) { return existing.id == config.id; }
-                        );
-                        if (it != densityGraph.nodes.end()) {
-                            *it = std::move(config);
-                        } else {
-                            densityGraph.nodes.push_back(std::move(config));
-                        }
+                    auto it = std::find_if(
+                        densityGraph.nodes.begin(),
+                        densityGraph.nodes.end(),
+                        [&](const DensityNodeConfig& existing) {
+                            return existing.id == config.id;
+                        });
+                    if (it != densityGraph.nodes.end()) {
+                        *it = std::move(config);
+                    } else {
+                        validateRetainedCount(
+                            densityGraph.nodes.size(),
+                            MaxDensityGraphNodes,
+                            sourceName,
+                            nodePath);
+                        densityGraph.nodes.push_back(std::move(config));
                     }
+                    ++nodeIndex;
                 }
             }
         }
@@ -761,11 +783,31 @@ void WorldGenConfig::validate(const char* sourceName) const {
         }
     }
 
+    if (densityGraph.nodes.size() > MaxDensityGraphNodes) {
+        Util::throwConfigurationConstraint(
+            sourceName, "density_graph.nodes",
+            "must contain no more than " +
+                std::to_string(MaxDensityGraphNodes) + " entries");
+    }
     for (size_t nodeIndex = 0; nodeIndex < densityGraph.nodes.size();
          ++nodeIndex) {
+        const auto& node = densityGraph.nodes[nodeIndex];
+        const std::string nodePath = "density_graph.nodes[" +
+            std::to_string(nodeIndex) + "]";
+        if (node.inputs.size() > MaxDensityNodeInputs) {
+            Util::throwConfigurationConstraint(
+                sourceName, nodePath + ".inputs",
+                "must contain no more than " +
+                    std::to_string(MaxDensityNodeInputs) + " entries");
+        }
+        if (node.splinePoints.size() > MaxDensitySplinePoints) {
+            Util::throwConfigurationConstraint(
+                sourceName, nodePath + ".spline",
+                "must contain no more than " +
+                    std::to_string(MaxDensitySplinePoints) + " entries");
+        }
         validateNoise(
-            densityGraph.nodes[nodeIndex].noise,
-            "density_graph.nodes[" + std::to_string(nodeIndex) + "].noise");
+            node.noise, nodePath + ".noise");
     }
 
     if (structures.features.size() > MaxStructureFeatures) {

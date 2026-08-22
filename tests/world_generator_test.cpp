@@ -249,3 +249,102 @@ TEST_CASE(WorldGenerator_RejectsInvalidDensityGraph) {
     CHECK(diagnostic.find("invalid density graph") != std::string::npos);
     CHECK(diagnostic.find("missing") != std::string::npos);
 }
+
+TEST_CASE(WorldGenerator_RejectsProgrammaticDensityGraphFanout) {
+    BlockRegistry registry = makeRegistry();
+
+    WorldGenConfig nodesConfig = makeFlatConfig();
+    nodesConfig.densityGraph.nodes.resize(
+        WorldGenConfig::MaxDensityGraphNodes + 1);
+    std::string nodesDiagnostic;
+    try {
+        WorldGenerator generator(registry, nodesConfig);
+    } catch (const std::invalid_argument& error) {
+        nodesDiagnostic = error.what();
+    }
+    CHECK_EQ(
+        nodesDiagnostic,
+        "Invalid configuration value 'density_graph.nodes' in "
+        "'WorldGenerator configuration': must contain no more than 32 entries");
+
+    WorldGenConfig inputsConfig = makeFlatConfig();
+    inputsConfig.densityGraph.nodes.push_back({
+        .id = "bounded",
+        .type = "add",
+        .inputs = std::vector<std::string>(
+            WorldGenConfig::MaxDensityNodeInputs + 1, "bounded")
+    });
+    std::string inputsDiagnostic;
+    try {
+        WorldGenerator generator(registry, inputsConfig);
+    } catch (const std::invalid_argument& error) {
+        inputsDiagnostic = error.what();
+    }
+    CHECK_EQ(
+        inputsDiagnostic,
+        "Invalid configuration value 'density_graph.nodes[0].inputs' in "
+        "'WorldGenerator configuration': must contain no more than 8 entries");
+
+    WorldGenConfig splineConfig = makeFlatConfig();
+    splineConfig.densityGraph.nodes.push_back({
+        .id = "bounded",
+        .type = "spline",
+        .splinePoints = std::vector<std::pair<float, float>>(
+            WorldGenConfig::MaxDensitySplinePoints + 1, {0.0f, 0.0f})
+    });
+    std::string splineDiagnostic;
+    try {
+        WorldGenerator generator(registry, splineConfig);
+    } catch (const std::invalid_argument& error) {
+        splineDiagnostic = error.what();
+    }
+    CHECK_EQ(
+        splineDiagnostic,
+        "Invalid configuration value 'density_graph.nodes[0].spline' in "
+        "'WorldGenerator configuration': must contain no more than 16 entries");
+}
+
+TEST_CASE(WorldGenerator_EvaluatesDensityGraphFanoutBoundary) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenConfig config = makeFlatConfig();
+    config.stageEnabled["climate_global"] = false;
+    config.stageEnabled["climate_local"] = false;
+    config.stageEnabled["biome_resolve"] = false;
+    config.stageEnabled["caves"] = false;
+    config.stageEnabled["surface_rules"] = false;
+    config.stageEnabled["structures"] = false;
+
+    for (size_t index = 0; index < WorldGenConfig::MaxDensityGraphNodes;
+         ++index) {
+        WorldGenConfig::DensityNodeConfig node;
+        node.id = "node" + std::to_string(index);
+        node.type = "constant";
+        node.value = index == 7 ? 15.0f : 0.0f;
+        config.densityGraph.nodes.push_back(std::move(node));
+    }
+    auto& aggregate = config.densityGraph.nodes[30];
+    aggregate.type = "add";
+    aggregate.inputs.clear();
+    for (size_t input = 0; input < WorldGenConfig::MaxDensityNodeInputs;
+         ++input) {
+        aggregate.inputs.push_back("node" + std::to_string(input));
+    }
+    auto& spline = config.densityGraph.nodes[31];
+    spline.type = "spline";
+    spline.inputs = {"node30"};
+    spline.splinePoints.clear();
+    for (size_t point = 0; point < WorldGenConfig::MaxDensitySplinePoints;
+         ++point) {
+        spline.splinePoints.emplace_back(
+            static_cast<float>(point),
+            point + 1 == WorldGenConfig::MaxDensitySplinePoints ? 1.0f : -1.0f);
+    }
+    config.densityGraph.outputs["base_density"] = "node31";
+
+    WorldGenerator generator(registry, config);
+    ChunkBuffer buffer;
+    generator.generate({0, 0, 0}, buffer);
+    CHECK_EQ(
+        buffer.at(0, 0, 0).id.type,
+        registry.findByIdentifier("rigel:stone")->type);
+}

@@ -3,6 +3,7 @@
 #include "Rigel/Asset/Types.h"
 #include "ResourceRegistry.h"
 
+#define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 #include <spdlog/spdlog.h>
 #include <ryml.hpp>

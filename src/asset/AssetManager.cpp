@@ -9,9 +9,6 @@
 #include <ryml_std.hpp>
 #include <spdlog/spdlog.h>
 
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
-
 #include <algorithm>
 #include <string_view>
 
@@ -36,10 +33,14 @@ std::span<const char> LoadContext::loadResource(const std::string& path) const {
 void AssetManager::loadManifest(const std::string& path) {
     spdlog::info("Loading asset manifest: {}", path);
 
-    // Register built-in loaders if not already registered
-    if (m_loaders.empty()) {
+    // Register each built-in loader unless that category was explicitly replaced.
+    if (!m_loaders.contains("raw")) {
         registerLoader("raw", std::make_unique<RawLoader>());
+    }
+    if (!m_loaders.contains("textures")) {
         registerLoader("textures", std::make_unique<TextureLoader>());
+    }
+    if (!m_loaders.contains("shaders")) {
         registerLoader("shaders", std::make_unique<ShaderLoader>());
     }
 
@@ -303,34 +304,6 @@ void AssetManager::forEachInCategory(
             fn(name, entry);
         }
     }
-}
-
-std::shared_ptr<RawAsset> AssetManager::loadRawAsset(
-    const std::string& id,
-    const AssetEntry& entry
-) {
-    RawLoader loader;
-    LoadContext ctx{id, entry.configTree.crootref(), *this};
-    auto baseAsset = loader.load(ctx);
-    auto asset = std::dynamic_pointer_cast<RawAsset>(baseAsset);
-    if (!asset) {
-        throw AssetLoadError(id, "Raw loader returned incompatible asset type");
-    }
-    return asset;
-}
-
-std::shared_ptr<TextureAsset> AssetManager::loadTextureAsset(
-    const std::string& id,
-    const AssetEntry& entry
-) {
-    TextureLoader loader;
-    LoadContext ctx{id, entry.configTree.crootref(), *this};
-    auto baseAsset = loader.load(ctx);
-    auto asset = std::dynamic_pointer_cast<TextureAsset>(baseAsset);
-    if (!asset) {
-        throw AssetLoadError(id, "Texture loader returned incompatible asset type");
-    }
-    return asset;
 }
 
 } // namespace Rigel::Asset

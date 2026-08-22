@@ -549,18 +549,6 @@ public:
     ) const;
 
 private:
-    /**
-     * @brief Legacy fallback loader for raw assets.
-     * @deprecated Use RawLoader instead.
-     */
-    std::shared_ptr<RawAsset> loadRawAsset(const std::string& id, const AssetEntry& entry);
-
-    /**
-     * @brief Legacy fallback loader for texture assets.
-     * @deprecated Use TextureLoader instead.
-     */
-    std::shared_ptr<TextureAsset> loadTextureAsset(const std::string& id, const AssetEntry& entry);
-
     std::string m_namespace;
     std::unordered_map<std::string, AssetEntry> m_entries;
     std::unordered_map<std::string, std::unique_ptr<IAssetLoader>> m_loaders;
@@ -606,14 +594,7 @@ Handle<T> AssetManager::get(const std::string& id) {
             throw AssetLoadError(id, "Loader returned incompatible asset type");
         }
     } else {
-        // Fall back to built-in loading for backwards compatibility
-        if constexpr (std::is_same_v<T, RawAsset>) {
-            asset = loadRawAsset(id, entry);
-        } else if constexpr (std::is_same_v<T, TextureAsset>) {
-            asset = loadTextureAsset(id, entry);
-        } else {
-            throw AssetLoadError(id, "Unsupported asset type and no loader registered");
-        }
+        throw AssetLoadError(id, "Unsupported asset type and no loader registered");
     }
 
     // Cache and return

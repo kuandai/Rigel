@@ -9,9 +9,6 @@
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 
-#include <chrono>
-#include <filesystem>
-
 using namespace Rigel;
 
 TEST_CASE(Persistence_WorldSaveLoad_MemoryFormat) {
@@ -36,14 +33,11 @@ TEST_CASE(Persistence_WorldSaveLoad_MemoryFormat) {
         Persistence::Backends::Memory::probe());
     Persistence::PersistenceService service(formats);
 
-    auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("rigel_persist_test_" + std::to_string(now));
-    std::filesystem::create_directories(root);
+    Test::TemporaryDirectory directory("rigel_world_persistence");
 
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
     Persistence::PersistenceContext context;
-    context.rootPath = root.string();
+    context.rootPath = directory.path().string();
     context.preferredFormat = "memory";
     context.storage = storage;
     context.providers = world.persistenceProvidersHandle();
@@ -88,6 +82,4 @@ TEST_CASE(Persistence_WorldSaveLoad_MemoryFormat) {
 
     Voxel::BlockState loadedState = loaded.getBlock(0, 0, 0);
     CHECK_EQ(loadedState.id, testId);
-
-    std::filesystem::remove_all(root);
 }

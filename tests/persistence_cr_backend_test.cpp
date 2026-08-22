@@ -16,11 +16,11 @@
 #include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldResources.h"
 
-#include <filesystem>
 #include "Rigel/Persistence/Storage.h"
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <unordered_map>
 
 using namespace Rigel::Persistence;
@@ -1039,9 +1039,7 @@ TEST_CASE(CRBin_roundtrip_basic) {
 }
 
 TEST_CASE(CRBackend_filesystem_region_roundtrip) {
-    std::filesystem::path root = ".cache/cr_backend_fs_test";
-    std::error_code ec;
-    std::filesystem::remove_all(root, ec);
+    Rigel::Test::TemporaryDirectory directory("rigel_cr_backend");
 
     auto storage = std::make_shared<FilesystemBackend>();
     FormatRegistry registry;
@@ -1049,7 +1047,7 @@ TEST_CASE(CRBackend_filesystem_region_roundtrip) {
     PersistenceService service(registry);
 
     PersistenceContext context;
-    context.rootPath = root.string();
+    context.rootPath = directory.path().string();
     context.preferredFormat = "cr";
     context.storage = storage;
 

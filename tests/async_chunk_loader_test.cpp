@@ -251,30 +251,22 @@ void verifyPayloadMatches(const Chunk& chunk,
 }
 
 struct MemoryContext {
+    Rigel::Test::TemporaryDirectory directory;
     FormatRegistry formats;
     PersistenceService service;
     PersistenceContext context;
-    std::filesystem::path root;
 
     MemoryContext()
-        : service(formats) {
+        : directory("rigel_async_loader"),
+          service(formats) {
         formats.registerFormat(
             Backends::Memory::descriptor(),
             Backends::Memory::factory(),
             Backends::Memory::probe());
 
-        auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-        root = std::filesystem::temp_directory_path() /
-            ("rigel_async_loader_test_" + std::to_string(now));
-        std::filesystem::create_directories(root);
-
-        context.rootPath = root.string();
+        context.rootPath = directory.path().string();
         context.preferredFormat = "memory";
         context.storage = std::make_shared<FilesystemBackend>();
-    }
-
-    ~MemoryContext() {
-        std::filesystem::remove_all(root);
     }
 };
 

@@ -13,7 +13,6 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -761,14 +760,11 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Deterministic) {
         Rigel::Persistence::Backends::Memory::probe());
     Rigel::Persistence::PersistenceService service(formats);
 
-    auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("rigel_chunk_payload_test_" + std::to_string(now));
-    std::filesystem::create_directories(root);
+    Rigel::Test::TemporaryDirectory directory("rigel_chunk_payload");
 
     auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
     Rigel::Persistence::PersistenceContext context;
-    context.rootPath = root.string();
+    context.rootPath = directory.path().string();
     context.preferredFormat = "memory";
     context.storage = storage;
 
@@ -817,8 +813,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Deterministic) {
         return;
     }
     verifyPayloadMatches(*loaded, payload);
-
-    std::filesystem::remove_all(root);
 }
 
 TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Random) {
@@ -844,14 +838,11 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Random) {
         Rigel::Persistence::Backends::Memory::probe());
     Rigel::Persistence::PersistenceService service(formats);
 
-    auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("rigel_chunk_payload_random_test_" + std::to_string(now));
-    std::filesystem::create_directories(root);
+    Rigel::Test::TemporaryDirectory directory("rigel_chunk_payload_random");
 
     auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
     Rigel::Persistence::PersistenceContext context;
-    context.rootPath = root.string();
+    context.rootPath = directory.path().string();
     context.preferredFormat = "memory";
     context.storage = storage;
 
@@ -900,8 +891,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Random) {
         return;
     }
     verifyPayloadMatches(*loaded, payload);
-
-    std::filesystem::remove_all(root);
 }
 
 TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
@@ -939,10 +928,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
         Rigel::Persistence::Backends::CR::probe());
     Rigel::Persistence::PersistenceService service(formats);
 
-    auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("rigel_chunk_payload_cr_test_" + std::to_string(now));
-    std::filesystem::create_directories(root);
+    Rigel::Test::TemporaryDirectory directory("rigel_chunk_payload_cr");
 
     auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
     auto providers = std::make_shared<Rigel::Persistence::ProviderRegistry>();
@@ -951,7 +937,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
         std::make_shared<Rigel::Persistence::BlockRegistryProvider>(&registry));
 
     Rigel::Persistence::PersistenceContext context;
-    context.rootPath = root.string();
+    context.rootPath = directory.path().string();
     context.preferredFormat = "cr";
     context.storage = storage;
     context.providers = providers;
@@ -967,7 +953,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
     Rigel::Persistence::ChunkRegionSnapshot decodedRegion = service.loadRegion(regionKey, context);
     CHECK(!decodedRegion.chunks.empty());
     if (decodedRegion.chunks.empty()) {
-        std::filesystem::remove_all(root);
         return;
     }
     Rigel::Persistence::ChunkData payload = decodedRegion.chunks.front().data;
@@ -1004,8 +989,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
         return;
     }
     verifyPayloadMatches(*loaded, payload);
-
-    std::filesystem::remove_all(root);
 }
 
 TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
@@ -1043,10 +1026,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
         Rigel::Persistence::Backends::CR::probe());
     Rigel::Persistence::PersistenceService service(formats);
 
-    auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("rigel_chunk_payload_cr_random_test_" + std::to_string(now));
-    std::filesystem::create_directories(root);
+    Rigel::Test::TemporaryDirectory directory("rigel_chunk_payload_cr_random");
 
     auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
     auto providers = std::make_shared<Rigel::Persistence::ProviderRegistry>();
@@ -1055,7 +1035,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
         std::make_shared<Rigel::Persistence::BlockRegistryProvider>(&registry));
 
     Rigel::Persistence::PersistenceContext context;
-    context.rootPath = root.string();
+    context.rootPath = directory.path().string();
     context.preferredFormat = "cr";
     context.storage = storage;
     context.providers = providers;
@@ -1071,7 +1051,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
     Rigel::Persistence::ChunkRegionSnapshot decodedRegion = service.loadRegion(regionKey, context);
     CHECK(!decodedRegion.chunks.empty());
     if (decodedRegion.chunks.empty()) {
-        std::filesystem::remove_all(root);
         return;
     }
     Rigel::Persistence::ChunkData payload = decodedRegion.chunks.front().data;
@@ -1108,8 +1087,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
         return;
     }
     verifyPayloadMatches(*loaded, payload);
-
-    std::filesystem::remove_all(root);
 }
 
 TEST_CASE(ChunkStreamer_WorkMetrics_CountGenerationAndSchedulerInspection) {

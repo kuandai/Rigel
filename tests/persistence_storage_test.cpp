@@ -3,7 +3,6 @@
 #include "Rigel/Persistence/Storage.h"
 #include "../src/persistence/AtomicFileCommit.h"
 
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -13,28 +12,6 @@
 using namespace Rigel::Persistence;
 
 namespace {
-
-class TemporaryDirectory final {
-public:
-    TemporaryDirectory() {
-        const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
-        m_path = std::filesystem::temp_directory_path() /
-            ("rigel_persistence_storage_" + std::to_string(suffix));
-        std::filesystem::create_directories(m_path);
-    }
-
-    ~TemporaryDirectory() {
-        std::error_code ec;
-        std::filesystem::remove_all(m_path, ec);
-    }
-
-    const std::filesystem::path& path() const {
-        return m_path;
-    }
-
-private:
-    std::filesystem::path m_path;
-};
 
 void writeFile(FilesystemBackend& storage, const std::filesystem::path& path, const std::vector<uint8_t>& data) {
     auto session = storage.openWrite(path.string(), AtomicWriteOptions{});
@@ -75,7 +52,7 @@ void writeRawFile(const std::filesystem::path& path, const std::vector<uint8_t>&
 } // namespace
 
 TEST_CASE(FilesystemBackend_atomic_replace_writes_complete_replacement) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
     const std::vector<uint8_t> previous{1, 2, 3, 4};
@@ -89,7 +66,7 @@ TEST_CASE(FilesystemBackend_atomic_replace_writes_complete_replacement) {
 }
 
 TEST_CASE(FilesystemBackend_failed_atomic_replace_preserves_existing_file) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
     const std::vector<uint8_t> previous{1, 2, 3, 4};
@@ -108,7 +85,7 @@ TEST_CASE(FilesystemBackend_failed_atomic_replace_preserves_existing_file) {
 }
 
 TEST_CASE(FilesystemBackend_failed_atomic_write_removes_temporary_file) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "occupied";
     const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
@@ -127,7 +104,7 @@ TEST_CASE(FilesystemBackend_failed_atomic_write_removes_temporary_file) {
 }
 
 TEST_CASE(FilesystemBackend_flush_failure_preserves_existing_file) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
     const auto tempPath = std::filesystem::path(path.string() + ".tmp");
@@ -156,7 +133,7 @@ TEST_CASE(FilesystemBackend_flush_failure_preserves_existing_file) {
 }
 
 TEST_CASE(FilesystemBackend_abandoned_atomic_write_removes_temporary_file) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
     const std::vector<uint8_t> previous{1, 2, 3, 4};
@@ -173,7 +150,7 @@ TEST_CASE(FilesystemBackend_abandoned_atomic_write_removes_temporary_file) {
 }
 
 TEST_CASE(FilesystemBackend_destroying_committed_session_preserves_new_temporary_file) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
     const std::vector<uint8_t> previous{1, 2, 3, 4};
@@ -194,7 +171,7 @@ TEST_CASE(FilesystemBackend_destroying_committed_session_preserves_new_temporary
 }
 
 TEST_CASE(FilesystemBackend_destroying_failed_session_preserves_new_temporary_file) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "occupied";
     const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
@@ -218,7 +195,7 @@ TEST_CASE(FilesystemBackend_destroying_failed_session_preserves_new_temporary_fi
 }
 
 TEST_CASE(FilesystemBackend_overlapping_sessions_do_not_reuse_stale_staging_file) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
     const auto stalePath = std::filesystem::path(path.string() + ".tmp");
@@ -237,7 +214,7 @@ TEST_CASE(FilesystemBackend_overlapping_sessions_do_not_reuse_stale_staging_file
 }
 
 TEST_CASE(FilesystemBackend_commit_then_continued_write_and_abort_are_isolated) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
     const std::vector<uint8_t> committed{1, 2, 3, 4};
@@ -258,7 +235,7 @@ TEST_CASE(FilesystemBackend_commit_then_continued_write_and_abort_are_isolated) 
 }
 
 TEST_CASE(FilesystemBackend_destroying_stale_session_preserves_active_session) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
     const std::vector<uint8_t> replacement{5, 6, 7, 8};
@@ -276,7 +253,7 @@ TEST_CASE(FilesystemBackend_destroying_stale_session_preserves_active_session) {
 }
 
 TEST_CASE(FilesystemBackend_overlapping_sessions_publish_in_commit_order) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const std::vector<uint8_t> firstData{1, 2, 3};
     const std::vector<uint8_t> secondData{4, 5, 6};
@@ -301,7 +278,7 @@ TEST_CASE(FilesystemBackend_overlapping_sessions_publish_in_commit_order) {
 }
 
 TEST_CASE(FilesystemBackend_failed_session_does_not_disable_overlapping_session) {
-    TemporaryDirectory directory;
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
     const std::vector<uint8_t> replacement{5, 6, 7, 8};

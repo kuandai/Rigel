@@ -28,6 +28,7 @@ struct LifecycleCalls {
     bool dirtyAtCloseFailure = false;
     bool shutdownStartedAtCloseFailure = false;
     std::shared_ptr<Rigel::Persistence::StorageBackend> persistenceStorage;
+    std::string persistenceRoot;
 };
 
 LifecycleCalls* g_calls = nullptr;
@@ -109,8 +110,18 @@ void recordShutdownStage(Rigel::ApplicationShutdownStage stage) noexcept {
     g_calls->shutdown.push_back(stage);
 }
 
+enum class PersistenceFailurePoint {
+    ChunkWrite,
+    JournalPublication,
+    EntityWrite,
+};
+
 class FailingStorageBackend final : public Rigel::Persistence::StorageBackend {
 public:
+    explicit FailingStorageBackend(PersistenceFailurePoint failurePoint)
+        : m_failurePoint(failurePoint) {
+    }
+
     std::unique_ptr<Rigel::Persistence::ByteReader> openRead(
         const std::string& path
     ) override {
@@ -121,8 +132,12 @@ public:
         const std::string& path,
         Rigel::Persistence::AtomicWriteOptions options
     ) override {
-        if (path.find("/entities/entityRegion_") != std::string::npos) {
-            fail(path);
+        if (matches(path)) {
+            ++g_calls->persistenceAttempts;
+            if (m_failuresRemaining > 0) {
+                --m_failuresRemaining;
+                fail(path);
+            }
         }
         return m_storage.openWrite(path, options);
     }
@@ -144,12 +159,25 @@ public:
     }
 
 private:
+    bool matches(const std::string& path) const {
+        switch (m_failurePoint) {
+            case PersistenceFailurePoint::ChunkWrite:
+                return path.find("/regions/region_") != std::string::npos;
+            case PersistenceFailurePoint::JournalPublication:
+                return path.ends_with("/entity-regions.journal");
+            case PersistenceFailurePoint::EntityWrite:
+                return path.find("/entities/entityRegion_") != std::string::npos;
+        }
+        return false;
+    }
+
     [[noreturn]] void fail(const std::string& path) {
-        ++g_calls->persistenceAttempts;
         throw std::runtime_error(
             "injected storage failure for " + path);
     }
 
+    PersistenceFailurePoint m_failurePoint;
+    size_t m_failuresRemaining = 1;
     Rigel::Persistence::FilesystemBackend m_storage;
 };
 
@@ -185,6 +213,7 @@ void runApplicationWithCloseFailure() {
         g_calls->persistenceStorage,
         &observeCloseFailure,
         &recordShutdownStage,
+        g_calls->persistenceRoot,
     });
 }
 
@@ -237,28 +266,45 @@ TEST_CASE(Application_BootstrapFailureReturnsFailureBeforeRunLoop) {
           std::string::npos);
 }
 
-TEST_CASE(Application_ClosePersistenceFailureReturnsFailureBeforeTeardown) {
-    LifecycleCalls calls;
-    ScopedLifecycleCalls scopedCalls(calls);
-    LogCapture logs;
-    calls.persistenceStorage = std::make_shared<FailingStorageBackend>();
+TEST_CASE(Application_ClosePersistenceFailuresRetryDuringCleanup) {
+    const std::vector<std::pair<PersistenceFailurePoint, std::string>> cases = {
+        {PersistenceFailurePoint::ChunkWrite, "application-close-chunk"},
+        {PersistenceFailurePoint::JournalPublication, "application-close-journal"},
+        {PersistenceFailurePoint::EntityWrite, "application-close-entity"},
+    };
 
-    const int result = Rigel::runApplication(&runApplicationWithCloseFailure);
+    for (const auto& [failurePoint, root] : cases) {
+        LifecycleCalls calls;
+        ScopedLifecycleCalls scopedCalls(calls);
+        LogCapture logs;
+        calls.persistenceRoot = root;
+        calls.persistenceStorage =
+            std::make_shared<FailingStorageBackend>(failurePoint);
 
-    CHECK_EQ(result, EXIT_FAILURE);
-    CHECK(calls.closeFailureObserved);
-    CHECK(calls.dirtyAtCloseFailure);
-    CHECK(!calls.shutdownStartedAtCloseFailure);
-    CHECK_EQ(calls.persistenceAttempts, static_cast<size_t>(1));
-    CHECK(!calls.shutdown.empty());
-    CHECK(calls.persistenceStorage->exists(
-        "application-close-test/entity-regions.journal"));
-    CHECK(logs.output().find(
-              "Failed to save world during application close") !=
-          std::string::npos);
-    CHECK(logs.output().find(
-              "injected storage failure for application-close-test") !=
-          std::string::npos);
-    CHECK(logs.output().find("Application terminated successfully") ==
-          std::string::npos);
+        const int result = Rigel::runApplication(&runApplicationWithCloseFailure);
+
+        CHECK_EQ(result, EXIT_FAILURE);
+        CHECK(calls.closeFailureObserved);
+        CHECK(calls.dirtyAtCloseFailure);
+        CHECK(!calls.shutdownStartedAtCloseFailure);
+        const size_t expectedAttempts =
+            failurePoint == PersistenceFailurePoint::EntityWrite ? 3 : 2;
+        CHECK_EQ(calls.persistenceAttempts, expectedAttempts);
+        CHECK(!calls.shutdown.empty());
+        CHECK(!calls.persistenceStorage->exists(
+            root + "/entity-regions.journal"));
+        CHECK(calls.persistenceStorage->exists(
+            root +
+            "/zones/rigel:default/entities/entityRegion_0_0_0.mem"));
+        CHECK(calls.persistenceStorage->exists(
+            root + "/zones/rigel:default/regions/region_0_0_0.mem"));
+        CHECK(logs.output().find(
+                  "Failed to save world during application close") !=
+              std::string::npos);
+        CHECK(logs.output().find(
+                  "injected storage failure for " + root) !=
+              std::string::npos);
+        CHECK(logs.output().find("Application terminated successfully") ==
+              std::string::npos);
+    }
 }

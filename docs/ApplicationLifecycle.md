@@ -130,13 +130,13 @@ query.
 
 Normal process exit calls `close()` after the runtime loop. Persistence errors
 leave the world resident, propagate to the process entry point, produce an
-error diagnostic, and result in a failed process exit. After an explicit close
-reports a persistence error, destructor cleanup does not retry the save, so any
-entity recovery journal remains available to the next process. For callers that
-omit `close()`, the destructor makes one best-effort save attempt without
-throwing before teardown. Failed construction skips the save and tears down only
-the resources acquired so far. Repeated successful shutdown requests are
-harmless.
+error diagnostic, and result in a failed process exit. Destructor cleanup makes
+one final best-effort save attempt without throwing, including after an explicit
+close error. A pending entity recovery journal is replayed before that retry can
+publish another journal. Callers that omit `close()` receive the same
+best-effort persistence before teardown. Failed construction skips the save and
+tears down only the resources acquired so far. Repeated successful shutdown
+requests are harmless.
 
 ---
 

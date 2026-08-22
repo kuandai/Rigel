@@ -3,6 +3,7 @@
 #include "GlfwRuntime.h"
 
 #include <memory>
+#include <string>
 
 namespace Rigel {
 
@@ -31,6 +32,7 @@ struct ApplicationCloseHooks {
     std::shared_ptr<Persistence::StorageBackend> persistenceStorage;
     void (*closeFailureObserved)(bool dirtyWorld) = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
+    std::string persistenceRoot = "application-close-test";
 };
 
 class ApplicationTestAccess {

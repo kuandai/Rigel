@@ -90,7 +90,6 @@ struct Application::Impl {
     Input::InputCallbackContext inputCallbacks;
     bool openGLInitialized = false;
     bool shutDown = false;
-    bool closePersistenceFailed = false;
     void (*afterContextAcquired)() = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
 
@@ -414,17 +413,14 @@ void Application::Impl::close() {
     try {
         persistWorld();
     } catch (const std::exception& e) {
-        closePersistenceFailed = true;
         throw std::runtime_error(
             std::string("Failed to save world during application close: ") +
             e.what());
     } catch (...) {
-        closePersistenceFailed = true;
         throw std::runtime_error(
             "Failed to save world during application close: unknown failure");
     }
 
-    closePersistenceFailed = false;
     shutdown();
 }
 
@@ -433,14 +429,12 @@ void Application::Impl::closeNoThrow() noexcept {
         return;
     }
 
-    if (!closePersistenceFailed) {
-        try {
-            persistWorld();
-        } catch (const std::exception& e) {
-            spdlog::error("World save failed during application cleanup: {}", e.what());
-        } catch (...) {
-            spdlog::error("World save failed during application cleanup: unknown failure");
-        }
+    try {
+        persistWorld();
+    } catch (const std::exception& e) {
+        spdlog::error("World save failed during application cleanup: {}", e.what());
+    } catch (...) {
+        spdlog::error("World save failed during application cleanup: unknown failure");
     }
 
     shutdown();
@@ -533,7 +527,7 @@ void ApplicationTestAccess::closeReadyWorld(ApplicationCloseHooks hooks) {
         Persistence::Backends::Memory::probe());
     impl->world.worldSet.setPersistenceStorage(
         std::move(hooks.persistenceStorage));
-    impl->world.worldSet.setPersistenceRoot("application-close-test");
+    impl->world.worldSet.setPersistenceRoot(std::move(hooks.persistenceRoot));
     impl->world.worldSet.setPersistencePreferredFormat("memory");
 
     Voxel::World& world = impl->world.worldSet.createWorld(

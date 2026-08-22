@@ -187,11 +187,19 @@ Current behavior:
 - Only chunks marked `isPersistDirty()` are saved.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,
   and all-air spans are skipped.
-- Before changing entity region files, a world save atomically replaces
-  `entity-regions.journal` with the complete desired populated regions and the
-  complete obsolete-region key set. Save and load replay an existing journal;
-  replay writes desired regions, removes obsolete regions, and removes the
-  journal only after all region operations succeed.
+- Save and entity load validate a pending `entity-regions.journal` schema,
+  persistence format identity and version, and expected zone before changing
+  region files. A mismatch fails without removing the journal or applying it
+  through the selected backend.
+- A world save replays a valid pending journal before other region writes, then
+  atomically replaces the journal with the complete desired populated regions
+  and complete obsolete-region key set when entity region changes are needed.
+  Replay writes desired regions, removes obsolete regions, and removes the
+  journal only after all region operations succeed. A pristine world with no
+  existing entity regions does not publish a journal.
+- Journal declarations and nested entity payload counts are bounded and checked
+  against remaining input before allocation. The complete desired entity
+  snapshot is checked for null and duplicate persistent IDs before publication.
 - Entity journal replay is idempotent process-interruption recovery built on
   atomic file replacement. It does not provide fsync-backed survival of power
   loss or storage-device or filesystem failure.

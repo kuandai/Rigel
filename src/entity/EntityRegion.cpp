@@ -59,6 +59,24 @@ void EntityRegion::deactivateChunk(Voxel::ChunkCoord coord) {
     m_activeChunks.erase(it);
 }
 
+bool EntityRegion::removeChunkIfEmpty(Voxel::ChunkCoord coord) {
+    auto activeIt = m_activeChunks.find(coord);
+    if (activeIt != m_activeChunks.end()) {
+        if (activeIt->second->hasEntities()) {
+            return false;
+        }
+        m_activeChunks.erase(activeIt);
+        return true;
+    }
+
+    auto inactiveIt = m_inactiveChunks.find(coord);
+    if (inactiveIt == m_inactiveChunks.end() || inactiveIt->second->hasEntities()) {
+        return false;
+    }
+    m_inactiveChunks.erase(inactiveIt);
+    return true;
+}
+
 bool EntityRegion::isEmpty() const {
     return m_activeChunks.empty() && m_inactiveChunks.empty();
 }

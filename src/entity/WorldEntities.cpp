@@ -8,6 +8,10 @@
 
 namespace Rigel::Entity {
 
+WorldEntities::~WorldEntities() {
+    clear();
+}
+
 void WorldEntities::bind(Voxel::World* world) {
     m_world = world;
 }
@@ -108,6 +112,9 @@ void WorldEntities::tick(float dt) {
 }
 
 void WorldEntities::clear() {
+    for (auto& [_, entity] : m_entities) {
+        removeFromChunk(*entity);
+    }
     m_entities.clear();
     m_regions.clear();
     m_chunkIndex.clear();
@@ -131,7 +138,7 @@ void WorldEntities::updateEntityChunk(Entity& entity) {
     }
 
     if (current) {
-        current->removeEntity(&entity);
+        removeFromChunk(entity);
     }
     EntityChunk& target = getOrCreateChunk(coord);
     target.addEntity(&entity);
@@ -169,10 +176,34 @@ EntityChunk* WorldEntities::findChunk(Voxel::ChunkCoord coord) const {
 
 void WorldEntities::removeFromChunk(Entity& entity) {
     EntityChunk* chunk = entity.currentChunk();
-    if (chunk) {
-        chunk->removeEntity(&entity);
+    if (!chunk) {
+        return;
     }
-    entity.setCurrentChunk(nullptr);
+
+    const Voxel::ChunkCoord chunkCoord = chunk->coord();
+    EntityRegion* region = chunk->region();
+    chunk->removeEntity(&entity);
+    if (chunk->hasEntities()) {
+        return;
+    }
+
+    auto chunkIt = m_chunkIndex.find(chunkCoord);
+    if (chunkIt != m_chunkIndex.end() && chunkIt->second == chunk) {
+        m_chunkIndex.erase(chunkIt);
+    }
+
+    if (!region) {
+        return;
+    }
+    const EntityRegionCoord regionCoord = region->coord();
+    if (!region->removeChunkIfEmpty(chunkCoord) || !region->isEmpty()) {
+        return;
+    }
+
+    auto regionIt = m_regions.find(regionCoord);
+    if (regionIt != m_regions.end() && regionIt->second.get() == region) {
+        m_regions.erase(regionIt);
+    }
 }
 
 } // namespace Rigel::Entity

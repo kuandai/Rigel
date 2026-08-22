@@ -13,8 +13,14 @@ class World;
 
 namespace Rigel::Entity {
 
+namespace detail {
+struct WorldEntitiesTestAccess;
+}
+
 class WorldEntities {
 public:
+    ~WorldEntities();
+
     void bind(Voxel::World* world);
 
     EntityId spawn(std::unique_ptr<Entity> entity);
@@ -32,6 +38,8 @@ public:
     void updateEntityChunk(Entity& entity);
 
 private:
+    friend struct detail::WorldEntitiesTestAccess;
+
     EntityRegion& getOrCreateRegion(Voxel::ChunkCoord coord);
     EntityChunk& getOrCreateChunk(Voxel::ChunkCoord coord);
     EntityChunk* findChunk(Voxel::ChunkCoord coord) const;

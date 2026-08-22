@@ -37,6 +37,7 @@ public:
     EntityChunk* findActiveChunk(Voxel::ChunkCoord coord);
     EntityChunk& getOrActivateChunk(Voxel::ChunkCoord coord);
     void deactivateChunk(Voxel::ChunkCoord coord);
+    bool removeChunkIfEmpty(Voxel::ChunkCoord coord);
     bool isEmpty() const;
 
 private:

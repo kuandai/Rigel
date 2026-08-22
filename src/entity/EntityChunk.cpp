@@ -22,6 +22,9 @@ void EntityChunk::removeEntity(Entity* entity) {
     if (!entity) {
         return;
     }
+    if (entity->currentChunk() == this) {
+        entity->setCurrentChunk(nullptr);
+    }
     auto it = std::remove(m_entities.begin(), m_entities.end(), entity);
     if (it != m_entities.end()) {
         m_entities.erase(it, m_entities.end());

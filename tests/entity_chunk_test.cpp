@@ -19,6 +19,7 @@ TEST_CASE(EntityChunk_AddRemove) {
 
     chunk.removeEntity(&entity);
     CHECK(!chunk.contains(&entity));
+    CHECK_EQ(entity.currentChunk(), nullptr);
 }
 
 TEST_CASE(EntityRegion_MinimumChunkCoordinate) {

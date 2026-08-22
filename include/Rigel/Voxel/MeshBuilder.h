@@ -114,27 +114,6 @@ private:
     ) const;
 
     /**
-     * @brief Append cube faces for a block.
-     *
-     * Generates quads for each visible face of a cube-shaped block.
-     *
-     * @param ctx Build context
-     * @param x Local X coordinate
-     * @param y Local Y coordinate
-     * @param z Local Z coordinate
-     * @param type Block type for texture info
-     * @param vertices Output vertex list
-     * @param indices Output index list
-     */
-    void appendCubeFaces(
-        const BuildContext& ctx,
-        int x, int y, int z,
-        const BlockType& type,
-        std::vector<VoxelVertex>& vertices,
-        std::vector<uint32_t>& indices
-    ) const;
-
-    /**
      * @brief Calculate ambient occlusion for a vertex.
      *
      * Uses the 3 adjacent blocks to determine AO level (0-3).

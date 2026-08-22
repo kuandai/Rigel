@@ -173,9 +173,6 @@ public:
     /// Check if chunk contains only air blocks
     bool isEmpty() const { return m_nonAirCount == 0; }
 
-    /// Check if chunk is completely filled with opaque blocks
-    bool isFullyOpaque() const { return m_opaqueCount == VOLUME; }
-
     /// Get count of non-air blocks
     uint32_t nonAirCount() const { return m_nonAirCount; }
 

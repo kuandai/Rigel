@@ -174,26 +174,6 @@ public:
     void bindTint(GLuint unit = 0) const;
 
     /**
-     * @brief Get the OpenGL texture ID.
-     */
-    GLuint textureId() const { return m_textureArray; }
-
-    /**
-     * @brief Get the OpenGL tint texture ID.
-     */
-    GLuint tintTextureId() const { return m_tintArray; }
-
-    /**
-     * @brief Check if atlas has been uploaded.
-     */
-    bool isUploaded() const { return m_textureArray != 0; }
-
-    /**
-     * @brief Check if tint atlas has been uploaded.
-     */
-    bool isTintUploaded() const { return m_tintArray != 0; }
-
-    /**
      * @brief Get number of textures in atlas.
      */
     size_t textureCount() const { return m_entries.size(); }

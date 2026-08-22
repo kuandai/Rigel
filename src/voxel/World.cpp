@@ -53,10 +53,6 @@ std::shared_ptr<Persistence::ProviderRegistry> World::persistenceProvidersHandle
     return m_persistenceProviders;
 }
 
-void World::setPersistenceProviders(std::shared_ptr<Persistence::ProviderRegistry> providers) {
-    m_persistenceProviders = std::move(providers);
-}
-
 BlockRegistry& World::blockRegistry() {
     if (!m_resources) {
         throw std::runtime_error("World resources not initialized");

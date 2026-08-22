@@ -82,7 +82,6 @@ public:
     Rigel::Persistence::ProviderRegistry& persistenceProviders();
     const Rigel::Persistence::ProviderRegistry& persistenceProviders() const;
     std::shared_ptr<Rigel::Persistence::ProviderRegistry> persistenceProvidersHandle() const;
-    void setPersistenceProviders(std::shared_ptr<Rigel::Persistence::ProviderRegistry> providers);
 
     /// @}
 

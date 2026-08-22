@@ -56,7 +56,6 @@ public:
 
     void setPersistenceRoot(std::string rootPath) { m_persistenceRoot = std::move(rootPath); }
     void setPersistenceStorage(std::shared_ptr<Persistence::StorageBackend> storage) { m_persistenceStorage = std::move(storage); }
-    void setPersistencePolicies(Persistence::PersistencePolicies policies) { m_persistencePolicies = std::move(policies); }
     void setPersistencePreferredFormat(std::string formatId) { m_persistencePreferredFormat = std::move(formatId); }
 
     Persistence::PersistenceContext persistenceContext(WorldId id) const;
@@ -76,7 +75,6 @@ private:
     Persistence::PersistenceService m_persistenceService;
     std::string m_persistenceRoot;
     std::string m_persistencePreferredFormat;
-    Persistence::PersistencePolicies m_persistencePolicies{};
     std::shared_ptr<Persistence::StorageBackend> m_persistenceStorage;
 };
 

@@ -57,14 +57,6 @@ struct ChunkCoord {
         );
     }
 
-    /// Convert to world-space maximum corner
-    glm::vec3 toWorldMax() const {
-        return glm::vec3(
-            static_cast<float>((x + 1) * ChunkSize),
-            static_cast<float>((y + 1) * ChunkSize),
-            static_cast<float>((z + 1) * ChunkSize)
-        );
-    }
 };
 
 /**

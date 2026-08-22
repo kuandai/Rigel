@@ -27,6 +27,7 @@ struct LifecycleCalls {
     bool closeFailureObserved = false;
     bool dirtyAtCloseFailure = false;
     bool shutdownStartedAtCloseFailure = false;
+    std::shared_ptr<Rigel::Persistence::StorageBackend> persistenceStorage;
 };
 
 LifecycleCalls* g_calls = nullptr;
@@ -113,30 +114,33 @@ public:
     std::unique_ptr<Rigel::Persistence::ByteReader> openRead(
         const std::string& path
     ) override {
-        fail(path);
+        return m_storage.openRead(path);
     }
 
     std::unique_ptr<Rigel::Persistence::AtomicWriteSession> openWrite(
         const std::string& path,
-        Rigel::Persistence::AtomicWriteOptions
+        Rigel::Persistence::AtomicWriteOptions options
     ) override {
-        fail(path);
+        if (path.find("/entities/entityRegion_") != std::string::npos) {
+            fail(path);
+        }
+        return m_storage.openWrite(path, options);
     }
 
     bool exists(const std::string& path) override {
-        fail(path);
+        return m_storage.exists(path);
     }
 
     std::vector<std::string> list(const std::string& path) override {
-        fail(path);
+        return m_storage.list(path);
     }
 
     void mkdirs(const std::string& path) override {
-        fail(path);
+        m_storage.mkdirs(path);
     }
 
     void remove(const std::string& path) override {
-        fail(path);
+        m_storage.remove(path);
     }
 
 private:
@@ -145,6 +149,8 @@ private:
         throw std::runtime_error(
             "injected storage failure for " + path);
     }
+
+    Rigel::Persistence::FilesystemBackend m_storage;
 };
 
 void observeCloseFailure(bool dirtyWorld) {
@@ -176,7 +182,7 @@ void runFailingApplication() {
 
 void runApplicationWithCloseFailure() {
     Rigel::ApplicationTestAccess::closeReadyWorld({
-        std::make_shared<FailingStorageBackend>(),
+        g_calls->persistenceStorage,
         &observeCloseFailure,
         &recordShutdownStage,
     });
@@ -235,6 +241,7 @@ TEST_CASE(Application_ClosePersistenceFailureReturnsFailureBeforeTeardown) {
     LifecycleCalls calls;
     ScopedLifecycleCalls scopedCalls(calls);
     LogCapture logs;
+    calls.persistenceStorage = std::make_shared<FailingStorageBackend>();
 
     const int result = Rigel::runApplication(&runApplicationWithCloseFailure);
 
@@ -242,8 +249,10 @@ TEST_CASE(Application_ClosePersistenceFailureReturnsFailureBeforeTeardown) {
     CHECK(calls.closeFailureObserved);
     CHECK(calls.dirtyAtCloseFailure);
     CHECK(!calls.shutdownStartedAtCloseFailure);
-    CHECK_EQ(calls.persistenceAttempts, static_cast<size_t>(2));
+    CHECK_EQ(calls.persistenceAttempts, static_cast<size_t>(1));
     CHECK(!calls.shutdown.empty());
+    CHECK(calls.persistenceStorage->exists(
+        "application-close-test/entity-regions.journal"));
     CHECK(logs.output().find(
               "Failed to save world during application close") !=
           std::string::npos);

@@ -90,6 +90,7 @@ struct Application::Impl {
     Input::InputCallbackContext inputCallbacks;
     bool openGLInitialized = false;
     bool shutDown = false;
+    bool closePersistenceFailed = false;
     void (*afterContextAcquired)() = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
 
@@ -413,14 +414,17 @@ void Application::Impl::close() {
     try {
         persistWorld();
     } catch (const std::exception& e) {
+        closePersistenceFailed = true;
         throw std::runtime_error(
             std::string("Failed to save world during application close: ") +
             e.what());
     } catch (...) {
+        closePersistenceFailed = true;
         throw std::runtime_error(
             "Failed to save world during application close: unknown failure");
     }
 
+    closePersistenceFailed = false;
     shutdown();
 }
 
@@ -429,12 +433,14 @@ void Application::Impl::closeNoThrow() noexcept {
         return;
     }
 
-    try {
-        persistWorld();
-    } catch (const std::exception& e) {
-        spdlog::error("World save failed during application cleanup: {}", e.what());
-    } catch (...) {
-        spdlog::error("World save failed during application cleanup: unknown failure");
+    if (!closePersistenceFailed) {
+        try {
+            persistWorld();
+        } catch (const std::exception& e) {
+            spdlog::error("World save failed during application cleanup: {}", e.what());
+        } catch (...) {
+            spdlog::error("World save failed during application cleanup: unknown failure");
+        }
     }
 
     shutdown();
@@ -534,6 +540,9 @@ void ApplicationTestAccess::closeReadyWorld(ApplicationCloseHooks hooks) {
         impl->world.activeWorldId);
     Voxel::Chunk& dirtyChunk = world.chunkManager().getOrCreateChunk({0, 0, 0});
     dirtyChunk.markPersistDirty();
+    auto entity = std::make_unique<Entity::Entity>("rigel:close_test_entity");
+    entity->setPosition(1.0f, 2.0f, 3.0f);
+    world.entities().spawn(std::move(entity));
     impl->world.world = &world;
     impl->world.ready = true;
 

@@ -187,7 +187,16 @@ Current behavior:
 - Only chunks marked `isPersistDirty()` are saved.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,
   and all-air spans are skipped.
-- Entities are serialized into entity regions if the format supports them.
+- Before changing entity region files, a world save atomically replaces
+  `entity-regions.journal` with the complete desired populated regions and the
+  complete obsolete-region key set. Save and load replay an existing journal;
+  replay writes desired regions, removes obsolete regions, and removes the
+  journal only after all region operations succeed.
+- Entity journal replay is idempotent process-interruption recovery built on
+  atomic file replacement. It does not provide fsync-backed survival of power
+  loss or storage-device or filesystem failure.
+- Entity load reads and validates every persisted region before spawning. Null
+  persistent IDs and duplicate IDs within or across regions fail the load.
 - Entities tagged `EntityTags::NoSaveInChunks` are skipped.
 
 ---

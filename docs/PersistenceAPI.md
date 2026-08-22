@@ -80,8 +80,9 @@ Formats implement `PersistenceFormat`:
 
 Each format provides a `FormatDescriptor`:
 
-- `id` and on-disk `version`, used by registry selection and format-owned
-  on-disk validation
+- `id`, used to register and select the format
+- on-disk `version`, recorded and checked by the shared entity recovery journal;
+  backend codecs validate their own format-specific wire versions
 - `FormatCapabilities::supportsEntityRegions`, used to reject entity
   persistence when a backend does not implement that lifecycle
 - `FormatCapabilities::fillMissingChunkSpans`, used by asynchronous loading to

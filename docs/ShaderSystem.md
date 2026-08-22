@@ -7,9 +7,9 @@ them, and `ShaderAsset` owns the resulting OpenGL program.
 ## Registration and Loading
 
 `AssetManager::loadManifest()` registers the built-in `raw`, `textures`, and
-`shaders` loaders when no loaders have been registered yet. Manifest entries
-are recorded during that call, but a shader is compiled lazily on the first
-typed request:
+`shaders` loaders independently unless that category was already registered
+explicitly. Manifest entries are recorded during that call, but a shader is
+compiled lazily on the first typed request:
 
 ```cpp
 auto shader = assets.get<Asset::ShaderAsset>("shaders/voxel");

@@ -242,7 +242,8 @@ Synchronization:
 - `WorldView` calls the loader's request callback when a chunk is needed.
 - The loader maps chunk -> region key and schedules region IO on the IO pool.
 - Region results are cached (LRU) and used to schedule per-chunk payload builds.
-- Payload builds (decode + base fill) run on a worker pool.
+- Payload builds run on a worker pool. They decode stored spans and, when the
+  selected format enables `fillMissingChunkSpans`, generate base fill first.
 - `ChunkStreamer::processCompletions()` drains payloads on the main thread via
   `ChunkLoadDrainCallback`, honoring `streaming.load_apply_budget_per_frame`.
 - Failed region reads are retried from their completion events. Exhausted reads
@@ -250,7 +251,8 @@ Synchronization:
 
 **Merge behavior**:
 - When spans exist, `mergeChunkSpans()` overlays disk data into a chunk.
-- For partial spans, base fill is generated off-thread before overlays.
+- For partial spans, Memory enables generator base fill before overlays; CR and
+  the default capability leave uncovered voxels as air.
 - Persist/dirty flags are cleared after disk data is applied.
 
 **Prefetch**:

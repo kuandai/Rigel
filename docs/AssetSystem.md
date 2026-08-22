@@ -93,12 +93,14 @@ entries.
 ## Load Flow and Caching
 
 1. `AssetManager::loadManifest()` parses `manifest.yaml` from embedded assets.
-2. Each manifest entry becomes an `AssetEntry` containing the category and a
+2. It installs the built-in raw, texture, and shader loader independently for
+   each category that has not already been replaced explicitly.
+3. Each manifest entry becomes an `AssetEntry` containing the category and a
    copied YAML subtree (so config nodes stay valid after parsing).
-3. `AssetManager::get<T>(id)`:
+4. `AssetManager::get<T>(id)`:
    - Checks the cache (keyed by type + id).
-   - Uses the category loader if registered.
-   - Falls back to built-in raw/texture loaders if no loader is registered.
+   - Requires and dispatches through the loader registered for the entry's
+     category.
    - Caches the loaded asset and returns a `Handle<T>`.
 
 The cache is type-specific: the same asset id can be loaded as different types

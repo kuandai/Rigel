@@ -201,8 +201,11 @@ explicit failed state until a later streaming requeue retries them.
   per-frame budget.
 
 The default loader (`AsyncChunkLoader`) uses the persistence service to fetch
-region data asynchronously, builds chunk payloads off-thread (including base
-fill for partial spans), then applies payloads on the main thread with a budget.
+region data asynchronously, builds chunk payloads off-thread, then applies
+payloads on the main thread with a budget. Partial Memory-format spans use
+generator base fill before stored overlays because Memory enables
+`fillMissingChunkSpans`; CR and the default capability leave uncovered voxels
+as air.
 If no stored data is found, generation proceeds normally. Region read failures
 are retried from completion events and never imply that stored data is absent.
 An irrecoverable persisted-data failure remains a load error for the desired

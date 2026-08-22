@@ -12,12 +12,11 @@ format-specific behavior.
 
 - Format ID: `cr`
 - Version: `4`
-- Extensions: `cosmicreach`, `crbin`, `json`
-- Compression: LZ4 (optional, controlled by provider)
-- Partial chunk saves: `false`
-- Random access: `false`
-- Entity regions: `true`
-- Metadata format: `json`
+- Entity regions: supported
+- Missing chunk-span base fill: disabled
+
+File extensions, JSON metadata, region indexing, and optional LZ4 compression
+are CR implementation details rather than negotiated descriptor capabilities.
 
 ### 1.2 Path Layout
 
@@ -69,8 +68,8 @@ Region files (`.cosmicreach`) contain:
 
 Column payloads contain encoded chunk records written by `CRChunkCodec`.
 
-LZ4 compression is optional and controlled by the provider
-`rigel:persistence.cr` (`CRPersistenceSettings.enableLz4`).
+LZ4 compression is optional and controlled by the typed
+`persistence.providers.rigel:persistence.cr.lz4` setting.
 
 ### 1.5 Chunk Encoding
 
@@ -99,12 +98,11 @@ Entity regions are stored as `.crbin` files:
 
 - Format ID: `memory`
 - Version: `1`
-- Extensions: `mem`
-- Compression: none
-- Partial chunk saves: `true`
-- Random access: `false`
-- Entity regions: `true`
-- Metadata format: `binary`
+- Entity regions: supported
+- Missing chunk-span base fill: enabled
+
+The `.mem` paths and binary encoding are Memory implementation details rather
+than negotiated descriptor capabilities.
 
 ### 2.2 Path Layout
 

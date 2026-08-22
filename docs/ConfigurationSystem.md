@@ -470,7 +470,11 @@ precedence.
 ## Limitations
 
 - Configs are loaded once at startup; there is no hot reload.
-- There is no schema validation beyond basic clamping.
+- Validation is implemented by the typed providers rather than one generic
+  schema engine. Unknown fixed keys are diagnosed and ignored; invalid scalar
+  shapes and types, strict booleans, numeric bounds, aggregate work limits,
+  cross-field world bounds, and density-graph cycles are rejected before
+  runtime resource construction.
 - World generation overlays are the only supported overlay mechanism.
 - Input bindings are configured through the asset manifest, not this system.
 

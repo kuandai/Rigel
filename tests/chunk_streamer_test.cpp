@@ -42,6 +42,20 @@ struct ChunkStreamerTestAccess {
         return streamer.m_genComplete.size();
     }
 
+    static size_t meshCompletionCount(const ChunkStreamer& streamer) {
+        return streamer.m_meshComplete.size();
+    }
+
+    static std::optional<size_t> pendingMeshIndexCount(ChunkStreamer& streamer) {
+        ChunkStreamer::MeshResult result;
+        if (!streamer.m_meshComplete.tryPop(result)) {
+            return std::nullopt;
+        }
+        const size_t indexCount = result.mesh.indexCount();
+        streamer.m_meshComplete.push(std::move(result));
+        return indexCount;
+    }
+
     static size_t inFlightMeshMissing(const ChunkStreamer& streamer) {
         return streamer.m_inFlightMeshMissing;
     }
@@ -135,6 +149,19 @@ bool waitForMeshCompletions(ChunkStreamer& streamer, uint64_t target) {
     }
     streamer.processCompletions();
     return streamer.workMetrics().meshJobsCompleted >= target;
+}
+
+bool waitForPendingMeshCompletion(const ChunkStreamer& streamer) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (Rigel::Voxel::detail::ChunkStreamerTestAccess::meshCompletionCount(
+                streamer) > 0) {
+            return true;
+        }
+        std::this_thread::yield();
+    }
+    return Rigel::Voxel::detail::ChunkStreamerTestAccess::meshCompletionCount(
+        streamer) > 0;
 }
 
 std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
@@ -3381,6 +3408,55 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
+
+    streamer.update(removedCoord.toWorldCenter());
+    CHECK(waitForMeshCompletions(streamer, 1));
+    CHECK(manager.hasChunk(removedCoord));
+    CHECK(meshStore.contains(removedCoord));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+
+    streamer.update(survivingCoord.toWorldCenter());
+    CHECK(waitForMeshCompletions(streamer, 2));
+    CHECK(manager.hasChunk(survivingCoord));
+    CHECK(manager.hasChunk(removedCoord));
+    CHECK(meshStore.contains(survivingCoord));
+    CHECK(meshStore.contains(removedCoord));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(2));
+
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    auto stateFor = [&](ChunkCoord coord)
+        -> std::optional<ChunkStreamer::DebugState> {
+        auto it = std::find_if(
+            states.begin(), states.end(),
+            [coord](const ChunkStreamer::DebugChunkState& state) {
+                return state.coord == coord;
+            });
+        if (it == states.end()) {
+            return std::nullopt;
+        }
+        return it->state;
+    };
+    streamer.getDebugStates(states);
+    const auto survivingState = stateFor(survivingCoord);
+    const auto removedState = stateFor(removedCoord);
+    CHECK(survivingState.has_value());
+    CHECK(removedState.has_value());
+    CHECK_EQ(*survivingState, ChunkStreamer::DebugState::ReadyMesh);
+    CHECK_EQ(*removedState, ChunkStreamer::DebugState::ReadyMesh);
+
+    auto meshIndexCount = [&](ChunkCoord coord) {
+        size_t indexCount = 0;
+        meshStore.forEach([&](const WorldMeshEntry& entry) {
+            if (entry.coord == coord) {
+                indexCount = entry.mesh.indexCount();
+            }
+        });
+        return indexCount;
+    };
+    CHECK_EQ(meshIndexCount(survivingCoord), static_cast<size_t>(30));
+
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [gate, &buildsEntered]() {
@@ -3390,6 +3466,7 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
         });
     WorkerGateRelease releaseOnExit(gate);
 
+    surviving.markDirty();
     streamer.update(survivingCoord.toWorldCenter());
     bool firstBuildEntered = gate->waitUntilEntered();
     if (!firstBuildEntered) {
@@ -3398,8 +3475,8 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     CHECK(firstBuildEntered);
     CHECK(manager.hasChunk(survivingCoord));
     CHECK(manager.hasChunk(removedCoord));
-    CHECK(!meshStore.contains(survivingCoord));
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(meshIndexCount(survivingCoord), static_cast<size_t>(30));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
     CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
 
     const uint32_t revisionBeforeRemoval = surviving.meshRevision();
@@ -3410,46 +3487,54 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     CHECK(!manager.hasChunk(removedCoord));
     CHECK_EQ(surviving.meshRevision(), revisionBeforeRemoval + 1);
     CHECK(!meshStore.contains(removedCoord));
+    streamer.getDebugStates(states);
+    CHECK(!stateFor(removedCoord).has_value());
 
     streamer.update(survivingCoord.toWorldCenter());
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
     CHECK_EQ(streamer.workMetrics().meshRequestsCoalesced,
              static_cast<uint64_t>(1));
     CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
 
     gate->release();
-    CHECK(waitForMeshCompletions(streamer, 1));
-    CHECK(!meshStore.contains(survivingCoord));
-    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(0));
+    CHECK(waitForPendingMeshCompletion(streamer));
+    const auto staleIndexCount =
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::pendingMeshIndexCount(
+            streamer);
+    CHECK(staleIndexCount.has_value());
+    CHECK_EQ(*staleIndexCount, static_cast<size_t>(30));
+    CHECK(waitForMeshCompletions(streamer, 3));
+    CHECK_EQ(meshIndexCount(survivingCoord), static_cast<size_t>(30));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(2));
     CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
              static_cast<uint64_t>(1));
 
     streamer.update(survivingCoord.toWorldCenter());
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
-    CHECK(waitForMeshCompletions(streamer, 2));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(4));
+    CHECK(waitForMeshCompletions(streamer, 4));
 
     const auto& metrics = streamer.workMetrics();
-    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(2));
-    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(2));
-    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(4));
+    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(4));
+    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(3));
     CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
     CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
     CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(2));
 
-    size_t exposedBoundaryIndexCount = 0;
-    meshStore.forEach([&](const WorldMeshEntry& entry) {
-        if (entry.coord == survivingCoord) {
-            exposedBoundaryIndexCount = entry.mesh.indexCount();
-        }
-    });
-    CHECK_EQ(exposedBoundaryIndexCount, static_cast<size_t>(36));
+    CHECK_EQ(meshIndexCount(survivingCoord), static_cast<size_t>(36));
+    streamer.getDebugStates(states);
+    const auto finalSurvivingState = stateFor(survivingCoord);
+    CHECK(finalSurvivingState.has_value());
+    CHECK_EQ(*finalSurvivingState, ChunkStreamer::DebugState::ReadyMesh);
 
     for (int i = 0; i < 8; ++i) {
         streamer.update(survivingCoord.toWorldCenter());
         streamer.processCompletions();
     }
-    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(2));
-    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(4));
+    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(4));
+    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(3));
+    CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
     CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
 }
 

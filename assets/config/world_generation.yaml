@@ -258,7 +258,7 @@ overlays:
 
 streaming:
   view_distance_chunks: 12
-  unload_distance_chunks: 12 
+  unload_distance_chunks: 13
   gen_queue_limit: 128
   mesh_queue_limit: 128
   update_budget_per_frame: 4096

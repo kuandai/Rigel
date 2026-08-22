@@ -21,7 +21,7 @@ TEST_CASE(StreamingConfig_ShippedStreamingDistances) {
     config.applyYaml(path.c_str(), yaml.str());
 
     CHECK_EQ(config.viewDistanceChunks, 12);
-    CHECK_EQ(config.unloadDistanceChunks, 12);
+    CHECK_EQ(config.unloadDistanceChunks, 13);
 }
 
 TEST_CASE(StreamingConfig_ApplyYaml) {

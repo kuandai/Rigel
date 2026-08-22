@@ -67,7 +67,9 @@ settled world does not require a scan of every loaded chunk to discover edits.
 builds a spherical desired set when the camera enters a different chunk or a
 streaming distance changes. Desired coordinates are ordered nearest first.
 Chunks beyond the effective unload radius are removed, and an optional
-`ChunkCache` limit evicts non-desired residents.
+`ChunkCache` limit evicts non-desired residents. The effective unload radius is
+never smaller than the view radius, so unload hysteresis exists only when the
+configured unload distance is greater than the configured view distance.
 
 For a missing desired chunk, the normal path is:
 

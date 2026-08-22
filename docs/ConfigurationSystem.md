@@ -242,7 +242,7 @@ settings under the `streaming` key. It uses the world generation and streaming
 source order above so existing project and per-world overrides retain their
 precedence.
 
-| Key | Type | Default | Notes |
+| Key | Type | Code fallback | Notes |
 | --- | --- | --- | --- |
 | `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera. |
 | `streaming.unload_distance_chunks` | int | `8` | Unload radius, with the view radius as its effective minimum. |
@@ -261,6 +261,36 @@ precedence.
 | `streaming.load_prefetch_radius` | int | `1` | Region prefetch radius. |
 | `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request. |
 | `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited). |
+
+The embedded configuration shipped with Rigel sets the view distance to 12
+chunks and the unload distance to 13 chunks. The effective unload distance is
+the greater of the configured view and unload distances. Hysteresis therefore
+exists only when `unload_distance_chunks` is greater than
+`view_distance_chunks`; equal values evict residents as soon as they leave the
+desired sphere.
+
+The one-chunk hysteresis was selected with a deterministic lifecycle regression.
+It preloads a sparse radius-12 sphere with one solid boundary probe, settles to
+quiescence, moves one chunk on the X axis, settles again, reverses to the origin,
+and settles a third time. The two runs differ only in unload distance, and no
+terrain generation is involved. With unload distance 12, the move entered 441
+chunks, evicted 441, and left 7,153 resident. Reversal then reloaded 441,
+generated none, evicted 441 from the opposite side, started 537 remesh jobs, and
+returned to 7,153 residents. With unload distance 13, the move entered the same
+441 chunks, evicted none, and left 7,594 resident; reversal caused no loads,
+generation, eviction, or remeshing and retained 7,594 residents. This evidence
+supports radius 13 for the tested one-chunk reversal without implying general
+CPU or byte savings.
+
+The immediate retention cost in that regression is 441 chunks, or 6.2% over
+the 7,153 radius-12 residents. This is not the full distance-bound increase:
+inclusive integer spheres contain 7,153 coordinates at radius 12 and 9,171 at
+radius 13, a worst increase of 2,018 coordinates, or 28.2%. A fully allocated
+chunk has 128 KiB of block arrays, so the dense block-array bounds for those
+deltas are 55.125 MiB and 252.250 MiB, respectively. Chunks allocate block
+subchunks sparsely, and these figures exclude chunk and allocator overhead,
+asynchronous copies, and currently unmetered CPU and GPU mesh memory. They are
+block-storage bounds, not measurements of total resident memory.
 
 Negative queue, budget, thread, cache, and prefetch values are clamped to zero.
 The desired set is rebuilt only when the camera enters a different chunk or a

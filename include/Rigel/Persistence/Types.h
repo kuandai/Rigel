@@ -184,7 +184,6 @@ enum class UnsupportedFeaturePolicy {
 
 struct PersistencePolicies {
     UnknownIdPolicy unknownBlockPolicy = UnknownIdPolicy::Fail;
-    UnknownIdPolicy unknownEntityPolicy = UnknownIdPolicy::Fail;
     UnsupportedFeaturePolicy unsupportedFeaturePolicy = UnsupportedFeaturePolicy::Fail;
 };
 

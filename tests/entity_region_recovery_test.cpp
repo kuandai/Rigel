@@ -465,6 +465,12 @@ struct EntityRecord {
     bool operator==(const EntityRecord&) const = default;
 };
 
+class RecoveredUnknownEntity final : public Entity::Entity {
+public:
+    explicit RecoveredUnknownEntity(std::string typeId)
+        : Entity::Entity(std::move(typeId)) {}
+};
+
 bool entityIdLess(const Entity::EntityId& lhs, const Entity::EntityId& rhs) {
     return std::tie(lhs.time, lhs.random, lhs.counter) <
         std::tie(rhs.time, rhs.random, rhs.counter);
@@ -1797,6 +1803,92 @@ TEST_CASE(Persistence_EntityBootstrapPreservesLiveWorldState) {
     CHECK_EQ(
         world.chunkManager().getChunk(liveChunk)->worldGenVersion(),
         static_cast<uint32_t>(23));
+}
+
+TEST_CASE(Persistence_UnknownEntityPlaceholderSurvivesUntilFactoryIsAvailable) {
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        const std::string unknownType =
+            "rigel:temporarily_missing_" + preferredFormat;
+        const std::string modelId =
+            "entity_models/temporarily_missing_" + preferredFormat;
+        const EntityRecord unknown{
+            Entity::EntityId{150, 151, preferredFormat == "memory" ? 1u : 2u},
+            unknownType,
+            glm::vec3(1.0f, 2.0f, 3.0f),
+            glm::vec3(4.0f, 5.0f, 6.0f),
+            glm::vec3(0.0f, 1.0f, 0.0f)};
+        const EntityRecord live{
+            Entity::EntityId{152, 153, preferredFormat == "memory" ? 1u : 2u},
+            "rigel:existing_" + preferredFormat,
+            glm::vec3(7.0f, 8.0f, 9.0f)};
+
+        auto files = std::make_shared<SharedFiles>();
+        auto persistedRegion = regionSnapshot(0, {unknown});
+        persistedRegion.chunks.front().entities.front().modelId = modelId;
+        saveRawRegions(files, {persistedRegion}, preferredFormat);
+
+        Persistence::FormatRegistry formats;
+        registerFormats(formats);
+        Persistence::PersistenceService service(formats);
+        auto factoryCalls = std::make_shared<size_t>(0);
+        {
+            Voxel::WorldResources resources;
+            Voxel::World world(resources);
+            world.setId(1);
+            populateWorld(world, {live});
+            Asset::AssetManager assets;
+            auto context = makeContext(files, {}, preferredFormat);
+            context.providers = world.persistenceProvidersHandle();
+
+            Persistence::loadBootstrapEntities(world, assets, service, context);
+
+            Entity::Entity* placeholder = world.entities().get(unknown.id);
+            CHECK(placeholder != nullptr);
+            CHECK(typeid(*placeholder) == typeid(Entity::Entity));
+            CHECK_EQ(placeholder->id(), unknown.id);
+            CHECK_EQ(placeholder->typeId(), unknownType);
+            CHECK_EQ(placeholder->position(), unknown.position);
+            CHECK_EQ(placeholder->velocity(), unknown.velocity);
+            CHECK_EQ(placeholder->viewDirection(), unknown.viewDirection);
+            CHECK_EQ(placeholder->modelIdentifier(), modelId);
+            CHECK(!placeholder->model());
+            CHECK(world.entities().get(live.id) != nullptr);
+            CHECK_EQ(world.entities().size(), static_cast<size_t>(2));
+
+            Entity::EntityFactory::instance().registerType(
+                unknownType,
+                [unknownType, factoryCalls]() {
+                    ++*factoryCalls;
+                    return std::make_unique<RecoveredUnknownEntity>(unknownType);
+                });
+            CHECK(dynamic_cast<RecoveredUnknownEntity*>(placeholder) == nullptr);
+            CHECK_EQ(*factoryCalls, static_cast<size_t>(0));
+
+            Persistence::saveWorldToDisk(world, service, context);
+        }
+
+        Voxel::WorldResources reloadedResources;
+        Voxel::World reloaded(reloadedResources);
+        reloaded.setId(1);
+        Asset::AssetManager reloadedAssets;
+        auto reloadContext = makeContext(files, {}, preferredFormat);
+        reloadContext.providers = reloaded.persistenceProvidersHandle();
+        Persistence::loadBootstrapEntities(
+            reloaded, reloadedAssets, service, reloadContext);
+
+        Entity::Entity* resolved = reloaded.entities().get(unknown.id);
+        CHECK(resolved != nullptr);
+        CHECK(dynamic_cast<RecoveredUnknownEntity*>(resolved) != nullptr);
+        CHECK_EQ(*factoryCalls, static_cast<size_t>(1));
+        CHECK_EQ(resolved->id(), unknown.id);
+        CHECK_EQ(resolved->typeId(), unknownType);
+        CHECK_EQ(resolved->position(), unknown.position);
+        CHECK_EQ(resolved->velocity(), unknown.velocity);
+        CHECK_EQ(resolved->viewDirection(), unknown.viewDirection);
+        CHECK_EQ(resolved->modelIdentifier(), modelId);
+        CHECK(reloaded.entities().get(live.id) != nullptr);
+        CHECK_EQ(reloaded.entities().size(), static_cast<size_t>(2));
+    }
 }
 
 TEST_CASE(Persistence_EntityBootstrapRejectsLiveIdCollisionBeforeSpawning) {

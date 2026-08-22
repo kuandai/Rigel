@@ -169,6 +169,10 @@ When loading:
 - Position, velocity, view direction, and model ID are restored.
 - A model ID remains part of entity state when its asset is unavailable; the
   runtime handle is populated when that asset can be resolved.
+- Unknown types are not controlled by a persistence policy. Their generic
+  placeholder preserves every field represented by the entity-region record.
+  Registering a factory later affects the next entity load; it does not replace
+  an already live placeholder in place.
 
 ---
 

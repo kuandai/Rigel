@@ -49,10 +49,18 @@ chunk. A region file can contain multiple spans for the same chunk.
 
 ### 3.1 Policies
 
-`PersistencePolicies` control error handling:
+`PersistencePolicies` control error handling for format features and unknown
+block identifiers:
 
-- `UnknownIdPolicy`: `Fail`, `Placeholder`, or `Skip`.
+- `unknownBlockPolicy` uses `UnknownIdPolicy`: `Fail`, `Placeholder`, or `Skip`.
 - `UnsupportedFeaturePolicy`: `Fail`, `NoOp`, or `Warn`.
+
+Unknown entity types have one identifier-preserving lifecycle rather than a
+policy switch:
+loading creates a generic `Entity` placeholder that retains the persistent
+entity ID, original type identifier, motion state, and model identifier. Saving
+the placeholder writes the original identifiers unchanged. A later load uses
+the registered `EntityFactory` implementation when that type becomes available.
 
 ---
 

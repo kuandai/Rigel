@@ -334,6 +334,80 @@ private:
     std::atomic<size_t> m_readAttempts = 0;
 };
 
+class TransientMidReadFailureStorage final : public StorageBackend {
+public:
+    TransientMidReadFailureStorage(std::shared_ptr<StorageBackend> delegate,
+                                   size_t failures)
+        : m_delegate(std::move(delegate)),
+          m_failuresRemaining(failures) {}
+
+    std::unique_ptr<ByteReader> openRead(const std::string& path) override {
+        restoreFile();
+        auto reader = m_delegate->openRead(path);
+        ++m_readAttempts;
+
+        if (m_originalBytes.empty()) {
+            m_path = path;
+            m_originalBytes = reader->readAt(0, reader->size());
+        }
+        if (m_failuresRemaining > 0) {
+            --m_failuresRemaining;
+            std::filesystem::resize_file(path, 0);
+            m_needsRestore = true;
+        }
+        return reader;
+    }
+
+    std::unique_ptr<AtomicWriteSession> openWrite(
+        const std::string& path,
+        AtomicWriteOptions options) override {
+        return m_delegate->openWrite(path, options);
+    }
+
+    bool exists(const std::string& path) override {
+        return m_delegate->exists(path);
+    }
+
+    std::vector<std::string> list(const std::string& path) override {
+        return m_delegate->list(path);
+    }
+
+    void mkdirs(const std::string& path) override {
+        m_delegate->mkdirs(path);
+    }
+
+    void remove(const std::string& path) override {
+        m_delegate->remove(path);
+    }
+
+    size_t readAttempts() const {
+        return m_readAttempts;
+    }
+
+    void restore() {
+        m_failuresRemaining = 0;
+        restoreFile();
+    }
+
+private:
+    void restoreFile() {
+        if (!m_needsRestore) {
+            return;
+        }
+        auto session = m_delegate->openWrite(m_path, {});
+        session->writer().writeBytes(m_originalBytes.data(), m_originalBytes.size());
+        session->commit();
+        m_needsRestore = false;
+    }
+
+    std::shared_ptr<StorageBackend> m_delegate;
+    size_t m_failuresRemaining = 0;
+    size_t m_readAttempts = 0;
+    std::string m_path;
+    std::vector<uint8_t> m_originalBytes;
+    bool m_needsRestore = false;
+};
+
 class TransientWriteFailureStorage final : public StorageBackend {
 public:
     TransientWriteFailureStorage(std::shared_ptr<StorageBackend> delegate,
@@ -1603,6 +1677,134 @@ TEST_CASE(ChunkStreamer_ExhaustedRegionReadsRecoverWithoutCameraMovement) {
              static_cast<uint64_t>(0));
     CHECK(!loader->isPending(coord));
     CHECK_EQ(loader->workCount().pending, static_cast<size_t>(0));
+}
+
+TEST_CASE(AsyncChunkLoader_ExhaustedMidReadFailuresRecoverWithoutNewRequest) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID persisted = registerTestBlock(registry, "rigel:test_mid_read_retry");
+    const ChunkCoord coord{0, 0, 0};
+    ChunkData payload = buildPayload(
+        coord, registry, {persisted}, false, std::nullopt, false);
+
+    MemoryContext ctx;
+    saveRegionForPayload(
+        ctx.service, ctx.context, "rigel:default", coord, payload);
+    auto failingStorage = std::make_shared<TransientMidReadFailureStorage>(
+        ctx.context.storage,
+        3);
+    ctx.context.storage = failingStorage;
+
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+    loader.setPrefetchRadius(0);
+    loader.setLoadQueueLimit(1);
+    auto retryNow = std::chrono::steady_clock::now();
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setRetryClock(
+        loader,
+        [&retryNow]() { return retryNow; });
+
+    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK(loader.drainCompletions(8).empty());
+    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(3));
+    CHECK(loader.isPending(coord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().terminalErrors, static_cast<size_t>(0));
+
+    failingStorage->restore();
+    retryNow += std::chrono::seconds(1);
+    std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(8);
+
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front().coord, coord);
+    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
+    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(4));
+    CHECK(!loader.isPending(coord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+    verifyPayloadMatches(*world.chunkManager().getChunk(coord), payload);
+}
+
+TEST_CASE(AsyncChunkLoader_CancelledRetryCannotAffectReplacementRequest) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID persisted = registerTestBlock(registry, "rigel:test_retry_replacement");
+    const ChunkCoord coord{0, 0, 0};
+    ChunkData payload = buildPayload(
+        coord, registry, {persisted}, false, std::nullopt, false);
+
+    MemoryContext ctx;
+    saveRegionForPayload(
+        ctx.service, ctx.context, "rigel:default", coord, payload);
+    auto failingStorage = std::make_shared<TransientReadFailureStorage>(
+        ctx.context.storage,
+        3);
+    ctx.context.storage = failingStorage;
+
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+    loader.setPrefetchRadius(0);
+    loader.setLoadQueueLimit(1);
+    auto retryNow = std::chrono::steady_clock::now();
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setRetryClock(
+        loader,
+        [&retryNow]() { return retryNow; });
+
+    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK(loader.drainCompletions(8).empty());
+    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(3));
+    CHECK(loader.isPending(coord));
+
+    loader.cancel(coord);
+    CHECK(!loader.isPending(coord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+
+    failingStorage->restore();
+    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK(loader.isPending(coord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+    CHECK_EQ(loader.workCount().started, static_cast<uint64_t>(2));
+
+    retryNow += std::chrono::seconds(1);
+    std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(8);
+
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front().coord, coord);
+    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
+    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(4));
+    CHECK(loader.drainCompletions(8).empty());
+    CHECK(!loader.isPending(coord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+    verifyPayloadMatches(*world.chunkManager().getChunk(coord), payload);
 }
 
 TEST_CASE(AsyncChunkLoader_RegionRetryWaitUsesLoadCapacity) {

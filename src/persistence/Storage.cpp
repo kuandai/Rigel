@@ -60,10 +60,11 @@ public:
     }
 
     uint8_t readU8() override {
+        requireAvailable(1);
         char value = 0;
         m_stream.read(&value, 1);
         if (!m_stream) {
-            throw std::runtime_error("Failed to read byte from: " + m_path);
+            throw StorageReadError("Failed to read byte from: " + m_path);
         }
         return static_cast<uint8_t>(value);
     }
@@ -92,9 +93,10 @@ public:
         if (len == 0) {
             return;
         }
+        requireAvailable(len);
         m_stream.read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(len));
         if (!m_stream) {
-            throw std::runtime_error("Failed to read bytes from: " + m_path);
+            throw StorageReadError("Failed to read bytes from: " + m_path);
         }
     }
 
@@ -122,6 +124,21 @@ public:
     }
 
 private:
+    void requireAvailable(size_t len) {
+        const auto position = m_stream.tellg();
+        if (position == std::streampos(-1)) {
+            if (m_stream.bad()) {
+                throw StorageReadError("Failed to determine read position in: " + m_path);
+            }
+            throw std::runtime_error("Invalid read position in: " + m_path);
+        }
+
+        const size_t offset = static_cast<size_t>(position);
+        if (offset > m_size || len > m_size - offset) {
+            throw std::runtime_error("Unexpected end of file while reading: " + m_path);
+        }
+    }
+
     std::string m_path;
     mutable std::ifstream m_stream;
     size_t m_size;

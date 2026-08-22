@@ -2,6 +2,7 @@
 
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
+#include "Rigel/Entity/EntityFactory.h"
 #include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
@@ -55,6 +56,7 @@ struct SharedFiles {
     std::vector<std::string> durabilityOperations;
     std::unordered_map<std::string, size_t> materializedListCalls;
     std::unordered_map<std::string, size_t> visitedEntries;
+    std::unordered_map<std::string, size_t> openedReads;
     std::set<std::string> rejectedMaterializedLists;
 };
 
@@ -317,6 +319,7 @@ public:
 
     std::unique_ptr<Persistence::ByteReader> openRead(
         const std::string& path) override {
+        ++m_files->openedReads[path];
         const auto found = m_files->files.find(path);
         if (found == m_files->files.end()) {
             throw std::runtime_error("Missing test storage file: " + path);
@@ -883,11 +886,12 @@ Persistence::EntityRegionSnapshot regionSnapshot(
 
 void saveRawRegions(
     const std::shared_ptr<SharedFiles>& files,
-    const std::vector<Persistence::EntityRegionSnapshot>& regions) {
+    const std::vector<Persistence::EntityRegionSnapshot>& regions,
+    const std::string& preferredFormat = "memory") {
     Persistence::FormatRegistry formats;
-    registerMemoryFormat(formats);
+    registerFormats(formats);
     Persistence::PersistenceService service(formats);
-    auto context = makeContext(files);
+    auto context = makeContext(files, {}, preferredFormat);
     for (const auto& region : regions) {
         service.saveEntities(region, context);
     }
@@ -942,6 +946,182 @@ std::string loadFailure(
         return error.what();
     }
     throw Test::TestFailure("Expected persisted entity validation to fail");
+}
+
+constexpr const char* kBootstrapLimitType =
+    "rigel:bootstrap_limit_entity";
+constexpr Entity::EntityId kBootstrapLiveId{901, 902, 903};
+constexpr Voxel::ChunkCoord kBootstrapLiveChunk{71, 72, 73};
+
+std::string entityRegionDirectory() {
+    return std::string(kRootPath) + "/zones/rigel/default/entities";
+}
+
+std::string entityRegionPathForTest(const std::string& preferredFormat,
+                                    uint32_t regionIndex) {
+    return entityRegionDirectory() + "/entityRegion_" +
+        std::to_string(regionIndex) + "_0_0" +
+        (preferredFormat == "memory" ? ".mem" : ".crbin");
+}
+
+void installEmptyEntityRegions(const std::shared_ptr<SharedFiles>& files,
+                               const std::string& preferredFormat,
+                               uint32_t firstRegion,
+                               uint32_t count) {
+    const std::vector<uint8_t> payload = preferredFormat == "memory"
+        ? std::vector<uint8_t>{0, 0, 0, 0}
+        : Entity::encodeEntityRegionPayload({});
+    for (uint32_t i = 0; i < count; ++i) {
+        const std::string path = entityRegionPathForTest(
+            preferredFormat, firstRegion + i);
+        files->files.emplace(path, payload);
+        files->durableFiles.emplace(path, payload);
+    }
+}
+
+size_t entityRegionReadCount(const std::shared_ptr<SharedFiles>& files) {
+    const std::string prefix = entityRegionDirectory() + "/";
+    size_t count = 0;
+    for (const auto& [path, reads] : files->openedReads) {
+        if (path.starts_with(prefix)) {
+            count += reads;
+        }
+    }
+    return count;
+}
+
+Persistence::EntityRegionSnapshot bootstrapChunkRegion(
+    size_t regionIndex,
+    size_t chunkCount) {
+    Persistence::EntityRegionSnapshot region;
+    region.key = Persistence::EntityRegionKey{
+        kZoneId, static_cast<int32_t>(regionIndex), 0, 0};
+    region.chunks.reserve(chunkCount);
+    for (size_t chunkIndex = 0; chunkIndex < chunkCount; ++chunkIndex) {
+        Persistence::EntityPersistedChunk chunk;
+        chunk.coord = Voxel::ChunkCoord{
+            static_cast<int32_t>(regionIndex * 16 + chunkIndex % 16),
+            static_cast<int32_t>((chunkIndex / 16) % 16),
+            static_cast<int32_t>(chunkIndex / 256)};
+        region.chunks.push_back(std::move(chunk));
+    }
+    return region;
+}
+
+Persistence::EntityRegionSnapshot bootstrapEntityRegion(
+    int32_t regionX,
+    uint32_t firstEntity,
+    size_t entityCount) {
+    Persistence::EntityRegionSnapshot region;
+    region.key = Persistence::EntityRegionKey{kZoneId, regionX, 0, 0};
+    Persistence::EntityPersistedChunk chunk;
+    chunk.coord = Voxel::ChunkCoord{regionX * 16, 0, 0};
+    chunk.entities.reserve(entityCount);
+    for (size_t i = 0; i < entityCount; ++i) {
+        Persistence::EntityPersistedEntity entity;
+        entity.id = Entity::EntityId{
+            801, firstEntity + static_cast<uint32_t>(i), 1};
+        entity.typeId = kBootstrapLimitType;
+        entity.position = glm::vec3(
+            static_cast<float>(regionX * 512 + 1), 1.0f, 1.0f);
+        chunk.entities.push_back(std::move(entity));
+    }
+    region.chunks.push_back(std::move(chunk));
+    return region;
+}
+
+Persistence::detail::EntityRegionJournalUsage bootstrapRegionUsage(
+    const std::string& preferredFormat,
+    const std::vector<Persistence::EntityRegionSnapshot>& regions) {
+    const Persistence::FormatDescriptor& descriptor =
+        preferredFormat == "memory"
+        ? Persistence::Backends::Memory::descriptor()
+        : Persistence::Backends::CR::descriptor();
+    Persistence::detail::EntityRegionJournalUsage usage =
+        Persistence::detail::beginEntityRegionJournalUsage(descriptor);
+    for (const auto& region : regions) {
+        size_t regionPayloadBytes =
+            Persistence::detail::accountDesiredEntityRegion(
+                usage, region.key);
+        size_t regionChunks = 0;
+        for (const auto& chunk : region.chunks) {
+            Persistence::detail::accountEntityRegionChunk(
+                usage, regionPayloadBytes, regionChunks);
+            ++regionChunks;
+            size_t chunkEntities = 0;
+            for (const auto& entity : chunk.entities) {
+                Persistence::detail::accountEntityRegionEntity(
+                    usage,
+                    regionPayloadBytes,
+                    chunkEntities,
+                    Entity::detail::measurePersistedEntityBytes(
+                        entity.typeId, entity.modelId));
+                ++chunkEntities;
+            }
+        }
+    }
+    return usage;
+}
+
+std::vector<Persistence::EntityRegionSnapshot>
+bootstrapEncodedBoundaryRegions(const std::string& preferredFormat) {
+    constexpr size_t entitiesPerRegion = 32;
+    std::vector<Persistence::EntityRegionSnapshot> regions;
+    regions.push_back(bootstrapEntityRegion(
+        0, 100'000, entitiesPerRegion));
+    regions.push_back(bootstrapEntityRegion(
+        1, 100'000 + entitiesPerRegion, entitiesPerRegion));
+    for (auto& region : regions) {
+        for (auto& entity : region.chunks.front().entities) {
+            entity.typeId.clear();
+        }
+    }
+
+    const auto baseUsage = bootstrapRegionUsage(preferredFormat, regions);
+    size_t remaining =
+        Persistence::detail::MaxEntityJournalEncodedBytes -
+        baseUsage.encodedBytes;
+    for (size_t entityIndex = 0;
+         entityIndex < entitiesPerRegion && remaining > 0;
+         ++entityIndex) {
+        for (auto& region : regions) {
+            std::string& typeId =
+                region.chunks.front().entities[entityIndex].typeId;
+            const size_t bytes = std::min(
+                remaining,
+                static_cast<size_t>(
+                    Entity::detail::MaxEntityStringBytes));
+            typeId.assign(bytes, 'x');
+            remaining -= bytes;
+        }
+    }
+
+    CHECK_EQ(remaining, static_cast<size_t>(0));
+    CHECK_EQ(
+        bootstrapRegionUsage(preferredFormat, regions).encodedBytes,
+        Persistence::detail::MaxEntityJournalEncodedBytes);
+    return regions;
+}
+
+void populateBootstrapSentinels(Voxel::World& world) {
+    auto live = std::make_unique<Entity::Entity>("rigel:bootstrap_live");
+    live->setId(kBootstrapLiveId);
+    live->setPosition(glm::vec3(4.0f, 5.0f, 6.0f));
+    CHECK_EQ(world.entities().spawn(std::move(live)), kBootstrapLiveId);
+    Voxel::Chunk& chunk =
+        world.chunkManager().getOrCreateChunk(kBootstrapLiveChunk);
+    chunk.setWorldGenVersion(41);
+    chunk.clearDirty();
+}
+
+void checkBootstrapSentinels(const Voxel::World& world) {
+    CHECK_EQ(world.entities().size(), static_cast<size_t>(1));
+    CHECK(world.entities().get(kBootstrapLiveId) != nullptr);
+    CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(1));
+    const Voxel::Chunk* chunk =
+        world.chunkManager().getChunk(kBootstrapLiveChunk);
+    CHECK(chunk != nullptr);
+    CHECK_EQ(chunk->worldGenVersion(), static_cast<uint32_t>(41));
 }
 
 void checkJournalRejection(
@@ -1591,6 +1771,224 @@ TEST_CASE(Persistence_EntityBootstrapRejectsLiveIdCollisionBeforeSpawning) {
     CHECK_EQ(
         world.chunkManager().getChunk(liveChunk)->worldGenVersion(),
         static_cast<uint32_t>(29));
+}
+
+TEST_CASE(Persistence_EntityBootstrapStopsRegionEnumerationAtLimit) {
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        const std::string directory = entityRegionDirectory();
+        files->rejectedMaterializedLists.insert(directory);
+        installEmptyEntityRegions(
+            files,
+            preferredFormat,
+            0,
+            Persistence::detail::MaxEntityJournalRegions);
+
+        Voxel::WorldResources resources;
+        Voxel::World boundaryWorld(resources);
+        Asset::AssetManager boundaryAssets;
+        bootstrapEntities(
+            files, boundaryWorld, boundaryAssets, preferredFormat);
+
+        CHECK_EQ(boundaryWorld.entities().size(), static_cast<size_t>(0));
+        CHECK_EQ(
+            files->materializedListCalls[directory],
+            static_cast<size_t>(0));
+        CHECK_EQ(
+            files->visitedEntries[directory],
+            static_cast<size_t>(
+                Persistence::detail::MaxEntityJournalRegions));
+        CHECK_EQ(
+            entityRegionReadCount(files),
+            static_cast<size_t>(
+                Persistence::detail::MaxEntityJournalRegions));
+
+        files->visitedEntries.clear();
+        files->openedReads.clear();
+        installEmptyEntityRegions(
+            files,
+            preferredFormat,
+            Persistence::detail::MaxEntityJournalRegions,
+            1);
+
+        Voxel::World overflowWorld(resources);
+        populateBootstrapSentinels(overflowWorld);
+        Asset::AssetManager overflowAssets;
+        const std::string error = loadFailure(
+            files, overflowWorld, overflowAssets, preferredFormat);
+
+        CHECK_EQ(
+            error,
+            "Entity region journal aggregate region count exceeds limit");
+        CHECK_EQ(
+            files->materializedListCalls[directory],
+            static_cast<size_t>(0));
+        CHECK_EQ(
+            files->visitedEntries[directory],
+            static_cast<size_t>(
+                Persistence::detail::MaxEntityJournalRegions) + 1);
+        CHECK_EQ(
+            entityRegionReadCount(files),
+            static_cast<size_t>(
+                Persistence::detail::MaxEntityJournalRegions));
+        checkBootstrapSentinels(overflowWorld);
+    }
+}
+
+TEST_CASE(Persistence_EntityBootstrapBoundsAggregateChunksAcrossRegions) {
+    constexpr size_t chunksPerRegion =
+        Entity::detail::MaxChunksPerEntityRegion;
+    static_assert(
+        Persistence::detail::MaxEntityJournalChunks % chunksPerRegion == 0);
+    constexpr size_t regionCount =
+        Persistence::detail::MaxEntityJournalChunks / chunksPerRegion;
+
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        std::vector<Persistence::EntityRegionSnapshot> regions;
+        regions.reserve(regionCount);
+        for (size_t regionIndex = 0;
+             regionIndex < regionCount;
+             ++regionIndex) {
+            regions.push_back(bootstrapChunkRegion(
+                regionIndex, chunksPerRegion));
+        }
+        saveRawRegions(files, regions, preferredFormat);
+        regions.clear();
+
+        Voxel::WorldResources resources;
+        Voxel::World boundaryWorld(resources);
+        Asset::AssetManager boundaryAssets;
+        bootstrapEntities(
+            files, boundaryWorld, boundaryAssets, preferredFormat);
+        CHECK_EQ(boundaryWorld.entities().size(), static_cast<size_t>(0));
+
+        saveRawRegions(
+            files,
+            {bootstrapChunkRegion(regionCount, 1)},
+            preferredFormat);
+        Voxel::World overflowWorld(resources);
+        populateBootstrapSentinels(overflowWorld);
+        Asset::AssetManager overflowAssets;
+        const std::string error = loadFailure(
+            files, overflowWorld, overflowAssets, preferredFormat);
+
+        CHECK_EQ(
+            error,
+            "Entity region journal aggregate chunk count exceeds limit");
+        checkBootstrapSentinels(overflowWorld);
+    }
+}
+
+TEST_CASE(Persistence_EntityBootstrapBoundsAggregateEntitiesAcrossRegions) {
+    constexpr size_t entitiesPerRegion =
+        Persistence::detail::MaxEntityJournalEntities / 2;
+    static_assert(
+        Persistence::detail::MaxEntityJournalEntities ==
+        2 * entitiesPerRegion);
+
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto factoryCalls = std::make_shared<size_t>(0);
+        Entity::EntityFactory::instance().registerType(
+            kBootstrapLimitType,
+            [factoryCalls]() {
+                ++*factoryCalls;
+                return std::make_unique<Entity::Entity>(
+                    kBootstrapLimitType);
+            });
+
+        auto files = std::make_shared<SharedFiles>();
+        std::vector<Persistence::EntityRegionSnapshot> regions;
+        regions.push_back(bootstrapEntityRegion(
+            0, 1, entitiesPerRegion));
+        regions.push_back(bootstrapEntityRegion(
+            1,
+            static_cast<uint32_t>(entitiesPerRegion + 1),
+            entitiesPerRegion));
+        saveRawRegions(files, regions, preferredFormat);
+        regions.clear();
+
+        Voxel::WorldResources resources;
+        {
+            Voxel::World boundaryWorld(resources);
+            Asset::AssetManager boundaryAssets;
+            bootstrapEntities(
+                files, boundaryWorld, boundaryAssets, preferredFormat);
+            CHECK_EQ(
+                boundaryWorld.entities().size(),
+                Persistence::detail::MaxEntityJournalEntities);
+            CHECK_EQ(
+                *factoryCalls,
+                Persistence::detail::MaxEntityJournalEntities);
+        }
+
+        saveRawRegions(
+            files,
+            {bootstrapEntityRegion(
+                2,
+                static_cast<uint32_t>(
+                    Persistence::detail::MaxEntityJournalEntities + 1),
+                1)},
+            preferredFormat);
+        *factoryCalls = 0;
+        Voxel::World overflowWorld(resources);
+        populateBootstrapSentinels(overflowWorld);
+        Asset::AssetManager overflowAssets;
+        const std::string error = loadFailure(
+            files, overflowWorld, overflowAssets, preferredFormat);
+
+        CHECK_EQ(
+            error,
+            "Entity region journal aggregate entity count exceeds limit");
+        CHECK_EQ(*factoryCalls, static_cast<size_t>(0));
+        checkBootstrapSentinels(overflowWorld);
+    }
+}
+
+TEST_CASE(Persistence_EntityBootstrapBoundsAggregateEncodingAcrossRegions) {
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        auto regions = bootstrapEncodedBoundaryRegions(preferredFormat);
+        saveRawRegions(files, regions, preferredFormat);
+
+        Voxel::WorldResources resources;
+        {
+            Voxel::World boundaryWorld(resources);
+            Asset::AssetManager boundaryAssets;
+            bootstrapEntities(
+                files, boundaryWorld, boundaryAssets, preferredFormat);
+            CHECK_EQ(boundaryWorld.entities().size(), static_cast<size_t>(64));
+        }
+
+        bool extended = false;
+        for (auto& region : regions) {
+            for (auto& entity : region.chunks.front().entities) {
+                if (entity.typeId.size() <
+                    Entity::detail::MaxEntityStringBytes) {
+                    entity.typeId.push_back('x');
+                    extended = true;
+                    break;
+                }
+            }
+            if (extended) {
+                break;
+            }
+        }
+        CHECK(extended);
+        saveRawRegions(files, regions, preferredFormat);
+        regions.clear();
+
+        Voxel::World overflowWorld(resources);
+        populateBootstrapSentinels(overflowWorld);
+        Asset::AssetManager overflowAssets;
+        const std::string error = loadFailure(
+            files, overflowWorld, overflowAssets, preferredFormat);
+
+        CHECK_EQ(
+            error,
+            "Entity region journal encoded size exceeds limit");
+        checkBootstrapSentinels(overflowWorld);
+    }
 }
 
 TEST_CASE(Persistence_EntityLoadRejectsDuplicateIdWithinRegion) {

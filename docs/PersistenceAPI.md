@@ -242,9 +242,11 @@ Current behavior:
   entity journal validation before writing dirty chunk regions.
   The complete desired entity snapshot is also checked for null and duplicate
   persistent IDs before publication.
-- Entity bootstrap validates the complete persisted snapshot and collisions
-  with live persistent IDs before spawning any entity. It does not clear chunks
-  or unrelated live entities.
+- Entity bootstrap uses stoppable region enumeration and applies the same
+  aggregate region, encoding, chunk, and entity bounds as recovery before
+  retaining each decoded region. It validates the complete bounded snapshot
+  and collisions with live persistent IDs before constructing or spawning any
+  entity. It does not clear chunks or unrelated live entities.
 - Entity journal replay is idempotent process-interruption recovery. With the
   Linux filesystem backend, the journal becomes durably authoritative after
   its file and directory entry have been synchronized. It remains authoritative

@@ -148,9 +148,36 @@ void loadBootstrapEntities(Voxel::World& world,
     std::string zoneId = kDefaultZoneId;
     detail::replayEntityRegionJournal(*format, context, zoneId);
     std::vector<EntityRegionSnapshot> entityRegions;
-    for (const auto& key : format->entityContainer().listRegions(zoneId)) {
-        entityRegions.push_back(format->entityContainer().loadRegion(key));
-    }
+    detail::EntityRegionJournalUsage usage =
+        detail::beginEntityRegionJournalUsage(format->descriptor());
+    format->entityContainer().forEachRegion(zoneId, [&](const auto& key) {
+        detail::EntityRegionJournalUsage candidateUsage = usage;
+        size_t regionPayloadBytes = detail::accountDesiredEntityRegion(
+            candidateUsage, key);
+
+        EntityRegionSnapshot candidate =
+            format->entityContainer().loadRegion(key);
+        size_t regionChunks = 0;
+        for (const auto& chunk : candidate.chunks) {
+            detail::accountEntityRegionChunk(
+                candidateUsage, regionPayloadBytes, regionChunks);
+            ++regionChunks;
+            size_t chunkEntities = 0;
+            for (const auto& entity : chunk.entities) {
+                detail::accountEntityRegionEntity(
+                    candidateUsage,
+                    regionPayloadBytes,
+                    chunkEntities,
+                    Entity::detail::measurePersistedEntityBytes(
+                        entity.typeId, entity.modelId));
+                ++chunkEntities;
+            }
+        }
+
+        entityRegions.push_back(std::move(candidate));
+        usage = candidateUsage;
+        return true;
+    });
     detail::validateEntityRegionSnapshots(entityRegions);
 
     for (const auto& region : entityRegions) {

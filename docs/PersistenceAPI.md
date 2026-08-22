@@ -225,12 +225,15 @@ Current behavior:
   persistence format identity and version, and expected zone before changing
   region files. A mismatch fails without removing the journal or applying it
   through the selected backend.
-- A world save replays a valid pending journal before other region writes, then
-  atomically replaces the journal with the complete desired populated regions
-  and complete obsolete-region key set when entity region changes are needed.
+- A world save replays a valid pending journal before preparing new persistence
+  work. It then prepares and validates the complete desired populated regions
+  and obsolete-region key set without publishing them, writes dirty chunk
+  regions, and only then publishes and applies the prepared entity journal.
   Replay writes desired regions, removes obsolete regions, and removes the
-  journal only after all region operations succeed. A pristine world with no
-  existing entity regions does not publish a journal.
+  journal only after all region operations succeed. A dirty chunk write failure
+  therefore leaves the prepared current entity changes unpublished. A pristine
+  world with no existing entity regions does not publish a journal. Chunk and
+  entity persistence are ordered operations, not a cross-domain transaction.
 - One close or recovery journal is bounded to 64 MiB of encoded data, 4,096
   combined desired and obsolete region declarations, 65,536 decoded chunks,
   and 65,536 decoded entities. These fixed product bounds cover the complete

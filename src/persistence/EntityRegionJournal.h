@@ -21,6 +21,12 @@ struct EntityRegionJournalUsage {
     size_t entities = 0;
 };
 
+struct EntityRegionJournalPlan {
+    std::vector<EntityRegionSnapshot> desiredRegions;
+    std::vector<EntityRegionKey> obsoleteRegions;
+    EntityRegionJournalUsage usage;
+};
+
 EntityRegionJournalUsage beginEntityRegionJournalUsage(
     const FormatDescriptor& format);
 
@@ -47,11 +53,15 @@ void replayEntityRegionJournal(
     const PersistenceContext& context,
     const std::string& zoneId);
 
-void saveEntityRegionsRecoverably(
+EntityRegionJournalPlan prepareEntityRegionJournal(
     PersistenceFormat& format,
-    const PersistenceContext& context,
     const std::string& zoneId,
     std::vector<EntityRegionSnapshot> desiredRegions);
+
+void publishAndApplyEntityRegionJournal(
+    PersistenceFormat& format,
+    const PersistenceContext& context,
+    const EntityRegionJournalPlan& plan);
 
 } // namespace detail
 } // namespace Rigel::Persistence

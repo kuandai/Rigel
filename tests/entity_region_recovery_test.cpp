@@ -582,6 +582,18 @@ std::string saveDirtyChunkFailure(
     throw Test::TestFailure("Expected world save to reject recovery journal");
 }
 
+std::string saveWorldFailure(
+    const Voxel::World& world,
+    Persistence::PersistenceService& service,
+    Persistence::PersistenceContext context) {
+    try {
+        Persistence::saveWorldToDisk(world, service, std::move(context));
+    } catch (const std::exception& error) {
+        return error.what();
+    }
+    throw Test::TestFailure("Expected world save to fail");
+}
+
 struct LoadedState {
     std::vector<EntityRecord> records;
     std::vector<Persistence::EntityRegionKey> regions;
@@ -690,6 +702,15 @@ size_t operationCount(const std::vector<std::string>& operations,
         operations.begin(), operations.end(),
         [&](const std::string& operation) {
             return operation.starts_with(prefix);
+        }));
+}
+
+size_t operationCountContaining(const std::vector<std::string>& operations,
+                                const std::string& contained) {
+    return static_cast<size_t>(std::count_if(
+        operations.begin(), operations.end(),
+        [&](const std::string& operation) {
+            return operation.find(contained) != std::string::npos;
         }));
 }
 
@@ -1221,8 +1242,10 @@ std::string saveRecoverableRegionsFailure(
     auto context = makeContext(files, control);
     auto format = service.openFormat(context);
     try {
-        Persistence::detail::saveEntityRegionsRecoverably(
-            *format, context, kZoneId, std::move(regions));
+        const auto plan = Persistence::detail::prepareEntityRegionJournal(
+            *format, kZoneId, std::move(regions));
+        Persistence::detail::publishAndApplyEntityRegionJournal(
+            *format, context, plan);
     } catch (const std::exception& error) {
         return error.what();
     }
@@ -2289,6 +2312,160 @@ TEST_CASE(Persistence_WorldSaveRejectsAggregateEntitiesBeforeChunkMutation) {
     checkExactState(files, records);
 }
 
+TEST_CASE(Persistence_WorldSaveCommitsEntitiesAfterDirtyChunks) {
+    const Entity::EntityId id{231, 232, 233};
+    const EntityRecord prior{
+        id, "rigel:chunk_order_prior", glm::vec3(1.0f, 2.0f, 3.0f)};
+    const EntityRecord desired{
+        id, "rigel:chunk_order_desired", glm::vec3(1.0f, 2.0f, 3.0f)};
+    auto files = std::make_shared<SharedFiles>();
+    saveRecords(files, {prior});
+    const auto filesBefore = files->files;
+    const auto durableFilesBefore = files->durableFiles;
+
+    Persistence::FormatRegistry formats;
+    registerMemoryFormat(formats);
+    Persistence::PersistenceService service(formats);
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    world.setId(1);
+    populateWorld(world, {desired});
+    Voxel::Chunk& dirtyChunk =
+        world.chunkManager().getOrCreateChunk({0, 0, 0});
+    dirtyChunk.markPersistDirty();
+
+    auto failureControl = std::make_shared<MutationControl>();
+    failureControl->observeAllPaths = true;
+    failureControl->failAt = 0;
+    auto context = makeContext(files, failureControl);
+    context.providers = world.persistenceProvidersHandle();
+    CHECK_EQ(
+        saveWorldFailure(world, service, context),
+        "injected entity persistence interruption");
+
+    CHECK(dirtyChunk.isPersistDirty());
+    CHECK_EQ(files->files, filesBefore);
+    CHECK_EQ(files->durableFiles, durableFilesBefore);
+    CHECK(!journalExists(files));
+    CHECK_EQ(failureControl->attempted.size(), static_cast<size_t>(1));
+    CHECK(failureControl->attempted.front().find("/regions/region_") !=
+          std::string::npos);
+    checkExactState(files, {prior});
+
+    auto retryControl = std::make_shared<MutationControl>();
+    retryControl->observeAllPaths = true;
+    context = makeContext(files, retryControl);
+    context.providers = world.persistenceProvidersHandle();
+    Persistence::saveWorldToDisk(world, service, context);
+
+    CHECK(dirtyChunk.isPersistDirty());
+    CHECK_EQ(
+        operationCountContaining(retryControl->attempted, "/regions/region_"),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        operationCountContaining(
+            retryControl->attempted, "write " + std::string(kJournalPath)),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        operationCountContaining(
+            retryControl->attempted, "/entities/entityRegion_"),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        operationCountContaining(
+            retryControl->attempted, "remove " + std::string(kJournalPath)),
+        static_cast<size_t>(1));
+    checkExactState(files, {desired});
+}
+
+TEST_CASE(Persistence_WorldSaveReplaysOlderJournalBeforeChunkFailure) {
+    const Entity::EntityId id{241, 242, 243};
+    const EntityRecord prior{
+        id, "rigel:replay_prior", glm::vec3(1.0f, 2.0f, 3.0f)};
+    const EntityRecord replayed{
+        id, "rigel:replay_authoritative", glm::vec3(1.0f, 2.0f, 3.0f)};
+    const EntityRecord desired{
+        id, "rigel:replay_current", glm::vec3(1.0f, 2.0f, 3.0f)};
+    auto files = std::make_shared<SharedFiles>();
+    saveRecords(files, {prior});
+
+    auto interruptedControl = std::make_shared<MutationControl>();
+    interruptedControl->failAt = 1;
+    CHECK_THROWS(saveRecords(files, {replayed}, interruptedControl));
+    CHECK(journalExists(files));
+    CHECK_EQ(
+        loadRawRegion(
+            files, Persistence::EntityRegionKey{kZoneId, 0, 0, 0})
+            .chunks.front()
+            .entities.front()
+            .typeId,
+        prior.typeId);
+
+    Persistence::FormatRegistry formats;
+    registerMemoryFormat(formats);
+    Persistence::PersistenceService service(formats);
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    world.setId(1);
+    populateWorld(world, {desired});
+    Voxel::Chunk& dirtyChunk =
+        world.chunkManager().getOrCreateChunk({0, 0, 0});
+    dirtyChunk.markPersistDirty();
+
+    auto failureControl = std::make_shared<MutationControl>();
+    failureControl->observeAllPaths = true;
+    failureControl->failAt = 2;
+    auto context = makeContext(files, failureControl);
+    context.providers = world.persistenceProvidersHandle();
+    CHECK_EQ(
+        saveWorldFailure(world, service, context),
+        "injected entity persistence interruption");
+
+    CHECK(dirtyChunk.isPersistDirty());
+    CHECK(!journalExists(files));
+    CHECK_EQ(failureControl->attempted.size(), static_cast<size_t>(3));
+    CHECK(failureControl->attempted[0].find("/entities/entityRegion_") !=
+          std::string::npos);
+    CHECK_EQ(
+        failureControl->attempted[1],
+        "remove " + std::string(kJournalPath));
+    CHECK(failureControl->attempted[2].find("/regions/region_") !=
+          std::string::npos);
+    CHECK_EQ(
+        operationCountContaining(
+            failureControl->attempted, "write " + std::string(kJournalPath)),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        loadRawRegion(
+            files, Persistence::EntityRegionKey{kZoneId, 0, 0, 0})
+            .chunks.front()
+            .entities.front()
+            .typeId,
+        replayed.typeId);
+
+    auto retryControl = std::make_shared<MutationControl>();
+    retryControl->observeAllPaths = true;
+    context = makeContext(files, retryControl);
+    context.providers = world.persistenceProvidersHandle();
+    Persistence::saveWorldToDisk(world, service, context);
+
+    CHECK_EQ(
+        operationCountContaining(retryControl->attempted, "/regions/region_"),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        operationCountContaining(
+            retryControl->attempted, "write " + std::string(kJournalPath)),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        operationCountContaining(
+            retryControl->attempted, "/entities/entityRegion_"),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        operationCountContaining(
+            retryControl->attempted, "remove " + std::string(kJournalPath)),
+        static_cast<size_t>(1));
+    checkExactState(files, {desired});
+}
+
 TEST_CASE(Persistence_EntityJournalWriterRejectsAggregateChunksBeforeMutation) {
     constexpr size_t chunksPerRegion =
         Entity::detail::MaxChunksPerEntityRegion;
@@ -2438,8 +2615,11 @@ TEST_CASE(Persistence_EntityJournalStopsObsoleteRegionEnumerationAtLimit) {
 
         std::string error;
         try {
-            Persistence::detail::saveEntityRegionsRecoverably(
-                *format, context, kZoneId, {});
+            const auto plan =
+                Persistence::detail::prepareEntityRegionJournal(
+                    *format, kZoneId, {});
+            Persistence::detail::publishAndApplyEntityRegionJournal(
+                *format, context, plan);
         } catch (const std::exception& caught) {
             error = caught.what();
         }

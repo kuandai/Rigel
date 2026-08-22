@@ -42,11 +42,6 @@ struct EntityRegionKeyLess {
     }
 };
 
-struct EntityRegionJournal {
-    std::vector<EntityRegionSnapshot> desiredRegions;
-    std::vector<EntityRegionKey> obsoleteRegions;
-};
-
 std::string journalPath(const PersistenceContext& context) {
     if (context.rootPath.empty()) {
         return kJournalFilename;
@@ -173,7 +168,7 @@ EntityRegionJournalUsage beginJournalUsage(const FormatDescriptor& format) {
 }
 
 EntityRegionJournalUsage measureJournal(
-    const EntityRegionJournal& journal,
+    const EntityRegionJournalPlan& journal,
     const FormatDescriptor& format) {
     validateJournalRegionCounts(
         journal.desiredRegions.size(), journal.obsoleteRegions.size());
@@ -283,7 +278,7 @@ void skipKey(ByteReader& reader) {
     reader.seek(reader.tell() + 3 * sizeof(uint32_t));
 }
 
-void sortAndValidateJournal(EntityRegionJournal& journal) {
+void sortAndValidateJournal(EntityRegionJournalPlan& journal) {
     EntityRegionKeyLess less;
     std::sort(
         journal.desiredRegions.begin(), journal.desiredRegions.end(),
@@ -335,7 +330,7 @@ void sortAndValidateJournal(EntityRegionJournal& journal) {
 }
 
 void writeJournal(ByteWriter& writer,
-                  const EntityRegionJournal& journal,
+                  const EntityRegionJournalPlan& journal,
                   const FormatDescriptor& format,
                   const EntityRegionJournalUsage& expectedUsage) {
     if (writer.tell() != 0) {
@@ -500,11 +495,11 @@ void preflightJournal(ByteReader& reader,
     }
 }
 
-EntityRegionJournal decodeJournal(ByteReader& reader,
-                                  const FormatDescriptor& format) {
+EntityRegionJournalPlan decodeJournal(ByteReader& reader,
+                                      const FormatDescriptor& format) {
     const auto [desiredCount, obsoleteCount] =
         readJournalPrefix(reader, format);
-    EntityRegionJournal journal;
+    EntityRegionJournalPlan journal;
     journal.desiredRegions.reserve(desiredCount);
     journal.obsoleteRegions.reserve(obsoleteCount);
 
@@ -545,28 +540,27 @@ EntityRegionJournal decodeJournal(ByteReader& reader,
     return journal;
 }
 
-EntityRegionJournal readJournal(ByteReader& reader,
-                                const FormatDescriptor& format) {
+EntityRegionJournalPlan readJournal(ByteReader& reader,
+                                    const FormatDescriptor& format) {
     preflightJournal(reader, format);
     reader.seek(0);
     return decodeJournal(reader, format);
 }
 
-void publishJournal(const EntityRegionJournal& journal,
+void publishJournal(const EntityRegionJournalPlan& journal,
                     const FormatDescriptor& format,
                     const PersistenceContext& context) {
-    const EntityRegionJournalUsage usage = measureJournal(journal, format);
     const std::string path = journalPath(context);
     context.storage->mkdirs(parentPath(path));
     auto session = context.storage->openWrite(path);
-    writeJournal(session->writer(), journal, format, usage);
+    writeJournal(session->writer(), journal, format, journal.usage);
     session->writer().flush();
     session->commit();
 }
 
 void applyJournal(PersistenceFormat& format,
                   const PersistenceContext& context,
-                  const EntityRegionJournal& journal) {
+                  const EntityRegionJournalPlan& journal) {
     for (const auto& region : journal.desiredRegions) {
         try {
             format.entityContainer().saveRegion(region);
@@ -595,7 +589,7 @@ void applyJournal(PersistenceFormat& format,
     }
 }
 
-void validateJournalZone(const EntityRegionJournal& journal,
+void validateJournalZone(const EntityRegionJournalPlan& journal,
                          const std::string& zoneId) {
     for (const auto& region : journal.desiredRegions) {
         if (region.key.zoneId != zoneId) {
@@ -731,7 +725,7 @@ void replayEntityRegionJournal(
 
     try {
         auto reader = context.storage->openRead(path);
-        const EntityRegionJournal journal =
+        const EntityRegionJournalPlan journal =
             readJournal(*reader, format.descriptor());
         validateJournalZone(journal, zoneId);
         applyJournal(format, context, journal);
@@ -742,12 +736,11 @@ void replayEntityRegionJournal(
     }
 }
 
-void saveEntityRegionsRecoverably(
+EntityRegionJournalPlan prepareEntityRegionJournal(
     PersistenceFormat& format,
-    const PersistenceContext& context,
     const std::string& zoneId,
     std::vector<EntityRegionSnapshot> desiredRegions) {
-    EntityRegionJournal journal;
+    EntityRegionJournalPlan journal;
     journal.desiredRegions = std::move(desiredRegions);
 
     EntityRegionJournalUsage usage =
@@ -768,11 +761,19 @@ void saveEntityRegionsRecoverably(
 
     sortAndValidateJournal(journal);
     validateJournalZone(journal, zoneId);
-    if (journal.desiredRegions.empty() && journal.obsoleteRegions.empty()) {
+    journal.usage = usage;
+    return journal;
+}
+
+void publishAndApplyEntityRegionJournal(
+    PersistenceFormat& format,
+    const PersistenceContext& context,
+    const EntityRegionJournalPlan& plan) {
+    if (plan.desiredRegions.empty() && plan.obsoleteRegions.empty()) {
         return;
     }
-    publishJournal(journal, format.descriptor(), context);
-    applyJournal(format, context, journal);
+    publishJournal(plan, format.descriptor(), context);
+    applyJournal(format, context, plan);
 }
 
 } // namespace Rigel::Persistence::detail

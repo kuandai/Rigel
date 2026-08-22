@@ -238,8 +238,11 @@ void saveWorldToDisk(const Voxel::World& world,
     requireSupportedDefaultZone(*format, context);
 
     std::string zoneId = kDefaultZoneId;
+    detail::EntityRegionJournalPlan entityJournalPlan;
     std::vector<EntityRegionSnapshot> desiredEntityRegions;
     if (format->descriptor().capabilities.supportsEntityRegions) {
+        detail::replayEntityRegionJournal(*format, context, zoneId);
+
         struct EntityRegionSave {
             std::unordered_map<Voxel::ChunkCoord,
                                size_t,
@@ -354,13 +357,8 @@ void saveWorldToDisk(const Voxel::World& world,
             snapshot.chunks = std::move(region.chunks);
             desiredEntityRegions.push_back(std::move(snapshot));
         }
-    }
-
-    if (format->descriptor().capabilities.supportsEntityRegions) {
-        detail::replayEntityRegionJournal(*format, context, zoneId);
-        detail::saveEntityRegionsRecoverably(
+        entityJournalPlan = detail::prepareEntityRegionJournal(
             *format,
-            context,
             zoneId,
             std::move(desiredEntityRegions));
     }
@@ -377,6 +375,11 @@ void saveWorldToDisk(const Voxel::World& world,
             }
         });
     saveChunkRegions(world, *format, dirtyChunks);
+
+    if (format->descriptor().capabilities.supportsEntityRegions) {
+        detail::publishAndApplyEntityRegionJournal(
+            *format, context, entityJournalPlan);
+    }
 
     WorldSnapshot worldSnapshot;
     worldSnapshot.metadata.worldId = "world_" + std::to_string(world.id());

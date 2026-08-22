@@ -28,15 +28,14 @@ public:
     WorldView(const WorldView&) = delete;
     WorldView& operator=(const WorldView&) = delete;
 
-    WorldView(WorldView&&) = default;
-    WorldView& operator=(WorldView&&) = default;
+    WorldView(WorldView&&) = delete;
+    WorldView& operator=(WorldView&&) = delete;
 
     void initialize(Asset::AssetManager& assets);
 
     World& world() { return *m_world; }
     const World& world() const { return *m_world; }
 
-    WorldMeshStore& meshStore() { return m_meshStore; }
     const WorldMeshStore& meshStore() const { return m_meshStore; }
 
     WorldRenderConfig& renderConfig() { return m_renderConfig; }

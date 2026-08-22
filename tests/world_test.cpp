@@ -5,6 +5,7 @@
 #include "Rigel/Voxel/WorldView.h"
 
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using namespace Rigel::Voxel;
@@ -18,6 +19,14 @@ static_assert(!std::is_move_constructible_v<ChunkManager>);
 static_assert(!std::is_move_assignable_v<ChunkManager>);
 static_assert(!std::is_move_constructible_v<World>);
 static_assert(!std::is_move_assignable_v<World>);
+static_assert(!std::is_move_constructible_v<WorldView>);
+static_assert(!std::is_move_assignable_v<WorldView>);
+static_assert(std::is_same_v<
+              decltype(std::declval<WorldView&>().meshStore()),
+              const WorldMeshStore&>);
+static_assert(std::is_same_v<
+              decltype(std::declval<const WorldView&>().meshStore()),
+              const WorldMeshStore&>);
 static_assert(!PubliclyClearable<ChunkManager>);
 static_assert(!PubliclyClearable<World>);
 

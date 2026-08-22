@@ -25,7 +25,12 @@ The implemented API includes:
 - `createView(id, assets)`, which creates the world if necessary and initializes
   its single view.
 - `world(id)`, `view(id)`, and `findView(id)` for lookup.
-- `removeWorld(id)` and `clear()` for destruction.
+- `clear()` for teardown-only destruction of every view and world.
+
+Before calling `clear()`, callers must detach each view's streaming callbacks,
+stop its asynchronous chunk loader, and clear the active view. `clear()` then
+destroys all views before the worlds and chunk managers to which they are
+bound. There is no per-world destruction operation.
 
 `WorldSet` also owns the shared `WorldResources`, persistence format registry,
 persistence service, storage backend, preferred format, policies, and root

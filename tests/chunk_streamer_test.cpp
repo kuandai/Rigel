@@ -4025,6 +4025,127 @@ TEST_CASE(ChunkStreamer_RemeshesRetainedNeighborAfterDistanceEviction) {
              static_cast<uint64_t>(0));
 }
 
+TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const BlockID visible =
+        registerTestBlock(registry, "rigel:occluded_fringe_visible");
+    BlockType hiddenType;
+    hiddenType.identifier = "rigel:occluded_fringe_hidden";
+    hiddenType.model = "hidden";
+    hiddenType.isOpaque = true;
+    const BlockID hidden =
+        registry.registerBlock(hiddenType.identifier, hiddenType);
+
+    const ChunkCoord survivingCoord{0, 0, 0};
+    const ChunkCoord removedCoord{1, 0, 0};
+    const ChunkCoord cameraCoord{-2, 0, 0};
+    Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
+    surviving.setBlock(
+        Chunk::SIZE - 1, 16, 16, BlockState{visible}, registry);
+    for (const auto& local : std::array<glm::ivec3, 5>{
+             glm::ivec3{Chunk::SIZE - 2, 16, 16},
+             glm::ivec3{Chunk::SIZE - 1, 15, 16},
+             glm::ivec3{Chunk::SIZE - 1, 17, 16},
+             glm::ivec3{Chunk::SIZE - 1, 16, 15},
+             glm::ivec3{Chunk::SIZE - 1, 16, 17}}) {
+        surviving.setBlock(
+            local.x, local.y, local.z, BlockState{hidden}, registry);
+    }
+    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setLoadedFromDisk(true);
+    surviving.clearPersistDirty();
+
+    for (int i = 0; i < DirectionCount; ++i) {
+        Direction direction = static_cast<Direction>(i);
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(direction, dx, dy, dz);
+        const ChunkCoord neighborCoord =
+            survivingCoord.offset(dx, dy, dz);
+        Chunk& neighbor = manager.getOrCreateChunk(neighborCoord);
+        if (neighborCoord == removedCoord) {
+            neighbor.setBlock(0, 16, 16, BlockState{hidden}, registry);
+        }
+        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setLoadedFromDisk(true);
+        neighbor.clearPersistDirty();
+        neighbor.clearDirty();
+    }
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 2;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    streamer.update(survivingCoord.toWorldCenter());
+    CHECK(waitForMeshCompletions(streamer, 1));
+    CHECK(!surviving.isEmpty());
+    CHECK(!surviving.isDirty());
+    CHECK(meshStore.contains(survivingCoord));
+    CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
+             static_cast<size_t>(0));
+    const uint64_t emptyMeshRevision =
+        installedMeshRevision(meshStore, survivingCoord);
+    CHECK(emptyMeshRevision > 0);
+    for (int i = 0; i < 8; ++i) {
+        streamer.update(survivingCoord.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::Quiescent);
+
+    Chunk& cameraChunk = manager.getOrCreateChunk(cameraCoord);
+    cameraChunk.setWorldGenVersion(generator->config().world.version);
+    cameraChunk.setLoadedFromDisk(true);
+    cameraChunk.clearPersistDirty();
+    cameraChunk.clearDirty();
+    const uint32_t revisionBeforeEviction = surviving.meshRevision();
+    streamer.update(cameraCoord.toWorldCenter());
+
+    CHECK(manager.hasChunk(survivingCoord));
+    CHECK(!manager.hasChunk(removedCoord));
+    CHECK(surviving.meshRevision() > revisionBeforeEviction);
+    CHECK(surviving.isDirty());
+    CHECK(meshStore.contains(survivingCoord));
+    CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
+             static_cast<size_t>(0));
+    CHECK_NE(streamer.diagnostics().state,
+             StreamingLifecycleState::Quiescent);
+
+    streamer.update(cameraCoord.toWorldCenter());
+    CHECK(waitForMeshCompletions(streamer, 2));
+    CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
+             static_cast<size_t>(6));
+    CHECK(installedMeshRevision(meshStore, survivingCoord) > emptyMeshRevision);
+    CHECK(!surviving.isDirty());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(2));
+
+    for (int i = 0; i < 8; ++i) {
+        streamer.update(cameraCoord.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::Quiescent);
+    CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+}
+
 TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     ChunkManager manager;
     BlockRegistry registry;

@@ -137,3 +137,25 @@ TEST_CASE(ChunkRenderer_ReinsertUploadsWhenRemovalWasNotRendered) {
         boundArrayBufferSize(),
         static_cast<GLint>(6 * sizeof(VoxelVertex)));
 }
+
+TEST_CASE(ChunkRenderer_EmptyInstalledMeshReleasesCachedGeometry) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+
+    WorldMeshStore store;
+    const ChunkCoord coord{1, 0, 0};
+    store.set(coord, makeMesh(3, 3));
+
+    WorldRenderContext renderContext;
+    renderContext.meshes = &store;
+    renderContext.shader = makeShader();
+
+    ChunkRenderer renderer;
+    renderer.render(renderContext);
+    CHECK_EQ(renderer.cachedMeshCount(), static_cast<size_t>(1));
+
+    store.set(coord, ChunkMesh{});
+    CHECK(store.contains(coord));
+    renderer.render(renderContext);
+    CHECK_EQ(renderer.cachedMeshCount(), static_cast<size_t>(0));
+}

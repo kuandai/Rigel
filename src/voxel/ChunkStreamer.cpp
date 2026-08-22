@@ -1406,7 +1406,12 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
 
         if (meshResult.empty) {
             if (m_meshStore) {
-                m_meshStore->remove(meshResult.coord);
+                if (chunk->isEmpty()) {
+                    m_meshStore->remove(meshResult.coord);
+                } else {
+                    m_meshStore->set(
+                        meshResult.coord, std::move(meshResult.mesh));
+                }
             }
         } else if (m_meshStore) {
             m_meshStore->set(meshResult.coord, std::move(meshResult.mesh));

@@ -200,6 +200,7 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     std::vector<RenderEntry> entries;
     ctx.meshes->forEach([&](const WorldMeshEntry& entry) {
         if (entry.mesh.isEmpty()) {
+            m_meshes.erase(entry.id);
             return;
         }
 

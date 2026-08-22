@@ -144,6 +144,162 @@ TEST_CASE(FilesystemBackend_atomic_replace_writes_complete_replacement) {
     CHECK(stagingFiles(path).empty());
 }
 
+TEST_CASE(AtomicFileCommit_synchronizes_before_and_after_publication) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto path = directory.path() / "region.bin";
+    const auto tempPath =
+        std::filesystem::path(path.string() + ".tmp.owned");
+    const std::vector<uint8_t> previous{1, 2, 3, 4};
+    const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
+    std::vector<std::string> operations;
+
+    writeRawFile(path, previous);
+    writeRawFile(tempPath, replacement);
+
+    detail::commitAtomicFile(
+        tempPath,
+        path,
+        [&operations]() {
+            operations.push_back("close");
+        },
+        [&](const std::filesystem::path& synchronizedPath) {
+            CHECK_EQ(synchronizedPath, tempPath);
+            operations.push_back("sync file");
+        },
+        [&](const std::filesystem::path& replacementPath,
+            const std::filesystem::path& destinationPath,
+            std::error_code& error) {
+            CHECK_EQ(replacementPath, tempPath);
+            CHECK_EQ(destinationPath, path);
+            CHECK_EQ(readFile(storage, path), previous);
+            operations.push_back("replace");
+            error.clear();
+        },
+        [&](const std::filesystem::path& directoryPath) {
+            CHECK_EQ(directoryPath, path.parent_path());
+            operations.push_back("sync directory");
+        });
+
+    CHECK_EQ(
+        operations,
+        (std::vector<std::string>{
+            "close", "sync file", "replace", "sync directory"}));
+}
+
+TEST_CASE(AtomicFileCommit_file_sync_failure_preserves_destination) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto path = directory.path() / "region.bin";
+    const auto tempPath =
+        std::filesystem::path(path.string() + ".tmp.owned");
+    const auto unownedTempPath =
+        std::filesystem::path(path.string() + ".tmp.unowned");
+    const std::vector<uint8_t> previous{1, 2, 3, 4};
+    const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
+    const std::vector<uint8_t> unowned{9, 8, 7};
+    bool replacementAttempted = false;
+    bool directorySyncAttempted = false;
+
+    writeRawFile(path, previous);
+    writeRawFile(tempPath, replacement);
+    writeRawFile(unownedTempPath, unowned);
+
+    CHECK_THROWS(detail::commitAtomicFile(
+        tempPath,
+        path,
+        []() {},
+        [](const std::filesystem::path&) {
+            throw std::runtime_error("file synchronization failed");
+        },
+        [&](const std::filesystem::path&,
+            const std::filesystem::path&,
+            std::error_code&) {
+            replacementAttempted = true;
+        },
+        [&](const std::filesystem::path&) {
+            directorySyncAttempted = true;
+        }));
+
+    CHECK(!replacementAttempted);
+    CHECK(!directorySyncAttempted);
+    CHECK_EQ(readFile(storage, path), previous);
+    CHECK(!std::filesystem::exists(tempPath));
+    CHECK_EQ(readFile(storage, unownedTempPath), unowned);
+}
+
+TEST_CASE(AtomicFileCommit_directory_sync_failure_keeps_published_paths) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto path = directory.path() / "region.bin";
+    const auto tempPath =
+        std::filesystem::path(path.string() + ".tmp.owned");
+    const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
+    const std::vector<uint8_t> laterStagingData{9, 8, 7};
+
+    writeRawFile(tempPath, replacement);
+
+    CHECK_THROWS(detail::commitAtomicFile(
+        tempPath,
+        path,
+        []() {},
+        [](const std::filesystem::path&) {},
+        [](const std::filesystem::path& replacementPath,
+           const std::filesystem::path& destinationPath,
+           std::error_code& error) {
+            std::filesystem::rename(
+                replacementPath, destinationPath, error);
+        },
+        [&](const std::filesystem::path&) {
+            writeRawFile(tempPath, laterStagingData);
+            throw std::runtime_error("directory synchronization failed");
+        }));
+
+    CHECK_EQ(readFile(storage, path), replacement);
+    CHECK_EQ(readFile(storage, tempPath), laterStagingData);
+}
+
+TEST_CASE(AtomicFileRemoval_synchronizes_directory_after_removal) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    const auto path = directory.path() / "region.bin";
+    std::vector<std::string> operations;
+    writeRawFile(path, std::vector<uint8_t>{1, 2, 3, 4});
+
+    detail::removeFileDurably(
+        path,
+        [&](const std::filesystem::path& removalPath) {
+            CHECK_EQ(removalPath, path);
+            operations.push_back("remove");
+            return std::filesystem::remove(removalPath);
+        },
+        [&](const std::filesystem::path& directoryPath) {
+            CHECK_EQ(directoryPath, path.parent_path());
+            CHECK(!std::filesystem::exists(path));
+            operations.push_back("sync directory");
+        });
+
+    CHECK_EQ(
+        operations,
+        (std::vector<std::string>{"remove", "sync directory"}));
+}
+
+TEST_CASE(AtomicFileRemoval_reports_directory_sync_failure) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    const auto path = directory.path() / "region.bin";
+    writeRawFile(path, std::vector<uint8_t>{1, 2, 3, 4});
+
+    CHECK_THROWS(detail::removeFileDurably(
+        path,
+        [](const std::filesystem::path& removalPath) {
+            return std::filesystem::remove(removalPath);
+        },
+        [](const std::filesystem::path&) {
+            throw std::runtime_error("directory synchronization failed");
+        }));
+
+    CHECK(!std::filesystem::exists(path));
+}
+
 TEST_CASE(FilesystemBackend_failed_atomic_replace_preserves_existing_file) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
@@ -162,11 +318,13 @@ TEST_CASE(FilesystemBackend_failed_atomic_replace_preserves_existing_file) {
         tempPath,
         path,
         []() {},
+        [](const std::filesystem::path&) {},
         [](const std::filesystem::path&,
            const std::filesystem::path&,
            std::error_code& error) {
             error = std::make_error_code(std::errc::permission_denied);
-        }));
+        },
+        [](const std::filesystem::path&) {}));
 
     CHECK_EQ(readFile(storage, path), previous);
     CHECK(!std::filesystem::exists(tempPath));
@@ -238,11 +396,13 @@ TEST_CASE(FilesystemBackend_flush_failure_preserves_existing_file) {
         []() {
             throw std::runtime_error("flush failed");
         },
+        [](const std::filesystem::path&) {},
         [&replacementAttempted](const std::filesystem::path&,
                                 const std::filesystem::path&,
                                 std::error_code&) {
             replacementAttempted = true;
-        }));
+        },
+        [](const std::filesystem::path&) {}));
 
     CHECK(!replacementAttempted);
     CHECK_EQ(readFile(storage, path), previous);

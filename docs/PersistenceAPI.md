@@ -154,6 +154,29 @@ Core APIs:
 `ByteReader`/`ByteWriter` supports random access via `seek`, `readAt`, and
 `writeAt` for formats that require region indexes.
 
+`AtomicWriteSession` promises process-safe publication: writes remain on a
+backend-owned staging path until `commit`, and an uncommitted session leaves
+the destination unchanged. Durability beyond the process depends on the
+storage implementation.
+
+On the supported Linux filesystem backend, a successful commit closes and
+flushes the writer, calls `fsync` on the staging file, atomically renames it
+over the destination without first deleting the destination, and calls `fsync`
+on the containing directory. Removing an existing file also calls `fsync` on
+its containing directory. Any synchronization error is reported by the
+operation. A failure before rename leaves the previous destination in place
+and removes only that session's staging file. A failure while synchronizing the
+directory is reported after publication and does not remove the published file
+or a newly created file that happens to reuse the old staging pathname.
+
+The non-Windows POSIX implementation uses the same file and directory `fsync`
+sequence, but Linux is the environment covered by the project's durability
+tests. On Windows, the staging file is synchronized with `FlushFileBuffers` and
+replacement requests `MOVEFILE_WRITE_THROUGH`; the backend does not currently
+have an independently validated equivalent for synchronizing parent-directory
+replacement and removal entries. Consequently, the Linux power-loss guarantee
+must not be assumed on Windows or an unvalidated POSIX environment.
+
 ---
 
 ## 9. World Save/Load Flow
@@ -196,9 +219,24 @@ Current behavior:
 - Entity bootstrap validates the complete persisted snapshot and collisions
   with live persistent IDs before spawning any entity. It does not clear chunks
   or unrelated live entities.
-- Entity journal replay is idempotent process-interruption recovery built on
-  atomic file replacement. It does not provide fsync-backed survival of power
-  loss or storage-device or filesystem failure.
+- Entity journal replay is idempotent process-interruption recovery. With the
+  Linux filesystem backend, the journal becomes durably authoritative after
+  its file and directory entry have been synchronized. It remains authoritative
+  while desired region replacements and obsolete-region removals are applied;
+  those operations are individually synchronized before the journal is removed
+  and that removal is synchronized.
+- A failed journal publication leaves either the previous region state with no
+  durable new journal, or a published journal that is replayed before the next
+  save. If final journal removal or its directory synchronization reports a
+  failure, all declared region operations have already completed; a retained
+  journal can safely replay them. These are the authoritative recovery states,
+  and no success is reported for the failed operation.
+- Atomic replacement protects process recovery on any conforming backend. The
+  Linux synchronization sequence additionally orders writes across sudden
+  power or kernel loss only when the filesystem, mount configuration, storage
+  device, and its volatile caches honor `fsync`. It does not protect against
+  media corruption, devices that falsely report flush completion, filesystem
+  defects, or loss of a newly created unsynchronized ancestor directory.
 - Entity load reads and validates every persisted region before spawning. Null
   persistent IDs and duplicate IDs within or across regions fail the load.
 - Entities tagged `EntityTags::NoSaveInChunks` are skipped.

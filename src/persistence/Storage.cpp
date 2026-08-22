@@ -16,6 +16,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 namespace Rigel::Persistence {
@@ -63,7 +66,7 @@ void replaceFileAtomically(const std::filesystem::path& tempPath,
     if (::MoveFileExW(
             tempPath.c_str(),
             finalPath.c_str(),
-            MOVEFILE_REPLACE_EXISTING) == 0) {
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
         error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
         return;
     }
@@ -72,6 +75,90 @@ void replaceFileAtomically(const std::filesystem::path& tempPath,
     std::filesystem::rename(tempPath, finalPath, error);
 #endif
 }
+
+#ifdef _WIN32
+
+void synchronizeFile(const std::filesystem::path& path) {
+    const HANDLE file = ::CreateFileW(
+        path.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        throw std::system_error(
+            static_cast<int>(::GetLastError()),
+            std::system_category(),
+            "Failed to open file for synchronization: " + path.string());
+    }
+    if (::FlushFileBuffers(file) == 0) {
+        const auto error = static_cast<int>(::GetLastError());
+        ::CloseHandle(file);
+        throw std::system_error(
+            error,
+            std::system_category(),
+            "Failed to synchronize file: " + path.string());
+    }
+    if (::CloseHandle(file) == 0) {
+        throw std::system_error(
+            static_cast<int>(::GetLastError()),
+            std::system_category(),
+            "Failed to close synchronized file: " + path.string());
+    }
+}
+
+void synchronizeDirectory(const std::filesystem::path&) {
+}
+
+#else
+
+void synchronizeDescriptor(int descriptor,
+                           const std::filesystem::path& path,
+                           const char* description) {
+    if (::fsync(descriptor) != 0) {
+        const int error = errno;
+        ::close(descriptor);
+        throw std::system_error(
+            error,
+            std::generic_category(),
+            std::string("Failed to synchronize ") + description + ": " +
+                path.string());
+    }
+    if (::close(descriptor) != 0) {
+        throw std::system_error(
+            errno,
+            std::generic_category(),
+            std::string("Failed to close synchronized ") + description +
+                ": " + path.string());
+    }
+}
+
+void synchronizeFile(const std::filesystem::path& path) {
+    const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (descriptor < 0) {
+        throw std::system_error(
+            errno,
+            std::generic_category(),
+            "Failed to open file for synchronization: " + path.string());
+    }
+    synchronizeDescriptor(descriptor, path, "file");
+}
+
+void synchronizeDirectory(const std::filesystem::path& path) {
+    const int descriptor =
+        ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (descriptor < 0) {
+        throw std::system_error(
+            errno,
+            std::generic_category(),
+            "Failed to open directory for synchronization: " + path.string());
+    }
+    synchronizeDescriptor(descriptor, path, "directory");
+}
+
+#endif
 
 class FileByteReader final : public ByteReader {
 public:
@@ -299,10 +386,16 @@ public:
                 auto writer = std::move(m_writer);
                 writer->close();
             },
+            [](const std::filesystem::path& tempPath) {
+                synchronizeFile(tempPath);
+            },
             [](const std::filesystem::path& tempPath,
                const std::filesystem::path& finalPath,
                std::error_code& error) {
                 replaceFileAtomically(tempPath, finalPath, error);
+            },
+            [](const std::filesystem::path& directoryPath) {
+                synchronizeDirectory(directoryPath);
             });
     }
 
@@ -365,7 +458,14 @@ void FilesystemBackend::mkdirs(const std::string& path) {
 }
 
 void FilesystemBackend::remove(const std::string& path) {
-    std::filesystem::remove(path);
+    detail::removeFileDurably(
+        std::filesystem::path(path),
+        [](const std::filesystem::path& removalPath) {
+            return std::filesystem::remove(removalPath);
+        },
+        [](const std::filesystem::path& directoryPath) {
+            synchronizeDirectory(directoryPath);
+        });
 }
 
 } // namespace Rigel::Persistence

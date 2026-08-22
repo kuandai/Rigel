@@ -98,6 +98,38 @@ TEST_CASE(FilesystemByteReader_bounds_random_access_reads) {
     CHECK_EQ(reader->readU8(), static_cast<uint8_t>(20));
 }
 
+TEST_CASE(FilesystemByteReader_restores_position_after_physical_read_failure) {
+#ifdef _WIN32
+    throw Rigel::Test::TestSkip(
+        "Windows does not permit truncating an open file");
+#else
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto path = directory.path() / "tiny.bin";
+    const std::vector<uint8_t> fixture{10, 20, 30, 40};
+    writeFile(storage, path, fixture);
+
+    auto reader = storage.openRead(path.string());
+    reader->seek(1);
+    std::filesystem::resize_file(path, 2);
+
+    try {
+        static_cast<void>(reader->readAt(2, 2));
+    } catch (const StorageReadError& error) {
+        CHECK_EQ(
+            std::string(error.what()),
+            "Failed to read bytes from: " + path.string());
+        CHECK_EQ(reader->tell(), static_cast<size_t>(1));
+        CHECK_EQ(reader->readU8(), static_cast<uint8_t>(20));
+        return;
+    } catch (const std::exception& error) {
+        throw Rigel::Test::TestFailure(
+            std::string("Unexpected random read exception: ") + error.what());
+    }
+    throw Rigel::Test::TestFailure("Expected random read to fail");
+#endif
+}
+
 TEST_CASE(FilesystemBackend_atomic_replace_writes_complete_replacement) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;

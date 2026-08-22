@@ -186,6 +186,7 @@ private:
 class InMemoryStorageBackend final : public StorageBackend {
 public:
     std::unique_ptr<ByteReader> openRead(const std::string& path) override {
+        m_calls.push_back("openRead " + path);
         auto it = m_files.find(path);
         if (it == m_files.end()) {
             throw std::runtime_error("Missing in-memory file: " + path);
@@ -194,14 +195,17 @@ public:
     }
 
     std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path, AtomicWriteOptions) override {
+        m_calls.push_back("openWrite " + path);
         return std::make_unique<InMemoryWriteSession>(m_files[path]);
     }
 
     bool exists(const std::string& path) override {
+        m_calls.push_back("exists " + path);
         return m_files.find(path) != m_files.end();
     }
 
     std::vector<std::string> list(const std::string& path) override {
+        m_calls.push_back("list " + path);
         std::vector<std::string> results;
         for (const auto& [key, value] : m_files) {
             if (key.rfind(path, 0) == 0) {
@@ -211,15 +215,30 @@ public:
         return results;
     }
 
-    void mkdirs(const std::string&) override {
+    void mkdirs(const std::string& path) override {
+        m_calls.push_back("mkdirs " + path);
     }
 
     void remove(const std::string& path) override {
+        m_calls.push_back("remove " + path);
         m_files.erase(path);
+    }
+
+    const std::vector<std::string>& calls() const {
+        return m_calls;
+    }
+
+    void clearCalls() {
+        m_calls.clear();
+    }
+
+    const std::unordered_map<std::string, std::vector<uint8_t>>& files() const {
+        return m_files;
     }
 
 private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
+    std::vector<std::string> m_calls;
 };
 
 void createEmptyFile(StorageBackend& storage, const std::string& path) {
@@ -378,6 +397,130 @@ TEST_CASE(Persistence_MetadataRoundTrip) {
     CHECK_EQ(loaded.worldId, world.metadata.worldId);
     CHECK_EQ(loaded.displayName, world.metadata.displayName);
 }
+
+#ifndef _WIN32
+TEST_CASE(Persistence_AggregateMetadataSavePreflightsMemoryLayouts) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
+
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    const std::string canonicalId = "rigel:canonical";
+    const std::string legacyId = "rigel:legacy";
+    createEmptyFile(
+        *storage, "root/zones/rigel/canonical/regions/existing.mem");
+    createEmptyFile(
+        *storage, "root/zones/rigel:legacy/regions/existing.mem");
+    storage->clearCalls();
+
+    WorldSnapshot world;
+    world.metadata = WorldMetadata{"world", "World"};
+    world.zones = {
+        ZoneMetadata{canonicalId, "Canonical"},
+        ZoneMetadata{legacyId, "Legacy"}
+    };
+
+    service.saveWorld(world, context);
+
+    const std::vector<std::string> expectedPrefix = {
+        "exists root/zones/rigel/canonical",
+        "list root/zones/rigel/canonical",
+        "exists root/zones/rigel:canonical",
+        "list root/zones/rigel:canonical",
+        "exists root/zones/rigel/legacy",
+        "list root/zones/rigel/legacy",
+        "exists root/zones/rigel:legacy",
+        "list root/zones/rigel:legacy",
+        "mkdirs root",
+        "openWrite root/world.meta"
+    };
+    CHECK(storage->calls().size() >= expectedPrefix.size());
+    CHECK(std::equal(
+        expectedPrefix.begin(), expectedPrefix.end(), storage->calls().begin()));
+    CHECK(storage->files().contains(
+        "root/zones/rigel/canonical/zone.meta"));
+    CHECK(storage->files().contains(
+        "root/zones/rigel:legacy/zone.meta"));
+    CHECK(!storage->files().contains(
+        "root/zones/rigel/legacy/zone.meta"));
+    CHECK(!storage->files().contains(
+        "root/zones/rigel:canonical/zone.meta"));
+    CHECK_EQ(service.loadWorldMetadata(context), world.metadata);
+    CHECK_EQ(
+        service.loadZoneMetadata(ZoneKey{canonicalId}, context),
+        world.zones[0]);
+    CHECK_EQ(
+        service.loadZoneMetadata(ZoneKey{legacyId}, context),
+        world.zones[1]);
+}
+
+TEST_CASE(Persistence_AggregateMetadataSaveRejectsSplitMemoryLayoutsBeforeWrites) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
+
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    const std::string earlierId = "rigel:earlier";
+    const std::string splitId = "rigel:split";
+    WorldSnapshot original;
+    original.metadata = WorldMetadata{"original", "Original World"};
+    original.zones = {
+        ZoneMetadata{earlierId, "Original Earlier Zone"},
+        ZoneMetadata{splitId, "Original Split Zone"}
+    };
+    service.saveWorld(original, context);
+    createEmptyFile(
+        *storage, "root/zones/rigel:split/regions/existing.mem");
+
+    const auto originalFiles = storage->files();
+    storage->clearCalls();
+
+    WorldSnapshot replacement;
+    replacement.metadata = WorldMetadata{"replacement", "Replacement World"};
+    replacement.zones = {
+        ZoneMetadata{earlierId, "Replacement Earlier Zone"},
+        ZoneMetadata{splitId, "Replacement Split Zone"}
+    };
+
+    std::string diagnostic;
+    try {
+        service.saveWorld(replacement, context);
+    } catch (const std::runtime_error& error) {
+        diagnostic = error.what();
+    }
+
+    const std::vector<std::string> expectedCalls = {
+        "exists root/zones/rigel/earlier",
+        "list root/zones/rigel/earlier",
+        "exists root/zones/rigel:earlier",
+        "list root/zones/rigel:earlier",
+        "exists root/zones/rigel/split",
+        "list root/zones/rigel/split",
+        "exists root/zones/rigel:split",
+        "list root/zones/rigel:split"
+    };
+    CHECK_EQ(storage->calls(), expectedCalls);
+    CHECK_EQ(storage->files(), originalFiles);
+    CHECK(diagnostic.find("MemoryFormat configuration error") !=
+          std::string::npos);
+    CHECK(diagnostic.find(splitId) != std::string::npos);
+    CHECK(diagnostic.find("both") != std::string::npos);
+    CHECK(diagnostic.find("consolidate") != std::string::npos);
+    CHECK(diagnostic.find("root/zones/rigel/split") != std::string::npos);
+}
+#endif
 
 TEST_CASE(Persistence_ZoneMetadataRoundTrip) {
     auto storage = std::make_shared<InMemoryStorageBackend>();

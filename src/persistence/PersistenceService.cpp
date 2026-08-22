@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace Rigel::Persistence {
 
@@ -16,6 +17,18 @@ std::string parentPath(const std::string& path) {
         return std::string();
     }
     return path.substr(0, pos);
+}
+
+template <typename Codec, typename Metadata>
+void writeMetadata(StorageBackend& storage,
+                   Codec& codec,
+                   const Metadata& metadata,
+                   const std::string& path) {
+    storage.mkdirs(parentPath(path));
+    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    codec.write(metadata, session->writer());
+    session->writer().flush();
+    session->commit();
 }
 
 } // namespace
@@ -50,16 +63,24 @@ void PersistenceService::saveWorld(const WorldSnapshot& snapshot, const Persiste
     }
     auto format = resolve(context);
 
-    auto& codec = format->worldMetadataCodec();
-    auto path = codec.metadataPath(context);
-    context.storage->mkdirs(parentPath(path));
-    auto session = context.storage->openWrite(path, AtomicWriteOptions{});
-    codec.write(snapshot.metadata, session->writer());
-    session->writer().flush();
-    session->commit();
+    auto& worldCodec = format->worldMetadataCodec();
+    auto& zoneCodec = format->zoneMetadataCodec();
+    const auto worldPath = worldCodec.metadataPath(context);
+    std::vector<std::string> zonePaths;
+    zonePaths.reserve(snapshot.zones.size());
+    for (const auto& zone : snapshot.zones) {
+        zonePaths.push_back(
+            zoneCodec.metadataPath(ZoneKey{zone.zoneId}, context));
+    }
 
-    for (const auto& zoneMetadata : snapshot.zones) {
-        saveZoneMetadata(zoneMetadata, context);
+    writeMetadata(*context.storage, worldCodec, snapshot.metadata, worldPath);
+
+    for (size_t index = 0; index < snapshot.zones.size(); ++index) {
+        writeMetadata(
+            *context.storage,
+            zoneCodec,
+            snapshot.zones[index],
+            zonePaths[index]);
     }
 }
 
@@ -77,11 +98,7 @@ void PersistenceService::saveZoneMetadata(const ZoneMetadata& metadata, const Pe
     auto& codec = format->zoneMetadataCodec();
     ZoneKey key{metadata.zoneId};
     auto path = codec.metadataPath(key, context);
-    context.storage->mkdirs(parentPath(path));
-    auto session = context.storage->openWrite(path, AtomicWriteOptions{});
-    codec.write(metadata, session->writer());
-    session->writer().flush();
-    session->commit();
+    writeMetadata(*context.storage, codec, metadata, path);
 }
 
 ZoneMetadata PersistenceService::loadZoneMetadata(const ZoneKey& key, const PersistenceContext& context) {

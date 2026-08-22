@@ -16,6 +16,7 @@
 #include <array>
 #include <cctype>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -81,6 +82,9 @@ constexpr size_t kMaxDecompressedRegionBytes = 64 * 1024 * 1024;
 constexpr size_t kMaxCompressedRegionBytes =
     kMaxDecompressedRegionBytes + kMaxDecompressedRegionBytes / 255 + 16;
 constexpr size_t kMaxColumnBytes = kMaxDecompressedRegionBytes;
+constexpr size_t kMaxChunkRecordBytes = 4 * 1024 * 1024;
+constexpr size_t kMaxChunkStringBytes = 1024 * 1024;
+constexpr size_t kMaxBlockEntityBytes = 1024 * 1024;
 constexpr int32_t kMaxPaletteEntries = 16 * 16 * 16;
 
 size_t remainingInput(const ByteReader& reader) {
@@ -232,10 +236,11 @@ std::optional<std::string> extractJsonString(const std::string& text, const std:
 class TrackingReader {
 public:
     explicit TrackingReader(ByteReader& reader)
-        : m_reader(reader) {
+        : m_reader(reader), m_start(reader.tell()) {
     }
 
     uint8_t readU8() {
+        requireReadable(1);
         uint8_t value = m_reader.readU8();
         m_bytes.push_back(value);
         return value;
@@ -265,23 +270,26 @@ public:
         if (len == 0) {
             return;
         }
-        if (len > remaining()) {
-            throw std::runtime_error("CRChunkCodec: payload exceeds column extent");
-        }
-        std::vector<uint8_t> buffer(len);
-        readBytes(buffer.data(), len);
+        requireReadable(len);
+        const size_t offset = m_bytes.size();
+        m_bytes.resize(offset + len);
+        m_reader.readBytes(m_bytes.data() + offset, len);
     }
 
     void readBytes(uint8_t* dst, size_t len) {
         if (len == 0) {
             return;
         }
+        requireReadable(len);
         m_reader.readBytes(dst, len);
         m_bytes.insert(m_bytes.end(), dst, dst + len);
     }
 
     size_t remaining() const {
-        return remainingInput(m_reader);
+        const size_t input = remainingInput(m_reader);
+        const size_t consumed = bytesConsumed();
+        const size_t record = kMaxChunkRecordBytes - consumed;
+        return std::min(input, record);
     }
 
     std::vector<uint8_t> takeBytes() {
@@ -289,7 +297,25 @@ public:
     }
 
 private:
+    size_t bytesConsumed() const {
+        const size_t position = m_reader.tell();
+        if (position < m_start || position - m_start > kMaxChunkRecordBytes) {
+            throw std::runtime_error("CRChunkCodec: invalid reader position");
+        }
+        return position - m_start;
+    }
+
+    void requireReadable(size_t len) const {
+        if (len > remainingInput(m_reader)) {
+            throw std::runtime_error("CRChunkCodec: payload exceeds column extent");
+        }
+        if (len > kMaxChunkRecordBytes - bytesConsumed()) {
+            throw std::runtime_error("CRChunkCodec: record exceeds format limit");
+        }
+    }
+
     ByteReader& m_reader;
+    size_t m_start = 0;
     std::vector<uint8_t> m_bytes;
 };
 
@@ -439,10 +465,83 @@ private:
     size_t m_pos = 0;
 };
 
+class BoundedWriter final : public ByteWriter {
+public:
+    BoundedWriter(ByteWriter& writer, size_t limit, const char* diagnostic)
+        : m_writer(writer),
+          m_start(writer.tell()),
+          m_limit(limit),
+          m_diagnostic(diagnostic) {
+    }
+
+    void writeU8(uint8_t value) override {
+        requireRange(m_writer.tell(), sizeof(value));
+        m_writer.writeU8(value);
+    }
+
+    void writeU16(uint16_t value) override {
+        requireRange(m_writer.tell(), sizeof(value));
+        m_writer.writeU16(value);
+    }
+
+    void writeU32(uint32_t value) override {
+        requireRange(m_writer.tell(), sizeof(value));
+        m_writer.writeU32(value);
+    }
+
+    void writeI32(int32_t value) override {
+        requireRange(m_writer.tell(), sizeof(value));
+        m_writer.writeI32(value);
+    }
+
+    void writeBytes(const uint8_t* src, size_t len) override {
+        requireRange(m_writer.tell(), len);
+        m_writer.writeBytes(src, len);
+    }
+
+    size_t size() const override {
+        return m_writer.size();
+    }
+
+    size_t tell() const override {
+        return m_writer.tell();
+    }
+
+    void seek(size_t offset) override {
+        requireRange(offset, 0);
+        m_writer.seek(offset);
+    }
+
+    void writeAt(size_t offset, const uint8_t* src, size_t len) override {
+        requireRange(offset, len);
+        m_writer.writeAt(offset, src, len);
+    }
+
+    void flush() override {
+        m_writer.flush();
+    }
+
+private:
+    void requireRange(size_t offset, size_t len) const {
+        if (offset < m_start || offset - m_start > m_limit ||
+            len > m_limit - (offset - m_start)) {
+            throw std::runtime_error(m_diagnostic);
+        }
+    }
+
+    ByteWriter& m_writer;
+    size_t m_start = 0;
+    size_t m_limit = 0;
+    const char* m_diagnostic = nullptr;
+};
+
 std::string readString(TrackingReader& reader) {
     int32_t len = reader.readI32();
     if (len < 0) {
         throw std::runtime_error("CRChunkCodec: invalid string length");
+    }
+    if (static_cast<size_t>(len) > kMaxChunkStringBytes) {
+        throw std::runtime_error("CRChunkCodec: string length exceeds format limit");
     }
     if (len == 0) {
         return std::string();
@@ -457,37 +556,12 @@ std::string readString(TrackingReader& reader) {
 }
 
 void writeString(ByteWriter& writer, const std::string& value) {
+    if (value.size() > kMaxChunkStringBytes) {
+        throw std::runtime_error("CRChunkCodec: string length exceeds format limit");
+    }
     writer.writeI32(static_cast<int32_t>(value.size()));
     if (!value.empty()) {
         writer.writeBytes(reinterpret_cast<const uint8_t*>(value.data()), value.size());
-    }
-}
-
-void readBlockLayerPayload(TrackingReader& reader, uint8_t layerType) {
-    switch (layerType) {
-    case kBlockLayerSingleByte:
-        reader.readU8();
-        break;
-    case kBlockLayerSingleInt:
-        reader.readI32();
-        break;
-    case kBlockLayerHalfNibble:
-        reader.readBytes(kLayerBytesHalfNibble);
-        break;
-    case kBlockLayerNibble:
-        reader.readBytes(kLayerBytesNibble);
-        break;
-    case kBlockLayerByte:
-        reader.readBytes(kLayerBytesByte);
-        break;
-    case kBlockLayerShort:
-        reader.readBytes(kLayerBytesShort);
-        break;
-    case kBlockLayerBit:
-        reader.readBytes(kLayerBytesBit);
-        break;
-    default:
-        throw std::runtime_error("CRChunkCodec: unknown block layer type");
     }
 }
 
@@ -499,8 +573,12 @@ void readLayer(TrackingReader& reader, uint8_t layerType, std::array<uint16_t, 2
         return;
     }
     case kBlockLayerSingleInt: {
-        uint16_t value = static_cast<uint16_t>(reader.readI32());
-        indices.fill(value);
+        const int32_t value = reader.readI32();
+        if (value < 0 ||
+            value > static_cast<int32_t>(std::numeric_limits<uint16_t>::max())) {
+            throw std::runtime_error("CRChunkCodec: palette index out of range");
+        }
+        indices.fill(static_cast<uint16_t>(value));
         return;
     }
     case kBlockLayerHalfNibble: {
@@ -570,6 +648,9 @@ std::vector<std::string> buildPalette(const std::vector<Voxel::BlockState>& bloc
         uint16_t id = state.id.type;
         if (paletteIndex.find(id) != paletteIndex.end()) {
             continue;
+        }
+        if (palette.size() >= static_cast<size_t>(kMaxPaletteEntries)) {
+            throw std::runtime_error("CRChunkCodec: palette exceeds format limit");
         }
         uint16_t index = static_cast<uint16_t>(palette.size());
         paletteIndex[id] = index;
@@ -780,35 +861,14 @@ void writeBlockData(ByteWriter& writer,
                 size_t index = static_cast<size_t>(x + z * 16 + layer * 256);
                 uint16_t blockId = blocks[index].id.type;
                 auto it = paletteIndex.find(blockId);
-                uint16_t paletteId = (it == paletteIndex.end()) ? 0 : it->second;
+                if (it == paletteIndex.end()) {
+                    throw std::runtime_error("CRChunkCodec: missing palette entry");
+                }
+                uint16_t paletteId = it->second;
                 indices[static_cast<size_t>(x + z * 16)] = paletteId;
             }
         }
         writeLayer(writer, indices, static_cast<uint16_t>(palette.size()));
-    }
-}
-
-void readBlockData(TrackingReader& reader) {
-    uint8_t type = reader.readU8();
-    switch (type) {
-    case kBlockNull:
-        return;
-    case kBlockSingle:
-        readString(reader);
-        return;
-    case kBlockLayered: {
-        int32_t paletteSize = reader.readI32();
-        for (int32_t i = 0; i < paletteSize; ++i) {
-            readString(reader);
-        }
-        for (int layer = 0; layer < 16; ++layer) {
-            uint8_t layerType = reader.readU8();
-            readBlockLayerPayload(reader, layerType);
-        }
-        return;
-    }
-    default:
-        throw std::runtime_error("CRChunkCodec: unknown block data type");
     }
 }
 
@@ -886,6 +946,9 @@ public:
 
     void write(const ChunkSnapshot& chunk, ByteWriter& writer) {
         if (!chunk.opaquePayload.empty()) {
+            if (chunk.opaquePayload.size() > kMaxChunkRecordBytes) {
+                throw std::runtime_error("CRChunkCodec: record exceeds format limit");
+            }
             MemoryByteReader sourceReader(chunk.opaquePayload);
             auto source = decodeRecord(sourceReader, ChunkKey{chunk.key.zoneId, 0, 0, 0});
             if (sourceReader.tell() != sourceReader.size()) {
@@ -959,6 +1022,14 @@ private:
             int32_t size = tracker.readI32();
             if (size < 0) {
                 throw std::runtime_error("CRChunkCodec: invalid block entity size");
+            }
+            if (static_cast<size_t>(size) > kMaxBlockEntityBytes) {
+                throw std::runtime_error(
+                    "CRChunkCodec: block entity size exceeds format limit");
+            }
+            if (static_cast<size_t>(size) > tracker.remaining()) {
+                throw std::runtime_error(
+                    "CRChunkCodec: block entity size exceeds column extent");
             }
             if (size != 0) {
                 tracker.readBytes(static_cast<size_t>(size));
@@ -1190,19 +1261,29 @@ public:
             return;
         }
 
-        std::vector<std::vector<ChunkSnapshot>> columns(16 * 16);
-        int32_t baseX = region.key.x * 16;
-        int32_t baseY = region.key.y * 16;
-        int32_t baseZ = region.key.z * 16;
+        std::vector<std::vector<const ChunkSnapshot*>> columns(kRegionColumnCount);
+        std::array<std::unordered_set<int32_t>, kRegionColumnCount> chunkYs;
+        const int64_t baseX =
+            static_cast<int64_t>(region.key.x) * static_cast<int64_t>(kRegionSpan);
+        const int64_t baseY =
+            static_cast<int64_t>(region.key.y) * static_cast<int64_t>(kRegionSpan);
+        const int64_t baseZ =
+            static_cast<int64_t>(region.key.z) * static_cast<int64_t>(kRegionSpan);
         for (const auto& chunk : region.chunks) {
-            int32_t localX = chunk.key.x - baseX;
-            int32_t localY = chunk.key.y - baseY;
-            int32_t localZ = chunk.key.z - baseZ;
+            if (chunk.key.zoneId != region.key.zoneId) {
+                throw std::runtime_error("CRRegion: chunk zone does not match region");
+            }
+            const int64_t localX = static_cast<int64_t>(chunk.key.x) - baseX;
+            const int64_t localY = static_cast<int64_t>(chunk.key.y) - baseY;
+            const int64_t localZ = static_cast<int64_t>(chunk.key.z) - baseZ;
             if (localX < 0 || localX >= 16 || localZ < 0 || localZ >= 16 || localY < 0 || localY >= 16) {
                 throw std::runtime_error("CRRegion: chunk lies outside its region");
             }
-            int index = localX + localZ * 16;
-            columns[index].push_back(chunk);
+            const size_t index = static_cast<size_t>(localX + localZ * 16);
+            if (!chunkYs[index].insert(chunk.key.y).second) {
+                throw std::runtime_error("CRRegion: duplicate chunk coordinates");
+            }
+            columns[index].push_back(&chunk);
         }
 
         std::vector<int32_t> offsets(16 * 16, -1);
@@ -1215,9 +1296,17 @@ public:
             if (col.empty()) {
                 continue;
             }
-            std::sort(col.begin(), col.end(), [](const ChunkSnapshot& a, const ChunkSnapshot& b) {
-                return a.key.y < b.key.y;
+            std::sort(col.begin(), col.end(), [](const ChunkSnapshot* a, const ChunkSnapshot* b) {
+                return a->key.y < b->key.y;
             });
+            if (col.size() > kMaxChunksPerColumn) {
+                throw std::runtime_error(
+                    "CRRegion: column chunk count exceeds format limit");
+            }
+            if (columnsWriter.size() >
+                static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+                throw std::runtime_error("CRRegion: column offset exceeds format limit");
+            }
             offsets[index] = static_cast<int32_t>(columnsWriter.size());
             ++columnsWritten;
 
@@ -1228,12 +1317,19 @@ public:
             columnsWriter.writeU8(0);
             uint8_t numChunks = 0;
 
-            for (const auto& chunk : col) {
-                m_codec.write(chunk, columnsWriter);
+            for (const ChunkSnapshot* chunk : col) {
+                BoundedWriter recordWriter(
+                    columnsWriter,
+                    kMaxChunkRecordBytes,
+                    "CRChunkCodec: record exceeds format limit");
+                m_codec.write(*chunk, recordWriter);
                 ++numChunks;
             }
 
             size_t columnEnd = columnsWriter.tell();
+            if (columnEnd - columnStart > kMaxColumnBytes) {
+                throw std::runtime_error("CRRegion: column extent exceeds format limit");
+            }
             int32_t columnSize = static_cast<int32_t>(columnEnd - columnStart);
             auto columnSizeBytes = encodeI32(columnSize);
             columnsWriter.writeAt(columnStart, columnSizeBytes.data(), columnSizeBytes.size());
@@ -1266,6 +1362,9 @@ public:
         if (!columnsBytes.empty()) {
             payloadWriter.writeBytes(columnsBytes.data(), columnsBytes.size());
         }
+        if (payload.size() > kMaxDecompressedRegionBytes) {
+            throw std::runtime_error("CRRegion: region payload exceeds format limit");
+        }
 
         bool useCompression = false;
         if (m_context.providers) {
@@ -1275,24 +1374,32 @@ public:
             }
         }
 
+        std::vector<uint8_t> compressed;
+        int compressedSize = 0;
+        const int32_t decompressedSize = static_cast<int32_t>(payload.size());
+        if (useCompression) {
+            if (!CRLz4::available()) {
+                throw std::runtime_error("CRRegion: LZ4 compression requested but unavailable");
+            }
+            const int bound = CRLz4::compressBound(decompressedSize);
+            if (bound <= 0 || static_cast<size_t>(bound) > kMaxCompressedRegionBytes) {
+                throw std::runtime_error("CRRegion: compressed size exceeds format limit");
+            }
+            compressed.resize(static_cast<size_t>(bound));
+            compressedSize = CRLz4::compress(
+                payload.data(), payload.size(), compressed.data(), compressed.size());
+            if (compressedSize <= 0) {
+                throw std::runtime_error("CRRegion: LZ4 compression failed");
+            }
+            compressed.resize(static_cast<size_t>(compressedSize));
+        }
+
         auto session = m_storage->openWrite(path, AtomicWriteOptions{});
         auto& writer = session->writer();
         writer.writeI32(kMagic);
         writer.writeI32(kFileVersion);
 
         if (useCompression) {
-            if (!CRLz4::available()) {
-                throw std::runtime_error("CRRegion: LZ4 compression requested but unavailable");
-            }
-            int32_t decompressedSize = static_cast<int32_t>(payload.size());
-            int bound = CRLz4::compressBound(decompressedSize);
-            std::vector<uint8_t> compressed(static_cast<size_t>(bound));
-            int compressedSize = CRLz4::compress(payload.data(), payload.size(), compressed.data(), compressed.size());
-            if (compressedSize <= 0) {
-                throw std::runtime_error("CRRegion: LZ4 compression failed");
-            }
-            compressed.resize(static_cast<size_t>(compressedSize));
-
             writer.writeI32(kCompressionLz4);
             writer.writeI32(columnsWritten);
             writer.writeI32(compressedSize);
@@ -1404,6 +1511,7 @@ public:
             const int64_t minimumY =
                 static_cast<int64_t>(key.y) * static_cast<int64_t>(kRegionSpan);
             const int64_t maximumY = minimumY + static_cast<int64_t>(kRegionSpan);
+            std::unordered_set<int32_t> chunkYs;
 
             for (uint8_t i = 0; i < column.chunkCount; ++i) {
                 requireRemaining(
@@ -1419,6 +1527,10 @@ public:
                     static_cast<int64_t>(chunkY) >= maximumY) {
                     throw std::runtime_error(
                         "CRRegion: chunk coordinates do not match region column");
+                }
+                if (!chunkYs.insert(chunkY).second) {
+                    throw std::runtime_error(
+                        "CRRegion: duplicate chunk coordinates in column");
                 }
                 columnReader.seek(recordStart);
                 region.chunks.push_back(m_codec.read(columnReader, hint));

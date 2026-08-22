@@ -464,6 +464,55 @@ std::vector<uint8_t> makeEmptyFixtureRecord(int32_t x, int32_t y, int32_t z) {
     return bytes;
 }
 
+std::vector<uint8_t> makeLayeredFixtureRecord(int32_t paletteSize) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeI32(0);
+    writer.writeI32(0);
+    writer.writeI32(0);
+    writer.writeU8(2);
+    writer.writeI32(paletteSize);
+    return bytes;
+}
+
+std::vector<uint8_t> makeSingleBlockFixtureRecord(int32_t stringSize,
+                                                   const std::vector<uint8_t>& stringBytes = {}) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeI32(0);
+    writer.writeI32(0);
+    writer.writeI32(0);
+    writer.writeU8(1);
+    writer.writeI32(stringSize);
+    writer.writeBytes(stringBytes.data(), stringBytes.size());
+    return bytes;
+}
+
+std::vector<uint8_t> makeBlockEntityFixtureRecord(int32_t entitySize,
+                                                   const std::vector<uint8_t>& entityBytes = {}) {
+    auto bytes = makeEmptyFixtureRecord(0, 0, 0);
+    bytes.back() = 1;
+    InMemoryByteWriter writer(bytes);
+    writer.seek(bytes.size());
+    writer.writeI32(entitySize);
+    writer.writeBytes(entityBytes.data(), entityBytes.size());
+    return bytes;
+}
+
+std::vector<uint8_t> makeInvalidPaletteReferenceRecord(int32_t paletteIndex) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeI32(0);
+    writer.writeI32(0);
+    writer.writeI32(0);
+    writer.writeU8(2);
+    writer.writeI32(1);
+    writeFixtureString(writer, "base:air");
+    writer.writeU8(2);
+    writer.writeI32(paletteIndex);
+    return bytes;
+}
+
 std::vector<uint8_t> makeFixtureColumn(
     int32_t version,
     uint8_t chunkCount,
@@ -554,12 +603,20 @@ std::vector<uint8_t> makeCompressedFixtureRegion(
     return bytes;
 }
 
-ChunkRegionSnapshot loadFixtureRegion(std::vector<uint8_t> bytes) {
+ChunkRegionSnapshot loadFixtureRegion(
+    std::vector<uint8_t> bytes,
+    const Rigel::Voxel::BlockRegistry* blockRegistry = nullptr) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
     PersistenceContext context;
     context.rootPath = "worlds/envelope_fixture";
     context.preferredFormat = "cr";
     context.storage = storage;
+    if (blockRegistry) {
+        context.providers = std::make_shared<ProviderRegistry>();
+        context.providers->add(
+            kBlockRegistryProviderId,
+            std::make_shared<BlockRegistryProvider>(blockRegistry));
+    }
     const RegionKey key{"zone:default", 0, 0, 0};
     const std::string path = CRPaths::regionPath(key, context);
     auto session = storage->openWrite(path, AtomicWriteOptions{});
@@ -728,12 +785,14 @@ TEST_CASE(CRBackend_region_rejects_invalid_offsets_and_column_extents) {
     const auto column = makeFixtureColumn(
         4, 1, {makeEmptyFixtureRecord(0, 0, 0)});
 
-    auto negativeOffsets = absentFixtureOffsets();
-    negativeOffsets[0] = -2;
-    checkCRRegionError(
-        [&]() { loadFixtureRegion(makeUncompressedFixtureRegion(
-            makeFixturePayload(3, negativeOffsets, column), 1)); },
-        "CRRegion: invalid negative column offset");
+    for (uint8_t offsetType : {uint8_t{1}, uint8_t{2}, uint8_t{3}}) {
+        auto negativeOffsets = absentFixtureOffsets();
+        negativeOffsets[0] = -2;
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeUncompressedFixtureRegion(
+                makeFixturePayload(offsetType, negativeOffsets, column), 1)); },
+            "CRRegion: invalid negative column offset");
+    }
 
     auto outsideOffsets = absentFixtureOffsets();
     outsideOffsets[0] = static_cast<int32_t>(column.size());
@@ -857,6 +916,157 @@ TEST_CASE(CRBackend_region_rejects_out_of_region_chunk_coordinates) {
     }
 }
 
+TEST_CASE(CRBackend_region_rejects_duplicate_chunk_coordinates) {
+    const auto record = makeEmptyFixtureRecord(0, 0, 0);
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, makeFixtureColumn(4, 2, {record, record}))); },
+        "CRRegion: duplicate chunk coordinates in column");
+}
+
+TEST_CASE(CRBackend_chunk_rejects_invalid_palette_declarations_and_references) {
+    for (int32_t paletteSize : {
+             -1,
+             0,
+             16 * 16 * 16 + 1,
+             std::numeric_limits<int32_t>::max()}) {
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+                1, makeFixtureColumn(4, 1, {makeLayeredFixtureRecord(paletteSize)}))); },
+            "CRChunkCodec: invalid palette size");
+    }
+
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, makeFixtureColumn(4, 1, {makeLayeredFixtureRecord(1)}))); },
+        "CRChunkCodec: palette exceeds column extent");
+
+    Rigel::Voxel::BlockRegistry registry;
+    for (int32_t paletteIndex : {-65'536, 65'536}) {
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+                1, makeFixtureColumn(
+                    4, 1, {makeInvalidPaletteReferenceRecord(paletteIndex)})),
+                &registry); },
+            "CRChunkCodec: palette index out of range");
+    }
+}
+
+TEST_CASE(CRBackend_chunk_rejects_invalid_string_declarations) {
+    constexpr int32_t kMaxStringBytes = 1'048'576;
+    for (int32_t stringSize : {
+             -1,
+             kMaxStringBytes + 1,
+             std::numeric_limits<int32_t>::max()}) {
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+                1, makeFixtureColumn(4, 1, {makeSingleBlockFixtureRecord(stringSize)}))); },
+            stringSize < 0
+                ? "CRChunkCodec: invalid string length"
+                : "CRChunkCodec: string length exceeds format limit");
+    }
+
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, makeFixtureColumn(4, 1, {makeSingleBlockFixtureRecord(2, {'x'})}))); },
+        "CRChunkCodec: string length exceeds column extent");
+}
+
+TEST_CASE(CRBackend_chunk_validates_block_entity_extents) {
+    auto zero = loadFixtureRegion(makeSingleColumnFixtureRegion(
+        1, makeFixtureColumn(4, 1, {makeBlockEntityFixtureRecord(0)})));
+    CHECK_EQ(zero.chunks.size(), 1u);
+
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, makeFixtureColumn(4, 1, {makeBlockEntityFixtureRecord(-1)}))); },
+        "CRChunkCodec: invalid block entity size");
+
+    for (int32_t entitySize : {1'048'577, std::numeric_limits<int32_t>::max()}) {
+        checkCRRegionError(
+            [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+                1, makeFixtureColumn(4, 1, {makeBlockEntityFixtureRecord(entitySize)}))); },
+            "CRChunkCodec: block entity size exceeds format limit");
+    }
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeSingleColumnFixtureRegion(
+            1, makeFixtureColumn(4, 1, {makeBlockEntityFixtureRecord(2, {0})}))); },
+        "CRChunkCodec: block entity size exceeds column extent");
+}
+
+TEST_CASE(CRBackend_writer_rejects_duplicate_chunks_before_commit) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "worlds/writer_duplicate";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    auto format = Backends::CR::factory()(context);
+
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{"zone:default", 0, 0, 0};
+    chunk.data = makeMinimalChunkData(chunk.key);
+    ChunkRegionSnapshot valid{RegionKey{"zone:default", 0, 0, 0}, {chunk}};
+    format->chunkContainer().saveRegion(valid);
+    const auto path = CRPaths::regionPath(valid.key, context);
+    const auto original = readAll(*storage, path);
+
+    ChunkRegionSnapshot duplicate = valid;
+    duplicate.chunks.push_back(chunk);
+    checkCRRegionError(
+        [&]() { format->chunkContainer().saveRegion(duplicate); },
+        "CRRegion: duplicate chunk coordinates");
+    CHECK_EQ(readAll(*storage, path), original);
+
+    ChunkRegionSnapshot mismatchedZone = valid;
+    mismatchedZone.chunks.front().key.zoneId = "zone:other";
+    checkCRRegionError(
+        [&]() { format->chunkContainer().saveRegion(mismatchedZone); },
+        "CRRegion: chunk zone does not match region");
+    CHECK_EQ(readAll(*storage, path), original);
+}
+
+TEST_CASE(CRBackend_writer_enforces_string_and_record_limits_before_commit) {
+    constexpr size_t kMaxStringBytes = 1'048'576;
+    constexpr size_t kMaxRecordBytes = 4 * 1024 * 1024;
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::BlockRegistry registry;
+    auto providers = std::make_shared<ProviderRegistry>();
+    providers->add(
+        kBlockRegistryProviderId,
+        std::make_shared<BlockRegistryProvider>(&registry));
+
+    PersistenceContext context;
+    context.rootPath = "worlds/writer_limits";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = providers;
+    auto format = Backends::CR::factory()(context);
+
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{"zone:default", 0, 0, 0};
+    chunk.data = makeMinimalChunkData(chunk.key);
+    ChunkRegionSnapshot valid{RegionKey{"zone:default", 0, 0, 0}, {chunk}};
+    format->chunkContainer().saveRegion(valid);
+    const auto path = CRPaths::regionPath(valid.key, context);
+    const auto original = readAll(*storage, path);
+
+    const auto oversizedId = registerTestBlock(
+        registry, std::string(kMaxStringBytes + 1, 'x'));
+    ChunkRegionSnapshot oversizedString = valid;
+    oversizedString.chunks.front().data.blocks.front().id = oversizedId;
+    checkCRRegionError(
+        [&]() { format->chunkContainer().saveRegion(oversizedString); },
+        "CRChunkCodec: string length exceeds format limit");
+    CHECK_EQ(readAll(*storage, path), original);
+
+    ChunkRegionSnapshot oversizedRecord = valid;
+    oversizedRecord.chunks.front().opaquePayload.resize(kMaxRecordBytes + 1);
+    checkCRRegionError(
+        [&]() { format->chunkContainer().saveRegion(oversizedRecord); },
+        "CRChunkCodec: record exceeds format limit");
+    CHECK_EQ(readAll(*storage, path), original);
+}
+
 TEST_CASE(CRBackend_region_rejects_unbounded_compression_declarations) {
     auto compressedLimit = makeCompressedFixtureRegion({}, 1);
     overwriteFixtureI32(
@@ -900,6 +1110,17 @@ TEST_CASE(CRBackend_region_requires_exact_lz4_output_size) {
         [&]() { loadFixtureRegion(makeCompressedFixtureRegion(
             compressed, static_cast<int32_t>(payload.size() + 1))); },
         "CRRegion: decompressed size does not match declaration");
+}
+
+TEST_CASE(CRBackend_region_rejects_corrupt_lz4_payload) {
+    if (!CRLz4::available()) {
+        SKIP_TEST("LZ4 not available");
+    }
+
+    checkCRRegionError(
+        [&]() { loadFixtureRegion(makeCompressedFixtureRegion(
+            {0xFF, 0xFF, 0xFF, 0xFF}, 16)); },
+        "CRRegion: LZ4 decompression failed");
 }
 
 TEST_CASE(CRBackend_dirty_save_preserves_untouched_record_bytes) {

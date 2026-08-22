@@ -700,17 +700,8 @@ bool AsyncChunkLoader::applyPayload(const ChunkPayload& payload) {
     chunk.clearDirty();
     chunk.setLoadedFromDisk(payload.loadedFromDisk);
 
-    for (int i = 0; i < Voxel::DirectionCount; ++i) {
-        Voxel::Direction dir = static_cast<Voxel::Direction>(i);
-        int dx = 0;
-        int dy = 0;
-        int dz = 0;
-        Voxel::directionOffset(dir, dx, dy, dz);
-        Voxel::ChunkCoord neighborCoord = payload.coord.offset(dx, dy, dz);
-        Voxel::Chunk* neighbor = m_world->chunkManager().getChunk(neighborCoord);
-        if (neighbor && !neighbor->isEmpty()) {
-            neighbor->invalidateMesh();
-        }
+    if (!chunk.isEmpty()) {
+        m_world->chunkManager().invalidateFaceNeighbors(payload.coord);
     }
 
     return true;

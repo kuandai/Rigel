@@ -1318,17 +1318,8 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         }
         queueLoadGen(genResult.coord);
         queueLoadedNeighbors(genResult.coord);
-        for (int i = 0; i < DirectionCount; ++i) {
-            Direction dir = static_cast<Direction>(i);
-            int dx = 0;
-            int dy = 0;
-            int dz = 0;
-            directionOffset(dir, dx, dy, dz);
-            ChunkCoord neighborCoord = genResult.coord.offset(dx, dy, dz);
-            Chunk* neighbor = m_chunkManager->getChunk(neighborCoord);
-            if (neighbor && !neighbor->isEmpty()) {
-                neighbor->invalidateMesh();
-            }
+        if (!chunk.isEmpty()) {
+            m_chunkManager->invalidateFaceNeighbors(genResult.coord);
         }
         ++applied;
     }

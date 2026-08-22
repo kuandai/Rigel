@@ -18,6 +18,10 @@
 #include <functional>
 #include <vector>
 
+namespace Rigel::Persistence {
+class AsyncChunkLoader;
+}
+
 namespace Rigel::Voxel {
 class BlockRegistry;
 class ChunkStreamer;
@@ -151,6 +155,7 @@ public:
 private:
     friend class Chunk;
     friend class ChunkStreamer;
+    friend class Rigel::Persistence::AsyncChunkLoader;
 
     void unloadChunk(ChunkCoord coord);
     void invalidateFaceNeighbors(ChunkCoord coord);

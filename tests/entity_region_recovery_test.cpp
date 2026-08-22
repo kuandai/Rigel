@@ -1774,6 +1774,8 @@ TEST_CASE(Persistence_EntityBootstrapRejectsLiveIdCollisionBeforeSpawning) {
 }
 
 TEST_CASE(Persistence_EntityBootstrapStopsRegionEnumerationAtLimit) {
+    constexpr uint32_t overflowRegionCount = 256;
+
     for (const std::string& preferredFormat : {"memory", "cr"}) {
         auto files = std::make_shared<SharedFiles>();
         const std::string directory = entityRegionDirectory();
@@ -1809,7 +1811,13 @@ TEST_CASE(Persistence_EntityBootstrapStopsRegionEnumerationAtLimit) {
             files,
             preferredFormat,
             Persistence::detail::MaxEntityJournalRegions,
-            1);
+            overflowRegionCount);
+
+        CHECK_EQ(
+            files->files.size(),
+            static_cast<size_t>(
+                Persistence::detail::MaxEntityJournalRegions) +
+                overflowRegionCount);
 
         Voxel::World overflowWorld(resources);
         populateBootstrapSentinels(overflowWorld);

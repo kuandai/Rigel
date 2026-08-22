@@ -169,6 +169,7 @@ void loadBootstrapEntities(Voxel::World& world,
                 entity->setPosition(saved.position);
                 entity->setVelocity(saved.velocity);
                 entity->setViewDirection(saved.viewDirection);
+                entity->setModelIdentifier(saved.modelId);
                 if (!saved.modelId.empty() && assets.exists(saved.modelId)) {
                     auto model = assets.get<Entity::EntityModelAsset>(saved.modelId);
                     entity->setModel(std::move(model));
@@ -247,9 +248,7 @@ void saveWorldToDisk(const Voxel::World& world,
             saved.position = entity.position();
             saved.velocity = entity.velocity();
             saved.viewDirection = entity.viewDirection();
-            if (entity.model()) {
-                saved.modelId = entity.model().id();
-            }
+            saved.modelId = entity.modelIdentifier();
             region.chunks[it->second].entities.push_back(std::move(saved));
         });
 

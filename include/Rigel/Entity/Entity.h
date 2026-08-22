@@ -75,6 +75,8 @@ public:
 
     void setModel(Asset::Handle<EntityModelAsset> model);
     const Asset::Handle<EntityModelAsset>& model() const { return m_model; }
+    void setModelIdentifier(std::string identifier);
+    const std::string& modelIdentifier() const { return m_modelIdentifier; }
 
     IEntityModelInstance* modelInstance() const { return m_modelInstance.get(); }
     void clearModelInstance();
@@ -117,6 +119,7 @@ protected:
     std::vector<IRenderEntityComponent*> m_renderComponents;
 
     Asset::Handle<EntityModelAsset> m_model;
+    std::string m_modelIdentifier;
     std::unique_ptr<IEntityModelInstance> m_modelInstance;
     glm::vec4 m_renderTint{1.0f};
 };

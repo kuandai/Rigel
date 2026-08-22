@@ -26,7 +26,7 @@ Entities are runtime objects with physics, rendering, and persistence hooks:
 - Physics: gravity modifier, floor friction, collision flags
 - Bounds: `localBounds` and `worldBounds`
 - Tags: `EntityTags` (e.g. `NoClip`, `NoSaveInChunks`)
-- Render state: model handle + tint
+- Render state: optional model handle, persistent model identifier, and tint
 - Components: update and render component lists
 
 Collision is axis-aligned (AABB) and resolved per-axis against voxel solids.
@@ -167,6 +167,8 @@ When loading:
 - `EntityFactory` is used to instantiate known types.
 - Unknown types fall back to a generic `Entity` with the type ID.
 - Position, velocity, view direction, and model ID are restored.
+- A model ID remains part of entity state when its asset is unavailable; the
+  runtime handle is populated when that asset can be resolved.
 
 ---
 

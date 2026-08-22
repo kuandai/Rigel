@@ -265,11 +265,18 @@ void Entity::render(const EntityRenderContext& ctx,
 }
 
 void Entity::setModel(Asset::Handle<EntityModelAsset> model) {
+    m_modelIdentifier = model.id();
     m_model = std::move(model);
     m_modelInstance.reset();
     if (m_model && m_model->hitbox) {
         setLocalBounds(*m_model->hitbox);
     }
+}
+
+void Entity::setModelIdentifier(std::string identifier) {
+    m_model = {};
+    m_modelIdentifier = std::move(identifier);
+    m_modelInstance.reset();
 }
 
 void Entity::clearModelInstance() {

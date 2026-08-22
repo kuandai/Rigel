@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Entity/EntityModelLoader.h"
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/PersistenceService.h"
@@ -116,4 +117,84 @@ TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
         completions.front().outcome,
         Voxel::ChunkLoadOutcome::Loaded);
     CHECK(!loaded.chunkManager().getChunk(loadedCoord)->isPersistDirty());
+}
+
+TEST_CASE(Persistence_EntityModelIdentifierSurvivesUnavailableAsset) {
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService service(formats);
+
+    Test::TemporaryDirectory directory("rigel_entity_model_persistence");
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    Persistence::PersistenceContext context;
+    context.rootPath = directory.path().string();
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    const Entity::EntityId entityId{10, 20, 30};
+    const std::string modelId = "entity_models/demo_cube";
+    Persistence::EntityPersistedEntity savedEntity;
+    savedEntity.typeId = "rigel:modelled_entity";
+    savedEntity.id = entityId;
+    savedEntity.position = glm::vec3(1.0f, 2.0f, 3.0f);
+    savedEntity.modelId = modelId;
+
+    Persistence::EntityPersistedChunk savedChunk;
+    savedChunk.coord = Voxel::ChunkCoord{0, 0, 0};
+    savedChunk.entities.push_back(savedEntity);
+
+    const Persistence::EntityRegionKey regionKey{
+        "rigel:default", 0, 0, 0};
+    Persistence::EntityRegionSnapshot savedRegion;
+    savedRegion.key = regionKey;
+    savedRegion.chunks.push_back(savedChunk);
+    service.saveEntities(savedRegion, context);
+
+    Voxel::WorldResources resources;
+    Voxel::World unavailableWorld(resources);
+    unavailableWorld.setId(1);
+    context.providers = unavailableWorld.persistenceProvidersHandle();
+    Asset::AssetManager unavailableAssets;
+    Persistence::loadBootstrapEntities(
+        unavailableWorld, unavailableAssets, service, context);
+
+    Entity::Entity* unavailableEntity =
+        unavailableWorld.entities().get(entityId);
+    CHECK(unavailableEntity != nullptr);
+    CHECK(!unavailableEntity->model());
+    CHECK_EQ(unavailableEntity->modelIdentifier(), modelId);
+
+    Persistence::saveWorldToDisk(unavailableWorld, service, context);
+    auto unavailableRoundTrip = service.loadEntities(regionKey, context);
+    CHECK_EQ(unavailableRoundTrip.chunks.size(), static_cast<size_t>(1));
+    CHECK_EQ(
+        unavailableRoundTrip.chunks.front().entities.front().modelId,
+        modelId);
+
+    Voxel::World availableWorld(resources);
+    availableWorld.setId(1);
+    context.providers = availableWorld.persistenceProvidersHandle();
+    Asset::AssetManager availableAssets;
+    availableAssets.loadManifest("manifest.yaml");
+    availableAssets.registerLoader(
+        "entity_models", std::make_unique<Entity::EntityModelLoader>());
+    availableAssets.registerLoader(
+        "entity_anims", std::make_unique<Entity::EntityAnimationSetLoader>());
+    Persistence::loadBootstrapEntities(
+        availableWorld, availableAssets, service, context);
+
+    Entity::Entity* availableEntity = availableWorld.entities().get(entityId);
+    CHECK(availableEntity != nullptr);
+    CHECK(availableEntity->model());
+    CHECK_EQ(availableEntity->model().id(), modelId);
+    CHECK_EQ(availableEntity->modelIdentifier(), modelId);
+
+    availableEntity->setModel({});
+    CHECK(availableEntity->modelIdentifier().empty());
+    Persistence::saveWorldToDisk(availableWorld, service, context);
+    auto clearedRoundTrip = service.loadEntities(regionKey, context);
+    CHECK(clearedRoundTrip.chunks.front().entities.front().modelId.empty());
 }

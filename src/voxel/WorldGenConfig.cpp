@@ -517,6 +517,13 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
                     std::string value;
                     output >> value;
                     if (!key.empty() && !value.empty()) {
+                        if (!densityGraph.outputs.contains(key)) {
+                            validateRetainedCount(
+                                densityGraph.outputs.size(),
+                                MaxDensityGraphOutputs,
+                                sourceName,
+                                "density_graph.outputs." + key);
+                        }
                         densityGraph.outputs[key] = value;
                     }
                 }
@@ -783,6 +790,12 @@ void WorldGenConfig::validate(const char* sourceName) const {
         }
     }
 
+    if (densityGraph.outputs.size() > MaxDensityGraphOutputs) {
+        Util::throwConfigurationConstraint(
+            sourceName, "density_graph.outputs",
+            "must contain no more than " +
+                std::to_string(MaxDensityGraphOutputs) + " entries");
+    }
     if (densityGraph.nodes.size() > MaxDensityGraphNodes) {
         Util::throwConfigurationConstraint(
             sourceName, "density_graph.nodes",

@@ -30,6 +30,7 @@ struct WorldGenConfig {
     static constexpr size_t MaxDensityGraphNodes = 32;
     static constexpr size_t MaxDensityNodeInputs = 8;
     static constexpr size_t MaxDensitySplinePoints = 16;
+    static constexpr size_t MaxDensityGraphOutputs = 8;
 
     struct WorldConfig {
         int minY = -64;

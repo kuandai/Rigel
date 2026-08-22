@@ -162,7 +162,7 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `biomes.epsilon` | float | `0.0001` | Blend epsilon. |
 | `biomes.coast_band.*` | object | - | Optional coast override. |
 | `biomes.entries[]` | list | - | Biome definitions. |
-| `density_graph.outputs` | map | - | Output name -> node id. |
+| `density_graph.outputs` | map | - | Output name -> node id (maximum 8 retained names). |
 | `density_graph.nodes[]` | list | - | Density node graph (maximum 32 retained nodes). |
 | `density_graph.nodes[].inputs[]` | list | - | Input node IDs (maximum 8 retained IDs per node). |
 | `density_graph.nodes[].spline[]` | list | - | Spline control points (maximum 16 per node). |
@@ -218,11 +218,13 @@ chunks on either side of the origin, while the span limit bounds the global
 surface search to 1,024 density samples per column. Noise declarations are
 limited to 16 octaves so every fBm sample has a fixed product-level work bound.
 Density graphs are limited to 32 nodes, 8 retained inputs per node, and 16
-spline points per node. The shipped graph uses 21 nodes, at most 3 inputs, and
-at most 9 spline points. The limits bound graph storage and noise grids to 32
-nodes, retained edges to 256, and linear spline comparisons to 512 per full
-graph sample while leaving measured headroom over the shipped graph. These
-values are validated before a `WorldGenerator` is constructed.
+spline points per node, plus 8 named outputs. The shipped graph uses 21 nodes,
+at most 3 inputs, at most 9 spline points, and 2 outputs. The limits bound graph
+storage and noise grids to 32 nodes, retained edges to 256, and linear spline
+comparisons to 512 per full graph sample while leaving measured headroom over
+the shipped graph. Cycles are rejected because their cached evaluation would
+otherwise depend on sample history. These values are validated before a
+`WorldGenerator` is constructed.
 
 ### Pipeline Stages
 

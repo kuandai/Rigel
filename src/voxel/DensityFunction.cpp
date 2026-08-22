@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 
 namespace Rigel::Voxel {
@@ -331,6 +332,35 @@ bool buildDensityGraph(const WorldGenConfig& config, DensityGraph& graph, std::s
                 }
             } else {
                 graph.nodes[i].inputs.push_back(it->second);
+            }
+        }
+    }
+
+    if (error.empty()) {
+        enum class VisitState : uint8_t { Unvisited, Visiting, Complete };
+        std::vector<VisitState> states(graph.nodes.size(), VisitState::Unvisited);
+        std::function<bool(int)> visit = [&](int index) {
+            auto& state = states[static_cast<size_t>(index)];
+            if (state == VisitState::Visiting) {
+                error = "Density graph cycle detected at node: " +
+                    graph.nodes[static_cast<size_t>(index)].name;
+                return false;
+            }
+            if (state == VisitState::Complete) {
+                return true;
+            }
+            state = VisitState::Visiting;
+            for (int input : graph.nodes[static_cast<size_t>(index)].inputs) {
+                if (input >= 0 && !visit(input)) {
+                    return false;
+                }
+            }
+            state = VisitState::Complete;
+            return true;
+        };
+        for (size_t i = 0; i < graph.nodes.size(); ++i) {
+            if (!visit(static_cast<int>(i))) {
+                return false;
             }
         }
     }

@@ -956,3 +956,60 @@ TEST_CASE(WorldGenConfig_RejectsHostileDensityGraphFanoutAtFirstExcess) {
         "Invalid configuration value 'density_graph.nodes[0].spline' in "
         "'hostile-density.yaml': must contain no more than 16 entries");
 }
+
+TEST_CASE(WorldGenConfig_BoundsDensityGraphOutputsAndPreservesReplacement) {
+    std::ostringstream yaml;
+    yaml << "density_graph:\n  outputs:\n";
+    for (size_t output = 0; output < WorldGenConfig::MaxDensityGraphOutputs;
+         ++output) {
+        yaml << "    output" << output << ": node" << output << "\n";
+    }
+    yaml << "    '': ignored\n"
+         << "    ignored: ''\n";
+
+    WorldGenConfig config;
+    config.applyYaml("output-limits.yaml", yaml.str());
+    CHECK_EQ(config.densityGraph.outputs.size(),
+             WorldGenConfig::MaxDensityGraphOutputs);
+
+    config.applyYaml(
+        "output-overlay.yaml",
+        "density_graph:\n"
+        "  outputs:\n"
+        "    output0: replacement\n");
+    CHECK_EQ(config.densityGraph.outputs.size(),
+             WorldGenConfig::MaxDensityGraphOutputs);
+    CHECK_EQ(config.densityGraph.outputs.at("output0"), "replacement");
+
+    const std::string error = exceptionMessage([&] {
+        config.applyYaml(
+            "output-overflow.yaml",
+            "density_graph:\n"
+            "  outputs:\n"
+            "    overflow: node\n");
+    });
+    CHECK_EQ(
+        error,
+        "Invalid configuration value 'density_graph.outputs.overflow' in "
+        "'output-overflow.yaml': must contain no more than 8 entries");
+    CHECK_EQ(config.densityGraph.outputs.size(),
+             WorldGenConfig::MaxDensityGraphOutputs);
+    CHECK(!config.densityGraph.outputs.contains("overflow"));
+    CHECK_EQ(config.densityGraph.outputs.at("output0"), "replacement");
+}
+
+TEST_CASE(WorldGenConfig_RejectsHostileDensityGraphOutputCount) {
+    std::ostringstream yaml;
+    yaml << "density_graph:\n  outputs:\n";
+    for (size_t output = 0; output < 1024; ++output) {
+        yaml << "    output" << output << ": node\n";
+    }
+    const std::string error = exceptionMessage([&] {
+        WorldGenConfig config;
+        config.applyYaml("hostile-outputs.yaml", yaml.str());
+    });
+    CHECK_EQ(
+        error,
+        "Invalid configuration value 'density_graph.outputs.output8' in "
+        "'hostile-outputs.yaml': must contain no more than 8 entries");
+}

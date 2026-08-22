@@ -302,6 +302,23 @@ TEST_CASE(WorldGenerator_RejectsProgrammaticDensityGraphFanout) {
         splineDiagnostic,
         "Invalid configuration value 'density_graph.nodes[0].spline' in "
         "'WorldGenerator configuration': must contain no more than 16 entries");
+
+    WorldGenConfig outputsConfig = makeFlatConfig();
+    for (size_t output = 0; output <= WorldGenConfig::MaxDensityGraphOutputs;
+         ++output) {
+        outputsConfig.densityGraph.outputs[
+            "output" + std::to_string(output)] = "node";
+    }
+    std::string outputsDiagnostic;
+    try {
+        WorldGenerator generator(registry, outputsConfig);
+    } catch (const std::invalid_argument& error) {
+        outputsDiagnostic = error.what();
+    }
+    CHECK_EQ(
+        outputsDiagnostic,
+        "Invalid configuration value 'density_graph.outputs' in "
+        "'WorldGenerator configuration': must contain no more than 8 entries");
 }
 
 TEST_CASE(WorldGenerator_EvaluatesDensityGraphFanoutBoundary) {
@@ -340,6 +357,77 @@ TEST_CASE(WorldGenerator_EvaluatesDensityGraphFanoutBoundary) {
             point + 1 == WorldGenConfig::MaxDensitySplinePoints ? 1.0f : -1.0f);
     }
     config.densityGraph.outputs["base_density"] = "node31";
+
+    WorldGenerator generator(registry, config);
+    ChunkBuffer buffer;
+    generator.generate({0, 0, 0}, buffer);
+    CHECK_EQ(
+        buffer.at(0, 0, 0).id.type,
+        registry.findByIdentifier("rigel:stone")->type);
+}
+
+TEST_CASE(WorldGenerator_RejectsCyclicDensityGraphs) {
+    BlockRegistry registry = makeRegistry();
+
+    WorldGenConfig selfCycle = makeFlatConfig();
+    selfCycle.densityGraph.nodes.push_back({
+        .id = "self",
+        .type = "add",
+        .inputs = {"self"}
+    });
+    std::string selfDiagnostic;
+    try {
+        WorldGenerator generator(registry, selfCycle);
+    } catch (const std::runtime_error& error) {
+        selfDiagnostic = error.what();
+    }
+    CHECK_EQ(
+        selfDiagnostic,
+        "WorldGenerator: invalid density graph: "
+        "Density graph cycle detected at node: self");
+
+    WorldGenConfig twoNodeCycle = makeFlatConfig();
+    twoNodeCycle.densityGraph.nodes = {
+        WorldGenConfig::DensityNodeConfig{
+            .id = "first", .type = "add", .inputs = {"second"}},
+        WorldGenConfig::DensityNodeConfig{
+            .id = "second", .type = "add", .inputs = {"first"}}
+    };
+    std::string twoNodeDiagnostic;
+    try {
+        WorldGenerator generator(registry, twoNodeCycle);
+    } catch (const std::runtime_error& error) {
+        twoNodeDiagnostic = error.what();
+    }
+    CHECK_EQ(
+        twoNodeDiagnostic,
+        "WorldGenerator: invalid density graph: "
+        "Density graph cycle detected at node: first");
+}
+
+TEST_CASE(WorldGenerator_AcceptsMaximumDepthAcyclicDensityGraph) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenConfig config = makeFlatConfig();
+    config.stageEnabled["climate_global"] = false;
+    config.stageEnabled["climate_local"] = false;
+    config.stageEnabled["biome_resolve"] = false;
+    config.stageEnabled["caves"] = false;
+    config.stageEnabled["surface_rules"] = false;
+    config.stageEnabled["structures"] = false;
+
+    for (size_t index = 0; index < WorldGenConfig::MaxDensityGraphNodes;
+         ++index) {
+        WorldGenConfig::DensityNodeConfig node;
+        node.id = "chain" + std::to_string(index);
+        node.type = index == 0 ? "constant" : "add";
+        node.value = 1.0f;
+        if (index != 0) {
+            node.inputs.push_back("chain" + std::to_string(index - 1));
+        }
+        config.densityGraph.nodes.push_back(std::move(node));
+    }
+    config.densityGraph.outputs["base_density"] =
+        "chain" + std::to_string(WorldGenConfig::MaxDensityGraphNodes - 1);
 
     WorldGenerator generator(registry, config);
     ChunkBuffer buffer;

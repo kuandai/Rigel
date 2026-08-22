@@ -12,6 +12,7 @@
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
+#include "ChunkValidation.h"
 #include "EntityRegionJournal.h"
 #include "backends/cr/CRWorldMetadata.h"
 
@@ -125,6 +126,20 @@ void loadWorldFromDisk(Voxel::World& world,
     auto format = service.openFormat(context);
     requireSupportedDefaultZone(*format, context);
 
+    std::vector<ChunkRegionSnapshot> chunkRegions;
+    if (includesChunks(scope)) {
+        for (const auto& key :
+             format->chunkContainer().listRegions(kDefaultZoneId)) {
+            ChunkRegionSnapshot region =
+                format->chunkContainer().loadRegion(key);
+            for (const auto& snapshot : region.chunks) {
+                detail::validateChunkData(
+                    snapshot.data, world.blockRegistry());
+            }
+            chunkRegions.push_back(std::move(region));
+        }
+    }
+
     world.clear();
     world.chunkManager().clearDirtyFlags();
 
@@ -132,8 +147,7 @@ void loadWorldFromDisk(Voxel::World& world,
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> touchedChunks;
 
     if (includesChunks(scope)) {
-        for (const auto& key : format->chunkContainer().listRegions(zoneId)) {
-            ChunkRegionSnapshot region = format->chunkContainer().loadRegion(key);
+        for (const auto& region : chunkRegions) {
             for (const auto& snapshot : region.chunks) {
                 const ChunkSpan& span = snapshot.data.span;
                 Voxel::ChunkCoord coord{span.chunkX, span.chunkY, span.chunkZ};
@@ -335,27 +349,29 @@ bool loadChunkFromDisk(Voxel::World& world,
         return false;
     }
 
-    Voxel::Chunk* chunk = nullptr;
-    bool loaded = false;
+    std::vector<const ChunkSnapshot*> matchingSnapshots;
     for (const auto& snapshot : region.chunks) {
         const ChunkSpan& span = snapshot.data.span;
         if (span.chunkX != coord.x || span.chunkY != coord.y || span.chunkZ != coord.z) {
             continue;
         }
-        if (!chunk) {
-            chunk = &world.chunkManager().getOrCreateChunk(coord);
-            chunk->setWorldGenVersion(worldGenVersion);
-        }
-        applyChunkData(snapshot.data, *chunk, world.blockRegistry());
-        loaded = true;
+        detail::validateChunkData(snapshot.data, world.blockRegistry());
+        matchingSnapshots.push_back(&snapshot);
     }
 
-    if (chunk) {
-        chunk->clearDirty();
-        chunk->clearPersistDirty();
+    if (matchingSnapshots.empty()) {
+        return false;
     }
 
-    return loaded;
+    Voxel::Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
+    chunk.setWorldGenVersion(worldGenVersion);
+    for (const ChunkSnapshot* snapshot : matchingSnapshots) {
+        applyChunkData(snapshot->data, chunk, world.blockRegistry());
+    }
+    chunk.clearDirty();
+    chunk.clearPersistDirty();
+
+    return true;
 }
 
 } // namespace Rigel::Persistence

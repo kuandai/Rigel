@@ -421,8 +421,6 @@ void saveEntityRegionsRecoverably(
     const PersistenceContext& context,
     const std::string& zoneId,
     std::vector<EntityRegionSnapshot> desiredRegions) {
-    replayEntityRegionJournal(format, context, zoneId);
-
     EntityRegionJournal journal;
     journal.desiredRegions = std::move(desiredRegions);
 
@@ -438,6 +436,9 @@ void saveEntityRegionsRecoverably(
 
     sortAndValidateJournal(journal);
     validateJournalZone(journal, zoneId);
+    if (journal.desiredRegions.empty() && journal.obsoleteRegions.empty()) {
+        return;
+    }
     publishJournal(journal, format.descriptor(), context);
     applyJournal(format, context, journal);
 }

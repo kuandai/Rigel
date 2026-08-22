@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -36,17 +37,34 @@ struct SharedFiles {
     std::unordered_map<std::string, std::vector<uint8_t>> files;
 };
 
+enum class FailureTiming {
+    BeforeMutation,
+    AfterMutation,
+};
+
 struct MutationControl {
     std::optional<size_t> failAt;
+    FailureTiming failureTiming = FailureTiming::BeforeMutation;
     size_t nextMutation = 0;
     std::vector<std::string> attempted;
+    std::optional<size_t> activeMutation;
 
     void beforeMutation(const std::string& operation) {
         attempted.push_back(operation);
         const size_t index = nextMutation++;
-        if (failAt && index == *failAt) {
+        activeMutation = index;
+        if (failAt && index == *failAt &&
+            failureTiming == FailureTiming::BeforeMutation) {
             throw std::runtime_error("injected entity persistence interruption");
         }
+    }
+
+    void afterMutation() {
+        if (failAt && activeMutation == failAt &&
+            failureTiming == FailureTiming::AfterMutation) {
+            throw std::runtime_error("injected entity persistence interruption");
+        }
+        activeMutation.reset();
     }
 };
 
@@ -218,6 +236,9 @@ public:
             m_control->beforeMutation("write " + m_path);
         }
         m_files->files[m_path] = m_buffer;
+        if (m_control && isEntityMutationPath(m_path)) {
+            m_control->afterMutation();
+        }
     }
 
     void abort() override {
@@ -283,6 +304,9 @@ public:
             m_control->beforeMutation("remove " + path);
         }
         m_files->files.erase(path);
+        if (m_control && isEntityMutationPath(path)) {
+            m_control->afterMutation();
+        }
     }
 
 private:
@@ -353,17 +377,64 @@ void populateWorld(Voxel::World& world,
 
 void saveRecords(const std::shared_ptr<SharedFiles>& files,
                  const std::vector<EntityRecord>& records,
-                 const std::shared_ptr<MutationControl>& control = {}) {
+                 const std::shared_ptr<MutationControl>& control = {},
+                 std::string preferredFormat = "memory") {
     Persistence::FormatRegistry formats;
-    registerMemoryFormat(formats);
+    registerFormats(formats);
     Persistence::PersistenceService service(formats);
     Voxel::WorldResources resources;
     Voxel::World world(resources);
     world.setId(1);
     populateWorld(world, records);
-    auto context = makeContext(files, control);
+    auto context = makeContext(
+        files, control, std::move(preferredFormat));
     context.providers = world.persistenceProvidersHandle();
     Persistence::saveWorldToDisk(world, service, context);
+}
+
+std::string saveFailureAfterIdMutation(
+    const std::shared_ptr<SharedFiles>& files,
+    const std::vector<EntityRecord>& records,
+    const std::string& preferredFormat,
+    const std::function<void(Entity::Entity&)>& mutate,
+    const std::shared_ptr<MutationControl>& control) {
+    Persistence::FormatRegistry formats;
+    registerFormats(formats);
+    Persistence::PersistenceService service(formats);
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    world.setId(1);
+    populateWorld(world, records);
+    world.entities().forEach(mutate);
+    auto context = makeContext(files, control, preferredFormat);
+    context.providers = world.persistenceProvidersHandle();
+    try {
+        Persistence::saveWorldToDisk(world, service, context);
+    } catch (const std::exception& error) {
+        return error.what();
+    }
+    throw Test::TestFailure("Expected entity save validation to fail");
+}
+
+std::string saveDirtyChunkFailure(
+    const std::shared_ptr<SharedFiles>& files,
+    const std::string& preferredFormat,
+    const std::shared_ptr<MutationControl>& control) {
+    Persistence::FormatRegistry formats;
+    registerFormats(formats);
+    Persistence::PersistenceService service(formats);
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    world.setId(1);
+    world.chunkManager().getOrCreateChunk({0, 0, 0}).markPersistDirty();
+    auto context = makeContext(files, control, preferredFormat);
+    context.providers = world.persistenceProvidersHandle();
+    try {
+        Persistence::saveWorldToDisk(world, service, context);
+    } catch (const std::exception& error) {
+        return error.what();
+    }
+    throw Test::TestFailure("Expected world save to reject recovery journal");
 }
 
 struct LoadedState {
@@ -371,15 +442,17 @@ struct LoadedState {
     std::vector<Persistence::EntityRegionKey> regions;
 };
 
-LoadedState loadRecords(const std::shared_ptr<SharedFiles>& files) {
+LoadedState loadRecords(const std::shared_ptr<SharedFiles>& files,
+                        std::string preferredFormat = "memory") {
     Persistence::FormatRegistry formats;
-    registerMemoryFormat(formats);
+    registerFormats(formats);
     Persistence::PersistenceService service(formats);
     Voxel::WorldResources resources;
     Voxel::World world(resources);
     world.setId(1);
     Asset::AssetManager assets;
-    auto context = makeContext(files);
+    auto context = makeContext(
+        files, {}, std::move(preferredFormat));
     context.providers = world.persistenceProvidersHandle();
     Persistence::loadWorldFromDisk(
         world, assets, service, context, 0,
@@ -430,6 +503,15 @@ bool journalExists(const std::shared_ptr<SharedFiles>& files) {
     return files->files.contains(kJournalPath);
 }
 
+bool hasEntityRegionFile(const std::shared_ptr<SharedFiles>& files) {
+    return std::any_of(
+        files->files.begin(), files->files.end(),
+        [](const auto& entry) {
+            return entry.first.find("/entities/entityRegion_") !=
+                std::string::npos;
+        });
+}
+
 void appendU16(std::vector<uint8_t>& bytes, uint16_t value) {
     bytes.push_back(static_cast<uint8_t>(value >> 8));
     bytes.push_back(static_cast<uint8_t>(value));
@@ -478,9 +560,10 @@ void installJournal(const std::shared_ptr<SharedFiles>& files,
 }
 
 void checkExactState(const std::shared_ptr<SharedFiles>& files,
-                     std::vector<EntityRecord> expected) {
+                     std::vector<EntityRecord> expected,
+                     const std::string& preferredFormat = "memory") {
     sortRecords(expected);
-    const LoadedState loaded = loadRecords(files);
+    const LoadedState loaded = loadRecords(files, preferredFormat);
     if (loaded.records.size() != expected.size()) {
         throw Test::TestFailure(
             "Recovered entity count " +
@@ -501,21 +584,31 @@ void checkExactState(const std::shared_ptr<SharedFiles>& files,
 void exerciseInterruptedSave(const std::vector<EntityRecord>& prior,
                              const std::vector<EntityRecord>& desired) {
     constexpr size_t mutationCount = 4;
-    for (size_t failAt = 0; failAt < mutationCount; ++failAt) {
-        auto files = std::make_shared<SharedFiles>();
-        saveRecords(files, prior);
+    const std::vector<std::string> formats = {"memory", "cr"};
+    const std::vector<FailureTiming> timings = {
+        FailureTiming::BeforeMutation,
+        FailureTiming::AfterMutation};
+    for (const auto& preferredFormat : formats) {
+        for (FailureTiming timing : timings) {
+            for (size_t failAt = 0; failAt < mutationCount; ++failAt) {
+                auto files = std::make_shared<SharedFiles>();
+                saveRecords(files, prior, {}, preferredFormat);
 
-        auto control = std::make_shared<MutationControl>();
-        control->failAt = failAt;
-        CHECK_THROWS(saveRecords(files, desired, control));
-        CHECK_EQ(control->attempted.size(), failAt + 1);
+                auto control = std::make_shared<MutationControl>();
+                control->failAt = failAt;
+                control->failureTiming = timing;
+                CHECK_THROWS(saveRecords(
+                    files, desired, control, preferredFormat));
+                CHECK_EQ(control->attempted.size(), failAt + 1);
 
-        if (failAt == 0) {
-            CHECK(!journalExists(files));
-            checkExactState(files, prior);
-        } else {
-            CHECK(journalExists(files));
-            checkExactState(files, desired);
+                if (failAt == 0 &&
+                    timing == FailureTiming::BeforeMutation) {
+                    CHECK(!journalExists(files));
+                    checkExactState(files, prior, preferredFormat);
+                } else {
+                    checkExactState(files, desired, preferredFormat);
+                }
+            }
         }
     }
 }
@@ -618,6 +711,127 @@ TEST_CASE(Persistence_EntityDespawnRecoversAtEveryMutation) {
         glm::vec3(513.0f, 4.0f, 5.0f)};
 
     exerciseInterruptedSave({priorA, priorB}, {});
+}
+
+TEST_CASE(Persistence_EntityPendingJournalReplaysBeforeSubsequentSave) {
+    const EntityRecord prior{
+        Entity::EntityId{90, 91, 92},
+        "rigel:prior",
+        glm::vec3(1.0f, 2.0f, 3.0f)};
+    const EntityRecord pending{
+        prior.id,
+        "rigel:pending",
+        glm::vec3(513.0f, 4.0f, 5.0f)};
+    const EntityRecord final{
+        prior.id,
+        "rigel:final",
+        glm::vec3(1025.0f, 6.0f, 7.0f)};
+
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        saveRecords(files, {prior}, {}, preferredFormat);
+        auto publishControl = std::make_shared<MutationControl>();
+        publishControl->failAt = 1;
+        CHECK_THROWS(saveRecords(
+            files, {pending}, publishControl, preferredFormat));
+        CHECK(journalExists(files));
+
+        auto replayControl = std::make_shared<MutationControl>();
+        saveRecords(files, {final}, replayControl, preferredFormat);
+
+        CHECK_EQ(replayControl->attempted.size(), static_cast<size_t>(7));
+        CHECK(replayControl->attempted[0].starts_with("write "));
+        CHECK(replayControl->attempted[0].find("entity-regions.journal") ==
+              std::string::npos);
+        CHECK(replayControl->attempted[1].starts_with("remove "));
+        CHECK(replayControl->attempted[1].find("entity-regions.journal") ==
+              std::string::npos);
+        CHECK_EQ(
+            replayControl->attempted[2],
+            std::string("remove ") + kJournalPath);
+        CHECK_EQ(
+            replayControl->attempted[3],
+            std::string("write ") + kJournalPath);
+        CHECK(replayControl->attempted[5].starts_with("remove "));
+        CHECK(replayControl->attempted[5].find("entity-regions.journal") ==
+              std::string::npos);
+        CHECK_EQ(
+            replayControl->attempted[6],
+            std::string("remove ") + kJournalPath);
+        checkExactState(files, {final}, preferredFormat);
+    }
+}
+
+TEST_CASE(Persistence_PristineWorldSkipsEntityJournalPublication) {
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        auto control = std::make_shared<MutationControl>();
+
+        saveRecords(files, {}, control, preferredFormat);
+
+        CHECK(control->attempted.empty());
+        CHECK(!journalExists(files));
+        CHECK(!hasEntityRegionFile(files));
+    }
+}
+
+TEST_CASE(Persistence_EntitySaveRejectsNullMutatedIdBeforePublication) {
+    const EntityRecord record{
+        Entity::EntityId{100, 101, 102},
+        "rigel:null_save",
+        glm::vec3(513.0f, 0.0f, 0.0f)};
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        auto control = std::make_shared<MutationControl>();
+
+        const std::string error = saveFailureAfterIdMutation(
+            files, {record}, preferredFormat,
+            [](Entity::Entity& entity) {
+                entity.setId(Entity::EntityId::Null());
+            },
+            control);
+
+        CHECK(error.find("Null persistent entity ID 0:0:0") !=
+              std::string::npos);
+        CHECK(error.find("rigel:default/(1, 0, 0)") !=
+              std::string::npos);
+        CHECK(control->attempted.empty());
+        CHECK(!journalExists(files));
+        CHECK(!hasEntityRegionFile(files));
+    }
+}
+
+TEST_CASE(Persistence_EntitySaveRejectsDuplicateMutatedIdsBeforePublication) {
+    const Entity::EntityId duplicate{110, 111, 112};
+    const EntityRecord first{
+        Entity::EntityId{120, 121, 122},
+        "rigel:duplicate_save_a",
+        glm::vec3(1.0f, 0.0f, 0.0f)};
+    const EntityRecord second{
+        Entity::EntityId{130, 131, 132},
+        "rigel:duplicate_save_b",
+        glm::vec3(513.0f, 0.0f, 0.0f)};
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        auto control = std::make_shared<MutationControl>();
+
+        const std::string error = saveFailureAfterIdMutation(
+            files, {first, second}, preferredFormat,
+            [&](Entity::Entity& entity) {
+                entity.setId(duplicate);
+            },
+            control);
+
+        CHECK(error.find("Duplicate persistent entity ID 110:111:112") !=
+              std::string::npos);
+        CHECK(error.find("rigel:default/(0, 0, 0)") !=
+              std::string::npos);
+        CHECK(error.find("rigel:default/(1, 0, 0)") !=
+              std::string::npos);
+        CHECK(control->attempted.empty());
+        CHECK(!journalExists(files));
+        CHECK(!hasEntityRegionFile(files));
+    }
 }
 
 TEST_CASE(Persistence_EntityLoadRejectsNullIdBeforeSpawning) {
@@ -841,6 +1055,18 @@ TEST_CASE(Persistence_EntityJournalRejectsDifferentPersistenceFormat) {
         [](const auto& entry) {
             return entry.first.ends_with(".crbin");
         }));
+
+    auto saveControl = std::make_shared<MutationControl>();
+    const std::string saveError = saveDirtyChunkFailure(
+        files, "cr", saveControl);
+    CHECK(saveError.find("persistence format mismatch") != std::string::npos);
+    CHECK(saveControl->attempted.empty());
+    CHECK(std::none_of(
+        files->files.begin(), files->files.end(),
+        [](const auto& entry) {
+            return entry.first.ends_with(".cosmicreach");
+        }));
+    CHECK(journalExists(files));
     checkExactState(files, {desired});
 }
 

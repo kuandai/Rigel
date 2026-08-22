@@ -214,6 +214,9 @@ void saveWorldToDisk(const Voxel::World& world,
     auto format = service.openFormat(context);
     requireSupportedDefaultZone(*format, context);
     std::string zoneId = kDefaultZoneId;
+    if (format->descriptor().capabilities.supportsEntityRegions) {
+        detail::replayEntityRegionJournal(*format, context, zoneId);
+    }
     const bool worldMetadataExists = context.storage->exists(
         format->worldMetadataCodec().metadataPath(context));
     const bool zoneMetadataExists = context.storage->exists(

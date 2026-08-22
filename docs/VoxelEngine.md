@@ -78,9 +78,12 @@ For a missing desired chunk, the normal path is:
 4. Wait for desired cardinal-neighbor data, then enqueue one mesh build.
 5. Install the completed CPU mesh into `WorldMeshStore`.
 
-Generation, load, and mesh capacity waits remain explicit pending work. Dirty
-mesh requests and capacity waiters are event-driven; stationary quiescent
-updates do not rescan the desired volume or loaded chunk set.
+Generation, load, and mesh capacity waits remain explicit pending work.
+Terminal desired-frontier failures and deferred persistence or replacement
+operations also remain unresolved lifecycle work until recovery, cancellation,
+departure, or reset. Dirty mesh requests, capacity waiters, and retry deadlines
+are event-driven; stationary updates do not rescan the desired volume or loaded
+chunk set to rediscover them.
 
 ## Asynchronous Validity
 

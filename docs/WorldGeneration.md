@@ -182,10 +182,12 @@ explicit failed state until a later streaming requeue retries them.
   Desired chunks are protected, so the cache can remain above this limit when
   the desired set alone exceeds it.
 - Chunks outside `unload_distance_chunks` are unloaded after modified data is
-  persisted. Failed persistence defers removal to a bounded retry update.
+  persisted. Failed persistence defers removal to a bounded retry update and
+  remains explicit pending lifecycle work between attempts.
 - If a loaded chunk’s `worldGenVersion` does not match the generator, modified
   data is persisted through the same removal gate before the chunk is discarded
-  and regenerated.
+  and regenerated. A deferred replacement remains unresolved until replacement
+  generation completes or the coordinate leaves the desired set.
 
 ---
 
@@ -203,6 +205,8 @@ region data asynchronously, builds chunk payloads off-thread (including base
 fill for partial spans), then applies payloads on the main thread with a budget.
 If no stored data is found, generation proceeds normally. Region read failures
 are retried from completion events and never imply that stored data is absent.
+An irrecoverable persisted-data failure remains a load error for the desired
+coordinate; it does not fall through to generation.
 
 Chunk modifications mark `persistDirty`, which allows save logic to skip
 unchanged chunks when persisting data.

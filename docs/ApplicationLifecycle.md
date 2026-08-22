@@ -94,21 +94,29 @@ exit action in the current binding set.
 Spawn discovery completes during bootstrap, before the world becomes ready.
 The first runtime streaming update begins the initial-stream phase. After each
 normal update and completion drain, `ChunkStreamer` combines its generation and
-mesh counts with the `AsyncChunkLoader` load counts supplied by `WorldView`.
+mesh counts, eviction state, and the `AsyncChunkLoader` load counts supplied by
+`WorldView`.
 
 Pending counts include capacity-blocked generation and mesh requests, mesh
-requests waiting for neighbor data, and deferred region loads. A zero count at
-startup or between completion stages is not sufficient for quiescence. The
-lifecycle reaches `quiescent` only after three consecutive complete updates
-observe no pending or in-flight work and start no new work. A new load,
-generation, or mesh request returns the lifecycle to `streaming` immediately on
-the next update.
+requests waiting for neighbor data, deferred region loads, and persistence or
+eviction retries. Terminal generation, load, and mesh failures remain explicit
+errors while their desired coordinates are unresolved. Version-replacement
+eviction remains pending through the replacement generation result. A zero
+queue count at startup or between completion stages is therefore not sufficient
+for quiescence. The lifecycle reaches `quiescent` only after three consecutive
+complete updates observe no pending, in-flight, or unresolved work and start no
+new work. A new load, generation, mesh, or eviction request returns the
+lifecycle to `streaming` immediately on the next update.
 
-The application logs lifecycle transitions as `streaming.lifecycle` records
-with the snapshot counts. This is the developer-facing readiness signal for
-starting a stationary performance measurement without a fixed startup delay.
-The snapshot is assembled from active queues and counters and does not add a
-desired-set scan or periodic persistence query.
+The application logs `streaming.lifecycle` records on lifecycle transitions and
+when the unresolved failure signature changes. Records contain operation counts
+and the generation, load, mesh, and eviction error diagnostics, so a new or
+recovered failure is visible even while the lifecycle remains `streaming`.
+Unchanged failures are not logged every frame. This is the developer-facing
+readiness signal for starting a stationary performance measurement without a
+fixed startup delay. The snapshot is assembled from active queues, unresolved
+state, and counters and does not add a desired-set scan or periodic persistence
+query.
 
 ## Phase 3: Shutdown (Application::close)
 

@@ -132,26 +132,31 @@ TAA, so they are stable.
 ## 8. Streaming Lifecycle Signal
 
 `WorldView::streamingDiagnostics()` exposes the current streaming lifecycle and
-generation, chunk-load, and mesh work counts. Each category reports pending
-requests, in-flight work, and a cumulative started count. Pending load counts
-include deferred region requests. Pending generation and mesh counts include
-scheduler and capacity wait queues; mesh requests waiting for neighbor data are
-also pending.
+generation, chunk-load, mesh, and eviction work counts. Each scheduled category
+reports pending requests, in-flight work, and a cumulative started count.
+Pending load counts include deferred region requests. Pending generation and
+mesh counts include scheduler and capacity wait queues; mesh requests waiting
+for neighbor data are also pending. Eviction pending counts cover deferred
+persistence and generation-version replacement until it completes or is
+canceled. Terminal generation, load, and mesh errors retain an operation and
+coordinate diagnostic while they leave a desired coordinate unresolved.
 
 The lifecycle states are:
 
 - `discovering_spawn`: initial camera placement is not complete.
 - `awaiting_initial_stream`: spawn discovery completed, but no streaming update
   has run.
-- `streaming`: work was pending, in flight, or started during the current update.
+- `streaming`: work was pending, in flight, unresolved, or started during the
+  current update.
 - `stabilizing`: an entire update completed without streaming work.
 - `quiescent`: three consecutive full updates completed without pending,
   in-flight, or newly started work.
 
 The application writes a `streaming.lifecycle` log record whenever the lifecycle
-state changes. The record contains the state, all work counts, and the stable
-update count. In particular, this record is the readiness signal for automated
-performance capture:
+state or unresolved failure signature changes. The record contains the state,
+all work counts, operation errors, and the stable update count. Repeated updates
+do not log an unchanged failure. In particular, this record is the readiness
+signal for automated performance capture:
 
 ```text
 streaming.lifecycle state=quiescent generation.pending=0 generation.in_flight=0 ...
@@ -159,8 +164,9 @@ streaming.lifecycle state=quiescent generation.pending=0 generation.in_flight=0 
 
 The started counts remain cumulative, so tests can take a snapshot at
 quiescence and verify that stationary updates do not start additional work.
-Quiescence bookkeeping examines active request queues only; it does not rescan
-the desired chunk set or poll persistence for discovery.
+Quiescence bookkeeping examines active requests and explicitly retained
+unresolved state; it does not rescan the desired chunk set or poll persistence
+for discovery.
 
 ---
 

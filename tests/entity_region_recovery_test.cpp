@@ -354,6 +354,7 @@ public:
     std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
         const std::string& path) override {
         mkdirs(std::filesystem::path(path).parent_path().generic_string());
+        m_files->durabilityOperations.push_back("open " + path);
         return std::make_unique<SharedWriteSession>(
             m_files, m_control, path);
     }
@@ -1353,6 +1354,90 @@ TEST_CASE(Persistence_FirstEntitySaveDurablyOrdersDirectoryHierarchy) {
                                           : static_cast<size_t>(7));
         CHECK(!journalExists(files));
         checkExactState(files, {record}, preferredFormat);
+    }
+}
+
+TEST_CASE(Persistence_FirstEntitySaveRetriesRootParentSyncBeforeJournal) {
+    const EntityRecord record{
+        Entity::EntityId{10, 11, 12},
+        "rigel:root_recovery",
+        glm::vec3(513.0f, 4.0f, 5.0f)};
+
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        for (bool retainFailedRoot : {false, true}) {
+            auto files = std::make_shared<SharedFiles>();
+            auto control = std::make_shared<MutationControl>();
+            control->failDirectoryChild = kRootPath;
+
+            CHECK_THROWS(saveRecords(
+                files, {record}, control, preferredFormat));
+
+            CHECK(control->directoryFailureInjected);
+            CHECK(control->attempted.empty());
+            CHECK(files->directories.contains(kRootPath));
+            CHECK(!files->durableDirectories.contains(kRootPath));
+            CHECK(files->files.empty());
+            CHECK(files->durableFiles.empty());
+            CHECK(!journalExists(files));
+            CHECK(!files->durableFiles.contains(kJournalPath));
+            CHECK(!hasEntityRegionFile(files));
+            CHECK_EQ(
+                operationCount(files->durabilityOperations, "write "),
+                static_cast<size_t>(0));
+            CHECK_EQ(
+                operationCount(
+                    files->durabilityOperations,
+                    std::string("open ") + kJournalPath),
+                static_cast<size_t>(0));
+            CHECK_EQ(
+                operationCount(
+                    files->durabilityOperations,
+                    std::string("remove ") + kJournalPath),
+                static_cast<size_t>(0));
+
+            simulatePowerLoss(files, retainFailedRoot);
+            CHECK_EQ(
+                files->directories.contains(kRootPath),
+                retainFailedRoot);
+            CHECK(!journalExists(files));
+            CHECK(!hasEntityRegionFile(files));
+
+            files->durabilityOperations.clear();
+            saveRecords(files, {record}, {}, preferredFormat);
+
+            const auto& retryOperations = files->durabilityOperations;
+            const std::string rootOperation =
+                std::string("mkdir ") +
+                (retainFailedRoot ? "existing " : "new ") +
+                kRootPath;
+            const size_t rootCreation = operationIndex(
+                retryOperations, rootOperation);
+            CHECK_EQ(
+                retryOperations.at(rootCreation + 1),
+                "sync " +
+                    Persistence::detail::containingDirectory(kRootPath)
+                        .generic_string() +
+                    " for " + kRootPath);
+            const size_t journalOpen = operationIndex(
+                retryOperations, std::string("open ") + kJournalPath);
+            const size_t journalWrite = operationIndex(
+                retryOperations, std::string("write ") + kJournalPath);
+            const size_t regionWrite = operationIndexContaining(
+                retryOperations, "write ", "/entities/entityRegion_");
+            const size_t journalRemoval = operationIndex(
+                retryOperations, std::string("remove ") + kJournalPath);
+            CHECK(rootCreation + 1 < journalOpen);
+            CHECK(journalOpen < journalWrite);
+            CHECK(journalWrite < regionWrite);
+            CHECK(regionWrite < journalRemoval);
+            CHECK(!journalExists(files));
+            for (const auto& component : entityDirectoryComponents()) {
+                CHECK(files->durableDirectories.contains(component));
+            }
+
+            simulatePowerLoss(files);
+            checkExactState(files, {record}, preferredFormat);
+        }
     }
 }
 

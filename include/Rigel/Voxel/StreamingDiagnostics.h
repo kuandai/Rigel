@@ -50,11 +50,29 @@ struct StreamingDiagnosticSnapshot {
     StreamingWorkCount generation;
     StreamingWorkCount chunkLoad;
     StreamingWorkCount mesh;
+    StreamingWorkCount eviction;
     uint32_t stableUpdates = 0;
 
     bool workEmpty() const {
-        return generation.empty() && chunkLoad.empty() && mesh.empty();
+        return generation.empty() && chunkLoad.empty() && mesh.empty() &&
+            eviction.empty();
     }
 };
+
+inline bool streamingFailureSignatureChanged(
+    const StreamingDiagnosticSnapshot& previous,
+    const StreamingDiagnosticSnapshot& current) {
+    auto workFailureChanged = [](const StreamingWorkCount& before,
+                                 const StreamingWorkCount& after) {
+        return before.terminalErrors != after.terminalErrors ||
+            before.lastError != after.lastError;
+    };
+
+    return workFailureChanged(previous.generation, current.generation) ||
+        workFailureChanged(previous.chunkLoad, current.chunkLoad) ||
+        workFailureChanged(previous.mesh, current.mesh) ||
+        workFailureChanged(previous.eviction, current.eviction) ||
+        previous.eviction.pending != current.eviction.pending;
+}
 
 } // namespace Rigel::Voxel

@@ -232,6 +232,10 @@ private:
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityMeshRequests;
     std::unordered_map<ChunkCoord, uint64_t, ChunkCoordHash> m_evictionRetryAfter;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_versionReplacementWaiting;
+    std::unordered_map<ChunkCoord, std::string, ChunkCoordHash> m_generationErrors;
+    std::unordered_map<ChunkCoord, std::string, ChunkCoordHash> m_loadErrors;
+    std::unordered_map<ChunkCoord, std::string, ChunkCoordHash> m_meshErrors;
+    std::unordered_map<ChunkCoord, std::string, ChunkCoordHash> m_evictionErrors;
     // Jobs whose completion has not yet been observed, including cancelled work
     // from an earlier generation lifecycle.
     size_t m_inFlightGen = 0;
@@ -277,8 +281,8 @@ private:
     bool hasAllNeighborsLoaded(ChunkCoord coord) const;
     StreamingDiagnosticSnapshot collectDiagnostics() const;
     void refreshDiagnostics(bool advanceWindow);
-    bool evictChunk(ChunkCoord coord);
-    void deferEviction(ChunkCoord coord);
+    bool evictChunk(ChunkCoord coord, bool versionReplacement = false);
+    void deferEviction(ChunkCoord coord, bool versionReplacement);
     void retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq);
 
     ChunkCoord cameraToChunk(const glm::vec3& cameraPos) const;

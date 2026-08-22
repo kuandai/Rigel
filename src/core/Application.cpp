@@ -73,6 +73,7 @@ struct Application::Impl {
         bool streamingLifecycleLogged = false;
         Voxel::StreamingLifecycleState lastStreamingLifecycle =
             Voxel::StreamingLifecycleState::DiscoveringSpawn;
+        Voxel::StreamingDiagnosticSnapshot lastStreamingDiagnostics;
         Voxel::BlockID placeBlock = Voxel::BlockRegistry::airId();
     };
 
@@ -640,18 +641,26 @@ void Application::run() {
                     const auto& diagnostics =
                         m_impl->world.worldView->streamingDiagnostics();
                     if (!m_impl->world.streamingLifecycleLogged ||
-                        diagnostics.state != m_impl->world.lastStreamingLifecycle) {
+                        diagnostics.state != m_impl->world.lastStreamingLifecycle ||
+                        Voxel::streamingFailureSignatureChanged(
+                            m_impl->world.lastStreamingDiagnostics,
+                            diagnostics)) {
                         spdlog::info(
                             "streaming.lifecycle state={} "
                             "generation.pending={} generation.in_flight={} generation.started={} "
+                            "generation.terminal_errors={} generation.last_error=\"{}\" "
                             "load.pending={} load.in_flight={} load.started={} "
                             "load.terminal_errors={} load.last_error=\"{}\" "
                             "mesh.pending={} mesh.in_flight={} mesh.started={} "
+                            "mesh.terminal_errors={} mesh.last_error=\"{}\" "
+                            "eviction.pending={} eviction.last_error=\"{}\" "
                             "stable_updates={}/{}",
                             Voxel::streamingLifecycleName(diagnostics.state),
                             diagnostics.generation.pending,
                             diagnostics.generation.inFlight,
                             diagnostics.generation.started,
+                            diagnostics.generation.terminalErrors,
+                            diagnostics.generation.lastError,
                             diagnostics.chunkLoad.pending,
                             diagnostics.chunkLoad.inFlight,
                             diagnostics.chunkLoad.started,
@@ -660,9 +669,14 @@ void Application::run() {
                             diagnostics.mesh.pending,
                             diagnostics.mesh.inFlight,
                             diagnostics.mesh.started,
+                            diagnostics.mesh.terminalErrors,
+                            diagnostics.mesh.lastError,
+                            diagnostics.eviction.pending,
+                            diagnostics.eviction.lastError,
                             diagnostics.stableUpdates,
                             Voxel::StreamingDiagnosticSnapshot::QuiescenceUpdateWindow);
                         m_impl->world.lastStreamingLifecycle = diagnostics.state;
+                        m_impl->world.lastStreamingDiagnostics = diagnostics;
                         m_impl->world.streamingLifecycleLogged = true;
                     }
                 }

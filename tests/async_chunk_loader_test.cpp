@@ -1979,6 +1979,17 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
     for (int update = 0; update < 4; ++update) {
         streamer.update(coord.toWorldCenter());
         streamer.processCompletions();
+        CHECK_EQ(streamer.diagnostics().state,
+                 StreamingLifecycleState::Streaming);
+        CHECK_EQ(streamer.diagnostics().chunkLoad.terminalErrors,
+                 static_cast<size_t>(1));
+        CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+                 static_cast<uint64_t>(update == 0 ? 1 : 0));
+        if (update > 0) {
+            CHECK_EQ(
+                streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+                static_cast<uint64_t>(0));
+        }
     }
     CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
     CHECK_EQ(streamer.diagnostics().chunkLoad.terminalErrors,

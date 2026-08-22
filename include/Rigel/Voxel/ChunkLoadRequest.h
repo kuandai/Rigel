@@ -3,6 +3,7 @@
 #include "ChunkCoord.h"
 
 #include <cstdint>
+#include <string>
 
 namespace Rigel::Voxel {
 
@@ -21,6 +22,7 @@ enum class ChunkLoadOutcome : uint8_t {
 struct ChunkLoadCompletion {
     ChunkCoord coord;
     ChunkLoadOutcome outcome = ChunkLoadOutcome::Missing;
+    std::string error;
 };
 
 } // namespace Rigel::Voxel

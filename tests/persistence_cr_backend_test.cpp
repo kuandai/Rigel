@@ -10,6 +10,9 @@
 #include "Rigel/Persistence/Backends/CR/CRLz4.h"
 #include "Rigel/Persistence/Providers.h"
 #include "Rigel/Persistence/WorldPersistence.h"
+#include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Entity/Entity.h"
+#include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Voxel/Block.h"
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/World.h"
@@ -1091,6 +1094,105 @@ TEST_CASE(CRBackend_writer_enforces_string_and_record_limits_before_commit) {
         [&]() { format->chunkContainer().saveRegion(oversizedRecord); },
         "CRChunkCodec: record exceeds format limit");
     CHECK_EQ(readAll(*storage, path), original);
+}
+
+TEST_CASE(CRBackend_entity_regions_validate_records_before_commit) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "worlds/entity_record_limits";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    auto format = Backends::CR::factory()(context);
+
+    EntityPersistedChunk chunk;
+    chunk.coord = Rigel::Voxel::ChunkCoord{0, 0, 0};
+    EntityRegionSnapshot valid{
+        EntityRegionKey{"zone:default", 0, 0, 0}, {chunk}};
+    format->entityContainer().saveRegion(valid);
+    const auto path = CRPaths::entityRegionPath(valid.key, context);
+    const auto original = readAll(*storage, path);
+
+    EntityRegionSnapshot duplicate = valid;
+    duplicate.chunks.push_back(chunk);
+    checkCRRegionError(
+        [&]() { format->entityContainer().saveRegion(duplicate); },
+        "CRFormat: duplicate entity chunk coordinates");
+    CHECK_EQ(readAll(*storage, path), original);
+
+    EntityRegionSnapshot outside = valid;
+    outside.chunks.front().coord.x = 16;
+    checkCRRegionError(
+        [&]() { format->entityContainer().saveRegion(outside); },
+        "CRFormat: entity chunk lies outside its region");
+    CHECK_EQ(readAll(*storage, path), original);
+
+    EntityPersistedEntity invalidEntity;
+    invalidEntity.position.x = std::numeric_limits<float>::infinity();
+    EntityRegionSnapshot invalidVector = valid;
+    invalidVector.chunks.front().entities.push_back(invalidEntity);
+    checkCRRegionError(
+        [&]() { format->entityContainer().saveRegion(invalidVector); },
+        "CRFormat: invalid persistent entity position");
+    CHECK_EQ(readAll(*storage, path), original);
+}
+
+TEST_CASE(CRBackend_entity_regions_reject_malformed_and_duplicate_records) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    PersistenceContext context;
+    context.rootPath = "worlds/entity_record_input";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    auto format = Backends::CR::factory()(context);
+    const EntityRegionKey key{"zone:default", 0, 0, 0};
+    const auto path = CRPaths::entityRegionPath(key, context);
+
+    createEmptyFile(*storage, path);
+    checkCRRegionError(
+        [&]() { format->entityContainer().loadRegion(key); },
+        "CRFormat: failed to decode entity region");
+
+    storage->remove(path);
+    EntityPersistedChunk chunk;
+    chunk.coord = Rigel::Voxel::ChunkCoord{0, 0, 0};
+    const auto duplicatePayload = Rigel::Entity::encodeEntityRegionPayload({chunk, chunk});
+    auto session = storage->openWrite(path, AtomicWriteOptions{});
+    session->writer().writeBytes(duplicatePayload.data(), duplicatePayload.size());
+    session->commit();
+    checkCRRegionError(
+        [&]() { format->entityContainer().loadRegion(key); },
+        "CRFormat: duplicate entity chunk coordinates");
+}
+
+TEST_CASE(CRBackend_entity_validation_precedes_live_world_mutation) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::CR::descriptor(), Backends::CR::factory(), Backends::CR::probe());
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "worlds/entity_validation_order";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+
+    const EntityRegionKey key{"rigel:default", 0, 0, 0};
+    createEmptyFile(
+        *storage, CRPaths::zoneRoot(key.zoneId, context) + "/entities");
+    createEmptyFile(*storage, CRPaths::entityRegionPath(key, context));
+
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::World world(resources);
+    auto existing = std::make_unique<Rigel::Entity::Entity>("base:existing");
+    const Rigel::Entity::EntityId existingId{1, 2, 3};
+    existing->setId(existingId);
+    CHECK_EQ(world.entities().spawn(std::move(existing)), existingId);
+    context.providers = world.persistenceProvidersHandle();
+    Rigel::Asset::AssetManager assets;
+
+    checkCRRegionError(
+        [&]() { loadWorldFromDisk(
+            world, assets, service, context, 0, LoadScope::EntitiesOnly); },
+        "CRFormat: failed to decode entity region");
+    CHECK(world.entities().get(existingId) != nullptr);
 }
 
 TEST_CASE(CRBackend_region_rejects_unbounded_compression_declarations) {

@@ -3,6 +3,8 @@
 #include "Rigel/Entity/EntityPersistence.h"
 
 #include <cstdint>
+#include <limits>
+#include <string>
 #include <vector>
 
 using namespace Rigel::Entity;
@@ -110,4 +112,54 @@ TEST_CASE(EntityPersistence_RejectsUnboundedEntityDeclaration) {
 
     CHECK(!decodeEntityRegionPayload(payload, decoded));
     CHECK_EQ(decoded.size(), static_cast<size_t>(1));
+}
+
+TEST_CASE(EntityPersistence_RejectsInvalidHeaderFlags) {
+    std::vector<uint8_t> payload = payloadHeader(0);
+    payload[7] = 1;
+    std::vector<EntityPersistedChunk> decoded(1);
+
+    CHECK(!decodeEntityRegionPayload(payload, decoded));
+    CHECK_EQ(decoded.size(), static_cast<size_t>(1));
+}
+
+TEST_CASE(EntityPersistence_RejectsUnboundedAndTruncatedStringsWithoutMutation) {
+    std::vector<uint8_t> payload = payloadHeader(1);
+    appendU32(payload, 0);
+    appendU32(payload, 0);
+    appendU32(payload, 0);
+    appendU32(payload, 1);
+    appendU32(payload, std::numeric_limits<uint32_t>::max());
+    std::vector<EntityPersistedChunk> decoded(1);
+    decoded.front().coord = ChunkCoord{7, 8, 9};
+    const auto original = decoded;
+
+    CHECK(!decodeEntityRegionPayload(payload, decoded));
+    CHECK_EQ(decoded, original);
+
+    EntityPersistedEntity entity;
+    entity.typeId = "base:test";
+    entity.id = EntityId{1, 2, 3};
+    EntityPersistedChunk chunk;
+    chunk.entities.push_back(entity);
+    payload = encodeEntityRegionPayload({chunk});
+    payload.pop_back();
+
+    CHECK(!decodeEntityRegionPayload(payload, decoded));
+    CHECK_EQ(decoded, original);
+}
+
+TEST_CASE(EntityPersistence_AcceptsEmptyCollectionsAndStrings) {
+    std::vector<EntityPersistedChunk> decoded(1);
+    CHECK(decodeEntityRegionPayload(payloadHeader(0), decoded));
+    CHECK(decoded.empty());
+
+    EntityPersistedEntity entity;
+    entity.id = EntityId{1, 2, 3};
+    EntityPersistedChunk chunk;
+    chunk.entities.push_back(entity);
+    const auto payload = encodeEntityRegionPayload({chunk});
+    CHECK(decodeEntityRegionPayload(payload, decoded));
+    CHECK(decoded.front().entities.front().typeId.empty());
+    CHECK(decoded.front().entities.front().modelId.empty());
 }

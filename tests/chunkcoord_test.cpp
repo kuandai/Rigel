@@ -2,6 +2,8 @@
 
 #include "Rigel/Voxel/ChunkCoord.h"
 
+#include <limits>
+
 using namespace Rigel::Voxel;
 
 TEST_CASE(ChunkCoord_WorldToChunkPositive) {
@@ -14,6 +16,12 @@ TEST_CASE(ChunkCoord_WorldToChunkNegative) {
     CHECK_EQ(worldToChunk(-1, 0, 0).x, -1);
     CHECK_EQ(worldToChunk(-32, 0, 0).x, -1);
     CHECK_EQ(worldToChunk(-33, 0, 0).x, -2);
+}
+
+TEST_CASE(ChunkCoord_WorldToChunkMinimumCoordinate) {
+    constexpr int minimum = std::numeric_limits<int>::min();
+    CHECK_EQ(worldToChunk(minimum, 0, 0).x, minimum / ChunkSize);
+    CHECK_EQ(worldToChunk(minimum + 1, 0, 0).x, minimum / ChunkSize);
 }
 
 TEST_CASE(ChunkCoord_LocalConversions) {

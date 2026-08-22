@@ -140,10 +140,20 @@ void loadWorldFromDisk(Voxel::World& world,
         }
     }
 
+    std::string zoneId = kDefaultZoneId;
+    std::vector<EntityRegionSnapshot> entityRegions;
+    if (includesEntities(scope) &&
+        format->descriptor().capabilities.supportsEntityRegions) {
+        detail::replayEntityRegionJournal(*format, context, zoneId);
+        for (const auto& key : format->entityContainer().listRegions(zoneId)) {
+            entityRegions.push_back(format->entityContainer().loadRegion(key));
+        }
+        detail::validateEntityRegionSnapshots(entityRegions);
+    }
+
     world.clear();
     world.chunkManager().clearDirtyFlags();
 
-    std::string zoneId = kDefaultZoneId;
     std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> touchedChunks;
 
     if (includesChunks(scope)) {
@@ -175,14 +185,6 @@ void loadWorldFromDisk(Voxel::World& world,
     if (!format->descriptor().capabilities.supportsEntityRegions) {
         return;
     }
-
-    detail::replayEntityRegionJournal(*format, context, zoneId);
-
-    std::vector<EntityRegionSnapshot> entityRegions;
-    for (const auto& key : format->entityContainer().listRegions(zoneId)) {
-        entityRegions.push_back(format->entityContainer().loadRegion(key));
-    }
-    detail::validateEntityRegionSnapshots(entityRegions);
 
     struct StagedEntity {
         Entity::EntityId id;

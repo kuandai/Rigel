@@ -4,7 +4,11 @@ namespace Rigel::Entity {
 
 namespace {
 int floorDiv(int a, int b) {
-    return (a >= 0) ? (a / b) : ((a - b + 1) / b);
+    int quotient = a / b;
+    if (a % b < 0) {
+        --quotient;
+    }
+    return quotient;
 }
 } // namespace
 

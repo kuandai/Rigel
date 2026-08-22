@@ -1,17 +1,22 @@
 #include "EntityRegionJournal.h"
 
+#include "../entity/EntityPersistenceLimits.h"
+
 #include "Rigel/Entity/EntityPersistence.h"
+#include "Rigel/Entity/EntityRegion.h"
 #include "Rigel/Persistence/Format.h"
 #include "Rigel/Persistence/Storage.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -373,8 +378,34 @@ void validateEntityRegionSnapshots(
                        EntityRegionKey,
                        Entity::EntityIdHash> sources;
     for (const auto& region : regions) {
+        std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> chunks;
         for (const auto& chunk : region.chunks) {
+            if (!chunks.insert(chunk.coord).second) {
+                throw std::runtime_error(
+                    "Duplicate entity chunk coordinates in region " +
+                    describeRegion(region.key));
+            }
+            const Entity::EntityRegionCoord expected =
+                Entity::chunkToRegion(chunk.coord);
+            if (expected.x != region.key.x ||
+                expected.y != region.key.y ||
+                expected.z != region.key.z) {
+                throw std::runtime_error(
+                    "Entity chunk lies outside region " +
+                    describeRegion(region.key));
+            }
             for (const auto& entity : chunk.entities) {
+                if (!Entity::detail::isPersistablePosition(entity.position)) {
+                    throw std::runtime_error(
+                        "Invalid persistent entity position in region " +
+                        describeRegion(region.key));
+                }
+                if (!Entity::detail::isFiniteVector(entity.velocity) ||
+                    !Entity::detail::isFiniteVector(entity.viewDirection)) {
+                    throw std::runtime_error(
+                        "Invalid persistent entity vector in region " +
+                        describeRegion(region.key));
+                }
                 if (entity.id.isNull()) {
                     throw std::runtime_error(
                         "Null persistent entity ID " + describeId(entity.id) +

@@ -89,7 +89,11 @@ struct ChunkCoordHash {
 inline ChunkCoord worldToChunk(int wx, int wy, int wz) {
     // Handle negative coordinates correctly (floor division)
     auto floorDiv = [](int a, int b) {
-        return (a >= 0) ? (a / b) : ((a - b + 1) / b);
+        int quotient = a / b;
+        if (a % b < 0) {
+            --quotient;
+        }
+        return quotient;
     };
     return {
         floorDiv(wx, ChunkSize),

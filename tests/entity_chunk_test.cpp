@@ -1,6 +1,9 @@
 #include "TestFramework.h"
 
 #include "Rigel/Entity/EntityChunk.h"
+#include "Rigel/Entity/EntityRegion.h"
+
+#include <limits>
 
 using namespace Rigel::Entity;
 
@@ -16,4 +19,11 @@ TEST_CASE(EntityChunk_AddRemove) {
 
     chunk.removeEntity(&entity);
     CHECK(!chunk.contains(&entity));
+}
+
+TEST_CASE(EntityRegion_MinimumChunkCoordinate) {
+    constexpr int minimum = std::numeric_limits<int>::min();
+    const EntityRegionCoord region = chunkToRegion({minimum, minimum + 1, 0});
+    CHECK_EQ(region.x, minimum / EntityRegionChunkSpan);
+    CHECK_EQ(region.y, minimum / EntityRegionChunkSpan);
 }

@@ -7,14 +7,17 @@
 #include "Rigel/Persistence/Providers.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Entity/EntityPersistence.h"
+#include "Rigel/Entity/EntityRegion.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "CRWorldMetadata.h"
+#include "../../../entity/EntityPersistenceLimits.h"
 #include "../../RegionFilename.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <limits>
 #include <optional>
@@ -1582,6 +1585,7 @@ public:
             }
             return;
         }
+        validateRegionChunks(region);
         auto payload = Entity::encodeEntityRegionPayload(region.chunks);
         auto session = m_storage->openWrite(path, AtomicWriteOptions{});
         if (!payload.empty()) {
@@ -1606,18 +1610,21 @@ public:
             return out;
         }
         auto reader = m_storage->openRead(path);
+        if (reader->size() > Entity::detail::MaxEntityRegionBytes) {
+            throw std::runtime_error(
+                "CRFormat: entity region payload exceeds format limit");
+        }
         std::vector<uint8_t> payload(reader->size());
         reader->seek(0);
         if (!payload.empty()) {
             reader->readBytes(payload.data(), payload.size());
         }
         std::vector<Entity::EntityPersistedChunk> chunks;
-        if (!payload.empty()) {
-            if (!Entity::decodeEntityRegionPayload(payload, chunks)) {
-                throw std::runtime_error("CRFormat: failed to decode entity region");
-            }
+        if (!Entity::decodeEntityRegionPayload(payload, chunks)) {
+            throw std::runtime_error("CRFormat: failed to decode entity region");
         }
         out.chunks = std::move(chunks);
+        validateRegionChunks(out);
         return out;
     }
 
@@ -1641,6 +1648,35 @@ public:
     }
 
 private:
+    static void validateRegionChunks(const EntityRegionSnapshot& region) {
+        std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> coordinates;
+        for (const auto& chunk : region.chunks) {
+            if (!coordinates.insert(chunk.coord).second) {
+                throw std::runtime_error(
+                    "CRFormat: duplicate entity chunk coordinates");
+            }
+            const Entity::EntityRegionCoord expected =
+                Entity::chunkToRegion(chunk.coord);
+            if (expected.x != region.key.x ||
+                expected.y != region.key.y ||
+                expected.z != region.key.z) {
+                throw std::runtime_error(
+                    "CRFormat: entity chunk lies outside its region");
+            }
+            for (const auto& entity : chunk.entities) {
+                if (!Entity::detail::isPersistablePosition(entity.position)) {
+                    throw std::runtime_error(
+                        "CRFormat: invalid persistent entity position");
+                }
+                if (!Entity::detail::isFiniteVector(entity.velocity) ||
+                    !Entity::detail::isFiniteVector(entity.viewDirection)) {
+                    throw std::runtime_error(
+                        "CRFormat: invalid persistent entity vector");
+                }
+            }
+        }
+    }
+
     std::shared_ptr<StorageBackend> m_storage;
     PersistenceContext m_context;
 };

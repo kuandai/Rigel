@@ -43,17 +43,22 @@ chunk. A region file can contain multiple spans for the same chunk.
 - `rootPath`: base directory for saves.
 - `preferredFormat`: format ID hint (e.g. `"cr"`).
 - `manifestPath`: optional metadata file location.
-- `policies`: behavior for unknown IDs or unsupported features.
+- `policies`: behavior for unsupported format features.
 - `storage`: `StorageBackend` instance (filesystem or custom).
 - `providers`: `ProviderRegistry` for passing runtime data (e.g. block registry).
 
 ### 3.1 Policies
 
-`PersistencePolicies` control error handling for format features and unknown
-block identifiers:
+`PersistencePolicies` control error handling for unsupported format features:
 
-- `unknownBlockPolicy` uses `UnknownIdPolicy`: `Fail`, `Placeholder`, or `Skip`.
 - `UnsupportedFeaturePolicy`: `Fail`, `NoOp`, or `Warn`.
+
+Unknown block identifiers are rejected before live chunk mutation. Rigel does
+not silently replace or omit blocks: doing so would change persisted block
+cardinality or destroy data on a later save. CR resolves stable string
+identifiers while decoding; Memory validates its numeric identifiers when the
+decoded spans are staged for application. A save or load can be retried after
+the required registry entry becomes available.
 
 Unknown entity types have one identifier-preserving lifecycle rather than a
 policy switch:

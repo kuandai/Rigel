@@ -885,7 +885,6 @@ void readLayer(TrackingReader& reader, uint8_t layerType, std::array<uint16_t, 2
 
 std::vector<std::string> buildPalette(const std::vector<Voxel::BlockState>& blocks,
                                       const Voxel::BlockRegistry& registry,
-                                      const PersistencePolicies& policies,
                                       std::unordered_map<uint16_t, uint16_t>& paletteIndex) {
     std::vector<std::string> palette;
     for (const auto& state : blocks) {
@@ -902,11 +901,8 @@ std::vector<std::string> buildPalette(const std::vector<Voxel::BlockState>& bloc
             palette.push_back(registry.getType(Voxel::BlockID{id}).identifier);
             continue;
         }
-        if (policies.unknownBlockPolicy == UnknownIdPolicy::Fail) {
-            throw std::runtime_error(
-                "CRChunkCodec: unknown runtime block identifier " + std::to_string(id));
-        }
-        palette.push_back(registry.getType(Voxel::BlockRegistry::airId()).identifier);
+        throw std::runtime_error(
+            "CRChunkCodec: unknown runtime block identifier " + std::to_string(id));
     }
     return palette;
 }
@@ -975,10 +971,9 @@ void writeLayer(ByteWriter& writer,
 }
 
 std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
-                                            const Voxel::BlockRegistry* registry,
-                                            const PersistencePolicies& policies) {
+                                            const Voxel::BlockRegistry* registry) {
     std::vector<Voxel::BlockState> blocks(16 * 16 * 16, Voxel::BlockState{});
-    auto resolveBlockId = [registry, &policies](const std::string& id) -> Voxel::BlockID {
+    auto resolveBlockId = [registry](const std::string& id) -> Voxel::BlockID {
         if (registry) {
             if (auto found = registry->findByIdentifier(id)) {
                 return *found;
@@ -997,10 +992,7 @@ std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
                 }
             }
         }
-        if (policies.unknownBlockPolicy == UnknownIdPolicy::Fail) {
-            throw std::runtime_error("CRChunkCodec: unknown block identifier '" + id + "'");
-        }
-        return Voxel::BlockRegistry::airId();
+        throw std::runtime_error("CRChunkCodec: unknown block identifier '" + id + "'");
     };
 
     uint8_t blockType = reader.readU8();
@@ -1057,8 +1049,7 @@ std::vector<Voxel::BlockState> decodeBlocks(TrackingReader& reader,
 
 void writeBlockData(ByteWriter& writer,
                     const std::vector<Voxel::BlockState>& blocks,
-                    const Voxel::BlockRegistry* registry,
-                    const PersistencePolicies& policies) {
+                    const Voxel::BlockRegistry* registry) {
     if (blocks.empty()) {
         writer.writeU8(kBlockNull);
         return;
@@ -1077,15 +1068,11 @@ void writeBlockData(ByteWriter& writer,
     }
 
     if (!registry) {
-        if (policies.unknownBlockPolicy == UnknownIdPolicy::Fail) {
-            throw std::runtime_error("CRChunkCodec: missing block registry");
-        }
-        static const Voxel::BlockRegistry fallbackRegistry;
-        registry = &fallbackRegistry;
+        throw std::runtime_error("CRChunkCodec: missing block registry");
     }
 
     std::unordered_map<uint16_t, uint16_t> paletteIndex;
-    auto palette = buildPalette(blocks, *registry, policies, paletteIndex);
+    auto palette = buildPalette(blocks, *registry, paletteIndex);
     if (palette.size() == 1) {
         writer.writeU8(kBlockSingle);
         writeString(writer, palette[0]);
@@ -1178,10 +1165,6 @@ public:
         m_registry = registry;
     }
 
-    void setPolicies(PersistencePolicies policies) {
-        m_policies = policies;
-    }
-
     ChunkSnapshot read(ByteReader& reader, const ChunkKey& keyHint) {
         auto decoded = decodeRecord(reader, keyHint);
         decoded.chunk.opaquePayload = std::move(decoded.bytes);
@@ -1234,7 +1217,7 @@ public:
         writer.writeI32(chunk.key.x);
         writer.writeI32(chunk.key.y);
         writer.writeI32(chunk.key.z);
-        writeBlockData(writer, chunk.data.blocks, m_registry, m_policies);
+        writeBlockData(writer, chunk.data.blocks, m_registry);
         writer.writeU8(static_cast<uint8_t>(kSkyNull));
         writer.writeU8(static_cast<uint8_t>(kBlockLightNull));
         writer.writeU8(static_cast<uint8_t>(kBlockEntityNull));
@@ -1265,7 +1248,7 @@ private:
         out.data.span.sizeX = 16;
         out.data.span.sizeY = 16;
         out.data.span.sizeZ = 16;
-        out.data.blocks = decodeBlocks(tracker, m_registry, m_policies);
+        out.data.blocks = decodeBlocks(tracker, m_registry);
         decoded.hasUnsupportedPayload = readSkylightData(tracker);
         decoded.hasUnsupportedPayload =
             readBlockLightData(tracker) || decoded.hasUnsupportedPayload;
@@ -1295,7 +1278,6 @@ private:
     }
 
     const Voxel::BlockRegistry* m_registry = nullptr;
-    PersistencePolicies m_policies{};
 };
 
 class CRWorldMetadataCodec final : public WorldMetadataCodec {
@@ -1948,7 +1930,6 @@ public:
           m_chunkContainer(m_storage, m_context, m_chunkCodec),
           m_entityContainer(m_storage, m_context) {
         m_worldCodec.setContext(m_context);
-        m_chunkCodec.setPolicies(m_context.policies);
         if (m_context.providers) {
             auto provider = m_context.providers->findAs<BlockRegistryProvider>(kBlockRegistryProviderId);
             if (provider) {

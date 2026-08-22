@@ -170,12 +170,6 @@ struct WorldSnapshot {
     std::vector<ZoneMetadata> zones;
 };
 
-enum class UnknownIdPolicy {
-    Fail,
-    Placeholder,
-    Skip
-};
-
 enum class UnsupportedFeaturePolicy {
     Fail,
     NoOp,
@@ -183,7 +177,6 @@ enum class UnsupportedFeaturePolicy {
 };
 
 struct PersistencePolicies {
-    UnknownIdPolicy unknownBlockPolicy = UnknownIdPolicy::Fail;
     UnsupportedFeaturePolicy unsupportedFeaturePolicy = UnsupportedFeaturePolicy::Fail;
 };
 

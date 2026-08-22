@@ -426,7 +426,8 @@ TEST_CASE(MemoryFormat_InvalidNumericBlockIdDoesNotMutateChunk) {
     span.sizeZ = 1;
     auto bytes = chunkFixture(span, 2);
     appendBlock(bytes, replacementId.type);
-    appendBlock(bytes, std::numeric_limits<uint16_t>::max());
+    const uint16_t lateId = static_cast<uint16_t>(registry.size());
+    appendBlock(bytes, lateId);
     MemoryFixture fixture;
     const ChunkSnapshot snapshot = fixture.loadChunk(std::move(bytes));
 
@@ -439,9 +440,27 @@ TEST_CASE(MemoryFormat_InvalidNumericBlockIdDoesNotMutateChunk) {
 
     checkFormatError(
         [&]() { applyChunkData(snapshot.data, chunk, registry); },
-        "ChunkSerializer: invalid block ID 65535");
+        "ChunkSerializer: invalid block ID " + std::to_string(lateId));
     CHECK_EQ(chunk.getBlock(0, 0, 0).id, originalId);
     CHECK_EQ(chunk.getBlock(1, 0, 0).id, originalId);
     CHECK(!chunk.isDirty());
     CHECK(!chunk.isPersistDirty());
+
+    Rigel::Voxel::BlockType lateType;
+    lateType.identifier = "test:late";
+    lateType.isOpaque = true;
+    const auto registeredLateId = registry.registerBlock(
+        "test:late", std::move(lateType));
+    CHECK_EQ(registeredLateId.type, lateId);
+
+    applyChunkData(snapshot.data, chunk, registry);
+    CHECK_EQ(chunk.getBlock(0, 0, 0).id, replacementId);
+    CHECK_EQ(chunk.getBlock(1, 0, 0).id, registeredLateId);
+
+    fixture.saveSingleChunkRegion(snapshot);
+    const ChunkSnapshot reloaded = fixture.loadSavedSingleChunkRegion(snapshot.key);
+    CHECK_EQ(reloaded.data.span, snapshot.data.span);
+    CHECK_EQ(reloaded.data.blocks.size(), 2u);
+    CHECK_EQ(reloaded.data.blocks[0].id, replacementId);
+    CHECK_EQ(reloaded.data.blocks[1].id, registeredLateId);
 }

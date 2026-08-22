@@ -445,6 +445,31 @@ std::vector<uint8_t> makeFixtureRecord(const ChunkKey& key,
     return bytes;
 }
 
+std::vector<uint8_t> makeTwoBlockFixtureRecord(
+    const ChunkKey& key,
+    const std::string& firstIdentifier,
+    const std::string& secondIdentifier) {
+    std::vector<uint8_t> bytes;
+    InMemoryByteWriter writer(bytes);
+    writer.writeI32(key.x);
+    writer.writeI32(key.y);
+    writer.writeI32(key.z);
+    writer.writeU8(2);
+    writer.writeI32(2);
+    writeFixtureString(writer, firstIdentifier);
+    writeFixtureString(writer, secondIdentifier);
+    for (int layer = 0; layer < 16; ++layer) {
+        writer.writeU8(7);
+        std::array<uint8_t, 32> indices{};
+        indices[0] = 0x02;
+        writer.writeBytes(indices.data(), indices.size());
+    }
+    writer.writeU8(1);
+    writer.writeU8(1);
+    writer.writeU8(0);
+    return bytes;
+}
+
 void writeFixtureRegion(StorageBackend& storage,
                         const std::string& path,
                         const std::vector<std::vector<uint8_t>>& records) {
@@ -1404,7 +1429,7 @@ TEST_CASE(CRBackend_region_rejects_corrupt_lz4_payload) {
         "CRRegion: LZ4 decompression failed");
 }
 
-TEST_CASE(CRBackend_dirty_save_preserves_untouched_record_bytes) {
+TEST_CASE(CRBackend_dirty_save_rejects_unknown_untouched_record) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
     Rigel::Voxel::WorldResources resources;
     Rigel::Voxel::BlockID stone = registerTestBlock(resources.registry(), "base:test_stone");
@@ -1427,19 +1452,19 @@ TEST_CASE(CRBackend_dirty_save_preserves_untouched_record_bytes) {
     auto untouchedRecord = makeFixtureRecord(
         ChunkKey{regionKey.zoneId, 2, 0, 0}, "base:unknown_id", true);
 
-    for (UnknownIdPolicy policy : {UnknownIdPolicy::Placeholder, UnknownIdPolicy::Skip}) {
-        context.policies.unknownBlockPolicy = policy;
-        writeFixtureRegion(*storage, path, {changedRecord, untouchedRecord});
-        auto untouchedBefore = readOnlyRecordInColumn(*storage, path, 2);
+    writeFixtureRegion(*storage, path, {changedRecord, untouchedRecord});
+    auto regionBefore = readAll(*storage, path);
 
-        saveChunkToDisk(world, service, context, Rigel::Voxel::ChunkCoord{0, 0, 0});
-
-        auto untouchedAfter = readOnlyRecordInColumn(*storage, path, 2);
-        CHECK_EQ(untouchedAfter, untouchedBefore);
-    }
+    checkCRRegionError(
+        [&]() {
+            saveChunkToDisk(
+                world, service, context, Rigel::Voxel::ChunkCoord{0, 0, 0});
+        },
+        "CRChunkCodec: unknown block identifier 'base:unknown_id'");
+    CHECK_EQ(readAll(*storage, path), regionBefore);
 }
 
-TEST_CASE(CRBackend_unknown_identifier_fail_policy_preserves_region) {
+TEST_CASE(CRBackend_unknown_identifier_retries_after_registry_availability) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
     Rigel::Voxel::WorldResources resources;
     Rigel::Voxel::BlockID stone = registerTestBlock(resources.registry(), "base:test_stone");
@@ -1458,16 +1483,32 @@ TEST_CASE(CRBackend_unknown_identifier_fail_policy_preserves_region) {
 
     RegionKey regionKey{"rigel:default", 0, 0, 0};
     const std::string path = CRPaths::regionPath(regionKey, context);
-    writeFixtureRegion(*storage, path, {
-        makeFixtureRecord(ChunkKey{regionKey.zoneId, 0, 0, 0}, "base:test_stone", false),
-        makeFixtureRecord(ChunkKey{regionKey.zoneId, 2, 0, 0}, "base:unknown_id", true)
-    });
+    writeFixtureRegion(*storage, path, {makeTwoBlockFixtureRecord(
+        ChunkKey{regionKey.zoneId, 0, 0, 0},
+        "base:test_stone",
+        "base:late_block")});
     auto regionBefore = readAll(*storage, path);
 
-    CHECK_THROWS(service.loadRegion(regionKey, context));
+    checkCRRegionError(
+        [&]() { service.loadRegion(regionKey, context); },
+        "CRChunkCodec: unknown block identifier 'base:late_block'");
     CHECK_EQ(readAll(*storage, path), regionBefore);
-    CHECK_THROWS(saveChunkToDisk(world, service, context, Rigel::Voxel::ChunkCoord{0, 0, 0}));
-    CHECK_EQ(readAll(*storage, path), regionBefore);
+
+    const auto lateId = registerTestBlock(
+        resources.registry(), "base:late_block");
+    ChunkRegionSnapshot loaded = service.loadRegion(regionKey, context);
+    CHECK_EQ(loaded.chunks.size(), 1u);
+    CHECK_EQ(loaded.chunks.front().data.blocks.size(), 16u * 16u * 16u);
+    CHECK_EQ(loaded.chunks.front().data.blocks[0].id, stone);
+    CHECK_EQ(loaded.chunks.front().data.blocks[1].id, lateId);
+
+    service.saveRegion(loaded, context);
+    ChunkRegionSnapshot reloaded = service.loadRegion(regionKey, context);
+    CHECK_EQ(reloaded.chunks.size(), 1u);
+    CHECK_EQ(reloaded.chunks.front().data.span, loaded.chunks.front().data.span);
+    CHECK_EQ(reloaded.chunks.front().data.blocks.size(), 16u * 16u * 16u);
+    CHECK_EQ(reloaded.chunks.front().data.blocks[0].id, stone);
+    CHECK_EQ(reloaded.chunks.front().data.blocks[1].id, lateId);
 }
 
 TEST_CASE(CRBackend_modified_optional_payload_record_is_rejected) {

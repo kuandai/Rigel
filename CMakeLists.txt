@@ -78,10 +78,11 @@ target_link_libraries(RigelLib
         spdlog::spdlog
         GLEW::GLEW
         glfw
-        OpenGL::GL
         ryml::ryml
-        stb::stb
         glm::glm
+    PRIVATE
+        OpenGL::GL
+        stb::stb
         imgui::imgui
 )
 
@@ -89,7 +90,7 @@ target_include_directories(RigelLib PRIVATE "${RIGEL_IMGUI_BINDINGS_DIR}")
 target_compile_definitions(RigelLib PRIVATE RIGEL_ENABLE_IMGUI IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
 
 if (CMAKE_DL_LIBS)
-    target_link_libraries(RigelLib PUBLIC ${CMAKE_DL_LIBS})
+    target_link_libraries(RigelLib PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 target_link_libraries(${PROJECT_NAME}
@@ -116,9 +117,13 @@ if (RIGEL_BUILD_TESTS)
     set(BLOCK_ASSET_FAILURE_TEST_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/block_asset_failure_test.cpp
     )
+    set(PUBLIC_HEADER_CONSUMER_SOURCE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/public_header_consumer.cpp
+    )
     list(REMOVE_ITEM TEST_SOURCES
         ${PROFILER_TEST_SOURCE}
         ${BLOCK_ASSET_FAILURE_TEST_SOURCE}
+        ${PUBLIC_HEADER_CONSUMER_SOURCE}
     )
 
     add_executable(Rigel_tests ${TEST_SOURCES})
@@ -173,14 +178,21 @@ if (RIGEL_BUILD_TESTS)
         stb::stb
     )
 
+    add_executable(Rigel_public_header_consumer
+        ${PUBLIC_HEADER_CONSUMER_SOURCE}
+    )
+    target_link_libraries(Rigel_public_header_consumer PRIVATE RigelLib)
+
     add_dependencies(Rigel_tests
         Rigel_profiler_tests
         Rigel_block_asset_failure_tests
+        Rigel_public_header_consumer
     )
 
     add_test(NAME Rigel_tests COMMAND Rigel_tests)
     add_test(NAME Rigel_profiler_tests COMMAND Rigel_profiler_tests)
     add_test(NAME Rigel_block_asset_failure_tests COMMAND Rigel_block_asset_failure_tests)
+    add_test(NAME Rigel_public_header_consumer COMMAND Rigel_public_header_consumer)
     add_test(
         NAME Rigel_tests_filtered_count
         COMMAND Rigel_tests --filter AssetHandle_Basics

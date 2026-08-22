@@ -14,6 +14,8 @@ Rigel uses a minimal in-tree test harness located in `tests/`:
   profiler implementation so test instrumentation does not change `RigelLib`.
 - Block asset failure coverage is compiled into
   `Rigel_block_asset_failure_tests` with a fixed embedded-resource fixture.
+- `Rigel_public_header_consumer` compiles and links representative public
+  headers using only `RigelLib`'s declared interface.
 - The harness is implemented in `tests/TestFramework.h` and
   `tests/TestFramework.cpp`.
 - Tests are registered via a `TEST_CASE(Name)` macro and executed by
@@ -43,6 +45,7 @@ When enabled, CMake adds:
 - `Rigel_tests` (test executable)
 - `Rigel_profiler_tests` (profiler test executable)
 - `Rigel_block_asset_failure_tests` (missing-resource test executable)
+- `Rigel_public_header_consumer` (public dependency interface check)
 
 ### 2.3 Running Tests
 
@@ -88,12 +91,13 @@ in the build directory root unless you change CMake output paths.
 
 ## 3. CTest Integration
 
-CTest registration is done in `CMakeLists.txt`. Aggregate suite entries run
-the three test executables; the harness obtains its test cases from each
-executable's runtime registry. A small filtered-run entry verifies the runner's
-executed-test summary. Adding, renaming, or reformatting a `TEST_CASE` does not
-change aggregate suite coverage; if the case selected by the filtered-run check
-is renamed, that check fails rather than silently omitting it.
+CTest registration is done in `CMakeLists.txt`. Aggregate suite entries run the
+three harness executables plus the public-header consumer; the harness obtains
+its test cases from each harness executable's runtime registry. A small
+filtered-run entry verifies the runner's executed-test summary. Adding,
+renaming, or reformatting a `TEST_CASE` does not change aggregate suite coverage;
+if the case selected by the filtered-run check is renamed, that check fails
+rather than silently omitting it.
 
 Run the main suite via CTest:
 

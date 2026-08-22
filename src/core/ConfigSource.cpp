@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace Rigel::Config {
@@ -64,7 +65,9 @@ std::optional<ConfigSourceResult> EmbeddedConfigSource::loadPath(
             std::string(data.begin(), data.end())
         };
     } catch (const std::exception&) {
-        return std::nullopt;
+        throw std::runtime_error(
+            "Missing configuration overlay '" + normalized +
+            "' declared by '" + m_assetId + "'");
     }
 }
 
@@ -91,7 +94,9 @@ std::optional<ConfigSourceResult> FileConfigSource::loadPath(
     }
     auto content = readFile(candidate);
     if (!content) {
-        return std::nullopt;
+        throw std::runtime_error(
+            "Missing configuration overlay '" + candidate.string() +
+            "' declared by '" + m_path + "'");
     }
     return ConfigSourceResult{candidate.string(), std::move(*content)};
 }

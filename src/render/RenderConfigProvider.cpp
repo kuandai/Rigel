@@ -79,7 +79,8 @@ void applyShadowConfig(ryml::ConstNodeRef shadowNode,
     if (!shadowNode.readable()) {
         return;
     }
-    shadow.enabled = Util::readBool(shadowNode, "enabled", shadow.enabled);
+    shadow.enabled = Util::readBool(
+        shadowNode, "enabled", shadow.enabled, sourceName, "render.shadow");
     shadow.cascades = Util::readIntWithMaximum(
         shadowNode, "cascades", shadow.cascades, 1,
         Voxel::ShadowConfig::MaxCascades, sourceName, "render.shadow");
@@ -127,12 +128,15 @@ void applyShadowConfig(ryml::ConstNodeRef shadowNode,
     shadow.fadePower = std::max(0.0f, shadow.fadePower);
 }
 
-void applyTaaConfig(ryml::ConstNodeRef taaNode, Voxel::TaaConfig& taa) {
+void applyTaaConfig(ryml::ConstNodeRef taaNode,
+                    Voxel::TaaConfig& taa,
+                    const char* sourceName) {
     if (!taaNode.readable()) {
         return;
     }
 
-    taa.enabled = Util::readBool(taaNode, "enabled", taa.enabled);
+    taa.enabled = Util::readBool(
+        taaNode, "enabled", taa.enabled, sourceName, "render.taa");
     taa.blend = std::clamp(
         Util::readFloat(taaNode, "blend", taa.blend), 0.0f, 1.0f);
     taa.jitterScale = std::max(
@@ -172,13 +176,17 @@ void applyRenderYaml(const char* sourceName,
             renderNode["shadow"], config.shadow, pcfState, sourceName);
     }
     if (renderNode.has_child("taa")) {
-        applyTaaConfig(renderNode["taa"], config.taa);
+        applyTaaConfig(renderNode["taa"], config.taa, sourceName);
     }
     if (renderNode.has_child("profiling")) {
         const auto profilingNode = renderNode["profiling"];
         if (profilingNode.readable()) {
             config.profilingEnabled = Util::readBool(
-                profilingNode, "enabled", config.profilingEnabled);
+                profilingNode,
+                "enabled",
+                config.profilingEnabled,
+                sourceName,
+                "render.profiling");
         }
     }
 }

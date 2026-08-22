@@ -175,6 +175,10 @@ private:
         const char* sourceName,
         const std::string& yaml
     );
+    std::vector<OverlayConfig> applyYamlUnchecked(
+        const char* sourceName,
+        const std::string& yaml
+    );
 };
 
 } // namespace Rigel::Voxel

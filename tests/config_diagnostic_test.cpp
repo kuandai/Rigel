@@ -128,6 +128,78 @@ TEST_CASE(WorldGenConfig_ReportsRemovedKeysAndIgnoresUnknownStages) {
     CHECK_EQ(config.stageEnabled.size(), static_cast<size_t>(1));
 }
 
+TEST_CASE(WorldGenConfig_BooleanValuesAreStrictAndAtomic) {
+    WorldGenConfig config;
+    config.seed = 7;
+    config.terrain.baseHeight = 3.0f;
+    config.flags["retained"] = true;
+
+    config.applyYaml(
+        "canonical-booleans.yaml",
+        "flags:\n"
+        "  enabled: true\n"
+        "  disabled: false\n"
+        "generation:\n"
+        "  stages:\n"
+        "    caves: false\n");
+    CHECK(config.isFlagEnabled("enabled"));
+    CHECK(!config.isFlagEnabled("disabled"));
+    CHECK(!config.isStageEnabled("caves"));
+
+    for (const std::string& invalid : {
+             std::string("TRUE"),
+             std::string("False"),
+             std::string("yes"),
+             std::string("maybe"),
+             std::string("[true]")}) {
+        const WorldGenConfig before = config;
+        std::string diagnostic;
+        try {
+            config.applyYaml(
+                "invalid-boolean.yaml",
+                "seed: 99\n"
+                "terrain:\n"
+                "  base_height: 12.0\n"
+                "flags:\n"
+                "  invalid: " + invalid + "\n");
+        } catch (const std::invalid_argument& error) {
+            diagnostic = error.what();
+        }
+        CHECK(
+            diagnostic.find("flags.invalid") != std::string::npos);
+        CHECK(
+            diagnostic.find("invalid-boolean.yaml") != std::string::npos);
+        CHECK(
+            diagnostic.find("expected boolean 'true' or 'false'") !=
+            std::string::npos);
+        CHECK_EQ(config.seed, before.seed);
+        CHECK_NEAR(
+            config.terrain.baseHeight, before.terrain.baseHeight, 0.001f);
+        CHECK_EQ(config.flags, before.flags);
+        CHECK_EQ(config.stageEnabled, before.stageEnabled);
+    }
+}
+
+TEST_CASE(RenderConfig_RejectsInvalidBooleanWithFullPath) {
+    Rigel::Render::RenderConfigProvider provider;
+    provider.addSource(std::make_unique<NamedConfigSource>(
+        "invalid-render.yaml",
+        "render:\n"
+        "  shadow:\n"
+        "    enabled: TRUE\n"));
+
+    std::string diagnostic;
+    try {
+        (void)provider.load();
+    } catch (const std::invalid_argument& error) {
+        diagnostic = error.what();
+    }
+    CHECK_EQ(
+        diagnostic,
+        "Invalid configuration value 'render.shadow.enabled' in "
+        "'invalid-render.yaml': expected boolean 'true' or 'false', got 'TRUE'");
+}
+
 TEST_CASE(RenderConfig_ReportsUnknownKeyAndSource) {
     LogCapture logs;
     Rigel::Render::RenderConfigProvider provider;

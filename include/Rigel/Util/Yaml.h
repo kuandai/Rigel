@@ -87,13 +87,37 @@ inline void warnUnknownKeys(ryml::ConstNodeRef node,
     }
 }
 
-inline bool readBool(ryml::ConstNodeRef node, const char* key, bool fallback) {
+inline bool readBool(ryml::ConstNodeRef node,
+                     const char* key,
+                     bool fallback,
+                     const char* sourceName,
+                     std::string_view path) {
     if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {
         return fallback;
     }
     std::string value;
-    node[ryml::to_csubstr(key)] >> value;
-    return value == "true" || value == "yes" || value == "1";
+    const ryml::ConstNodeRef valueNode = node[ryml::to_csubstr(key)];
+    if (valueNode.has_val()) {
+        const ryml::csubstr scalar = valueNode.val();
+        if (scalar.data()) {
+            value.assign(scalar.data(), scalar.size());
+        }
+    } else {
+        value = "<non-scalar>";
+    }
+    if (value == "true") {
+        return true;
+    }
+    if (value == "false") {
+        return false;
+    }
+    const std::string fullPath = path.empty()
+        ? std::string(key)
+        : std::string(path) + "." + key;
+    throw std::invalid_argument(
+        "Invalid configuration value '" + fullPath + "' in '" +
+        sourceName + "': expected boolean 'true' or 'false', got '" +
+        value + "'");
 }
 
 inline int readInt(ryml::ConstNodeRef node, const char* key, int fallback) {

@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "Rigel/Voxel/WorldConfigProvider.h"
+#include "Rigel/Asset/Types.h"
 
 #include <filesystem>
 #include <fstream>
@@ -42,6 +43,27 @@ private:
     std::string m_name;
     std::string m_yaml;
     std::unordered_map<std::string, std::string> m_paths;
+};
+
+class FixedRawLoader final : public Rigel::Asset::IAssetLoader {
+public:
+    explicit FixedRawLoader(std::string yaml)
+        : m_yaml(std::move(yaml)) {
+    }
+
+    std::string_view category() const override {
+        return "raw";
+    }
+
+    std::shared_ptr<Rigel::Asset::AssetBase> load(
+        const Rigel::Asset::LoadContext&) override {
+        auto asset = std::make_shared<Rigel::Asset::RawAsset>();
+        asset->data.assign(m_yaml.begin(), m_yaml.end());
+        return asset;
+    }
+
+private:
+    std::string m_yaml;
 };
 
 class CurrentPathGuard {
@@ -88,7 +110,7 @@ TEST_CASE(WorldConfigProvider_OverlaySource) {
         out << "flags:\n";
         out << "  smooth: true\n";
         out << "overlays:\n";
-        out << "  - path: " << overlayPath.string() << "\n";
+        out << "  - path: overlay.yaml\n";
         out << "    when: smooth\n";
         out << "terrain:\n";
         out << "  base_height: 1.0\n";
@@ -104,6 +126,58 @@ TEST_CASE(WorldConfigProvider_OverlaySource) {
     WorldGenConfig config = provider.loadConfig().generation;
 
     CHECK_NEAR(config.terrain.baseHeight, 9.0f, 0.001f);
+}
+
+TEST_CASE(WorldConfigProvider_MissingRelativeOverlayIsFatal) {
+    Rigel::Test::TemporaryDirectory directory("rigel_missing_relative_overlay");
+    const auto basePath = directory.path() / "base.yaml";
+    {
+        std::ofstream out(basePath);
+        out << "terrain:\n";
+        out << "  base_height: 9.0\n";
+        out << "overlays:\n";
+        out << "  - path: missing.yaml\n";
+    }
+
+    WorldConfigProvider provider;
+    provider.addSource(std::make_unique<FileConfigSource>(basePath.string()));
+
+    std::string diagnostic;
+    try {
+        (void)provider.loadConfig();
+    } catch (const std::runtime_error& error) {
+        diagnostic = error.what();
+    }
+    CHECK_EQ(
+        diagnostic,
+        "Missing configuration overlay '" +
+            (directory.path() / "missing.yaml").string() +
+            "' declared by '" + basePath.string() + "'");
+}
+
+TEST_CASE(WorldConfigProvider_MissingEmbeddedOverlayIsFatal) {
+    Rigel::Asset::AssetManager assets;
+    assets.registerLoader(
+        "raw",
+        std::make_unique<FixedRawLoader>(
+            "overlays:\n"
+            "  - path: assets/config/definitely_missing_overlay.yaml\n"));
+    assets.loadManifest("manifest.yaml");
+
+    WorldConfigProvider provider;
+    provider.addSource(std::make_unique<EmbeddedConfigSource>(
+        assets, "raw/world_config"));
+
+    std::string diagnostic;
+    try {
+        (void)provider.loadConfig();
+    } catch (const std::runtime_error& error) {
+        diagnostic = error.what();
+    }
+    CHECK_EQ(
+        diagnostic,
+        "Missing configuration overlay 'config/definitely_missing_overlay.yaml' "
+        "declared by 'raw/world_config'");
 }
 
 TEST_CASE(WorldConfigProvider_HigherPrecedenceSourceOverridesLowerOverlay) {

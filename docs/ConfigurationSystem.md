@@ -108,7 +108,7 @@ Each typed provider aggregates neutral `Config::IConfigSource` instances:
 Each source provides:
 
 - `load()` -> full YAML file content.
-- `loadPath(path)` -> resolution of overlays declared by that source (optional).
+- `loadPath(path)` -> resolution of overlays declared by that source.
 
 Overlay resolution has two behaviors:
 
@@ -123,6 +123,9 @@ applied first, followed by its overlays in declaration order. Loading then
 continues with the next source, so project-root and per-world values cannot be
 overridden by an overlay from a lower-precedence source. Overlay paths are
 resolved only by the source that declared them.
+Declaring an overlay that the source cannot load is a configuration error. The
+diagnostic names both the declaring source and the resolved file or embedded
+resource path; the source layer is not published partially.
 
 ---
 
@@ -230,6 +233,9 @@ otherwise depend on sample history. These values are validated before a
 
 `generation.stages` maps fixed stage names to boolean enable flags. Map key
 order has no runtime meaning. Unknown stage names are reported and ignored.
+World-generation and render boolean settings use the exact lowercase scalars
+`true` and `false`; aliases, mixed case, containers, and other malformed
+values are rejected with the source and full key path.
 
 Current stage names:
 

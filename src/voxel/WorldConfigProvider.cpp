@@ -1,6 +1,7 @@
 #include "Rigel/Voxel/WorldConfigProvider.h"
 
 #include <iterator>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace Rigel::Voxel {
@@ -12,7 +13,8 @@ void WorldConfigProvider::addSource(
 
 WorldConfiguration WorldConfigProvider::loadConfig() const {
     WorldConfiguration config;
-    auto applyOverlays = [&config](
+    auto applyOverlays = [](
+        WorldConfiguration& target,
         const Config::IConfigSource& source,
         std::vector<WorldGenConfig::OverlayConfig> pending) {
         std::unordered_set<std::string> appliedPaths;
@@ -21,7 +23,7 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
             WorldGenConfig::OverlayConfig overlay = std::move(pending[overlayIndex]);
             ++overlayIndex;
             if (!overlay.when.empty() &&
-                !config.generation.isFlagEnabled(overlay.when)) {
+                !target.generation.isFlagEnabled(overlay.when)) {
                 continue;
             }
             if (!appliedPaths.insert(overlay.path).second) {
@@ -30,14 +32,16 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
 
             auto overlayData = source.loadPath(overlay.path);
             if (!overlayData) {
-                continue;
+                throw std::runtime_error(
+                    "Missing configuration overlay '" + overlay.path +
+                    "' declared by '" + source.name() + "'");
             }
 
-            auto nestedOverlays = config.generation.applyYamlWithOverlays(
+            auto nestedOverlays = target.generation.applyYamlWithOverlays(
                 overlayData->name.c_str(),
                 overlayData->content
             );
-            config.streaming.applyYaml(
+            target.streaming.applyYaml(
                 overlayData->name.c_str(), overlayData->content);
             pending.insert(
                 pending.end(),
@@ -52,10 +56,12 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
         if (!yaml) {
             continue;
         }
-        auto overlays = config.generation.applyYamlWithOverlays(
+        WorldConfiguration candidate = config;
+        auto overlays = candidate.generation.applyYamlWithOverlays(
             source->name().c_str(), *yaml);
-        config.streaming.applyYaml(source->name().c_str(), *yaml);
-        applyOverlays(*source, std::move(overlays));
+        candidate.streaming.applyYaml(source->name().c_str(), *yaml);
+        applyOverlays(candidate, *source, std::move(overlays));
+        config = std::move(candidate);
     }
 
     config.generation.validate("merged world configuration");

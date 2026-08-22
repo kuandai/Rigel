@@ -342,6 +342,15 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
 std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays(
     const char* sourceName,
     const std::string& yaml) {
+    WorldGenConfig candidate = *this;
+    auto overlays = candidate.applyYamlUnchecked(sourceName, yaml);
+    *this = std::move(candidate);
+    return overlays;
+}
+
+std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlUnchecked(
+    const char* sourceName,
+    const std::string& yaml) {
     std::vector<OverlayConfig> declaredOverlays;
     if (yaml.empty()) {
         return declaredOverlays;
@@ -685,7 +694,12 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
                 if (!isKnownGenerationStage(name)) {
                     continue;
                 }
-                stageEnabled[name] = Util::readBool(stages, name.c_str(), true);
+                stageEnabled[name] = Util::readBool(
+                    stages,
+                    name.c_str(),
+                    true,
+                    sourceName,
+                    "generation.stages");
             }
         }
     }
@@ -695,7 +709,8 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
         if (flagsNode.is_map()) {
             for (ryml::ConstNodeRef flagNode : flagsNode.children()) {
                 std::string key = Util::toStdString(flagNode.key());
-                bool value = Util::readBool(flagsNode, key.c_str(), false);
+                bool value = Util::readBool(
+                    flagsNode, key.c_str(), false, sourceName, "flags");
                 flags[key] = value;
             }
         }

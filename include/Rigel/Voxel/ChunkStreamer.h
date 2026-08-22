@@ -292,6 +292,7 @@ private:
     void wakeGenerationCapacityWaiter();
     void wakeMissingMeshCapacityWaiter();
     void queueLoadedNeighbors(ChunkCoord coord);
+    std::optional<size_t> dirtyMeshPriority(ChunkCoord coord) const;
     void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
     void reprioritizeDirtyMeshes();
     void enqueueGeneration(ChunkCoord coord);

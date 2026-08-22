@@ -2,7 +2,7 @@
 
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
-#include "Rigel/Entity/EntityRegion.h"
+#include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/PersistenceService.h"
@@ -487,7 +487,8 @@ std::vector<Persistence::EntityRegionKey> expectedRegions(
             static_cast<int>(record.position.x),
             static_cast<int>(record.position.y),
             static_cast<int>(record.position.z));
-        const Entity::EntityRegionCoord region = Entity::chunkToRegion(chunk);
+        const Entity::PersistenceRegionCoord region =
+            Entity::persistenceRegionForChunk(chunk);
         coords.emplace(region.x, region.y, region.z);
     }
 
@@ -629,7 +630,7 @@ Persistence::EntityRegionSnapshot regionSnapshot(
     Persistence::EntityRegionSnapshot region;
     region.key = Persistence::EntityRegionKey{kZoneId, regionX, 0, 0};
     Persistence::EntityPersistedChunk chunk;
-    chunk.coord = Voxel::ChunkCoord{regionX * Entity::EntityRegionChunkSpan, 0, 0};
+    chunk.coord = Voxel::ChunkCoord{regionX * 16, 0, 0};
     for (const auto& record : records) {
         chunk.entities.push_back(persistedEntity(record));
     }

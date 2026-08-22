@@ -4,7 +4,6 @@
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Entity/EntityFactory.h"
 #include "Rigel/Entity/EntityPersistence.h"
-#include "Rigel/Entity/EntityRegion.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/ChunkSerializer.h"
 #include "Rigel/Persistence/Format.h"
@@ -229,7 +228,8 @@ void saveWorldToDisk(const Voxel::World& world,
                 static_cast<int>(std::floor(pos.y)),
                 static_cast<int>(std::floor(pos.z))
             );
-            Entity::EntityRegionCoord regionCoord = Entity::chunkToRegion(coord);
+            const Entity::PersistenceRegionCoord regionCoord =
+                Entity::persistenceRegionForChunk(coord);
             auto& region = entityRegions[std::make_tuple(
                 regionCoord.x, regionCoord.y, regionCoord.z)];
             auto it = region.chunkIndex.find(coord);

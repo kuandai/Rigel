@@ -7,7 +7,6 @@
 #include "Rigel/Persistence/Providers.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Entity/EntityPersistence.h"
-#include "Rigel/Entity/EntityRegion.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "CRWorldMetadata.h"
@@ -1661,8 +1660,8 @@ private:
                 throw std::runtime_error(
                     "CRFormat: duplicate entity chunk coordinates");
             }
-            const Entity::EntityRegionCoord expected =
-                Entity::chunkToRegion(chunk.coord);
+            const Entity::PersistenceRegionCoord expected =
+                Entity::persistenceRegionForChunk(chunk.coord);
             if (expected.x != region.key.x ||
                 expected.y != region.key.y ||
                 expected.z != region.key.z) {

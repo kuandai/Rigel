@@ -3,7 +3,6 @@
 #include "../entity/EntityPersistenceLimits.h"
 
 #include "Rigel/Entity/EntityPersistence.h"
-#include "Rigel/Entity/EntityRegion.h"
 #include "Rigel/Persistence/Format.h"
 #include "Rigel/Persistence/Storage.h"
 
@@ -386,8 +385,8 @@ void validateEntityRegionSnapshots(
                     "Duplicate entity chunk coordinates in region " +
                     describeRegion(region.key));
             }
-            const Entity::EntityRegionCoord expected =
-                Entity::chunkToRegion(chunk.coord);
+            const Entity::PersistenceRegionCoord expected =
+                Entity::persistenceRegionForChunk(chunk.coord);
             if (expected.x != region.key.x ||
                 expected.y != region.key.y ||
                 expected.z != region.key.z) {

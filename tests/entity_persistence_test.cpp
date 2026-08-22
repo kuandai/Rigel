@@ -30,6 +30,21 @@ std::vector<uint8_t> payloadHeader(uint32_t chunkCount) {
 
 } // namespace
 
+TEST_CASE(EntityPersistence_MapsChunkCoordinatesToRegions) {
+    const PersistenceRegionCoord boundaries =
+        persistenceRegionForChunk(ChunkCoord{15, 16, -1});
+    CHECK_EQ(boundaries.x, 0);
+    CHECK_EQ(boundaries.y, 1);
+    CHECK_EQ(boundaries.z, -1);
+
+    constexpr int minimum = std::numeric_limits<int>::min();
+    const PersistenceRegionCoord minimumRegion =
+        persistenceRegionForChunk(ChunkCoord{minimum, minimum + 1, 0});
+    CHECK_EQ(minimumRegion.x, minimum / 16);
+    CHECK_EQ(minimumRegion.y, minimum / 16);
+    CHECK_EQ(minimumRegion.z, 0);
+}
+
 TEST_CASE(EntityPersistence_RoundTrip) {
     constexpr float kEpsilon = 1.0e-5f;
 

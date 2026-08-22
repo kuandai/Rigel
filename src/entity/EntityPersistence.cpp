@@ -9,8 +9,18 @@
 namespace Rigel::Entity {
 
 namespace {
+constexpr int kPersistenceRegionChunkSpan = 16;
 constexpr uint32_t kEntityRegionMagic = 0x52474531; // "RGE1"
 constexpr uint16_t kEntityRegionVersion = 1;
+
+int floorDiv(int value, int divisor) {
+    int quotient = value / divisor;
+    if (value % divisor < 0) {
+        --quotient;
+    }
+    return quotient;
+}
+
 class BufferWriter {
 public:
     void writeU8(uint8_t value) {
@@ -171,6 +181,13 @@ bool readVec3(BufferReader& reader, glm::vec3& value) {
 }
 
 } // namespace
+
+PersistenceRegionCoord persistenceRegionForChunk(Voxel::ChunkCoord coord) {
+    return PersistenceRegionCoord{
+        floorDiv(coord.x, kPersistenceRegionChunkSpan),
+        floorDiv(coord.y, kPersistenceRegionChunkSpan),
+        floorDiv(coord.z, kPersistenceRegionChunkSpan)};
+}
 
 std::vector<uint8_t> encodeEntityRegionPayload(
     const std::vector<EntityPersistedChunk>& chunks) {

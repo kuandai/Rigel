@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace Rigel::Voxel {
@@ -10,9 +11,11 @@ struct StreamingWorkCount {
     size_t pending = 0;
     size_t inFlight = 0;
     uint64_t started = 0;
+    size_t terminalErrors = 0;
+    std::string lastError;
 
     bool empty() const {
-        return pending == 0 && inFlight == 0;
+        return pending == 0 && inFlight == 0 && terminalErrors == 0;
     }
 };
 

@@ -645,6 +645,7 @@ void Application::run() {
                             "streaming.lifecycle state={} "
                             "generation.pending={} generation.in_flight={} generation.started={} "
                             "load.pending={} load.in_flight={} load.started={} "
+                            "load.terminal_errors={} load.last_error=\"{}\" "
                             "mesh.pending={} mesh.in_flight={} mesh.started={} "
                             "stable_updates={}/{}",
                             Voxel::streamingLifecycleName(diagnostics.state),
@@ -654,6 +655,8 @@ void Application::run() {
                             diagnostics.chunkLoad.pending,
                             diagnostics.chunkLoad.inFlight,
                             diagnostics.chunkLoad.started,
+                            diagnostics.chunkLoad.terminalErrors,
+                            diagnostics.chunkLoad.lastError,
                             diagnostics.mesh.pending,
                             diagnostics.mesh.inFlight,
                             diagnostics.mesh.started,

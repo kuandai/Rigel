@@ -2,10 +2,16 @@
 
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace Rigel::Persistence {
+
+class StorageReadError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 class ByteReader {
 public:

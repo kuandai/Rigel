@@ -13,6 +13,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <queue>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -82,6 +83,7 @@ private:
         std::string error;
         bool ok = false;
         bool exists = false;
+        bool retryable = false;
     };
 
     struct ChunkPayload {
@@ -109,6 +111,8 @@ private:
                         ChunkLoadRequestId requestId);
     void startDeferredChunkLoads(
         std::vector<Voxel::ChunkLoadCompletion>* resolved = nullptr);
+    void startRetryChunkLoads(
+        std::vector<Voxel::ChunkLoadCompletion>* resolved = nullptr);
     void completeChunkLoad(Voxel::ChunkCoord coord,
                            ChunkLoadRequestId requestId,
                            Voxel::ChunkLoadOutcome outcome,
@@ -116,6 +120,13 @@ private:
     void restartChunkLoad(Voxel::ChunkCoord coord,
                           ChunkLoadRequestId requestId,
                           std::vector<Voxel::ChunkLoadCompletion>& resolved);
+    void scheduleRegionRetry(const RegionKey& key,
+                             ChunkRequestMap pending,
+                             const std::string& error);
+    void markTerminalChunkLoad(Voxel::ChunkCoord coord,
+                               ChunkLoadRequestId requestId,
+                               std::string diagnostic);
+    void refreshLastTerminalError();
     void deferRegionLoad(const RegionKey& key);
     void startDeferredRegionLoads();
     bool queueRegionLoad(const RegionKey& key);
@@ -131,6 +142,10 @@ private:
     bool applyPayload(const ChunkPayload& payload);
     void invalidateRegion(const RegionKey& key);
     ChunkLoadRequestId nextChunkLoadRequestId();
+
+    using RetryClock = std::chrono::steady_clock;
+    RetryClock::time_point retryNow() const;
+    RetryClock::duration retryDelay(size_t failureRounds) const;
 
     PersistenceService* m_service = nullptr;
     PersistenceContext m_context;
@@ -165,6 +180,38 @@ private:
     ChunkRequestMap m_pendingChunks;
     std::deque<Voxel::ChunkCoord> m_deferredChunkLoads;
     ChunkRequestMap m_deferredChunkRequests;
+
+    struct ChunkRetryState {
+        ChunkLoadRequestId requestId = 0;
+        RetryClock::time_point retryAfter{};
+    };
+
+    struct ChunkRetrySchedule {
+        Voxel::ChunkCoord coord;
+        ChunkLoadRequestId requestId = 0;
+        RetryClock::time_point retryAfter{};
+    };
+
+    struct ChunkRetryScheduleGreater {
+        bool operator()(const ChunkRetrySchedule& lhs,
+                        const ChunkRetrySchedule& rhs) const {
+            return lhs.retryAfter > rhs.retryAfter;
+        }
+    };
+
+    std::unordered_map<Voxel::ChunkCoord,
+                       ChunkRetryState,
+                       Voxel::ChunkCoordHash> m_retryChunks;
+    std::priority_queue<ChunkRetrySchedule,
+                        std::vector<ChunkRetrySchedule>,
+                        ChunkRetryScheduleGreater> m_retrySchedule;
+    std::unordered_map<Voxel::ChunkCoord,
+                       std::string,
+                       Voxel::ChunkCoordHash> m_terminalChunks;
+    std::unordered_map<Voxel::ChunkCoord,
+                       size_t,
+                       Voxel::ChunkCoordHash> m_chunkRetryRounds;
+    std::string m_lastTerminalError;
     std::deque<Voxel::ChunkLoadCompletion> m_resolvedChunks;
     ChunkRequestMap m_payloadInFlight;
     ChunkLoadRequestId m_nextChunkLoadRequestId = 1;
@@ -178,6 +225,8 @@ private:
     std::unordered_map<RegionKey, RegionPresence, RegionKeyHash> m_regionPresence;
     std::unordered_map<RegionKey, size_t, RegionKeyHash> m_regionLoadAttempts;
     std::unordered_map<RegionKey, uint64_t, RegionKeyHash> m_regionRevisions;
+
+    std::function<RetryClock::time_point()> m_retryClock;
 
     Voxel::detail::ThreadPool m_ioPool;
     Voxel::detail::ThreadPool m_workerPool;

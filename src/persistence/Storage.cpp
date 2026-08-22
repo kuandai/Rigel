@@ -54,7 +54,7 @@ public:
     explicit FileByteReader(const std::string& path)
         : m_path(path), m_stream(path, std::ios::binary), m_size(0) {
         if (!m_stream.is_open()) {
-            throw std::runtime_error("Failed to open file for reading: " + path);
+            throw StorageReadError("Failed to open file for reading: " + path);
         }
         m_size = static_cast<size_t>(std::filesystem::file_size(path));
     }

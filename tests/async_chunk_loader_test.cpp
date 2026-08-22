@@ -55,6 +55,12 @@ struct AsyncChunkLoaderTestAccess {
         return loader.m_chunkComplete.size();
     }
 
+    static void setRetryClock(
+        AsyncChunkLoader& loader,
+        std::function<std::chrono::steady_clock::time_point()> clock) {
+        loader.m_retryClock = std::move(clock);
+    }
+
     static void retainInRegionCompletionQueue(
         AsyncChunkLoader& loader,
         std::shared_ptr<ChunkRegionSnapshot> lifetimeProbe) {
@@ -286,7 +292,7 @@ public:
             if (m_failuresRemaining.compare_exchange_weak(
                     remaining,
                     remaining - 1)) {
-                throw std::runtime_error("injected transient read failure");
+                throw StorageReadError("injected transient read failure");
             }
         }
         return m_delegate->openRead(path);
@@ -316,6 +322,10 @@ public:
 
     size_t readAttempts() const {
         return m_readAttempts.load();
+    }
+
+    void restore() {
+        m_failuresRemaining.store(0);
     }
 
 private:
@@ -439,6 +449,9 @@ void configureStreamerLoader(ChunkStreamer& streamer,
     });
     streamer.setChunkLoadCancel([loader](ChunkCoord coord) {
         loader->cancel(coord);
+    });
+    streamer.setChunkLoadWorkCallback([loader]() {
+        return loader->workCount();
     });
     streamer.setChunkEvictionCallback([loader](ChunkCoord coord) {
         return loader->persistChunk(coord);
@@ -1495,7 +1508,7 @@ TEST_CASE(ChunkStreamer_TransientRegionFailurePreservesPersistedChunk) {
              static_cast<uint64_t>(0));
 }
 
-TEST_CASE(AsyncChunkLoader_RegionFailureExhaustionIsTerminal) {
+TEST_CASE(ChunkStreamer_ExhaustedRegionReadsRecoverWithoutCameraMovement) {
     WorldResources resources;
     World world;
     world.initialize(resources);
@@ -1518,7 +1531,111 @@ TEST_CASE(AsyncChunkLoader_RegionFailureExhaustionIsTerminal) {
                          payload);
     auto failingStorage = std::make_shared<TransientReadFailureStorage>(
         ctx.context.storage,
-        10);
+        100);
+    ctx.context.storage = failingStorage;
+
+    auto loader = std::make_shared<AsyncChunkLoader>(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+    loader->setPrefetchRadius(0);
+    auto retryNow = std::chrono::steady_clock::now();
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setRetryClock(
+        *loader,
+        [&retryNow]() { return retryNow; });
+
+    WorldMeshStore meshStore;
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
+    configureStreamerLoader(streamer, loader);
+    streamer.markSpawnDiscoveryComplete();
+
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(3));
+    CHECK(loader->isPending(coord));
+    CHECK(world.chunkManager().getChunk(coord) == nullptr);
+    CHECK_EQ(loader->workCount().pending, static_cast<size_t>(1));
+    CHECK_EQ(loader->workCount().inFlight, static_cast<size_t>(0));
+    CHECK_EQ(loader->workCount().terminalErrors, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(0));
+
+    for (int update = 0; update < 4; ++update) {
+        streamer.update(coord.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(3));
+    CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+
+    failingStorage->restore();
+    retryNow += std::chrono::seconds(1);
+    streamer.processCompletions();
+
+    Chunk* loaded = world.chunkManager().getChunk(coord);
+    CHECK(loaded != nullptr);
+    if (!loaded) {
+        return;
+    }
+    CHECK(loaded->loadedFromDisk());
+    verifyPayloadMatches(*loaded, payload);
+    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(4));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(0));
+    CHECK(!loader->isPending(coord));
+    CHECK_EQ(loader->workCount().pending, static_cast<size_t>(0));
+}
+
+TEST_CASE(AsyncChunkLoader_RegionRetryWaitUsesLoadCapacity) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID persisted = registerTestBlock(registry, "rigel:test_retry_capacity");
+    const ChunkCoord retryCoord{0, 0, 0};
+    const ChunkCoord activeCoord{64, 0, 0};
+    ChunkData retryPayload = buildPayload(
+        retryCoord, registry, {persisted}, false, std::nullopt, false);
+    ChunkData activePayload = buildPayload(
+        activeCoord, registry, {persisted}, false, std::nullopt, false);
+
+    MemoryContext ctx;
+    saveRegionForPayload(ctx.service,
+                         ctx.context,
+                         "rigel:default",
+                         retryCoord,
+                         retryPayload);
+    saveRegionForPayload(ctx.service,
+                         ctx.context,
+                         "rigel:default",
+                         activeCoord,
+                         activePayload);
+    auto failingStorage = std::make_shared<TransientReadFailureStorage>(
+        ctx.context.storage,
+        3);
     ctx.context.storage = failingStorage;
 
     AsyncChunkLoader loader(
@@ -1531,18 +1648,48 @@ TEST_CASE(AsyncChunkLoader_RegionFailureExhaustionIsTerminal) {
         1,
         generator);
     loader.setPrefetchRadius(0);
+    loader.setLoadQueueLimit(1);
+    loader.setRegionDrainBudget(3);
+    auto retryNow = std::chrono::steady_clock::now();
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setRetryClock(
+        loader,
+        [&retryNow]() { return retryNow; });
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(retryCoord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(activeCoord), ChunkLoadRequestResult::Deferred);
     auto resolved = loader.drainCompletions(8);
 
-    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(3));
+    CHECK(resolved.empty());
+    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(4));
+    CHECK(loader.isPending(retryCoord));
+    CHECK(loader.isPending(activeCoord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(2));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+
+    failingStorage->restore();
+    retryNow += std::chrono::seconds(1);
+    resolved = loader.drainCompletions(0);
+    CHECK(resolved.empty());
+    CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(4));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(2));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+
+    resolved = loader.drainCompletions(8);
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));
-    CHECK_EQ(resolved.front().coord, coord);
-    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Failed);
-    CHECK(!loader.isPending(coord));
-    CHECK(world.chunkManager().getChunk(coord) == nullptr);
+    CHECK_EQ(resolved.front().coord, activeCoord);
+    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
+    CHECK(loader.isPending(retryCoord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+
+    resolved = loader.drainCompletions(8);
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front().coord, retryCoord);
+    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
+    CHECK(!loader.isPending(retryCoord));
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+    verifyPayloadMatches(*world.chunkManager().getChunk(retryCoord), retryPayload);
 }
 
 TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
@@ -1596,15 +1743,16 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
     CHECK_EQ(loader.request(deferredCoord), ChunkLoadRequestResult::Deferred);
     CHECK(waitForRegionCompletion(loader));
     std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(1);
-    if (resolved.empty()) {
+    if (loader.workCount().terminalErrors == 0) {
         CHECK(waitForPayloadCompletions(loader, 1));
-        resolved = loader.drainCompletions(8);
+        resolved = loader.drainCompletions(1);
     }
 
-    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
-    CHECK_EQ(resolved.front().coord, coord);
-    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Failed);
-    CHECK(!loader.isPending(coord));
+    CHECK(resolved.empty());
+    CHECK(loader.isPending(coord));
+    CHECK_EQ(loader.workCount().terminalErrors, static_cast<size_t>(1));
+    CHECK(loader.workCount().lastError.find("(0, 0, 0)") != std::string::npos);
+    CHECK(loader.workCount().lastError.find("repair") != std::string::npos);
 
     CHECK(waitForPayloadCompletions(loader, 1));
     resolved = loader.drainCompletions(8);
@@ -1612,10 +1760,42 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
     CHECK_EQ(resolved.front().coord, deferredCoord);
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
     CHECK(!loader.isPending(deferredCoord));
-    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().terminalErrors, static_cast<size_t>(1));
+    CHECK(!loader.workCount().empty());
     CHECK(world.chunkManager().getChunk(coord) == nullptr);
     CHECK(world.chunkManager().getChunk(deferredCoord) != nullptr);
+
+    WorldMeshStore meshStore;
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
+    auto sharedLoader = std::shared_ptr<AsyncChunkLoader>(&loader, [](AsyncChunkLoader*) {});
+    configureStreamerLoader(streamer, sharedLoader);
+    streamer.markSpawnDiscoveryComplete();
+    for (int update = 0; update < 4; ++update) {
+        streamer.update(coord.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+    CHECK_EQ(streamer.diagnostics().chunkLoad.terminalErrors,
+             static_cast<size_t>(1));
+    CHECK(!streamer.diagnostics().workEmpty());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(0));
+
+    streamer.update(deferredCoord.toWorldCenter());
+    CHECK(!loader.isPending(coord));
+    CHECK_EQ(loader.workCount().terminalErrors, static_cast<size_t>(0));
+    CHECK(loader.workCount().lastError.empty());
 }
 
 TEST_CASE(AsyncChunkLoader_RegionCapacityStartsDeferredRequests) {

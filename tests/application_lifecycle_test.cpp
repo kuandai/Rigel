@@ -1,10 +1,18 @@
 #include "TestFramework.h"
 
+#include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
 
+#include <cstdlib>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
 namespace {
 
@@ -13,6 +21,7 @@ struct LifecycleCalls {
     std::vector<Rigel::ApplicationShutdownStage> shutdown;
     GLFWwindow* window = reinterpret_cast<GLFWwindow*>(0x1);
     GLFWwindow* destroyedWindow = nullptr;
+    bool runLoopEntered = false;
 };
 
 LifecycleCalls* g_calls = nullptr;
@@ -26,6 +35,33 @@ public:
     ~ScopedLifecycleCalls() {
         g_calls = nullptr;
     }
+};
+
+class ErrorLogCapture {
+public:
+    ErrorLogCapture()
+        : m_previous(spdlog::default_logger())
+        , m_logger(std::make_shared<spdlog::logger>(
+              "application-lifecycle-test",
+              std::make_shared<spdlog::sinks::ostream_sink_mt>(m_output))) {
+        m_logger->set_level(spdlog::level::err);
+        m_logger->set_pattern("%v");
+        spdlog::set_default_logger(m_logger);
+    }
+
+    ~ErrorLogCapture() {
+        spdlog::set_default_logger(m_previous);
+    }
+
+    std::string output() {
+        m_logger->flush();
+        return m_output.str();
+    }
+
+private:
+    std::ostringstream m_output;
+    std::shared_ptr<spdlog::logger> m_previous;
+    std::shared_ptr<spdlog::logger> m_logger;
 };
 
 int initialize() {
@@ -56,7 +92,11 @@ void makeContextCurrent(GLFWwindow* window) {
 }
 
 void failAfterContextAcquired() {
-    throw std::runtime_error("construction failed");
+    throw std::runtime_error("required bootstrap data unavailable");
+}
+
+void recordRunLoopEntry(Rigel::Application&) {
+    g_calls->runLoopEntered = true;
 }
 
 void recordShutdownStage(Rigel::ApplicationShutdownStage stage) noexcept {
@@ -72,6 +112,16 @@ Rigel::GlfwRuntime::Api fakeRuntimeApi() {
         &destroyWindow,
         &makeContextCurrent,
     };
+}
+
+void runFailingApplication() {
+    Rigel::ApplicationTestAccess::constructAndRun(
+        {
+            fakeRuntimeApi(),
+            &failAfterContextAcquired,
+            &recordShutdownStage,
+        },
+        &recordRunLoopEntry);
 }
 
 } // namespace
@@ -108,4 +158,17 @@ TEST_CASE(Application_ConstructionFailureUsesOrderedShutdownOnce) {
     };
     CHECK_EQ(calls.runtime, expectedRuntime);
     CHECK_EQ(calls.destroyedWindow, calls.window);
+}
+
+TEST_CASE(Application_BootstrapFailureReturnsFailureBeforeRunLoop) {
+    LifecycleCalls calls;
+    ScopedLifecycleCalls scopedCalls(calls);
+    ErrorLogCapture logs;
+
+    const int result = Rigel::runApplication(&runFailingApplication);
+
+    CHECK_EQ(result, EXIT_FAILURE);
+    CHECK(!calls.runLoopEntered);
+    CHECK(logs.output().find("required bootstrap data unavailable") !=
+          std::string::npos);
 }

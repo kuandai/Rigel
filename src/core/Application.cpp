@@ -1,4 +1,5 @@
 #include "Rigel/Application.h"
+#include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
 #include "GlfwRuntime.h"
 #include "Rigel/Asset/AssetManager.h"
@@ -452,6 +453,33 @@ Application::~Application() {
 
 void ApplicationTestAccess::construct(ApplicationConstructionHooks hooks) {
     Application application(std::make_unique<Application::Impl>(hooks));
+}
+
+void ApplicationTestAccess::constructAndRun(
+    ApplicationConstructionHooks hooks,
+    void (*runLoop)(Application&)
+) {
+    Application application(std::make_unique<Application::Impl>(hooks));
+    runLoop(application);
+}
+
+int runApplication(ApplicationMain applicationMain) noexcept {
+    try {
+        applicationMain();
+        return EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        spdlog::error("Application error: {}", e.what());
+    } catch (...) {
+        spdlog::error("Application error: unknown failure");
+    }
+    return EXIT_FAILURE;
+}
+
+int runApplication() noexcept {
+    return runApplication([] {
+        Application application;
+        application.run();
+    });
 }
 
 void Application::run() {

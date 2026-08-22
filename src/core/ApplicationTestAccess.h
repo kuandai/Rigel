@@ -4,6 +4,8 @@
 
 namespace Rigel {
 
+class Application;
+
 enum class ApplicationShutdownStage {
     ContextMadeCurrent,
     UserInterfaceReleased,
@@ -23,6 +25,9 @@ struct ApplicationConstructionHooks {
 class ApplicationTestAccess {
 public:
     static void construct(ApplicationConstructionHooks hooks);
+    static void constructAndRun(
+        ApplicationConstructionHooks hooks,
+        void (*runLoop)(Application&));
 };
 
 } // namespace Rigel

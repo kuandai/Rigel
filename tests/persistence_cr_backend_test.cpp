@@ -451,6 +451,32 @@ void checkCRRegionError(Fn&& fn, const std::string& expected) {
     throw Rigel::Test::TestFailure("Expected CR region format error");
 }
 
+template <typename Fn>
+void checkCRBinError(Fn&& fn, const std::string& expected) {
+    try {
+        fn();
+    } catch (const std::runtime_error& error) {
+        if (std::string(error.what()) != expected) {
+            throw Rigel::Test::TestFailure(
+                "Expected CRBin error '" + expected + "', got '" + error.what() + "'");
+        }
+        return;
+    }
+    throw Rigel::Test::TestFailure("Expected CRBin format error");
+}
+
+CRBinDocument readCRBinFixture(std::vector<uint8_t> bytes) {
+    InMemoryByteReader reader(std::move(bytes));
+    return CRBinReader::read(reader);
+}
+
+void writeCRBinSchemaEntry(InMemoryByteWriter& writer,
+                           CRSchemaType type,
+                           const std::string& name) {
+    writer.writeU8(static_cast<uint8_t>(type));
+    writeFixtureString(writer, name);
+}
+
 std::vector<uint8_t> makeEmptyFixtureRecord(int32_t x, int32_t y, int32_t z) {
     std::vector<uint8_t> bytes;
     InMemoryByteWriter writer(bytes);
@@ -1579,6 +1605,7 @@ TEST_CASE(CRBin_roundtrip_basic) {
     CRBinDocument doc;
     doc.schema.entries = {
         {"id", CRSchemaType::Int},
+        {"time", CRSchemaType::Long},
         {"name", CRSchemaType::String},
         {"flag", CRSchemaType::Boolean},
         {"items", CRSchemaType::IntArray},
@@ -1590,6 +1617,7 @@ TEST_CASE(CRBin_roundtrip_basic) {
 
     CRBinObject root;
     root.fields["id"] = CRBinValue::fromInt(42);
+    root.fields["time"] = CRBinValue::fromInt(std::numeric_limits<int64_t>::min());
     root.fields["name"] = CRBinValue::fromString("demo");
     root.fields["flag"] = CRBinValue::fromBool(true);
     CRBinValue::Array items;
@@ -1613,6 +1641,8 @@ TEST_CASE(CRBin_roundtrip_basic) {
     auto loaded = CRBinReader::read(reader);
 
     CHECK_EQ(asInt(requireField(loaded.root, "id")), 42);
+    CHECK_EQ(asInt(requireField(loaded.root, "time")),
+             std::numeric_limits<int64_t>::min());
     CHECK_EQ(asString(requireField(loaded.root, "name")), "demo");
     CHECK_EQ(asBool(requireField(loaded.root, "flag")), true);
 
@@ -1628,6 +1658,194 @@ TEST_CASE(CRBin_roundtrip_basic) {
     CHECK(std::holds_alternative<CRBinObject>(childValue.value));
     const auto& childObj = std::get<CRBinObject>(childValue.value);
     CHECK_EQ(asFloat(requireField(childObj, "value")), 1.25f);
+}
+
+TEST_CASE(CRBin_rejects_invalid_table_and_string_declarations) {
+    for (int32_t count : {-1, std::numeric_limits<int32_t>::max()}) {
+        std::vector<uint8_t> bytes;
+        InMemoryByteWriter writer(bytes);
+        writer.writeI32(count);
+        checkCRBinError(
+            [&]() { readCRBinFixture(bytes); },
+            count < 0
+                ? "CRBinReader: invalid string table size"
+                : "CRBinReader: string table size exceeds format limit");
+    }
+
+    std::vector<uint8_t> truncatedTable;
+    InMemoryByteWriter truncatedTableWriter(truncatedTable);
+    truncatedTableWriter.writeI32(1);
+    checkCRBinError(
+        [&]() { readCRBinFixture(truncatedTable); },
+        "CRBinReader: string table exceeds remaining input");
+
+    for (int32_t length : {1'048'577, std::numeric_limits<int32_t>::max()}) {
+        std::vector<uint8_t> bytes;
+        InMemoryByteWriter writer(bytes);
+        writer.writeI32(1);
+        writer.writeI32(length);
+        checkCRBinError(
+            [&]() { readCRBinFixture(bytes); },
+            "CRBinReader: string length exceeds format limit");
+    }
+
+    std::vector<uint8_t> truncatedString;
+    InMemoryByteWriter truncatedStringWriter(truncatedString);
+    truncatedStringWriter.writeI32(1);
+    truncatedStringWriter.writeI32(2);
+    truncatedStringWriter.writeU8('x');
+    checkCRBinError(
+        [&]() { readCRBinFixture(truncatedString); },
+        "CRBinReader: string length exceeds remaining input");
+
+    std::vector<uint8_t> empty;
+    InMemoryByteWriter emptyWriter(empty);
+    emptyWriter.writeI32(0);
+    emptyWriter.writeU8(0);
+    emptyWriter.writeI32(0);
+    CHECK(readCRBinFixture(empty).root.fields.empty());
+}
+
+TEST_CASE(CRBin_rejects_unbounded_schema_declarations) {
+    std::vector<uint8_t> oversizedSchema;
+    InMemoryByteWriter schemaWriter(oversizedSchema);
+    schemaWriter.writeI32(0);
+    for (size_t i = 0; i < 4'097; ++i) {
+        writeCRBinSchemaEntry(schemaWriter, CRSchemaType::Byte, std::to_string(i));
+    }
+    checkCRBinError(
+        [&]() { readCRBinFixture(oversizedSchema); },
+        "CRBinReader: schema entry count exceeds format limit");
+
+    std::vector<uint8_t> oversizedTable;
+    InMemoryByteWriter tableWriter(oversizedTable);
+    tableWriter.writeI32(0);
+    tableWriter.writeU8(0);
+    tableWriter.writeI32(std::numeric_limits<int32_t>::max());
+    checkCRBinError(
+        [&]() { readCRBinFixture(oversizedTable); },
+        "CRBinReader: alternate schema count exceeds format limit");
+
+    std::vector<uint8_t> truncatedSchema;
+    InMemoryByteWriter truncatedWriter(truncatedSchema);
+    truncatedWriter.writeI32(0);
+    checkCRBinError(
+        [&]() { readCRBinFixture(truncatedSchema); },
+        "CRBinReader: schema exceeds remaining input");
+}
+
+TEST_CASE(CRBin_validates_array_declarations_before_allocation) {
+    auto makeArray = [](int32_t length, size_t values = 0) {
+        std::vector<uint8_t> bytes;
+        InMemoryByteWriter writer(bytes);
+        writer.writeI32(0);
+        writeCRBinSchemaEntry(writer, CRSchemaType::IntArray, "items");
+        writer.writeU8(0);
+        writer.writeI32(0);
+        writer.writeI32(length);
+        for (size_t i = 0; i < values; ++i) {
+            writer.writeI32(static_cast<int32_t>(i));
+        }
+        return bytes;
+    };
+
+    checkCRBinError(
+        [&]() { readCRBinFixture(makeArray(-2)); },
+        "CRBinReader: array length is below null sentinel");
+    checkCRBinError(
+        [&]() { readCRBinFixture(makeArray(std::numeric_limits<int32_t>::max())); },
+        "CRBinReader: array length exceeds format limit");
+    checkCRBinError(
+        [&]() { readCRBinFixture(makeArray(1)); },
+        "CRBinReader: array exceeds remaining input");
+
+    auto nullArray = readCRBinFixture(makeArray(-1));
+    CHECK(std::holds_alternative<std::monostate>(
+        requireField(nullArray.root, "items").value));
+    auto emptyArray = readCRBinFixture(makeArray(0));
+    CHECK(std::get<CRBinValue::Array>(
+        requireField(emptyArray.root, "items").value).empty());
+}
+
+TEST_CASE(CRBin_accepts_only_defined_null_and_valid_references) {
+    auto makeStringReference = [](CRSchemaType type, int32_t reference) {
+        std::vector<uint8_t> bytes;
+        InMemoryByteWriter writer(bytes);
+        writer.writeI32(1);
+        writeFixtureString(writer, "value");
+        writeCRBinSchemaEntry(writer, type, "field");
+        writer.writeU8(0);
+        writer.writeI32(0);
+        if (type == CRSchemaType::StringArray) {
+            writer.writeI32(1);
+        }
+        writer.writeI32(reference);
+        return bytes;
+    };
+
+    auto valid = readCRBinFixture(makeStringReference(CRSchemaType::String, 0));
+    CHECK_EQ(asString(requireField(valid.root, "field")), "value");
+    auto nullValue = readCRBinFixture(makeStringReference(CRSchemaType::String, -1));
+    CHECK(std::holds_alternative<std::monostate>(
+        requireField(nullValue.root, "field").value));
+
+    for (CRSchemaType type : {CRSchemaType::String, CRSchemaType::StringArray}) {
+        for (int32_t reference : {-2, 1}) {
+            checkCRBinError(
+                [&]() { readCRBinFixture(makeStringReference(type, reference)); },
+                reference < -1
+                    ? "CRBinReader: string reference is below null sentinel"
+                    : "CRBinReader: string reference out of range");
+        }
+    }
+
+    auto makeObjectReference = [](int32_t reference) {
+        std::vector<uint8_t> bytes;
+        InMemoryByteWriter writer(bytes);
+        writer.writeI32(0);
+        writeCRBinSchemaEntry(writer, CRSchemaType::Object, "field");
+        writer.writeU8(0);
+        writer.writeI32(1);
+        writer.writeU8(0);
+        writer.writeI32(reference);
+        return bytes;
+    };
+
+    auto nullObject = readCRBinFixture(makeObjectReference(-1));
+    CHECK(std::holds_alternative<std::monostate>(
+        requireField(nullObject.root, "field").value));
+    for (int32_t reference : {-2, 1}) {
+        checkCRBinError(
+            [&]() { readCRBinFixture(makeObjectReference(reference)); },
+            reference < -1
+                ? "CRBinReader: schema reference is below null sentinel"
+                : "CRBinReader: schema reference out of range");
+    }
+}
+
+TEST_CASE(CRBin_writer_validates_records_before_output) {
+    CRBinDocument invalidObject;
+    invalidObject.schema.entries = {{"child", CRSchemaType::Object}};
+    invalidObject.altSchemas.emplace_back();
+    CRBinObject child;
+    child.schemaIndex = 1;
+    invalidObject.root.fields["child"] = CRBinValue::fromObject(std::move(child));
+
+    std::vector<uint8_t> target{0xAA, 0xBB, 0xCC};
+    InMemoryByteWriter writer(target);
+    checkCRBinError(
+        [&]() { CRBinWriter::write(writer, invalidObject); },
+        "CRBinWriter: schema reference out of range");
+    CHECK_EQ(target, (std::vector<uint8_t>{0xAA, 0xBB, 0xCC}));
+
+    CRBinDocument oversizedString;
+    oversizedString.schema.entries = {{"value", CRSchemaType::String}};
+    oversizedString.root.fields["value"] =
+        CRBinValue::fromString(std::string(1'048'577, 'x'));
+    checkCRBinError(
+        [&]() { CRBinWriter::write(writer, oversizedString); },
+        "CRBinWriter: string length exceeds format limit");
+    CHECK_EQ(target, (std::vector<uint8_t>{0xAA, 0xBB, 0xCC}));
 }
 
 TEST_CASE(CRBackend_filesystem_region_roundtrip) {

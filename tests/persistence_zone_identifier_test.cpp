@@ -115,7 +115,12 @@ const std::vector<std::string>& invalidZoneIds() {
         "Rigel:default",
         "rigel:default.",
         "con",
-        "rigel:nul.txt"
+        "rigel:nul.txt",
+        "parent:regions",
+        "parent:entities",
+        "parent:chunks",
+        "parent:zone.meta",
+        "parent:zoneinfo.json"
     };
     return ids;
 }
@@ -164,6 +169,13 @@ TEST_CASE(Persistence_ZoneIdentifierValidationPrecedesStorageOperations) {
                     ZoneMetadata{invalid, "Unsafe Zone"}, context);
             },
             invalid);
+        const std::string conflicting = "parent:zone.meta";
+        checkIdentifierError(
+            [&]() {
+                service.saveZoneMetadata(
+                    ZoneMetadata{conflicting, "Conflicting Zone"}, context);
+            },
+            conflicting);
 
         WorldSnapshot world;
         world.metadata = WorldMetadata{"world", "World"};
@@ -288,3 +300,137 @@ TEST_CASE(Persistence_ValidNamespacedZoneIdentifierIsConfinedAndDistinct) {
         },
         "rigel/default");
 }
+
+TEST_CASE(Persistence_ZoneIdentifiersCannotAliasZoneStorageChildren) {
+    Rigel::Test::TemporaryDirectory directory("rigel_zone_child_alias");
+
+    for (const std::string& formatId : {std::string("memory"), std::string("cr")}) {
+        FormatRegistry registry;
+        registerFormats(registry);
+        PersistenceService service(registry);
+        auto storage = std::make_shared<FilesystemBackend>();
+        const auto root = directory.path() / formatId;
+        auto context = makeContext(formatId, root.string(), storage);
+
+        const ZoneMetadata parent{"parent", "Parent Zone"};
+        service.saveZoneMetadata(parent, context);
+
+        for (const std::string& conflictingId : {
+                 std::string("parent:regions"),
+                 std::string("parent:entities"),
+                 std::string("parent:chunks"),
+                 std::string("parent:zone.meta"),
+                 std::string("parent:zoneinfo.json")}) {
+            checkIdentifierError(
+                [&]() {
+                    service.saveZoneMetadata(
+                        ZoneMetadata{conflictingId, "Conflicting Zone"},
+                        context);
+                },
+                conflictingId);
+        }
+
+        CHECK_EQ(
+            service.loadZoneMetadata(ZoneKey{parent.zoneId}, context).zoneId,
+            parent.zoneId);
+    }
+}
+
+#ifndef _WIN32
+TEST_CASE(MemoryFormat_LoadsNamespacedZonesFromPreviousStorageLayout) {
+    Rigel::Test::TemporaryDirectory directory("rigel_memory_zone_layout");
+    FormatRegistry registry;
+    registerFormats(registry);
+    PersistenceService service(registry);
+    auto storage = std::make_shared<FilesystemBackend>();
+    auto context = makeContext("memory", directory.path().string(), storage);
+    const std::string zoneId = "rigel:default";
+    const ZoneMetadata metadata{zoneId, "Default Zone"};
+
+    ChunkSnapshot chunk;
+    chunk.key = ChunkKey{zoneId, 1, 2, 3};
+    chunk.data.span.chunkX = 1;
+    chunk.data.span.chunkY = 2;
+    chunk.data.span.chunkZ = 3;
+    chunk.data.span.sizeX = 1;
+    chunk.data.span.sizeY = 1;
+    chunk.data.span.sizeZ = 1;
+    chunk.data.blocks.push_back(Rigel::Voxel::BlockState{});
+    const ChunkRegionSnapshot region{
+        RegionKey{zoneId, 0, 0, 0}, {chunk}};
+
+    EntityPersistedChunk entityChunk;
+    entityChunk.coord = Rigel::Voxel::ChunkCoord{1, 2, 3};
+    const EntityRegionSnapshot entities{
+        EntityRegionKey{zoneId, 0, 0, 0}, {entityChunk}};
+
+    service.saveZoneMetadata(metadata, context);
+    service.saveRegion(region, context);
+    service.saveEntities(entities, context);
+    service.openFormat(context)->chunkContainer().saveChunk(chunk);
+
+    const auto canonicalRoot =
+        directory.path() / "zones" / "rigel" / "default";
+    const auto previousRoot =
+        directory.path() / "zones" / "rigel:default";
+    std::filesystem::rename(canonicalRoot, previousRoot);
+
+    CHECK_EQ(service.loadZoneMetadata(ZoneKey{zoneId}, context), metadata);
+    CHECK_EQ(service.loadRegion(region.key, context), region);
+    CHECK_EQ(service.loadEntities(entities.key, context), entities);
+    CHECK_EQ(
+        service.openFormat(context)->chunkContainer().loadChunk(chunk.key),
+        chunk);
+
+    const ZoneMetadata updated{zoneId, "Updated Zone"};
+    service.saveZoneMetadata(updated, context);
+    CHECK_EQ(service.loadZoneMetadata(ZoneKey{zoneId}, context), updated);
+
+    auto format = service.openFormat(context);
+    format->entityContainer().removeRegion(entities.key);
+    CHECK_EQ(service.loadEntities(entities.key, context),
+             (EntityRegionSnapshot{entities.key, {}}));
+
+    CHECK(std::filesystem::exists(previousRoot / "zone.meta"));
+    CHECK(std::filesystem::exists(
+        previousRoot / "regions" / "region_0_0_0.mem"));
+    CHECK(std::filesystem::exists(
+        previousRoot / "chunks" / "chunk_1_2_3.mem"));
+    CHECK(!std::filesystem::exists(
+        previousRoot / "entities" / "entityRegion_0_0_0.mem"));
+    CHECK(!std::filesystem::exists(canonicalRoot));
+}
+
+TEST_CASE(MemoryFormat_RejectsSplitNamespacedZoneStorageLayouts) {
+    Rigel::Test::TemporaryDirectory directory("rigel_memory_split_zone");
+    FormatRegistry registry;
+    registerFormats(registry);
+    PersistenceService service(registry);
+    auto storage = std::make_shared<FilesystemBackend>();
+    auto context = makeContext("memory", directory.path().string(), storage);
+    const std::string zoneId = "rigel:default";
+
+    service.saveZoneMetadata(ZoneMetadata{zoneId, "Current"}, context);
+    const auto canonicalPath =
+        directory.path() / "zones" / "rigel" / "default" / "zone.meta";
+    const auto previousPath =
+        directory.path() / "zones" / "rigel:default" / "zone.meta";
+    auto previousSession = storage->openWrite(
+        previousPath.string(), AtomicWriteOptions{});
+    previousSession->commit();
+
+    std::string diagnostic;
+    try {
+        service.saveZoneMetadata(ZoneMetadata{zoneId, "Replacement"}, context);
+    } catch (const std::runtime_error& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK(diagnostic.find("MemoryFormat configuration error") !=
+          std::string::npos);
+    CHECK(diagnostic.find(zoneId) != std::string::npos);
+    CHECK(diagnostic.find("both") != std::string::npos);
+    CHECK(std::filesystem::exists(canonicalPath));
+    CHECK(std::filesystem::exists(previousPath));
+}
+#endif

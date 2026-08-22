@@ -16,7 +16,8 @@ constexpr size_t kMaximumSegmentLength = 64;
         std::string(zoneId) + "' " + reason +
         "; expected one or two lowercase ASCII name segments separated by "
         "a single ':', with each segment starting and ending in a letter or "
-        "digit and containing only letters, digits, '.', '_', or '-'");
+        "digit and containing only letters, digits, '.', '_', or '-'; "
+        "namespace-local segments cannot use persistence storage names");
 }
 
 bool isLowercaseLetterOrDigit(char value) {
@@ -41,6 +42,14 @@ bool isReservedPlatformName(std::string_view segment) {
         return true;
     }
     return false;
+}
+
+bool isBackendStorageChild(std::string_view segment) {
+    return segment == "regions" ||
+        segment == "entities" ||
+        segment == "chunks" ||
+        segment == "zone.meta" ||
+        segment == "zoneinfo.json";
 }
 
 void validateSegment(std::string_view zoneId, std::string_view segment) {
@@ -82,7 +91,12 @@ void validateZoneIdentifier(std::string_view zoneId) {
         throwIdentifierError(zoneId, "resembles a drive-relative path");
     }
     validateSegment(zoneId, zoneId.substr(0, separator));
-    validateSegment(zoneId, zoneId.substr(separator + 1));
+    const auto localName = zoneId.substr(separator + 1);
+    validateSegment(zoneId, localName);
+    if (isBackendStorageChild(localName)) {
+        throwIdentifierError(
+            zoneId, "uses a name reserved for persistence storage");
+    }
 }
 
 std::string zoneIdentifierStoragePath(std::string_view zoneId) {

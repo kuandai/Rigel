@@ -78,8 +78,56 @@ void validateStringSize(const std::string& value) {
     }
 }
 
-std::string zoneRoot(const PersistenceContext& context, const std::string& zoneId) {
+std::string canonicalZoneRoot(const PersistenceContext& context,
+                              const std::string& zoneId) {
     return context.rootPath + "/zones/" + detail::zoneIdentifierStoragePath(zoneId);
+}
+
+#ifndef _WIN32
+std::string previousZoneRoot(const PersistenceContext& context,
+                             const std::string& zoneId) {
+    return context.rootPath + "/zones/" + zoneId;
+}
+
+bool hasStoredZone(StorageBackend& storage, const std::string& root) {
+    if (storage.exists(root)) {
+        return true;
+    }
+    const auto childPrefix = root + "/";
+    for (const auto& entry : storage.list(root)) {
+        if (entry == root || entry.rfind(childPrefix, 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
+std::string zoneRoot(StorageBackend& storage,
+                     const PersistenceContext& context,
+                     const std::string& zoneId) {
+    detail::validateZoneIdentifier(zoneId);
+    const auto canonicalRoot = canonicalZoneRoot(context, zoneId);
+
+#ifdef _WIN32
+    return canonicalRoot;
+#else
+    if (zoneId.find(':') == std::string::npos) {
+        return canonicalRoot;
+    }
+
+    const auto legacyRoot = previousZoneRoot(context, zoneId);
+    const bool hasCanonicalData = hasStoredZone(storage, canonicalRoot);
+    const bool hasLegacyData = hasStoredZone(storage, legacyRoot);
+    if (hasCanonicalData && hasLegacyData) {
+        throw std::runtime_error(
+            "MemoryFormat configuration error: zone identifier '" + zoneId +
+            "' has data in both its current and previous storage layouts; "
+            "consolidate the zone under '" + canonicalRoot +
+            "' before continuing");
+    }
+    return hasLegacyData ? legacyRoot : canonicalRoot;
+#endif
 }
 
 std::string parentPath(const std::string& path) {
@@ -90,18 +138,24 @@ std::string parentPath(const std::string& path) {
     return path.substr(0, pos);
 }
 
-std::string regionPath(const PersistenceContext& context, const RegionKey& key) {
-    return zoneRoot(context, key.zoneId) + "/regions/region_" + std::to_string(key.x) + "_" +
+std::string regionPath(StorageBackend& storage,
+                       const PersistenceContext& context,
+                       const RegionKey& key) {
+    return zoneRoot(storage, context, key.zoneId) + "/regions/region_" + std::to_string(key.x) + "_" +
         std::to_string(key.y) + "_" + std::to_string(key.z) + ".mem";
 }
 
-std::string entityRegionPath(const PersistenceContext& context, const EntityRegionKey& key) {
-    return zoneRoot(context, key.zoneId) + "/entities/entityRegion_" + std::to_string(key.x) + "_" +
+std::string entityRegionPath(StorageBackend& storage,
+                             const PersistenceContext& context,
+                             const EntityRegionKey& key) {
+    return zoneRoot(storage, context, key.zoneId) + "/entities/entityRegion_" + std::to_string(key.x) + "_" +
         std::to_string(key.y) + "_" + std::to_string(key.z) + ".mem";
 }
 
-std::string chunkPath(const PersistenceContext& context, const ChunkKey& key) {
-    return zoneRoot(context, key.zoneId) + "/chunks/chunk_" + std::to_string(key.x) + "_" +
+std::string chunkPath(StorageBackend& storage,
+                      const PersistenceContext& context,
+                      const ChunkKey& key) {
+    return zoneRoot(storage, context, key.zoneId) + "/chunks/chunk_" + std::to_string(key.x) + "_" +
         std::to_string(key.y) + "_" + std::to_string(key.z) + ".mem";
 }
 
@@ -299,8 +353,12 @@ public:
 
 class MemoryZoneMetadataCodec final : public ZoneMetadataCodec {
 public:
+    explicit MemoryZoneMetadataCodec(std::shared_ptr<StorageBackend> storage)
+        : m_storage(std::move(storage)) {
+    }
+
     std::string metadataPath(const ZoneKey& key, const PersistenceContext& context) const override {
-        return zoneRoot(context, key.zoneId) + "/zone.meta";
+        return zoneRoot(*m_storage, context, key.zoneId) + "/zone.meta";
     }
 
     void write(const ZoneMetadata& metadata, ByteWriter& writer) override {
@@ -318,6 +376,9 @@ public:
         detail::validateZoneIdentifier(out.zoneId);
         return out;
     }
+
+private:
+    std::shared_ptr<StorageBackend> m_storage;
 };
 
 class MemoryChunkCodec final : public ChunkCodec {
@@ -464,7 +525,7 @@ public:
     }
 
     bool regionExists(const RegionKey& key) override {
-        return m_storage->exists(regionPath(m_context, key));
+        return m_storage->exists(regionPath(*m_storage, m_context, key));
     }
 
     void saveRegion(const ChunkRegionSnapshot& region) override {
@@ -478,7 +539,7 @@ public:
                 chunk.data.span, chunk.data.blocks.size());
         }
 
-        auto path = regionPath(m_context, region.key);
+        auto path = regionPath(*m_storage, m_context, region.key);
         m_storage->mkdirs(parentPath(path));
         auto session = m_storage->openWrite(path, AtomicWriteOptions{});
         auto& writer = session->writer();
@@ -493,7 +554,7 @@ public:
     ChunkRegionSnapshot loadRegion(const RegionKey& key) override {
         ChunkRegionSnapshot region;
         region.key = key;
-        auto path = regionPath(m_context, key);
+        auto path = regionPath(*m_storage, m_context, key);
         if (!m_storage->exists(path)) {
             return region;
         }
@@ -519,7 +580,7 @@ public:
 
     std::vector<RegionKey> listRegions(const std::string& zoneId) override {
         std::vector<RegionKey> regions;
-        std::string dir = zoneRoot(m_context, zoneId) + "/regions";
+        std::string dir = zoneRoot(*m_storage, m_context, zoneId) + "/regions";
         if (!m_storage->exists(dir)) {
             return regions;
         }
@@ -541,7 +602,7 @@ public:
     }
 
     void saveChunk(const ChunkSnapshot& chunk) override {
-        auto path = chunkPath(m_context, chunk.key);
+        auto path = chunkPath(*m_storage, m_context, chunk.key);
         m_storage->mkdirs(parentPath(path));
         auto session = m_storage->openWrite(path, AtomicWriteOptions{});
         m_codec.write(chunk, session->writer());
@@ -550,7 +611,7 @@ public:
     }
 
     ChunkSnapshot loadChunk(const ChunkKey& key) override {
-        auto path = chunkPath(m_context, key);
+        auto path = chunkPath(*m_storage, m_context, key);
         auto reader = m_storage->openRead(path);
         return m_codec.read(*reader, key);
     }
@@ -568,7 +629,7 @@ public:
     }
 
     void saveRegion(const EntityRegionSnapshot& region) override {
-        auto path = entityRegionPath(m_context, region.key);
+        auto path = entityRegionPath(*m_storage, m_context, region.key);
         m_storage->mkdirs(parentPath(path));
         auto session = m_storage->openWrite(path, AtomicWriteOptions{});
         m_codec.write(region, session->writer());
@@ -577,7 +638,7 @@ public:
     }
 
     void removeRegion(const EntityRegionKey& key) override {
-        auto path = entityRegionPath(m_context, key);
+        auto path = entityRegionPath(*m_storage, m_context, key);
         if (m_storage->exists(path)) {
             m_storage->remove(path);
         }
@@ -586,7 +647,7 @@ public:
     EntityRegionSnapshot loadRegion(const EntityRegionKey& key) override {
         EntityRegionSnapshot empty;
         empty.key = key;
-        auto path = entityRegionPath(m_context, key);
+        auto path = entityRegionPath(*m_storage, m_context, key);
         if (!m_storage->exists(path)) {
             return empty;
         }
@@ -596,7 +657,7 @@ public:
 
     std::vector<EntityRegionKey> listRegions(const std::string& zoneId) override {
         std::vector<EntityRegionKey> regions;
-        std::string dir = zoneRoot(m_context, zoneId) + "/entities";
+        std::string dir = zoneRoot(*m_storage, m_context, zoneId) + "/entities";
         if (!m_storage->exists(dir)) {
             return regions;
         }
@@ -624,6 +685,7 @@ public:
     MemoryFormat(std::shared_ptr<StorageBackend> storage, const PersistenceContext& context)
         : m_storage(std::move(storage)),
           m_context(context),
+          m_zoneCodec(m_storage),
           m_chunkContainer(m_storage, m_context, m_chunkCodec),
           m_entityContainer(m_storage, m_context, m_entityCodec) {
     }

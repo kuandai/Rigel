@@ -2014,6 +2014,77 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
     CHECK(loader.workCount().lastError.empty());
 }
 
+TEST_CASE(AsyncChunkLoader_FailureSignatureTracksTerminalSetMutation) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    BlockID persisted =
+        registerTestBlock(registry, "rigel:terminal_signature_payload");
+    const ChunkCoord representative{0, 0, 0};
+    const ChunkCoord removed{1, 0, 0};
+    const ChunkCoord replacement{2, 0, 0};
+    ChunkData representativePayload = buildPayload(
+        representative, registry, {persisted}, false, std::nullopt, false);
+    ChunkData removedPayload = buildPayload(
+        removed, registry, {persisted}, false, std::nullopt, false);
+    ChunkData replacementPayload = buildPayload(
+        replacement, registry, {persisted}, false, std::nullopt, false);
+    representativePayload.blocks.pop_back();
+    removedPayload.blocks.pop_back();
+    replacementPayload.blocks.pop_back();
+
+    MemoryContext ctx;
+    saveRegionForPayloads(
+        ctx.service,
+        ctx.context,
+        "rigel:default",
+        {{representative, representativePayload},
+         {removed, removedPayload},
+         {replacement, replacementPayload}});
+
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+    loader.setPrefetchRadius(0);
+
+    CHECK_EQ(loader.request(makeLoadRequest(representative)),
+             ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(removed)),
+             ChunkLoadRequestResult::Queued);
+    CHECK(loader.drainCompletions(8).empty());
+
+    StreamingDiagnosticSnapshot previous;
+    previous.chunkLoad = loader.workCount();
+    CHECK_EQ(previous.chunkLoad.terminalErrors, static_cast<size_t>(2));
+    CHECK(previous.chunkLoad.lastError.find("(0, 0, 0)") !=
+          std::string::npos);
+
+    loader.cancel(removed);
+    CHECK_EQ(loader.request(makeLoadRequest(replacement)),
+             ChunkLoadRequestResult::Queued);
+    CHECK(loader.drainCompletions(8).empty());
+
+    StreamingDiagnosticSnapshot current;
+    current.chunkLoad = loader.workCount();
+    CHECK_EQ(current.chunkLoad.terminalErrors,
+             previous.chunkLoad.terminalErrors);
+    CHECK_EQ(current.chunkLoad.lastError, previous.chunkLoad.lastError);
+    CHECK(streamingFailureSignatureChanged(previous, current));
+    CHECK_EQ(loader.workCount().failureVersion,
+             current.chunkLoad.failureVersion);
+    CHECK(!streamingFailureSignatureChanged(current, current));
+}
+
 TEST_CASE(AsyncChunkLoader_RegionCapacityStartsDeferredRequests) {
     WorldResources resources;
     World world;

@@ -24,6 +24,13 @@ namespace Rigel::Persistence {
 
 namespace {
 constexpr size_t kMaxRegionLoadAttempts = 3;
+
+void advanceFailureVersion(uint64_t& version) {
+    ++version;
+    if (version == 0) {
+        ++version;
+    }
+}
 constexpr auto kInitialRegionRetryDelay = std::chrono::milliseconds(100);
 constexpr auto kMaxRegionRetryDelay = std::chrono::seconds(2);
 
@@ -228,7 +235,8 @@ Voxel::StreamingWorkCount AsyncChunkLoader::workCount() const {
         .inFlight = m_inFlight.size() + m_payloadInFlight.size(),
         .started = m_requestsStarted,
         .terminalErrors = m_terminalChunks.size(),
-        .lastError = m_lastTerminalError
+        .lastError = m_lastTerminalError,
+        .failureVersion = m_terminalFailureVersion
     };
 }
 
@@ -237,9 +245,7 @@ void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {
     m_deferredChunkRequests.erase(coord);
     m_retryChunks.erase(coord);
     m_chunkRetryRounds.erase(coord);
-    if (m_terminalChunks.erase(coord) > 0) {
-        refreshLastTerminalError();
-    }
+    clearTerminalChunkLoad(coord);
     if (!m_format) {
         return;
     }
@@ -561,6 +567,7 @@ void AsyncChunkLoader::completeChunkLoad(
     }
     m_pendingChunks.erase(pendingIt);
     m_chunkRetryRounds.erase(coord);
+    clearTerminalChunkLoad(coord);
     resolved.push_back({coord, requestId, outcome});
     startDeferredChunkLoads(&resolved);
 }
@@ -612,8 +619,23 @@ void AsyncChunkLoader::markTerminalChunkLoad(
     m_pendingChunks.erase(pendingIt);
     m_retryChunks.erase(coord);
     m_chunkRetryRounds.erase(coord);
-    m_lastTerminalError = diagnostic;
-    m_terminalChunks[coord] = std::move(diagnostic);
+    auto terminalIt = m_terminalChunks.find(coord);
+    if (terminalIt == m_terminalChunks.end()) {
+        m_terminalChunks.emplace(coord, std::move(diagnostic));
+        advanceFailureVersion(m_terminalFailureVersion);
+    } else if (terminalIt->second != diagnostic) {
+        terminalIt->second = std::move(diagnostic);
+        advanceFailureVersion(m_terminalFailureVersion);
+    }
+    refreshLastTerminalError();
+}
+
+void AsyncChunkLoader::clearTerminalChunkLoad(Voxel::ChunkCoord coord) {
+    if (m_terminalChunks.erase(coord) == 0) {
+        return;
+    }
+    advanceFailureVersion(m_terminalFailureVersion);
+    refreshLastTerminalError();
 }
 
 void AsyncChunkLoader::refreshLastTerminalError() {

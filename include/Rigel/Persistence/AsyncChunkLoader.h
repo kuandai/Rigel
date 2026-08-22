@@ -12,6 +12,7 @@
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <queue>
 #include <string>
@@ -126,6 +127,7 @@ private:
     void markTerminalChunkLoad(Voxel::ChunkCoord coord,
                                ChunkLoadRequestId requestId,
                                std::string diagnostic);
+    void clearTerminalChunkLoad(Voxel::ChunkCoord coord);
     void refreshLastTerminalError();
     void deferRegionLoad(const RegionKey& key);
     void startDeferredRegionLoads();
@@ -204,13 +206,12 @@ private:
     std::priority_queue<ChunkRetrySchedule,
                         std::vector<ChunkRetrySchedule>,
                         ChunkRetryScheduleGreater> m_retrySchedule;
-    std::unordered_map<Voxel::ChunkCoord,
-                       std::string,
-                       Voxel::ChunkCoordHash> m_terminalChunks;
+    std::map<Voxel::ChunkCoord, std::string> m_terminalChunks;
     std::unordered_map<Voxel::ChunkCoord,
                        size_t,
                        Voxel::ChunkCoordHash> m_chunkRetryRounds;
     std::string m_lastTerminalError;
+    uint64_t m_terminalFailureVersion = 0;
     std::deque<Voxel::ChunkLoadCompletion> m_resolvedChunks;
     ChunkRequestMap m_payloadInFlight;
     uint64_t m_requestsStarted = 0;

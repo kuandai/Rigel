@@ -15,6 +15,43 @@ namespace Rigel::Voxel {
 
 namespace {
 constexpr uint64_t kEvictionRetryDelayUpdates = 60;
+using FailureMap = std::map<ChunkCoord, std::string>;
+
+void advanceFailureVersion(uint64_t& version) {
+    ++version;
+    if (version == 0) {
+        ++version;
+    }
+}
+
+void setFailure(FailureMap& failures,
+                uint64_t& version,
+                ChunkCoord coord,
+                std::string diagnostic) {
+    auto failureIt = failures.find(coord);
+    if (failureIt == failures.end()) {
+        failures.emplace(coord, std::move(diagnostic));
+        advanceFailureVersion(version);
+    } else if (failureIt->second != diagnostic) {
+        failureIt->second = std::move(diagnostic);
+        advanceFailureVersion(version);
+    }
+}
+
+void eraseFailure(FailureMap& failures,
+                  uint64_t& version,
+                  ChunkCoord coord) {
+    if (failures.erase(coord) > 0) {
+        advanceFailureVersion(version);
+    }
+}
+
+void clearFailures(FailureMap& failures, uint64_t& version) {
+    if (!failures.empty()) {
+        failures.clear();
+        advanceFailureVersion(version);
+    }
+}
 
 int distanceSquared(const ChunkCoord& a, const ChunkCoord& b) {
     int dx = a.x - b.x;
@@ -36,7 +73,7 @@ std::string failureDiagnostic(std::string_view operation,
 }
 
 std::string diagnosticForLowestCoordinate(
-    const std::map<ChunkCoord, std::string>& errors) {
+    const FailureMap& errors) {
     return errors.empty() ? std::string{} : errors.begin()->second;
 }
 } // namespace
@@ -92,10 +129,10 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_evictionRetryAfter.clear();
     m_versionReplacementRetries.clear();
     m_versionReplacementWaiting.clear();
-    m_generationErrors.clear();
-    m_loadErrors.clear();
-    m_meshErrors.clear();
-    m_evictionErrors.clear();
+    clearFailures(m_generationErrors, m_generationFailureVersion);
+    clearFailures(m_loadErrors, m_loadFailureVersion);
+    clearFailures(m_meshErrors, m_meshFailureVersion);
+    clearFailures(m_evictionErrors, m_evictionFailureVersion);
     m_nextEvictionRetrySequence = 0;
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
@@ -291,9 +328,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 m_generationCapacityWaiting.erase(coord);
                 m_missingMeshCapacityWaiting.erase(coord);
                 m_meshDependencyWaiting.erase(coord);
-                m_generationErrors.erase(coord);
-                m_loadErrors.erase(coord);
-                m_meshErrors.erase(coord);
+                eraseFailure(
+                    m_generationErrors, m_generationFailureVersion, coord);
+                eraseFailure(m_loadErrors, m_loadFailureVersion, coord);
+                eraseFailure(m_meshErrors, m_meshFailureVersion, coord);
                 queueLoadedNeighbors(coord);
             }
         }
@@ -573,7 +611,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     continue;
                 }
                 m_versionReplacementWaiting.erase(coord);
-                m_evictionErrors.erase(coord);
+                eraseFailure(
+                    m_evictionErrors, m_evictionFailureVersion, coord);
 
                 m_cache.touch(coord);
                 cacheEvictionNeeded = true;
@@ -629,7 +668,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 ++queued;
                 continue;
             }
-            m_loadErrors.erase(coord);
+            eraseFailure(m_loadErrors, m_loadFailureVersion, coord);
             if (m_chunkPending && m_chunkPending(coord)) {
                 if (loadRequestId == 0) {
                     loadRequestId = nextLoadRequestId();
@@ -737,11 +776,16 @@ void ChunkStreamer::processCompletions() {
             }
             m_loadPending.erase(pendingIt);
             if (completion.outcome == ChunkLoadOutcome::Failed) {
-                m_loadErrors[completion.coord] = failureDiagnostic(
-                    "load", completion.coord, completion.error);
+                setFailure(
+                    m_loadErrors,
+                    m_loadFailureVersion,
+                    completion.coord,
+                    failureDiagnostic(
+                        "load", completion.coord, completion.error));
                 continue;
             }
-            m_loadErrors.erase(completion.coord);
+            eraseFailure(
+                m_loadErrors, m_loadFailureVersion, completion.coord);
             queueLoadGen(completion.coord);
         }
     }
@@ -836,10 +880,10 @@ void ChunkStreamer::reset() {
     m_evictionRetryAfter.clear();
     m_versionReplacementRetries.clear();
     m_versionReplacementWaiting.clear();
-    m_generationErrors.clear();
-    m_loadErrors.clear();
-    m_meshErrors.clear();
-    m_evictionErrors.clear();
+    clearFailures(m_generationErrors, m_generationFailureVersion);
+    clearFailures(m_loadErrors, m_loadFailureVersion);
+    clearFailures(m_meshErrors, m_meshFailureVersion);
+    clearFailures(m_evictionErrors, m_evictionFailureVersion);
     m_nextEvictionRetrySequence = 0;
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
@@ -891,7 +935,7 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
 
     m_evictionRetryAfter.erase(coord);
     m_versionReplacementRetries.erase(coord);
-    m_evictionErrors.erase(coord);
+    eraseFailure(m_evictionErrors, m_evictionFailureVersion, coord);
     if (!versionReplacement) {
         m_versionReplacementWaiting.erase(coord);
     }
@@ -908,17 +952,21 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
     m_meshDependencyWaiting.erase(coord);
     m_priorityMeshRequests.erase(coord);
     m_countedMeshRetryRevisions.erase(coord);
-    m_generationErrors.erase(coord);
-    m_loadErrors.erase(coord);
-    m_meshErrors.erase(coord);
+    eraseFailure(m_generationErrors, m_generationFailureVersion, coord);
+    eraseFailure(m_loadErrors, m_loadFailureVersion, coord);
+    eraseFailure(m_meshErrors, m_meshFailureVersion, coord);
     return true;
 }
 
 void ChunkStreamer::deferEviction(ChunkCoord coord, bool versionReplacement) {
     uint64_t retrySequence = m_streamingUpdateSequence + kEvictionRetryDelayUpdates;
     m_evictionRetryAfter[coord] = retrySequence;
-    m_evictionErrors[coord] = failureDiagnostic(
-        "eviction persistence", coord, "persistence did not complete");
+    setFailure(
+        m_evictionErrors,
+        m_evictionFailureVersion,
+        coord,
+        failureDiagnostic(
+            "eviction persistence", coord, "persistence did not complete"));
     if (versionReplacement) {
         m_versionReplacementRetries.insert(coord);
         m_versionReplacementWaiting.erase(coord);
@@ -956,7 +1004,8 @@ uint64_t ChunkStreamer::retireIneligibleEvictions(ChunkCoord center,
         bool cachePressure = m_cache.maxChunks() > 0 &&
             m_cache.size() > m_cache.maxChunks() && !desired;
         if (!outsideUnloadRadius && !cachePressure) {
-            m_evictionErrors.erase(coord);
+            eraseFailure(
+                m_evictionErrors, m_evictionFailureVersion, coord);
             it = m_evictionRetryAfter.erase(it);
             continue;
         }
@@ -1015,12 +1064,13 @@ void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq
         if ((outsideUnloadRadius || cachePressure) && evictChunk(coord)) {
             m_cache.erase(coord);
         } else if (!outsideUnloadRadius && !cachePressure) {
-            m_evictionErrors.erase(coord);
+            eraseFailure(
+                m_evictionErrors, m_evictionFailureVersion, coord);
         }
     }
 }
 
-StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() const {
+StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
     StreamingDiagnosticSnapshot snapshot;
     size_t generationPending = m_generationCapacityWaiting.size();
     size_t meshPending =
@@ -1072,14 +1122,16 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() const {
         .inFlight = m_inFlightGen,
         .started = m_workMetrics.generationJobsStarted,
         .terminalErrors = m_generationErrors.size(),
-        .lastError = diagnosticForLowestCoordinate(m_generationErrors)
+        .lastError = diagnosticForLowestCoordinate(m_generationErrors),
+        .failureVersion = m_generationFailureVersion
     };
     snapshot.mesh = StreamingWorkCount{
         .pending = meshPending,
         .inFlight = m_inFlightMesh,
         .started = m_workMetrics.meshJobsStarted,
         .terminalErrors = m_meshErrors.size(),
-        .lastError = diagnosticForLowestCoordinate(m_meshErrors)
+        .lastError = diagnosticForLowestCoordinate(m_meshErrors),
+        .failureVersion = m_meshFailureVersion
     };
     if (m_chunkLoadWork) {
         snapshot.chunkLoad = m_chunkLoadWork();
@@ -1095,10 +1147,19 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() const {
         snapshot.chunkLoad.lastError =
             diagnosticForLowestCoordinate(m_loadErrors);
     }
+    if (snapshot.chunkLoad.failureVersion != m_observedLoaderFailureVersion ||
+        m_loadFailureVersion != m_observedLoadFailureVersion) {
+        m_observedLoaderFailureVersion = snapshot.chunkLoad.failureVersion;
+        m_observedLoadFailureVersion = m_loadFailureVersion;
+        advanceFailureVersion(m_chunkLoadFailureVersion);
+    }
+    snapshot.chunkLoad.failureVersion = m_chunkLoadFailureVersion;
     snapshot.eviction = StreamingWorkCount{
         .pending = m_evictionRetryAfter.size() +
             m_versionReplacementWaiting.size(),
-        .lastError = diagnosticForLowestCoordinate(m_evictionErrors)
+        .terminalErrors = m_evictionErrors.size(),
+        .lastError = diagnosticForLowestCoordinate(m_evictionErrors),
+        .failureVersion = m_evictionFailureVersion
     };
     return snapshot;
 }
@@ -1168,8 +1229,12 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         if (genResult.failed) {
             stateIt->second = ChunkState::GenerationFailed;
             ++m_workMetrics.generationJobsFailed;
-            m_generationErrors[genResult.coord] = failureDiagnostic(
-                "generation", genResult.coord, genResult.error);
+            setFailure(
+                m_generationErrors,
+                m_generationFailureVersion,
+                genResult.coord,
+                failureDiagnostic(
+                    "generation", genResult.coord, genResult.error));
             spdlog::error("Chunk generation failed at ({}, {}, {}): {}",
                           genResult.coord.x,
                           genResult.coord.y,
@@ -1180,8 +1245,9 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         }
 
         cancelPendingLoad(genResult.coord);
-        m_generationErrors.erase(genResult.coord);
-        m_loadErrors.erase(genResult.coord);
+        eraseFailure(
+            m_generationErrors, m_generationFailureVersion, genResult.coord);
+        eraseFailure(m_loadErrors, m_loadFailureVersion, genResult.coord);
         m_versionReplacementWaiting.erase(genResult.coord);
         Chunk& chunk = m_chunkManager->getOrCreateChunk(genResult.coord);
         if (m_registry) {
@@ -1203,7 +1269,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             }
             chunk.clearDirty();
             m_priorityMeshRequests.erase(genResult.coord);
-            m_meshErrors.erase(genResult.coord);
+            eraseFailure(m_meshErrors, m_meshFailureVersion, genResult.coord);
             stateIt->second = ChunkState::ReadyMesh;
         } else {
             stateIt->second = ChunkState::ReadyData;
@@ -1302,8 +1368,12 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             m_meshDependencyWaiting.erase(meshResult.coord);
             m_priorityMeshRequests.erase(meshResult.coord);
             ++m_workMetrics.meshJobsFailed;
-            m_meshErrors[meshResult.coord] = failureDiagnostic(
-                "mesh build", meshResult.coord, meshResult.error);
+            setFailure(
+                m_meshErrors,
+                m_meshFailureVersion,
+                meshResult.coord,
+                failureDiagnostic(
+                    "mesh build", meshResult.coord, meshResult.error));
             spdlog::error("Chunk mesh build failed at ({}, {}, {}): {}",
                           meshResult.coord.x,
                           meshResult.coord.y,
@@ -1321,7 +1391,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             m_meshStore->set(meshResult.coord, std::move(meshResult.mesh));
         }
         chunk->clearDirty();
-        m_meshErrors.erase(meshResult.coord);
+        eraseFailure(m_meshErrors, m_meshFailureVersion, meshResult.coord);
         stateIt->second = ChunkState::ReadyMesh;
 
         if (m_benchmark) {
@@ -1336,7 +1406,7 @@ void ChunkStreamer::cancelPendingLoad(ChunkCoord coord) {
     auto pendingIt = m_loadPending.find(coord);
     if (pendingIt == m_loadPending.end()) {
         if (m_chunkManager && m_chunkManager->getChunk(coord)) {
-            m_loadErrors.erase(coord);
+            eraseFailure(m_loadErrors, m_loadFailureVersion, coord);
         }
         return;
     }
@@ -1344,7 +1414,7 @@ void ChunkStreamer::cancelPendingLoad(ChunkCoord coord) {
         m_chunkLoadCancel(coord);
     }
     m_loadPending.erase(pendingIt);
-    m_loadErrors.erase(coord);
+    eraseFailure(m_loadErrors, m_loadFailureVersion, coord);
 }
 
 ChunkLoadRequestId ChunkStreamer::nextLoadRequestId() {

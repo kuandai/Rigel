@@ -2468,14 +2468,21 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
     CHECK_EQ(streamer.workMetrics().generationJobsStarted,
              static_cast<uint64_t>(0));
 
-    streamer.setChunkLoader([](ChunkLoadRequest) {
-        return ChunkLoadRequestResult::Missing;
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        CHECK_EQ(request.coord, coord);
+        Chunk& loaded = manager.getOrCreateChunk(coord);
+        loaded.setWorldGenVersion(generator->config().world.version);
+        loaded.setLoadedFromDisk(true);
+        return ChunkLoadRequestResult::Queued;
     });
     streamer.update(coord.toWorldCenter());
     CHECK_EQ(streamer.diagnostics().chunkLoad.terminalErrors,
              static_cast<size_t>(0));
     streamer.processCompletions();
     CHECK(manager.hasChunk(coord));
+    CHECK(manager.getChunk(coord)->loadedFromDisk());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(0));
 }
 
 TEST_CASE(ChunkStreamer_LateFailedLoadCannotReplaceActiveRequest) {
@@ -2923,6 +2930,14 @@ TEST_CASE(ChunkStreamer_DirtyMeshFailureSurvivesResidentDesiredReentry) {
     CHECK(!chunk.isDirty());
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
     CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+    ChunkMesh oldGeometry;
+    meshStore.forEach([&](const WorldMeshEntry& entry) {
+        if (entry.coord == coord) {
+            oldGeometry = entry.mesh;
+        }
+    });
+    CHECK(!oldGeometry.isEmpty());
+    const uint64_t oldMeshVersion = meshStore.version();
 
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
@@ -2936,6 +2951,14 @@ TEST_CASE(ChunkStreamer_DirtyMeshFailureSurvivesResidentDesiredReentry) {
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
     CHECK_EQ(streamer.workMetrics().meshJobsFailed, static_cast<uint64_t>(1));
     CHECK_EQ(streamer.diagnostics().mesh.terminalErrors, static_cast<size_t>(1));
+    CHECK_EQ(meshStore.version(), oldMeshVersion);
+    ChunkMesh retainedGeometry;
+    meshStore.forEach([&](const WorldMeshEntry& entry) {
+        if (entry.coord == coord) {
+            retainedGeometry = entry.mesh;
+        }
+    });
+    CHECK(meshesMatch(retainedGeometry, oldGeometry));
 
     streamer.update(departureCoord.toWorldCenter());
     streamer.processCompletions();
@@ -2967,6 +2990,15 @@ TEST_CASE(ChunkStreamer_DirtyMeshFailureSurvivesResidentDesiredReentry) {
             static_cast<uint64_t>(0));
         CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
                  static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateCacheEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateResidentEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateDeferredEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
     }
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
 
@@ -2984,6 +3016,64 @@ TEST_CASE(ChunkStreamer_DirtyMeshFailureSurvivesResidentDesiredReentry) {
     CHECK_EQ(streamer.diagnostics().mesh.terminalErrors, static_cast<size_t>(0));
     CHECK(meshStore.contains(coord));
     CHECK(!chunk.isDirty());
+
+    ChunkMesh recoveredGeometry;
+    meshStore.forEach([&](const WorldMeshEntry& entry) {
+        if (entry.coord == coord) {
+            recoveredGeometry = entry.mesh;
+        }
+    });
+    CHECK(!recoveredGeometry.isEmpty());
+    CHECK(!meshesMatch(recoveredGeometry, oldGeometry));
+
+    for (uint32_t stable = 1;
+         stable <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++stable) {
+        streamer.update(coord.toWorldCenter());
+        streamer.processCompletions();
+        CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateCacheEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateResidentEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateDeferredEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+    }
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::Quiescent);
+
+    const ChunkStreamer::WorkMetrics recoveredMetrics = streamer.workMetrics();
+    for (int update = 0; update < 60; ++update) {
+        streamer.update(coord.toWorldCenter());
+        streamer.processCompletions();
+        CHECK_EQ(streamer.diagnostics().state,
+                 StreamingLifecycleState::Quiescent);
+        CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateCacheEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateResidentEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateDeferredEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+    }
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+             recoveredMetrics.meshJobsStarted);
+    CHECK_EQ(streamer.workMetrics().meshJobsFailed,
+             recoveredMetrics.meshJobsFailed);
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted,
+             recoveredMetrics.meshJobsAccepted);
 }
 
 TEST_CASE(ChunkStreamer_StaleMeshFailureRetriesLatestRevision) {
@@ -4143,6 +4233,80 @@ TEST_CASE(StreamingDiagnostics_FailureSignatureChangesOnlyWithFailures) {
     previous = current;
     current.eviction.pending = 0;
     CHECK(streamingFailureSignatureChanged(previous, current));
+}
+
+TEST_CASE(ChunkStreamer_FailureSignatureTracksNonRepresentativeLoadChange) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 2;
+    stream.unloadDistanceChunks = 2;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+
+    const ChunkCoord representative{-1, 0, 0};
+    const ChunkCoord departing{0, 0, -2};
+    const ChunkCoord arriving{0, 0, 3};
+    std::unordered_map<ChunkCoord, ChunkLoadRequest, ChunkCoordHash> requests;
+    std::vector<ChunkLoadCompletion> completions;
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        if (request.coord != representative && request.coord != departing &&
+            request.coord != arriving) {
+            return ChunkLoadRequestResult::Missing;
+        }
+        requests[request.coord] = request;
+        return ChunkLoadRequestResult::Queued;
+    });
+    streamer.setChunkLoadDrain([&](size_t) {
+        std::vector<ChunkLoadCompletion> drained = std::move(completions);
+        completions.clear();
+        return drained;
+    });
+
+    streamer.update(ChunkCoord{0, 0, 0}.toWorldCenter());
+    CHECK(requests.find(representative) != requests.end());
+    CHECK(requests.find(departing) != requests.end());
+    completions.push_back({representative,
+                           requests[representative].requestId,
+                           ChunkLoadOutcome::Failed,
+                           "representative load failure"});
+    completions.push_back({departing,
+                           requests[departing].requestId,
+                           ChunkLoadOutcome::Failed,
+                           "departing load failure"});
+    streamer.processCompletions();
+
+    const StreamingDiagnosticSnapshot previous = streamer.diagnostics();
+    CHECK_EQ(previous.chunkLoad.terminalErrors, static_cast<size_t>(2));
+    CHECK(previous.chunkLoad.lastError.find("(-1, 0, 0)") !=
+          std::string::npos);
+
+    streamer.update(ChunkCoord{0, 0, 1}.toWorldCenter());
+    CHECK(requests.find(arriving) != requests.end());
+    completions.push_back({arriving,
+                           requests[arriving].requestId,
+                           ChunkLoadOutcome::Failed,
+                           "arriving load failure"});
+    streamer.processCompletions();
+
+    const StreamingDiagnosticSnapshot current = streamer.diagnostics();
+    CHECK_EQ(current.chunkLoad.terminalErrors,
+             previous.chunkLoad.terminalErrors);
+    CHECK_EQ(current.chunkLoad.lastError, previous.chunkLoad.lastError);
+    CHECK(streamingFailureSignatureChanged(previous, current));
+
+    streamer.update(ChunkCoord{0, 0, 1}.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(!streamingFailureSignatureChanged(current, streamer.diagnostics()));
 }
 
 TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {

@@ -13,6 +13,7 @@ struct StreamingWorkCount {
     uint64_t started = 0;
     size_t terminalErrors = 0;
     std::string lastError;
+    uint64_t failureVersion = 0;
 
     bool empty() const {
         return pending == 0 && inFlight == 0 && terminalErrors == 0;
@@ -65,7 +66,8 @@ inline bool streamingFailureSignatureChanged(
     auto workFailureChanged = [](const StreamingWorkCount& before,
                                  const StreamingWorkCount& after) {
         return before.terminalErrors != after.terminalErrors ||
-            before.lastError != after.lastError;
+            before.lastError != after.lastError ||
+            before.failureVersion != after.failureVersion;
     };
 
     return workFailureChanged(previous.generation, current.generation) ||

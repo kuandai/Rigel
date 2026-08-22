@@ -245,6 +245,13 @@ private:
     std::map<ChunkCoord, std::string> m_loadErrors;
     std::map<ChunkCoord, std::string> m_meshErrors;
     std::map<ChunkCoord, std::string> m_evictionErrors;
+    uint64_t m_generationFailureVersion = 0;
+    uint64_t m_loadFailureVersion = 0;
+    uint64_t m_meshFailureVersion = 0;
+    uint64_t m_evictionFailureVersion = 0;
+    uint64_t m_observedLoaderFailureVersion = 0;
+    uint64_t m_observedLoadFailureVersion = 0;
+    uint64_t m_chunkLoadFailureVersion = 0;
     // Jobs whose completion has not yet been observed, including cancelled work
     // from an earlier generation lifecycle.
     size_t m_inFlightGen = 0;
@@ -290,7 +297,7 @@ private:
                      bool prioritized = false);
     void ensureThreadPool();
     bool hasAllNeighborsLoaded(ChunkCoord coord) const;
-    StreamingDiagnosticSnapshot collectDiagnostics() const;
+    StreamingDiagnosticSnapshot collectDiagnostics();
     void refreshDiagnostics(bool advanceWindow);
     bool evictChunk(ChunkCoord coord, bool versionReplacement = false);
     void deferEviction(ChunkCoord coord, bool versionReplacement);

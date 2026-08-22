@@ -1300,7 +1300,13 @@ public:
 
         std::vector<int32_t> offsets(16 * 16, -1);
         std::vector<uint8_t> columnsBytes;
-        VectorWriter columnsWriter(columnsBytes);
+        VectorWriter columnsBuffer(columnsBytes);
+        constexpr size_t minimumOffsetTableBytes =
+            sizeof(uint8_t) + kRegionColumnCount * sizeof(uint16_t);
+        BoundedWriter columnsWriter(
+            columnsBuffer,
+            kMaxDecompressedRegionBytes - minimumOffsetTableBytes,
+            "CRRegion: region payload exceeds format limit");
         int columnsWritten = 0;
 
         for (int index = 0; index < 16 * 16; ++index) {

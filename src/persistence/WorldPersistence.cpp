@@ -12,6 +12,7 @@
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "EntityRegionJournal.h"
+#include "../entity/EntityPersistenceLimits.h"
 #include "backends/cr/CRWorldMetadata.h"
 
 #include <cmath>
@@ -38,6 +39,19 @@ std::string describeEntityId(const Entity::EntityId& id) {
     return std::to_string(id.time) + ":" +
         std::to_string(id.random) + ":" +
         std::to_string(id.counter);
+}
+
+const char* invalidPositionField(const glm::vec3& position) {
+    if (!Entity::detail::isPersistablePositionComponent(position.x)) {
+        return "position.x";
+    }
+    if (!Entity::detail::isPersistablePositionComponent(position.y)) {
+        return "position.y";
+    }
+    if (!Entity::detail::isPersistablePositionComponent(position.z)) {
+        return "position.z";
+    }
+    return nullptr;
 }
 
 void saveChunkRegions(const Voxel::World& world,
@@ -194,6 +208,39 @@ void saveWorldToDisk(const Voxel::World& world,
                      PersistenceContext context) {
     auto format = service.openFormat(context);
     requireSupportedDefaultZone(*format, context);
+
+    struct StagedEntitySave {
+        Voxel::ChunkCoord chunk;
+        Entity::EntityPersistedEntity entity;
+    };
+    std::vector<StagedEntitySave> stagedEntities;
+    if (format->descriptor().capabilities.supportsEntityRegions) {
+        world.entities().forEach([&](const Entity::Entity& entity) {
+            if (entity.hasTag(Entity::EntityTags::NoSaveInChunks)) {
+                return;
+            }
+            const glm::vec3& position = entity.position();
+            if (const char* field = invalidPositionField(position)) {
+                throw std::runtime_error(
+                    std::string("Invalid persistent entity ") + field +
+                    " for entity ID " + describeEntityId(entity.id()));
+            }
+
+            StagedEntitySave staged;
+            staged.chunk = Voxel::worldToChunk(
+                static_cast<int>(std::floor(position.x)),
+                static_cast<int>(std::floor(position.y)),
+                static_cast<int>(std::floor(position.z)));
+            staged.entity.typeId = entity.typeId();
+            staged.entity.id = entity.id();
+            staged.entity.position = position;
+            staged.entity.velocity = entity.velocity();
+            staged.entity.viewDirection = entity.viewDirection();
+            staged.entity.modelId = entity.modelIdentifier();
+            stagedEntities.push_back(std::move(staged));
+        });
+    }
+
     std::string zoneId = kDefaultZoneId;
     if (format->descriptor().capabilities.supportsEntityRegions) {
         detail::replayEntityRegionJournal(*format, context, zoneId);
@@ -219,16 +266,8 @@ void saveWorldToDisk(const Voxel::World& world,
         entityRegions;
 
     if (format->descriptor().capabilities.supportsEntityRegions) {
-        world.entities().forEach([&](const Entity::Entity& entity) {
-            if (entity.hasTag(Entity::EntityTags::NoSaveInChunks)) {
-                return;
-            }
-            const glm::vec3& pos = entity.position();
-            Voxel::ChunkCoord coord = Voxel::worldToChunk(
-                static_cast<int>(std::floor(pos.x)),
-                static_cast<int>(std::floor(pos.y)),
-                static_cast<int>(std::floor(pos.z))
-            );
+        for (auto& staged : stagedEntities) {
+            const Voxel::ChunkCoord coord = staged.chunk;
             const Entity::PersistenceRegionCoord regionCoord =
                 Entity::persistenceRegionForChunk(coord);
             auto& region = entityRegions[std::make_tuple(
@@ -242,15 +281,9 @@ void saveWorldToDisk(const Voxel::World& world,
                 region.chunkIndex.emplace(coord, index);
                 it = region.chunkIndex.find(coord);
             }
-            Entity::EntityPersistedEntity saved;
-            saved.typeId = entity.typeId();
-            saved.id = entity.id();
-            saved.position = entity.position();
-            saved.velocity = entity.velocity();
-            saved.viewDirection = entity.viewDirection();
-            saved.modelId = entity.modelIdentifier();
-            region.chunks[it->second].entities.push_back(std::move(saved));
-        });
+            region.chunks[it->second].entities.push_back(
+                std::move(staged.entity));
+        }
 
         std::vector<EntityRegionSnapshot> desiredRegions;
         desiredRegions.reserve(entityRegions.size());

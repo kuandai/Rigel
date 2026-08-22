@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -34,6 +35,8 @@ constexpr const char* kRootPath = "entity-recovery-world";
 constexpr const char* kZoneId = "rigel:default";
 constexpr const char* kJournalPath =
     "entity-recovery-world/entity-regions.journal";
+constexpr float kPositivePositionOverflow = 0x1p31f;
+constexpr float kNegativePositionBoundary = -0x1p31f;
 
 struct SharedFiles {
     std::unordered_map<std::string, std::vector<uint8_t>> files;
@@ -47,6 +50,7 @@ enum class FailureTiming {
 struct MutationControl {
     std::optional<size_t> failAt;
     FailureTiming failureTiming = FailureTiming::BeforeMutation;
+    bool observeAllPaths = false;
     size_t nextMutation = 0;
     std::vector<std::string> attempted;
     std::optional<size_t> activeMutation;
@@ -237,6 +241,12 @@ bool isEntityMutationPath(const std::string& path) {
         path.find("/entities/entityRegion_") != std::string::npos;
 }
 
+bool observesMutationPath(const std::shared_ptr<MutationControl>& control,
+                          const std::string& path) {
+    return control &&
+        (control->observeAllPaths || isEntityMutationPath(path));
+}
+
 class SharedWriteSession final : public Persistence::AtomicWriteSession {
 public:
     SharedWriteSession(std::shared_ptr<SharedFiles> files,
@@ -253,11 +263,11 @@ public:
     }
 
     void commit() override {
-        if (m_control && isEntityMutationPath(m_path)) {
+        if (observesMutationPath(m_control, m_path)) {
             m_control->beforeMutation("write " + m_path);
         }
         m_files->files[m_path] = m_buffer;
-        if (m_control && isEntityMutationPath(m_path)) {
+        if (observesMutationPath(m_control, m_path)) {
             m_control->afterMutation();
         }
     }
@@ -320,11 +330,11 @@ public:
     }
 
     void remove(const std::string& path) override {
-        if (m_control && isEntityMutationPath(path)) {
+        if (observesMutationPath(m_control, path)) {
             m_control->beforeMutation("remove " + path);
         }
         m_files->files.erase(path);
-        if (m_control && isEntityMutationPath(path)) {
+        if (observesMutationPath(m_control, path)) {
             m_control->afterMutation();
         }
     }
@@ -412,12 +422,13 @@ void saveRecords(const std::shared_ptr<SharedFiles>& files,
     Persistence::saveWorldToDisk(world, service, context);
 }
 
-std::string saveFailureAfterIdMutation(
+std::string saveFailureAfterEntityMutation(
     const std::shared_ptr<SharedFiles>& files,
     const std::vector<EntityRecord>& records,
     const std::string& preferredFormat,
     const std::function<void(Entity::Entity&)>& mutate,
-    const std::shared_ptr<MutationControl>& control) {
+    const std::shared_ptr<MutationControl>& control,
+    bool addDirtyChunk = false) {
     Persistence::FormatRegistry formats;
     registerFormats(formats);
     Persistence::PersistenceService service(formats);
@@ -426,6 +437,9 @@ std::string saveFailureAfterIdMutation(
     world.setId(1);
     populateWorld(world, records);
     world.entities().forEach(mutate);
+    if (addDirtyChunk) {
+        world.chunkManager().getOrCreateChunk({0, 0, 0}).markPersistDirty();
+    }
     auto context = makeContext(files, control, preferredFormat);
     context.providers = world.persistenceProvidersHandle();
     try {
@@ -504,9 +518,9 @@ std::vector<Persistence::EntityRegionKey> expectedRegions(
     std::set<std::tuple<int32_t, int32_t, int32_t>> coords;
     for (const auto& record : records) {
         const Voxel::ChunkCoord chunk = Voxel::worldToChunk(
-            static_cast<int>(record.position.x),
-            static_cast<int>(record.position.y),
-            static_cast<int>(record.position.z));
+            static_cast<int>(std::floor(record.position.x)),
+            static_cast<int>(std::floor(record.position.y)),
+            static_cast<int>(std::floor(record.position.z)));
         const Entity::PersistenceRegionCoord region =
             Entity::persistenceRegionForChunk(chunk);
         coords.emplace(region.x, region.y, region.z);
@@ -832,7 +846,7 @@ TEST_CASE(Persistence_EntitySaveRejectsNullMutatedIdBeforePublication) {
         auto files = std::make_shared<SharedFiles>();
         auto control = std::make_shared<MutationControl>();
 
-        const std::string error = saveFailureAfterIdMutation(
+        const std::string error = saveFailureAfterEntityMutation(
             files, {record}, preferredFormat,
             [](Entity::Entity& entity) {
                 entity.setId(Entity::EntityId::Null());
@@ -863,7 +877,7 @@ TEST_CASE(Persistence_EntitySaveRejectsDuplicateMutatedIdsBeforePublication) {
         auto files = std::make_shared<SharedFiles>();
         auto control = std::make_shared<MutationControl>();
 
-        const std::string error = saveFailureAfterIdMutation(
+        const std::string error = saveFailureAfterEntityMutation(
             files, {first, second}, preferredFormat,
             [&](Entity::Entity& entity) {
                 entity.setId(duplicate);
@@ -879,6 +893,76 @@ TEST_CASE(Persistence_EntitySaveRejectsDuplicateMutatedIdsBeforePublication) {
         CHECK(control->attempted.empty());
         CHECK(!journalExists(files));
         CHECK(!hasEntityRegionFile(files));
+    }
+}
+
+TEST_CASE(Persistence_EntitySaveRejectsInvalidPositionsBeforeStorageMutation) {
+    const EntityRecord prior{
+        Entity::EntityId{180, 181, 182},
+        "rigel:position_validation",
+        glm::vec3(16.0f, 17.0f, 18.0f)};
+    const std::vector<std::pair<glm::vec3, std::string>> cases = {
+        {glm::vec3(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f),
+         "position.x"},
+        {glm::vec3(0.0f, std::numeric_limits<float>::infinity(), 0.0f),
+         "position.y"},
+        {glm::vec3(0.0f, 0.0f, -std::numeric_limits<float>::infinity()),
+         "position.z"},
+        {glm::vec3(kPositivePositionOverflow, 0.0f, 0.0f), "position.x"},
+        {glm::vec3(0.0f,
+                   std::nextafter(
+                       kNegativePositionBoundary,
+                       -std::numeric_limits<float>::infinity()),
+                   0.0f),
+         "position.y"}};
+
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        for (const auto& [position, field] : cases) {
+            auto files = std::make_shared<SharedFiles>();
+            saveRecords(files, {prior}, {}, preferredFormat);
+            const auto persistedFiles = files->files;
+            auto control = std::make_shared<MutationControl>();
+            control->observeAllPaths = true;
+
+            const std::string error = saveFailureAfterEntityMutation(
+                files, {prior}, preferredFormat,
+                [&](Entity::Entity& entity) {
+                    entity.setPosition(position);
+                },
+                control,
+                true);
+
+            CHECK_EQ(
+                error,
+                "Invalid persistent entity " + field +
+                    " for entity ID 180:181:182");
+            CHECK(control->attempted.empty());
+            CHECK_EQ(files->files, persistedFiles);
+            checkExactState(files, {prior}, preferredFormat);
+        }
+    }
+}
+
+TEST_CASE(Persistence_EntitySaveAcceptsRepresentablePositionBoundaries) {
+    const float positiveBoundary =
+        std::nextafter(kPositivePositionOverflow, 0.0f);
+
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        const std::vector<EntityRecord> records = {
+            {Entity::EntityId{190, 191, 192},
+             "rigel:positive_boundary",
+             glm::vec3(positiveBoundary, 0.0f, 0.0f)},
+            {Entity::EntityId{200, 201, 202},
+             "rigel:negative_boundary",
+             glm::vec3(kNegativePositionBoundary, 0.0f, 0.0f)},
+            {Entity::EntityId{210, 211, 212},
+             "rigel:negative_fraction",
+             glm::vec3(-0.5f, 0.0f, 0.0f)}};
+        auto files = std::make_shared<SharedFiles>();
+
+        saveRecords(files, records, {}, preferredFormat);
+
+        checkExactState(files, records, preferredFormat);
     }
 }
 
@@ -918,6 +1002,42 @@ TEST_CASE(Persistence_EntityLoadRejectsNullIdBeforeSpawning) {
         static_cast<uint32_t>(17));
     CHECK(error.find("0:0:0") != std::string::npos);
     CHECK(error.find("rigel:default/(1, 0, 0)") != std::string::npos);
+}
+
+TEST_CASE(Persistence_EntityLoadRejectsInvalidPositionsBeforeSpawning) {
+    const std::vector<float> invalidValues = {
+        std::numeric_limits<float>::quiet_NaN(),
+        kPositivePositionOverflow,
+        std::nextafter(
+            kNegativePositionBoundary,
+            -std::numeric_limits<float>::infinity())};
+
+    for (float invalidValue : invalidValues) {
+        auto files = std::make_shared<SharedFiles>();
+        const EntityRecord invalid{
+            Entity::EntityId{220, 221, 222},
+            "rigel:invalid_position",
+            glm::vec3(invalidValue, 0.0f, 0.0f)};
+        saveRawRegions(files, {regionSnapshot(0, {invalid})});
+
+        Voxel::WorldResources resources;
+        Voxel::World world(resources);
+        const EntityRecord live{
+            Entity::EntityId{230, 231, 232},
+            "rigel:live",
+            glm::vec3(32.0f, 2.0f, 3.0f)};
+        populateWorld(world, {live});
+        Asset::AssetManager assets;
+
+        const std::string error = loadFailure(files, world, assets);
+
+        CHECK(error.find("Invalid persistent entity position") !=
+              std::string::npos);
+        CHECK_EQ(world.entities().size(), static_cast<size_t>(1));
+        const Entity::Entity* loadedLive = world.entities().get(live.id);
+        CHECK(loadedLive != nullptr);
+        CHECK_EQ(loadedLive->position(), live.position);
+    }
 }
 
 TEST_CASE(Persistence_EntityBootstrapPreservesLiveWorldState) {

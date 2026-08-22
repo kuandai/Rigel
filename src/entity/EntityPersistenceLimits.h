@@ -22,18 +22,19 @@ inline bool isFiniteVector(const glm::vec3& value) {
         std::isfinite(value.z);
 }
 
-inline bool isPersistablePosition(const glm::vec3& value) {
+inline bool isPersistablePositionComponent(float value) {
     constexpr double minimum =
-        static_cast<double>(std::numeric_limits<int>::min());
+        static_cast<double>(std::numeric_limits<int32_t>::min());
     constexpr double maximum =
-        static_cast<double>(std::numeric_limits<int>::max());
-    return isFiniteVector(value) &&
-        static_cast<double>(value.x) >= minimum &&
-        static_cast<double>(value.x) <= maximum &&
-        static_cast<double>(value.y) >= minimum &&
-        static_cast<double>(value.y) <= maximum &&
-        static_cast<double>(value.z) >= minimum &&
-        static_cast<double>(value.z) <= maximum;
+        static_cast<double>(std::numeric_limits<int32_t>::max());
+    const double widened = static_cast<double>(value);
+    return std::isfinite(value) && widened >= minimum && widened <= maximum;
+}
+
+inline bool isPersistablePosition(const glm::vec3& value) {
+    return isPersistablePositionComponent(value.x) &&
+        isPersistablePositionComponent(value.y) &&
+        isPersistablePositionComponent(value.z);
 }
 
 } // namespace Rigel::Entity::detail

@@ -162,14 +162,22 @@ storage implementation.
 On the supported Linux filesystem backend, a successful commit closes and
 flushes the writer, calls `fsync` on the staging file, atomically renames it
 over the destination without first deleting the destination, and calls `fsync`
-on the containing directory. Removal calls `fsync` on the containing directory
-even when the path is already absent, so retrying a removal can complete an
-earlier interrupted directory synchronization. Any synchronization error is
-reported by the operation. A failure before rename leaves the previous
-destination in place and removes only that session's staging file. A failure
-while synchronizing the directory is reported after publication and does not
-remove the published file or a newly created file that happens to reuse the old
-staging pathname.
+on the containing directory. Before `mkdirs` returns or `openWrite` creates a
+staging file, the backend walks the requested directory hierarchy one component
+at a time. It creates or observes each component, synchronizes that component's
+parent directory, and only then proceeds to the child. Already-present
+components follow the same synchronization sequence, so retrying after a
+failed parent synchronization cannot mistake a visible but unfinished
+directory entry for a durable one. Removal likewise calls `fsync` on the
+containing directory even when the path is already absent, so retrying a
+removal can complete an earlier interrupted directory synchronization.
+
+Any synchronization error is reported by the operation. A directory hierarchy
+failure occurs before a dependent staging file is opened. A failure before
+rename leaves the previous destination in place and removes only that session's
+staging file. A failure while synchronizing the directory is reported after
+publication and does not remove the published file or a newly created file
+that happens to reuse the old staging pathname.
 
 The non-Windows POSIX implementation uses the same file and directory `fsync`
 sequence, but Linux is the environment covered by the project's durability
@@ -225,10 +233,12 @@ Current behavior:
   Linux filesystem backend, the journal becomes durably authoritative after
   its file and directory entry have been synchronized. It remains authoritative
   while desired region replacements and obsolete-region removals are applied;
-  those operations are individually synchronized before the journal is removed
-  and that removal is synchronized. Replay repeats obsolete-region removals
-  even when a pathname is already absent, ensuring an interrupted removal's
-  directory synchronization completes before journal authority is discarded.
+  newly needed region-directory components and the region files are
+  individually synchronized before the journal is removed, and that removal is
+  synchronized. Replay repeats both directory preparation for desired regions
+  and obsolete-region removals, even when the directory already exists or a
+  removed pathname is already absent, ensuring an interrupted parent-directory
+  synchronization completes before journal authority is discarded.
 - A failed journal publication leaves either the previous region state with no
   durable new journal, or a published journal that is replayed before the next
   save. If final journal removal or its directory synchronization reports a
@@ -236,11 +246,12 @@ Current behavior:
   journal can safely replay them. These are the authoritative recovery states,
   and no success is reported for the failed operation.
 - Atomic replacement protects process recovery on any conforming backend. The
-  Linux synchronization sequence additionally orders writes across sudden
-  power or kernel loss only when the filesystem, mount configuration, storage
-  device, and its volatile caches honor `fsync`. It does not protect against
-  media corruption, devices that falsely report flush completion, filesystem
-  defects, or loss of a newly created unsynchronized ancestor directory.
+  tested Linux synchronization sequence additionally orders writes across
+  sudden power or kernel loss only when the filesystem, mount configuration,
+  storage device, and its volatile caches honestly honor `fsync`. This contract
+  does not extend to Windows or an unvalidated filesystem, and it does not
+  protect against media corruption, filesystem defects, or devices that falsely
+  report flush completion.
 - Entity load reads and validates every persisted region before spawning. Null
   persistent IDs and duplicate IDs within or across regions fail the load.
 - Entities tagged `EntityTags::NoSaveInChunks` are skipped.

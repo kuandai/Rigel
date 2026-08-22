@@ -10,11 +10,13 @@
 #include "Rigel/Persistence/WorldPersistence.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
+#include "../src/persistence/DurableDirectory.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -40,7 +42,11 @@ constexpr float kNegativePositionBoundary = -0x1p31f;
 
 struct SharedFiles {
     std::unordered_map<std::string, std::vector<uint8_t>> files;
+    std::unordered_map<std::string, std::vector<uint8_t>> durableFiles;
     std::unordered_map<std::string, std::vector<uint8_t>> unsynchronizedRemovals;
+    std::set<std::string> directories;
+    std::set<std::string> durableDirectories;
+    std::vector<std::string> durabilityOperations;
 };
 
 enum class FailureTiming {
@@ -55,6 +61,8 @@ struct MutationControl {
     size_t nextMutation = 0;
     std::vector<std::string> attempted;
     std::optional<size_t> activeMutation;
+    std::optional<std::string> failDirectoryChild;
+    bool directoryFailureInjected = false;
 
     void beforeMutation(const std::string& operation) {
         attempted.push_back(operation);
@@ -271,7 +279,9 @@ public:
         if (observesMutationPath(m_control, m_path)) {
             m_control->afterMutation();
         }
+        m_files->durableFiles[m_path] = m_buffer;
         m_files->unsynchronizedRemovals.erase(m_path);
+        m_files->durabilityOperations.push_back("write " + m_path);
     }
 
     void abort() override {
@@ -303,12 +313,14 @@ public:
 
     std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
         const std::string& path) override {
+        mkdirs(std::filesystem::path(path).parent_path().generic_string());
         return std::make_unique<SharedWriteSession>(
             m_files, m_control, path);
     }
 
     bool exists(const std::string& path) override {
-        if (m_files->files.contains(path)) {
+        if (m_files->files.contains(path) ||
+            m_files->directories.contains(path)) {
             return true;
         }
         return std::any_of(
@@ -328,7 +340,30 @@ public:
         return entries;
     }
 
-    void mkdirs(const std::string&) override {
+    void mkdirs(const std::string& path) override {
+        std::string currentChild;
+        Persistence::detail::createDirectoriesDurably(
+            std::filesystem::path(path),
+            [&](const std::filesystem::path& directoryPath) {
+                currentChild = directoryPath.generic_string();
+                const bool created =
+                    m_files->directories.insert(currentChild).second;
+                m_files->durabilityOperations.push_back(
+                    std::string("mkdir ") +
+                    (created ? "new " : "existing ") + currentChild);
+            },
+            [&](const std::filesystem::path& parentPath) {
+                m_files->durabilityOperations.push_back(
+                    "sync " + parentPath.generic_string() + " for " +
+                    currentChild);
+                if (m_control && m_control->failDirectoryChild == currentChild &&
+                    !m_control->directoryFailureInjected) {
+                    m_control->directoryFailureInjected = true;
+                    throw std::runtime_error(
+                        "injected directory synchronization interruption");
+                }
+                m_files->durableDirectories.insert(currentChild);
+            });
     }
 
     void remove(const std::string& path) override {
@@ -352,7 +387,9 @@ public:
             }
             throw;
         }
+        m_files->durableFiles.erase(path);
         m_files->unsynchronizedRemovals.erase(path);
+        m_files->durabilityOperations.push_back("remove " + path);
     }
 
 private:
@@ -564,11 +601,93 @@ bool hasEntityRegionFile(const std::shared_ptr<SharedFiles>& files) {
         });
 }
 
-void simulatePowerLoss(const std::shared_ptr<SharedFiles>& files) {
-    for (auto& [path, contents] : files->unsynchronizedRemovals) {
-        files->files[path] = std::move(contents);
+size_t operationIndex(const std::vector<std::string>& operations,
+                      const std::string& expected) {
+    const auto found = std::find(operations.begin(), operations.end(), expected);
+    if (found == operations.end()) {
+        throw Test::TestFailure("Missing durability operation: " + expected);
     }
+    return static_cast<size_t>(std::distance(operations.begin(), found));
+}
+
+size_t operationIndexContaining(const std::vector<std::string>& operations,
+                                const std::string& prefix,
+                                const std::string& contained) {
+    const auto found = std::find_if(
+        operations.begin(), operations.end(),
+        [&](const std::string& operation) {
+            return operation.starts_with(prefix) &&
+                operation.find(contained) != std::string::npos;
+        });
+    if (found == operations.end()) {
+        throw Test::TestFailure(
+            "Missing durability operation containing: " + contained);
+    }
+    return static_cast<size_t>(std::distance(operations.begin(), found));
+}
+
+size_t operationCount(const std::vector<std::string>& operations,
+                      const std::string& prefix) {
+    return static_cast<size_t>(std::count_if(
+        operations.begin(), operations.end(),
+        [&](const std::string& operation) {
+            return operation.starts_with(prefix);
+        }));
+}
+
+const std::vector<std::string>& entityDirectoryComponents() {
+    static const std::vector<std::string> components = {
+        kRootPath,
+        std::string(kRootPath) + "/zones",
+        std::string(kRootPath) + "/zones/rigel",
+        std::string(kRootPath) + "/zones/rigel/default",
+        std::string(kRootPath) + "/zones/rigel/default/entities"};
+    return components;
+}
+
+void simulatePowerLoss(
+    const std::shared_ptr<SharedFiles>& files,
+    bool retainUnsynchronizedDirectories = false) {
+    files->files = files->durableFiles;
     files->unsynchronizedRemovals.clear();
+
+    if (retainUnsynchronizedDirectories) {
+        return;
+    }
+
+    std::vector<std::string> disappeared;
+    for (const auto& directory : files->directories) {
+        if (!files->durableDirectories.contains(directory)) {
+            disappeared.push_back(directory);
+        }
+    }
+    for (const auto& directory : disappeared) {
+        const std::string prefix = directory + "/";
+        for (auto it = files->files.begin(); it != files->files.end();) {
+            if (it->first.starts_with(prefix)) {
+                it = files->files.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = files->durableFiles.begin();
+             it != files->durableFiles.end();) {
+            if (it->first.starts_with(prefix)) {
+                it = files->durableFiles.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = files->directories.begin();
+             it != files->directories.end();) {
+            if (*it == directory || it->starts_with(prefix)) {
+                files->durableDirectories.erase(*it);
+                it = files->directories.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
 }
 
 void appendU16(std::vector<uint8_t>& bytes, uint16_t value) {
@@ -615,7 +734,8 @@ void appendKey(std::vector<uint8_t>& bytes,
 
 void installJournal(const std::shared_ptr<SharedFiles>& files,
                     std::vector<uint8_t> bytes) {
-    files->files[kJournalPath] = std::move(bytes);
+    files->files[kJournalPath] = bytes;
+    files->durableFiles[kJournalPath] = std::move(bytes);
 }
 
 void checkExactState(const std::shared_ptr<SharedFiles>& files,
@@ -768,6 +888,145 @@ TEST_CASE(Persistence_EntityRegionMoveRecoversAtEveryMutation) {
     desired.position = glm::vec3(513.0f, 4.0f, 5.0f);
 
     exerciseInterruptedSave({prior}, {desired});
+}
+
+TEST_CASE(Persistence_FirstEntitySaveDurablyOrdersDirectoryHierarchy) {
+    const EntityRecord record{
+        Entity::EntityId{4, 5, 6},
+        "rigel:first_save",
+        glm::vec3(513.0f, 4.0f, 5.0f)};
+
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+
+        saveRecords(files, {record}, {}, preferredFormat);
+
+        const auto& operations = files->durabilityOperations;
+        const size_t journalWrite = operationIndex(
+            operations, std::string("write ") + kJournalPath);
+        const size_t regionWrite = operationIndexContaining(
+            operations, "write ", "/entities/entityRegion_");
+        const size_t journalRemoval = operationIndex(
+            operations, std::string("remove ") + kJournalPath);
+
+        for (const auto& component : entityDirectoryComponents()) {
+            CHECK(files->directories.contains(component));
+            CHECK(files->durableDirectories.contains(component));
+            const size_t creation = operationIndex(
+                operations, "mkdir new " + component);
+            CHECK_EQ(
+                operations.at(creation + 1),
+                "sync " +
+                    Persistence::detail::containingDirectory(component)
+                        .generic_string() +
+                    " for " + component);
+            if (component == kRootPath) {
+                CHECK(creation + 1 < journalWrite);
+            } else {
+                CHECK(creation + 1 < regionWrite);
+            }
+        }
+        CHECK(regionWrite < journalRemoval);
+        CHECK(files->durableFiles.contains(
+            operations.at(regionWrite).substr(std::string("write ").size())));
+        CHECK(!files->durableFiles.contains(kJournalPath));
+        CHECK(!journalExists(files));
+        checkExactState(files, {record}, preferredFormat);
+
+        files->durabilityOperations.clear();
+        saveRecords(files, {record}, {}, preferredFormat);
+
+        CHECK_EQ(operationCount(
+                     files->durabilityOperations, "mkdir new "),
+                 static_cast<size_t>(0));
+        CHECK_EQ(
+            operationCount(files->durabilityOperations, "sync "),
+            preferredFormat == "memory" ? static_cast<size_t>(12)
+                                          : static_cast<size_t>(7));
+        CHECK(!journalExists(files));
+        checkExactState(files, {record}, preferredFormat);
+    }
+}
+
+TEST_CASE(Persistence_EntityJournalRetainsAuthorityAcrossAncestorSyncFailure) {
+    const EntityRecord record{
+        Entity::EntityId{7, 8, 9},
+        "rigel:ancestor_recovery",
+        glm::vec3(513.0f, 4.0f, 5.0f)};
+    const auto& components = entityDirectoryComponents();
+
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        for (size_t componentIndex = 1;
+             componentIndex < components.size();
+             ++componentIndex) {
+            for (bool retainFailedComponent : {false, true}) {
+                auto files = std::make_shared<SharedFiles>();
+                auto control = std::make_shared<MutationControl>();
+                control->failDirectoryChild = components[componentIndex];
+
+                CHECK_THROWS(saveRecords(
+                    files, {record}, control, preferredFormat));
+
+                CHECK(control->directoryFailureInjected);
+                CHECK(journalExists(files));
+                CHECK(files->durableFiles.contains(kJournalPath));
+                CHECK(!hasEntityRegionFile(files));
+                CHECK(files->directories.contains(components[componentIndex]));
+                CHECK(!files->durableDirectories.contains(
+                    components[componentIndex]));
+                CHECK_EQ(
+                    operationCount(
+                        files->durabilityOperations,
+                        std::string("remove ") + kJournalPath),
+                    static_cast<size_t>(0));
+
+                simulatePowerLoss(files, retainFailedComponent);
+                CHECK(journalExists(files));
+                CHECK_EQ(
+                    files->directories.contains(components[componentIndex]),
+                    retainFailedComponent);
+
+                files->durabilityOperations.clear();
+                const LoadedState recovered = loadRecords(
+                    files, preferredFormat);
+
+                CHECK_EQ(recovered.records.size(), static_cast<size_t>(1));
+                CHECK_EQ(recovered.records.front().id, record.id);
+                CHECK(!journalExists(files));
+                const auto& replayOperations = files->durabilityOperations;
+                const std::string directoryOperation =
+                    std::string("mkdir ") +
+                    (retainFailedComponent ? "existing " : "new ") +
+                    components[componentIndex];
+                const size_t creation = operationIndex(
+                    replayOperations, directoryOperation);
+                CHECK_EQ(
+                    replayOperations.at(creation + 1),
+                    "sync " +
+                        Persistence::detail::containingDirectory(
+                            components[componentIndex])
+                            .generic_string() +
+                        " for " + components[componentIndex]);
+                const size_t regionWrite = operationIndexContaining(
+                    replayOperations, "write ", "/entities/entityRegion_");
+                const size_t journalRemoval = operationIndex(
+                    replayOperations,
+                    std::string("remove ") + kJournalPath);
+                CHECK(creation + 1 < regionWrite);
+                CHECK(regionWrite < journalRemoval);
+                CHECK(files->durableFiles.contains(
+                    replayOperations.at(regionWrite).substr(
+                        std::string("write ").size())));
+                CHECK(!files->durableFiles.contains(kJournalPath));
+
+                for (const auto& component : components) {
+                    CHECK(files->durableDirectories.contains(component));
+                }
+                simulatePowerLoss(files);
+                checkExactState(files, {record}, preferredFormat);
+            }
+        }
+    }
 }
 
 TEST_CASE(Persistence_EntityRegionSwapRecoversAtEveryMutation) {

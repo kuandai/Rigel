@@ -1957,6 +1957,37 @@ TEST_CASE(CRBin_writer_validates_records_before_output) {
     CHECK_EQ(target, (std::vector<uint8_t>{0xAA, 0xBB, 0xCC}));
 }
 
+TEST_CASE(CRBin_writer_counts_schema_implied_values_before_output) {
+    constexpr size_t kSchemaEntries = 4'096;
+    constexpr size_t kObjectCount = 256;
+    CRBinDocument document;
+    document.schema.entries = {{"objects", CRSchemaType::ObjectArray}};
+    CRSchema objectSchema;
+    objectSchema.entries.reserve(kSchemaEntries);
+    for (size_t i = 0; i < kSchemaEntries; ++i) {
+        objectSchema.entries.push_back(
+            {"field" + std::to_string(i), CRSchemaType::Byte});
+    }
+    document.altSchemas.push_back(std::move(objectSchema));
+
+    CRBinValue::Array objects;
+    objects.reserve(kObjectCount);
+    for (size_t i = 0; i < kObjectCount; ++i) {
+        CRBinObject object;
+        object.schemaIndex = 0;
+        objects.push_back(CRBinValue::fromObject(std::move(object)));
+    }
+    document.root.fields["objects"] =
+        CRBinValue::fromArray(std::move(objects));
+
+    std::vector<uint8_t> target{0xAA, 0xBB, 0xCC};
+    InMemoryByteWriter writer(target);
+    checkCRBinError(
+        [&]() { CRBinWriter::write(writer, document); },
+        "CRBinWriter: value count exceeds format limit");
+    CHECK_EQ(target, (std::vector<uint8_t>{0xAA, 0xBB, 0xCC}));
+}
+
 TEST_CASE(CRBackend_filesystem_region_roundtrip) {
     Rigel::Test::TemporaryDirectory directory("rigel_cr_backend");
 

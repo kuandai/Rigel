@@ -340,6 +340,14 @@ void validateSchemaForWrite(const CRSchema& schema, size_t& totalEntries) {
     totalEntries += schema.entries.size();
 }
 
+const CRBinValue* findValue(const CRBinObject& obj, const std::string& name) {
+    auto it = obj.fields.find(name);
+    if (it == obj.fields.end()) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
 void validateValueForWrite(const CRBinValue& value,
                            const std::vector<CRSchema>& altSchemas,
                            size_t depth,
@@ -372,11 +380,17 @@ void validateValueForWrite(const CRBinValue& value,
             object.schemaIndex >= static_cast<int32_t>(altSchemas.size())) {
             throw std::runtime_error("CRBinWriter: schema reference out of range");
         }
-        for (const auto& [name, field] : object.fields) {
-            if (name.size() > kMaxStringBytes) {
-                throw std::runtime_error("CRBinWriter: string length exceeds format limit");
+        const auto& schema =
+            altSchemas[static_cast<size_t>(object.schemaIndex)];
+        for (const auto& entry : schema.entries) {
+            const CRBinValue* field = findValue(object, entry.name);
+            if (field) {
+                validateValueForWrite(
+                    *field, altSchemas, depth + 1, totalValues);
+            } else {
+                validateValueForWrite(
+                    CRBinValue{}, altSchemas, depth + 1, totalValues);
             }
-            validateValueForWrite(field, altSchemas, depth + 1, totalValues);
         }
     }
 }
@@ -393,20 +407,15 @@ void validateDocumentForWrite(const CRBinDocument& doc) {
     }
 
     size_t totalValues = 0;
-    for (const auto& [name, value] : doc.root.fields) {
-        if (name.size() > kMaxStringBytes) {
-            throw std::runtime_error("CRBinWriter: string length exceeds format limit");
+    for (const auto& entry : doc.schema.entries) {
+        const CRBinValue* value = findValue(doc.root, entry.name);
+        if (value) {
+            validateValueForWrite(*value, doc.altSchemas, 0, totalValues);
+        } else {
+            validateValueForWrite(
+                CRBinValue{}, doc.altSchemas, 0, totalValues);
         }
-        validateValueForWrite(value, doc.altSchemas, 0, totalValues);
     }
-}
-
-const CRBinValue* findValue(const CRBinObject& obj, const std::string& name) {
-    auto it = obj.fields.find(name);
-    if (it == obj.fields.end()) {
-        return nullptr;
-    }
-    return &it->second;
 }
 
 int64_t toInt(const CRBinValue& value) {

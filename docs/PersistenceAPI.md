@@ -162,12 +162,14 @@ storage implementation.
 On the supported Linux filesystem backend, a successful commit closes and
 flushes the writer, calls `fsync` on the staging file, atomically renames it
 over the destination without first deleting the destination, and calls `fsync`
-on the containing directory. Removing an existing file also calls `fsync` on
-its containing directory. Any synchronization error is reported by the
-operation. A failure before rename leaves the previous destination in place
-and removes only that session's staging file. A failure while synchronizing the
-directory is reported after publication and does not remove the published file
-or a newly created file that happens to reuse the old staging pathname.
+on the containing directory. Removal calls `fsync` on the containing directory
+even when the path is already absent, so retrying a removal can complete an
+earlier interrupted directory synchronization. Any synchronization error is
+reported by the operation. A failure before rename leaves the previous
+destination in place and removes only that session's staging file. A failure
+while synchronizing the directory is reported after publication and does not
+remove the published file or a newly created file that happens to reuse the old
+staging pathname.
 
 The non-Windows POSIX implementation uses the same file and directory `fsync`
 sequence, but Linux is the environment covered by the project's durability
@@ -224,7 +226,9 @@ Current behavior:
   its file and directory entry have been synchronized. It remains authoritative
   while desired region replacements and obsolete-region removals are applied;
   those operations are individually synchronized before the journal is removed
-  and that removal is synchronized.
+  and that removal is synchronized. Replay repeats obsolete-region removals
+  even when a pathname is already absent, ensuring an interrupted removal's
+  directory synchronization completes before journal authority is discarded.
 - A failed journal publication leaves either the previous region state with no
   durable new journal, or a published journal that is replayed before the next
   save. If final journal removal or its directory synchronization reports a

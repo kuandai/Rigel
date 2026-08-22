@@ -49,10 +49,9 @@ template <typename Remove, typename SynchronizeDirectory>
 void removeFileDurably(const std::filesystem::path& path,
                        Remove&& remove,
                        SynchronizeDirectory&& synchronizeDirectory) {
-    if (std::forward<Remove>(remove)(path)) {
-        std::forward<SynchronizeDirectory>(synchronizeDirectory)(
-            containingDirectory(path));
-    }
+    std::forward<Remove>(remove)(path);
+    std::forward<SynchronizeDirectory>(synchronizeDirectory)(
+        containingDirectory(path));
 }
 
 } // namespace Rigel::Persistence::detail

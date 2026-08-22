@@ -597,9 +597,7 @@ public:
 
     void removeRegion(const EntityRegionKey& key) override {
         auto path = entityRegionPath(*m_storage, m_context, key);
-        if (m_storage->exists(path)) {
-            m_storage->remove(path);
-        }
+        m_storage->remove(path);
     }
 
     EntityRegionSnapshot loadRegion(const EntityRegionKey& key) override {

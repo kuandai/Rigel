@@ -283,6 +283,28 @@ TEST_CASE(AtomicFileRemoval_synchronizes_directory_after_removal) {
         (std::vector<std::string>{"remove", "sync directory"}));
 }
 
+TEST_CASE(AtomicFileRemoval_synchronizes_directory_when_path_is_absent) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    const auto path = directory.path() / "missing-region.bin";
+    std::vector<std::string> operations;
+
+    detail::removeFileDurably(
+        path,
+        [&](const std::filesystem::path& removalPath) {
+            CHECK_EQ(removalPath, path);
+            operations.push_back("remove");
+            return std::filesystem::remove(removalPath);
+        },
+        [&](const std::filesystem::path& directoryPath) {
+            CHECK_EQ(directoryPath, path.parent_path());
+            operations.push_back("sync directory");
+        });
+
+    CHECK_EQ(
+        operations,
+        (std::vector<std::string>{"remove", "sync directory"}));
+}
+
 TEST_CASE(AtomicFileRemoval_reports_directory_sync_failure) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     const auto path = directory.path() / "region.bin";

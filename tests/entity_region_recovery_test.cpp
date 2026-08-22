@@ -40,6 +40,7 @@ constexpr float kNegativePositionBoundary = -0x1p31f;
 
 struct SharedFiles {
     std::unordered_map<std::string, std::vector<uint8_t>> files;
+    std::unordered_map<std::string, std::vector<uint8_t>> unsynchronizedRemovals;
 };
 
 enum class FailureTiming {
@@ -270,6 +271,7 @@ public:
         if (observesMutationPath(m_control, m_path)) {
             m_control->afterMutation();
         }
+        m_files->unsynchronizedRemovals.erase(m_path);
     }
 
     void abort() override {
@@ -333,10 +335,24 @@ public:
         if (observesMutationPath(m_control, path)) {
             m_control->beforeMutation("remove " + path);
         }
-        m_files->files.erase(path);
-        if (observesMutationPath(m_control, path)) {
-            m_control->afterMutation();
+        std::optional<std::vector<uint8_t>> removedContents;
+        const auto found = m_files->files.find(path);
+        if (found != m_files->files.end()) {
+            removedContents = found->second;
+            m_files->files.erase(found);
         }
+        try {
+            if (observesMutationPath(m_control, path)) {
+                m_control->afterMutation();
+            }
+        } catch (...) {
+            if (removedContents) {
+                m_files->unsynchronizedRemovals.try_emplace(
+                    path, std::move(*removedContents));
+            }
+            throw;
+        }
+        m_files->unsynchronizedRemovals.erase(path);
     }
 
 private:
@@ -476,8 +492,10 @@ struct LoadedState {
     std::vector<Persistence::EntityRegionKey> regions;
 };
 
-LoadedState loadRecords(const std::shared_ptr<SharedFiles>& files,
-                        std::string preferredFormat = "memory") {
+LoadedState loadRecords(
+    const std::shared_ptr<SharedFiles>& files,
+    std::string preferredFormat = "memory",
+    const std::shared_ptr<MutationControl>& control = {}) {
     Persistence::FormatRegistry formats;
     registerFormats(formats);
     Persistence::PersistenceService service(formats);
@@ -486,7 +504,7 @@ LoadedState loadRecords(const std::shared_ptr<SharedFiles>& files,
     world.setId(1);
     Asset::AssetManager assets;
     auto context = makeContext(
-        files, {}, std::move(preferredFormat));
+        files, control, std::move(preferredFormat));
     context.providers = world.persistenceProvidersHandle();
     Persistence::loadBootstrapEntities(
         world, assets, service, context);
@@ -544,6 +562,13 @@ bool hasEntityRegionFile(const std::shared_ptr<SharedFiles>& files) {
             return entry.first.find("/entities/entityRegion_") !=
                 std::string::npos;
         });
+}
+
+void simulatePowerLoss(const std::shared_ptr<SharedFiles>& files) {
+    for (auto& [path, contents] : files->unsynchronizedRemovals) {
+        files->files[path] = std::move(contents);
+    }
+    files->unsynchronizedRemovals.clear();
 }
 
 void appendU16(std::vector<uint8_t>& bytes, uint16_t value) {
@@ -773,6 +798,47 @@ TEST_CASE(Persistence_EntityDespawnRecoversAtEveryMutation) {
         glm::vec3(513.0f, 4.0f, 5.0f)};
 
     exerciseInterruptedSave({priorA, priorB}, {});
+}
+
+TEST_CASE(Persistence_EntityRemovalReplayDurablyRetriesAbsentRegion) {
+    const EntityRecord prior{
+        Entity::EntityId{50, 51, 52},
+        "rigel:removed",
+        glm::vec3(1.0f, 2.0f, 3.0f)};
+
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        saveRecords(files, {prior}, {}, preferredFormat);
+
+        auto removalControl = std::make_shared<MutationControl>();
+        removalControl->failAt = 1;
+        removalControl->failureTiming = FailureTiming::AfterMutation;
+        CHECK_THROWS(saveRecords(
+            files, {}, removalControl, preferredFormat));
+        CHECK(journalExists(files));
+        CHECK(!hasEntityRegionFile(files));
+        CHECK_EQ(
+            files->unsynchronizedRemovals.size(), static_cast<size_t>(1));
+
+        auto replayControl = std::make_shared<MutationControl>();
+        const LoadedState replayed = loadRecords(
+            files, preferredFormat, replayControl);
+
+        CHECK(replayed.records.empty());
+        CHECK(replayed.regions.empty());
+        CHECK(!journalExists(files));
+        CHECK(files->unsynchronizedRemovals.empty());
+        CHECK_EQ(replayControl->attempted.size(), static_cast<size_t>(2));
+        CHECK(replayControl->attempted[0].starts_with("remove "));
+        CHECK(replayControl->attempted[0].find("entity-regions.journal") ==
+              std::string::npos);
+        CHECK_EQ(
+            replayControl->attempted[1],
+            std::string("remove ") + kJournalPath);
+
+        simulatePowerLoss(files);
+        checkExactState(files, {}, preferredFormat);
+    }
 }
 
 TEST_CASE(Persistence_EntityPendingJournalReplaysBeforeSubsequentSave) {

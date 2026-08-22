@@ -250,6 +250,15 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         const auto secondId = resources.registry().registerBlock(
             secondIdentifier, std::move(secondBlock));
 
+        Voxel::BlockType fillerBlock;
+        fillerBlock.identifier = "base:filler";
+        fillerBlock.model = "cube";
+        fillerBlock.isOpaque = true;
+        fillerBlock.isSolid = true;
+        const std::string fillerIdentifier = fillerBlock.identifier;
+        resources.registry().registerBlock(
+            fillerIdentifier, std::move(fillerBlock));
+
         Persistence::FormatRegistry formats;
         formats.registerFormat(
             Persistence::Backends::Memory::descriptor(),
@@ -301,8 +310,8 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         loaded.setId(1);
         context.providers = loaded.persistenceProvidersHandle();
         Voxel::WorldGenConfig generatorConfig;
-        generatorConfig.solidBlock = "base:first";
-        generatorConfig.surfaceBlock = "base:first";
+        generatorConfig.solidBlock = fillerIdentifier;
+        generatorConfig.surfaceBlock = fillerIdentifier;
         auto generator = std::make_shared<Voxel::WorldGenerator>(
             resources.registry(), std::move(generatorConfig));
         loaded.setGenerator(generator);

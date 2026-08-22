@@ -3,6 +3,7 @@
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/EntityModelLoader.h"
 #include "Rigel/Persistence/AsyncChunkLoader.h"
+#include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
@@ -11,9 +12,38 @@
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 
+#include <filesystem>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace Rigel;
+
+namespace {
+
+class RejectChunkRegionEnumerationStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    void forEachEntry(
+        const std::string& path,
+        const Persistence::StorageEntryVisitor& visitor) override {
+        if (std::filesystem::path(path).filename() == "regions") {
+            ++m_chunkRegionEnumerationAttempts;
+            throw std::runtime_error(
+                "Chunk region enumeration is forbidden during targeted save");
+        }
+        FilesystemBackend::forEachEntry(path, visitor);
+    }
+
+    size_t chunkRegionEnumerationAttempts() const {
+        return m_chunkRegionEnumerationAttempts;
+    }
+
+private:
+    size_t m_chunkRegionEnumerationAttempts = 0;
+};
+
+} // namespace
 
 TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
     Voxel::WorldResources resources;
@@ -197,4 +227,118 @@ TEST_CASE(Persistence_EntityModelIdentifierSurvivesUnavailableAsset) {
     Persistence::saveWorldToDisk(availableWorld, service, context);
     auto clearedRoundTrip = service.loadEntities(regionKey, context);
     CHECK(clearedRoundTrip.chunks.front().entities.front().modelId.empty());
+}
+
+TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
+    for (const std::string formatId : {std::string("memory"), std::string("cr")}) {
+        Voxel::WorldResources resources;
+        Voxel::BlockType firstBlock;
+        firstBlock.identifier = "base:first";
+        firstBlock.model = "cube";
+        firstBlock.isOpaque = true;
+        firstBlock.isSolid = true;
+        const std::string firstIdentifier = firstBlock.identifier;
+        const auto firstId = resources.registry().registerBlock(
+            firstIdentifier, std::move(firstBlock));
+
+        Voxel::BlockType secondBlock;
+        secondBlock.identifier = "base:second";
+        secondBlock.model = "cube";
+        secondBlock.isOpaque = true;
+        secondBlock.isSolid = true;
+        const std::string secondIdentifier = secondBlock.identifier;
+        const auto secondId = resources.registry().registerBlock(
+            secondIdentifier, std::move(secondBlock));
+
+        Persistence::FormatRegistry formats;
+        formats.registerFormat(
+            Persistence::Backends::Memory::descriptor(),
+            Persistence::Backends::Memory::factory(),
+            Persistence::Backends::Memory::probe());
+        formats.registerFormat(
+            Persistence::Backends::CR::descriptor(),
+            Persistence::Backends::CR::factory(),
+            Persistence::Backends::CR::probe());
+        Persistence::PersistenceService service(formats);
+
+        Test::TemporaryDirectory directory(
+            "rigel_targeted_chunk_save_" + formatId);
+        Persistence::PersistenceContext context;
+        context.rootPath = directory.path().string();
+        context.preferredFormat = formatId;
+        context.storage = std::make_shared<Persistence::FilesystemBackend>();
+
+        Voxel::World world(resources);
+        world.setId(1);
+        context.providers = world.persistenceProvidersHandle();
+        const Voxel::ChunkCoord targetCoord{0, 0, 0};
+        const Voxel::ChunkCoord siblingCoord{1, 0, 0};
+        const Voxel::ChunkCoord absentRegionCoord{32, 0, 0};
+        world.setBlock(0, 0, 0, Voxel::BlockState{firstId});
+        world.setBlock(
+            Voxel::Chunk::SIZE, 0, 0, Voxel::BlockState{firstId});
+        Persistence::saveWorldToDisk(world, service, context);
+        world.chunkManager().getChunk(targetCoord)->clearPersistDirty();
+        world.chunkManager().getChunk(siblingCoord)->clearPersistDirty();
+        CHECK(!world.chunkManager().getChunk(targetCoord)->isPersistDirty());
+        CHECK(!world.chunkManager().getChunk(siblingCoord)->isPersistDirty());
+
+        auto observedStorage =
+            std::make_shared<RejectChunkRegionEnumerationStorage>();
+        context.storage = observedStorage;
+        world.setBlock(0, 0, 0, Voxel::BlockState{secondId});
+        world.setBlock(
+            absentRegionCoord.x * Voxel::Chunk::SIZE,
+            0,
+            0,
+            Voxel::BlockState{secondId});
+        Persistence::saveWorldToDisk(world, service, context);
+        CHECK_EQ(
+            observedStorage->chunkRegionEnumerationAttempts(),
+            static_cast<size_t>(0));
+
+        Voxel::World loaded(resources);
+        loaded.setId(1);
+        context.providers = loaded.persistenceProvidersHandle();
+        Voxel::WorldGenConfig generatorConfig;
+        generatorConfig.solidBlock = "base:first";
+        generatorConfig.surfaceBlock = "base:first";
+        auto generator = std::make_shared<Voxel::WorldGenerator>(
+            resources.registry(), std::move(generatorConfig));
+        loaded.setGenerator(generator);
+        Persistence::AsyncChunkLoader loader(
+            service,
+            context,
+            loaded,
+            generator->config().world.version,
+            0,
+            0,
+            0,
+            generator);
+        loader.setPrefetchRadius(0);
+
+        const std::vector<Voxel::ChunkCoord> coords{
+            targetCoord, siblingCoord, absentRegionCoord};
+        for (size_t i = 0; i < coords.size(); ++i) {
+            CHECK_EQ(
+                loader.request(Voxel::ChunkLoadRequest{coords[i], i + 1}),
+                Voxel::ChunkLoadRequestResult::Queued);
+        }
+        const auto completions = loader.drainCompletions(coords.size());
+        CHECK_EQ(completions.size(), coords.size());
+        for (const auto& completion : completions) {
+            CHECK_EQ(completion.outcome, Voxel::ChunkLoadOutcome::Loaded);
+        }
+
+        CHECK_EQ(
+            loaded.getBlock(0, 0, 0),
+            Voxel::BlockState(secondId));
+        CHECK_EQ(
+            loaded.getBlock(Voxel::Chunk::SIZE, 0, 0),
+            Voxel::BlockState(firstId));
+        CHECK_EQ(
+            loaded.getBlock(
+                absentRegionCoord.x * Voxel::Chunk::SIZE, 0, 0),
+            Voxel::BlockState(secondId));
+    }
 }

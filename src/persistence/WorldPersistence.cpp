@@ -18,7 +18,6 @@
 
 #include <cmath>
 #include <map>
-#include <set>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -76,14 +75,10 @@ void saveChunkRegions(const Voxel::World& world,
         region.chunks.push_back(coord);
     }
 
-    std::set<std::tuple<int, int, int>> existingRegions;
-    for (const auto& key : format.chunkContainer().listRegions(kDefaultZoneId)) {
-        existingRegions.insert(std::make_tuple(key.x, key.y, key.z));
-    }
-
     for (auto& [coords, regionSave] : regions) {
+        (void)coords;
         ChunkRegionSnapshot existing;
-        if (existingRegions.contains(coords)) {
+        if (format.chunkContainer().regionExists(regionSave.key)) {
             existing = format.chunkContainer().loadRegion(regionSave.key);
         } else {
             existing.key = regionSave.key;

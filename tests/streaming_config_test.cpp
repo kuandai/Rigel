@@ -86,7 +86,6 @@ TEST_CASE(StreamingConfig_LayeredMergeAndClamp) {
     config.applyYaml("base", R"(
 streaming:
   view_distance_chunks: 9
-  unload_distance_chunks: 9
   worker_threads: 4
   load_queue_limit: 20
 )");
@@ -96,8 +95,10 @@ streaming:
   load_queue_limit: -1
   max_resident_chunks: -1
 )");
+    config.validate("merged test configuration");
 
     CHECK_EQ(config.viewDistanceChunks, 9);
+    CHECK_EQ(config.unloadDistanceChunks, 8);
     CHECK_EQ(config.workerThreads, 0);
     CHECK_EQ(config.loadQueueLimit, 0);
     CHECK_EQ(config.maxResidentChunks, static_cast<size_t>(0));
@@ -122,9 +123,10 @@ streaming:
   load_max_cached_regions: 256
   load_max_inflight_regions: 64
   load_prefetch_radius: 4
-  load_prefetch_per_request: 512
+  load_prefetch_per_request: 728
   max_resident_chunks: 65536
 )");
+    config.validate("merged test configuration");
 
     CHECK_EQ(config.viewDistanceChunks, StreamingConfig::MaxViewDistanceChunks);
     CHECK_EQ(config.unloadDistanceChunks, StreamingConfig::MaxUnloadDistanceChunks);
@@ -206,25 +208,22 @@ TEST_CASE(StreamingConfig_RejectsValuesAboveOperationalMaxima) {
         "'limits.yaml': expected integer no greater than 32768, got "
         "'4294967295'"
     );
-}
 
-TEST_CASE(StreamingConfig_RejectsCrossFieldViolations) {
-    const std::string unloadError = exceptionMessage([] {
+    const std::string prefetchError = exceptionMessage([] {
         StreamingConfig config;
         config.applyYaml(
-            "constraints.yaml",
-            "streaming:\n"
-            "  view_distance_chunks: 9\n"
-            "  unload_distance_chunks: 8\n"
+            "limits.yaml",
+            "streaming:\n  load_prefetch_per_request: 729\n"
         );
     });
     CHECK_EQ(
-        unloadError,
-        "Invalid configuration value 'streaming.unload_distance_chunks' in "
-        "'constraints.yaml': must be greater than or equal to "
-        "'streaming.view_distance_chunks'"
+        prefetchError,
+        "Invalid configuration value 'streaming.load_prefetch_per_request' "
+        "in 'limits.yaml': expected integer no greater than 728, got '729'"
     );
+}
 
+TEST_CASE(StreamingConfig_RejectsCrossFieldViolations) {
     const std::string workerError = exceptionMessage([] {
         StreamingConfig config;
         config.applyYaml(
@@ -234,27 +233,29 @@ TEST_CASE(StreamingConfig_RejectsCrossFieldViolations) {
             "  io_threads: 2\n"
             "  load_worker_threads: 2\n"
         );
+        config.validate("merged test configuration");
     });
     CHECK_EQ(
         workerError,
         "Invalid configuration value 'streaming.worker_threads' in "
-        "'constraints.yaml': combined worker_threads, io_threads, and "
+        "'merged test configuration': combined worker_threads, io_threads, and "
         "load_worker_threads must not exceed 64"
     );
+}
 
-    const std::string prefetchError = exceptionMessage([] {
-        StreamingConfig config;
-        config.applyYaml(
-            "constraints.yaml",
-            "streaming:\n"
-            "  load_prefetch_radius: 1\n"
-            "  load_prefetch_per_request: 27\n"
-        );
-    });
-    CHECK_EQ(
-        prefetchError,
-        "Invalid configuration value 'streaming.load_prefetch_per_request' "
-        "in 'constraints.yaml': must not exceed the neighbor count selected "
-        "by 'streaming.load_prefetch_radius'"
+TEST_CASE(StreamingConfig_ValidatesWorkerTotalAfterLayeredMerge) {
+    StreamingConfig config;
+    config.applyYaml(
+        "base.yaml",
+        "streaming:\n  worker_threads: 64\n"
     );
+    config.applyYaml(
+        "override.yaml",
+        "streaming:\n  io_threads: 0\n  load_worker_threads: 0\n"
+    );
+    config.validate("merged test configuration");
+
+    CHECK_EQ(config.workerThreads, 64);
+    CHECK_EQ(config.ioThreads, 0);
+    CHECK_EQ(config.loadWorkerThreads, 0);
 }

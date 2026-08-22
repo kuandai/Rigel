@@ -155,6 +155,7 @@ struct WorldGenConfig {
     std::vector<OverlayConfig> overlays;
 
     void applyYaml(const char* sourceName, const std::string& yaml);
+    void validate(const char* sourceName) const;
     bool isStageEnabled(const std::string& stage) const;
     bool isFlagEnabled(const std::string& name) const;
 

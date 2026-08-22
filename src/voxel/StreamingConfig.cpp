@@ -98,13 +98,9 @@ void StreamingConfig::applyYaml(const char* sourceName, const std::string& yaml)
         0, MaxResidentChunks, sourceName, "streaming");
     maxResidentChunks = static_cast<size_t>(resident);
 
-    if (unloadDistanceChunks < viewDistanceChunks) {
-        Util::throwConfigurationConstraint(
-            sourceName,
-            "streaming.unload_distance_chunks",
-            "must be greater than or equal to 'streaming.view_distance_chunks'"
-        );
-    }
+}
+
+void StreamingConfig::validate(const char* sourceName) const {
     if (workerThreads + ioThreads + loadWorkerThreads > MaxTotalWorkerThreads) {
         Util::throwConfigurationConstraint(
             sourceName,
@@ -112,18 +108,6 @@ void StreamingConfig::applyYaml(const char* sourceName, const std::string& yaml)
             "combined worker_threads, io_threads, and load_worker_threads "
             "must not exceed " + std::to_string(MaxTotalWorkerThreads)
         );
-    }
-    if (loadPrefetchRadius > 0) {
-        const int diameter = loadPrefetchRadius * 2 + 1;
-        const int candidateCount = diameter * diameter * diameter - 1;
-        if (loadPrefetchPerRequest > candidateCount) {
-            Util::throwConfigurationConstraint(
-                sourceName,
-                "streaming.load_prefetch_per_request",
-                "must not exceed the neighbor count selected by "
-                "'streaming.load_prefetch_radius'"
-            );
-        }
     }
 }
 

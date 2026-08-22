@@ -144,7 +144,7 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `surface_block` | string | `base:debug` | Block ID used for surface fill. |
 | `world.min_y` | int | `-64` | Minimum world Y coordinate; supported range is `[-4096,4096]`. |
 | `world.max_y` | int | `320` | Maximum world Y coordinate; supported range is `[-4096,4096]`. |
-| `world.sea_level` | int | `0` | Sea level for water placement; must be inside the world bounds. |
+| `world.sea_level` | int | `0` | Sea level for water placement. Values outside the world bounds coherently produce no water or flood all eligible air. |
 | `world.version` | int | `1` | World generation version. |
 | `terrain.base_height` | float | `16.0` | Base terrain height. |
 | `terrain.height_variation` | float | `16.0` | Terrain height variation. |
@@ -252,7 +252,7 @@ precedence.
 | Key | Type | Code fallback | Notes |
 | --- | --- | --- | --- |
 | `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera (maximum `16`). |
-| `streaming.unload_distance_chunks` | int | `8` | Unload radius (maximum `24`); must be at least the view radius. |
+| `streaming.unload_distance_chunks` | int | `8` | Configured unload radius (maximum `24`); the view radius is its effective minimum. |
 | `streaming.gen_queue_limit` | int | `0` | In-flight generation cap (0 = unlimited; maximum explicit cap `32768`). |
 | `streaming.mesh_queue_limit` | int | `0` | In-flight mesh cap (0 = unlimited; maximum explicit cap `32768`). |
 | `streaming.update_budget_per_frame` | int | `0` | Load/generation/missing-mesh requests advanced per update (0 = unlimited). |
@@ -266,12 +266,12 @@ precedence.
 | `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = unlimited, maximum `256`). |
 | `streaming.load_max_inflight_regions` | int | `8` | Concurrent region read cap (0 = unlimited, maximum `64`). |
 | `streaming.load_prefetch_radius` | int | `1` | Region prefetch radius (maximum `4`). |
-| `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request (maximum `512` and no more than the selected neighbor cube). |
+| `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request (0 = all candidates; maximum `728`). |
 | `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited, maximum explicit cap `65536`). |
 
 The embedded configuration shipped with Rigel sets the view distance to 12
-chunks and the unload distance to 13 chunks. Configurations with an unload
-distance below the view distance are rejected. Hysteresis exists only when
+chunks and the unload distance to 13 chunks. The effective unload distance is
+the greater of the configured view and unload distances. Hysteresis exists only when
 `unload_distance_chunks` is greater than `view_distance_chunks`; equal values
 evict residents as soon as they leave the desired sphere.
 
@@ -301,8 +301,8 @@ block-storage bounds, not measurements of total resident memory.
 The view limit bounds a synchronous desired-set rebuild to 35,937 cube
 candidates and 17,077 selected sphere coordinates. The unload limit bounds its
 distance-retention sphere to 57,777 coordinates. Prefetch scans at most 728
-neighbors, and the per-request cap cannot exceed the neighbor count selected
-by its radius. Per-frame budgets are limited to 32,768. These are operational
+neighbors; the maximum explicit per-request cap equals that radius-four
+candidate count. Per-frame budgets are limited to 32,768. These are operational
 ceilings for Rigel's fixed 32-cubed chunks rather than integer or address-space
 maxima.
 
@@ -330,7 +330,7 @@ config (`assets/config/render.yaml`) may override them.
 | `render.transparent_alpha` | float | `0.5` | Alpha for transparent pass. |
 | `render.shadow.enabled` | bool | `false` | Toggle cascaded shadows. |
 | `render.shadow.cascades` | int | `3` | Cascade count (maximum `4`). |
-| `render.shadow.map_size` | int | `1024` | Shadow map resolution (maximum `8192`). |
+| `render.shadow.map_size` | int | `1024` | Shadow map resolution (maximum `6144`). |
 | `render.shadow.max_distance` | float | `200.0` | Shadow max distance. |
 | `render.shadow.split_lambda` | float | `0.5` | Log/linear split blend. |
 | `render.shadow.bias` | float | `0.0005` | Depth bias. |
@@ -370,9 +370,9 @@ Values are clamped during load:
 - `taa.blend` is clamped to `[0, 1]`.
 
 Shadow cascades, map dimensions, and PCF radii above their documented maxima
-are rejected before renderer or streaming workers are created. The 8,192 map
-limit leaves headroom above the shipped 6,144 maps while placing a fixed bound
-on both texture-array allocations. The PCF limit matches the implemented
+are rejected before renderer or streaming workers are created. The 6,144 map
+limit matches the largest shipped configuration while placing a fixed bound on
+both texture-array allocations. The PCF limit matches the implemented
 four-texel shader kernel instead of accepting values that would be silently
 reduced during rendering.
 

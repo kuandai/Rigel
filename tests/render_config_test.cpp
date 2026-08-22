@@ -184,7 +184,7 @@ TEST_CASE(RenderConfig_AcceptsShadowResourceMaxima) {
 render:
   shadow:
     cascades: 4
-    map_size: 8192
+    map_size: 6144
     pcf_radius: 4
     pcf_radius_near: 4
     pcf_radius_far: 4
@@ -216,14 +216,14 @@ TEST_CASE(RenderConfig_RejectsShadowValuesAboveResourceMaxima) {
     const std::string mapError = exceptionMessage([] {
         RenderConfigProvider provider;
         provider.addSource(std::make_unique<StringConfigSource>(
-            "render:\n  shadow:\n    map_size: 8193\n"
+            "render:\n  shadow:\n    map_size: 6145\n"
         ));
         provider.load();
     });
     CHECK_EQ(
         mapError,
         "Invalid configuration value 'render.shadow.map_size' in 'string': "
-        "expected integer no greater than 8192, got '8193'"
+        "expected integer no greater than 6144, got '6145'"
     );
 
     const std::string pcfMaxError = exceptionMessage([] {
@@ -262,6 +262,6 @@ TEST_CASE(RenderConfig_RejectsShadowValuesAboveResourceMaxima) {
     CHECK_EQ(
         unsignedError,
         "Invalid configuration value 'render.shadow.map_size' in 'string': "
-        "expected integer no greater than 8192, got '4294967295'"
+        "expected integer no greater than 6144, got '4294967295'"
     );
 }

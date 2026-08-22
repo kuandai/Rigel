@@ -278,6 +278,7 @@ TEST_CASE(WorldGenConfig_AcceptsWorldAndOctaveMaxima) {
         "      noise:\n"
         "        octaves: 16\n"
     );
+    config.validate("merged test configuration");
 
     CHECK_EQ(config.world.maxY, WorldGenConfig::MaxWorldY);
     CHECK_EQ(config.world.maxY - config.world.minY + 1,
@@ -342,10 +343,12 @@ TEST_CASE(WorldGenConfig_RejectsWorldCrossFieldViolations) {
             "  max_y: 9\n"
             "  sea_level: 9\n"
         );
+        config.validate("merged test configuration");
     });
     CHECK_EQ(
         orderingError,
-        "Invalid configuration value 'world.max_y' in 'constraints.yaml': "
+        "Invalid configuration value 'world.max_y' in "
+        "'merged test configuration': "
         "must be greater than or equal to 'world.min_y'"
     );
 
@@ -358,26 +361,36 @@ TEST_CASE(WorldGenConfig_RejectsWorldCrossFieldViolations) {
             "  max_y: 1024\n"
             "  sea_level: 0\n"
         );
+        config.validate("merged test configuration");
     });
     CHECK_EQ(
         heightError,
-        "Invalid configuration value 'world.max_y' in 'constraints.yaml': "
+        "Invalid configuration value 'world.max_y' in "
+        "'merged test configuration': "
         "inclusive world height must not exceed 1024"
     );
+}
 
-    const std::string seaError = exceptionMessage([] {
-        WorldGenConfig config;
-        config.applyYaml(
-            "constraints.yaml",
-            "world:\n"
-            "  min_y: 0\n"
-            "  max_y: 10\n"
-            "  sea_level: 11\n"
-        );
-    });
-    CHECK_EQ(
-        seaError,
-        "Invalid configuration value 'world.sea_level' in "
-        "'constraints.yaml': must be between 'world.min_y' and 'world.max_y'"
+TEST_CASE(WorldGenConfig_ValidatesBoundsAfterLayeredMerge) {
+    WorldGenConfig config;
+    config.applyYaml("base.yaml", "world:\n  min_y: 400\n");
+    config.applyYaml("override.yaml", "world:\n  max_y: 500\n");
+    config.validate("merged test configuration");
+
+    CHECK_EQ(config.world.minY, 400);
+    CHECK_EQ(config.world.maxY, 500);
+}
+
+TEST_CASE(WorldGenConfig_AcceptsSeaLevelOutsideWorldBounds) {
+    WorldGenConfig config;
+    config.applyYaml(
+        "above.yaml",
+        "world:\n  min_y: 0\n  max_y: 10\n  sea_level: 11\n"
     );
+    config.validate("merged test configuration");
+    CHECK_EQ(config.world.seaLevel, 11);
+
+    config.applyYaml("below.yaml", "world:\n  sea_level: -1\n");
+    config.validate("merged test configuration");
+    CHECK_EQ(config.world.seaLevel, -1);
 }

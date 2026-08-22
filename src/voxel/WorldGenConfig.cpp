@@ -306,13 +306,6 @@ void validateWorldBounds(const WorldGenConfig::WorldConfig& world,
                 std::to_string(WorldGenConfig::MaxWorldHeight)
         );
     }
-    if (world.seaLevel < world.minY || world.seaLevel > world.maxY) {
-        Util::throwConfigurationConstraint(
-            sourceName,
-            "world.sea_level",
-            "must be between 'world.min_y' and 'world.max_y'"
-        );
-    }
 }
 
 WorldGenConfig::BiomeTarget readBiomeTarget(ryml::ConstNodeRef node,
@@ -364,7 +357,6 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
             sourceName, "world");
         world.version = static_cast<uint32_t>(Util::readInt(worldNode, "version",
                                                       static_cast<int>(world.version)));
-        validateWorldBounds(world, sourceName);
     }
 
     if (root.has_child("terrain")) {
@@ -624,6 +616,10 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
 
     spdlog::debug("Applied world gen config from {}", sourceName);
     return declaredOverlays;
+}
+
+void WorldGenConfig::validate(const char* sourceName) const {
+    validateWorldBounds(world, sourceName);
 }
 
 bool WorldGenConfig::isStageEnabled(const std::string& stage) const {

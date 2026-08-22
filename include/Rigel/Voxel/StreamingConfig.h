@@ -14,7 +14,7 @@ struct StreamingConfig {
     static constexpr int MaxCachedRegions = 256;
     static constexpr int MaxInFlightRegions = 64;
     static constexpr int MaxPrefetchRadius = 4;
-    static constexpr int MaxPrefetchPerRequest = 512;
+    static constexpr int MaxPrefetchPerRequest = 728;
     static constexpr int MaxResidentChunks = 65536;
 
     int viewDistanceChunks = 6;
@@ -36,6 +36,7 @@ struct StreamingConfig {
     size_t maxResidentChunks = 0;
 
     void applyYaml(const char* sourceName, const std::string& yaml);
+    void validate(const char* sourceName) const;
 };
 
 } // namespace Rigel::Voxel

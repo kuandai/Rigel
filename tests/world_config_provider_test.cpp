@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <unordered_map>
 
 using namespace Rigel::Voxel;
@@ -137,6 +138,56 @@ TEST_CASE(WorldConfigProvider_HigherPrecedenceSourceOverridesLowerOverlay) {
 
     CHECK_NEAR(config.generation.terrain.baseHeight, 9.0f, 0.001f);
     CHECK_EQ(config.streaming.workerThreads, 3);
+}
+
+TEST_CASE(WorldConfigProvider_ValidatesCrossFieldsAfterAllSourcesMerge) {
+    WorldConfigProvider provider;
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "base",
+        "world:\n"
+        "  min_y: 400\n"
+        "streaming:\n"
+        "  worker_threads: 64\n"
+    ));
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "override",
+        "world:\n"
+        "  max_y: 500\n"
+        "streaming:\n"
+        "  io_threads: 0\n"
+        "  load_worker_threads: 0\n"
+    ));
+
+    const WorldConfiguration config = provider.loadConfig();
+    CHECK_EQ(config.generation.world.minY, 400);
+    CHECK_EQ(config.generation.world.maxY, 500);
+    CHECK_EQ(config.streaming.workerThreads, 64);
+    CHECK_EQ(config.streaming.ioThreads, 0);
+    CHECK_EQ(config.streaming.loadWorkerThreads, 0);
+}
+
+TEST_CASE(WorldConfigProvider_ReportsInvalidFinalCrossFields) {
+    WorldConfigProvider provider;
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "base",
+        "streaming:\n"
+        "  worker_threads: 61\n"
+        "  io_threads: 2\n"
+        "  load_worker_threads: 2\n"
+    ));
+
+    std::string message;
+    try {
+        (void)provider.loadConfig();
+    } catch (const std::invalid_argument& error) {
+        message = error.what();
+    }
+    CHECK_EQ(
+        message,
+        "Invalid configuration value 'streaming.worker_threads' in "
+        "'merged world configuration': combined worker_threads, io_threads, "
+        "and load_worker_threads must not exceed 64"
+    );
 }
 
 TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {

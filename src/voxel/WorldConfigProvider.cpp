@@ -58,6 +58,9 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
         applyOverlays(*source, std::move(overlays));
     }
 
+    config.generation.validate("merged world configuration");
+    config.streaming.validate("merged world configuration");
+
     return config;
 }
 

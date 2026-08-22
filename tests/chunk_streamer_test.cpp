@@ -3374,6 +3374,226 @@ TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
     CHECK_EQ(installedIndexCount, static_cast<size_t>(54));
 }
 
+TEST_CASE(ChunkStreamer_EmptyChunkIgnoresGeneratedNeighborArrival) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const ChunkCoord survivingCoord{0, 2, 0};
+    const ChunkCoord arrivingCoord{1, 2, 0};
+
+    Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
+    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setLoadedFromDisk(true);
+    surviving.clearDirty();
+
+    for (int i = 0; i < DirectionCount; ++i) {
+        Direction direction = static_cast<Direction>(i);
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(direction, dx, dy, dz);
+        const ChunkCoord neighborCoord = survivingCoord.offset(dx, dy, dz);
+        if (neighborCoord == arrivingCoord) {
+            continue;
+        }
+        Chunk& neighbor = manager.getOrCreateChunk(neighborCoord);
+        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setLoadedFromDisk(true);
+        neighbor.clearDirty();
+    }
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+
+    streamer.update(survivingCoord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(surviving.isEmpty());
+    CHECK(!surviving.isDirty());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+    const uint32_t settledRevision = surviving.meshRevision();
+
+    stream.viewDistanceChunks = 1;
+    streamer.setConfig(stream);
+    streamer.update(survivingCoord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(1));
+    streamer.processCompletions();
+
+    Chunk* arrived = manager.getChunk(arrivingCoord);
+    CHECK(arrived != nullptr);
+    CHECK(arrived->isEmpty());
+    CHECK(surviving.isEmpty());
+    CHECK(!surviving.isDirty());
+    CHECK_EQ(surviving.meshRevision(), settledRevision);
+
+    streamer.update(survivingCoord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
+}
+
+TEST_CASE(ChunkStreamer_NonEmptyChunkRemeshesAfterGeneratedNeighborArrival) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(registry, "rigel:arrival_boundary_solid");
+    const ChunkCoord survivingCoord{0, 2, 0};
+    const ChunkCoord arrivingCoord{1, 2, 0};
+
+    Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
+    surviving.setBlock(
+        Chunk::SIZE - 1, 1, 1, BlockState{solid}, registry);
+    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setLoadedFromDisk(true);
+
+    for (int i = 0; i < DirectionCount; ++i) {
+        Direction direction = static_cast<Direction>(i);
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(direction, dx, dy, dz);
+        const ChunkCoord neighborCoord = survivingCoord.offset(dx, dy, dz);
+        if (neighborCoord == arrivingCoord) {
+            continue;
+        }
+        Chunk& neighbor = manager.getOrCreateChunk(neighborCoord);
+        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setLoadedFromDisk(true);
+        neighbor.clearDirty();
+    }
+
+    auto gate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> buildsEntered{0};
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 1;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer,
+        [gate, &buildsEntered]() {
+            if (buildsEntered.fetch_add(1, std::memory_order_relaxed) == 0) {
+                gate->enterAndWait();
+            }
+        });
+    WorkerGateRelease releaseOnExit(gate);
+
+    streamer.update(survivingCoord.toWorldCenter());
+    bool firstBuildEntered = gate->waitUntilEntered();
+    if (!firstBuildEntered) {
+        gate->release();
+    }
+    CHECK(firstBuildEntered);
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    const uint32_t queuedRevision = surviving.meshRevision();
+
+    stream.viewDistanceChunks = 1;
+    streamer.setConfig(stream);
+    streamer.update(survivingCoord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(1));
+    CHECK(waitForGenerationCompletion(streamer));
+    streamer.processCompletions();
+    CHECK(manager.hasChunk(arrivingCoord));
+    CHECK_EQ(surviving.meshRevision(), queuedRevision + 1);
+
+    streamer.update(survivingCoord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
+
+    gate->release();
+    CHECK(waitForMeshCompletions(streamer, 1));
+    CHECK(!meshStore.contains(survivingCoord));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+             static_cast<uint64_t>(1));
+
+    streamer.update(survivingCoord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK(waitForPendingMeshCompletion(streamer));
+    const auto replacementIndexCount =
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::pendingMeshIndexCount(
+            streamer);
+    CHECK(replacementIndexCount.has_value());
+    CHECK(*replacementIndexCount > 0);
+    CHECK(waitForMeshCompletions(streamer, 2));
+
+    const auto& metrics = streamer.workMetrics();
+    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
+    CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
+    CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(2));
+    CHECK(meshStore.contains(survivingCoord));
+    CHECK(!surviving.isDirty());
+}
+
+TEST_CASE(ChunkStreamer_EmptyChunkIgnoresNeighborDeparture) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const ChunkCoord survivingCoord{0, 2, 0};
+    const ChunkCoord removedCoord{1, 2, 0};
+
+    Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
+    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setLoadedFromDisk(true);
+    surviving.clearDirty();
+    Chunk& removed = manager.getOrCreateChunk(removedCoord);
+    removed.setWorldGenVersion(generator->config().world.version);
+    removed.setLoadedFromDisk(true);
+    removed.clearDirty();
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+
+    streamer.update(removedCoord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(manager.hasChunk(survivingCoord));
+    CHECK(!surviving.isDirty());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+    const uint32_t settledRevision = surviving.meshRevision();
+
+    stream.unloadDistanceChunks = 0;
+    streamer.setConfig(stream);
+    streamer.update(survivingCoord.toWorldCenter());
+    CHECK(!manager.hasChunk(removedCoord));
+    CHECK(!surviving.isDirty());
+    CHECK_EQ(surviving.meshRevision(), settledRevision);
+
+    streamer.update(survivingCoord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
+}
+
 TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     ChunkManager manager;
     BlockRegistry registry;
@@ -4524,7 +4744,8 @@ TEST_CASE(ChunkStreamer_UnloadHysteresisAvoidsOneChunkReversalChurn) {
         uint64_t entered = 0;
         size_t moveEvicted = 0;
         size_t movedResidents = 0;
-        uint64_t reloadedOrRegenerated = 0;
+        uint64_t reloaded = 0;
+        uint64_t regenerated = 0;
         size_t reversalEvicted = 0;
         uint64_t remeshed = 0;
         size_t reversedResidents = 0;
@@ -4653,11 +4874,10 @@ TEST_CASE(ChunkStreamer_UnloadHysteresisAvoidsOneChunkReversalChurn) {
             initialWork.chunkLoadRequestsStarted;
         result.moveEvicted = removedCoordinates(initial, afterMove);
         result.movedResidents = afterMove.size();
-        result.reloadedOrRegenerated =
-            reversalWork.chunkLoadRequestsStarted -
-                moveWork.chunkLoadRequestsStarted +
-            reversalWork.generationJobsStarted -
-                moveWork.generationJobsStarted;
+        result.reloaded = reversalWork.chunkLoadRequestsStarted -
+            moveWork.chunkLoadRequestsStarted;
+        result.regenerated = reversalWork.generationJobsStarted -
+            moveWork.generationJobsStarted;
         result.reversalEvicted = removedCoordinates(afterMove, afterReversal);
         result.remeshed = reversalWork.meshJobsStarted - moveWork.meshJobsStarted;
         result.reversedResidents = afterReversal.size();
@@ -4669,9 +4889,10 @@ TEST_CASE(ChunkStreamer_UnloadHysteresisAvoidsOneChunkReversalChurn) {
     CHECK_EQ(radius12.entered, static_cast<uint64_t>(441));
     CHECK_EQ(radius12.moveEvicted, static_cast<size_t>(441));
     CHECK_EQ(radius12.movedResidents, radius12.initialResidents);
-    CHECK_EQ(radius12.reloadedOrRegenerated, static_cast<uint64_t>(441));
+    CHECK_EQ(radius12.reloaded, static_cast<uint64_t>(441));
+    CHECK_EQ(radius12.regenerated, static_cast<uint64_t>(0));
     CHECK_EQ(radius12.reversalEvicted, static_cast<size_t>(441));
-    CHECK_EQ(radius12.remeshed, static_cast<uint64_t>(537));
+    CHECK_EQ(radius12.remeshed, static_cast<uint64_t>(0));
     CHECK_EQ(radius12.reversedResidents, radius12.initialResidents);
 
     const MovementResult radius13 = run(13);
@@ -4680,7 +4901,8 @@ TEST_CASE(ChunkStreamer_UnloadHysteresisAvoidsOneChunkReversalChurn) {
     CHECK_EQ(radius13.moveEvicted, static_cast<size_t>(0));
     CHECK_EQ(radius13.movedResidents,
              radius13.initialResidents + static_cast<size_t>(441));
-    CHECK_EQ(radius13.reloadedOrRegenerated, static_cast<uint64_t>(0));
+    CHECK_EQ(radius13.reloaded, static_cast<uint64_t>(0));
+    CHECK_EQ(radius13.regenerated, static_cast<uint64_t>(0));
     CHECK_EQ(radius13.reversalEvicted, static_cast<size_t>(0));
     CHECK_EQ(radius13.remeshed, static_cast<uint64_t>(0));
     CHECK_EQ(radius13.reversedResidents, radius13.movedResidents);

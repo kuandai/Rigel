@@ -1291,7 +1291,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             directionOffset(dir, dx, dy, dz);
             ChunkCoord neighborCoord = genResult.coord.offset(dx, dy, dz);
             Chunk* neighbor = m_chunkManager->getChunk(neighborCoord);
-            if (neighbor) {
+            if (neighbor && !neighbor->isEmpty()) {
                 neighbor->invalidateMesh();
             }
         }

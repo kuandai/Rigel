@@ -275,7 +275,7 @@ quiescence, moves one chunk on the X axis, settles again, reverses to the origin
 and settles a third time. The two runs differ only in unload distance, and no
 terrain generation is involved. With unload distance 12, the move entered 441
 chunks, evicted 441, and left 7,153 resident. Reversal then reloaded 441,
-generated none, evicted 441 from the opposite side, started 537 remesh jobs, and
+generated none, evicted 441 from the opposite side, started no remesh jobs, and
 returned to 7,153 residents. With unload distance 13, the move entered the same
 441 chunks, evicted none, and left 7,594 resident; reversal caused no loads,
 generation, eviction, or remeshing and retained 7,594 residents. This evidence

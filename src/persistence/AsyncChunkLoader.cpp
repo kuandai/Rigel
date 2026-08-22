@@ -703,7 +703,7 @@ bool AsyncChunkLoader::applyPayload(const ChunkPayload& payload) {
         Voxel::directionOffset(dir, dx, dy, dz);
         Voxel::ChunkCoord neighborCoord = payload.coord.offset(dx, dy, dz);
         Voxel::Chunk* neighbor = m_world->chunkManager().getChunk(neighborCoord);
-        if (neighbor) {
+        if (neighbor && !neighbor->isEmpty()) {
             neighbor->invalidateMesh();
         }
     }

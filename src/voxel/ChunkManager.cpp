@@ -11,7 +11,8 @@ void ChunkManager::invalidateFaceNeighbors(ChunkCoord coord) {
         int dy = 0;
         int dz = 0;
         directionOffset(static_cast<Direction>(i), dx, dy, dz);
-        if (Chunk* neighbor = getChunk(coord.offset(dx, dy, dz))) {
+        if (Chunk* neighbor = getChunk(coord.offset(dx, dy, dz));
+            neighbor && !neighbor->isEmpty()) {
             neighbor->invalidateMesh();
         }
     }

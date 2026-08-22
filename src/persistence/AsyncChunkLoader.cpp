@@ -90,7 +90,7 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
                                    size_t ioThreads,
                                    size_t workerThreads,
                                    int viewDistanceChunks,
-                                   std::shared_ptr<Voxel::WorldGenerator> generator)
+                                   std::shared_ptr<const Voxel::WorldGenerator> generator)
     : m_service(&service),
       m_context(std::move(context)),
       m_format(service.openFormat(m_context)),

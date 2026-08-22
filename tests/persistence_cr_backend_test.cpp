@@ -869,13 +869,10 @@ TEST_CASE(CRBackend_async_loader_rejects_alternate_default_zone) {
   "defaultZoneId": "base:moon"
 }
 )");
-    auto generator = std::make_shared<Rigel::Voxel::WorldGenerator>(
-        resources.registry());
-
     std::string diagnostic;
     try {
         AsyncChunkLoader loader(
-            service, context, world, 0, 0, 0, 4, std::move(generator));
+            service, context, world, 0, 0, 0, 4, nullptr);
     } catch (const std::exception& error) {
         diagnostic = error.what();
     }

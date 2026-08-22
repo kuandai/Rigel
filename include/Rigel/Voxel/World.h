@@ -125,8 +125,8 @@ public:
     /// @name Generation
     /// @{
 
-    void setGenerator(std::shared_ptr<WorldGenerator> generator);
-    const std::shared_ptr<WorldGenerator>& generator() const { return m_generator; }
+    void setGenerator(std::shared_ptr<const WorldGenerator> generator);
+    const std::shared_ptr<const WorldGenerator>& generator() const { return m_generator; }
 
     /**
      * @brief Tick entities for this world.
@@ -140,7 +140,7 @@ private:
     WorldResources* m_resources = nullptr;
     ChunkManager m_chunkManager;
     Entity::WorldEntities m_entities;
-    std::shared_ptr<WorldGenerator> m_generator;
+    std::shared_ptr<const WorldGenerator> m_generator;
     bool m_initialized = false;
     std::shared_ptr<Rigel::Persistence::ProviderRegistry> m_persistenceProviders;
 

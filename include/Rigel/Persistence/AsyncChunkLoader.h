@@ -36,7 +36,7 @@ public:
                      size_t ioThreads,
                      size_t workerThreads,
                      int viewDistanceChunks,
-                     std::shared_ptr<Voxel::WorldGenerator> generator);
+                     std::shared_ptr<const Voxel::WorldGenerator> generator);
     ~AsyncChunkLoader();
 
     Voxel::ChunkLoadRequestResult request(Voxel::ChunkCoord coord);
@@ -160,7 +160,7 @@ private:
     size_t m_prefetchPerRequest = 12;
     size_t m_regionDrainBudget = 32;
 
-    std::shared_ptr<Voxel::WorldGenerator> m_generator;
+    std::shared_ptr<const Voxel::WorldGenerator> m_generator;
 
     std::function<void()> m_regionLoadStartCallback;
     std::function<void()> m_payloadBuildStartCallback;

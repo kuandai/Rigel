@@ -9,10 +9,8 @@
 
 #include <array>
 #include <atomic>
-#include <functional>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace Rigel::Voxel {
@@ -63,16 +61,13 @@ class WorldGenStage {
 public:
     virtual ~WorldGenStage() = default;
     virtual const char* name() const = 0;
-    virtual void apply(WorldGenContext& ctx, ChunkBuffer& buffer) = 0;
+    virtual void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const = 0;
 };
 
 class WorldGenerator {
 public:
-    using StageFactory = std::function<std::unique_ptr<WorldGenStage>()>;
+    WorldGenerator(const BlockRegistry& registry, WorldGenConfig config);
 
-    explicit WorldGenerator(const BlockRegistry& registry);
-
-    void setConfig(WorldGenConfig config);
     const WorldGenConfig& config() const { return m_config; }
 
     void generate(ChunkCoord coord, ChunkBuffer& out,
@@ -80,14 +75,9 @@ public:
 
 private:
     const BlockRegistry& m_registry;
-    WorldGenConfig m_config;
-    DensityGraph m_densityGraph;
-    std::vector<std::unique_ptr<WorldGenStage>> m_stages;
-    std::unordered_map<std::string, StageFactory> m_stageFactories;
-
-    void registerDefaultStages();
-    void rebuildStages();
-    bool isStageEnabled(const std::string& stage) const;
+    const WorldGenConfig m_config;
+    const DensityGraph m_densityGraph;
+    const std::vector<std::unique_ptr<const WorldGenStage>> m_stages;
 };
 
 } // namespace Rigel::Voxel

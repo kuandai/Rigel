@@ -88,11 +88,11 @@ public:
                   WorldMeshStore& meshStore,
                   BlockRegistry& registry,
                   TextureAtlas* atlas,
-                  std::shared_ptr<WorldGenerator> generator);
+                  std::shared_ptr<const WorldGenerator> generator);
     ~ChunkStreamer();
 
     void setConfig(const StreamingConfig& config);
-    void setGenerator(std::shared_ptr<WorldGenerator> generator);
+    void setGenerator(std::shared_ptr<const WorldGenerator> generator);
     void setBenchmark(ChunkBenchmarkStats* stats);
     void setChunkLoader(ChunkLoadCallback loader);
     void setChunkPendingCallback(ChunkPendingCallback pending);
@@ -196,7 +196,7 @@ private:
     WorldMeshStore* const m_meshStore;
     BlockRegistry* const m_registry;
     TextureAtlas* const m_atlas;
-    std::shared_ptr<WorldGenerator> m_generator;
+    std::shared_ptr<const WorldGenerator> m_generator;
     ChunkCache m_cache;
     ChunkBenchmarkStats* m_benchmark = nullptr;
     ChunkLoadCallback m_chunkLoader;

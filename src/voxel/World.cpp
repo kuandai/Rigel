@@ -84,7 +84,7 @@ void World::clear() {
     m_entities.clear();
 }
 
-void World::setGenerator(std::shared_ptr<WorldGenerator> generator) {
+void World::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
     m_generator = std::move(generator);
 }
 

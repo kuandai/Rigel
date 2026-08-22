@@ -40,8 +40,8 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     streaming.applyBudgetPerFrame = 0;
     streaming.workerThreads = 0;
 
-    auto generator = std::make_shared<WorldGenerator>(resources.registry());
-    generator->setConfig(config);
+    auto generator =
+        std::make_shared<WorldGenerator>(resources.registry(), config);
     world.setGenerator(generator);
     view.setGenerator(generator);
     view.setStreamConfig(streaming);
@@ -81,7 +81,11 @@ TEST_CASE(WorldView_EditDrivenMeshingMatchesInitialStreaming) {
         solid.identifier = "rigel:world_view_mesh_solid";
         BlockID solidId = resources.registry().registerBlock(solid.identifier, solid);
 
-        auto generator = std::make_shared<WorldGenerator>(resources.registry());
+        WorldGenConfig generation;
+        generation.solidBlock = solid.identifier;
+        generation.surfaceBlock = solid.identifier;
+        auto generator = std::make_shared<WorldGenerator>(
+            resources.registry(), std::move(generation));
         world.setGenerator(generator);
         view.setGenerator(generator);
 

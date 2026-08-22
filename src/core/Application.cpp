@@ -266,9 +266,9 @@ void Application::initialize() {
                 crSettings);
         }
 
-        auto generator =
-            std::make_shared<Voxel::WorldGenerator>(m_impl->world.worldSet.resources().registry());
-        generator->setConfig(config.generation);
+        auto generator = std::make_shared<const Voxel::WorldGenerator>(
+            m_impl->world.worldSet.resources().registry(),
+            config.generation);
         m_impl->world.world->setGenerator(generator);
         m_impl->world.worldView->setGenerator(generator);
 

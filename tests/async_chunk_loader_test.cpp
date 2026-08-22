@@ -160,7 +160,6 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     surface.isSolid = true;
     registry.registerBlock(surface.identifier, surface);
 
-    auto generator = std::make_shared<WorldGenerator>(registry);
     WorldGenConfig config;
     config.seed = 1;
     config.solidBlock = solid.identifier;
@@ -168,8 +167,7 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     config.terrain.baseHeight = 64.0f;
     config.terrain.heightVariation = 0.0f;
     config.terrain.surfaceDepth = 1;
-    generator->setConfig(config);
-    return generator;
+    return std::make_shared<WorldGenerator>(registry, std::move(config));
 }
 
 BlockID registerTestBlock(BlockRegistry& registry, const std::string& identifier) {
@@ -1321,7 +1319,10 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
         streamer.workMetrics().generationJobsStarted;
     WorldGenConfig changedConfig = generator->config();
     ++changedConfig.world.version;
-    generator->setConfig(std::move(changedConfig));
+    generator = std::make_shared<WorldGenerator>(
+        registry, std::move(changedConfig));
+    world.setGenerator(generator);
+    streamer.setGenerator(generator);
 
     streamer.update(coord.toWorldCenter());
 

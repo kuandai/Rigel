@@ -33,10 +33,8 @@ WorldGenConfig makeFlatConfig() {
 
 TEST_CASE(WorldGenerator_FlatSurface) {
     BlockRegistry registry = makeRegistry();
-    WorldGenerator generator(registry);
-
     WorldGenConfig config = makeFlatConfig();
-    generator.setConfig(config);
+    WorldGenerator generator(registry, config);
 
     ChunkBuffer buffer;
     generator.generate({0, 0, 0}, buffer);
@@ -50,11 +48,9 @@ TEST_CASE(WorldGenerator_FlatSurface) {
 
 TEST_CASE(WorldGenerator_DisableSurfaceStage) {
     BlockRegistry registry = makeRegistry();
-    WorldGenerator generator(registry);
-
     WorldGenConfig config = makeFlatConfig();
     config.stageEnabled["surface_rules"] = false;
-    generator.setConfig(config);
+    WorldGenerator generator(registry, config);
 
     ChunkBuffer buffer;
     generator.generate({0, 0, 0}, buffer);
@@ -65,8 +61,6 @@ TEST_CASE(WorldGenerator_DisableSurfaceStage) {
 
 TEST_CASE(WorldGenerator_CaveStageFlagControlsCarving) {
     BlockRegistry registry = makeRegistry();
-    WorldGenerator generator(registry);
-
     WorldGenConfig config = makeFlatConfig();
     config.densityGraph.outputs["base_density"] = "solid";
     config.densityGraph.outputs["cave_density"] = "cave";
@@ -85,15 +79,15 @@ TEST_CASE(WorldGenerator_CaveStageFlagControlsCarving) {
     config.caves.threshold = 0.5f;
     config.stageEnabled["surface_rules"] = false;
 
-    generator.setConfig(config);
+    WorldGenerator cavesEnabledGenerator(registry, config);
     ChunkBuffer cavesEnabled;
-    generator.generate({0, 0, 0}, cavesEnabled);
+    cavesEnabledGenerator.generate({0, 0, 0}, cavesEnabled);
     CHECK(cavesEnabled.at(0, 0, 0).isAir());
 
     config.stageEnabled["caves"] = false;
-    generator.setConfig(config);
+    WorldGenerator cavesDisabledGenerator(registry, config);
     ChunkBuffer cavesDisabled;
-    generator.generate({0, 0, 0}, cavesDisabled);
+    cavesDisabledGenerator.generate({0, 0, 0}, cavesDisabled);
     CHECK_EQ(
         cavesDisabled.at(0, 0, 0).id.type,
         registry.findByIdentifier("rigel:stone")->type
@@ -102,10 +96,8 @@ TEST_CASE(WorldGenerator_CaveStageFlagControlsCarving) {
 
 TEST_CASE(WorldGenerator_Deterministic) {
     BlockRegistry registry = makeRegistry();
-    WorldGenerator generator(registry);
-
     WorldGenConfig config = makeFlatConfig();
-    generator.setConfig(config);
+    WorldGenerator generator(registry, config);
 
     ChunkBuffer a;
     ChunkBuffer b;
@@ -117,14 +109,12 @@ TEST_CASE(WorldGenerator_Deterministic) {
 
 TEST_CASE(WorldGenerator_RejectsMissingRequiredBlock) {
     BlockRegistry registry = makeRegistry();
-    WorldGenerator generator(registry);
-
     WorldGenConfig config = makeFlatConfig();
     config.solidBlock = "rigel:missing";
 
     std::string diagnostic;
     try {
-        generator.setConfig(config);
+        WorldGenerator generator(registry, config);
     } catch (const std::exception& e) {
         diagnostic = e.what();
     }
@@ -135,21 +125,17 @@ TEST_CASE(WorldGenerator_RejectsMissingRequiredBlock) {
 
 TEST_CASE(WorldGenerator_DisabledStagesDoNotRequireMaterials) {
     BlockRegistry registry = makeRegistry();
-    WorldGenerator generator(registry);
-
     WorldGenConfig config = makeFlatConfig();
     config.solidBlock = "rigel:missing_solid";
     config.surfaceBlock = "rigel:missing_surface";
     config.stageEnabled["terrain_density"] = false;
     config.stageEnabled["surface_rules"] = false;
 
-    CHECK_NO_THROW(generator.setConfig(config));
+    CHECK_NO_THROW(WorldGenerator(registry, config));
 }
 
 TEST_CASE(WorldGenerator_RejectsInvalidDensityGraph) {
     BlockRegistry registry = makeRegistry();
-    WorldGenerator generator(registry);
-
     WorldGenConfig config = makeFlatConfig();
     config.densityGraph.outputs["base_density"] = "sum";
     config.densityGraph.nodes = {
@@ -162,7 +148,7 @@ TEST_CASE(WorldGenerator_RejectsInvalidDensityGraph) {
 
     std::string diagnostic;
     try {
-        generator.setConfig(config);
+        WorldGenerator generator(registry, config);
     } catch (const std::exception& e) {
         diagnostic = e.what();
     }

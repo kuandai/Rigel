@@ -39,7 +39,7 @@ void WorldView::initialize(Asset::AssetManager& assets) {
     m_initialized = true;
 }
 
-void WorldView::setGenerator(std::shared_ptr<WorldGenerator> generator) {
+void WorldView::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
     if (!m_world || !m_resources) {
         return;
     }

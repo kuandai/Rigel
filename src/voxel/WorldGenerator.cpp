@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string_view>
 #include <spdlog/spdlog.h>
 
 namespace Rigel::Voxel {
@@ -162,7 +163,7 @@ public:
 
     const char* name() const override { return "climate_global"; }
 
-    void apply(WorldGenContext& ctx, ChunkBuffer&) override {
+    void apply(WorldGenContext& ctx, ChunkBuffer&) const override {
         const auto& climate = m_config.climate;
         for (int z = 0; z < Chunk::SIZE; ++z) {
             if (ctx.shouldCancel()) {
@@ -226,7 +227,7 @@ public:
 
     const char* name() const override { return "climate_local"; }
 
-    void apply(WorldGenContext& ctx, ChunkBuffer&) override {
+    void apply(WorldGenContext& ctx, ChunkBuffer&) const override {
         const auto& climate = m_config.climate;
         if (climate.localBlend == 0.0f) {
             return;
@@ -300,7 +301,7 @@ public:
 
     const char* name() const override { return "biome_resolve"; }
 
-    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) override {
+    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
         (void)buffer;
         const auto& biomes = m_config.biomes;
         if (biomes.entries.empty()) {
@@ -396,7 +397,7 @@ public:
 
     const char* name() const override { return "terrain_density"; }
 
-    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) override {
+    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
         const auto& terrain = m_config.terrain;
         const auto& world = m_config.world;
 
@@ -501,7 +502,7 @@ public:
 
     const char* name() const override { return "caves"; }
 
-    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) override {
+    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
         const auto& caves = m_config.caves;
         if (!m_graph || m_graph->empty()) {
             return;
@@ -572,7 +573,7 @@ public:
 
     const char* name() const override { return "surface_rules"; }
 
-    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) override {
+    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
         const auto& terrain = m_config.terrain;
         const auto& world = m_config.world;
         if (ctx.surfaceBlock.isAir() && ctx.sandBlock.isAir() && m_surfaceByBiome.empty()) {
@@ -787,7 +788,7 @@ public:
 
     const char* name() const override { return "structures"; }
 
-    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) override {
+    void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
         if (m_features.empty()) {
             return;
         }
@@ -880,18 +881,10 @@ private:
     std::vector<FeatureResolved> m_features;
 };
 
-} // namespace
-
-WorldGenerator::WorldGenerator(const BlockRegistry& registry)
-    : m_registry(registry)
-{
-    registerDefaultStages();
-    rebuildStages();
-}
-
-void WorldGenerator::setConfig(WorldGenConfig config) {
-    auto requireBlock = [this](const std::string& identifier, const char* role) {
-        if (!m_registry.findByIdentifier(identifier)) {
+DensityGraph validateAndBuildDensityGraph(const BlockRegistry& registry,
+                                          const WorldGenConfig& config) {
+    auto requireBlock = [&registry](const std::string& identifier, const char* role) {
+        if (!registry.findByIdentifier(identifier)) {
             throw std::runtime_error(
                 "WorldGenerator: required " + std::string(role) + " block '" +
                 identifier + "' is not registered");
@@ -910,11 +903,55 @@ void WorldGenerator::setConfig(WorldGenConfig config) {
         throw std::runtime_error(
             "WorldGenerator: invalid density graph: " + graphError);
     }
-
-    m_config = std::move(config);
-    m_densityGraph = std::move(densityGraph);
-    rebuildStages();
+    return densityGraph;
 }
+
+std::vector<std::unique_ptr<const WorldGenStage>> buildStages(
+    const WorldGenConfig& config,
+    const BlockRegistry& registry,
+    const DensityGraph& densityGraph) {
+    std::vector<std::unique_ptr<const WorldGenStage>> stages;
+    stages.reserve(kWorldGenPipelineStages.size());
+    for (const char* stageName : kWorldGenPipelineStages) {
+        if (!config.isStageEnabled(stageName)) {
+            continue;
+        }
+
+        std::unique_ptr<const WorldGenStage> stage;
+        const std::string_view name(stageName);
+        if (name == "climate_global") {
+            stage = std::make_unique<ClimateGlobalStage>(config);
+        } else if (name == "climate_local") {
+            stage = std::make_unique<ClimateLocalStage>(config);
+        } else if (name == "biome_resolve") {
+            stage = std::make_unique<BiomeResolveStage>(config);
+        } else if (name == "terrain_density") {
+            stage = std::make_unique<TerrainDensityStage>(config, &densityGraph);
+        } else if (name == "caves") {
+            stage = std::make_unique<CavesStage>(config, &densityGraph);
+        } else if (name == "surface_rules") {
+            stage = std::make_unique<SurfaceRulesStage>(config, registry, &densityGraph);
+        } else if (name == "structures") {
+            stage = std::make_unique<StructuresStage>(config, registry);
+        }
+
+        if (!stage) {
+            spdlog::error("WorldGenerator: no stage implementation for '{}'", stageName);
+            continue;
+        }
+        stages.push_back(std::move(stage));
+    }
+    spdlog::debug("WorldGenerator built {} stages", stages.size());
+    return stages;
+}
+
+} // namespace
+
+WorldGenerator::WorldGenerator(const BlockRegistry& registry, WorldGenConfig config)
+    : m_registry(registry),
+      m_config(std::move(config)),
+      m_densityGraph(validateAndBuildDensityGraph(m_registry, m_config)),
+      m_stages(buildStages(m_config, m_registry, m_densityGraph)) {}
 
 void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
                               const std::atomic_bool* cancel) const {
@@ -938,8 +975,8 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
 
     if (ctx.solidBlock.isAir() || ctx.surfaceBlock.isAir() ||
         ctx.waterBlock.isAir() || ctx.sandBlock.isAir()) {
-        static bool warned = false;
-        if (!warned) {
+        static std::atomic_bool warned = false;
+        if (!warned.exchange(true, std::memory_order_relaxed)) {
             if (ctx.solidBlock.isAir()) {
                 spdlog::warn("WorldGenerator: solid block '{}' not found, using air", m_config.solidBlock);
             }
@@ -952,7 +989,6 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
             if (ctx.sandBlock.isAir()) {
                 spdlog::warn("WorldGenerator: sand block '{}' not found, using air", kDefaultSandBlock);
             }
-            warned = true;
         }
     }
 
@@ -965,52 +1001,6 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
             return;
         }
     }
-}
-
-void WorldGenerator::registerDefaultStages() {
-    m_stageFactories["climate_global"] = [this]() {
-        return std::make_unique<ClimateGlobalStage>(m_config);
-    };
-    m_stageFactories["climate_local"] = [this]() {
-        return std::make_unique<ClimateLocalStage>(m_config);
-    };
-    m_stageFactories["biome_resolve"] = [this]() {
-        return std::make_unique<BiomeResolveStage>(m_config);
-    };
-    m_stageFactories["terrain_density"] = [this]() {
-        return std::make_unique<TerrainDensityStage>(m_config, &m_densityGraph);
-    };
-    m_stageFactories["caves"] = [this]() {
-        return std::make_unique<CavesStage>(m_config, &m_densityGraph);
-    };
-    m_stageFactories["surface_rules"] = [this]() {
-        return std::make_unique<SurfaceRulesStage>(m_config, m_registry, &m_densityGraph);
-    };
-    m_stageFactories["structures"] = [this]() {
-        return std::make_unique<StructuresStage>(m_config, m_registry);
-    };
-}
-
-void WorldGenerator::rebuildStages() {
-    m_stages.clear();
-
-    for (const char* stageName : kWorldGenPipelineStages) {
-        if (!isStageEnabled(stageName)) {
-            continue;
-        }
-        auto it = m_stageFactories.find(stageName);
-        if (it == m_stageFactories.end()) {
-            spdlog::error("WorldGenerator: no factory registered for stage '{}'", stageName);
-            continue;
-        }
-        m_stages.push_back(it->second());
-    }
-
-    spdlog::debug("WorldGenerator built {} stages", m_stages.size());
-}
-
-bool WorldGenerator::isStageEnabled(const std::string& stage) const {
-    return m_config.isStageEnabled(stage);
 }
 
 } // namespace Rigel::Voxel

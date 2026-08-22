@@ -129,7 +129,6 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     surface.identifier = "rigel:grass";
     registry.registerBlock(surface.identifier, surface);
 
-    auto generator = std::make_shared<WorldGenerator>(registry);
     WorldGenConfig config;
     config.seed = 1;
     config.solidBlock = solid.identifier;
@@ -137,8 +136,7 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     config.terrain.baseHeight = 0.0f;
     config.terrain.heightVariation = 0.0f;
     config.terrain.surfaceDepth = 1;
-    generator->setConfig(config);
-    return generator;
+    return std::make_shared<WorldGenerator>(registry, std::move(config));
 }
 
 BlockID registerTestBlock(BlockRegistry& registry, const std::string& identifier) {
@@ -629,8 +627,8 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDeferredEviction) {
     CHECK(manager.getChunk(first)->isPersistDirty());
     CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
 
-    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
-    replacementGenerator->setConfig(generator->config());
+    auto replacementGenerator =
+        std::make_shared<WorldGenerator>(registry, generator->config());
     streamer.setGenerator(replacementGenerator);
 
     for (int update = 0; update < 59; ++update) {
@@ -1225,13 +1223,13 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     BlockID replacementBlock =
         registerTestBlock(registry, "rigel:replacement_generation_solid");
 
-    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
     WorldGenConfig replacementConfig = originalGenerator->config();
     ++replacementConfig.world.version;
     replacementConfig.solidBlock = "rigel:replacement_generation_solid";
     replacementConfig.surfaceBlock = "rigel:replacement_generation_solid";
     replacementConfig.terrain.baseHeight = 64.0f;
-    replacementGenerator->setConfig(replacementConfig);
+    auto replacementGenerator =
+        std::make_shared<WorldGenerator>(registry, replacementConfig);
 
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
@@ -1339,22 +1337,22 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementSupersedesOutstandingGeneration) {
     BlockID originalBlock =
         registerTestBlock(registry, "rigel:original_generator_solid");
 
-    auto originalGenerator = std::make_shared<WorldGenerator>(registry);
     WorldGenConfig originalConfig;
     originalConfig.solidBlock = "rigel:original_generator_solid";
     originalConfig.surfaceBlock = "rigel:original_generator_solid";
     originalConfig.terrain.baseHeight = 64.0f;
     originalConfig.terrain.heightVariation = 0.0f;
-    originalGenerator->setConfig(originalConfig);
+    auto originalGenerator =
+        std::make_shared<WorldGenerator>(registry, originalConfig);
 
     BlockID replacementBlock =
         registerTestBlock(registry, "rigel:replacement_generator_solid");
 
-    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
     WorldGenConfig replacementConfig = originalConfig;
     replacementConfig.solidBlock = "rigel:replacement_generator_solid";
     replacementConfig.surfaceBlock = "rigel:replacement_generator_solid";
-    replacementGenerator->setConfig(replacementConfig);
+    auto replacementGenerator =
+        std::make_shared<WorldGenerator>(registry, replacementConfig);
     CHECK_EQ(originalConfig.world.version, replacementConfig.world.version);
 
     ChunkStreamer streamer(
@@ -2703,8 +2701,8 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDirtyMeshCapacity) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
-    replacementGenerator->setConfig(originalGenerator->config());
+    auto replacementGenerator = std::make_shared<WorldGenerator>(
+        registry, originalGenerator->config());
     BlockID solid =
         registerTestBlock(registry, "rigel:generator_replacement_mesh_solid");
     const ChunkCoord coord{0, 0, 0};
@@ -2827,13 +2825,13 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementInstallsOnlyCurrentMesh) {
         registerTexturedTestBlock(
             registry, "rigel:overlap_replacement_solid", replacementTexture);
 
-    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
     WorldGenConfig replacementConfig = originalGenerator->config();
     ++replacementConfig.world.version;
     replacementConfig.solidBlock = "rigel:overlap_replacement_solid";
     replacementConfig.surfaceBlock = "rigel:overlap_replacement_solid";
     replacementConfig.terrain.baseHeight = 64.0f;
-    replacementGenerator->setConfig(replacementConfig);
+    auto replacementGenerator =
+        std::make_shared<WorldGenerator>(registry, replacementConfig);
 
     const ChunkCoord coord{0, 0, 0};
     Chunk& original = manager.getOrCreateChunk(coord);
@@ -2947,10 +2945,10 @@ TEST_CASE(ChunkStreamer_MeshRetirementPreservesReplacementGenerationFailure) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
     WorldGenConfig replacementConfig = originalGenerator->config();
     ++replacementConfig.world.version;
-    replacementGenerator->setConfig(replacementConfig);
+    auto replacementGenerator =
+        std::make_shared<WorldGenerator>(registry, replacementConfig);
     BlockID solid =
         registerTestBlock(registry, "rigel:failed_replacement_original_solid");
     const ChunkCoord coord{0, 0, 0};
@@ -3506,7 +3504,9 @@ TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
 
     WorldGenConfig changedConfig = generator->config();
     ++changedConfig.world.version;
-    generator->setConfig(std::move(changedConfig));
+    generator = std::make_shared<WorldGenerator>(
+        registry, std::move(changedConfig));
+    streamer.setGenerator(generator);
 
     streamer.update(glm::vec3(0.0f));
     const auto& changed = streamer.workMetrics();

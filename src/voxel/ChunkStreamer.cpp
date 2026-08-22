@@ -27,7 +27,7 @@ ChunkStreamer::ChunkStreamer(ChunkManager& manager,
                              WorldMeshStore& meshStore,
                              BlockRegistry& registry,
                              TextureAtlas* atlas,
-                             std::shared_ptr<WorldGenerator> generator)
+                             std::shared_ptr<const WorldGenerator> generator)
     : m_chunkManager(&manager),
       m_meshStore(&meshStore),
       m_registry(&registry),
@@ -79,7 +79,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     refreshDiagnostics(false);
 }
 
-void ChunkStreamer::setGenerator(std::shared_ptr<WorldGenerator> generator) {
+void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
     if (m_generator == generator) {
         return;
     }

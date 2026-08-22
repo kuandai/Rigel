@@ -244,7 +244,6 @@ private:
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;
-    uint32_t m_lastWorldGenVersion = 0;
     bool m_spawnDiscoveryComplete = false;
     bool m_initialStreamingBegun = false;
     bool m_workObservedThisUpdate = false;

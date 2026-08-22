@@ -32,11 +32,7 @@ ChunkStreamer::ChunkStreamer(ChunkManager& manager,
       m_meshStore(&meshStore),
       m_registry(&registry),
       m_atlas(atlas),
-      m_generator(std::move(generator)) {
-    m_lastWorldGenVersion = m_generator
-        ? m_generator->config().world.version
-        : 0;
-}
+      m_generator(std::move(generator)) {}
 
 ChunkStreamer::~ChunkStreamer() {
     if (m_genPool) {
@@ -285,14 +281,6 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     ++it;
                 }
             }
-        }
-    }
-
-    const uint32_t worldGenVersion = m_generator->config().world.version;
-    bool worldGenChanged = m_lastWorldGenVersion != worldGenVersion;
-    if (worldGenChanged) {
-        for (const ChunkCoord& coord : m_desired) {
-            queueLoadGen(coord);
         }
     }
 
@@ -641,8 +629,6 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     m_workMetrics.schedulerCoordinatesInspected += schedulerCoordinatesInspected;
     m_workMetrics.cacheEvictionCoordinatesInspected +=
         cacheEvictionCoordinatesInspected;
-    m_lastWorldGenVersion = worldGenVersion;
-
     StreamingDiagnosticSnapshot afterUpdate = collectDiagnostics();
     m_workObservedThisUpdate = m_workObservedThisUpdate || !afterUpdate.workEmpty();
     m_workStartedThisUpdate =
@@ -788,7 +774,6 @@ void ChunkStreamer::reset() {
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
-    m_lastWorldGenVersion = m_generator ? m_generator->config().world.version : 0;
     m_initialStreamingBegun = false;
     m_workObservedThisUpdate = false;
     m_workStartedThisUpdate = false;
@@ -1004,6 +989,10 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
 
         if (genResult.workEpoch !=
             m_workEpoch.load(std::memory_order_relaxed)) {
+            continue;
+        }
+        if (!m_generator ||
+            genResult.worldGenVersion != m_generator->config().world.version) {
             continue;
         }
 
@@ -1329,17 +1318,22 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
     auto cancelToken = std::make_shared<std::atomic_bool>(false);
     m_genCancel[coord] = cancelToken;
     auto generator = m_generator;
+    const uint32_t worldGenVersion = generator
+        ? generator->config().world.version
+        : 0;
     uint64_t workEpoch = m_workEpoch.load(std::memory_order_relaxed);
     auto generationStartCallback = m_generationStartCallback;
     auto job = [this,
                 generator,
                 coord,
                 cancelToken,
+                worldGenVersion,
                 workEpoch,
                 generationStartCallback = std::move(generationStartCallback)]() {
         GenResult result;
         result.coord = coord;
         result.workEpoch = workEpoch;
+        result.worldGenVersion = worldGenVersion;
         result.cancelToken = cancelToken;
         if (cancelToken->load(std::memory_order_relaxed)) {
             result.cancelled = true;
@@ -1363,9 +1357,6 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
             auto end = std::chrono::steady_clock::now();
 
             result.blocks = buffer.blocks;
-            result.worldGenVersion = generator
-                ? generator->config().world.version
-                : 0;
             result.seconds = std::chrono::duration<double>(end - start).count();
         } catch (const std::exception& e) {
             result.failed = true;

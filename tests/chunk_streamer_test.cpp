@@ -1349,17 +1349,18 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementSupersedesOutstandingGeneration) {
         registerTestBlock(registry, "rigel:replacement_generator_solid");
 
     WorldGenConfig replacementConfig = originalConfig;
+    ++replacementConfig.world.version;
     replacementConfig.solidBlock = "rigel:replacement_generator_solid";
     replacementConfig.surfaceBlock = "rigel:replacement_generator_solid";
     auto replacementGenerator =
         std::make_shared<WorldGenerator>(registry, replacementConfig);
-    CHECK_EQ(originalConfig.world.version, replacementConfig.world.version);
+    CHECK_NE(originalConfig.world.version, replacementConfig.world.version);
 
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
-    stream.unloadDistanceChunks = 0;
+    stream.unloadDistanceChunks = 1;
     stream.genQueueLimit = 1;
     stream.meshQueueLimit = 0;
     stream.updateBudgetPerFrame = 0;
@@ -1367,6 +1368,7 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementSupersedesOutstandingGeneration) {
     stream.workerThreads = 4;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
     auto originalGate = std::make_shared<WorkerGate>();
     auto replacementGate = std::make_shared<WorkerGate>();
     WorkerGateRelease releaseOriginalOnExit(originalGate);
@@ -1384,6 +1386,15 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementSupersedesOutstandingGeneration) {
         });
 
     const ChunkCoord coord{0, 0, 0};
+    for (int index = 0; index < DirectionCount; ++index) {
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(static_cast<Direction>(index), dx, dy, dz);
+        Chunk& neighbor = manager.getOrCreateChunk(coord.offset(dx, dy, dz));
+        neighbor.setWorldGenVersion(replacementConfig.world.version);
+        neighbor.clearDirty();
+    }
     streamer.update(coord.toWorldCenter());
     CHECK(originalGate->waitUntilEntered());
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
@@ -1395,18 +1406,47 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementSupersedesOutstandingGeneration) {
     CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
     CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+
+    for (uint32_t update = 0;
+         update < StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++update) {
+        streamer.processCompletions();
+        streamer.update(coord.toWorldCenter());
+        CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+        CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(1));
+        CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+    }
 
     originalGate->release();
     CHECK(waitForGenerationCompletion(streamer));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(1));
     streamer.processCompletions();
     CHECK(!manager.hasChunk(coord));
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
 
     streamer.update(coord.toWorldCenter());
     CHECK(replacementGate->waitUntilEntered());
     CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(2));
     replacementGate->release();
     CHECK(waitForGenerationCompletion(streamer));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
     streamer.processCompletions();
 
     Chunk* accepted = manager.getChunk(coord);
@@ -1415,8 +1455,38 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementSupersedesOutstandingGeneration) {
         return;
     }
     CHECK_EQ(accepted->worldGenVersion(), replacementConfig.world.version);
-    CHECK_EQ(accepted->getBlock(0, 0, 0).id, replacementBlock);
-    CHECK(accepted->getBlock(0, 0, 0).id != originalBlock);
+    ChunkBuffer acceptedBlocks;
+    accepted->copyBlocks(acceptedBlocks.blocks);
+    CHECK(std::all_of(
+        acceptedBlocks.blocks.begin(),
+        acceptedBlocks.blocks.end(),
+        [replacementBlock](BlockState block) {
+            return block.id == replacementBlock;
+        }));
+    CHECK(std::none_of(
+        acceptedBlocks.blocks.begin(),
+        acceptedBlocks.blocks.end(),
+        [originalBlock](BlockState block) {
+            return block.id == originalBlock;
+        }));
+
+    streamer.update(coord.toWorldCenter());
+    CHECK(waitForMeshCompletions(streamer, 1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+
+    for (uint32_t stable = 1;
+         stable <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++stable) {
+        streamer.update(coord.toWorldCenter());
+        CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        streamer.processCompletions();
+        CHECK_EQ(streamer.diagnostics().stableUpdates, stable);
+    }
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Quiescent);
 }
 
 TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {

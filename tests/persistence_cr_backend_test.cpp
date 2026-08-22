@@ -1052,6 +1052,13 @@ TEST_CASE(CRBackend_writer_rejects_duplicate_chunks_before_commit) {
         [&]() { format->chunkContainer().saveRegion(mismatchedZone); },
         "CRRegion: chunk zone does not match region");
     CHECK_EQ(readAll(*storage, path), original);
+
+    ChunkRegionSnapshot mismatchedSpan = valid;
+    mismatchedSpan.chunks.front().data.span.offsetX = 16;
+    checkCRRegionError(
+        [&]() { format->chunkContainer().saveRegion(mismatchedSpan); },
+        "CRChunkCodec: chunk span does not match storage key");
+    CHECK_EQ(readAll(*storage, path), original);
 }
 
 TEST_CASE(CRBackend_writer_enforces_string_and_record_limits_before_commit) {

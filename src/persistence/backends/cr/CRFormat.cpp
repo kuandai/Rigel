@@ -948,6 +948,20 @@ public:
     }
 
     void write(const ChunkSnapshot& chunk, ByteWriter& writer) {
+        const auto rigelCoord = toRigelChunk(chunk.key);
+        const ChunkSpan& span = chunk.data.span;
+        if (span.sizeX != 16 || span.sizeY != 16 || span.sizeZ != 16) {
+            throw std::runtime_error("CRChunkCodec: chunk span size mismatch");
+        }
+        if (span.chunkX != rigelCoord.rigelChunkX ||
+            span.chunkY != rigelCoord.rigelChunkY ||
+            span.chunkZ != rigelCoord.rigelChunkZ ||
+            span.offsetX != (rigelCoord.subchunkIndex & 1) * 16 ||
+            span.offsetY != ((rigelCoord.subchunkIndex >> 1) & 1) * 16 ||
+            span.offsetZ != ((rigelCoord.subchunkIndex >> 2) & 1) * 16) {
+            throw std::runtime_error(
+                "CRChunkCodec: chunk span does not match storage key");
+        }
         if (!chunk.opaquePayload.empty()) {
             if (chunk.opaquePayload.size() > kMaxChunkRecordBytes) {
                 throw std::runtime_error("CRChunkCodec: record exceeds format limit");
@@ -967,11 +981,6 @@ public:
             }
         }
 
-        if (chunk.data.span.sizeX != 16 ||
-            chunk.data.span.sizeY != 16 ||
-            chunk.data.span.sizeZ != 16) {
-            throw std::runtime_error("CRChunkCodec: chunk span size mismatch");
-        }
         if (chunk.data.blocks.size() != 16 * 16 * 16) {
             throw std::runtime_error("CRChunkCodec: chunk block data size mismatch");
         }

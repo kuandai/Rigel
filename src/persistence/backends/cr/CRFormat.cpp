@@ -209,6 +209,10 @@ std::array<uint8_t, 4> encodeI32(int32_t value) {
     throw std::runtime_error("CRMetadata: invalid JSON string");
 }
 
+[[noreturn]] void throwInvalidJsonDocument() {
+    throw std::runtime_error("CRMetadata: invalid JSON document");
+}
+
 void requireMetadataStringSize(size_t size) {
     if (size > kMaxMetadataStringBytes) {
         throw std::runtime_error(
@@ -469,14 +473,42 @@ std::optional<std::string> extractJsonString(std::string_view text,
     const std::string needle = "\"" + std::string(key) + "\"";
     std::optional<std::string> result;
     size_t position = 0;
-    while (position < text.size()) {
+    while (position < text.size() && isJsonWhitespace(text[position])) {
+        ++position;
+    }
+    if (position >= text.size() || text[position] != '{') {
+        throwInvalidJsonDocument();
+    }
+
+    std::vector<char> closingDelimiters{'}'};
+    ++position;
+    while (!closingDelimiters.empty()) {
+        if (position >= text.size()) {
+            throwInvalidJsonDocument();
+        }
         if (text[position] != '"') {
-            ++position;
+            const char token = text[position++];
+            if (token == '{') {
+                closingDelimiters.push_back('}');
+            } else if (token == '[') {
+                closingDelimiters.push_back(']');
+            } else if (token == '}' || token == ']') {
+                if (closingDelimiters.back() != token) {
+                    throwInvalidJsonDocument();
+                }
+                closingDelimiters.pop_back();
+            }
             continue;
         }
 
         const size_t tokenStart = position;
         const size_t tokenEnd = consumeJsonString(text, tokenStart, nullptr);
+        if (closingDelimiters.size() != 1 ||
+            closingDelimiters.back() != '}') {
+            position = tokenEnd;
+            continue;
+        }
+
         const bool matchesKey =
             tokenEnd - tokenStart == needle.size() &&
             text.compare(tokenStart, needle.size(), needle) == 0;
@@ -503,11 +535,17 @@ std::optional<std::string> extractJsonString(std::string_view text,
         }
 
         std::string value;
-        const size_t valueEnd = consumeJsonString(text, valueStart, &value);
+        position = consumeJsonString(text, valueStart, &value);
         if (!result) {
             result = std::move(value);
         }
-        position = valueEnd;
+    }
+
+    while (position < text.size() && isJsonWhitespace(text[position])) {
+        ++position;
+    }
+    if (position != text.size()) {
+        throwInvalidJsonDocument();
     }
     return result;
 }

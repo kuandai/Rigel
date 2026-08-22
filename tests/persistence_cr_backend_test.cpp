@@ -1697,6 +1697,101 @@ TEST_CASE(CRBackend_zone_metadata_decodes_json_unicode_escape) {
         (ZoneMetadata{"rigel:default", "rigel:default"}));
 }
 
+TEST_CASE(CRBackend_metadata_uses_only_root_object_members) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::CR::descriptor(),
+        Backends::CR::factory(),
+        Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/root_metadata";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+
+    const std::string worldInfo = R"({
+  "extension": {
+    "defaultZoneId": "base:moon",
+    "worldDisplayName": "Nested Object"
+  },
+  "entries": [
+    {
+      "defaultZoneId": "base:void",
+      "worldDisplayName": "Nested Array"
+    }
+  ],
+  "defaultZoneId": "rigel:default",
+  "worldDisplayName": "Root World"
+}
+)";
+    const std::string zoneInfo = R"({
+  "extension": {"zoneId": "base:moon"},
+  "entries": [{"zoneId": "base:void"}],
+  "zoneId": "rigel:default"
+}
+)";
+    const ZoneKey zoneKey{"rigel:default"};
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const auto zonePath = CRPaths::zoneInfoPath(zoneKey, context);
+    writeText(*storage, worldPath, worldInfo);
+    writeText(*storage, zonePath, zoneInfo);
+
+    CHECK_EQ(
+        service.loadWorldMetadata(context),
+        (WorldMetadata{"root_metadata", "Root World"}));
+    CHECK_EQ(
+        service.loadZoneMetadata(zoneKey, context),
+        (ZoneMetadata{"rigel:default", "rigel:default"}));
+
+    saveCRWorld(storage, context.rootPath, true);
+
+    CHECK_EQ(
+        readAll(*storage, worldPath),
+        (std::vector<uint8_t>(worldInfo.begin(), worldInfo.end())));
+    CHECK_EQ(
+        readAll(*storage, zonePath),
+        (std::vector<uint8_t>(zoneInfo.begin(), zoneInfo.end())));
+}
+
+TEST_CASE(CRBackend_world_metadata_preserves_utf8_and_decodes_unicode) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::CR::descriptor(),
+        Backends::CR::factory(),
+        Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/unicode_metadata";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+
+    const std::string utf8Name =
+        std::string("Caf\xc3\xa9 \xe4\xb8\x96\xe7\x95\x8c ") +
+        "\xf0\x9f\x9a\x80";
+    WorldSnapshot world;
+    world.metadata = WorldMetadata{"unicode_metadata", utf8Name};
+    service.saveWorld(world, context);
+
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const auto rawDocument = readAll(*storage, worldPath);
+    CHECK(
+        std::string(rawDocument.begin(), rawDocument.end()).find(utf8Name) !=
+        std::string::npos);
+    CHECK_EQ(service.loadWorldMetadata(context), world.metadata);
+
+    writeText(
+        *storage,
+        worldPath,
+        R"({"worldDisplayName":"Caf\u00e9 \u4e16\u754c \ud83d\ude80"})");
+    CHECK_EQ(
+        service.loadWorldMetadata(context),
+        (WorldMetadata{"unicode_metadata", utf8Name}));
+}
+
 TEST_CASE(CRBackend_world_metadata_enforces_string_and_document_boundaries) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
     FormatRegistry registry;
@@ -1774,13 +1869,19 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
     const std::vector<std::string> invalidDocuments{
         R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\q"})",
         R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\u12xz"})",
+        R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\u12")",
         R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\ud800"})",
+        R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\udfff"})",
+        R"({"defaultZoneId":"rigel:default","extension":[})",
         std::string(kMaxMetadataDocumentBytes + 1, 'x')
     };
     const std::vector<std::string> diagnostics{
         "CRMetadata: invalid JSON string",
         "CRMetadata: invalid JSON string",
         "CRMetadata: invalid JSON string",
+        "CRMetadata: invalid JSON string",
+        "CRMetadata: invalid JSON string",
+        "CRMetadata: invalid JSON document",
         "CRMetadata: document exceeds format limit"
     };
 
@@ -1796,11 +1897,15 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
             RegionKey{"rigel:default", 0, 0, 0}, context);
         writeText(*storage, worldPath, invalidDocuments[index]);
         const auto previousPayload = readAll(*storage, worldPath);
+        const size_t mkdirCount = storage->mkdirCount();
+        const size_t writeSessionCount = storage->writeSessionCount();
 
         checkCRMetadataError(
             [&]() { saveCRWorld(storage, context.rootPath, true); },
             diagnostics[index]);
 
+        CHECK_EQ(storage->mkdirCount(), mkdirCount);
+        CHECK_EQ(storage->writeSessionCount(), writeSessionCount);
         CHECK_EQ(readAll(*storage, worldPath), previousPayload);
         CHECK(!storage->exists(zonePath));
         CHECK(!storage->exists(regionPath));

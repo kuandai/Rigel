@@ -51,7 +51,8 @@ public:
     }
 
     ~CurrentPathGuard() {
-        std::filesystem::current_path(m_original);
+        std::error_code error;
+        std::filesystem::current_path(m_original, error);
     }
 
 private:
@@ -61,7 +62,8 @@ private:
 } // namespace
 
 TEST_CASE(WorldConfigProvider_FileSource) {
-    std::filesystem::path path = std::filesystem::temp_directory_path() / "rigel_world_config_test.yaml";
+    Rigel::Test::TemporaryDirectory directory("rigel_world_config");
+    const auto path = directory.path() / "world.yaml";
     {
         std::ofstream out(path);
         out << "seed: 99\n";
@@ -74,13 +76,12 @@ TEST_CASE(WorldConfigProvider_FileSource) {
 
     CHECK_EQ(config.seed, static_cast<uint32_t>(99));
     CHECK_EQ(config.solidBlock, "base:stone_shale");
-
-    std::filesystem::remove(path);
 }
 
 TEST_CASE(WorldConfigProvider_OverlaySource) {
-    std::filesystem::path basePath = std::filesystem::temp_directory_path() / "rigel_world_config_base.yaml";
-    std::filesystem::path overlayPath = std::filesystem::temp_directory_path() / "rigel_world_config_overlay.yaml";
+    Rigel::Test::TemporaryDirectory directory("rigel_world_config");
+    const auto basePath = directory.path() / "base.yaml";
+    const auto overlayPath = directory.path() / "overlay.yaml";
     {
         std::ofstream out(basePath);
         out << "flags:\n";
@@ -102,9 +103,6 @@ TEST_CASE(WorldConfigProvider_OverlaySource) {
     WorldGenConfig config = provider.loadConfig().generation;
 
     CHECK_NEAR(config.terrain.baseHeight, 9.0f, 0.001f);
-
-    std::filesystem::remove(basePath);
-    std::filesystem::remove(overlayPath);
 }
 
 TEST_CASE(WorldConfigProvider_HigherPrecedenceSourceOverridesLowerOverlay) {
@@ -193,11 +191,9 @@ TEST_CASE(WorldConfigProvider_AppliesNestedOverlaysAfterDeclaredOverlays) {
 }
 
 TEST_CASE(FileConfigSource_ResolvesOverlayRelativeToDeclaringFile) {
-    const auto root = std::filesystem::temp_directory_path()
-        / "rigel_config_relative_overlay_test";
-    const auto sourceDir = root / "source";
-    const auto workingDir = root / "working";
-    std::filesystem::remove_all(root);
+    Rigel::Test::TemporaryDirectory directory("rigel_config_relative_overlay");
+    const auto sourceDir = directory.path() / "source";
+    const auto workingDir = directory.path() / "working";
     std::filesystem::create_directories(sourceDir);
     std::filesystem::create_directories(workingDir);
     {
@@ -221,5 +217,4 @@ TEST_CASE(FileConfigSource_ResolvesOverlayRelativeToDeclaringFile) {
         CHECK(result->content.find("9.0") != std::string::npos);
         CHECK(result->content.find("2.0") == std::string::npos);
     }
-    std::filesystem::remove_all(root);
 }

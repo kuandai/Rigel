@@ -8,7 +8,7 @@ execution paths used by world generation, meshing, and disk IO.
 - [Overview](#overview)
 - [Phase 1: Bootstrap (Application::Application)](#phase-1-bootstrap-applicationapplication)
 - [Phase 2: Runtime Loop (Application::run)](#phase-2-runtime-loop-applicationrun)
-- [Phase 3: Shutdown (Application::~Application)](#phase-3-shutdown-applicationapplication)
+- [Phase 3: Shutdown (Application::close)](#phase-3-shutdown-applicationclose)
 - [Threading Model](#threading-model)
 - [Asynchronous Flows](#asynchronous-flows)
   - [A) Chunk Generation (world data)](#a-chunk-generation-world-data)
@@ -110,7 +110,7 @@ starting a stationary performance measurement without a fixed startup delay.
 The snapshot is assembled from active queues and counters and does not add a
 desired-set scan or periodic persistence query.
 
-## Phase 3: Shutdown (Application::~Application)
+## Phase 3: Shutdown (Application::close)
 
 1. Save world to disk (synchronous) if initialized.
 2. Make the application context current and shut down ImGui.
@@ -120,7 +120,12 @@ desired-set scan or periodic persistence query.
    context remains current.
 6. Destroy the window and terminate GLFW.
 
-The same sequence handles normal shutdown and failed construction. Repeated
+Normal process exit calls `close()` after the runtime loop. Persistence errors
+leave the world resident, propagate to the process entry point, produce an
+error diagnostic, and result in a failed process exit. The destructor retries
+the save without throwing before completing teardown, which also provides
+best-effort cleanup for callers that omit `close()`. Failed construction skips
+the save and tears down only the resources acquired so far. Repeated successful
 shutdown requests are harmless.
 
 ---

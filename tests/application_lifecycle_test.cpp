@@ -2,6 +2,7 @@
 
 #include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
+#include "Rigel/Persistence/Storage.h"
 
 #include <cstdlib>
 #include <memory>
@@ -22,6 +23,10 @@ struct LifecycleCalls {
     GLFWwindow* window = reinterpret_cast<GLFWwindow*>(0x1);
     GLFWwindow* destroyedWindow = nullptr;
     bool runLoopEntered = false;
+    size_t persistenceAttempts = 0;
+    bool closeFailureObserved = false;
+    bool dirtyAtCloseFailure = false;
+    bool shutdownStartedAtCloseFailure = false;
 };
 
 LifecycleCalls* g_calls = nullptr;
@@ -37,19 +42,19 @@ public:
     }
 };
 
-class ErrorLogCapture {
+class LogCapture {
 public:
-    ErrorLogCapture()
+    LogCapture()
         : m_previous(spdlog::default_logger())
         , m_logger(std::make_shared<spdlog::logger>(
               "application-lifecycle-test",
               std::make_shared<spdlog::sinks::ostream_sink_mt>(m_output))) {
-        m_logger->set_level(spdlog::level::err);
+        m_logger->set_level(spdlog::level::info);
         m_logger->set_pattern("%v");
         spdlog::set_default_logger(m_logger);
     }
 
-    ~ErrorLogCapture() {
+    ~LogCapture() {
         spdlog::set_default_logger(m_previous);
     }
 
@@ -103,6 +108,51 @@ void recordShutdownStage(Rigel::ApplicationShutdownStage stage) noexcept {
     g_calls->shutdown.push_back(stage);
 }
 
+class FailingStorageBackend final : public Rigel::Persistence::StorageBackend {
+public:
+    std::unique_ptr<Rigel::Persistence::ByteReader> openRead(
+        const std::string& path
+    ) override {
+        fail(path);
+    }
+
+    std::unique_ptr<Rigel::Persistence::AtomicWriteSession> openWrite(
+        const std::string& path,
+        Rigel::Persistence::AtomicWriteOptions
+    ) override {
+        fail(path);
+    }
+
+    bool exists(const std::string& path) override {
+        fail(path);
+    }
+
+    std::vector<std::string> list(const std::string& path) override {
+        fail(path);
+    }
+
+    void mkdirs(const std::string& path) override {
+        fail(path);
+    }
+
+    void remove(const std::string& path) override {
+        fail(path);
+    }
+
+private:
+    [[noreturn]] void fail(const std::string& path) {
+        ++g_calls->persistenceAttempts;
+        throw std::runtime_error(
+            "injected storage failure for " + path);
+    }
+};
+
+void observeCloseFailure(bool dirtyWorld) {
+    g_calls->closeFailureObserved = true;
+    g_calls->dirtyAtCloseFailure = dirtyWorld;
+    g_calls->shutdownStartedAtCloseFailure = !g_calls->shutdown.empty();
+}
+
 Rigel::GlfwRuntime::Api fakeRuntimeApi() {
     return {
         &initialize,
@@ -122,6 +172,14 @@ void runFailingApplication() {
             &recordShutdownStage,
         },
         &recordRunLoopEntry);
+}
+
+void runApplicationWithCloseFailure() {
+    Rigel::ApplicationTestAccess::closeReadyWorld({
+        std::make_shared<FailingStorageBackend>(),
+        &observeCloseFailure,
+        &recordShutdownStage,
+    });
 }
 
 } // namespace
@@ -163,12 +221,35 @@ TEST_CASE(Application_ConstructionFailureUsesOrderedShutdownOnce) {
 TEST_CASE(Application_BootstrapFailureReturnsFailureBeforeRunLoop) {
     LifecycleCalls calls;
     ScopedLifecycleCalls scopedCalls(calls);
-    ErrorLogCapture logs;
+    LogCapture logs;
 
     const int result = Rigel::runApplication(&runFailingApplication);
 
     CHECK_EQ(result, EXIT_FAILURE);
     CHECK(!calls.runLoopEntered);
     CHECK(logs.output().find("required bootstrap data unavailable") !=
+          std::string::npos);
+}
+
+TEST_CASE(Application_ClosePersistenceFailureReturnsFailureBeforeTeardown) {
+    LifecycleCalls calls;
+    ScopedLifecycleCalls scopedCalls(calls);
+    LogCapture logs;
+
+    const int result = Rigel::runApplication(&runApplicationWithCloseFailure);
+
+    CHECK_EQ(result, EXIT_FAILURE);
+    CHECK(calls.closeFailureObserved);
+    CHECK(calls.dirtyAtCloseFailure);
+    CHECK(!calls.shutdownStartedAtCloseFailure);
+    CHECK_EQ(calls.persistenceAttempts, static_cast<size_t>(2));
+    CHECK(!calls.shutdown.empty());
+    CHECK(logs.output().find(
+              "Failed to save world during application close") !=
+          std::string::npos);
+    CHECK(logs.output().find(
+              "injected storage failure for application-close-test") !=
+          std::string::npos);
+    CHECK(logs.output().find("Application terminated successfully") ==
           std::string::npos);
 }

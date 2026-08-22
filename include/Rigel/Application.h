@@ -11,10 +11,17 @@ public:
     ~Application();
 
     void run();
+    void close();
 
 private:
+    enum class Initialization {
+        Run,
+        Skip,
+    };
+
     struct Impl;
     explicit Application(std::unique_ptr<Impl> impl);
+    Application(std::unique_ptr<Impl> impl, Initialization initialization);
 
     void initialize();
 

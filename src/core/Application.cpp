@@ -39,6 +39,7 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -98,7 +99,10 @@ struct Application::Impl {
         , shutdownStageCompleted(hooks.shutdownStageCompleted) {
     }
     ~Impl();
-    void shutdown(bool saveWorld) noexcept;
+    void persistWorld();
+    void close();
+    void closeNoThrow() noexcept;
+    void shutdown() noexcept;
     void completeShutdownStage(ApplicationShutdownStage stage) noexcept {
         if (shutdownStageCompleted) {
             shutdownStageCompleted(stage);
@@ -111,11 +115,21 @@ Application::Application()
 }
 
 Application::Application(std::unique_ptr<Impl> impl)
+    : Application(std::move(impl), Initialization::Run) {
+}
+
+Application::Application(
+    std::unique_ptr<Impl> impl,
+    Initialization initialization
+)
     : m_impl(std::move(impl)) {
+    if (initialization == Initialization::Skip) {
+        return;
+    }
     try {
         initialize();
     } catch (...) {
-        m_impl->shutdown(false);
+        m_impl->shutdown();
         throw;
     }
 }
@@ -376,23 +390,58 @@ void Application::initialize() {
 }
 
 Application::Impl::~Impl() {
-    shutdown(false);
+    shutdown();
 }
 
-void Application::Impl::shutdown(bool saveWorld) noexcept {
-    if (std::exchange(shutDown, true)) {
+void Application::Impl::persistWorld() {
+    if (!world.ready || !world.world) {
         return;
     }
 
-    if (saveWorld && world.ready && world.world) {
-        try {
-            Persistence::saveWorldToDisk(
-                *world.world,
-                world.worldSet.persistenceService(),
-                world.worldSet.persistenceContext(world.activeWorldId));
-        } catch (const std::exception& e) {
-            spdlog::error("World save failed: {}", e.what());
-        }
+    Persistence::saveWorldToDisk(
+        *world.world,
+        world.worldSet.persistenceService(),
+        world.worldSet.persistenceContext(world.activeWorldId));
+}
+
+void Application::Impl::close() {
+    if (shutDown) {
+        return;
+    }
+
+    try {
+        persistWorld();
+    } catch (const std::exception& e) {
+        throw std::runtime_error(
+            std::string("Failed to save world during application close: ") +
+            e.what());
+    } catch (...) {
+        throw std::runtime_error(
+            "Failed to save world during application close: unknown failure");
+    }
+
+    shutdown();
+}
+
+void Application::Impl::closeNoThrow() noexcept {
+    if (shutDown) {
+        return;
+    }
+
+    try {
+        persistWorld();
+    } catch (const std::exception& e) {
+        spdlog::error("World save failed during application cleanup: {}", e.what());
+    } catch (...) {
+        spdlog::error("World save failed during application cleanup: unknown failure");
+    }
+
+    shutdown();
+}
+
+void Application::Impl::shutdown() noexcept {
+    if (std::exchange(shutDown, true)) {
+        return;
     }
 
     const bool hasContext = runtime.window() != nullptr;
@@ -442,12 +491,17 @@ void Application::Impl::shutdown(bool saveWorld) noexcept {
     runtime.shutdown();
     completeShutdownStage(ApplicationShutdownStage::RuntimeReleased);
     openGLInitialized = false;
-    spdlog::info("Application terminated successfully");
 }
 
 Application::~Application() {
     if (m_impl) {
-        m_impl->shutdown(true);
+        m_impl->closeNoThrow();
+    }
+}
+
+void Application::close() {
+    if (m_impl) {
+        m_impl->close();
     }
 }
 
@@ -463,9 +517,41 @@ void ApplicationTestAccess::constructAndRun(
     runLoop(application);
 }
 
+void ApplicationTestAccess::closeReadyWorld(ApplicationCloseHooks hooks) {
+    auto impl = std::make_unique<Application::Impl>();
+    impl->shutdownStageCompleted = hooks.shutdownStageCompleted;
+    impl->world.worldSet.persistenceFormats().registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    impl->world.worldSet.setPersistenceStorage(
+        std::move(hooks.persistenceStorage));
+    impl->world.worldSet.setPersistenceRoot("application-close-test");
+    impl->world.worldSet.setPersistencePreferredFormat("memory");
+
+    Voxel::World& world = impl->world.worldSet.createWorld(
+        impl->world.activeWorldId);
+    Voxel::Chunk& dirtyChunk = world.chunkManager().getOrCreateChunk({0, 0, 0});
+    dirtyChunk.markPersistDirty();
+    impl->world.world = &world;
+    impl->world.ready = true;
+
+    Application application(
+        std::move(impl), Application::Initialization::Skip);
+    try {
+        application.close();
+    } catch (...) {
+        if (hooks.closeFailureObserved) {
+            hooks.closeFailureObserved(dirtyChunk.isPersistDirty());
+        }
+        throw;
+    }
+}
+
 int runApplication(ApplicationMain applicationMain) noexcept {
     try {
         applicationMain();
+        spdlog::info("Application terminated successfully");
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
         spdlog::error("Application error: {}", e.what());
@@ -479,6 +565,7 @@ int runApplication() noexcept {
     return runApplication([] {
         Application application;
         application.run();
+        application.close();
     });
 }
 

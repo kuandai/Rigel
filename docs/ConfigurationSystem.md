@@ -37,9 +37,8 @@ Fields merge according to their YAML shape:
   empty.
 
 World generation has one keyed sequence exception: `density_graph.nodes`
-merges entries by `id`, replacing a matching node as a whole. Persistence
-`providers` is a map keyed by provider ID, and each provider's options merge by
-option name.
+merges entries by `id`, replacing a matching node as a whole. Persistence's
+typed CR options merge by key.
 
 Four config types are supported today:
 
@@ -427,16 +426,18 @@ config (`assets/config/persistence.yaml`) may override them.
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `persistence.format` | string | `cr` | Preferred format ID. |
-| `persistence.providers` | map | - | Provider options by ID. |
+| `persistence.providers` | map | - | Typed backend options by ID. |
 | `persistence.providers.rigel:persistence.cr.lz4` | bool | `false` | CR backend compression. |
 
 Key fields:
 
 - `format`: preferred format ID (default `cr`).
-- `providers`: map of provider ID -> options.
+- `providers`: typed backend settings keyed by provider ID. The only supported
+  configuration provider is `rigel:persistence.cr`.
 
-Provider options are stored as strings. Consumers interpret them as needed
-(e.g. `getBool`, `getString`). Example from the shipped config:
+CR's `lz4` option uses the same exact lowercase `true`/`false` contract as
+world-generation and render booleans. Invalid values fail with the source and
+full key before a source layer is published. Example from the shipped config:
 
 ```yaml
 persistence:
@@ -446,10 +447,8 @@ persistence:
       lz4: false
 ```
 
-Provider IDs used by the persistence system:
-
-- `rigel:persistence.cr` (CR backend settings)
-- `rigel:persistence.block_registry` (block registry provider)
+The runtime persistence provider registry remains separate from configuration;
+it carries objects such as the block registry and CR settings after bootstrap.
 
 ---
 

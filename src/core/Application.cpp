@@ -264,13 +264,12 @@ void Application::initialize() {
         m_impl->world.world = &m_impl->world.worldSet.createWorld(m_impl->world.activeWorldId);
         m_impl->world.worldView = &m_impl->world.worldSet.createView(m_impl->world.activeWorldId, m_impl->assets);
 
-        if (const auto* provider = persistenceConfig.findProvider(Persistence::Backends::CR::kCRSettingsProviderId)) {
-            auto crSettings = std::make_shared<Persistence::Backends::CR::CRPersistenceSettings>();
-            crSettings->enableLz4 = provider->getBool("lz4", crSettings->enableLz4);
-            m_impl->world.world->persistenceProviders().add(
-                Persistence::Backends::CR::kCRSettingsProviderId,
-                crSettings);
-        }
+        auto crSettings = std::make_shared<
+            Persistence::Backends::CR::CRPersistenceSettings>();
+        crSettings->enableLz4 = persistenceConfig.crLz4Enabled;
+        m_impl->world.world->persistenceProviders().add(
+            Persistence::Backends::CR::kCRSettingsProviderId,
+            crSettings);
 
         auto generator = std::make_shared<const Voxel::WorldGenerator>(
             m_impl->world.worldSet.resources().registry(),

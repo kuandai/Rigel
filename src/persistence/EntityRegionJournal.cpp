@@ -1,6 +1,8 @@
 #include "EntityRegionJournal.h"
 
+#include "../entity/EntityPersistenceDetail.h"
 #include "../entity/EntityPersistenceLimits.h"
+#include "EntityRegionJournalLimits.h"
 
 #include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Persistence/Format.h"
@@ -25,7 +27,7 @@ namespace {
 constexpr uint32_t kJournalMagic = 0x5247454A; // "RGEJ"
 constexpr uint16_t kJournalVersion = 2;
 constexpr const char* kJournalFilename = "entity-regions.journal";
-constexpr uint32_t kMaxJournalRegions = 1'048'576;
+constexpr uint32_t kMaxJournalRegionsPerList = 1'048'576;
 constexpr size_t kMaxJournalPayloadBytes =
     Entity::detail::MaxEntityRegionBytes;
 constexpr uint32_t kMaxJournalStringBytes = 1'048'576;
@@ -43,6 +45,14 @@ struct EntityRegionKeyLess {
 struct EntityRegionJournal {
     std::vector<EntityRegionSnapshot> desiredRegions;
     std::vector<EntityRegionKey> obsoleteRegions;
+};
+
+struct JournalUsage {
+    size_t encodedBytes = 0;
+    size_t payloadBytes = 0;
+    size_t regions = 0;
+    size_t chunks = 0;
+    size_t entities = 0;
 };
 
 std::string journalPath(const PersistenceContext& context) {
@@ -86,16 +96,134 @@ void requireRemaining(const ByteReader& reader,
     }
 }
 
-void writeString(ByteWriter& writer, const std::string& value) {
+void consumeLimit(size_t& used,
+                  size_t amount,
+                  size_t limit,
+                  const char* diagnostic) {
+    if (used > limit || amount > limit - used) {
+        throw std::runtime_error(diagnostic);
+    }
+    used += amount;
+}
+
+size_t encodedStringBytes(const std::string& value) {
     if (value.size() > kMaxJournalStringBytes ||
         value.size() > std::numeric_limits<uint32_t>::max()) {
         throw std::runtime_error("Entity region journal string is too large");
     }
+    return sizeof(uint32_t) + value.size();
+}
+
+void consumeEncodedBytes(JournalUsage& usage, size_t amount) {
+    consumeLimit(
+        usage.encodedBytes,
+        amount,
+        MaxEntityJournalEncodedBytes,
+        "Entity region journal encoded size exceeds limit");
+}
+
+void consumeKey(JournalUsage& usage, const EntityRegionKey& key) {
+    consumeEncodedBytes(usage, encodedStringBytes(key.zoneId));
+    consumeEncodedBytes(usage, 3 * sizeof(uint32_t));
+}
+
+void consumeRegion(JournalUsage& usage) {
+    consumeLimit(
+        usage.regions,
+        1,
+        MaxEntityJournalRegions,
+        "Entity region journal aggregate region count exceeds limit");
+}
+
+void consumePayload(JournalUsage& usage,
+                    const Entity::detail::EntityRegionPayloadInfo& info) {
+    consumeLimit(
+        usage.payloadBytes,
+        info.encodedBytes,
+        MaxEntityJournalPayloadBytes,
+        "Entity region journal aggregate payload exceeds size limit");
+    consumeLimit(
+        usage.chunks,
+        info.chunks,
+        MaxEntityJournalChunks,
+        "Entity region journal aggregate chunk count exceeds limit");
+    consumeLimit(
+        usage.entities,
+        info.entities,
+        MaxEntityJournalEntities,
+        "Entity region journal aggregate entity count exceeds limit");
+    consumeEncodedBytes(usage, sizeof(uint32_t));
+    consumeEncodedBytes(usage, info.encodedBytes);
+}
+
+JournalUsage beginJournalUsage(size_t desiredCount,
+                               size_t obsoleteCount,
+                               const FormatDescriptor& format) {
+    if (format.id.empty()) {
+        throw std::runtime_error(
+            "Entity region journal requires a persistence format identity");
+    }
+    if (desiredCount > std::numeric_limits<uint32_t>::max() ||
+        obsoleteCount > std::numeric_limits<uint32_t>::max() ||
+        desiredCount > kMaxJournalRegionsPerList ||
+        obsoleteCount > kMaxJournalRegionsPerList) {
+        throw std::runtime_error(
+            "Entity region journal region count exceeds limit");
+    }
+    if (desiredCount > MaxEntityJournalRegions ||
+        obsoleteCount > MaxEntityJournalRegions - desiredCount) {
+        throw std::runtime_error(
+            "Entity region journal aggregate region count exceeds limit");
+    }
+
+    JournalUsage usage;
+    usage.regions = desiredCount + obsoleteCount;
+    consumeEncodedBytes(usage, 2 * sizeof(uint32_t));
+    consumeEncodedBytes(usage, encodedStringBytes(format.id));
+    consumeEncodedBytes(usage, 3 * sizeof(uint32_t));
+    return usage;
+}
+
+JournalUsage measureJournal(const EntityRegionJournal& journal,
+                            const FormatDescriptor& format) {
+    JournalUsage usage = beginJournalUsage(
+        journal.desiredRegions.size(),
+        journal.obsoleteRegions.size(),
+        format);
+    for (const auto& region : journal.desiredRegions) {
+        consumeKey(usage, region.key);
+        consumePayload(
+            usage,
+            Entity::detail::measureEntityRegionPayload(region.chunks));
+    }
+    for (const auto& key : journal.obsoleteRegions) {
+        consumeKey(usage, key);
+    }
+    return usage;
+}
+
+void writeString(ByteWriter& writer, const std::string& value) {
+    encodedStringBytes(value);
     writer.writeU32(static_cast<uint32_t>(value.size()));
     if (!value.empty()) {
         writer.writeBytes(
             reinterpret_cast<const uint8_t*>(value.data()), value.size());
     }
+}
+
+void skipString(ByteReader& reader) {
+    requireRemaining(
+        reader, sizeof(uint32_t),
+        "Truncated string length in entity region journal");
+    const uint32_t size = reader.readU32();
+    if (size > kMaxJournalStringBytes) {
+        throw std::runtime_error(
+            "Entity region journal string exceeds size limit");
+    }
+    if (size > remaining(reader)) {
+        throw std::runtime_error("Truncated string in entity region journal");
+    }
+    reader.seek(reader.tell() + size);
 }
 
 std::string readString(ByteReader& reader) {
@@ -134,6 +262,14 @@ EntityRegionKey readKey(ByteReader& reader) {
     key.y = reader.readI32();
     key.z = reader.readI32();
     return key;
+}
+
+void skipKey(ByteReader& reader) {
+    skipString(reader);
+    requireRemaining(
+        reader, 3 * sizeof(uint32_t),
+        "Truncated entity region key in recovery journal");
+    reader.seek(reader.tell() + 3 * sizeof(uint32_t));
 }
 
 void sortAndValidateJournal(EntityRegionJournal& journal) {
@@ -189,16 +325,11 @@ void sortAndValidateJournal(EntityRegionJournal& journal) {
 
 void writeJournal(ByteWriter& writer,
                   const EntityRegionJournal& journal,
-                  const FormatDescriptor& format) {
-    if (journal.desiredRegions.size() > kMaxJournalRegions ||
-        journal.obsoleteRegions.size() > kMaxJournalRegions ||
-        journal.desiredRegions.size() > std::numeric_limits<uint32_t>::max() ||
-        journal.obsoleteRegions.size() > std::numeric_limits<uint32_t>::max()) {
-        throw std::runtime_error("Entity region journal has too many regions");
-    }
-    if (format.id.empty()) {
+                  const FormatDescriptor& format,
+                  const JournalUsage& expectedUsage) {
+    if (writer.tell() != 0) {
         throw std::runtime_error(
-            "Entity region journal requires a persistence format identity");
+            "Entity region journal writer did not start at the beginning");
     }
 
     writer.writeU32(kJournalMagic);
@@ -211,8 +342,11 @@ void writeJournal(ByteWriter& writer,
 
     for (const auto& region : journal.desiredRegions) {
         writeKey(writer, region.key);
+        const Entity::detail::EntityRegionPayloadInfo info =
+            Entity::detail::measureEntityRegionPayload(region.chunks);
         const auto payload = Entity::encodeEntityRegionPayload(region.chunks);
-        if (payload.size() > kMaxJournalPayloadBytes ||
+        if (payload.size() != info.encodedBytes ||
+            payload.size() > kMaxJournalPayloadBytes ||
             payload.size() > std::numeric_limits<uint32_t>::max()) {
             throw std::runtime_error(
                 "Entity region payload is too large for recovery journal");
@@ -225,10 +359,15 @@ void writeJournal(ByteWriter& writer,
     for (const auto& key : journal.obsoleteRegions) {
         writeKey(writer, key);
     }
+    if (writer.tell() != expectedUsage.encodedBytes) {
+        throw std::runtime_error(
+            "Entity region journal encoded size did not match its preflight");
+    }
 }
 
-EntityRegionJournal readJournal(ByteReader& reader,
-                                const FormatDescriptor& format) {
+std::pair<uint32_t, uint32_t> readJournalPrefix(
+    ByteReader& reader,
+    const FormatDescriptor& format) {
     requireRemaining(
         reader, 2 * sizeof(uint32_t),
         "Truncated entity region journal header");
@@ -255,21 +394,106 @@ EntityRegionJournal readJournal(ByteReader& reader,
             std::to_string(format.version));
     }
 
-    EntityRegionJournal journal;
     const uint32_t desiredCount = reader.readU32();
     const uint32_t obsoleteCount = reader.readU32();
-    if (desiredCount > kMaxJournalRegions ||
-        obsoleteCount > kMaxJournalRegions) {
+    if (desiredCount > kMaxJournalRegionsPerList ||
+        obsoleteCount > kMaxJournalRegionsPerList) {
         throw std::runtime_error(
             "Entity region journal region count exceeds limit");
     }
-    const uint64_t minimumBytes =
-        static_cast<uint64_t>(desiredCount) * kMinDesiredRegionBytes +
-        static_cast<uint64_t>(obsoleteCount) * kMinObsoleteRegionBytes;
-    if (minimumBytes > remaining(reader)) {
+    if (desiredCount > MaxEntityJournalRegions ||
+        obsoleteCount > MaxEntityJournalRegions - desiredCount) {
+        throw std::runtime_error(
+            "Entity region journal aggregate region count exceeds limit");
+    }
+    const size_t available = remaining(reader);
+    if (desiredCount > available / kMinDesiredRegionBytes) {
         throw std::runtime_error(
             "Entity region journal counts exceed remaining data");
     }
+    const size_t desiredBytes = desiredCount * kMinDesiredRegionBytes;
+    if (obsoleteCount >
+        (available - desiredBytes) / kMinObsoleteRegionBytes) {
+        throw std::runtime_error(
+            "Entity region journal counts exceed remaining data");
+    }
+    return {desiredCount, obsoleteCount};
+}
+
+void preflightJournal(ByteReader& reader,
+                      const FormatDescriptor& format) {
+    if (reader.size() > MaxEntityJournalEncodedBytes) {
+        throw std::runtime_error(
+            "Entity region journal encoded size exceeds limit");
+    }
+
+    const auto [desiredCount, obsoleteCount] =
+        readJournalPrefix(reader, format);
+    JournalUsage usage;
+    usage.encodedBytes = reader.size();
+    usage.regions = static_cast<size_t>(desiredCount) + obsoleteCount;
+
+    for (uint32_t i = 0; i < desiredCount; ++i) {
+        skipKey(reader);
+        requireRemaining(
+            reader, sizeof(uint32_t),
+            "Truncated entity region payload size in recovery journal");
+        const uint32_t payloadSize = reader.readU32();
+        if (payloadSize > kMaxJournalPayloadBytes) {
+            throw std::runtime_error(
+                "Entity region journal payload exceeds size limit");
+        }
+        consumeLimit(
+            usage.payloadBytes,
+            payloadSize,
+            MaxEntityJournalPayloadBytes,
+            "Entity region journal aggregate payload exceeds size limit");
+        if (payloadSize > remaining(reader)) {
+            throw std::runtime_error(
+                "Truncated entity region payload in recovery journal");
+        }
+
+        std::vector<uint8_t> payload(payloadSize);
+        if (payloadSize > 0) {
+            reader.readBytes(payload.data(), payload.size());
+        }
+        Entity::detail::EntityRegionPayloadInfo info;
+        const auto inspection = Entity::detail::inspectEntityRegionPayload(
+            payload,
+            MaxEntityJournalChunks - usage.chunks,
+            MaxEntityJournalEntities - usage.entities,
+            info);
+        if (inspection ==
+            Entity::detail::EntityRegionPayloadInspection::ChunkLimitExceeded) {
+            throw std::runtime_error(
+                "Entity region journal aggregate chunk count exceeds limit");
+        }
+        if (inspection ==
+            Entity::detail::EntityRegionPayloadInspection::EntityLimitExceeded) {
+            throw std::runtime_error(
+                "Entity region journal aggregate entity count exceeds limit");
+        }
+        if (inspection !=
+            Entity::detail::EntityRegionPayloadInspection::Valid) {
+            throw std::runtime_error(
+                "Invalid entity payload for journal region during preflight");
+        }
+        usage.chunks += info.chunks;
+        usage.entities += info.entities;
+    }
+    for (uint32_t i = 0; i < obsoleteCount; ++i) {
+        skipKey(reader);
+    }
+    if (reader.tell() != reader.size()) {
+        throw std::runtime_error("Trailing data in entity region journal");
+    }
+}
+
+EntityRegionJournal decodeJournal(ByteReader& reader,
+                                  const FormatDescriptor& format) {
+    const auto [desiredCount, obsoleteCount] =
+        readJournalPrefix(reader, format);
+    EntityRegionJournal journal;
     journal.desiredRegions.reserve(desiredCount);
     journal.obsoleteRegions.reserve(obsoleteCount);
 
@@ -310,13 +534,21 @@ EntityRegionJournal readJournal(ByteReader& reader,
     return journal;
 }
 
+EntityRegionJournal readJournal(ByteReader& reader,
+                                const FormatDescriptor& format) {
+    preflightJournal(reader, format);
+    reader.seek(0);
+    return decodeJournal(reader, format);
+}
+
 void publishJournal(const EntityRegionJournal& journal,
                     const FormatDescriptor& format,
                     const PersistenceContext& context) {
+    const JournalUsage usage = measureJournal(journal, format);
     const std::string path = journalPath(context);
     context.storage->mkdirs(parentPath(path));
     auto session = context.storage->openWrite(path);
-    writeJournal(session->writer(), journal, format);
+    writeJournal(session->writer(), journal, format, usage);
     session->writer().flush();
     session->commit();
 }
@@ -455,12 +687,16 @@ void saveEntityRegionsRecoverably(
     EntityRegionJournal journal;
     journal.desiredRegions = std::move(desiredRegions);
 
+    JournalUsage usage = measureJournal(journal, format.descriptor());
+
     std::set<EntityRegionKey, EntityRegionKeyLess> desiredKeys;
     for (const auto& region : journal.desiredRegions) {
         desiredKeys.insert(region.key);
     }
     for (const auto& key : format.entityContainer().listRegions(zoneId)) {
         if (!desiredKeys.contains(key)) {
+            consumeRegion(usage);
+            consumeKey(usage, key);
             journal.obsoleteRegions.push_back(key);
         }
     }

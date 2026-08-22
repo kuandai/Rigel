@@ -223,9 +223,15 @@ Current behavior:
   Replay writes desired regions, removes obsolete regions, and removes the
   journal only after all region operations succeed. A pristine world with no
   existing entity regions does not publish a journal.
-- Journal declarations and nested entity payload counts are bounded and checked
-  against remaining input before allocation. The complete desired entity
-  snapshot is checked for null and duplicate persistent IDs before publication.
+- One close or recovery journal is bounded to 64 MiB of encoded data, 4,096
+  combined desired and obsolete region declarations, 65,536 decoded chunks,
+  and 65,536 decoded entities. These fixed product bounds cover the complete
+  journal, in addition to the per-region payload and nested collection limits.
+  Publication measures the same encoding and decoded work that replay accepts
+  before staging the journal. Replay preflights all declarations, payload
+  lengths, and nested work before reserving or retaining decoded snapshots.
+  The complete desired entity snapshot is also checked for null and duplicate
+  persistent IDs before publication.
 - Entity bootstrap validates the complete persisted snapshot and collisions
   with live persistent IDs before spawning any entity. It does not clear chunks
   or unrelated live entities.

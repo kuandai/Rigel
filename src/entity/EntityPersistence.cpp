@@ -1,4 +1,5 @@
 #include "Rigel/Entity/EntityPersistence.h"
+#include "EntityPersistenceDetail.h"
 #include "EntityPersistenceLimits.h"
 
 #include <bit>
@@ -23,6 +24,10 @@ int floorDiv(int value, int divisor) {
 
 class BufferWriter {
 public:
+    explicit BufferWriter(size_t encodedBytes) {
+        m_data.reserve(encodedBytes);
+    }
+
     void writeU8(uint8_t value) {
         requireSpace(1);
         m_data.push_back(value);
@@ -153,6 +158,26 @@ public:
         return true;
     }
 
+    bool skipString(size_t& length) {
+        uint32_t encodedLength = 0;
+        if (!readU32(encodedLength) ||
+            encodedLength > detail::MaxEntityStringBytes ||
+            !ensure(encodedLength)) {
+            return false;
+        }
+        length = encodedLength;
+        m_pos += encodedLength;
+        return true;
+    }
+
+    bool skip(size_t length) {
+        if (!ensure(length)) {
+            return false;
+        }
+        m_pos += length;
+        return true;
+    }
+
     bool atEnd() const {
         return m_pos == m_data.size();
     }
@@ -182,6 +207,143 @@ bool readVec3(BufferReader& reader, glm::vec3& value) {
 
 } // namespace
 
+namespace detail {
+
+EntityRegionPayloadInfo measureEntityRegionPayload(
+    const std::vector<EntityPersistedChunk>& chunks) {
+    if (chunks.size() > MaxChunksPerEntityRegion ||
+        chunks.size() > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error("Entity region has too many chunks");
+    }
+
+    EntityRegionPayloadInfo info;
+    info.encodedBytes = 3 * sizeof(uint32_t);
+    info.chunks = chunks.size();
+    auto addEncodedBytes = [&](size_t bytes) {
+        if (info.encodedBytes > MaxEntityRegionBytes ||
+            bytes > MaxEntityRegionBytes - info.encodedBytes) {
+            throw std::runtime_error("Entity region payload is too large");
+        }
+        info.encodedBytes += bytes;
+    };
+    auto addString = [&](const std::string& value) {
+        if (value.size() > MaxEntityStringBytes ||
+            value.size() > std::numeric_limits<uint32_t>::max()) {
+            throw std::runtime_error("Entity persistence string is too large");
+        }
+        addEncodedBytes(sizeof(uint32_t));
+        addEncodedBytes(value.size());
+        if (value.size() > std::numeric_limits<size_t>::max() -
+                               info.stringBytes) {
+            throw std::runtime_error("Entity region payload is too large");
+        }
+        info.stringBytes += value.size();
+    };
+
+    for (const auto& chunk : chunks) {
+        if (chunk.entities.size() > MaxEntitiesPerChunk ||
+            chunk.entities.size() > std::numeric_limits<uint32_t>::max()) {
+            throw std::runtime_error("Entity chunk has too many entities");
+        }
+        addEncodedBytes(MinEncodedChunkBytes);
+        if (chunk.entities.size() >
+            std::numeric_limits<size_t>::max() - info.entities) {
+            throw std::runtime_error("Entity region payload is too large");
+        }
+        info.entities += chunk.entities.size();
+        for (const auto& entity : chunk.entities) {
+            addString(entity.typeId);
+            addEncodedBytes(MinEncodedEntityBytes - 2 * sizeof(uint32_t));
+            addString(entity.modelId);
+        }
+    }
+    return info;
+}
+
+EntityRegionPayloadInspection inspectEntityRegionPayload(
+    std::span<const uint8_t> payload,
+    size_t maxChunks,
+    size_t maxEntities,
+    EntityRegionPayloadInfo& info) {
+    info = {};
+    if (payload.size() > MaxEntityRegionBytes) {
+        return EntityRegionPayloadInspection::Invalid;
+    }
+
+    BufferReader reader(payload);
+    uint32_t magic = 0;
+    uint16_t version = 0;
+    uint16_t reserved = 0;
+    if (!reader.readU32(magic) || magic != kEntityRegionMagic ||
+        !reader.readU16(version) || version != kEntityRegionVersion ||
+        !reader.readU16(reserved) || reserved != 0) {
+        return EntityRegionPayloadInspection::Invalid;
+    }
+
+    uint32_t chunkCount = 0;
+    if (!reader.readU32(chunkCount) ||
+        chunkCount > MaxChunksPerEntityRegion) {
+        return EntityRegionPayloadInspection::Invalid;
+    }
+    if (chunkCount > maxChunks) {
+        return EntityRegionPayloadInspection::ChunkLimitExceeded;
+    }
+    if (chunkCount > reader.remaining() / MinEncodedChunkBytes) {
+        return EntityRegionPayloadInspection::Invalid;
+    }
+    info.encodedBytes = payload.size();
+    info.chunks = chunkCount;
+
+    for (uint32_t i = 0; i < chunkCount; ++i) {
+        if (!reader.skip(3 * sizeof(uint32_t))) {
+            return EntityRegionPayloadInspection::Invalid;
+        }
+        uint32_t entityCount = 0;
+        if (!reader.readU32(entityCount) ||
+            entityCount > MaxEntitiesPerChunk) {
+            return EntityRegionPayloadInspection::Invalid;
+        }
+        if (info.entities > maxEntities ||
+            entityCount > maxEntities - info.entities) {
+            return EntityRegionPayloadInspection::EntityLimitExceeded;
+        }
+        if (entityCount > reader.remaining() / MinEncodedEntityBytes) {
+            return EntityRegionPayloadInspection::Invalid;
+        }
+        info.entities += entityCount;
+
+        for (uint32_t e = 0; e < entityCount; ++e) {
+            size_t stringBytes = 0;
+            if (!reader.skipString(stringBytes)) {
+                return EntityRegionPayloadInspection::Invalid;
+            }
+            if (stringBytes > std::numeric_limits<size_t>::max() -
+                                  info.stringBytes) {
+                return EntityRegionPayloadInspection::Invalid;
+            }
+            info.stringBytes += stringBytes;
+            constexpr size_t kEncodedEntityFixedBytes =
+                2 * sizeof(uint32_t) + sizeof(uint64_t) +
+                9 * sizeof(uint32_t);
+            if (!reader.skip(kEncodedEntityFixedBytes) ||
+                !reader.skipString(stringBytes)) {
+                return EntityRegionPayloadInspection::Invalid;
+            }
+            if (stringBytes > std::numeric_limits<size_t>::max() -
+                                  info.stringBytes) {
+                return EntityRegionPayloadInspection::Invalid;
+            }
+            info.stringBytes += stringBytes;
+        }
+    }
+
+    return reader.atEnd()
+        ? EntityRegionPayloadInspection::Valid
+        : EntityRegionPayloadInspection::Invalid;
+}
+
+} // namespace detail
+
 PersistenceRegionCoord persistenceRegionForChunk(Voxel::ChunkCoord coord) {
     return PersistenceRegionCoord{
         floorDiv(coord.x, kPersistenceRegionChunkSpan),
@@ -191,12 +353,9 @@ PersistenceRegionCoord persistenceRegionForChunk(Voxel::ChunkCoord coord) {
 
 std::vector<uint8_t> encodeEntityRegionPayload(
     const std::vector<EntityPersistedChunk>& chunks) {
-    if (chunks.size() > detail::MaxChunksPerEntityRegion ||
-        chunks.size() > std::numeric_limits<uint32_t>::max()) {
-        throw std::runtime_error("Entity region has too many chunks");
-    }
-
-    BufferWriter writer;
+    const detail::EntityRegionPayloadInfo info =
+        detail::measureEntityRegionPayload(chunks);
+    BufferWriter writer(info.encodedBytes);
     writer.writeU32(kEntityRegionMagic);
     writer.writeU16(kEntityRegionVersion);
     writer.writeU16(0);
@@ -229,7 +388,12 @@ std::vector<uint8_t> encodeEntityRegionPayload(
 
 bool decodeEntityRegionPayload(std::span<const uint8_t> payload,
                                std::vector<EntityPersistedChunk>& outChunks) {
-    if (payload.size() > detail::MaxEntityRegionBytes) {
+    detail::EntityRegionPayloadInfo info;
+    if (detail::inspectEntityRegionPayload(
+            payload,
+            detail::MaxChunksPerEntityRegion,
+            std::numeric_limits<size_t>::max(),
+            info) != detail::EntityRegionPayloadInspection::Valid) {
         return false;
     }
     BufferReader reader(payload);
@@ -250,13 +414,8 @@ bool decodeEntityRegionPayload(std::span<const uint8_t> payload,
     if (!reader.readU32(chunkCount)) {
         return false;
     }
-    if (chunkCount > detail::MaxChunksPerEntityRegion ||
-        chunkCount > reader.remaining() / detail::MinEncodedChunkBytes) {
-        return false;
-    }
-
     std::vector<EntityPersistedChunk> chunks;
-    chunks.reserve(chunkCount);
+    chunks.reserve(info.chunks);
 
     for (uint32_t i = 0; i < chunkCount; ++i) {
         EntityPersistedChunk chunk;
@@ -272,10 +431,6 @@ bool decodeEntityRegionPayload(std::span<const uint8_t> payload,
 
         uint32_t entityCount = 0;
         if (!reader.readU32(entityCount)) {
-            return false;
-        }
-        if (entityCount > detail::MaxEntitiesPerChunk ||
-            entityCount > reader.remaining() / detail::MinEncodedEntityBytes) {
             return false;
         }
         chunk.entities.reserve(entityCount);

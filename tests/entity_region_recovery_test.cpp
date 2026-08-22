@@ -10,7 +10,11 @@
 #include "Rigel/Persistence/WorldPersistence.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
+#include "../src/entity/EntityPersistenceDetail.h"
+#include "../src/entity/EntityPersistenceLimits.h"
 #include "../src/persistence/DurableDirectory.h"
+#include "../src/persistence/EntityRegionJournal.h"
+#include "../src/persistence/EntityRegionJournalLimits.h"
 
 #include <algorithm>
 #include <array>
@@ -43,6 +47,7 @@ constexpr float kNegativePositionBoundary = -0x1p31f;
 struct SharedFiles {
     std::unordered_map<std::string, std::vector<uint8_t>> files;
     std::unordered_map<std::string, std::vector<uint8_t>> durableFiles;
+    std::unordered_map<std::string, size_t> reportedReadSizes;
     std::unordered_map<std::string, std::vector<uint8_t>> unsynchronizedRemovals;
     std::set<std::string> directories;
     std::set<std::string> durableDirectories;
@@ -85,8 +90,10 @@ struct MutationControl {
 
 class SharedByteReader final : public Persistence::ByteReader {
 public:
-    explicit SharedByteReader(std::vector<uint8_t> data)
-        : m_data(std::move(data)) {
+    explicit SharedByteReader(std::vector<uint8_t> data,
+                              std::optional<size_t> reportedSize = {})
+        : m_data(std::move(data)),
+          m_reportedSize(reportedSize.value_or(m_data.size())) {
     }
 
     uint8_t readU8() override {
@@ -119,7 +126,7 @@ public:
     }
 
     size_t size() const override {
-        return m_data.size();
+        return m_reportedSize;
     }
 
     size_t tell() const override {
@@ -151,6 +158,7 @@ private:
     }
 
     std::vector<uint8_t> m_data;
+    size_t m_reportedSize = 0;
     size_t m_position = 0;
 };
 
@@ -276,6 +284,7 @@ public:
             m_control->beforeMutation("write " + m_path);
         }
         m_files->files[m_path] = m_buffer;
+        m_files->reportedReadSizes.erase(m_path);
         if (observesMutationPath(m_control, m_path)) {
             m_control->afterMutation();
         }
@@ -308,7 +317,12 @@ public:
         if (found == m_files->files.end()) {
             throw std::runtime_error("Missing test storage file: " + path);
         }
-        return std::make_unique<SharedByteReader>(found->second);
+        const auto reportedSize = m_files->reportedReadSizes.find(path);
+        return std::make_unique<SharedByteReader>(
+            found->second,
+            reportedSize == m_files->reportedReadSizes.end()
+                ? std::optional<size_t>{}
+                : std::optional<size_t>{reportedSize->second});
     }
 
     std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
@@ -388,6 +402,7 @@ public:
             throw;
         }
         m_files->durableFiles.erase(path);
+        m_files->reportedReadSizes.erase(path);
         m_files->unsynchronizedRemovals.erase(path);
         m_files->durabilityOperations.push_back("remove " + path);
     }
@@ -732,6 +747,34 @@ void appendKey(std::vector<uint8_t>& bytes,
     appendU32(bytes, z);
 }
 
+std::vector<uint8_t> entityPayloadHeader(uint32_t chunkCount) {
+    std::vector<uint8_t> bytes;
+    appendU32(bytes, 0x52474531);
+    appendU16(bytes, 1);
+    appendU16(bytes, 0);
+    appendU32(bytes, chunkCount);
+    return bytes;
+}
+
+void appendEntityChunk(std::vector<uint8_t>& bytes,
+                       uint32_t entityCount,
+                       uint32_t x = 0,
+                       uint32_t y = 0,
+                       uint32_t z = 0) {
+    appendU32(bytes, x);
+    appendU32(bytes, y);
+    appendU32(bytes, z);
+    appendU32(bytes, entityCount);
+}
+
+void appendDesiredPayload(std::vector<uint8_t>& journal,
+                          const std::vector<uint8_t>& payload,
+                          uint32_t regionX = 0) {
+    appendKey(journal, "", regionX);
+    appendU32(journal, static_cast<uint32_t>(payload.size()));
+    journal.insert(journal.end(), payload.begin(), payload.end());
+}
+
 void installJournal(const std::shared_ptr<SharedFiles>& files,
                     std::vector<uint8_t> bytes) {
     files->files[kJournalPath] = bytes;
@@ -829,6 +872,26 @@ void saveRawRegions(
     }
 }
 
+Persistence::EntityRegionSnapshot loadRawRegion(
+    const std::shared_ptr<SharedFiles>& files,
+    const Persistence::EntityRegionKey& key) {
+    Persistence::FormatRegistry formats;
+    registerMemoryFormat(formats);
+    Persistence::PersistenceService service(formats);
+    auto context = makeContext(files);
+    auto format = service.openFormat(context);
+    return format->entityContainer().loadRegion(key);
+}
+
+size_t rawRegionCount(const std::shared_ptr<SharedFiles>& files) {
+    Persistence::FormatRegistry formats;
+    registerMemoryFormat(formats);
+    Persistence::PersistenceService service(formats);
+    auto context = makeContext(files);
+    auto format = service.openFormat(context);
+    return format->entityContainer().listRegions(kZoneId).size();
+}
+
 void bootstrapEntities(
     const std::shared_ptr<SharedFiles>& files,
     Voxel::World& world,
@@ -858,6 +921,80 @@ std::string loadFailure(
         return error.what();
     }
     throw Test::TestFailure("Expected persisted entity validation to fail");
+}
+
+void checkJournalRejection(
+    std::vector<uint8_t> journal,
+    const std::string& diagnostic,
+    std::optional<size_t> reportedSize = {}) {
+    auto files = std::make_shared<SharedFiles>();
+    const EntityRecord persisted{
+        Entity::EntityId{201, 202, 203},
+        "rigel:persisted",
+        glm::vec3(1.0f, 2.0f, 3.0f)};
+    saveRawRegions(files, {regionSnapshot(0, {persisted})});
+    installJournal(files, std::move(journal));
+    if (reportedSize) {
+        files->reportedReadSizes[kJournalPath] = *reportedSize;
+    }
+    const auto filesBefore = files->files;
+    const auto durableFilesBefore = files->durableFiles;
+
+    auto control = std::make_shared<MutationControl>();
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    const EntityRecord live{
+        Entity::EntityId{211, 212, 213},
+        "rigel:live",
+        glm::vec3(4.0f, 5.0f, 6.0f)};
+    populateWorld(world, {live});
+    Asset::AssetManager assets;
+
+    const std::string error = loadFailure(
+        files, world, assets, "memory", control);
+
+    CHECK_EQ(
+        error,
+        std::string("Failed to replay entity recovery journal: ") +
+            diagnostic);
+    CHECK(control->attempted.empty());
+    CHECK_EQ(files->files, filesBefore);
+    CHECK_EQ(files->durableFiles, durableFilesBefore);
+    CHECK(journalExists(files));
+    CHECK_EQ(world.entities().size(), static_cast<size_t>(1));
+    world.entities().forEach([&](const Entity::Entity& entity) {
+        CHECK_EQ(entity.id(), live.id);
+        CHECK_EQ(entity.typeId(), live.typeId);
+        CHECK_EQ(entity.position(), live.position);
+    });
+}
+
+std::string saveRecoverableRegionsFailure(
+    const std::shared_ptr<SharedFiles>& files,
+    std::vector<Persistence::EntityRegionSnapshot> regions,
+    const std::shared_ptr<MutationControl>& control) {
+    Persistence::FormatRegistry formats;
+    registerMemoryFormat(formats);
+    Persistence::PersistenceService service(formats);
+    auto context = makeContext(files, control);
+    auto format = service.openFormat(context);
+    try {
+        Persistence::detail::saveEntityRegionsRecoverably(
+            *format, context, kZoneId, std::move(regions));
+    } catch (const std::exception& error) {
+        return error.what();
+    }
+    throw Test::TestFailure("Expected recoverable entity save to fail");
+}
+
+void replayJournal(const std::shared_ptr<SharedFiles>& files) {
+    Persistence::FormatRegistry formats;
+    registerMemoryFormat(formats);
+    Persistence::PersistenceService service(formats);
+    auto context = makeContext(files);
+    auto format = service.openFormat(context);
+    Persistence::detail::replayEntityRegionJournal(
+        *format, context, kZoneId);
 }
 
 } // namespace
@@ -1474,6 +1611,320 @@ TEST_CASE(Persistence_EntityLoadRejectsDuplicateIdAcrossRegions) {
     CHECK(error.find("70:71:72") != std::string::npos);
     CHECK(error.find("rigel:default/(0, 0, 0)") != std::string::npos);
     CHECK(error.find("rigel:default/(1, 0, 0)") != std::string::npos);
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsAggregateDeclarationsBeforeMutation) {
+    checkJournalRejection(
+        journalHeader(Persistence::detail::MaxEntityJournalRegions, 1),
+        "Entity region journal aggregate region count exceeds limit");
+
+    checkJournalRejection(
+        journalHeader(0, 0),
+        "Entity region journal encoded size exceeds limit",
+        Persistence::detail::MaxEntityJournalEncodedBytes + 1);
+
+    std::vector<uint8_t> payloadJournal = journalHeader(2, 0);
+    appendDesiredPayload(payloadJournal, entityPayloadHeader(0));
+    appendKey(payloadJournal, "", 1);
+    appendU32(
+        payloadJournal,
+        static_cast<uint32_t>(
+            Persistence::detail::MaxEntityJournalPayloadBytes));
+    payloadJournal.resize(payloadJournal.size() + 12);
+    checkJournalRejection(
+        std::move(payloadJournal),
+        "Entity region journal aggregate payload exceeds size limit");
+
+    std::vector<uint8_t> entityJournal = journalHeader(1, 0);
+    std::vector<uint8_t> entityPayload = entityPayloadHeader(1);
+    appendEntityChunk(
+        entityPayload,
+        static_cast<uint32_t>(
+            Persistence::detail::MaxEntityJournalEntities + 1));
+    appendDesiredPayload(entityJournal, entityPayload);
+    checkJournalRejection(
+        std::move(entityJournal),
+        "Entity region journal aggregate entity count exceeds limit");
+}
+
+TEST_CASE(Persistence_EntityJournalRejectsAggregateChunkWorkAcrossRegions) {
+    constexpr size_t chunksPerRegion =
+        Entity::detail::MaxChunksPerEntityRegion;
+    static_assert(
+        Persistence::detail::MaxEntityJournalChunks % chunksPerRegion == 0);
+    constexpr size_t fullRegionCount =
+        Persistence::detail::MaxEntityJournalChunks / chunksPerRegion;
+
+    std::vector<uint8_t> journal = journalHeader(
+        static_cast<uint32_t>(fullRegionCount + 1), 0);
+    for (size_t region = 0; region < fullRegionCount; ++region) {
+        std::vector<uint8_t> payload = entityPayloadHeader(
+            static_cast<uint32_t>(chunksPerRegion));
+        for (size_t chunk = 0; chunk < chunksPerRegion; ++chunk) {
+            appendEntityChunk(payload, 0);
+        }
+        appendDesiredPayload(
+            journal, payload, static_cast<uint32_t>(region));
+    }
+    appendDesiredPayload(
+        journal,
+        entityPayloadHeader(1),
+        static_cast<uint32_t>(fullRegionCount));
+
+    checkJournalRejection(
+        std::move(journal),
+        "Entity region journal aggregate chunk count exceeds limit");
+}
+
+TEST_CASE(Persistence_EntityJournalWriterRejectsAggregateWorkBeforeMutation) {
+    auto files = std::make_shared<SharedFiles>();
+    const EntityRecord prior{
+        Entity::EntityId{221, 222, 223},
+        "rigel:prior",
+        glm::vec3(1.0f)};
+    saveRawRegions(files, {regionSnapshot(0, {prior})});
+    const auto filesBefore = files->files;
+    const auto durableFilesBefore = files->durableFiles;
+
+    std::vector<Persistence::EntityRegionSnapshot> regions;
+    regions.reserve(Persistence::detail::MaxEntityJournalRegions + 1);
+    for (uint32_t i = 0;
+         i <= Persistence::detail::MaxEntityJournalRegions;
+         ++i) {
+        const EntityRecord record{
+            Entity::EntityId{1, i + 1, 1},
+            "rigel:aggregate_region",
+            glm::vec3(0.0f)};
+        regions.push_back(regionSnapshot(static_cast<int32_t>(i), {record}));
+    }
+    auto control = std::make_shared<MutationControl>();
+    const std::string regionError = saveRecoverableRegionsFailure(
+        files, std::move(regions), control);
+    CHECK_EQ(
+        regionError,
+        "Entity region journal aggregate region count exceeds limit");
+    CHECK(control->attempted.empty());
+    CHECK_EQ(files->files, filesBefore);
+    CHECK_EQ(files->durableFiles, durableFilesBefore);
+    CHECK(!journalExists(files));
+
+    std::vector<EntityRecord> records;
+    records.reserve(Persistence::detail::MaxEntityJournalEntities + 1);
+    for (size_t i = 0;
+         i <= Persistence::detail::MaxEntityJournalEntities;
+         ++i) {
+        records.push_back(EntityRecord{
+            Entity::EntityId{2, static_cast<uint32_t>(i + 1), 1},
+            "rigel:aggregate_entity",
+            glm::vec3(0.0f)});
+    }
+    control = std::make_shared<MutationControl>();
+    const std::string entityError = saveRecoverableRegionsFailure(
+        files, {regionSnapshot(0, records)}, control);
+    CHECK_EQ(
+        entityError,
+        "Entity region journal aggregate entity count exceeds limit");
+    CHECK(control->attempted.empty());
+    CHECK_EQ(files->files, filesBefore);
+    CHECK_EQ(files->durableFiles, durableFilesBefore);
+    CHECK(!journalExists(files));
+}
+
+TEST_CASE(Persistence_EntityJournalRecoversAtAggregateRegionBoundary) {
+    auto files = std::make_shared<SharedFiles>();
+    std::vector<Persistence::EntityRegionSnapshot> regions;
+    regions.reserve(Persistence::detail::MaxEntityJournalRegions);
+    for (uint32_t i = 0;
+         i < Persistence::detail::MaxEntityJournalRegions;
+         ++i) {
+        const EntityRecord record{
+            Entity::EntityId{3, i + 1, 1},
+            "rigel:region_boundary",
+            glm::vec3(0.0f)};
+        regions.push_back(regionSnapshot(static_cast<int32_t>(i), {record}));
+    }
+    auto control = std::make_shared<MutationControl>();
+    control->failAt = 1;
+
+    CHECK_EQ(
+        saveRecoverableRegionsFailure(files, std::move(regions), control),
+        "Failed to apply entity recovery journal to region "
+        "rigel:default/(0, 0, 0): injected entity persistence interruption");
+    CHECK(journalExists(files));
+
+    replayJournal(files);
+
+    CHECK(!journalExists(files));
+    CHECK_EQ(
+        rawRegionCount(files),
+        static_cast<size_t>(Persistence::detail::MaxEntityJournalRegions));
+}
+
+TEST_CASE(Persistence_EntityJournalRecoversAtAggregateChunkBoundary) {
+    auto files = std::make_shared<SharedFiles>();
+    constexpr size_t chunksPerRegion =
+        Entity::detail::MaxChunksPerEntityRegion;
+    constexpr size_t regionCount =
+        Persistence::detail::MaxEntityJournalChunks / chunksPerRegion;
+    std::vector<Persistence::EntityRegionSnapshot> regions;
+    regions.reserve(regionCount);
+    for (size_t regionIndex = 0; regionIndex < regionCount; ++regionIndex) {
+        Persistence::EntityRegionSnapshot region;
+        region.key = Persistence::EntityRegionKey{
+            kZoneId, static_cast<int32_t>(regionIndex), 0, 0};
+        region.chunks.reserve(chunksPerRegion);
+        for (size_t chunkIndex = 0;
+             chunkIndex < chunksPerRegion;
+             ++chunkIndex) {
+            Persistence::EntityPersistedChunk chunk;
+            chunk.coord = Voxel::ChunkCoord{
+                static_cast<int32_t>(regionIndex * 16 + chunkIndex % 16),
+                static_cast<int32_t>((chunkIndex / 16) % 16),
+                static_cast<int32_t>(chunkIndex / 256)};
+            if (chunkIndex == 0) {
+                chunk.entities.push_back(persistedEntity(EntityRecord{
+                    Entity::EntityId{
+                        4, static_cast<uint32_t>(regionIndex + 1), 1},
+                    "rigel:chunk_boundary",
+                    glm::vec3(0.0f)}));
+            }
+            region.chunks.push_back(std::move(chunk));
+        }
+        regions.push_back(std::move(region));
+    }
+    auto control = std::make_shared<MutationControl>();
+    control->failAt = 1;
+
+    saveRecoverableRegionsFailure(files, std::move(regions), control);
+    CHECK(journalExists(files));
+    replayJournal(files);
+
+    CHECK(!journalExists(files));
+    CHECK_EQ(rawRegionCount(files), regionCount);
+    size_t recoveredChunks = 0;
+    for (size_t i = 0; i < regionCount; ++i) {
+        recoveredChunks += loadRawRegion(
+            files,
+            Persistence::EntityRegionKey{
+                kZoneId, static_cast<int32_t>(i), 0, 0}).chunks.size();
+    }
+    CHECK_EQ(
+        recoveredChunks,
+        Persistence::detail::MaxEntityJournalChunks);
+}
+
+TEST_CASE(Persistence_EntityJournalRecoversAtAggregateEntityBoundary) {
+    auto files = std::make_shared<SharedFiles>();
+    std::vector<EntityRecord> records;
+    records.reserve(Persistence::detail::MaxEntityJournalEntities);
+    for (size_t i = 0;
+         i < Persistence::detail::MaxEntityJournalEntities;
+         ++i) {
+        records.push_back(EntityRecord{
+            Entity::EntityId{5, static_cast<uint32_t>(i + 1), 1},
+            "rigel:entity_boundary",
+            glm::vec3(0.0f)});
+    }
+    auto control = std::make_shared<MutationControl>();
+    control->failAt = 1;
+
+    saveRecoverableRegionsFailure(
+        files, {regionSnapshot(0, records)}, control);
+    CHECK(journalExists(files));
+    replayJournal(files);
+
+    CHECK(!journalExists(files));
+    const auto region = loadRawRegion(
+        files, Persistence::EntityRegionKey{kZoneId, 0, 0, 0});
+    CHECK_EQ(region.chunks.size(), static_cast<size_t>(1));
+    CHECK_EQ(
+        region.chunks[0].entities.size(),
+        Persistence::detail::MaxEntityJournalEntities);
+}
+
+TEST_CASE(Persistence_EntityJournalRecoversAtEncodedSizeBoundary) {
+    auto files = std::make_shared<SharedFiles>();
+    Persistence::EntityRegionSnapshot region;
+    region.key = Persistence::EntityRegionKey{kZoneId, 0, 0, 0};
+    Persistence::EntityPersistedChunk chunk;
+    chunk.coord = Voxel::ChunkCoord{0, 0, 0};
+    constexpr size_t entityCount = 64;
+    chunk.entities.reserve(entityCount);
+    for (size_t i = 0; i < entityCount; ++i) {
+        auto entity = persistedEntity(EntityRecord{
+            Entity::EntityId{6, static_cast<uint32_t>(i + 1), 1},
+            "",
+            glm::vec3(0.0f)});
+        chunk.entities.push_back(std::move(entity));
+    }
+    region.chunks.push_back(std::move(chunk));
+
+    std::vector<uint8_t> prefix = journalHeader(1, 0);
+    appendKey(prefix, kZoneId);
+    appendU32(prefix, 0);
+    const size_t targetPayloadBytes =
+        Persistence::detail::MaxEntityJournalEncodedBytes - prefix.size();
+    const auto baseInfo = Entity::detail::measureEntityRegionPayload(
+        region.chunks);
+    size_t stringBytes = targetPayloadBytes - baseInfo.encodedBytes;
+    for (auto& entity : region.chunks[0].entities) {
+        for (std::string* value : {&entity.typeId, &entity.modelId}) {
+            const size_t bytes = std::min(
+                stringBytes,
+                static_cast<size_t>(Entity::detail::MaxEntityStringBytes));
+            value->assign(bytes, 'x');
+            stringBytes -= bytes;
+        }
+    }
+    CHECK_EQ(stringBytes, static_cast<size_t>(0));
+    CHECK_EQ(
+        Entity::detail::measureEntityRegionPayload(region.chunks).encodedBytes,
+        targetPayloadBytes);
+
+    auto control = std::make_shared<MutationControl>();
+    control->failAt = 1;
+    saveRecoverableRegionsFailure(files, {std::move(region)}, control);
+    CHECK(journalExists(files));
+    CHECK_EQ(
+        files->durableFiles.at(kJournalPath).size(),
+        Persistence::detail::MaxEntityJournalEncodedBytes);
+
+    replayJournal(files);
+
+    CHECK(!journalExists(files));
+    auto recovered = loadRawRegion(
+        files, Persistence::EntityRegionKey{kZoneId, 0, 0, 0});
+    CHECK_EQ(recovered.chunks.size(), static_cast<size_t>(1));
+    CHECK_EQ(recovered.chunks[0].entities.size(), entityCount);
+
+    bool extended = false;
+    for (auto& entity : recovered.chunks[0].entities) {
+        for (std::string* value : {&entity.typeId, &entity.modelId}) {
+            if (value->size() < Entity::detail::MaxEntityStringBytes) {
+                value->push_back('x');
+                extended = true;
+                break;
+            }
+        }
+        if (extended) {
+            break;
+        }
+    }
+    CHECK(extended);
+    const auto filesBefore = files->files;
+    const auto durableFilesBefore = files->durableFiles;
+    control = std::make_shared<MutationControl>();
+    std::vector<Persistence::EntityRegionSnapshot> oversized;
+    oversized.push_back(std::move(recovered));
+
+    CHECK_EQ(
+        saveRecoverableRegionsFailure(
+            files, std::move(oversized), control),
+        "Entity region journal encoded size exceeds limit");
+    CHECK(control->attempted.empty());
+    CHECK_EQ(files->files, filesBefore);
+    CHECK_EQ(files->durableFiles, durableFilesBefore);
+    CHECK(!journalExists(files));
 }
 
 TEST_CASE(Persistence_EntityJournalRejectsUnboundedRegionCounts) {

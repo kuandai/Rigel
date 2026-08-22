@@ -1,7 +1,9 @@
 #pragma once
 
+#include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Rigel::Test {
@@ -27,6 +29,24 @@ public:
     Registrar(const char* name, void (*fn)()) {
         registerTest(name, fn);
     }
+};
+
+class TemporaryDirectory final {
+public:
+    explicit TemporaryDirectory(std::string_view prefix);
+    ~TemporaryDirectory();
+
+    TemporaryDirectory(const TemporaryDirectory&) = delete;
+    TemporaryDirectory& operator=(const TemporaryDirectory&) = delete;
+    TemporaryDirectory(TemporaryDirectory&&) = delete;
+    TemporaryDirectory& operator=(TemporaryDirectory&&) = delete;
+
+    const std::filesystem::path& path() const {
+        return m_path;
+    }
+
+private:
+    std::filesystem::path m_path;
 };
 
 } // namespace Rigel::Test

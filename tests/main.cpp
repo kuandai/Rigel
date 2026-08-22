@@ -1,10 +1,34 @@
 #include "TestFramework.h"
 
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
 
+namespace {
+
+class CurrentPathGuard final {
+public:
+    explicit CurrentPathGuard(const std::filesystem::path& path)
+        : m_original(std::filesystem::current_path()) {
+        std::filesystem::current_path(path);
+    }
+
+    ~CurrentPathGuard() {
+        std::error_code error;
+        std::filesystem::current_path(m_original, error);
+    }
+
+private:
+    std::filesystem::path m_original;
+};
+
+} // namespace
+
 int main(int argc, char** argv) {
+    Rigel::Test::TemporaryDirectory workingDirectory("rigel_test_run");
+    CurrentPathGuard currentPath(workingDirectory.path());
+
     auto& tests = Rigel::Test::registry();
     size_t executed = 0;
     size_t failed = 0;

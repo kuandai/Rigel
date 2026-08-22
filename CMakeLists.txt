@@ -129,6 +129,7 @@ if (RIGEL_BUILD_TESTS)
     target_link_libraries(Rigel_tests PRIVATE RigelLib)
     target_compile_definitions(Rigel_tests PRIVATE
         $<$<CONFIG:Debug>:RIGEL_EXPECT_PROFILER_ENABLED>
+        RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
     )
 
     add_executable(Rigel_profiler_tests
@@ -142,6 +143,9 @@ if (RIGEL_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     target_compile_definitions(Rigel_profiler_tests PRIVATE RIGEL_ENABLE_PROFILER)
+    target_compile_definitions(Rigel_profiler_tests PRIVATE
+        RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
 
     add_executable(Rigel_block_asset_failure_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
@@ -158,6 +162,9 @@ if (RIGEL_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     target_compile_definitions(Rigel_block_asset_failure_tests PRIVATE STB_IMAGE_IMPLEMENTATION)
+    target_compile_definitions(Rigel_block_asset_failure_tests PRIVATE
+        RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
     target_link_libraries(Rigel_block_asset_failure_tests PRIVATE
         spdlog::spdlog
         GLEW::GLEW

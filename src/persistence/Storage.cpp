@@ -1,6 +1,7 @@
 #include "Rigel/Persistence/Storage.h"
 
 #include "AtomicFileCommit.h"
+#include "DurableDirectory.h"
 
 #include <atomic>
 #include <cerrno>
@@ -159,6 +160,17 @@ void synchronizeDirectory(const std::filesystem::path& path) {
 }
 
 #endif
+
+void prepareDirectories(const std::filesystem::path& path) {
+    detail::createDirectoriesDurably(
+        path,
+        [](const std::filesystem::path& directoryPath) {
+            std::filesystem::create_directory(directoryPath);
+        },
+        [](const std::filesystem::path& directoryPath) {
+            synchronizeDirectory(directoryPath);
+        });
+}
 
 class FileByteReader final : public ByteReader {
 public:
@@ -423,7 +435,7 @@ std::unique_ptr<ByteReader> FilesystemBackend::openRead(const std::string& path)
 
 std::unique_ptr<AtomicWriteSession> FilesystemBackend::openWrite(const std::string& path) {
     std::filesystem::path p(path);
-    std::filesystem::create_directories(p.parent_path());
+    prepareDirectories(p.parent_path());
 
     const auto tempPath = createUniqueTemporaryFile(p);
     try {
@@ -451,10 +463,7 @@ std::vector<std::string> FilesystemBackend::list(const std::string& path) {
 }
 
 void FilesystemBackend::mkdirs(const std::string& path) {
-    if (path.empty()) {
-        return;
-    }
-    std::filesystem::create_directories(path);
+    prepareDirectories(std::filesystem::path(path));
 }
 
 void FilesystemBackend::remove(const std::string& path) {

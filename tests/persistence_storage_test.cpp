@@ -2,10 +2,12 @@
 
 #include "Rigel/Persistence/Storage.h"
 #include "../src/persistence/AtomicFileCommit.h"
+#include "../src/persistence/DurableDirectory.h"
 
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -68,7 +70,119 @@ void checkRandomReadFailure(ByteReader& reader,
     throw Rigel::Test::TestFailure("Expected random read to fail");
 }
 
+std::string displayPath(const std::filesystem::path& path) {
+    return path.generic_string();
+}
+
 } // namespace
+
+TEST_CASE(DurableDirectoryCreation_synchronizes_each_parent_before_descending) {
+    const std::filesystem::path path =
+        "world/zones/rigel/default/entities";
+    std::set<std::filesystem::path> directories;
+    std::vector<std::string> operations;
+
+    detail::createDirectoriesDurably(
+        path,
+        [&](const std::filesystem::path& directoryPath) {
+            const bool created = directories.insert(directoryPath).second;
+            operations.push_back(
+                std::string("mkdir ") + (created ? "new " : "existing ") +
+                displayPath(directoryPath));
+        },
+        [&](const std::filesystem::path& directoryPath) {
+            operations.push_back("sync " + displayPath(directoryPath));
+        });
+
+    CHECK_EQ(
+        operations,
+        (std::vector<std::string>{
+            "mkdir new world",
+            "sync .",
+            "mkdir new world/zones",
+            "sync world",
+            "mkdir new world/zones/rigel",
+            "sync world/zones",
+            "mkdir new world/zones/rigel/default",
+            "sync world/zones/rigel",
+            "mkdir new world/zones/rigel/default/entities",
+            "sync world/zones/rigel/default"}));
+}
+
+TEST_CASE(DurableDirectoryCreation_retries_every_failed_parent_sync) {
+    const std::filesystem::path path =
+        "world/zones/rigel/default/entities";
+    const std::vector<std::filesystem::path> components = {
+        "world",
+        "world/zones",
+        "world/zones/rigel",
+        "world/zones/rigel/default",
+        "world/zones/rigel/default/entities"};
+
+    for (size_t failAt = 0; failAt < components.size(); ++failAt) {
+        std::set<std::filesystem::path> directories;
+        std::vector<std::string> retryOperations;
+        size_t nextSync = 0;
+        bool openedDependentFile = false;
+
+        CHECK_THROWS(([&]() {
+            detail::createDirectoriesDurably(
+                path,
+                [&](const std::filesystem::path& directoryPath) {
+                    directories.insert(directoryPath);
+                },
+                [&](const std::filesystem::path&) {
+                    if (nextSync++ == failAt) {
+                        throw std::runtime_error("parent sync failed");
+                    }
+                });
+            openedDependentFile = true;
+        }()));
+
+        CHECK(!openedDependentFile);
+        CHECK(directories.contains(components[failAt]));
+
+        detail::createDirectoriesDurably(
+            path,
+            [&](const std::filesystem::path& directoryPath) {
+                const bool created = directories.insert(directoryPath).second;
+                retryOperations.push_back(
+                    std::string("mkdir ") +
+                    (created ? "new " : "existing ") +
+                    displayPath(directoryPath));
+            },
+            [&](const std::filesystem::path& directoryPath) {
+                retryOperations.push_back(
+                    "sync " + displayPath(directoryPath));
+            });
+        openedDependentFile = true;
+
+        CHECK(openedDependentFile);
+        CHECK_EQ(
+            retryOperations[failAt * 2],
+            "mkdir existing " + displayPath(components[failAt]));
+        CHECK_EQ(
+            retryOperations[failAt * 2 + 1],
+            "sync " +
+                displayPath(detail::containingDirectory(components[failAt])));
+        CHECK_EQ(directories.size(), components.size());
+    }
+}
+
+TEST_CASE(FilesystemBackend_open_write_creates_absent_nested_hierarchy) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto path = directory.path() / "world" / "zones" / "rigel" /
+        "default" / "entities" / "region.bin";
+    const std::vector<uint8_t> payload{1, 2, 3, 4};
+
+    auto session = storage.openWrite(path.string());
+    session->writer().writeBytes(payload.data(), payload.size());
+    session->commit();
+
+    CHECK_EQ(readFile(storage, path), payload);
+    CHECK(std::filesystem::is_directory(path.parent_path()));
+}
 
 TEST_CASE(FilesystemByteReader_bounds_random_access_reads) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");

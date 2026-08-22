@@ -91,6 +91,7 @@ constexpr size_t kMaxChunkStringBytes = 1024 * 1024;
 constexpr size_t kMaxBlockEntityBytes = 1024 * 1024;
 constexpr size_t kMaxMetadataStringBytes = 1024 * 1024;
 constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
+constexpr size_t kMaxMetadataNestingDepth = 256;
 constexpr int32_t kMaxPaletteEntries = 16 * 16 * 16;
 
 size_t remainingInput(const ByteReader& reader) {
@@ -468,82 +469,226 @@ bool isJsonWhitespace(char value) {
     return value == ' ' || value == '\t' || value == '\n' || value == '\r';
 }
 
-std::optional<std::string> extractJsonString(std::string_view text,
-                                             std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\"";
-    std::optional<std::string> result;
-    size_t position = 0;
+void skipJsonWhitespace(std::string_view text, size_t& position) {
     while (position < text.size() && isJsonWhitespace(text[position])) {
         ++position;
     }
+}
+
+void consumeJsonNumber(std::string_view text, size_t& position) {
+    if (position < text.size() && text[position] == '-') {
+        ++position;
+    }
+    if (position >= text.size()) {
+        throwInvalidJsonDocument();
+    }
+    if (text[position] == '0') {
+        ++position;
+        if (position < text.size() && text[position] >= '0' && text[position] <= '9') {
+            throwInvalidJsonDocument();
+        }
+    } else if (text[position] >= '1' && text[position] <= '9') {
+        do {
+            ++position;
+        } while (position < text.size() &&
+                 text[position] >= '0' && text[position] <= '9');
+    } else {
+        throwInvalidJsonDocument();
+    }
+    if (position < text.size() && text[position] == '.') {
+        ++position;
+        const size_t digitsStart = position;
+        while (position < text.size() &&
+               text[position] >= '0' && text[position] <= '9') {
+            ++position;
+        }
+        if (position == digitsStart) {
+            throwInvalidJsonDocument();
+        }
+    }
+    if (position < text.size() &&
+        (text[position] == 'e' || text[position] == 'E')) {
+        ++position;
+        if (position < text.size() &&
+            (text[position] == '+' || text[position] == '-')) {
+            ++position;
+        }
+        const size_t digitsStart = position;
+        while (position < text.size() &&
+               text[position] >= '0' && text[position] <= '9') {
+            ++position;
+        }
+        if (position == digitsStart) {
+            throwInvalidJsonDocument();
+        }
+    }
+}
+
+enum class MetadataSchema {
+    World,
+    Zone
+};
+
+struct MetadataStrings {
+    std::optional<std::string> worldDisplayName;
+    std::optional<std::string> defaultZoneId;
+    std::optional<std::string> zoneId;
+};
+
+MetadataStrings parseMetadataStrings(std::string_view text,
+                                     MetadataSchema schema) {
+    enum class ParserState {
+        ObjectFirstKeyOrEnd,
+        ObjectKey,
+        ObjectColon,
+        ObjectValue,
+        ObjectCommaOrEnd,
+        ArrayFirstValueOrEnd,
+        ArrayValue,
+        ArrayCommaOrEnd
+    };
+    struct ParserFrame {
+        ParserState state;
+    };
+
+    MetadataStrings result;
+    std::string rootMemberKey;
+    size_t position = 0;
+    skipJsonWhitespace(text, position);
     if (position >= text.size() || text[position] != '{') {
         throwInvalidJsonDocument();
     }
 
-    std::vector<char> closingDelimiters{'}'};
+    std::vector<ParserFrame> frames{
+        ParserFrame{ParserState::ObjectFirstKeyOrEnd}};
     ++position;
-    while (!closingDelimiters.empty()) {
+    while (!frames.empty()) {
+        skipJsonWhitespace(text, position);
         if (position >= text.size()) {
             throwInvalidJsonDocument();
         }
-        if (text[position] != '"') {
-            const char token = text[position++];
-            if (token == '{') {
-                closingDelimiters.push_back('}');
-            } else if (token == '[') {
-                closingDelimiters.push_back(']');
-            } else if (token == '}' || token == ']') {
-                if (closingDelimiters.back() != token) {
+        ParserFrame& frame = frames.back();
+        switch (frame.state) {
+        case ParserState::ObjectFirstKeyOrEnd:
+            if (text[position] == '}') {
+                ++position;
+                frames.pop_back();
+                continue;
+            }
+            frame.state = ParserState::ObjectKey;
+            continue;
+        case ParserState::ObjectKey:
+            if (text[position] != '"') {
+                throwInvalidJsonDocument();
+            }
+            rootMemberKey.clear();
+            position = consumeJsonString(
+                text, position, frames.size() == 1 ? &rootMemberKey : nullptr);
+            frame.state = ParserState::ObjectColon;
+            continue;
+        case ParserState::ObjectColon:
+            if (text[position] != ':') {
+                throwInvalidJsonDocument();
+            }
+            ++position;
+            frame.state = ParserState::ObjectValue;
+            continue;
+        case ParserState::ObjectCommaOrEnd:
+            if (text[position] == '}') {
+                ++position;
+                frames.pop_back();
+                continue;
+            }
+            if (text[position] != ',') {
+                throwInvalidJsonDocument();
+            }
+            ++position;
+            frame.state = ParserState::ObjectKey;
+            continue;
+        case ParserState::ArrayFirstValueOrEnd:
+            if (text[position] == ']') {
+                ++position;
+                frames.pop_back();
+                continue;
+            }
+            frame.state = ParserState::ArrayValue;
+            continue;
+        case ParserState::ArrayCommaOrEnd:
+            if (text[position] == ']') {
+                ++position;
+                frames.pop_back();
+                continue;
+            }
+            if (text[position] != ',') {
+                throwInvalidJsonDocument();
+            }
+            ++position;
+            frame.state = ParserState::ArrayValue;
+            continue;
+        case ParserState::ObjectValue:
+        case ParserState::ArrayValue:
+            break;
+        }
+
+        std::optional<std::string>* authoritativeTarget = nullptr;
+        if (frame.state == ParserState::ObjectValue && frames.size() == 1) {
+            if (schema == MetadataSchema::World &&
+                rootMemberKey == "worldDisplayName") {
+                authoritativeTarget = &result.worldDisplayName;
+            } else if (schema == MetadataSchema::World &&
+                       rootMemberKey == "defaultZoneId") {
+                authoritativeTarget = &result.defaultZoneId;
+            } else if (schema == MetadataSchema::Zone &&
+                       rootMemberKey == "zoneId") {
+                authoritativeTarget = &result.zoneId;
+            }
+        }
+        frame.state = frame.state == ParserState::ObjectValue
+            ? ParserState::ObjectCommaOrEnd
+            : ParserState::ArrayCommaOrEnd;
+
+        if (text[position] == '"') {
+            std::string value;
+            position = consumeJsonString(
+                text, position, authoritativeTarget ? &value : nullptr);
+            if (authoritativeTarget) {
+                if (*authoritativeTarget) {
                     throwInvalidJsonDocument();
                 }
-                closingDelimiters.pop_back();
+                *authoritativeTarget = std::move(value);
             }
-            continue;
-        }
-
-        const size_t tokenStart = position;
-        const size_t tokenEnd = consumeJsonString(text, tokenStart, nullptr);
-        if (closingDelimiters.size() != 1 ||
-            closingDelimiters.back() != '}') {
-            position = tokenEnd;
-            continue;
-        }
-
-        const bool matchesKey =
-            tokenEnd - tokenStart == needle.size() &&
-            text.compare(tokenStart, needle.size(), needle) == 0;
-        if (!matchesKey) {
-            position = tokenEnd;
-            continue;
-        }
-
-        size_t valueStart = tokenEnd;
-        while (valueStart < text.size() && isJsonWhitespace(text[valueStart])) {
-            ++valueStart;
-        }
-        if (valueStart >= text.size() || text[valueStart] != ':') {
-            position = tokenEnd;
-            continue;
-        }
-        ++valueStart;
-        while (valueStart < text.size() && isJsonWhitespace(text[valueStart])) {
-            ++valueStart;
-        }
-        if (valueStart >= text.size() || text[valueStart] != '"') {
-            position = tokenEnd;
-            continue;
-        }
-
-        std::string value;
-        position = consumeJsonString(text, valueStart, &value);
-        if (!result) {
-            result = std::move(value);
+        } else {
+            if (authoritativeTarget) {
+                throwInvalidJsonDocument();
+            }
+            if (text[position] == '{') {
+                if (frames.size() >= kMaxMetadataNestingDepth) {
+                    throw std::runtime_error(
+                        "CRMetadata: JSON nesting exceeds format limit");
+                }
+                ++position;
+                frames.push_back(ParserFrame{
+                    ParserState::ObjectFirstKeyOrEnd});
+            } else if (text[position] == '[') {
+                if (frames.size() >= kMaxMetadataNestingDepth) {
+                    throw std::runtime_error(
+                        "CRMetadata: JSON nesting exceeds format limit");
+                }
+                ++position;
+                frames.push_back(ParserFrame{
+                    ParserState::ArrayFirstValueOrEnd});
+            } else if (text.substr(position, 4) == "true" ||
+                       text.substr(position, 4) == "null") {
+                position += 4;
+            } else if (text.substr(position, 5) == "false") {
+                position += 5;
+            } else {
+                consumeJsonNumber(text, position);
+            }
         }
     }
 
-    while (position < text.size() && isJsonWhitespace(text[position])) {
-        ++position;
-    }
+    skipJsonWhitespace(text, position);
     if (position != text.size()) {
         throwInvalidJsonDocument();
     }
@@ -1310,9 +1455,10 @@ public:
         const std::string text = readMetadataDocument(reader);
         WorldMetadata out;
         out.worldId = basename(m_context.rootPath);
-        auto displayName = extractJsonString(text, "worldDisplayName");
-        if (displayName) {
-            out.displayName = *displayName;
+        const MetadataStrings metadata = parseMetadataStrings(
+            text, MetadataSchema::World);
+        if (metadata.worldDisplayName) {
+            out.displayName = *metadata.worldDisplayName;
         } else {
             out.displayName = out.worldId;
         }
@@ -1354,9 +1500,10 @@ public:
     ZoneMetadata read(ByteReader& reader) override {
         const std::string text = readMetadataDocument(reader);
         ZoneMetadata out;
-        auto zoneId = extractJsonString(text, "zoneId");
-        if (zoneId) {
-            out.zoneId = *zoneId;
+        const MetadataStrings metadata = parseMetadataStrings(
+            text, MetadataSchema::Zone);
+        if (metadata.zoneId) {
+            out.zoneId = *metadata.zoneId;
         }
         detail::validateZoneIdentifier(out.zoneId);
         out.displayName = out.zoneId;
@@ -2030,7 +2177,8 @@ void requireSupportedDefaultZone(const PersistenceContext& context,
 
     auto reader = context.storage->openRead(path);
     const std::string text = readMetadataDocument(*reader);
-    const auto defaultZoneId = extractJsonString(text, "defaultZoneId");
+    const auto defaultZoneId = parseMetadataStrings(
+        text, MetadataSchema::World).defaultZoneId;
     if (!defaultZoneId || defaultZoneId->empty()) {
         throw std::runtime_error(
             "CR world metadata at '" + path +

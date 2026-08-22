@@ -33,6 +33,12 @@ components (`rigel/default`), so the encoding is injective over accepted IDs:
 - `zones/<zoneId>/entities/entityRegion_<x>_<y>_<z>.crbin`
 - `players/localPlayer.json` (reserved; not currently written)
 
+CR metadata is a bounded JSON root object. The authoritative
+`worldDisplayName`, `defaultZoneId`, and `zoneId` members must be strings and
+must be unique in their applicable document; nested extension members do not
+override them. Unknown JSON values are preserved, with container nesting
+limited to 256 levels and the existing 4 MiB document limit.
+
 ### 1.3 Region Layout and Chunk Mapping
 
 Rigel chunks are 32x32x32. CR chunks are 16x16x16, so each Rigel chunk maps to

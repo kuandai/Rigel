@@ -1702,7 +1702,14 @@ TEST_CASE(CRBackend_metadata_uses_only_root_object_members) {
     const std::string worldInfo = R"({
   "extension": {
     "defaultZoneId": "base:moon",
-    "worldDisplayName": "Nested Object"
+    "worldDisplayName": "Nested Object",
+    "grammar": {
+      "enabled": true,
+      "disabled": false,
+      "none": null,
+      "number": -1.25e+2,
+      "nested": [{}, []]
+    }
   },
   "entries": [
     {
@@ -1741,6 +1748,65 @@ TEST_CASE(CRBackend_metadata_uses_only_root_object_members) {
     CHECK_EQ(
         readAll(*storage, zonePath),
         (std::vector<uint8_t>(zoneInfo.begin(), zoneInfo.end())));
+}
+
+TEST_CASE(CRBackend_metadata_rejects_duplicate_or_non_string_authoritative_members) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::CR::descriptor(),
+        Backends::CR::factory(),
+        Backends::CR::probe());
+    PersistenceService service(registry);
+
+    PersistenceContext context;
+    context.rootPath = "worlds/ambiguous_metadata";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const ZoneKey zoneKey{"rigel:default"};
+    const auto zonePath = CRPaths::zoneInfoPath(zoneKey, context);
+
+    for (const std::string& document : {
+             R"({"worldDisplayName":"first","worldDisplayName":"second"})",
+             R"({"worldDisplayName":"first","world\u0044isplayName":"second"})",
+             R"({"worldDisplayName":[]})",
+             R"({"defaultZoneId":null,"worldDisplayName":"world"})"}) {
+        writeText(*storage, worldPath, document);
+        checkCRMetadataError(
+            [&]() { service.loadWorldMetadata(context); },
+            "CRMetadata: invalid JSON document");
+    }
+
+    for (const std::string& document : {
+             R"({"zoneId":"rigel:default","zoneId":"base:moon"})",
+             R"({"zoneId":{"value":"rigel:default"}})"}) {
+        writeText(*storage, zonePath, document);
+        checkCRMetadataError(
+            [&]() { service.loadZoneMetadata(zoneKey, context); },
+            "CRMetadata: invalid JSON document");
+    }
+
+    std::string boundaryNesting =
+        R"({"worldDisplayName":"depth","extension":)";
+    boundaryNesting.append(255, '[');
+    boundaryNesting += '0';
+    boundaryNesting.append(255, ']');
+    boundaryNesting += '}';
+    writeText(*storage, worldPath, boundaryNesting);
+    CHECK_EQ(
+        service.loadWorldMetadata(context),
+        (WorldMetadata{"ambiguous_metadata", "depth"}));
+
+    std::string excessiveNesting = R"({"extension":)";
+    excessiveNesting.append(256, '[');
+    excessiveNesting += '0';
+    excessiveNesting.append(256, ']');
+    excessiveNesting += '}';
+    writeText(*storage, worldPath, excessiveNesting);
+    checkCRMetadataError(
+        [&]() { service.loadWorldMetadata(context); },
+        "CRMetadata: JSON nesting exceeds format limit");
 }
 
 TEST_CASE(CRBackend_world_metadata_preserves_utf8_and_decodes_unicode) {
@@ -1861,6 +1927,15 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
         R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\ud800"})",
         R"({"defaultZoneId":"rigel:default","worldDisplayName":"bad\udfff"})",
         R"({"defaultZoneId":"rigel:default","extension":[})",
+        R"({"defaultZoneId":"rigel:default","defaultZoneId":"base:moon"})",
+        R"({"defaultZoneId":"rigel:default","worldDisplayName":"first","worldDisplayName":"second"})",
+        R"({"defaultZoneId":"rigel:default" "worldDisplayName":"missing comma"})",
+        R"({"defaultZoneId" "rigel:default"})",
+        R"({"defaultZoneId":{"value":"rigel:default"}})",
+        R"({"defaultZoneId":"rigel:default",})",
+        R"({"defaultZoneId":"rigel:default"} trailing)",
+        R"({"defaultZoneId":"rigel:default","extension":truth})",
+        R"({"defaultZoneId":"rigel:default","extension":01})",
         std::string(kMaxMetadataDocumentBytes + 1, 'x')
     };
     const std::vector<std::string> diagnostics{
@@ -1869,6 +1944,15 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
         "CRMetadata: invalid JSON string",
         "CRMetadata: invalid JSON string",
         "CRMetadata: invalid JSON string",
+        "CRMetadata: invalid JSON document",
+        "CRMetadata: invalid JSON document",
+        "CRMetadata: invalid JSON document",
+        "CRMetadata: invalid JSON document",
+        "CRMetadata: invalid JSON document",
+        "CRMetadata: invalid JSON document",
+        "CRMetadata: invalid JSON document",
+        "CRMetadata: invalid JSON document",
+        "CRMetadata: invalid JSON document",
         "CRMetadata: invalid JSON document",
         "CRMetadata: document exceeds format limit"
     };

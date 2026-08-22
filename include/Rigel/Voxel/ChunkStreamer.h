@@ -77,7 +77,8 @@ public:
         DebugState state;
     };
 
-    using ChunkLoadCallback = std::function<ChunkLoadRequestResult(ChunkCoord)>;
+    using ChunkLoadCallback =
+        std::function<ChunkLoadRequestResult(ChunkLoadRequest)>;
     using ChunkPendingCallback = std::function<bool(ChunkCoord)>;
     using ChunkLoadDrainCallback =
         std::function<std::vector<ChunkLoadCompletion>(size_t)>;
@@ -212,7 +213,7 @@ private:
     detail::ConcurrentQueue<GenResult> m_genComplete;
     detail::ConcurrentQueue<MeshResult> m_meshComplete;
     std::unordered_map<ChunkCoord, ChunkState, ChunkCoordHash> m_states;
-    std::unordered_set<ChunkCoord, ChunkCoordHash> m_loadPending;
+    std::unordered_map<ChunkCoord, ChunkLoadRequestId, ChunkCoordHash> m_loadPending;
     std::unordered_map<ChunkCoord, std::shared_ptr<std::atomic_bool>, ChunkCoordHash> m_genCancel;
     std::unordered_map<ChunkCoord, MeshInFlight, ChunkCoordHash> m_meshInFlight;
     std::unordered_map<ChunkCoord, uint32_t, ChunkCoordHash> m_countedMeshRetryRevisions;
@@ -244,6 +245,7 @@ private:
     size_t m_inFlightMesh = 0;
     size_t m_inFlightMeshMissing = 0;
     size_t m_inFlightMeshDirty = 0;
+    ChunkLoadRequestId m_nextLoadRequestId = 1;
     uint64_t m_nextMeshRequestId = 1;
     std::atomic<uint64_t> m_workEpoch{1};
     MeshRequestKind m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
@@ -264,6 +266,7 @@ private:
 
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);
+    ChunkLoadRequestId nextLoadRequestId();
     void cancelPendingLoad(ChunkCoord coord);
     void queueLoadGen(ChunkCoord coord);
     void waitForGenerationCapacity(ChunkCoord coord);

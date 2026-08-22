@@ -72,6 +72,11 @@ struct AsyncChunkLoaderTestAccess {
 }
 
 namespace {
+ChunkLoadRequest makeLoadRequest(ChunkCoord coord) {
+    static ChunkLoadRequestId nextRequestId = 1;
+    return {coord, nextRequestId++};
+}
+
 class LoaderWorkGate {
 public:
     void enterAndWait() {
@@ -502,8 +507,8 @@ void saveRegionForPayloads(PersistenceService& service,
 
 void configureStreamerLoader(ChunkStreamer& streamer,
                              const std::shared_ptr<AsyncChunkLoader>& loader) {
-    streamer.setChunkLoader([loader](ChunkCoord coord) {
-        return loader->request(coord);
+    streamer.setChunkLoader([loader](ChunkLoadRequest request) {
+        return loader->request(request);
     });
     streamer.setChunkPendingCallback([loader](ChunkCoord coord) {
         return loader->isPending(coord);
@@ -559,7 +564,8 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
         1,
         generator);
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    const ChunkLoadRequest request = makeLoadRequest(coord);
+    CHECK_EQ(loader.request(request), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(coord));
 
     auto resolved = loader.drainCompletions(1);
@@ -572,6 +578,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK(!loader.isPending(coord));
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));
     CHECK_EQ(resolved.front().coord, coord);
+    CHECK_EQ(resolved.front().requestId, request.requestId);
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
 }
 
@@ -604,7 +611,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Random) {
         1,
         generator);
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
     loader.drainCompletions(1);
 
     Chunk* loaded = world.chunkManager().getChunk(coord);
@@ -647,8 +654,8 @@ TEST_CASE(AsyncChunkLoader_ApplyBudget) {
         1,
         generator);
 
-    CHECK_EQ(loader.request(coordA), ChunkLoadRequestResult::Queued);
-    CHECK_EQ(loader.request(coordB), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coordA)), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coordB)), ChunkLoadRequestResult::Queued);
 
     loader.drainCompletions(1);
 
@@ -743,7 +750,8 @@ TEST_CASE(ChunkStreamer_EvictionPersistenceSurvivesLoaderAndWorldReload) {
         0,
         generator);
     reconstructedLoader.setPrefetchRadius(0);
-    CHECK_EQ(reconstructedLoader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(reconstructedLoader.request(makeLoadRequest(coord)),
+             ChunkLoadRequestResult::Queued);
     reconstructedLoader.drainCompletions(4);
 
     const Chunk* reconstructedChunk = reconstructed.chunkManager().getChunk(coord);
@@ -795,7 +803,7 @@ TEST_CASE(AsyncChunkLoader_PersistenceInvalidatesInFlightRegionSnapshot) {
             regionGate->enterAndWait();
         });
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
     bool loadStarted = regionGate->waitUntilEntered();
     if (!loadStarted) {
         regionGate->release();
@@ -873,7 +881,7 @@ TEST_CASE(AsyncChunkLoader_StalePayloadRestartsFromReplacementRegionCache) {
             }
         });
 
-    CHECK_EQ(loader.request(staleCoord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(staleCoord)), ChunkLoadRequestResult::Queued);
     loader.drainCompletions(1);
     CHECK(payloadGate->waitUntilEntered());
 
@@ -883,7 +891,7 @@ TEST_CASE(AsyncChunkLoader_StalePayloadRestartsFromReplacementRegionCache) {
     CHECK(loader.persistChunk(persistedCoord));
     world.chunkManager().unloadChunk(persistedCoord);
 
-    CHECK_EQ(loader.request(refillCoord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(refillCoord)), ChunkLoadRequestResult::Queued);
     loader.drainCompletions(1);
 
     payloadGate->release();
@@ -941,7 +949,7 @@ TEST_CASE(AsyncChunkLoader_CancelledPayloadCannotCompleteNewRequest) {
             }
         });
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
     CHECK(loader.drainCompletions(1).empty());
     CHECK(payloadGate->waitUntilEntered());
 
@@ -950,7 +958,7 @@ TEST_CASE(AsyncChunkLoader_CancelledPayloadCannotCompleteNewRequest) {
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(coord));
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
@@ -1025,16 +1033,17 @@ TEST_CASE(AsyncChunkLoader_CancelledActiveRequestWakesDeferredCapacity) {
             }
         });
 
-    CHECK_EQ(loader.request(active), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(active)), ChunkLoadRequestResult::Queued);
     CHECK(loader.drainCompletions(1).empty());
     CHECK(payloadGate->waitUntilEntered());
-    CHECK_EQ(loader.request(deferred), ChunkLoadRequestResult::Deferred);
+    const ChunkLoadRequest deferredRequest = makeLoadRequest(deferred);
+    CHECK_EQ(loader.request(deferredRequest), ChunkLoadRequestResult::Deferred);
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(2));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
 
     loader.cancel(active);
     CHECK(!loader.isPending(active));
-    CHECK_EQ(loader.request(deferred), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(deferredRequest), ChunkLoadRequestResult::Queued);
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(2));
 
@@ -1276,7 +1285,7 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
     streamer.setConfig(stream);
 
     size_t loadRequests = 0;
-    streamer.setChunkLoader([loader, &loadRequests](ChunkCoord request) {
+    streamer.setChunkLoader([loader, &loadRequests](ChunkLoadRequest request) {
         ++loadRequests;
         return loader->request(request);
     });
@@ -1387,7 +1396,8 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
         0,
         generator);
     reconstructedLoader.setPrefetchRadius(0);
-    CHECK_EQ(reconstructedLoader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(reconstructedLoader.request(makeLoadRequest(coord)),
+             ChunkLoadRequestResult::Queued);
     reconstructedLoader.drainCompletions(4);
 
     const Chunk* recovered = reconstructed.chunkManager().getChunk(coord);
@@ -1432,7 +1442,7 @@ TEST_CASE(ChunkStreamer_SaturatedLoaderPreservesPersistedChunk) {
         1,
         generator);
     loader->setLoadQueueLimit(1);
-    CHECK_EQ(loader->request(blocker), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader->request(makeLoadRequest(blocker)), ChunkLoadRequestResult::Queued);
 
     WorldMeshStore meshStore;
     ChunkStreamer streamer(
@@ -1449,9 +1459,9 @@ TEST_CASE(ChunkStreamer_SaturatedLoaderPreservesPersistedChunk) {
     streamer.setConfig(stream);
     std::optional<ChunkLoadRequestResult> targetRequest;
     size_t targetRequestCount = 0;
-    streamer.setChunkLoader([&, loader](ChunkCoord coord) {
-        ChunkLoadRequestResult result = loader->request(coord);
-        if (coord == target) {
+    streamer.setChunkLoader([&, loader](ChunkLoadRequest request) {
+        ChunkLoadRequestResult result = loader->request(request);
+        if (request.coord == target) {
             targetRequest = result;
             ++targetRequestCount;
         }
@@ -1545,7 +1555,7 @@ TEST_CASE(ChunkStreamer_TransientRegionFailurePreservesPersistedChunk) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.setChunkLoader([loader](ChunkCoord request) {
+    streamer.setChunkLoader([loader](ChunkLoadRequest request) {
         return loader->request(request);
     });
     streamer.setChunkPendingCallback([loader](ChunkCoord request) {
@@ -1710,7 +1720,7 @@ TEST_CASE(AsyncChunkLoader_ExhaustedMidReadFailuresRecoverWithoutNewRequest) {
         loader,
         [&retryNow]() { return retryNow; });
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
     CHECK(loader.drainCompletions(8).empty());
     CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(3));
     CHECK(loader.isPending(coord));
@@ -1770,7 +1780,7 @@ TEST_CASE(AsyncChunkLoader_CancelledRetryCannotAffectReplacementRequest) {
         loader,
         [&retryNow]() { return retryNow; });
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
     CHECK(loader.drainCompletions(8).empty());
     CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(3));
     CHECK(loader.isPending(coord));
@@ -1780,7 +1790,7 @@ TEST_CASE(AsyncChunkLoader_CancelledRetryCannotAffectReplacementRequest) {
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
 
     failingStorage->restore();
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(coord));
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
@@ -1850,8 +1860,8 @@ TEST_CASE(AsyncChunkLoader_RegionRetryWaitUsesLoadCapacity) {
         loader,
         [&retryNow]() { return retryNow; });
 
-    CHECK_EQ(loader.request(retryCoord), ChunkLoadRequestResult::Queued);
-    CHECK_EQ(loader.request(activeCoord), ChunkLoadRequestResult::Deferred);
+    CHECK_EQ(loader.request(makeLoadRequest(retryCoord)), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(activeCoord)), ChunkLoadRequestResult::Deferred);
     auto resolved = loader.drainCompletions(8);
 
     CHECK(resolved.empty());
@@ -1934,8 +1944,8 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
     loader.setPrefetchRadius(0);
     loader.setLoadQueueLimit(1);
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
-    CHECK_EQ(loader.request(deferredCoord), ChunkLoadRequestResult::Deferred);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(deferredCoord)), ChunkLoadRequestResult::Deferred);
     CHECK(waitForRegionCompletion(loader));
     std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(1);
     if (loader.workCount().terminalErrors == 0) {
@@ -2036,8 +2046,8 @@ TEST_CASE(AsyncChunkLoader_RegionCapacityStartsDeferredRequests) {
     loader.setMaxInFlightRegions(1);
     loader.setPrefetchRadius(0);
 
-    CHECK_EQ(loader.request(coordA), ChunkLoadRequestResult::Queued);
-    CHECK_EQ(loader.request(coordB), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coordA)), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coordB)), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(coordA));
     CHECK(loader.isPending(coordB));
     auto deferred = loader.workCount();
@@ -2097,7 +2107,7 @@ TEST_CASE(AsyncChunkLoader_Cancel) {
         1,
         generator);
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
     loader.cancel(coord);
     CHECK(!loader.isPending(coord));
 
@@ -2142,8 +2152,8 @@ TEST_CASE(AsyncChunkLoader_CancelDeferredRequest) {
         generator);
     loader.setLoadQueueLimit(1);
 
-    CHECK_EQ(loader.request(active), ChunkLoadRequestResult::Queued);
-    CHECK_EQ(loader.request(deferred), ChunkLoadRequestResult::Deferred);
+    CHECK_EQ(loader.request(makeLoadRequest(active)), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(deferred)), ChunkLoadRequestResult::Deferred);
     CHECK(loader.isPending(deferred));
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(2));
 
@@ -2199,7 +2209,7 @@ TEST_CASE(AsyncChunkLoader_PartialSpan_BaseFill) {
         1,
         generator);
 
-    CHECK_EQ(loader.request(coord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(coord)), ChunkLoadRequestResult::Queued);
     loader.drainCompletions(1);
 
     Chunk* loaded = world.chunkManager().getChunk(coord);
@@ -2236,7 +2246,7 @@ TEST_CASE(AsyncChunkLoader_MissingRegion_UsesNegativeCache) {
         generator);
 
     ChunkCoord missing{123, 4, -77};
-    CHECK_EQ(loader.request(missing), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest(missing)), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(missing));
 
     auto resolved = loader.drainCompletions(8);
@@ -2247,7 +2257,7 @@ TEST_CASE(AsyncChunkLoader_MissingRegion_UsesNegativeCache) {
     CHECK_EQ(resolved.front().coord, missing);
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Missing);
 
-    CHECK_EQ(loader.request(missing), ChunkLoadRequestResult::Missing);
+    CHECK_EQ(loader.request(makeLoadRequest(missing)), ChunkLoadRequestResult::Missing);
 }
 
 TEST_CASE(AsyncChunkLoader_DestroyWithInFlightJobs) {
@@ -2290,7 +2300,7 @@ TEST_CASE(AsyncChunkLoader_DestroyWithInFlightJobs) {
         *loader,
         [payloadGate]() { payloadGate->enterAndWait(); });
 
-    CHECK_EQ(loader->request(payloadCoord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader->request(makeLoadRequest(payloadCoord)), ChunkLoadRequestResult::Queued);
     CHECK(waitForRegionCompletion(*loader));
     loader->drainCompletions(1);
     CHECK(payloadGate->waitUntilEntered());
@@ -2298,7 +2308,7 @@ TEST_CASE(AsyncChunkLoader_DestroyWithInFlightJobs) {
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setRegionLoadStartCallback(
         *loader,
         [regionGate]() { regionGate->enterAndWait(); });
-    CHECK_EQ(loader->request(regionCoord), ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader->request(makeLoadRequest(regionCoord)), ChunkLoadRequestResult::Queued);
     CHECK(regionGate->waitUntilEntered());
 
     auto completionQueueDestroyed = std::make_shared<std::promise<void>>();

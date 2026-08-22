@@ -315,8 +315,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
 
         if (!m_loadPending.empty()) {
             for (auto it = m_loadPending.begin(); it != m_loadPending.end(); ) {
-                if (m_desiredSet.find(*it) == m_desiredSet.end()) {
-                    ChunkCoord coord = *it;
+                if (m_desiredSet.find(it->first) == m_desiredSet.end()) {
+                    ChunkCoord coord = it->first;
                     ++it;
                     cancelPendingLoad(coord);
                 } else {
@@ -331,17 +331,17 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     if (!m_chunkLoadDrain && !m_loadPending.empty()) {
         for (auto it = m_loadPending.begin(); it != m_loadPending.end(); ) {
             ++schedulerCoordinatesInspected;
-            bool resident = m_chunkManager->getChunk(*it) != nullptr;
+            ChunkCoord coord = it->first;
+            bool resident = m_chunkManager->getChunk(coord) != nullptr;
             bool resolved = resident;
             if (!resolved && m_chunkPending) {
-                resolved = !m_chunkPending(*it);
+                resolved = !m_chunkPending(coord);
             } else if (!resolved) {
-                queueLoadGen(*it);
+                queueLoadGen(coord);
                 ++it;
                 continue;
             }
             if (resolved) {
-                ChunkCoord coord = *it;
                 ++it;
                 if (resident) {
                     cancelPendingLoad(coord);
@@ -535,9 +535,14 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
 
             Chunk* chunk = m_chunkManager->getChunk(coord);
             ChunkLoadRequestResult loadResult = ChunkLoadRequestResult::Missing;
+            ChunkLoadRequestId loadRequestId = 0;
             if (!chunk && state != ChunkState::QueuedGen && m_chunkLoader) {
-                bool wasPending = m_loadPending.find(coord) != m_loadPending.end();
-                loadResult = m_chunkLoader(coord);
+                auto pendingIt = m_loadPending.find(coord);
+                bool wasPending = pendingIt != m_loadPending.end();
+                loadRequestId = wasPending
+                    ? pendingIt->second
+                    : nextLoadRequestId();
+                loadResult = m_chunkLoader({coord, loadRequestId});
                 if (loadResult != ChunkLoadRequestResult::Missing && !wasPending) {
                     ++m_workMetrics.chunkLoadRequestsStarted;
                 }
@@ -613,13 +618,16 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
 
             if (loadResult != ChunkLoadRequestResult::Missing) {
-                m_loadPending.insert(coord);
+                m_loadPending.insert_or_assign(coord, loadRequestId);
                 ++queued;
                 continue;
             }
             m_loadErrors.erase(coord);
             if (m_chunkPending && m_chunkPending(coord)) {
-                m_loadPending.insert(coord);
+                if (loadRequestId == 0) {
+                    loadRequestId = nextLoadRequestId();
+                }
+                m_loadPending.insert_or_assign(coord, loadRequestId);
                 ++queued;
                 continue;
             }
@@ -705,10 +713,13 @@ void ChunkStreamer::processCompletions() {
     if (m_chunkLoadDrain) {
         PROFILE_SCOPE("Streaming/LoadDrain");
         for (const ChunkLoadCompletion& completion : m_chunkLoadDrain(loadBudget)) {
-            if (m_loadPending.erase(completion.coord) == 0 ||
+            auto pendingIt = m_loadPending.find(completion.coord);
+            if (pendingIt == m_loadPending.end() ||
+                pendingIt->second != completion.requestId ||
                 m_desiredSet.find(completion.coord) == m_desiredSet.end()) {
                 continue;
             }
+            m_loadPending.erase(pendingIt);
             if (completion.outcome == ChunkLoadOutcome::Failed) {
                 m_loadErrors[completion.coord] = failureDiagnostic(
                     "load", completion.coord, completion.error);
@@ -822,8 +833,8 @@ void ChunkStreamer::reset() {
     m_missingMeshCapacityWaiting.clear();
     m_meshDependencyWaiting.clear();
     if (m_chunkLoadCancel) {
-        for (const auto& coord : m_loadPending) {
-            m_chunkLoadCancel(coord);
+        for (const auto& pending : m_loadPending) {
+            m_chunkLoadCancel(pending.first);
         }
     }
     m_loadPending.clear();
@@ -1278,6 +1289,14 @@ void ChunkStreamer::cancelPendingLoad(ChunkCoord coord) {
     }
     m_loadPending.erase(pendingIt);
     m_loadErrors.erase(coord);
+}
+
+ChunkLoadRequestId ChunkStreamer::nextLoadRequestId() {
+    ChunkLoadRequestId requestId = m_nextLoadRequestId++;
+    if (m_nextLoadRequestId == 0) {
+        m_nextLoadRequestId = 1;
+    }
+    return requestId;
 }
 
 void ChunkStreamer::queueLoadGen(ChunkCoord coord) {

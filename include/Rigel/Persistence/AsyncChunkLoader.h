@@ -39,7 +39,7 @@ public:
                      std::shared_ptr<const Voxel::WorldGenerator> generator);
     ~AsyncChunkLoader();
 
-    Voxel::ChunkLoadRequestResult request(Voxel::ChunkCoord coord);
+    Voxel::ChunkLoadRequestResult request(Voxel::ChunkLoadRequest request);
     bool isPending(Voxel::ChunkCoord coord) const;
     void cancel(Voxel::ChunkCoord coord);
     bool persistChunk(Voxel::ChunkCoord coord);
@@ -62,7 +62,7 @@ private:
         size_t operator()(const RegionKey& key) const;
     };
 
-    using ChunkLoadRequestId = uint64_t;
+    using ChunkLoadRequestId = Voxel::ChunkLoadRequestId;
     using ChunkRequestMap =
         std::unordered_map<Voxel::ChunkCoord,
                            ChunkLoadRequestId,
@@ -141,7 +141,6 @@ private:
 
     bool applyPayload(const ChunkPayload& payload);
     void invalidateRegion(const RegionKey& key);
-    ChunkLoadRequestId nextChunkLoadRequestId();
 
     using RetryClock = std::chrono::steady_clock;
     RetryClock::time_point retryNow() const;
@@ -214,7 +213,6 @@ private:
     std::string m_lastTerminalError;
     std::deque<Voxel::ChunkLoadCompletion> m_resolvedChunks;
     ChunkRequestMap m_payloadInFlight;
-    ChunkLoadRequestId m_nextChunkLoadRequestId = 1;
     uint64_t m_requestsStarted = 0;
     std::deque<RegionKey> m_lru;
 

@@ -59,15 +59,6 @@ size_t AsyncChunkLoader::RegionKeyHash::operator()(const RegionKey& key) const {
     return seed;
 }
 
-AsyncChunkLoader::ChunkLoadRequestId
-AsyncChunkLoader::nextChunkLoadRequestId() {
-    ChunkLoadRequestId requestId = m_nextChunkLoadRequestId++;
-    if (m_nextChunkLoadRequestId == 0) {
-        m_nextChunkLoadRequestId = 1;
-    }
-    return requestId;
-}
-
 AsyncChunkLoader::RetryClock::time_point AsyncChunkLoader::retryNow() const {
     return m_retryClock ? m_retryClock() : RetryClock::now();
 }
@@ -148,7 +139,10 @@ void AsyncChunkLoader::setLoadQueueLimit(size_t maxPending) {
     startDeferredChunkLoads();
 }
 
-Voxel::ChunkLoadRequestResult AsyncChunkLoader::request(Voxel::ChunkCoord coord) {
+Voxel::ChunkLoadRequestResult AsyncChunkLoader::request(
+    Voxel::ChunkLoadRequest request) {
+    const Voxel::ChunkCoord coord = request.coord;
+    const ChunkLoadRequestId requestId = request.requestId;
     if (!m_format || !m_world) {
         return Voxel::ChunkLoadRequestResult::Missing;
     }
@@ -176,13 +170,13 @@ Voxel::ChunkLoadRequestResult AsyncChunkLoader::request(Voxel::ChunkCoord coord)
     }
 
     if (m_loadQueueLimit > 0 && m_pendingChunks.size() >= m_loadQueueLimit) {
-        deferChunkLoad(coord, nextChunkLoadRequestId());
+        deferChunkLoad(coord, requestId);
         ++m_requestsStarted;
         return Voxel::ChunkLoadRequestResult::Deferred;
     }
 
     Voxel::ChunkLoadRequestResult result =
-        queueChunkLoad(coord, nextChunkLoadRequestId());
+        queueChunkLoad(coord, requestId);
     if (result == Voxel::ChunkLoadRequestResult::Queued) {
         ++m_requestsStarted;
     }
@@ -506,10 +500,10 @@ void AsyncChunkLoader::startDeferredChunkLoads(
         }
         if (resolved) {
             resolved->push_back(
-                {coord, Voxel::ChunkLoadOutcome::Missing});
+                {coord, requestId, Voxel::ChunkLoadOutcome::Missing});
         } else {
             m_resolvedChunks.push_back(
-                {coord, Voxel::ChunkLoadOutcome::Missing});
+                {coord, requestId, Voxel::ChunkLoadOutcome::Missing});
         }
     }
 }
@@ -545,6 +539,7 @@ void AsyncChunkLoader::startRetryChunkLoads(
         m_chunkRetryRounds.erase(schedule.coord);
         Voxel::ChunkLoadCompletion completion{
             schedule.coord,
+            schedule.requestId,
             Voxel::ChunkLoadOutcome::Missing};
         if (resolved) {
             resolved->push_back(completion);
@@ -566,7 +561,7 @@ void AsyncChunkLoader::completeChunkLoad(
     }
     m_pendingChunks.erase(pendingIt);
     m_chunkRetryRounds.erase(coord);
-    resolved.push_back({coord, outcome});
+    resolved.push_back({coord, requestId, outcome});
     startDeferredChunkLoads(&resolved);
 }
 

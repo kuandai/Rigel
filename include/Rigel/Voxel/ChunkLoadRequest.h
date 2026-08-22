@@ -19,8 +19,16 @@ enum class ChunkLoadOutcome : uint8_t {
     Failed
 };
 
+using ChunkLoadRequestId = uint64_t;
+
+struct ChunkLoadRequest {
+    ChunkCoord coord;
+    ChunkLoadRequestId requestId = 0;
+};
+
 struct ChunkLoadCompletion {
     ChunkCoord coord;
+    ChunkLoadRequestId requestId = 0;
     ChunkLoadOutcome outcome = ChunkLoadOutcome::Missing;
     std::string error;
 };

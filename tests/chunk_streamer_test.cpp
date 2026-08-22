@@ -781,7 +781,8 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Deterministic) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
-    streamer.setChunkLoader([&](ChunkCoord request) {
+    streamer.setChunkLoader([&](ChunkLoadRequest loadRequest) {
+        ChunkCoord request = loadRequest.coord;
         if (request != coord) {
             return ChunkLoadRequestResult::Missing;
         }
@@ -826,7 +827,8 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Random) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
-    streamer.setChunkLoader([&](ChunkCoord request) {
+    streamer.setChunkLoader([&](ChunkLoadRequest loadRequest) {
+        ChunkCoord request = loadRequest.coord;
         if (request != coord) {
             return ChunkLoadRequestResult::Missing;
         }
@@ -898,7 +900,8 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Deterministic) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
-    streamer.setChunkLoader([&](ChunkCoord request) {
+    streamer.setChunkLoader([&](ChunkLoadRequest loadRequest) {
+        ChunkCoord request = loadRequest.coord;
         Rigel::Persistence::ChunkRegionSnapshot loaded = service.loadRegion(regionKey, context);
         for (const auto& chunk : loaded.chunks) {
             if (chunk.key.x == request.x &&
@@ -975,7 +978,8 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Random) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
-    streamer.setChunkLoader([&](ChunkCoord request) {
+    streamer.setChunkLoader([&](ChunkLoadRequest loadRequest) {
+        ChunkCoord request = loadRequest.coord;
         Rigel::Persistence::ChunkRegionSnapshot loaded = service.loadRegion(regionKey, context);
         for (const auto& chunk : loaded.chunks) {
             if (chunk.key.x == request.x &&
@@ -1077,7 +1081,8 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
-    streamer.setChunkLoader([&](ChunkCoord request) {
+    streamer.setChunkLoader([&](ChunkLoadRequest loadRequest) {
+        ChunkCoord request = loadRequest.coord;
         if (request != coord) {
             return ChunkLoadRequestResult::Missing;
         }
@@ -1174,7 +1179,8 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
-    streamer.setChunkLoader([&](ChunkCoord request) {
+    streamer.setChunkLoader([&](ChunkLoadRequest loadRequest) {
+        ChunkCoord request = loadRequest.coord;
         if (request != coord) {
             return ChunkLoadRequestResult::Missing;
         }
@@ -2080,8 +2086,8 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPromotesPendingInitialMesh) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.setChunkLoader([&](ChunkCoord coord) {
-        return coord == pendingCoord
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        return request.coord == pendingCoord
             ? ChunkLoadRequestResult::Queued
             : ChunkLoadRequestResult::Missing;
     });
@@ -2200,8 +2206,10 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     streamer.setConfig(stream);
 
     size_t callbackCount = 0;
-    streamer.setChunkLoader([&](ChunkCoord) {
+    std::vector<ChunkLoadRequestId> requestIds;
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
         ++callbackCount;
+        requestIds.push_back(request.requestId);
         return ChunkLoadRequestResult::Queued;
     });
 
@@ -2210,6 +2218,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
 
     const auto& metrics = streamer.workMetrics();
     CHECK_EQ(callbackCount, static_cast<size_t>(2));
+    CHECK_EQ(requestIds.front(), requestIds.back());
     CHECK_EQ(metrics.chunkLoadRequestsStarted, static_cast<uint64_t>(1));
     CHECK_EQ(metrics.desiredBuildCoordinatesInspected, static_cast<uint64_t>(1));
     CHECK_EQ(metrics.schedulerCoordinatesInspected, static_cast<uint64_t>(3));
@@ -2237,8 +2246,10 @@ TEST_CASE(ChunkStreamer_MissingLoadResolutionStartsGeneration) {
 
     const ChunkCoord coord{0, 0, 0};
     size_t loadAttempts = 0;
-    streamer.setChunkLoader([&](ChunkCoord request) {
-        CHECK_EQ(request, coord);
+    ChunkLoadRequestId loadRequestId = 0;
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        CHECK_EQ(request.coord, coord);
+        loadRequestId = request.requestId;
         return ++loadAttempts == 1
             ? ChunkLoadRequestResult::Queued
             : ChunkLoadRequestResult::Missing;
@@ -2250,7 +2261,7 @@ TEST_CASE(ChunkStreamer_MissingLoadResolutionStartsGeneration) {
         }
         resolved = true;
         return std::vector<ChunkLoadCompletion>{
-            {coord, ChunkLoadOutcome::Missing}
+            {coord, loadRequestId, ChunkLoadOutcome::Missing}
         };
     });
 
@@ -2288,8 +2299,10 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
 
     const ChunkCoord coord{0, 0, 0};
     size_t loadAttempts = 0;
-    streamer.setChunkLoader([&](ChunkCoord request) {
-        CHECK_EQ(request, coord);
+    ChunkLoadRequestId loadRequestId = 0;
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        CHECK_EQ(request.coord, coord);
+        loadRequestId = request.requestId;
         ++loadAttempts;
         return ChunkLoadRequestResult::Queued;
     });
@@ -2300,7 +2313,10 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
         }
         resolved = true;
         return std::vector<ChunkLoadCompletion>{
-            {coord, ChunkLoadOutcome::Failed, "injected load failure"}
+            {coord,
+             loadRequestId,
+             ChunkLoadOutcome::Failed,
+             "injected load failure"}
         };
     });
 
@@ -2337,13 +2353,113 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
     CHECK_EQ(streamer.workMetrics().generationJobsStarted,
              static_cast<uint64_t>(0));
 
-    streamer.setChunkLoader([](ChunkCoord) {
+    streamer.setChunkLoader([](ChunkLoadRequest) {
         return ChunkLoadRequestResult::Missing;
     });
     streamer.update(coord.toWorldCenter());
     CHECK_EQ(streamer.diagnostics().chunkLoad.terminalErrors,
              static_cast<size_t>(0));
     streamer.processCompletions();
+    CHECK(manager.hasChunk(coord));
+}
+
+TEST_CASE(ChunkStreamer_LateFailedLoadCannotReplaceActiveRequest) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    const ChunkCoord coord{0, 0, 0};
+    const ChunkCoord away{4, 0, 0};
+    std::vector<ChunkLoadRequest> requests;
+    std::vector<ChunkLoadCompletion> completions;
+    size_t cancellations = 0;
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        if (request.coord != coord) {
+            return ChunkLoadRequestResult::Missing;
+        }
+        if (requests.empty() ||
+            requests.back().requestId != request.requestId) {
+            requests.push_back(request);
+        }
+        return ChunkLoadRequestResult::Queued;
+    });
+    streamer.setChunkLoadDrain([&](size_t) {
+        std::vector<ChunkLoadCompletion> drained = std::move(completions);
+        completions.clear();
+        return drained;
+    });
+    streamer.setChunkLoadCancel([&](ChunkCoord cancelled) {
+        if (cancelled == coord) {
+            ++cancellations;
+        }
+    });
+
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(requests.size(), static_cast<size_t>(1));
+    const ChunkLoadRequest firstRequest = requests.front();
+
+    streamer.update(away.toWorldCenter());
+    CHECK_EQ(cancellations, static_cast<size_t>(1));
+
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(requests.size(), static_cast<size_t>(2));
+    const ChunkLoadRequest replacementRequest = requests.back();
+    CHECK_NE(firstRequest.requestId, replacementRequest.requestId);
+
+    completions.push_back({firstRequest.coord,
+                           firstRequest.requestId,
+                           ChunkLoadOutcome::Failed,
+                           "late load failure"});
+    streamer.processCompletions();
+    CHECK_EQ(streamer.diagnostics().chunkLoad.pending, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().chunkLoad.terminalErrors,
+             static_cast<size_t>(0));
+    CHECK(streamer.diagnostics().chunkLoad.lastError.empty());
+
+    for (uint32_t update = 0;
+         update <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++update) {
+        streamer.update(coord.toWorldCenter());
+        streamer.processCompletions();
+        CHECK_EQ(streamer.diagnostics().state,
+                 StreamingLifecycleState::Streaming);
+        CHECK_EQ(streamer.diagnostics().chunkLoad.pending,
+                 static_cast<size_t>(1));
+        CHECK_EQ(streamer.diagnostics().chunkLoad.terminalErrors,
+                 static_cast<size_t>(0));
+        CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+                 static_cast<uint64_t>(0));
+    }
+
+    Chunk& loaded = manager.getOrCreateChunk(coord);
+    loaded.setWorldGenVersion(generator->config().world.version);
+    loaded.setLoadedFromDisk(true);
+    completions.push_back({replacementRequest.coord,
+                           replacementRequest.requestId,
+                           ChunkLoadOutcome::Loaded});
+    streamer.processCompletions();
+    streamer.update(coord.toWorldCenter());
+
+    CHECK_EQ(streamer.diagnostics().chunkLoad.pending, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().chunkLoad.terminalErrors,
+             static_cast<size_t>(0));
+    CHECK(streamer.diagnostics().chunkLoad.lastError.empty());
     CHECK(manager.hasChunk(coord));
 }
 
@@ -2367,8 +2483,8 @@ TEST_CASE(ChunkStreamer_MovementRequestsOnlyNewDesiredFrontier) {
 
     std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> requestCounts;
     std::unordered_set<ChunkCoord, ChunkCoordHash> cancelled;
-    streamer.setChunkLoader([&](ChunkCoord coord) {
-        ++requestCounts[coord];
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        ++requestCounts[request.coord];
         return ChunkLoadRequestResult::Queued;
     });
     streamer.setChunkPendingCallback([](ChunkCoord) { return true; });
@@ -2489,7 +2605,7 @@ TEST_CASE(ChunkStreamer_DepartedFrontierReleasesWaitingMesh) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.setChunkLoader([](ChunkCoord) {
+    streamer.setChunkLoader([](ChunkLoadRequest) {
         return ChunkLoadRequestResult::Queued;
     });
     streamer.setChunkLoadDrain([](size_t) {
@@ -3492,7 +3608,7 @@ TEST_CASE(ChunkStreamer_DiskLoadedChunksWaitForNeighborFrontierAcrossArrivalOrde
         stream.workerThreads = 0;
         stream.maxResidentChunks = 0;
         streamer.setConfig(stream);
-        streamer.setChunkLoader([](ChunkCoord) {
+        streamer.setChunkLoader([](ChunkLoadRequest) {
             return ChunkLoadRequestResult::Queued;
         });
 
@@ -3591,8 +3707,9 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     streamer.setConfig(stream);
 
     size_t loadAttempts = 0;
-    streamer.setChunkLoader([&](ChunkCoord coord) {
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
         ++loadAttempts;
+        ChunkCoord coord = request.coord;
         if (coord != ChunkCoord{0, 0, 0}) {
             return ChunkLoadRequestResult::Missing;
         }
@@ -3831,8 +3948,9 @@ TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {
         streamer.setConfig(stream);
 
         size_t loadAttempts = 0;
-        streamer.setChunkLoader([&](ChunkCoord coord) {
+        streamer.setChunkLoader([&](ChunkLoadRequest request) {
             ++loadAttempts;
+            ChunkCoord coord = request.coord;
             Chunk& chunk = manager.getOrCreateChunk(coord);
             chunk.setWorldGenVersion(generator->config().world.version);
             chunk.setLoadedFromDisk(true);

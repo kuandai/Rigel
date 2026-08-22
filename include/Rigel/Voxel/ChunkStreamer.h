@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <optional>
 #include <queue>
 #include <string>
@@ -231,11 +232,12 @@ private:
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityMeshRequests;
     std::unordered_map<ChunkCoord, uint64_t, ChunkCoordHash> m_evictionRetryAfter;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_versionReplacementRetries;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_versionReplacementWaiting;
-    std::unordered_map<ChunkCoord, std::string, ChunkCoordHash> m_generationErrors;
-    std::unordered_map<ChunkCoord, std::string, ChunkCoordHash> m_loadErrors;
-    std::unordered_map<ChunkCoord, std::string, ChunkCoordHash> m_meshErrors;
-    std::unordered_map<ChunkCoord, std::string, ChunkCoordHash> m_evictionErrors;
+    std::map<ChunkCoord, std::string> m_generationErrors;
+    std::map<ChunkCoord, std::string> m_loadErrors;
+    std::map<ChunkCoord, std::string> m_meshErrors;
+    std::map<ChunkCoord, std::string> m_evictionErrors;
     // Jobs whose completion has not yet been observed, including cancelled work
     // from an earlier generation lifecycle.
     size_t m_inFlightGen = 0;

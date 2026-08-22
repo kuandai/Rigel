@@ -36,19 +36,8 @@ std::string failureDiagnostic(std::string_view operation,
 }
 
 std::string diagnosticForLowestCoordinate(
-    const std::unordered_map<ChunkCoord, std::string, ChunkCoordHash>& errors) {
-    const std::pair<const ChunkCoord, std::string>* selected = nullptr;
-    for (const auto& entry : errors) {
-        if (!selected || entry.first.x < selected->first.x ||
-            (entry.first.x == selected->first.x &&
-             entry.first.y < selected->first.y) ||
-            (entry.first.x == selected->first.x &&
-             entry.first.y == selected->first.y &&
-             entry.first.z < selected->first.z)) {
-            selected = &entry;
-        }
-    }
-    return selected ? selected->second : std::string{};
+    const std::map<ChunkCoord, std::string>& errors) {
+    return errors.empty() ? std::string{} : errors.begin()->second;
 }
 } // namespace
 
@@ -84,6 +73,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_dirtyMeshQueued.clear();
     m_priorityMeshRequests.clear();
     m_evictionRetryAfter.clear();
+    m_versionReplacementRetries.clear();
     m_versionReplacementWaiting.clear();
     m_generationErrors.clear();
     m_loadErrors.clear();
@@ -269,7 +259,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         reprioritizeDirtyMeshes();
         for (const ChunkCoord& coord : m_desired) {
             if (m_versionReplacementWaiting.find(coord) ==
-                m_versionReplacementWaiting.end()) {
+                    m_versionReplacementWaiting.end() &&
+                m_versionReplacementRetries.find(coord) ==
+                    m_versionReplacementRetries.end()) {
                 m_evictionRetryAfter.erase(coord);
                 m_evictionErrors.erase(coord);
             }
@@ -286,7 +278,12 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 m_generationErrors.erase(coord);
                 m_loadErrors.erase(coord);
                 m_meshErrors.erase(coord);
-                if (m_versionReplacementWaiting.erase(coord) > 0) {
+                bool replacementCanceled =
+                    m_versionReplacementWaiting.erase(coord) > 0;
+                replacementCanceled =
+                    m_versionReplacementRetries.erase(coord) > 0 ||
+                    replacementCanceled;
+                if (replacementCanceled) {
                     m_evictionRetryAfter.erase(coord);
                     m_evictionErrors.erase(coord);
                 }
@@ -552,7 +549,6 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 if (m_generator &&
                     chunk->worldGenVersion() != m_generator->config().world.version) {
                     if (!evictChunk(coord, true)) {
-                        m_versionReplacementWaiting.insert(coord);
                         continue;
                     }
                     if (!genFull) {
@@ -564,6 +560,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     }
                     continue;
                 }
+                m_versionReplacementWaiting.erase(coord);
+                m_evictionErrors.erase(coord);
 
                 m_cache.touch(coord);
                 cacheEvictionNeeded = true;
@@ -809,6 +807,7 @@ void ChunkStreamer::reset() {
     m_dirtyMeshQueued.clear();
     m_priorityMeshRequests.clear();
     m_evictionRetryAfter.clear();
+    m_versionReplacementRetries.clear();
     m_versionReplacementWaiting.clear();
     m_generationErrors.clear();
     m_loadErrors.clear();
@@ -864,6 +863,7 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
     }
 
     m_evictionRetryAfter.erase(coord);
+    m_versionReplacementRetries.erase(coord);
     m_evictionErrors.erase(coord);
     if (!versionReplacement) {
         m_versionReplacementWaiting.erase(coord);
@@ -893,7 +893,10 @@ void ChunkStreamer::deferEviction(ChunkCoord coord, bool versionReplacement) {
     m_evictionErrors[coord] = failureDiagnostic(
         "eviction persistence", coord, "persistence did not complete");
     if (versionReplacement) {
-        m_versionReplacementWaiting.insert(coord);
+        m_versionReplacementRetries.insert(coord);
+        m_versionReplacementWaiting.erase(coord);
+    } else {
+        m_versionReplacementRetries.erase(coord);
     }
     if (m_nextEvictionRetrySequence == 0 ||
         retrySequence < m_nextEvictionRetrySequence) {
@@ -907,12 +910,14 @@ void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq
         return;
     }
 
-    std::vector<ChunkCoord> due;
+    std::vector<std::pair<ChunkCoord, bool>> due;
     m_nextEvictionRetrySequence = 0;
     for (auto it = m_evictionRetryAfter.begin();
          it != m_evictionRetryAfter.end();) {
         if (it->second <= m_streamingUpdateSequence) {
-            due.push_back(it->first);
+            bool versionReplacement =
+                m_versionReplacementRetries.erase(it->first) > 0;
+            due.emplace_back(it->first, versionReplacement);
             it = m_evictionRetryAfter.erase(it);
             continue;
         }
@@ -923,20 +928,17 @@ void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq
         ++it;
     }
 
-    for (const ChunkCoord& coord : due) {
+    for (const auto& [coord, versionReplacement] : due) {
         Chunk* chunk = m_chunkManager ? m_chunkManager->getChunk(coord) : nullptr;
-        bool replacementWaiting =
-            m_versionReplacementWaiting.find(coord) !=
-            m_versionReplacementWaiting.end();
-        if (replacementWaiting &&
+        bool replacementIncomplete = !chunk ||
+            (m_generator &&
+             chunk->worldGenVersion() != m_generator->config().world.version);
+        if (versionReplacement &&
             m_desiredSet.find(coord) != m_desiredSet.end() &&
-            chunk && m_generator &&
-            chunk->worldGenVersion() != m_generator->config().world.version) {
+            replacementIncomplete) {
+            m_versionReplacementWaiting.insert(coord);
             queueLoadGen(coord);
             continue;
-        }
-        if (replacementWaiting) {
-            m_versionReplacementWaiting.erase(coord);
         }
 
         bool outsideUnloadRadius = distanceSquared(center, coord) > unloadRadiusSq;
@@ -1027,14 +1029,9 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() const {
         snapshot.chunkLoad.lastError =
             diagnosticForLowestCoordinate(m_loadErrors);
     }
-    size_t evictionPending = m_evictionRetryAfter.size();
-    for (const ChunkCoord& coord : m_versionReplacementWaiting) {
-        if (m_evictionRetryAfter.find(coord) == m_evictionRetryAfter.end()) {
-            ++evictionPending;
-        }
-    }
     snapshot.eviction = StreamingWorkCount{
-        .pending = evictionPending,
+        .pending = m_evictionRetryAfter.size() +
+            m_versionReplacementWaiting.size(),
         .lastError = diagnosticForLowestCoordinate(m_evictionErrors)
     };
     return snapshot;

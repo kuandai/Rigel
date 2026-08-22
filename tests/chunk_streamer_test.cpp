@@ -11,6 +11,7 @@
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/MeshBuilder.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -3379,10 +3380,42 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
+    streamer.update(removedCoord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(manager.hasChunk(removedCoord));
+    CHECK(meshStore.contains(removedCoord));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+
     streamer.update(survivingCoord.toWorldCenter());
     streamer.processCompletions();
+    CHECK(manager.hasChunk(survivingCoord));
+    CHECK(manager.hasChunk(removedCoord));
     CHECK(meshStore.contains(survivingCoord));
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK(meshStore.contains(removedCoord));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(2));
+
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    auto stateFor = [&](ChunkCoord coord)
+        -> std::optional<ChunkStreamer::DebugState> {
+        auto it = std::find_if(
+            states.begin(), states.end(),
+            [coord](const ChunkStreamer::DebugChunkState& state) {
+                return state.coord == coord;
+            });
+        if (it == states.end()) {
+            return std::nullopt;
+        }
+        return it->state;
+    };
+    streamer.getDebugStates(states);
+    const auto survivingState = stateFor(survivingCoord);
+    const auto removedState = stateFor(removedCoord);
+    CHECK(survivingState.has_value());
+    CHECK(removedState.has_value());
+    CHECK_EQ(*survivingState, ChunkStreamer::DebugState::ReadyMesh);
+    CHECK_EQ(*removedState, ChunkStreamer::DebugState::ReadyMesh);
 
     size_t hiddenBoundaryIndexCount = 0;
     meshStore.forEach([&](const WorldMeshEntry& entry) {
@@ -3400,11 +3433,16 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     CHECK(!manager.hasChunk(removedCoord));
     CHECK_EQ(surviving.meshRevision(), revisionBeforeRemoval + 1);
     CHECK(!meshStore.contains(removedCoord));
+    streamer.getDebugStates(states);
+    CHECK(!stateFor(removedCoord).has_value());
+    const auto stateAfterRemoval = stateFor(survivingCoord);
+    CHECK(stateAfterRemoval.has_value());
+    CHECK_EQ(*stateAfterRemoval, ChunkStreamer::DebugState::ReadyMesh);
 
     streamer.update(survivingCoord.toWorldCenter());
     streamer.processCompletions();
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
-    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(3));
 
     size_t exposedBoundaryIndexCount = 0;
     meshStore.forEach([&](const WorldMeshEntry& entry) {
@@ -3416,7 +3454,7 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
 
     streamer.update(survivingCoord.toWorldCenter());
     streamer.processCompletions();
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
 }
 
 TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {

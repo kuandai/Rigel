@@ -5,6 +5,7 @@
 #include "Rigel/Voxel/Chunk.h"
 #include "../../ChunkValidation.h"
 #include "../../RegionFilename.h"
+#include "../../ZoneIdentifier.h"
 
 #include <bit>
 #include <filesystem>
@@ -78,7 +79,7 @@ void validateStringSize(const std::string& value) {
 }
 
 std::string zoneRoot(const PersistenceContext& context, const std::string& zoneId) {
-    return context.rootPath + "/zones/" + zoneId;
+    return context.rootPath + "/zones/" + detail::zoneIdentifierStoragePath(zoneId);
 }
 
 std::string parentPath(const std::string& path) {
@@ -230,6 +231,7 @@ int32_t floorDiv(int32_t value, int32_t divisor) {
 class MemoryRegionLayout final : public RegionLayout {
 public:
     RegionKey regionForChunk(const std::string& zoneId, Voxel::ChunkCoord coord) const override {
+        detail::validateZoneIdentifier(zoneId);
         return RegionKey{
             zoneId,
             floorDiv(coord.x, kMemoryRegionSpan),
@@ -240,10 +242,12 @@ public:
 
     std::vector<ChunkKey> storageKeysForChunk(const std::string& zoneId,
                                               Voxel::ChunkCoord coord) const override {
+        detail::validateZoneIdentifier(zoneId);
         return {ChunkKey{zoneId, coord.x, coord.y, coord.z}};
     }
 
     ChunkSpan spanForStorageKey(const ChunkKey& key) const override {
+        detail::validateZoneIdentifier(key.zoneId);
         ChunkSpan span;
         span.chunkX = key.x;
         span.chunkY = key.y;
@@ -255,6 +259,7 @@ public:
     }
 
     std::vector<Voxel::ChunkCoord> chunksForRegion(const RegionKey& key) const override {
+        detail::validateZoneIdentifier(key.zoneId);
         std::vector<Voxel::ChunkCoord> coords;
         coords.reserve(kMemoryRegionSpan * kMemoryRegionSpan * kMemoryRegionSpan);
         int32_t baseX = key.x * kMemoryRegionSpan;
@@ -299,6 +304,7 @@ public:
     }
 
     void write(const ZoneMetadata& metadata, ByteWriter& writer) override {
+        detail::validateZoneIdentifier(metadata.zoneId);
         validateStringSize(metadata.zoneId);
         validateStringSize(metadata.displayName);
         writeString(writer, metadata.zoneId);
@@ -309,6 +315,7 @@ public:
         ZoneMetadata out;
         out.zoneId = readString(reader);
         out.displayName = readString(reader);
+        detail::validateZoneIdentifier(out.zoneId);
         return out;
     }
 };
@@ -316,6 +323,7 @@ public:
 class MemoryChunkCodec final : public ChunkCodec {
 public:
     void write(const ChunkSnapshot& chunk, ByteWriter& writer) override {
+        detail::validateZoneIdentifier(chunk.key.zoneId);
         detail::validateChunkBlockCount(
             chunk.data.span, chunk.data.blocks.size());
         writer.writeI32(chunk.key.x);
@@ -329,6 +337,7 @@ public:
     }
 
     ChunkSnapshot read(ByteReader& reader, const ChunkKey& keyHint) override {
+        detail::validateZoneIdentifier(keyHint.zoneId);
         requireRemaining(
             reader, kEncodedChunkHeaderBytes - sizeof(uint32_t),
             "MemoryFormat: truncated chunk header");
@@ -359,6 +368,7 @@ public:
 class MemoryEntityRegionCodec final : public EntityRegionCodec {
 public:
     void write(const EntityRegionSnapshot& region, ByteWriter& writer) override {
+        detail::validateZoneIdentifier(region.key.zoneId);
         validateCollectionSize(
             region.chunks.size(),
             kMaxChunksPerRegion,
@@ -394,6 +404,7 @@ public:
     }
 
     EntityRegionSnapshot read(ByteReader& reader, const EntityRegionKey& keyHint) override {
+        detail::validateZoneIdentifier(keyHint.zoneId);
         EntityRegionSnapshot out;
         out.key = keyHint;
         requireRemaining(
@@ -462,6 +473,7 @@ public:
             kMaxChunksPerRegion,
             "MemoryFormat: chunk count exceeds format limit");
         for (const auto& chunk : region.chunks) {
+            detail::validateZoneIdentifier(chunk.key.zoneId);
             detail::validateChunkBlockCount(
                 chunk.data.span, chunk.data.blocks.size());
         }

@@ -1,5 +1,6 @@
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
+#include "ZoneIdentifier.h"
 
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -44,6 +45,9 @@ void PersistenceService::handleUnsupportedFeature(const PersistenceContext& cont
 }
 
 void PersistenceService::saveWorld(const WorldSnapshot& snapshot, const PersistenceContext& context) {
+    for (const auto& zone : snapshot.zones) {
+        detail::validateZoneIdentifier(zone.zoneId);
+    }
     auto format = resolve(context);
 
     auto& codec = format->worldMetadataCodec();
@@ -68,6 +72,7 @@ WorldMetadata PersistenceService::loadWorldMetadata(const PersistenceContext& co
 }
 
 void PersistenceService::saveZoneMetadata(const ZoneMetadata& metadata, const PersistenceContext& context) {
+    detail::validateZoneIdentifier(metadata.zoneId);
     auto format = resolve(context);
     auto& codec = format->zoneMetadataCodec();
     ZoneKey key{metadata.zoneId};
@@ -80,6 +85,7 @@ void PersistenceService::saveZoneMetadata(const ZoneMetadata& metadata, const Pe
 }
 
 ZoneMetadata PersistenceService::loadZoneMetadata(const ZoneKey& key, const PersistenceContext& context) {
+    detail::validateZoneIdentifier(key.zoneId);
     auto format = resolve(context);
     auto& codec = format->zoneMetadataCodec();
     auto path = codec.metadataPath(key, context);
@@ -88,16 +94,22 @@ ZoneMetadata PersistenceService::loadZoneMetadata(const ZoneKey& key, const Pers
 }
 
 void PersistenceService::saveRegion(const ChunkRegionSnapshot& region, const PersistenceContext& context) {
+    detail::validateZoneIdentifier(region.key.zoneId);
+    for (const auto& chunk : region.chunks) {
+        detail::validateZoneIdentifier(chunk.key.zoneId);
+    }
     auto format = resolve(context);
     format->chunkContainer().saveRegion(region);
 }
 
 ChunkRegionSnapshot PersistenceService::loadRegion(const RegionKey& key, const PersistenceContext& context) {
+    detail::validateZoneIdentifier(key.zoneId);
     auto format = resolve(context);
     return format->chunkContainer().loadRegion(key);
 }
 
 void PersistenceService::saveEntities(const EntityRegionSnapshot& region, const PersistenceContext& context) {
+    detail::validateZoneIdentifier(region.key.zoneId);
     auto format = resolve(context);
     if (!format->descriptor().capabilities.supportsEntityRegions) {
         handleUnsupportedFeature(context, "saveEntities: entity regions not supported by format");
@@ -107,6 +119,7 @@ void PersistenceService::saveEntities(const EntityRegionSnapshot& region, const 
 }
 
 EntityRegionSnapshot PersistenceService::loadEntities(const EntityRegionKey& key, const PersistenceContext& context) {
+    detail::validateZoneIdentifier(key.zoneId);
     auto format = resolve(context);
     if (!format->descriptor().capabilities.supportsEntityRegions) {
         handleUnsupportedFeature(context, "loadEntities: entity regions not supported by format");

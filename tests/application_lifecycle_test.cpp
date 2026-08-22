@@ -295,9 +295,9 @@ TEST_CASE(Application_ClosePersistenceFailuresRetryDuringCleanup) {
             root + "/entity-regions.journal"));
         CHECK(calls.persistenceStorage->exists(
             root +
-            "/zones/rigel:default/entities/entityRegion_0_0_0.mem"));
+            "/zones/rigel/default/entities/entityRegion_0_0_0.mem"));
         CHECK(calls.persistenceStorage->exists(
-            root + "/zones/rigel:default/regions/region_0_0_0.mem"));
+            root + "/zones/rigel/default/regions/region_0_0_0.mem"));
         CHECK(logs.output().find(
                   "Failed to save world during application close") !=
               std::string::npos);

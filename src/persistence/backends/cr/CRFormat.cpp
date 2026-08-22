@@ -13,6 +13,7 @@
 #include "CRWorldMetadata.h"
 #include "../../../entity/EntityPersistenceLimits.h"
 #include "../../RegionFilename.h"
+#include "../../ZoneIdentifier.h"
 
 #include <algorithm>
 #include <array>
@@ -127,6 +128,7 @@ std::string parentPath(const std::string& path) {
 class CRRegionLayout final : public RegionLayout {
 public:
     RegionKey regionForChunk(const std::string& zoneId, Voxel::ChunkCoord coord) const override {
+        detail::validateZoneIdentifier(zoneId);
         constexpr int32_t rigelRegionSpan = 8;
         return RegionKey{
             zoneId,
@@ -138,6 +140,7 @@ public:
 
     std::vector<ChunkKey> storageKeysForChunk(const std::string& zoneId,
                                               Voxel::ChunkCoord coord) const override {
+        detail::validateZoneIdentifier(zoneId);
         std::vector<ChunkKey> keys;
         keys.reserve(Voxel::Chunk::SUBCHUNK_COUNT);
         for (int subchunkIndex = 0; subchunkIndex < Voxel::Chunk::SUBCHUNK_COUNT; ++subchunkIndex) {
@@ -149,6 +152,7 @@ public:
     }
 
     ChunkSpan spanForStorageKey(const ChunkKey& key) const override {
+        detail::validateZoneIdentifier(key.zoneId);
         auto rigelCoord = toRigelChunk(key);
         ChunkSpan span;
         span.chunkX = rigelCoord.rigelChunkX;
@@ -164,6 +168,7 @@ public:
     }
 
     std::vector<Voxel::ChunkCoord> chunksForRegion(const RegionKey& key) const override {
+        detail::validateZoneIdentifier(key.zoneId);
         constexpr int32_t rigelRegionSpan = 8;
         std::vector<Voxel::ChunkCoord> coords;
         coords.reserve(rigelRegionSpan * rigelRegionSpan * rigelRegionSpan);
@@ -1109,6 +1114,7 @@ public:
     }
 
     void write(const ZoneMetadata& metadata, ByteWriter& writer) override {
+        detail::validateZoneIdentifier(metadata.zoneId);
         std::string text = "{\n";
         text += "  \"zoneId\": \"" + metadata.zoneId + "\",\n";
         text += "  \"worldGenSaveKey\": \"rigel:default\",\n";
@@ -1132,6 +1138,7 @@ public:
         if (zoneId) {
             out.zoneId = *zoneId;
         }
+        detail::validateZoneIdentifier(out.zoneId);
         out.displayName = out.zoneId;
         return out;
     }
@@ -1282,6 +1289,7 @@ public:
         const int64_t baseZ =
             static_cast<int64_t>(region.key.z) * static_cast<int64_t>(kRegionSpan);
         for (const auto& chunk : region.chunks) {
+            detail::validateZoneIdentifier(chunk.key.zoneId);
             if (chunk.key.zoneId != region.key.zoneId) {
                 throw std::runtime_error("CRRegion: chunk zone does not match region");
             }
@@ -1793,6 +1801,7 @@ FormatProbe probe() {
 
 void requireSupportedDefaultZone(const PersistenceContext& context,
                                  const std::string& supportedZoneId) {
+    detail::validateZoneIdentifier(supportedZoneId);
     if (!context.storage) {
         throw std::runtime_error("CR default-zone validation requires a storage backend");
     }
@@ -1815,6 +1824,7 @@ void requireSupportedDefaultZone(const PersistenceContext& context,
             "' does not declare defaultZoneId; refusing to open this world "
             "because its persistence zone cannot be determined");
     }
+    detail::validateZoneIdentifier(*defaultZoneId);
     if (*defaultZoneId != supportedZoneId) {
         throw std::runtime_error(
             "CR world metadata at '" + path + "' declares default zone '" +

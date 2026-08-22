@@ -1,4 +1,5 @@
 #include "Rigel/Persistence/Backends/CR/CRPaths.h"
+#include "../../ZoneIdentifier.h"
 
 namespace Rigel::Persistence::Backends::CR {
 
@@ -43,13 +44,7 @@ std::string CRPaths::playersPath(const PersistenceContext& context) {
 }
 
 std::string CRPaths::normalizeZoneId(const std::string& zoneId) {
-    std::string out = zoneId;
-    for (auto& ch : out) {
-        if (ch == ':') {
-            ch = '/';
-        }
-    }
-    return out;
+    return detail::zoneIdentifierStoragePath(zoneId);
 }
 
 } // namespace Rigel::Persistence::Backends::CR

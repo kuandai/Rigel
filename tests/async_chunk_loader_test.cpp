@@ -517,7 +517,9 @@ void writeRawMemoryRegion(
     auto format = service.openFormat(context);
     const RegionKey regionKey = format->regionLayout().regionForChunk(
         zoneId, payloads.front().first);
-    const std::string directory = context.rootPath + "/zones/" + zoneId +
+    std::string zoneStoragePath = zoneId;
+    std::replace(zoneStoragePath.begin(), zoneStoragePath.end(), ':', '/');
+    const std::string directory = context.rootPath + "/zones/" + zoneStoragePath +
         "/regions";
     const std::string path = directory + "/region_" +
         std::to_string(regionKey.x) + "_" + std::to_string(regionKey.y) +

@@ -55,6 +55,13 @@ struct AsyncChunkLoaderTestAccess {
         return loader.m_chunkComplete.size();
     }
 
+    static bool payloadRequestInFlight(const AsyncChunkLoader& loader,
+                                       Voxel::ChunkCoord coord,
+                                       Voxel::ChunkLoadRequestId requestId) {
+        auto it = loader.m_payloadInFlight.find(coord);
+        return it != loader.m_payloadInFlight.end() && it->second == requestId;
+    }
+
     static void setRetryClock(
         AsyncChunkLoader& loader,
         std::function<std::chrono::steady_clock::time_point()> clock) {
@@ -939,20 +946,26 @@ TEST_CASE(AsyncChunkLoader_StalePayloadRestartsFromReplacementRegionCache) {
         generator);
     loader.setPrefetchRadius(0);
 
-    auto payloadGate = std::make_shared<LoaderWorkGate>();
-    auto unusedGate = std::make_shared<LoaderWorkGate>();
-    LoaderWorkRelease releaseOnExit(unusedGate, payloadGate);
+    auto stalePayloadGate = std::make_shared<LoaderWorkGate>();
+    auto restartedPayloadGate = std::make_shared<LoaderWorkGate>();
+    LoaderWorkRelease releaseOnExit(stalePayloadGate, restartedPayloadGate);
     std::atomic<size_t> payloadStarts = 0;
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
-        setPayloadBuildStartCallback(loader, [payloadGate, &payloadStarts]() {
-            if (payloadStarts.fetch_add(1) == 0) {
-                payloadGate->enterAndWait();
-            }
-        });
+        setPayloadBuildStartCallback(
+            loader,
+            [stalePayloadGate, restartedPayloadGate, &payloadStarts]() {
+                size_t startIndex = payloadStarts.fetch_add(1);
+                if (startIndex == 0) {
+                    stalePayloadGate->enterAndWait();
+                } else if (startIndex == 2) {
+                    restartedPayloadGate->enterAndWait();
+                }
+            });
 
-    CHECK_EQ(loader.request(makeLoadRequest(staleCoord)), ChunkLoadRequestResult::Queued);
+    const ChunkLoadRequest staleRequest = makeLoadRequest(staleCoord);
+    CHECK_EQ(loader.request(staleRequest), ChunkLoadRequestResult::Queued);
     loader.drainCompletions(1);
-    CHECK(payloadGate->waitUntilEntered());
+    CHECK(stalePayloadGate->waitUntilEntered());
 
     Chunk& dirty = world.chunkManager().getOrCreateChunk(persistedCoord);
     dirty.fill(BlockState{edited}, registry);
@@ -963,10 +976,26 @@ TEST_CASE(AsyncChunkLoader_StalePayloadRestartsFromReplacementRegionCache) {
     CHECK_EQ(loader.request(makeLoadRequest(refillCoord)), ChunkLoadRequestResult::Queued);
     loader.drainCompletions(1);
 
-    payloadGate->release();
+    stalePayloadGate->release();
     CHECK(waitForPayloadCompletions(loader, 2));
     std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(8);
-    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+    CHECK(restartedPayloadGate->waitUntilEntered());
+
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    if (!resolved.empty()) {
+        CHECK_EQ(resolved.front().coord, refillCoord);
+        CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
+    }
+    CHECK_EQ(payloadStarts.load(), static_cast<size_t>(3));
+    CHECK(loader.isPending(staleCoord));
+    CHECK(!loader.isPending(refillCoord));
+    CHECK(!world.chunkManager().hasChunk(staleCoord));
+    CHECK(world.chunkManager().hasChunk(refillCoord));
+    CHECK(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+              payloadRequestInFlight(
+                  loader, staleCoord, staleRequest.requestId));
+
+    restartedPayloadGate->release();
     CHECK(waitForPayloadCompletions(loader, 1));
     std::vector<ChunkLoadCompletion> restarted = loader.drainCompletions(8);
     resolved.insert(resolved.end(), restarted.begin(), restarted.end());

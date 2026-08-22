@@ -209,6 +209,24 @@ bool readVec3(BufferReader& reader, glm::vec3& value) {
 
 namespace detail {
 
+size_t measurePersistedEntityBytes(
+    std::string_view typeId,
+    std::string_view modelId) {
+    size_t encodedBytes = MinEncodedEntityBytes;
+    for (const std::string_view value : {typeId, modelId}) {
+        if (value.size() > MaxEntityStringBytes ||
+            value.size() > std::numeric_limits<uint32_t>::max()) {
+            throw std::runtime_error("Entity persistence string is too large");
+        }
+        if (encodedBytes > MaxEntityRegionBytes ||
+            value.size() > MaxEntityRegionBytes - encodedBytes) {
+            throw std::runtime_error("Entity region payload is too large");
+        }
+        encodedBytes += value.size();
+    }
+    return encodedBytes;
+}
+
 EntityRegionPayloadInfo measureEntityRegionPayload(
     const std::vector<EntityPersistedChunk>& chunks) {
     if (chunks.size() > MaxChunksPerEntityRegion ||
@@ -226,20 +244,6 @@ EntityRegionPayloadInfo measureEntityRegionPayload(
         }
         info.encodedBytes += bytes;
     };
-    auto addString = [&](const std::string& value) {
-        if (value.size() > MaxEntityStringBytes ||
-            value.size() > std::numeric_limits<uint32_t>::max()) {
-            throw std::runtime_error("Entity persistence string is too large");
-        }
-        addEncodedBytes(sizeof(uint32_t));
-        addEncodedBytes(value.size());
-        if (value.size() > std::numeric_limits<size_t>::max() -
-                               info.stringBytes) {
-            throw std::runtime_error("Entity region payload is too large");
-        }
-        info.stringBytes += value.size();
-    };
-
     for (const auto& chunk : chunks) {
         if (chunk.entities.size() > MaxEntitiesPerChunk ||
             chunk.entities.size() > std::numeric_limits<uint32_t>::max()) {
@@ -252,9 +256,8 @@ EntityRegionPayloadInfo measureEntityRegionPayload(
         }
         info.entities += chunk.entities.size();
         for (const auto& entity : chunk.entities) {
-            addString(entity.typeId);
-            addEncodedBytes(MinEncodedEntityBytes - 2 * sizeof(uint32_t));
-            addString(entity.modelId);
+            addEncodedBytes(measurePersistedEntityBytes(
+                entity.typeId, entity.modelId));
         }
     }
     return info;
@@ -313,27 +316,17 @@ EntityRegionPayloadInspection inspectEntityRegionPayload(
         info.entities += entityCount;
 
         for (uint32_t e = 0; e < entityCount; ++e) {
-            size_t stringBytes = 0;
-            if (!reader.skipString(stringBytes)) {
+            size_t ignoredStringBytes = 0;
+            if (!reader.skipString(ignoredStringBytes)) {
                 return EntityRegionPayloadInspection::Invalid;
             }
-            if (stringBytes > std::numeric_limits<size_t>::max() -
-                                  info.stringBytes) {
-                return EntityRegionPayloadInspection::Invalid;
-            }
-            info.stringBytes += stringBytes;
             constexpr size_t kEncodedEntityFixedBytes =
                 2 * sizeof(uint32_t) + sizeof(uint64_t) +
                 9 * sizeof(uint32_t);
             if (!reader.skip(kEncodedEntityFixedBytes) ||
-                !reader.skipString(stringBytes)) {
+                !reader.skipString(ignoredStringBytes)) {
                 return EntityRegionPayloadInspection::Invalid;
             }
-            if (stringBytes > std::numeric_limits<size_t>::max() -
-                                  info.stringBytes) {
-                return EntityRegionPayloadInspection::Invalid;
-            }
-            info.stringBytes += stringBytes;
         }
     }
 

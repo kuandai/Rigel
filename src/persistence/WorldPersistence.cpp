@@ -12,6 +12,7 @@
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "EntityRegionJournal.h"
+#include "../entity/EntityPersistenceDetail.h"
 #include "../entity/EntityPersistenceLimits.h"
 #include "backends/cr/CRWorldMetadata.h"
 
@@ -209,12 +210,22 @@ void saveWorldToDisk(const Voxel::World& world,
     auto format = service.openFormat(context);
     requireSupportedDefaultZone(*format, context);
 
-    struct StagedEntitySave {
-        Voxel::ChunkCoord chunk;
-        Entity::EntityPersistedEntity entity;
-    };
-    std::vector<StagedEntitySave> stagedEntities;
+    std::string zoneId = kDefaultZoneId;
+    std::vector<EntityRegionSnapshot> desiredEntityRegions;
     if (format->descriptor().capabilities.supportsEntityRegions) {
+        struct EntityRegionSave {
+            std::unordered_map<Voxel::ChunkCoord,
+                               size_t,
+                               Voxel::ChunkCoordHash> chunkIndex;
+            std::vector<Entity::EntityPersistedChunk> chunks;
+            size_t payloadBytes = 0;
+        };
+
+        std::map<std::tuple<int32_t, int32_t, int32_t>, EntityRegionSave>
+            entityRegions;
+        detail::EntityRegionJournalUsage journalUsage =
+            detail::beginEntityRegionJournalUsage(format->descriptor());
+
         world.entities().forEach([&](const Entity::Entity& entity) {
             if (entity.hasTag(Entity::EntityTags::NoSaveInChunks)) {
                 return;
@@ -226,67 +237,86 @@ void saveWorldToDisk(const Voxel::World& world,
                     " for entity ID " + describeEntityId(entity.id()));
             }
 
-            StagedEntitySave staged;
-            staged.chunk = Voxel::worldToChunk(
+            const Voxel::ChunkCoord chunkCoord = Voxel::worldToChunk(
                 static_cast<int>(std::floor(position.x)),
                 static_cast<int>(std::floor(position.y)),
                 static_cast<int>(std::floor(position.z)));
-            staged.entity.typeId = entity.typeId();
-            staged.entity.id = entity.id();
-            staged.entity.position = position;
-            staged.entity.velocity = entity.velocity();
-            staged.entity.viewDirection = entity.viewDirection();
-            staged.entity.modelId = entity.modelIdentifier();
-            stagedEntities.push_back(std::move(staged));
-        });
-    }
-
-    std::string zoneId = kDefaultZoneId;
-    if (format->descriptor().capabilities.supportsEntityRegions) {
-        detail::replayEntityRegionJournal(*format, context, zoneId);
-    }
-    const bool worldMetadataExists = context.storage->exists(
-        format->worldMetadataCodec().metadataPath(context));
-    const bool zoneMetadataExists = context.storage->exists(
-        format->zoneMetadataCodec().metadataPath(ZoneKey{zoneId}, context));
-    std::vector<Voxel::ChunkCoord> dirtyChunks;
-    world.chunkManager().forEachChunk([&](Voxel::ChunkCoord coord, const Voxel::Chunk& chunk) {
-        if (chunk.isPersistDirty()) {
-            dirtyChunks.push_back(coord);
-        }
-    });
-    saveChunkRegions(world, *format, dirtyChunks);
-
-    struct EntityRegionSave {
-        std::unordered_map<Voxel::ChunkCoord, size_t, Voxel::ChunkCoordHash> chunkIndex;
-        std::vector<Entity::EntityPersistedChunk> chunks;
-    };
-
-    std::map<std::tuple<int32_t, int32_t, int32_t>, EntityRegionSave>
-        entityRegions;
-
-    if (format->descriptor().capabilities.supportsEntityRegions) {
-        for (auto& staged : stagedEntities) {
-            const Voxel::ChunkCoord coord = staged.chunk;
             const Entity::PersistenceRegionCoord regionCoord =
-                Entity::persistenceRegionForChunk(coord);
-            auto& region = entityRegions[std::make_tuple(
-                regionCoord.x, regionCoord.y, regionCoord.z)];
-            auto it = region.chunkIndex.find(coord);
-            if (it == region.chunkIndex.end()) {
-                Entity::EntityPersistedChunk chunk;
-                chunk.coord = coord;
-                region.chunks.push_back(std::move(chunk));
-                size_t index = region.chunks.size() - 1;
-                region.chunkIndex.emplace(coord, index);
-                it = region.chunkIndex.find(coord);
-            }
-            region.chunks[it->second].entities.push_back(
-                std::move(staged.entity));
-        }
+                Entity::persistenceRegionForChunk(chunkCoord);
+            const auto regionKey = std::make_tuple(
+                regionCoord.x, regionCoord.y, regionCoord.z);
+            auto regionIt = entityRegions.find(regionKey);
+            const bool isNewRegion = regionIt == entityRegions.end();
 
-        std::vector<EntityRegionSnapshot> desiredRegions;
-        desiredRegions.reserve(entityRegions.size());
+            bool isNewChunk = true;
+            size_t existingRegionChunks = 0;
+            size_t existingChunkEntities = 0;
+            if (!isNewRegion) {
+                existingRegionChunks = regionIt->second.chunks.size();
+                const auto chunkIt =
+                    regionIt->second.chunkIndex.find(chunkCoord);
+                isNewChunk = chunkIt == regionIt->second.chunkIndex.end();
+                if (!isNewChunk) {
+                    existingChunkEntities =
+                        regionIt->second.chunks[chunkIt->second]
+                            .entities.size();
+                }
+            }
+
+            const size_t encodedEntityBytes =
+                Entity::detail::measurePersistedEntityBytes(
+                    entity.typeId(), entity.modelIdentifier());
+            detail::EntityRegionJournalUsage nextUsage = journalUsage;
+            size_t nextRegionPayloadBytes = isNewRegion
+                ? detail::accountDesiredEntityRegion(
+                      nextUsage,
+                      EntityRegionKey{
+                          zoneId,
+                          regionCoord.x,
+                          regionCoord.y,
+                          regionCoord.z})
+                : regionIt->second.payloadBytes;
+            if (isNewChunk) {
+                detail::accountEntityRegionChunk(
+                    nextUsage,
+                    nextRegionPayloadBytes,
+                    existingRegionChunks);
+            }
+            detail::accountEntityRegionEntity(
+                nextUsage,
+                nextRegionPayloadBytes,
+                existingChunkEntities,
+                encodedEntityBytes);
+
+            if (isNewRegion) {
+                regionIt = entityRegions.emplace(
+                    regionKey, EntityRegionSave{}).first;
+            }
+            auto& region = regionIt->second;
+            auto chunkIt = region.chunkIndex.find(chunkCoord);
+            if (isNewChunk) {
+                Entity::EntityPersistedChunk chunk;
+                chunk.coord = chunkCoord;
+                region.chunks.push_back(std::move(chunk));
+                const size_t index = region.chunks.size() - 1;
+                chunkIt = region.chunkIndex.emplace(
+                    chunkCoord, index).first;
+            }
+
+            Entity::EntityPersistedEntity persisted;
+            persisted.typeId = entity.typeId();
+            persisted.id = entity.id();
+            persisted.position = position;
+            persisted.velocity = entity.velocity();
+            persisted.viewDirection = entity.viewDirection();
+            persisted.modelId = entity.modelIdentifier();
+            region.chunks[chunkIt->second].entities.push_back(
+                std::move(persisted));
+            region.payloadBytes = nextRegionPayloadBytes;
+            journalUsage = nextUsage;
+        });
+
+        desiredEntityRegions.reserve(entityRegions.size());
         for (auto& [coord, region] : entityRegions) {
             EntityRegionSnapshot snapshot;
             snapshot.key = EntityRegionKey{
@@ -295,11 +325,31 @@ void saveWorldToDisk(const Voxel::World& world,
                 std::get<1>(coord),
                 std::get<2>(coord)};
             snapshot.chunks = std::move(region.chunks);
-            desiredRegions.push_back(std::move(snapshot));
+            desiredEntityRegions.push_back(std::move(snapshot));
         }
-        detail::saveEntityRegionsRecoverably(
-            *format, context, zoneId, std::move(desiredRegions));
     }
+
+    if (format->descriptor().capabilities.supportsEntityRegions) {
+        detail::replayEntityRegionJournal(*format, context, zoneId);
+        detail::saveEntityRegionsRecoverably(
+            *format,
+            context,
+            zoneId,
+            std::move(desiredEntityRegions));
+    }
+
+    const bool worldMetadataExists = context.storage->exists(
+        format->worldMetadataCodec().metadataPath(context));
+    const bool zoneMetadataExists = context.storage->exists(
+        format->zoneMetadataCodec().metadataPath(ZoneKey{zoneId}, context));
+    std::vector<Voxel::ChunkCoord> dirtyChunks;
+    world.chunkManager().forEachChunk(
+        [&](Voxel::ChunkCoord coord, const Voxel::Chunk& chunk) {
+            if (chunk.isPersistDirty()) {
+                dirtyChunks.push_back(coord);
+            }
+        });
+    saveChunkRegions(world, *format, dirtyChunks);
 
     WorldSnapshot worldSnapshot;
     worldSnapshot.metadata.worldId = "world_" + std::to_string(world.id());

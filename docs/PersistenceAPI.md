@@ -230,6 +230,8 @@ Current behavior:
   Publication measures the same encoding and decoded work that replay accepts
   before staging the journal. Replay preflights all declarations, payload
   lengths, and nested work before reserving or retaining decoded snapshots.
+  World close applies those limits while grouping live entities and completes
+  entity journal validation before writing dirty chunk regions.
   The complete desired entity snapshot is also checked for null and duplicate
   persistent IDs before publication.
 - Entity bootstrap validates the complete persisted snapshot and collisions

@@ -695,7 +695,8 @@ TEST_CASE(ChunkStreamer_EvictionPersistenceSurvivesLoaderAndWorldReload) {
     loader->setPrefetchRadius(0);
 
     WorldMeshStore meshStore;
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        world.chunkManager(), meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -706,7 +707,6 @@ TEST_CASE(ChunkStreamer_EvictionPersistenceSurvivesLoaderAndWorldReload) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
     configureStreamerLoader(streamer, loader);
 
     streamChunk(streamer, coord);
@@ -1091,7 +1091,8 @@ TEST_CASE(ChunkStreamer_ResidentReplacementCancelsPendingPayload) {
         });
 
     WorldMeshStore meshStore;
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        world.chunkManager(), meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1102,7 +1103,6 @@ TEST_CASE(ChunkStreamer_ResidentReplacementCancelsPendingPayload) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
     configureStreamerLoader(streamer, loader);
     streamer.setChunkLoadWorkCallback([loader]() {
         return loader->workCount();
@@ -1182,7 +1182,8 @@ TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {
     loader->setPrefetchRadius(0);
 
     WorldMeshStore meshStore;
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        world.chunkManager(), meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1193,7 +1194,6 @@ TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
     configureStreamerLoader(streamer, loader);
 
     streamChunk(streamer, coord);
@@ -1264,7 +1264,8 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
     loader->setPrefetchRadius(0);
 
     WorldMeshStore meshStore;
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        world.chunkManager(), meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 1;
@@ -1275,7 +1276,6 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
 
     size_t loadRequests = 0;
     streamer.setChunkLoader([loader, &loadRequests](ChunkCoord request) {
@@ -1434,7 +1434,8 @@ TEST_CASE(ChunkStreamer_SaturatedLoaderPreservesPersistedChunk) {
     CHECK_EQ(loader->request(blocker), ChunkLoadRequestResult::Queued);
 
     WorldMeshStore meshStore;
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        world.chunkManager(), meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1445,7 +1446,6 @@ TEST_CASE(ChunkStreamer_SaturatedLoaderPreservesPersistedChunk) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
     std::optional<ChunkLoadRequestResult> targetRequest;
     size_t targetRequestCount = 0;
     streamer.setChunkLoader([&, loader](ChunkCoord coord) {
@@ -1532,7 +1532,8 @@ TEST_CASE(ChunkStreamer_TransientRegionFailurePreservesPersistedChunk) {
     loader->setPrefetchRadius(0);
 
     WorldMeshStore meshStore;
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        world.chunkManager(), meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1543,7 +1544,6 @@ TEST_CASE(ChunkStreamer_TransientRegionFailurePreservesPersistedChunk) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
     streamer.setChunkLoader([loader](ChunkCoord request) {
         return loader->request(request);
     });
@@ -1616,7 +1616,8 @@ TEST_CASE(ChunkStreamer_ExhaustedRegionReadsRecoverWithoutCameraMovement) {
         [&retryNow]() { return retryNow; });
 
     WorldMeshStore meshStore;
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        world.chunkManager(), meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1627,7 +1628,6 @@ TEST_CASE(ChunkStreamer_ExhaustedRegionReadsRecoverWithoutCameraMovement) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
     configureStreamerLoader(streamer, loader);
     streamer.markSpawnDiscoveryComplete();
 
@@ -1962,7 +1962,8 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
     CHECK(world.chunkManager().getChunk(deferredCoord) != nullptr);
 
     WorldMeshStore meshStore;
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        world.chunkManager(), meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1971,7 +1972,6 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&world.chunkManager(), &meshStore, &registry, nullptr, generator);
     auto sharedLoader = std::shared_ptr<AsyncChunkLoader>(&loader, [](AsyncChunkLoader*) {});
     configureStreamerLoader(streamer, sharedLoader);
     streamer.markSpawnDiscoveryComplete();

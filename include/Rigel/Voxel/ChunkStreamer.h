@@ -19,7 +19,6 @@
 #include <functional>
 #include <optional>
 #include <queue>
-#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -85,15 +84,15 @@ public:
     using ChunkLoadWorkCallback = std::function<StreamingWorkCount()>;
     using ChunkEvictionCallback = std::function<bool(ChunkCoord)>;
 
-    ChunkStreamer() = default;
+    ChunkStreamer(ChunkManager& manager,
+                  WorldMeshStore& meshStore,
+                  BlockRegistry& registry,
+                  TextureAtlas* atlas,
+                  std::shared_ptr<WorldGenerator> generator);
     ~ChunkStreamer();
 
     void setConfig(const StreamingConfig& config);
-    void bind(ChunkManager* manager,
-              WorldMeshStore* meshStore,
-              BlockRegistry* registry,
-              TextureAtlas* atlas,
-              std::shared_ptr<WorldGenerator> generator);
+    void setGenerator(std::shared_ptr<WorldGenerator> generator);
     void setBenchmark(ChunkBenchmarkStats* stats);
     void setChunkLoader(ChunkLoadCallback loader);
     void setChunkPendingCallback(ChunkPendingCallback pending);
@@ -130,7 +129,7 @@ private:
 
     struct GenResult {
         ChunkCoord coord;
-        uint64_t bindingEpoch = 0;
+        uint64_t workEpoch = 0;
         std::array<BlockState, Chunk::VOLUME> blocks{};
         uint32_t worldGenVersion = 0;
         double seconds = 0.0;
@@ -143,7 +142,7 @@ private:
     struct MeshTask {
         ChunkCoord coord;
         uint64_t requestId = 0;
-        uint64_t bindingEpoch = 0;
+        uint64_t workEpoch = 0;
         uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
         std::array<BlockState, Chunk::VOLUME> blocks{};
@@ -153,7 +152,7 @@ private:
     struct MeshResult {
         ChunkCoord coord;
         uint64_t requestId = 0;
-        uint64_t bindingEpoch = 0;
+        uint64_t workEpoch = 0;
         uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
         ChunkMesh mesh;
@@ -171,7 +170,7 @@ private:
     struct MeshInFlight {
         MeshRequestKind kind = MeshRequestKind::Missing;
         uint64_t requestId = 0;
-        uint64_t bindingEpoch = 0;
+        uint64_t workEpoch = 0;
         uint32_t observedRevision = 0;
         bool prioritized = false;
         bool obsolete = false;
@@ -193,10 +192,10 @@ private:
     };
 
     StreamingConfig m_config;
-    ChunkManager* m_chunkManager = nullptr;
-    WorldMeshStore* m_meshStore = nullptr;
-    BlockRegistry* m_registry = nullptr;
-    TextureAtlas* m_atlas = nullptr;
+    ChunkManager* const m_chunkManager;
+    WorldMeshStore* const m_meshStore;
+    BlockRegistry* const m_registry;
+    TextureAtlas* const m_atlas;
     std::shared_ptr<WorldGenerator> m_generator;
     ChunkCache m_cache;
     ChunkBenchmarkStats* m_benchmark = nullptr;
@@ -240,8 +239,7 @@ private:
     size_t m_inFlightMeshMissing = 0;
     size_t m_inFlightMeshDirty = 0;
     uint64_t m_nextMeshRequestId = 1;
-    std::shared_mutex m_bindingMutex;
-    uint64_t m_bindingEpoch = 1;
+    std::atomic<uint64_t> m_workEpoch{1};
     MeshRequestKind m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;

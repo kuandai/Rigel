@@ -23,6 +23,21 @@ int distanceSquared(const ChunkCoord& a, const ChunkCoord& b) {
 }
 } // namespace
 
+ChunkStreamer::ChunkStreamer(ChunkManager& manager,
+                             WorldMeshStore& meshStore,
+                             BlockRegistry& registry,
+                             TextureAtlas* atlas,
+                             std::shared_ptr<WorldGenerator> generator)
+    : m_chunkManager(&manager),
+      m_meshStore(&meshStore),
+      m_registry(&registry),
+      m_atlas(atlas),
+      m_generator(std::move(generator)) {
+    m_lastWorldGenVersion = m_generator
+        ? m_generator->config().world.version
+        : 0;
+}
+
 ChunkStreamer::~ChunkStreamer() {
     if (m_genPool) {
         m_genPool->stop();
@@ -64,73 +79,28 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     refreshDiagnostics(false);
 }
 
-void ChunkStreamer::bind(ChunkManager* manager,
-                         WorldMeshStore* meshStore,
-                         BlockRegistry* registry,
-                         TextureAtlas* atlas,
-                         std::shared_ptr<WorldGenerator> generator) {
-    bool chunkManagerChanged = m_chunkManager != manager;
-    bool bindingChanged =
-        chunkManagerChanged ||
-        m_meshStore != meshStore ||
-        m_registry != registry ||
-        m_atlas != atlas ||
-        m_generator != generator;
-
-    if (bindingChanged) {
-        for (auto& entry : m_genCancel) {
-            entry.second->store(true, std::memory_order_relaxed);
-        }
+void ChunkStreamer::setGenerator(std::shared_ptr<WorldGenerator> generator) {
+    if (m_generator == generator) {
+        return;
     }
 
-    {
-        std::unique_lock bindingLock(m_bindingMutex);
-        if (bindingChanged) {
-            ++m_bindingEpoch;
-            if (m_bindingEpoch == 0) {
-                m_bindingEpoch = 1;
-            }
-            for (auto& entry : m_meshInFlight) {
-                entry.second.obsolete = true;
-            }
+    for (auto& [coord, cancelToken] : m_genCancel) {
+        cancelToken->store(true, std::memory_order_relaxed);
+        auto stateIt = m_states.find(coord);
+        if (stateIt != m_states.end() &&
+            stateIt->second == ChunkState::QueuedGen) {
+            m_states.erase(stateIt);
         }
-
-        m_chunkManager = manager;
-        m_meshStore = meshStore;
-        m_registry = registry;
-        m_atlas = atlas;
-        m_generator = std::move(generator);
     }
+    m_genCancel.clear();
 
-    if (bindingChanged) {
-        m_genCancel.clear();
-        m_states.clear();
-        m_countedMeshRetryRevisions.clear();
-        if (chunkManagerChanged) {
-            m_cache = ChunkCache();
-            m_cache.setMaxChunks(m_config.maxResidentChunks);
-            m_evictionRetryAfter.clear();
-            m_nextEvictionRetrySequence = 0;
-        }
-        m_dirtyMeshQueue = {};
-        m_dirtyMeshQueued.clear();
-        m_priorityMeshRequests.clear();
-        m_versionReplacementWaiting.clear();
-        m_loadGenQueue.clear();
-        m_loadGenQueued.clear();
-        m_generationCapacityWait.clear();
-        m_generationCapacityWaiting.clear();
-        m_missingMeshCapacityWait.clear();
-        m_missingMeshCapacityWaiting.clear();
-        m_meshDependencyWaiting.clear();
-        m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
-
-        for (const auto& [coord, flight] : m_meshInFlight) {
-            if (!flight.obsolete ||
-                m_desiredSet.find(coord) == m_desiredSet.end() ||
-                !m_chunkManager) {
-                continue;
-            }
+    uint64_t nextEpoch = m_workEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (nextEpoch == 0) {
+        m_workEpoch.store(1, std::memory_order_relaxed);
+    }
+    for (auto& [coord, flight] : m_meshInFlight) {
+        flight.obsolete = true;
+        if (m_desiredSet.find(coord) != m_desiredSet.end()) {
             if (Chunk* chunk = m_chunkManager->getChunk(coord)) {
                 if (!chunk->isEmpty()) {
                     chunk->markDirty();
@@ -139,7 +109,7 @@ void ChunkStreamer::bind(ChunkManager* manager,
         }
     }
 
-    m_lastWorldGenVersion = m_generator ? m_generator->config().world.version : 0;
+    m_generator = std::move(generator);
     for (const ChunkCoord& coord : m_desired) {
         queueLoadGen(coord);
     }
@@ -762,16 +732,14 @@ void ChunkStreamer::reset() {
         entry.second->store(true, std::memory_order_relaxed);
     }
 
-    std::unique_lock bindingLock(m_bindingMutex);
-    ++m_bindingEpoch;
-    if (m_bindingEpoch == 0) {
-        m_bindingEpoch = 1;
+    uint64_t nextEpoch = m_workEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (nextEpoch == 0) {
+        m_workEpoch.store(1, std::memory_order_relaxed);
     }
     m_states.clear();
     for (auto& entry : m_meshInFlight) {
         entry.second.obsolete = true;
     }
-    bindingLock.unlock();
     m_countedMeshRetryRevisions.clear();
     m_cache = ChunkCache();
     m_cache.setMaxChunks(m_config.maxResidentChunks);
@@ -1010,7 +978,8 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         }
         wakeGenerationCapacityWaiter();
 
-        if (genResult.bindingEpoch != m_bindingEpoch) {
+        if (genResult.workEpoch !=
+            m_workEpoch.load(std::memory_order_relaxed)) {
             continue;
         }
 
@@ -1114,9 +1083,19 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         wakeMissingMeshCapacityWaiter();
 
         if (flight.obsolete ||
-            flight.bindingEpoch != m_bindingEpoch ||
-            meshResult.bindingEpoch != flight.bindingEpoch) {
+            flight.workEpoch != m_workEpoch.load(std::memory_order_relaxed) ||
+            meshResult.workEpoch != flight.workEpoch) {
             ++m_workMetrics.meshJobsRejectedStale;
+            Chunk* chunk = m_chunkManager->getChunk(meshResult.coord);
+            if (chunk &&
+                m_desiredSet.find(meshResult.coord) != m_desiredSet.end() &&
+                !chunk->isEmpty()) {
+                m_states[meshResult.coord] = ChunkState::ReadyData;
+                chunk->markDirty();
+                queueDirtyMesh(meshResult.coord, flight.prioritized);
+            } else {
+                m_states.erase(meshResult.coord);
+            }
             queueLoadGen(meshResult.coord);
             continue;
         }
@@ -1337,17 +1316,17 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
     auto cancelToken = std::make_shared<std::atomic_bool>(false);
     m_genCancel[coord] = cancelToken;
     auto generator = m_generator;
-    uint64_t bindingEpoch = m_bindingEpoch;
+    uint64_t workEpoch = m_workEpoch.load(std::memory_order_relaxed);
     auto generationStartCallback = m_generationStartCallback;
     auto job = [this,
                 generator,
                 coord,
                 cancelToken,
-                bindingEpoch,
+                workEpoch,
                 generationStartCallback = std::move(generationStartCallback)]() {
         GenResult result;
         result.coord = coord;
-        result.bindingEpoch = bindingEpoch;
+        result.workEpoch = workEpoch;
         result.cancelToken = cancelToken;
         if (cancelToken->load(std::memory_order_relaxed)) {
             result.cancelled = true;
@@ -1359,11 +1338,9 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
             if (generationStartCallback) {
                 generationStartCallback();
             }
-            std::shared_lock bindingLock(m_bindingMutex);
-            if (bindingEpoch != m_bindingEpoch ||
+            if (workEpoch != m_workEpoch.load(std::memory_order_relaxed) ||
                 cancelToken->load(std::memory_order_relaxed)) {
                 result.cancelled = true;
-                bindingLock.unlock();
                 m_genComplete.push(std::move(result));
                 return;
             }
@@ -1418,7 +1395,7 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord,
     MeshTask task;
     task.coord = coord;
     task.requestId = m_nextMeshRequestId++;
-    task.bindingEpoch = m_bindingEpoch;
+    task.workEpoch = m_workEpoch.load(std::memory_order_relaxed);
     if (m_nextMeshRequestId == 0) {
         m_nextMeshRequestId = 1;
     }
@@ -1495,7 +1472,7 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord,
     m_meshInFlight[coord] = MeshInFlight{
         .kind = kind,
         .requestId = task.requestId,
-        .bindingEpoch = task.bindingEpoch,
+        .workEpoch = task.workEpoch,
         .observedRevision = task.revision,
         .prioritized = prioritized
     };
@@ -1532,16 +1509,15 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord,
         MeshResult result;
         result.coord = task.coord;
         result.requestId = task.requestId;
-        result.bindingEpoch = task.bindingEpoch;
+        result.workEpoch = task.workEpoch;
         result.chunkInstanceId = task.chunkInstanceId;
         result.revision = task.revision;
         try {
             if (meshBuildStartCallback) {
                 meshBuildStartCallback();
             }
-            std::shared_lock bindingLock(m_bindingMutex);
-            if (task.bindingEpoch != m_bindingEpoch) {
-                bindingLock.unlock();
+            if (task.workEpoch !=
+                m_workEpoch.load(std::memory_order_relaxed)) {
                 m_meshComplete.push(std::move(result));
                 return;
             }

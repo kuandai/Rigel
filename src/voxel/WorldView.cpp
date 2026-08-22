@@ -8,6 +8,11 @@ namespace Rigel::Voxel {
 WorldView::WorldView(World& world, WorldResources& resources)
     : m_world(&world)
     , m_resources(&resources)
+    , m_streamer(world.chunkManager(),
+                 m_meshStore,
+                 resources.registry(),
+                 &resources.textureAtlas(),
+                 world.generator())
 {}
 
 void WorldView::initialize(Asset::AssetManager& assets) {
@@ -31,14 +36,6 @@ void WorldView::initialize(Asset::AssetManager& assets) {
 
     m_entityRenderer.initialize(assets);
 
-    if (m_world && m_resources) {
-        m_streamer.bind(&m_world->chunkManager(),
-                        &m_meshStore,
-                        &m_resources->registry(),
-                        &m_resources->textureAtlas(),
-                        m_world->generator());
-    }
-
     m_initialized = true;
 }
 
@@ -46,11 +43,7 @@ void WorldView::setGenerator(std::shared_ptr<WorldGenerator> generator) {
     if (!m_world || !m_resources) {
         return;
     }
-    m_streamer.bind(&m_world->chunkManager(),
-                    &m_meshStore,
-                    &m_resources->registry(),
-                    &m_resources->textureAtlas(),
-                    std::move(generator));
+    m_streamer.setGenerator(std::move(generator));
 }
 
 void WorldView::setChunkLoader(ChunkStreamer::ChunkLoadCallback loader) {

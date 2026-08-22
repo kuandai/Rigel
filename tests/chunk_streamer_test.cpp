@@ -39,6 +39,14 @@ struct ChunkStreamerTestAccess {
     static size_t generationCompletionCount(const ChunkStreamer& streamer) {
         return streamer.m_genComplete.size();
     }
+
+    static size_t inFlightMeshMissing(const ChunkStreamer& streamer) {
+        return streamer.m_inFlightMeshMissing;
+    }
+
+    static size_t inFlightMeshDirty(const ChunkStreamer& streamer) {
+        return streamer.m_inFlightMeshDirty;
+    }
 };
 }
 
@@ -261,7 +269,7 @@ TEST_CASE(ChunkStreamer_GeneratesSphere) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -271,7 +279,6 @@ TEST_CASE(ChunkStreamer_GeneratesSphere) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     streamer.processCompletions();
@@ -284,7 +291,7 @@ TEST_CASE(ChunkStreamer_RespectsQueueLimit) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -294,7 +301,6 @@ TEST_CASE(ChunkStreamer_RespectsQueueLimit) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     streamer.processCompletions();
@@ -307,7 +313,7 @@ TEST_CASE(ChunkStreamer_UpdateBudget_DoesNotStarveOuterChunks) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 2;
     stream.unloadDistanceChunks = 2;
@@ -318,7 +324,6 @@ TEST_CASE(ChunkStreamer_UpdateBudget_DoesNotStarveOuterChunks) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     bool foundOuter = false;
     for (int frame = 0; frame < 128; ++frame) {
@@ -339,7 +344,7 @@ TEST_CASE(ChunkStreamer_EvictsOutsideRadius) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -349,7 +354,6 @@ TEST_CASE(ChunkStreamer_EvictsOutsideRadius) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     streamer.processCompletions();
@@ -367,7 +371,7 @@ TEST_CASE(ChunkStreamer_RetainsDirtyChunkWithoutEvictionPersistence) {
     auto generator = makeGenerator(registry);
     BlockID edited = registerTestBlock(registry, "rigel:eviction_edit");
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -377,7 +381,6 @@ TEST_CASE(ChunkStreamer_RetainsDirtyChunkWithoutEvictionPersistence) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     const ChunkCoord origin{0, 0, 0};
     streamer.update(origin.toWorldCenter());
@@ -404,7 +407,7 @@ TEST_CASE(ChunkStreamer_RetriesFailedEvictionPersistenceAtBoundedIntervals) {
     auto generator = makeGenerator(registry);
     BlockID edited = registerTestBlock(registry, "rigel:retry_eviction_edit");
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -414,7 +417,6 @@ TEST_CASE(ChunkStreamer_RetriesFailedEvictionPersistenceAtBoundedIntervals) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     const ChunkCoord origin{0, 0, 0};
     streamer.update(origin.toWorldCenter());
@@ -462,7 +464,7 @@ TEST_CASE(ChunkStreamer_CachePressureRetainsChunkWhenPersistenceDefers) {
     auto generator = makeGenerator(registry);
     BlockID edited = registerTestBlock(registry, "rigel:cache_eviction_edit");
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 8;
@@ -472,7 +474,6 @@ TEST_CASE(ChunkStreamer_CachePressureRetainsChunkWhenPersistenceDefers) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 1;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     const ChunkCoord origin{0, 0, 0};
     streamer.update(origin.toWorldCenter());
@@ -512,7 +513,7 @@ TEST_CASE(ChunkStreamer_CachePressureDeferralRemainsQuiescentUntilRetry) {
     auto generator = makeGenerator(registry);
     BlockID edited = registerTestBlock(registry, "rigel:cache_retry_edit");
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 8;
@@ -522,7 +523,6 @@ TEST_CASE(ChunkStreamer_CachePressureDeferralRemainsQuiescentUntilRetry) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 1;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     size_t persistenceAttempts = 0;
     streamer.setChunkEvictionCallback([&](ChunkCoord) {
@@ -577,14 +577,15 @@ TEST_CASE(ChunkStreamer_CachePressureDeferralRemainsQuiescentUntilRetry) {
              settledInspections);
 }
 
-TEST_CASE(ChunkStreamer_RebindRetainsDeferredEvictionForSameManager) {
+TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDeferredEviction) {
     ChunkManager manager;
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
-    BlockID edited = registerTestBlock(registry, "rigel:rebind_eviction_edit");
+    BlockID edited =
+        registerTestBlock(registry, "rigel:generator_replacement_eviction_edit");
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 8;
@@ -594,7 +595,6 @@ TEST_CASE(ChunkStreamer_RebindRetainsDeferredEvictionForSameManager) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 1;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     const ChunkCoord first{0, 0, 0};
     streamer.update(first.toWorldCenter());
@@ -631,8 +631,7 @@ TEST_CASE(ChunkStreamer_RebindRetainsDeferredEvictionForSameManager) {
 
     auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
     replacementGenerator->setConfig(generator->config());
-    streamer.bind(
-        &manager, &meshStore, &registry, nullptr, replacementGenerator);
+    streamer.setGenerator(replacementGenerator);
 
     for (int update = 0; update < 59; ++update) {
         streamer.update(current.toWorldCenter());
@@ -657,7 +656,7 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Deterministic) {
     ChunkCoord coord{2, 0, 0};
     Rigel::Persistence::ChunkData payload = buildPayload(coord, registry, palette, false, std::nullopt, true);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -667,7 +666,6 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Deterministic) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         if (request != coord) {
@@ -703,7 +701,7 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Random) {
     ChunkCoord coord{3, 0, 0};
     Rigel::Persistence::ChunkData payload = buildPayload(coord, registry, palette, true, std::nullopt, true);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -713,7 +711,6 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Random) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         if (request != coord) {
@@ -776,7 +773,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Deterministic) {
     region.chunks.push_back(snapshot);
     format->chunkContainer().saveRegion(region);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -786,7 +783,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Deterministic) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         Rigel::Persistence::ChunkRegionSnapshot loaded = service.loadRegion(regionKey, context);
@@ -854,7 +850,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Random) {
     region.chunks.push_back(snapshot);
     format->chunkContainer().saveRegion(region);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -864,7 +860,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Random) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         Rigel::Persistence::ChunkRegionSnapshot loaded = service.loadRegion(regionKey, context);
@@ -957,7 +952,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
     }
     Rigel::Persistence::ChunkData payload = decodedRegion.chunks.front().data;
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -967,7 +962,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         if (request != coord) {
@@ -1055,7 +1049,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
     }
     Rigel::Persistence::ChunkData payload = decodedRegion.chunks.front().data;
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1065,7 +1059,6 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.setChunkLoader([&](ChunkCoord request) {
         if (request != coord) {
@@ -1095,7 +1088,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CountGenerationAndSchedulerInspection) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -1106,7 +1099,6 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CountGenerationAndSchedulerInspection) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
 
@@ -1126,7 +1118,7 @@ TEST_CASE(ChunkStreamer_GenerationCapacityWaitsForCompletion) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -1137,7 +1129,6 @@ TEST_CASE(ChunkStreamer_GenerationCapacityWaitsForCompletion) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
@@ -1167,7 +1158,7 @@ TEST_CASE(ChunkStreamer_GenerationFailureCompletesJob) {
         WorldMeshStore meshStore;
         auto generator = makeGenerator(registry);
 
-        ChunkStreamer streamer;
+        ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
         StreamingConfig stream;
         stream.viewDistanceChunks = 0;
         stream.unloadDistanceChunks = 0;
@@ -1178,7 +1169,6 @@ TEST_CASE(ChunkStreamer_GenerationFailureCompletesJob) {
         stream.workerThreads = workerThreads;
         stream.maxResidentChunks = 0;
         streamer.setConfig(stream);
-        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
         Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
             streamer,
             []() { throw std::runtime_error("injected generation failure"); });
@@ -1243,7 +1233,8 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     replacementConfig.terrain.baseHeight = 64.0f;
     replacementGenerator->setConfig(replacementConfig);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1254,7 +1245,6 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     stream.workerThreads = 4;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, originalGenerator);
     streamer.markSpawnDiscoveryComplete();
 
     auto originalGate = std::make_shared<WorkerGate>();
@@ -1281,7 +1271,7 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     streamer.reset();
     CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
-    streamer.bind(&manager, &meshStore, &registry, nullptr, replacementGenerator);
+    streamer.setGenerator(replacementGenerator);
     streamer.update(coord.toWorldCenter());
 
     CHECK_EQ(jobsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
@@ -1342,34 +1332,33 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     CHECK_EQ(accepted->getBlock(0, 0, 0).id, replacementBlock);
 }
 
-TEST_CASE(ChunkStreamer_RebindSupersedesOutstandingGeneration) {
+TEST_CASE(ChunkStreamer_GeneratorReplacementSupersedesOutstandingGeneration) {
     ChunkManager manager;
     WorldMeshStore meshStore;
-    auto originalRegistry = std::make_unique<BlockRegistry>();
+    BlockRegistry registry;
     BlockID originalBlock =
-        registerTestBlock(*originalRegistry, "rigel:original_rebind_solid");
+        registerTestBlock(registry, "rigel:original_generator_solid");
 
-    auto originalGenerator = std::make_shared<WorldGenerator>(*originalRegistry);
+    auto originalGenerator = std::make_shared<WorldGenerator>(registry);
     WorldGenConfig originalConfig;
-    originalConfig.solidBlock = "rigel:original_rebind_solid";
-    originalConfig.surfaceBlock = "rigel:original_rebind_solid";
+    originalConfig.solidBlock = "rigel:original_generator_solid";
+    originalConfig.surfaceBlock = "rigel:original_generator_solid";
     originalConfig.terrain.baseHeight = 64.0f;
     originalConfig.terrain.heightVariation = 0.0f;
     originalGenerator->setConfig(originalConfig);
 
-    BlockRegistry replacementRegistry;
-    registerTestBlock(replacementRegistry, "rigel:replacement_rebind_unused");
     BlockID replacementBlock =
-        registerTestBlock(replacementRegistry, "rigel:replacement_rebind_solid");
+        registerTestBlock(registry, "rigel:replacement_generator_solid");
 
-    auto replacementGenerator = std::make_shared<WorldGenerator>(replacementRegistry);
+    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
     WorldGenConfig replacementConfig = originalConfig;
-    replacementConfig.solidBlock = "rigel:replacement_rebind_solid";
-    replacementConfig.surfaceBlock = "rigel:replacement_rebind_solid";
+    replacementConfig.solidBlock = "rigel:replacement_generator_solid";
+    replacementConfig.surfaceBlock = "rigel:replacement_generator_solid";
     replacementGenerator->setConfig(replacementConfig);
     CHECK_EQ(originalConfig.world.version, replacementConfig.world.version);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1380,12 +1369,6 @@ TEST_CASE(ChunkStreamer_RebindSupersedesOutstandingGeneration) {
     stream.workerThreads = 4;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager,
-                  &meshStore,
-                  originalRegistry.get(),
-                  nullptr,
-                  originalGenerator);
-
     auto originalGate = std::make_shared<WorkerGate>();
     auto replacementGate = std::make_shared<WorkerGate>();
     WorkerGateRelease releaseOriginalOnExit(originalGate);
@@ -1407,13 +1390,8 @@ TEST_CASE(ChunkStreamer_RebindSupersedesOutstandingGeneration) {
     CHECK(originalGate->waitUntilEntered());
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
 
-    streamer.bind(&manager,
-                  &meshStore,
-                  &replacementRegistry,
-                  nullptr,
-                  replacementGenerator);
+    streamer.setGenerator(replacementGenerator);
     originalGenerator.reset();
-    originalRegistry.reset();
     streamer.update(coord.toWorldCenter());
     CHECK_EQ(jobsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
     CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
@@ -1468,7 +1446,7 @@ TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
 
     auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -1479,7 +1457,6 @@ TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
     stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [gate, &buildsEntered]() {
@@ -1548,7 +1525,7 @@ TEST_CASE(ChunkStreamer_SingleMeshSlotAlternatesMissingAndDirtyWork) {
 
     auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -1559,7 +1536,6 @@ TEST_CASE(ChunkStreamer_SingleMeshSlotAlternatesMissingAndDirtyWork) {
     stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [gate, &buildsEntered]() {
@@ -1635,7 +1611,7 @@ TEST_CASE(ChunkStreamer_DirtyMeshCapacityPreservesNearestFirstPriority) {
 
     auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -1646,7 +1622,6 @@ TEST_CASE(ChunkStreamer_DirtyMeshCapacityPreservesNearestFirstPriority) {
     stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [gate, &buildsEntered]() {
@@ -1725,7 +1700,7 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPrecedesDistancePriority) {
         chunk.clearDirty();
     }
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -1736,7 +1711,6 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPrecedesDistancePriority) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     streamer.processCompletions();
@@ -1795,7 +1769,7 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPromotesPendingInitialMesh) {
     }
     meshStore.set(ordinaryCoord, {});
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -1806,7 +1780,6 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPromotesPendingInitialMesh) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
     streamer.setChunkLoader([&](ChunkCoord coord) {
         return coord == pendingCoord
             ? ChunkLoadRequestResult::Queued
@@ -1870,7 +1843,7 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPrioritySurvivesDependencyWait) {
         }
     }
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 2;
     stream.unloadDistanceChunks = 2;
@@ -1881,7 +1854,6 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPrioritySurvivesDependencyWait) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
@@ -1915,7 +1887,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1926,7 +1898,6 @@ TEST_CASE(ChunkStreamer_WorkMetrics_CoalescePendingLoadRequests) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     size_t callbackCount = 0;
     streamer.setChunkLoader([&](ChunkCoord) {
@@ -1952,7 +1923,7 @@ TEST_CASE(ChunkStreamer_MissingLoadResolutionStartsGeneration) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -1963,7 +1934,6 @@ TEST_CASE(ChunkStreamer_MissingLoadResolutionStartsGeneration) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     const ChunkCoord coord{0, 0, 0};
     size_t loadAttempts = 0;
@@ -2003,7 +1973,7 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -2014,7 +1984,6 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     const ChunkCoord coord{0, 0, 0};
     size_t loadAttempts = 0;
@@ -2050,7 +2019,7 @@ TEST_CASE(ChunkStreamer_MovementRequestsOnlyNewDesiredFrontier) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 2;
     stream.unloadDistanceChunks = 2;
@@ -2061,7 +2030,6 @@ TEST_CASE(ChunkStreamer_MovementRequestsOnlyNewDesiredFrontier) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> requestCounts;
     std::unordered_set<ChunkCoord, ChunkCoordHash> cancelled;
@@ -2134,7 +2102,7 @@ TEST_CASE(ChunkStreamer_MovementCancelsDepartedGeneration) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -2145,7 +2113,6 @@ TEST_CASE(ChunkStreamer_MovementCancelsDepartedGeneration) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     const ChunkCoord departed{0, 0, 0};
     const ChunkCoord desired{4, 0, 0};
@@ -2177,7 +2144,7 @@ TEST_CASE(ChunkStreamer_DepartedFrontierReleasesWaitingMesh) {
     sharedNeighbor.setWorldGenVersion(generator->config().world.version);
     sharedNeighbor.setLoadedFromDisk(true);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -2188,7 +2155,6 @@ TEST_CASE(ChunkStreamer_DepartedFrontierReleasesWaitingMesh) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
     streamer.setChunkLoader([](ChunkCoord) {
         return ChunkLoadRequestResult::Queued;
     });
@@ -2219,7 +2185,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {
     chunk.setWorldGenVersion(generator->config().world.version);
     chunk.setLoadedFromDisk(true);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -2230,7 +2196,6 @@ TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     streamer.processCompletions();
@@ -2284,7 +2249,7 @@ TEST_CASE(ChunkStreamer_MeshFailureCompletesJob) {
         chunk.setWorldGenVersion(generator->config().world.version);
         chunk.setLoadedFromDisk(true);
 
-        ChunkStreamer streamer;
+        ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
         StreamingConfig stream;
         stream.viewDistanceChunks = 0;
         stream.unloadDistanceChunks = 0;
@@ -2295,7 +2260,6 @@ TEST_CASE(ChunkStreamer_MeshFailureCompletesJob) {
         stream.workerThreads = workerThreads;
         stream.maxResidentChunks = 0;
         streamer.setConfig(stream);
-        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
         Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
             streamer,
             []() { throw std::runtime_error("injected mesh failure"); });
@@ -2337,7 +2301,7 @@ TEST_CASE(ChunkStreamer_StaleMeshFailureRetriesLatestRevision) {
 
     auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -2348,7 +2312,6 @@ TEST_CASE(ChunkStreamer_StaleMeshFailureRetriesLatestRevision) {
     stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [gate, &buildsEntered]() {
@@ -2422,7 +2385,7 @@ TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
 
     auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -2433,7 +2396,6 @@ TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
     stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [gate, &buildsEntered]() {
@@ -2512,7 +2474,7 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterChunkUnload) {
     removed.setWorldGenVersion(generator->config().world.version);
     removed.setLoadedFromDisk(true);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 1;
@@ -2523,7 +2485,6 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterChunkUnload) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(survivingCoord.toWorldCenter());
     streamer.processCompletions();
@@ -2585,7 +2546,7 @@ TEST_CASE(ChunkStreamer_ReplacementRejectsMeshBuiltWithPriorNeighbor) {
 
     auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 1;
@@ -2596,7 +2557,6 @@ TEST_CASE(ChunkStreamer_ReplacementRejectsMeshBuiltWithPriorNeighbor) {
     stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [gate, &buildsEntered]() {
@@ -2669,7 +2629,7 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
 
     auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> buildsEntered{0};
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -2680,7 +2640,6 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
     stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [gate, &buildsEntered]() {
@@ -2739,62 +2698,35 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
     CHECK_EQ(installedIndexCount, static_cast<size_t>(60));
 }
 
-TEST_CASE(ChunkStreamer_RebindSupersedesOutstandingMeshRequest) {
-    auto originalManager = std::make_unique<ChunkManager>();
-    ChunkManager replacementManager;
-    auto originalMeshStore = std::make_unique<WorldMeshStore>();
-    WorldMeshStore replacementMeshStore;
-    auto originalRegistry = std::make_unique<BlockRegistry>();
-    BlockRegistry replacementRegistry;
-    auto originalAtlas = std::make_unique<TextureAtlas>();
-    TextureAtlas replacementAtlas;
-    const std::string texture = "textures/rebind_solid.png";
-
-    BlockID originalSolid = registerTexturedTestBlock(
-        *originalRegistry, "rigel:rebind_solid", texture);
-    BlockID replacementSolid = registerTexturedTestBlock(
-        replacementRegistry, "rigel:rebind_solid", texture);
-    CHECK_EQ(originalSolid, replacementSolid);
-    addTestTexture(*originalAtlas, texture);
-    addTestTexture(replacementAtlas, "textures/rebind_unused.png");
-    addTestTexture(replacementAtlas, texture);
-
-    auto originalGenerator = makeGenerator(*originalRegistry);
-    auto replacementGenerator = makeGenerator(replacementRegistry);
-    CHECK_EQ(originalGenerator->config().world.version,
-             replacementGenerator->config().world.version);
-
+TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDirtyMeshCapacity) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto originalGenerator = makeGenerator(registry);
+    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
+    replacementGenerator->setConfig(originalGenerator->config());
+    BlockID solid =
+        registerTestBlock(registry, "rigel:generator_replacement_mesh_solid");
     const ChunkCoord coord{0, 0, 0};
-    Chunk& originalChunk = originalManager->getOrCreateChunk(coord);
-    originalChunk.setBlock(
-        0, 0, 0, BlockState{originalSolid}, *originalRegistry);
-    originalChunk.setWorldGenVersion(originalGenerator->config().world.version);
-    originalChunk.setLoadedFromDisk(true);
 
-    Chunk& replacementChunk = replacementManager.getOrCreateChunk(coord);
-    replacementChunk.setBlock(
-        0, 0, 0, BlockState{replacementSolid}, replacementRegistry);
-    replacementChunk.setBlock(
-        1, 0, 0, BlockState{replacementSolid}, replacementRegistry);
-    replacementChunk.setWorldGenVersion(replacementGenerator->config().world.version);
-    replacementChunk.setLoadedFromDisk(true);
+    Chunk& chunk = manager.getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(originalGenerator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+    meshStore.set(coord, {});
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
     stream.genQueueLimit = 0;
-    stream.meshQueueLimit = 1;
+    stream.meshQueueLimit = 2;
     stream.updateBudgetPerFrame = 0;
     stream.applyBudgetPerFrame = 0;
     stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(originalManager.get(),
-                  originalMeshStore.get(),
-                  originalRegistry.get(),
-                  originalAtlas.get(),
-                  originalGenerator);
 
     auto originalGate = std::make_shared<WorkerGate>();
     auto replacementGate = std::make_shared<WorkerGate>();
@@ -2814,53 +2746,64 @@ TEST_CASE(ChunkStreamer_RebindSupersedesOutstandingMeshRequest) {
 
     streamer.update(coord.toWorldCenter());
     CHECK(originalGate->waitUntilEntered());
-    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
-
-    streamer.bind(&replacementManager,
-                  &replacementMeshStore,
-                  &replacementRegistry,
-                  &replacementAtlas,
-                  replacementGenerator);
-    originalGenerator.reset();
-    originalAtlas.reset();
-    originalRegistry.reset();
-    originalMeshStore.reset();
-    originalManager.reset();
-    streamer.update(coord.toWorldCenter());
-    CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
     CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
-    CHECK(!replacementMeshStore.contains(coord));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshDirty(streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshMissing(streamer),
+        static_cast<size_t>(0));
+
+    streamer.setGenerator(replacementGenerator);
+    CHECK(chunk.isDirty());
     streamer.update(coord.toWorldCenter());
-    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
-             static_cast<uint64_t>(0));
+
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshDirty(streamer),
+        static_cast<size_t>(1));
 
     originalGate->release();
     CHECK(waitForMeshCompletions(streamer, 1));
-    CHECK(!replacementMeshStore.contains(coord));
-    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshDirty(streamer),
+        static_cast<size_t>(0));
 
     streamer.update(coord.toWorldCenter());
     CHECK(replacementGate->waitUntilEntered());
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshDirty(streamer),
+        static_cast<size_t>(1));
+
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+
     replacementGate->release();
     CHECK(waitForMeshCompletions(streamer, 2));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::inFlightMeshDirty(streamer),
+        static_cast<size_t>(0));
+    CHECK(meshStore.contains(coord));
 
-    CHECK(replacementMeshStore.contains(coord));
-    size_t installedIndexCount = 0;
-    bool usesReplacementTextureLayer = true;
-    replacementMeshStore.forEach([&](const WorldMeshEntry& entry) {
-        if (entry.coord != coord) {
-            return;
-        }
-        installedIndexCount = entry.mesh.indexCount();
-        for (const VoxelVertex& vertex : entry.mesh.vertices) {
-            usesReplacementTextureLayer =
-                usesReplacementTextureLayer && vertex.textureLayer == 1;
-        }
-    });
-    CHECK_EQ(installedIndexCount, static_cast<size_t>(60));
-    CHECK(usesReplacementTextureLayer);
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
 }
 
 TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {
@@ -2875,7 +2818,7 @@ TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {
     chunk.setWorldGenVersion(generator->config().world.version);
     chunk.setLoadedFromDisk(true);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -2886,7 +2829,6 @@ TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     streamer.update(glm::vec3(0.0f));
     const uint32_t queuedRevision = chunk.meshRevision();
@@ -2935,7 +2877,7 @@ TEST_CASE(ChunkStreamer_DiskLoadedChunksWaitForNeighborFrontierAcrossArrivalOrde
         center.setLoadedFromDisk(true);
         center.clearDirty();
 
-        ChunkStreamer streamer;
+        ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
         StreamingConfig stream;
         stream.viewDistanceChunks = 1;
         stream.unloadDistanceChunks = 1;
@@ -2946,7 +2888,6 @@ TEST_CASE(ChunkStreamer_DiskLoadedChunksWaitForNeighborFrontierAcrossArrivalOrde
         stream.workerThreads = 0;
         stream.maxResidentChunks = 0;
         streamer.setConfig(stream);
-        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
         streamer.setChunkLoader([](ChunkCoord) {
             return ChunkLoadRequestResult::Queued;
         });
@@ -3033,7 +2974,7 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     auto generator = makeGenerator(registry);
     BlockID solid = registerTestBlock(registry, "rigel:quiescence_solid");
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
     stream.unloadDistanceChunks = 1;
@@ -3044,7 +2985,6 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     size_t loadAttempts = 0;
     streamer.setChunkLoader([&](ChunkCoord coord) {
@@ -3119,7 +3059,7 @@ TEST_CASE(ChunkStreamer_QuiescenceRequiresStableIdleUpdates) {
     center.setWorldGenVersion(generator->config().world.version);
     center.setLoadedFromDisk(true);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -3130,7 +3070,6 @@ TEST_CASE(ChunkStreamer_QuiescenceRequiresStableIdleUpdates) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     StreamingWorkCount loadWork{
         .pending = 1,
@@ -3236,7 +3175,7 @@ TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {
         WorldMeshStore meshStore;
         auto generator = makeGenerator(registry);
 
-        ChunkStreamer streamer;
+        ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
         StreamingConfig stream;
         stream.viewDistanceChunks = viewDistance;
         stream.unloadDistanceChunks = viewDistance;
@@ -3247,7 +3186,6 @@ TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {
         stream.workerThreads = 0;
         stream.maxResidentChunks = 0;
         streamer.setConfig(stream);
-        streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
         size_t loadAttempts = 0;
         streamer.setChunkLoader([&](ChunkCoord coord) {
@@ -3308,7 +3246,7 @@ TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
 
-    ChunkStreamer streamer;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -3319,7 +3257,6 @@ TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
 
     for (int update = 0; update < 4; ++update) {
         streamer.update(glm::vec3(0.0f));

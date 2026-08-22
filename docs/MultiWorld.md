@@ -66,9 +66,10 @@ derived and renderer-facing state for that world:
 - `WorldRenderConfig`
 - Voxel and shadow shader handles
 
-`WorldView::setGenerator()` binds the streaming pipeline to the supplied
-generator. The application assigns the same generator to both the `World` and
-its `WorldView` during bootstrap.
+`WorldView::setGenerator()` replaces the streaming pipeline's generator. The
+chunk manager, mesh store, block registry, and texture atlas remain fixed for
+the lifetime of the view. The application assigns the same generator to both
+the `World` and its `WorldView` during bootstrap.
 
 ## Application Wiring
 

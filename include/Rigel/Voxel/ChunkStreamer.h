@@ -19,6 +19,7 @@
 #include <functional>
 #include <optional>
 #include <queue>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -129,7 +130,7 @@ private:
 
     struct GenResult {
         ChunkCoord coord;
-        uint64_t lifecycle = 0;
+        uint64_t bindingEpoch = 0;
         std::array<BlockState, Chunk::VOLUME> blocks{};
         uint32_t worldGenVersion = 0;
         double seconds = 0.0;
@@ -142,6 +143,7 @@ private:
     struct MeshTask {
         ChunkCoord coord;
         uint64_t requestId = 0;
+        uint64_t bindingEpoch = 0;
         uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
         std::array<BlockState, Chunk::VOLUME> blocks{};
@@ -151,6 +153,7 @@ private:
     struct MeshResult {
         ChunkCoord coord;
         uint64_t requestId = 0;
+        uint64_t bindingEpoch = 0;
         uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
         ChunkMesh mesh;
@@ -168,6 +171,7 @@ private:
     struct MeshInFlight {
         MeshRequestKind kind = MeshRequestKind::Missing;
         uint64_t requestId = 0;
+        uint64_t bindingEpoch = 0;
         uint32_t observedRevision = 0;
         bool prioritized = false;
         bool obsolete = false;
@@ -236,6 +240,8 @@ private:
     size_t m_inFlightMeshMissing = 0;
     size_t m_inFlightMeshDirty = 0;
     uint64_t m_nextMeshRequestId = 1;
+    std::shared_mutex m_bindingMutex;
+    uint64_t m_bindingEpoch = 1;
     MeshRequestKind m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;
@@ -247,7 +253,6 @@ private:
     bool m_workStartedThisUpdate = false;
     uint64_t m_streamingUpdateSequence = 0;
     uint64_t m_lifecycleUpdateSequence = 0;
-    uint64_t m_generationLifecycle = 1;
     uint64_t m_nextEvictionRetrySequence = 0;
     std::function<void()> m_generationStartCallback;
     std::function<void()> m_meshBuildStartCallback;

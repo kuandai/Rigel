@@ -142,6 +142,23 @@ BlockID registerTestBlock(BlockRegistry& registry, const std::string& identifier
     return registry.registerBlock(identifier, std::move(block));
 }
 
+BlockID registerTexturedTestBlock(BlockRegistry& registry,
+                                  const std::string& identifier,
+                                  const std::string& texture) {
+    BlockType block;
+    block.identifier = identifier;
+    block.isOpaque = true;
+    block.isSolid = true;
+    block.textures = FaceTextures::uniform(texture);
+    return registry.registerBlock(identifier, std::move(block));
+}
+
+void addTestTexture(TextureAtlas& atlas, const std::string& identifier) {
+    std::array<unsigned char, 16 * 16 * 4> pixels{};
+    pixels.fill(255);
+    atlas.addTexture(identifier, pixels.data());
+}
+
 Rigel::Persistence::ChunkData buildPayload(ChunkCoord coord,
                                            BlockRegistry& registry,
                                            const std::vector<BlockID>& palette,
@@ -1226,6 +1243,9 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
     CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(1));
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
     CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
 
     for (uint32_t i = 0;
@@ -1275,6 +1295,107 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     }
     CHECK_EQ(accepted->worldGenVersion(), replacementConfig.world.version);
     CHECK_EQ(accepted->getBlock(0, 0, 0).id, replacementBlock);
+}
+
+TEST_CASE(ChunkStreamer_RebindSupersedesOutstandingGeneration) {
+    ChunkManager manager;
+    WorldMeshStore meshStore;
+    auto originalRegistry = std::make_unique<BlockRegistry>();
+    BlockID originalBlock =
+        registerTestBlock(*originalRegistry, "rigel:original_rebind_solid");
+
+    auto originalGenerator = std::make_shared<WorldGenerator>(*originalRegistry);
+    WorldGenConfig originalConfig;
+    originalConfig.solidBlock = "rigel:original_rebind_solid";
+    originalConfig.surfaceBlock = "rigel:original_rebind_solid";
+    originalConfig.terrain.baseHeight = 64.0f;
+    originalConfig.terrain.heightVariation = 0.0f;
+    originalGenerator->setConfig(originalConfig);
+
+    BlockRegistry replacementRegistry;
+    registerTestBlock(replacementRegistry, "rigel:replacement_rebind_unused");
+    BlockID replacementBlock =
+        registerTestBlock(replacementRegistry, "rigel:replacement_rebind_solid");
+
+    auto replacementGenerator = std::make_shared<WorldGenerator>(replacementRegistry);
+    WorldGenConfig replacementConfig = originalConfig;
+    replacementConfig.solidBlock = "rigel:replacement_rebind_solid";
+    replacementConfig.surfaceBlock = "rigel:replacement_rebind_solid";
+    replacementGenerator->setConfig(replacementConfig);
+    CHECK_EQ(originalConfig.world.version, replacementConfig.world.version);
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 1;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 4;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(&manager,
+                  &meshStore,
+                  originalRegistry.get(),
+                  nullptr,
+                  originalGenerator);
+
+    auto originalGate = std::make_shared<WorkerGate>();
+    auto replacementGate = std::make_shared<WorkerGate>();
+    WorkerGateRelease releaseOriginalOnExit(originalGate);
+    WorkerGateRelease releaseReplacementOnExit(replacementGate);
+    std::atomic<size_t> jobsEntered{0};
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [originalGate, replacementGate, &jobsEntered]() {
+            size_t jobIndex = jobsEntered.fetch_add(1, std::memory_order_relaxed);
+            if (jobIndex == 0) {
+                originalGate->enterAndWait();
+            } else if (jobIndex == 1) {
+                replacementGate->enterAndWait();
+            }
+        });
+
+    const ChunkCoord coord{0, 0, 0};
+    streamer.update(coord.toWorldCenter());
+    CHECK(originalGate->waitUntilEntered());
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+
+    streamer.bind(&manager,
+                  &meshStore,
+                  &replacementRegistry,
+                  nullptr,
+                  replacementGenerator);
+    originalGenerator.reset();
+    originalRegistry.reset();
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(jobsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending, static_cast<size_t>(1));
+
+    originalGate->release();
+    CHECK(waitForGenerationCompletion(streamer));
+    streamer.processCompletions();
+    CHECK(!manager.hasChunk(coord));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
+
+    streamer.update(coord.toWorldCenter());
+    CHECK(replacementGate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, static_cast<uint64_t>(2));
+    replacementGate->release();
+    CHECK(waitForGenerationCompletion(streamer));
+    streamer.processCompletions();
+
+    Chunk* accepted = manager.getChunk(coord);
+    CHECK(accepted != nullptr);
+    if (!accepted) {
+        return;
+    }
+    CHECK_EQ(accepted->worldGenVersion(), replacementConfig.world.version);
+    CHECK_EQ(accepted->getBlock(0, 0, 0).id, replacementBlock);
+    CHECK(accepted->getBlock(0, 0, 0).id != originalBlock);
 }
 
 TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
@@ -2571,6 +2692,130 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
         }
     });
     CHECK_EQ(installedIndexCount, static_cast<size_t>(60));
+}
+
+TEST_CASE(ChunkStreamer_RebindSupersedesOutstandingMeshRequest) {
+    auto originalManager = std::make_unique<ChunkManager>();
+    ChunkManager replacementManager;
+    auto originalMeshStore = std::make_unique<WorldMeshStore>();
+    WorldMeshStore replacementMeshStore;
+    auto originalRegistry = std::make_unique<BlockRegistry>();
+    BlockRegistry replacementRegistry;
+    auto originalAtlas = std::make_unique<TextureAtlas>();
+    TextureAtlas replacementAtlas;
+    const std::string texture = "textures/rebind_solid.png";
+
+    BlockID originalSolid = registerTexturedTestBlock(
+        *originalRegistry, "rigel:rebind_solid", texture);
+    BlockID replacementSolid = registerTexturedTestBlock(
+        replacementRegistry, "rigel:rebind_solid", texture);
+    CHECK_EQ(originalSolid, replacementSolid);
+    addTestTexture(*originalAtlas, texture);
+    addTestTexture(replacementAtlas, "textures/rebind_unused.png");
+    addTestTexture(replacementAtlas, texture);
+
+    auto originalGenerator = makeGenerator(*originalRegistry);
+    auto replacementGenerator = makeGenerator(replacementRegistry);
+    CHECK_EQ(originalGenerator->config().world.version,
+             replacementGenerator->config().world.version);
+
+    const ChunkCoord coord{0, 0, 0};
+    Chunk& originalChunk = originalManager->getOrCreateChunk(coord);
+    originalChunk.setBlock(
+        0, 0, 0, BlockState{originalSolid}, *originalRegistry);
+    originalChunk.setWorldGenVersion(originalGenerator->config().world.version);
+    originalChunk.setLoadedFromDisk(true);
+
+    Chunk& replacementChunk = replacementManager.getOrCreateChunk(coord);
+    replacementChunk.setBlock(
+        0, 0, 0, BlockState{replacementSolid}, replacementRegistry);
+    replacementChunk.setBlock(
+        1, 0, 0, BlockState{replacementSolid}, replacementRegistry);
+    replacementChunk.setWorldGenVersion(replacementGenerator->config().world.version);
+    replacementChunk.setLoadedFromDisk(true);
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 1;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.bind(originalManager.get(),
+                  originalMeshStore.get(),
+                  originalRegistry.get(),
+                  originalAtlas.get(),
+                  originalGenerator);
+
+    auto originalGate = std::make_shared<WorkerGate>();
+    auto replacementGate = std::make_shared<WorkerGate>();
+    WorkerGateRelease releaseOriginalOnExit(originalGate);
+    WorkerGateRelease releaseReplacementOnExit(replacementGate);
+    std::atomic<size_t> buildsEntered{0};
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer,
+        [originalGate, replacementGate, &buildsEntered]() {
+            size_t buildIndex = buildsEntered.fetch_add(1, std::memory_order_relaxed);
+            if (buildIndex == 0) {
+                originalGate->enterAndWait();
+            } else if (buildIndex == 1) {
+                replacementGate->enterAndWait();
+            }
+        });
+
+    streamer.update(coord.toWorldCenter());
+    CHECK(originalGate->waitUntilEntered());
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
+
+    streamer.bind(&replacementManager,
+                  &replacementMeshStore,
+                  &replacementRegistry,
+                  &replacementAtlas,
+                  replacementGenerator);
+    originalGenerator.reset();
+    originalAtlas.reset();
+    originalRegistry.reset();
+    originalMeshStore.reset();
+    originalManager.reset();
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
+    CHECK(!replacementMeshStore.contains(coord));
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+
+    originalGate->release();
+    CHECK(waitForMeshCompletions(streamer, 1));
+    CHECK(!replacementMeshStore.contains(coord));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(0));
+
+    streamer.update(coord.toWorldCenter());
+    CHECK(replacementGate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    replacementGate->release();
+    CHECK(waitForMeshCompletions(streamer, 2));
+
+    CHECK(replacementMeshStore.contains(coord));
+    size_t installedIndexCount = 0;
+    bool usesReplacementTextureLayer = true;
+    replacementMeshStore.forEach([&](const WorldMeshEntry& entry) {
+        if (entry.coord != coord) {
+            return;
+        }
+        installedIndexCount = entry.mesh.indexCount();
+        for (const VoxelVertex& vertex : entry.mesh.vertices) {
+            usesReplacementTextureLayer =
+                usesReplacementTextureLayer && vertex.textureLayer == 1;
+        }
+    });
+    CHECK_EQ(installedIndexCount, static_cast<size_t>(60));
+    CHECK(usesReplacementTextureLayer);
 }
 
 TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {

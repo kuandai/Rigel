@@ -2,7 +2,9 @@
 #include "Rigel/Persistence/Storage.h"
 #include "ZoneIdentifier.h"
 
+#include <algorithm>
 #include <spdlog/spdlog.h>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -10,6 +12,92 @@
 namespace Rigel::Persistence {
 
 namespace {
+
+class MetadataBufferWriter final : public ByteWriter {
+public:
+    explicit MetadataBufferWriter(std::vector<uint8_t>& payload)
+        : m_payload(payload) {
+    }
+
+    void writeU8(uint8_t value) override {
+        writeBytes(&value, sizeof(value));
+    }
+
+    void writeU16(uint16_t value) override {
+        const uint8_t bytes[] = {
+            static_cast<uint8_t>((value >> 8) & 0xFF),
+            static_cast<uint8_t>(value & 0xFF)
+        };
+        writeBytes(bytes, sizeof(bytes));
+    }
+
+    void writeU32(uint32_t value) override {
+        const uint8_t bytes[] = {
+            static_cast<uint8_t>((value >> 24) & 0xFF),
+            static_cast<uint8_t>((value >> 16) & 0xFF),
+            static_cast<uint8_t>((value >> 8) & 0xFF),
+            static_cast<uint8_t>(value & 0xFF)
+        };
+        writeBytes(bytes, sizeof(bytes));
+    }
+
+    void writeI32(int32_t value) override {
+        writeU32(static_cast<uint32_t>(value));
+    }
+
+    void writeBytes(const uint8_t* src, size_t len) override {
+        requireCapacity(m_position, len);
+        if (len == 0) {
+            return;
+        }
+        if (m_position + len > m_payload.size()) {
+            m_payload.resize(m_position + len, 0);
+        }
+        std::copy_n(src, len, m_payload.data() + m_position);
+        m_position += len;
+    }
+
+    size_t size() const override {
+        return m_payload.size();
+    }
+
+    size_t tell() const override {
+        return m_position;
+    }
+
+    void seek(size_t offset) override {
+        requireCapacity(offset, 0);
+        if (offset > m_payload.size()) {
+            m_payload.resize(offset, 0);
+        }
+        m_position = offset;
+    }
+
+    void writeAt(size_t offset, const uint8_t* src, size_t len) override {
+        requireCapacity(offset, len);
+        if (len == 0) {
+            return;
+        }
+        if (offset + len > m_payload.size()) {
+            m_payload.resize(offset + len, 0);
+        }
+        std::copy_n(src, len, m_payload.data() + offset);
+    }
+
+    void flush() override {
+    }
+
+private:
+    void requireCapacity(size_t offset, size_t len) const {
+        if (offset > m_payload.max_size() ||
+            len > m_payload.max_size() - offset) {
+            throw std::length_error("Metadata payload exceeds staging capacity");
+        }
+    }
+
+    std::vector<uint8_t>& m_payload;
+    size_t m_position = 0;
+};
 
 std::string parentPath(const std::string& path) {
     auto pos = path.find_last_of('/');
@@ -20,15 +108,32 @@ std::string parentPath(const std::string& path) {
 }
 
 template <typename Codec, typename Metadata>
+std::vector<uint8_t> encodeMetadata(Codec& codec, const Metadata& metadata) {
+    std::vector<uint8_t> payload;
+    MetadataBufferWriter writer(payload);
+    codec.write(metadata, writer);
+    writer.flush();
+    return payload;
+}
+
+void publishMetadata(StorageBackend& storage,
+                     const std::vector<uint8_t>& payload,
+                     const std::string& path) {
+    storage.mkdirs(parentPath(path));
+    auto session = storage.openWrite(path, AtomicWriteOptions{});
+    if (!payload.empty()) {
+        session->writer().writeBytes(payload.data(), payload.size());
+    }
+    session->writer().flush();
+    session->commit();
+}
+
+template <typename Codec, typename Metadata>
 void writeMetadata(StorageBackend& storage,
                    Codec& codec,
                    const Metadata& metadata,
                    const std::string& path) {
-    storage.mkdirs(parentPath(path));
-    auto session = storage.openWrite(path, AtomicWriteOptions{});
-    codec.write(metadata, session->writer());
-    session->writer().flush();
-    session->commit();
+    publishMetadata(storage, encodeMetadata(codec, metadata), path);
 }
 
 } // namespace
@@ -73,13 +178,19 @@ void PersistenceService::saveWorld(const WorldSnapshot& snapshot, const Persiste
             zoneCodec.metadataPath(ZoneKey{zone.zoneId}, context));
     }
 
-    writeMetadata(*context.storage, worldCodec, snapshot.metadata, worldPath);
+    auto worldPayload = encodeMetadata(worldCodec, snapshot.metadata);
+    std::vector<std::vector<uint8_t>> zonePayloads;
+    zonePayloads.reserve(snapshot.zones.size());
+    for (const auto& zone : snapshot.zones) {
+        zonePayloads.push_back(encodeMetadata(zoneCodec, zone));
+    }
+
+    publishMetadata(*context.storage, worldPayload, worldPath);
 
     for (size_t index = 0; index < snapshot.zones.size(); ++index) {
-        writeMetadata(
+        publishMetadata(
             *context.storage,
-            zoneCodec,
-            snapshot.zones[index],
+            zonePayloads[index],
             zonePaths[index]);
     }
 }

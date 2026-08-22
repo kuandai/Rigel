@@ -522,6 +522,49 @@ TEST_CASE(Persistence_AggregateMetadataSaveRejectsSplitMemoryLayoutsBeforeWrites
 }
 #endif
 
+TEST_CASE(Persistence_AggregateMetadataSaveValidatesAllPayloadsBeforeWrites) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+
+    FormatRegistry registry;
+    registry.registerFormat(Backends::Memory::descriptor(), Backends::Memory::factory(), Backends::Memory::probe());
+
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    WorldSnapshot original;
+    original.metadata = WorldMetadata{"original", "Original World"};
+    original.zones = {
+        ZoneMetadata{"zone-earlier", "Original Earlier Zone"},
+        ZoneMetadata{"zone-later", "Original Later Zone"}
+    };
+    service.saveWorld(original, context);
+
+    const auto originalFiles = storage->files();
+    storage->clearCalls();
+
+    WorldSnapshot replacement;
+    replacement.metadata = WorldMetadata{"replacement", "Replacement World"};
+    replacement.zones = {
+        ZoneMetadata{"zone-earlier", "Replacement Earlier Zone"},
+        ZoneMetadata{"zone-later", std::string(1'048'577, 'x')}
+    };
+
+    std::string diagnostic;
+    try {
+        service.saveWorld(replacement, context);
+    } catch (const std::runtime_error& error) {
+        diagnostic = error.what();
+    }
+
+    CHECK_EQ(storage->files(), originalFiles);
+    CHECK(storage->calls().empty());
+    CHECK(diagnostic.find("MemoryFormat: string length exceeds format limit") !=
+          std::string::npos);
+}
+
 TEST_CASE(Persistence_ZoneMetadataRoundTrip) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
 

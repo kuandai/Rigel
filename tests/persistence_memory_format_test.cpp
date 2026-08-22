@@ -398,9 +398,13 @@ TEST_CASE(MemoryFormat_RejectsMismatchedBlockCount) {
         },
         "ChunkSerializer: block data size mismatch");
 
+    ChunkSpan truncated = single;
+    truncated.sizeX = 2;
+    auto truncatedBytes = chunkFixture(truncated, 2);
+    appendBlock(truncatedBytes);
     checkFormatError(
-        [&]() { fixture.loadChunk(chunkFixture(single, 1)); },
-        "MemoryFormat: chunk count exceeds remaining input");
+        [&]() { fixture.loadChunk(truncatedBytes); },
+        "MemoryFormat: chunk block count exceeds remaining input");
 }
 
 TEST_CASE(MemoryFormat_InvalidNumericBlockIdDoesNotMutateChunk) {

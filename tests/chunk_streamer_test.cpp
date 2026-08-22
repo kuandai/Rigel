@@ -3368,6 +3368,8 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     removed.setLoadedFromDisk(true);
     removed.clearPersistDirty();
 
+    auto gate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 0;
@@ -3376,54 +3378,29 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     stream.meshQueueLimit = 0;
     stream.updateBudgetPerFrame = 0;
     stream.applyBudgetPerFrame = 0;
-    stream.workerThreads = 0;
+    stream.workerThreads = 2;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
-
-    streamer.update(removedCoord.toWorldCenter());
-    streamer.processCompletions();
-    CHECK(manager.hasChunk(removedCoord));
-    CHECK(meshStore.contains(removedCoord));
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
-    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer,
+        [gate, &buildsEntered]() {
+            if (buildsEntered.fetch_add(1, std::memory_order_relaxed) == 0) {
+                gate->enterAndWait();
+            }
+        });
+    WorkerGateRelease releaseOnExit(gate);
 
     streamer.update(survivingCoord.toWorldCenter());
-    streamer.processCompletions();
+    bool firstBuildEntered = gate->waitUntilEntered();
+    if (!firstBuildEntered) {
+        gate->release();
+    }
+    CHECK(firstBuildEntered);
     CHECK(manager.hasChunk(survivingCoord));
     CHECK(manager.hasChunk(removedCoord));
-    CHECK(meshStore.contains(survivingCoord));
-    CHECK(meshStore.contains(removedCoord));
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
-    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(2));
-
-    std::vector<ChunkStreamer::DebugChunkState> states;
-    auto stateFor = [&](ChunkCoord coord)
-        -> std::optional<ChunkStreamer::DebugState> {
-        auto it = std::find_if(
-            states.begin(), states.end(),
-            [coord](const ChunkStreamer::DebugChunkState& state) {
-                return state.coord == coord;
-            });
-        if (it == states.end()) {
-            return std::nullopt;
-        }
-        return it->state;
-    };
-    streamer.getDebugStates(states);
-    const auto survivingState = stateFor(survivingCoord);
-    const auto removedState = stateFor(removedCoord);
-    CHECK(survivingState.has_value());
-    CHECK(removedState.has_value());
-    CHECK_EQ(*survivingState, ChunkStreamer::DebugState::ReadyMesh);
-    CHECK_EQ(*removedState, ChunkStreamer::DebugState::ReadyMesh);
-
-    size_t hiddenBoundaryIndexCount = 0;
-    meshStore.forEach([&](const WorldMeshEntry& entry) {
-        if (entry.coord == survivingCoord) {
-            hiddenBoundaryIndexCount = entry.mesh.indexCount();
-        }
-    });
-    CHECK_EQ(hiddenBoundaryIndexCount, static_cast<size_t>(30));
+    CHECK(!meshStore.contains(survivingCoord));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
 
     const uint32_t revisionBeforeRemoval = surviving.meshRevision();
     stream.unloadDistanceChunks = 0;
@@ -3433,16 +3410,31 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     CHECK(!manager.hasChunk(removedCoord));
     CHECK_EQ(surviving.meshRevision(), revisionBeforeRemoval + 1);
     CHECK(!meshStore.contains(removedCoord));
-    streamer.getDebugStates(states);
-    CHECK(!stateFor(removedCoord).has_value());
-    const auto stateAfterRemoval = stateFor(survivingCoord);
-    CHECK(stateAfterRemoval.has_value());
-    CHECK_EQ(*stateAfterRemoval, ChunkStreamer::DebugState::ReadyMesh);
 
     streamer.update(survivingCoord.toWorldCenter());
-    streamer.processCompletions();
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
-    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshRequestsCoalesced,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(1));
+
+    gate->release();
+    CHECK(waitForMeshCompletions(streamer, 1));
+    CHECK(!meshStore.contains(survivingCoord));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+             static_cast<uint64_t>(1));
+
+    streamer.update(survivingCoord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK(waitForMeshCompletions(streamer, 2));
+
+    const auto& metrics = streamer.workMetrics();
+    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(metrics.meshJobsRejectedStale, static_cast<uint64_t>(1));
+    CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
+    CHECK_EQ(buildsEntered.load(std::memory_order_relaxed), static_cast<size_t>(2));
 
     size_t exposedBoundaryIndexCount = 0;
     meshStore.forEach([&](const WorldMeshEntry& entry) {
@@ -3452,9 +3444,13 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     });
     CHECK_EQ(exposedBoundaryIndexCount, static_cast<size_t>(36));
 
-    streamer.update(survivingCoord.toWorldCenter());
-    streamer.processCompletions();
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(3));
+    for (int i = 0; i < 8; ++i) {
+        streamer.update(survivingCoord.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(metrics.meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshJobsCompleted, static_cast<uint64_t>(2));
+    CHECK_EQ(metrics.meshRequestsCoalesced, static_cast<uint64_t>(1));
 }
 
 TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {

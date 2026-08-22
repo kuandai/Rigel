@@ -226,6 +226,19 @@ TEST_CASE(RenderConfig_RejectsShadowValuesAboveResourceMaxima) {
         "expected integer no greater than 8192, got '8193'"
     );
 
+    const std::string pcfMaxError = exceptionMessage([] {
+        RenderConfigProvider provider;
+        provider.addSource(std::make_unique<StringConfigSource>(
+            "render:\n  shadow:\n    pcf_radius_near: 5\n"
+        ));
+        provider.load();
+    });
+    CHECK_EQ(
+        pcfMaxError,
+        "Invalid configuration value 'render.shadow.pcf_radius_near' in "
+        "'string': expected integer no greater than 4, got '5'"
+    );
+
     const std::string pcfError = exceptionMessage([] {
         RenderConfigProvider provider;
         provider.addSource(std::make_unique<StringConfigSource>(

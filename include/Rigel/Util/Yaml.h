@@ -8,12 +8,59 @@
 #include <charconv>
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
 
 namespace Rigel::Util {
+
+namespace detail {
+
+struct ParsedConfigurationInteger {
+    int64_t value = 0;
+    std::string declared;
+    std::string fullPath;
+};
+
+[[noreturn]] inline void throwInvalidConfigurationInteger(
+    const ParsedConfigurationInteger& parsed,
+    const char* sourceName,
+    const std::string& expectation) {
+    throw std::invalid_argument(
+        "Invalid configuration value '" + parsed.fullPath + "' in '" +
+        sourceName + "': expected " + expectation + ", got '" +
+        parsed.declared + "'"
+    );
+}
+
+inline std::optional<ParsedConfigurationInteger> parseConfigurationInteger(
+    ryml::ConstNodeRef node,
+    const char* key,
+    const char* sourceName,
+    std::string_view path,
+    const std::string& expectation) {
+    if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {
+        return std::nullopt;
+    }
+
+    const ryml::csubstr scalar = node[ryml::to_csubstr(key)].val();
+    ParsedConfigurationInteger parsed;
+    parsed.declared.assign(scalar.data(), scalar.size());
+    parsed.fullPath = path.empty()
+        ? std::string(key)
+        : std::string(path) + "." + key;
+    const char* begin = parsed.declared.data();
+    const char* end = begin + parsed.declared.size();
+    const auto result = std::from_chars(begin, end, parsed.value);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        throwInvalidConfigurationInteger(parsed, sourceName, expectation);
+    }
+    return parsed;
+}
+
+} // namespace detail
 
 inline void warnUnknownKeys(ryml::ConstNodeRef node,
                             const char* sourceName,
@@ -65,29 +112,19 @@ inline int readIntInRange(ryml::ConstNodeRef node,
                           int maximum,
                           const char* sourceName,
                           std::string_view path) {
-    if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {
+    const std::string expectation =
+        "integer in [" + std::to_string(minimum) + ", " +
+        std::to_string(maximum) + "]";
+    const auto parsed = detail::parseConfigurationInteger(
+        node, key, sourceName, path, expectation);
+    if (!parsed) {
         return fallback;
     }
-
-    const ryml::csubstr scalar = node[ryml::to_csubstr(key)].val();
-    const std::string declared(scalar.data(), scalar.size());
-    int64_t value = 0;
-    const char* begin = declared.data();
-    const char* end = begin + declared.size();
-    const auto result = std::from_chars(begin, end, value);
-    const std::string fullPath = path.empty()
-        ? std::string(key)
-        : std::string(path) + "." + key;
-    if (result.ec != std::errc{} || result.ptr != end ||
-        value < minimum || value > maximum) {
-        throw std::invalid_argument(
-            "Invalid configuration value '" + fullPath + "' in '" +
-            sourceName + "': expected integer in [" +
-            std::to_string(minimum) + ", " + std::to_string(maximum) +
-            "], got '" + declared + "'"
-        );
+    if (parsed->value < minimum || parsed->value > maximum) {
+        detail::throwInvalidConfigurationInteger(
+            *parsed, sourceName, expectation);
     }
-    return static_cast<int>(value);
+    return static_cast<int>(parsed->value);
 }
 
 inline int readIntWithMaximum(ryml::ConstNodeRef node,
@@ -97,27 +134,28 @@ inline int readIntWithMaximum(ryml::ConstNodeRef node,
                               int maximum,
                               const char* sourceName,
                               std::string_view path) {
-    if (!node.readable() || !node.has_child(ryml::to_csubstr(key))) {
+    const std::string expectation =
+        "integer no greater than " + std::to_string(maximum);
+    const auto parsed = detail::parseConfigurationInteger(
+        node, key, sourceName, path, expectation);
+    if (!parsed) {
         return fallback;
     }
-
-    const ryml::csubstr scalar = node[ryml::to_csubstr(key)].val();
-    const std::string declared(scalar.data(), scalar.size());
-    int64_t value = 0;
-    const char* begin = declared.data();
-    const char* end = begin + declared.size();
-    const auto result = std::from_chars(begin, end, value);
-    const std::string fullPath = path.empty()
-        ? std::string(key)
-        : std::string(path) + "." + key;
-    if (result.ec != std::errc{} || result.ptr != end || value > maximum) {
-        throw std::invalid_argument(
-            "Invalid configuration value '" + fullPath + "' in '" +
-            sourceName + "': expected integer no greater than " +
-            std::to_string(maximum) + ", got '" + declared + "'"
-        );
+    if (parsed->value > maximum) {
+        detail::throwInvalidConfigurationInteger(
+            *parsed, sourceName, expectation);
     }
-    return static_cast<int>(std::max<int64_t>(minimum, value));
+    return static_cast<int>(std::max<int64_t>(minimum, parsed->value));
+}
+
+[[noreturn]] inline void throwConfigurationConstraint(
+    const char* sourceName,
+    std::string_view key,
+    const std::string& requirement) {
+    throw std::invalid_argument(
+        "Invalid configuration value '" + std::string(key) + "' in '" +
+        sourceName + "': " + requirement
+    );
 }
 
 inline float readFloat(ryml::ConstNodeRef node, const char* key, float fallback) {

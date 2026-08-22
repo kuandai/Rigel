@@ -6,21 +6,8 @@
 #include <ryml_std.hpp>
 
 #include <algorithm>
-#include <stdexcept>
 
 namespace Rigel::Voxel {
-namespace {
-
-[[noreturn]] void throwConstraint(const char* sourceName,
-                                  const char* key,
-                                  const std::string& requirement) {
-    throw std::invalid_argument(
-        "Invalid configuration value '" + std::string(key) + "' in '" +
-        sourceName + "': " + requirement
-    );
-}
-
-} // namespace
 
 void StreamingConfig::applyYaml(const char* sourceName, const std::string& yaml) {
     if (yaml.empty()) {
@@ -77,13 +64,13 @@ void StreamingConfig::applyYaml(const char* sourceName, const std::string& yaml)
         MaxBudgetPerFrame, sourceName, "streaming");
     workerThreads = Util::readIntWithMaximum(
         streamNode, "worker_threads", workerThreads, 0,
-        MaxWorkerThreads, sourceName, "streaming");
+        MaxTotalWorkerThreads, sourceName, "streaming");
     ioThreads = Util::readIntWithMaximum(
         streamNode, "io_threads", ioThreads, 0,
-        MaxWorkerThreads, sourceName, "streaming");
+        MaxTotalWorkerThreads, sourceName, "streaming");
     loadWorkerThreads = Util::readIntWithMaximum(
         streamNode, "load_worker_threads", loadWorkerThreads, 0,
-        MaxWorkerThreads, sourceName, "streaming");
+        MaxTotalWorkerThreads, sourceName, "streaming");
     loadApplyBudgetPerFrame = Util::readIntWithMaximum(
         streamNode, "load_apply_budget_per_frame", loadApplyBudgetPerFrame, 0,
         MaxBudgetPerFrame, sourceName, "streaming");
@@ -112,25 +99,25 @@ void StreamingConfig::applyYaml(const char* sourceName, const std::string& yaml)
     maxResidentChunks = static_cast<size_t>(resident);
 
     if (unloadDistanceChunks < viewDistanceChunks) {
-        throwConstraint(
+        Util::throwConfigurationConstraint(
             sourceName,
             "streaming.unload_distance_chunks",
             "must be greater than or equal to 'streaming.view_distance_chunks'"
         );
     }
-    if (workerThreads + ioThreads + loadWorkerThreads > MaxWorkerThreads) {
-        throwConstraint(
+    if (workerThreads + ioThreads + loadWorkerThreads > MaxTotalWorkerThreads) {
+        Util::throwConfigurationConstraint(
             sourceName,
             "streaming.worker_threads",
             "combined worker_threads, io_threads, and load_worker_threads "
-            "must not exceed " + std::to_string(MaxWorkerThreads)
+            "must not exceed " + std::to_string(MaxTotalWorkerThreads)
         );
     }
     if (loadPrefetchRadius > 0) {
         const int diameter = loadPrefetchRadius * 2 + 1;
         const int candidateCount = diameter * diameter * diameter - 1;
         if (loadPrefetchPerRequest > candidateCount) {
-            throwConstraint(
+            Util::throwConfigurationConstraint(
                 sourceName,
                 "streaming.load_prefetch_per_request",
                 "must not exceed the neighbor count selected by "

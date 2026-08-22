@@ -133,7 +133,7 @@ streaming:
     CHECK_EQ(config.meshQueueLimit,
              static_cast<size_t>(StreamingConfig::MaxQueueLimit));
     CHECK_EQ(config.workerThreads + config.ioThreads + config.loadWorkerThreads,
-             StreamingConfig::MaxWorkerThreads);
+             StreamingConfig::MaxTotalWorkerThreads);
     CHECK_EQ(config.loadPrefetchRadius, StreamingConfig::MaxPrefetchRadius);
     CHECK_EQ(config.loadPrefetchPerRequest,
              StreamingConfig::MaxPrefetchPerRequest);
@@ -151,6 +151,32 @@ TEST_CASE(StreamingConfig_RejectsValuesAboveOperationalMaxima) {
         radiusError,
         "Invalid configuration value 'streaming.view_distance_chunks' in "
         "'limits.yaml': expected integer no greater than 16, got '17'"
+    );
+
+    const std::string unloadError = exceptionMessage([] {
+        StreamingConfig config;
+        config.applyYaml(
+            "limits.yaml",
+            "streaming:\n  unload_distance_chunks: 25\n"
+        );
+    });
+    CHECK_EQ(
+        unloadError,
+        "Invalid configuration value 'streaming.unload_distance_chunks' in "
+        "'limits.yaml': expected integer no greater than 24, got '25'"
+    );
+
+    const std::string workerError = exceptionMessage([] {
+        StreamingConfig config;
+        config.applyYaml(
+            "limits.yaml",
+            "streaming:\n  worker_threads: 65\n"
+        );
+    });
+    CHECK_EQ(
+        workerError,
+        "Invalid configuration value 'streaming.worker_threads' in "
+        "'limits.yaml': expected integer no greater than 64, got '65'"
     );
 
     const std::string queueError = exceptionMessage([] {

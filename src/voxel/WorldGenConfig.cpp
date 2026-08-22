@@ -5,7 +5,6 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cstdint>
-#include <stdexcept>
 
 #include "Rigel/Util/Yaml.h"
 #include "Rigel/Util/Ryml.h"
@@ -288,19 +287,10 @@ void applyClimateLayer(ryml::ConstNodeRef node,
     }
 }
 
-[[noreturn]] void throwConstraint(const char* sourceName,
-                                  const char* key,
-                                  const std::string& requirement) {
-    throw std::invalid_argument(
-        "Invalid configuration value '" + std::string(key) + "' in '" +
-        sourceName + "': " + requirement
-    );
-}
-
 void validateWorldBounds(const WorldGenConfig::WorldConfig& world,
                          const char* sourceName) {
     if (world.maxY < world.minY) {
-        throwConstraint(
+        Util::throwConfigurationConstraint(
             sourceName,
             "world.max_y",
             "must be greater than or equal to 'world.min_y'"
@@ -309,7 +299,7 @@ void validateWorldBounds(const WorldGenConfig::WorldConfig& world,
     const int64_t height =
         static_cast<int64_t>(world.maxY) - world.minY + 1;
     if (height > WorldGenConfig::MaxWorldHeight) {
-        throwConstraint(
+        Util::throwConfigurationConstraint(
             sourceName,
             "world.max_y",
             "inclusive world height must not exceed " +
@@ -317,7 +307,7 @@ void validateWorldBounds(const WorldGenConfig::WorldConfig& world,
         );
     }
     if (world.seaLevel < world.minY || world.seaLevel > world.maxY) {
-        throwConstraint(
+        Util::throwConfigurationConstraint(
             sourceName,
             "world.sea_level",
             "must be between 'world.min_y' and 'world.max_y'"

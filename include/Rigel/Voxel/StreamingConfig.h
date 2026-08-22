@@ -9,7 +9,7 @@ struct StreamingConfig {
     static constexpr int MaxViewDistanceChunks = 16;
     static constexpr int MaxUnloadDistanceChunks = 24;
     static constexpr int MaxQueueLimit = 32768;
-    static constexpr int MaxWorkerThreads = 64;
+    static constexpr int MaxTotalWorkerThreads = 64;
     static constexpr int MaxBudgetPerFrame = 32768;
     static constexpr int MaxCachedRegions = 256;
     static constexpr int MaxInFlightRegions = 64;

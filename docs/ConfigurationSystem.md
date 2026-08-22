@@ -263,8 +263,8 @@ precedence.
 | `streaming.load_apply_budget_per_frame` | int | `8` | Disk payload apply budget (0 = unlimited). |
 | `streaming.load_region_drain_budget` | int | `32` | Region completion drain budget. |
 | `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited; maximum explicit cap `32768`). |
-| `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = disabled, maximum `256`). |
-| `streaming.load_max_inflight_regions` | int | `8` | Concurrent region read cap (0 = disabled, maximum `64`). |
+| `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = unlimited, maximum `256`). |
+| `streaming.load_max_inflight_regions` | int | `8` | Concurrent region read cap (0 = unlimited, maximum `64`). |
 | `streaming.load_prefetch_radius` | int | `1` | Region prefetch radius (maximum `4`). |
 | `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request (maximum `512` and no more than the selected neighbor cube). |
 | `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited, maximum explicit cap `65536`). |

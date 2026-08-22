@@ -94,6 +94,29 @@ TEST_CASE(FilesystemBackend_failed_atomic_replace_preserves_existing_file) {
     CHECK_EQ(readFile(storage, unownedTempPath), unownedData);
 }
 
+TEST_CASE(FilesystemBackend_missing_atomic_staging_file_preserves_existing_file) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto path = directory.path() / "region.bin";
+    const auto unownedTempPath = std::filesystem::path(path.string() + ".tmp");
+    const std::vector<uint8_t> previous{1, 2, 3, 4};
+    const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
+    const std::vector<uint8_t> unownedData{9, 8, 7};
+
+    writeFile(storage, path, previous);
+    auto session = storage.openWrite(path.string(), AtomicWriteOptions{});
+    session->writer().writeBytes(replacement.data(), replacement.size());
+    const auto ownedTempPath = onlyStagingFile(path);
+    writeRawFile(unownedTempPath, unownedData);
+
+    CHECK(std::filesystem::remove(ownedTempPath));
+    CHECK_THROWS(session->commit());
+
+    CHECK_EQ(readFile(storage, path), previous);
+    CHECK(!std::filesystem::exists(ownedTempPath));
+    CHECK_EQ(readFile(storage, unownedTempPath), unownedData);
+}
+
 TEST_CASE(FilesystemBackend_failed_atomic_write_removes_temporary_file) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;

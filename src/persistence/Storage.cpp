@@ -11,6 +11,13 @@
 #include <stdexcept>
 #include <system_error>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace Rigel::Persistence {
 
 namespace {
@@ -47,6 +54,23 @@ std::filesystem::path createUniqueTemporaryFile(const std::filesystem::path& fin
         }
         return candidate;
     }
+}
+
+void replaceFileAtomically(const std::filesystem::path& tempPath,
+                           const std::filesystem::path& finalPath,
+                           std::error_code& error) {
+#ifdef _WIN32
+    if (::MoveFileExW(
+            tempPath.c_str(),
+            finalPath.c_str(),
+            MOVEFILE_REPLACE_EXISTING) == 0) {
+        error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+        return;
+    }
+    error.clear();
+#else
+    std::filesystem::rename(tempPath, finalPath, error);
+#endif
 }
 
 class FileByteReader final : public ByteReader {
@@ -265,7 +289,7 @@ public:
             [](const std::filesystem::path& tempPath,
                const std::filesystem::path& finalPath,
                std::error_code& error) {
-                std::filesystem::rename(tempPath, finalPath, error);
+                replaceFileAtomically(tempPath, finalPath, error);
             });
     }
 

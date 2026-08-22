@@ -69,19 +69,29 @@ TEST_CASE(FilesystemBackend_failed_atomic_replace_preserves_existing_file) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;
     const auto path = directory.path() / "region.bin";
+    const auto tempPath = std::filesystem::path(path.string() + ".tmp.owned");
+    const auto unownedTempPath = std::filesystem::path(path.string() + ".tmp");
     const std::vector<uint8_t> previous{1, 2, 3, 4};
     const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
+    const std::vector<uint8_t> unownedData{9, 8, 7};
 
     writeFile(storage, path, previous);
-    auto session = storage.openWrite(path.string(), AtomicWriteOptions{});
-    session->writer().writeBytes(replacement.data(), replacement.size());
-    const auto tempPath = onlyStagingFile(path);
+    writeRawFile(tempPath, replacement);
+    writeRawFile(unownedTempPath, unownedData);
 
-    CHECK(std::filesystem::remove(tempPath));
-    CHECK_THROWS(session->commit());
+    CHECK_THROWS(detail::commitAtomicFile(
+        tempPath,
+        path,
+        []() {},
+        [](const std::filesystem::path&,
+           const std::filesystem::path&,
+           std::error_code& error) {
+            error = std::make_error_code(std::errc::permission_denied);
+        }));
 
     CHECK_EQ(readFile(storage, path), previous);
     CHECK(!std::filesystem::exists(tempPath));
+    CHECK_EQ(readFile(storage, unownedTempPath), unownedData);
 }
 
 TEST_CASE(FilesystemBackend_failed_atomic_write_removes_temporary_file) {
@@ -147,6 +157,27 @@ TEST_CASE(FilesystemBackend_abandoned_atomic_write_removes_temporary_file) {
 
     CHECK_EQ(readFile(storage, path), previous);
     CHECK(stagingFiles(path).empty());
+}
+
+TEST_CASE(FilesystemBackend_non_atomic_write_updates_destination_and_cannot_abort) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto path = directory.path() / "region.bin";
+    const std::vector<uint8_t> previous{1, 2, 3, 4};
+    const std::vector<uint8_t> replacement{5, 6, 7, 8, 9};
+
+    writeFile(storage, path, previous);
+    AtomicWriteOptions options;
+    options.atomic = false;
+    auto session = storage.openWrite(path.string(), options);
+    session->writer().writeBytes(replacement.data(), replacement.size());
+    session->writer().flush();
+
+    CHECK(stagingFiles(path).empty());
+    CHECK_EQ(std::filesystem::file_size(path), replacement.size());
+    session->abort();
+    session.reset();
+    CHECK_EQ(readFile(storage, path), replacement);
 }
 
 TEST_CASE(FilesystemBackend_destroying_committed_session_preserves_new_temporary_file) {

@@ -47,8 +47,9 @@ public:
 };
 
 struct AtomicWriteOptions {
+    // Atomic writes remain staged until commit and can be aborted without
+    // changing the destination. Non-atomic writes update it directly.
     bool atomic = true;
-    bool replaceExisting = true;
 };
 
 class AtomicWriteSession {

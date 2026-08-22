@@ -10,6 +10,7 @@
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "CRWorldMetadata.h"
+#include "MemoryByteReader.h"
 #include "../../../entity/EntityPersistenceLimits.h"
 #include "../../RegionFilename.h"
 #include "../../ZoneIdentifier.h"
@@ -307,79 +308,6 @@ private:
     ByteReader& m_reader;
     size_t m_start = 0;
     std::vector<uint8_t> m_bytes;
-};
-
-class MemoryByteReader final : public ByteReader {
-public:
-    explicit MemoryByteReader(std::vector<uint8_t> data)
-        : m_data(std::move(data)) {
-    }
-
-    uint8_t readU8() override {
-        ensureAvailable(1);
-        return m_data[m_pos++];
-    }
-
-    uint16_t readU16() override {
-        uint16_t value = 0;
-        value |= static_cast<uint16_t>(readU8()) << 8;
-        value |= static_cast<uint16_t>(readU8());
-        return value;
-    }
-
-    uint32_t readU32() override {
-        uint32_t value = 0;
-        value |= static_cast<uint32_t>(readU8()) << 24;
-        value |= static_cast<uint32_t>(readU8()) << 16;
-        value |= static_cast<uint32_t>(readU8()) << 8;
-        value |= static_cast<uint32_t>(readU8());
-        return value;
-    }
-
-    int32_t readI32() override {
-        return static_cast<int32_t>(readU32());
-    }
-
-    void readBytes(uint8_t* dst, size_t len) override {
-        ensureAvailable(len);
-        if (len == 0) {
-            return;
-        }
-        std::copy_n(m_data.data() + m_pos, len, dst);
-        m_pos += len;
-    }
-
-    size_t size() const override {
-        return m_data.size();
-    }
-
-    size_t tell() const override {
-        return m_pos;
-    }
-
-    void seek(size_t offset) override {
-        if (offset > m_data.size()) {
-            throw std::runtime_error("CRMemoryReader seek out of range");
-        }
-        m_pos = offset;
-    }
-
-    std::vector<uint8_t> readAt(size_t offset, size_t len) override {
-        if (offset + len > m_data.size()) {
-            throw std::runtime_error("CRMemoryReader readAt out of range");
-        }
-        return std::vector<uint8_t>(m_data.begin() + offset, m_data.begin() + offset + len);
-    }
-
-private:
-    void ensureAvailable(size_t len) {
-        if (m_pos + len > m_data.size()) {
-            throw std::runtime_error("CRMemoryReader read out of range");
-        }
-    }
-
-    std::vector<uint8_t> m_data;
-    size_t m_pos = 0;
 };
 
 class VectorWriter final : public ByteWriter {

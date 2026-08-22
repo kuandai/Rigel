@@ -10,6 +10,7 @@ public:
     struct Api {
         int (*initialize)();
         void (*terminate)();
+        void (*windowHint)(int, int);
         GLFWwindow* (*createWindow)(int, int, const char*, GLFWmonitor*, GLFWwindow*);
         void (*destroyWindow)(GLFWwindow*);
         void (*makeContextCurrent)(GLFWwindow*);
@@ -23,6 +24,7 @@ public:
     GlfwRuntime& operator=(const GlfwRuntime&) = delete;
 
     bool initialize();
+    void windowHint(int hint, int value) const;
     GLFWwindow* createWindow(int width, int height, const char* title);
     GLFWwindow* window() const { return m_window; }
     void makeContextCurrent() const;

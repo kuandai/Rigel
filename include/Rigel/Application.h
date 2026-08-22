@@ -3,6 +3,8 @@
 
 namespace Rigel {
 
+class ApplicationTestAccess;
+
 class Application {
 public:
     Application();
@@ -11,9 +13,12 @@ public:
     void run();
 
 private:
+    struct Impl;
+    explicit Application(std::unique_ptr<Impl> impl);
+
     void initialize();
 
-    struct Impl;
+    friend class ApplicationTestAccess;
     std::unique_ptr<Impl> m_impl;
 };
 

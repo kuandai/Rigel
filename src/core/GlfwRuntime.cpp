@@ -10,6 +10,7 @@ GlfwRuntime::GlfwRuntime()
     : GlfwRuntime(Api{
           &glfwInit,
           &glfwTerminate,
+          &glfwWindowHint,
           &glfwCreateWindow,
           &glfwDestroyWindow,
           &glfwMakeContextCurrent,
@@ -30,6 +31,12 @@ bool GlfwRuntime::initialize() {
     }
     m_initialized = m_api.initialize() != 0;
     return m_initialized;
+}
+
+void GlfwRuntime::windowHint(int hint, int value) const {
+    if (m_initialized) {
+        m_api.windowHint(hint, value);
+    }
 }
 
 GLFWwindow* GlfwRuntime::createWindow(int width, int height, const char* title) {

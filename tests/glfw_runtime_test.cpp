@@ -24,6 +24,9 @@ void terminate() {
     g_calls->events.emplace_back("terminate");
 }
 
+void windowHint(int, int) {
+}
+
 GLFWwindow* createWindow(int, int, const char*, GLFWmonitor*, GLFWwindow*) {
     g_calls->events.emplace_back("create window");
     return g_calls->window;
@@ -43,6 +46,7 @@ Rigel::GlfwRuntime::Api fakeApi() {
     return {
         &initialize,
         &terminate,
+        &windowHint,
         &createWindow,
         &destroyWindow,
         &makeContextCurrent,

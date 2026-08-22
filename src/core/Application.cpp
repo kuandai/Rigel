@@ -1,4 +1,5 @@
 #include "Rigel/Application.h"
+#include "ApplicationTestAccess.h"
 #include "GlfwRuntime.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Core/Profiler.h"
@@ -86,12 +87,30 @@ struct Application::Impl {
     Input::InputCallbackContext inputCallbacks;
     bool openGLInitialized = false;
     bool shutDown = false;
+    void (*afterContextAcquired)() = nullptr;
+    void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
 
+    Impl() = default;
+    explicit Impl(ApplicationConstructionHooks hooks)
+        : runtime(hooks.runtimeApi)
+        , afterContextAcquired(hooks.afterContextAcquired)
+        , shutdownStageCompleted(hooks.shutdownStageCompleted) {
+    }
     ~Impl();
     void shutdown(bool saveWorld) noexcept;
+    void completeShutdownStage(ApplicationShutdownStage stage) noexcept {
+        if (shutdownStageCompleted) {
+            shutdownStageCompleted(stage);
+        }
+    }
 };
 
-Application::Application() : m_impl(std::make_unique<Impl>()) {
+Application::Application()
+    : Application(std::make_unique<Impl>()) {
+}
+
+Application::Application(std::unique_ptr<Impl> impl)
+    : m_impl(std::move(impl)) {
     try {
         initialize();
     } catch (...) {
@@ -123,11 +142,13 @@ void Application::initialize() {
     spdlog::info("GLFW initialized successfully");
 
     // Create a simple GLFW window
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, Render::kOpenGLContextMajorVersion);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, Render::kOpenGLContextMinorVersion);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    glfwWindowHint(GLFW_DEPTH_BITS, 24);
+    m_impl->runtime.windowHint(
+        GLFW_CONTEXT_VERSION_MAJOR, Render::kOpenGLContextMajorVersion);
+    m_impl->runtime.windowHint(
+        GLFW_CONTEXT_VERSION_MINOR, Render::kOpenGLContextMinorVersion);
+    m_impl->runtime.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    m_impl->runtime.windowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+    m_impl->runtime.windowHint(GLFW_DEPTH_BITS, 24);
 
     m_impl->window.window = m_impl->runtime.createWindow(800, 600, "Rigel");
     if (!m_impl->window.window) {
@@ -136,6 +157,9 @@ void Application::initialize() {
     }
 
     m_impl->runtime.makeContextCurrent();
+    if (m_impl->afterContextAcquired) {
+        m_impl->afterContextAcquired();
+    }
     const int swapInterval = m_impl->timing.benchmarkEnabled ? 0 : 1;
     glfwSwapInterval(swapInterval);
     spdlog::info("Frame pacing swap interval: {}", swapInterval);
@@ -373,8 +397,10 @@ void Application::Impl::shutdown(bool saveWorld) noexcept {
     const bool hasContext = runtime.window() != nullptr;
     if (hasContext) {
         runtime.makeContextCurrent();
+        completeShutdownStage(ApplicationShutdownStage::ContextMadeCurrent);
         UI::shutdown();
     }
+    completeShutdownStage(ApplicationShutdownStage::UserInterfaceReleased);
 
     Voxel::WorldView* activeView = world.worldView;
     if (!activeView) {
@@ -389,6 +415,7 @@ void Application::Impl::shutdown(bool saveWorld) noexcept {
         activeView->setChunkEvictionCallback({});
     }
     world.chunkLoader.reset();
+    completeShutdownStage(ApplicationShutdownStage::AsyncLoadingStopped);
 
     if (activeView) {
         activeView->clear();
@@ -400,15 +427,19 @@ void Application::Impl::shutdown(bool saveWorld) noexcept {
     world.worldView = nullptr;
     world.world = nullptr;
     world.ready = false;
+    completeShutdownStage(ApplicationShutdownStage::WorldsReleased);
 
     if (openGLInitialized && hasContext) {
         world.worldSet.resources().releaseRenderResources();
         renderer.release();
     }
+    completeShutdownStage(ApplicationShutdownStage::RenderResourcesReleased);
     assets.clearCache();
+    completeShutdownStage(ApplicationShutdownStage::AssetCacheReleased);
 
     window.window = nullptr;
     runtime.shutdown();
+    completeShutdownStage(ApplicationShutdownStage::RuntimeReleased);
     openGLInitialized = false;
     spdlog::info("Application terminated successfully");
 }
@@ -417,6 +448,10 @@ Application::~Application() {
     if (m_impl) {
         m_impl->shutdown(true);
     }
+}
+
+void ApplicationTestAccess::construct(ApplicationConstructionHooks hooks) {
+    Application application(std::make_unique<Application::Impl>(hooks));
 }
 
 void Application::run() {

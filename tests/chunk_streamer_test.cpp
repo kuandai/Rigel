@@ -578,6 +578,74 @@ TEST_CASE(ChunkStreamer_CachePressureDeferralRemainsQuiescentUntilRetry) {
              settledInspections);
 }
 
+TEST_CASE(ChunkStreamer_RebindRetainsDeferredEvictionForSameManager) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID edited = registerTestBlock(registry, "rigel:rebind_eviction_edit");
+
+    ChunkStreamer streamer;
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 8;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 1;
+    streamer.setConfig(stream);
+    streamer.bind(&manager, &meshStore, &registry, nullptr, generator);
+
+    const ChunkCoord first{0, 0, 0};
+    streamer.update(first.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(first.toWorldCenter());
+    Chunk* firstChunk = manager.getChunk(first);
+    CHECK(firstChunk != nullptr);
+    if (!firstChunk) {
+        return;
+    }
+    firstChunk->setBlock(0, 0, 0, BlockState{edited}, registry);
+
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord coord) {
+        ++persistenceAttempts;
+        if (persistenceAttempts == 1) {
+            return false;
+        }
+        Chunk* saved = manager.getChunk(coord);
+        if (saved) {
+            saved->clearPersistDirty();
+        }
+        return true;
+    });
+
+    const ChunkCoord current{1, 0, 0};
+    streamer.update(current.toWorldCenter());
+    streamer.processCompletions();
+    streamer.update(current.toWorldCenter());
+
+    CHECK(manager.hasChunk(first));
+    CHECK(manager.getChunk(first)->isPersistDirty());
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+
+    auto replacementGenerator = std::make_shared<WorldGenerator>(registry);
+    replacementGenerator->setConfig(generator->config());
+    streamer.bind(
+        &manager, &meshStore, &registry, nullptr, replacementGenerator);
+
+    for (int update = 0; update < 59; ++update) {
+        streamer.update(current.toWorldCenter());
+    }
+    CHECK(manager.hasChunk(first));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+
+    streamer.update(current.toWorldCenter());
+    CHECK(!manager.hasChunk(first));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(2));
+}
+
 TEST_CASE(ChunkStreamer_LoadsChunkPayload_Deterministic) {
     ChunkManager manager;
     BlockRegistry registry;

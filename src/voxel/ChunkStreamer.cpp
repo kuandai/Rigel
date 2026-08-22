@@ -69,8 +69,9 @@ void ChunkStreamer::bind(ChunkManager* manager,
                          BlockRegistry* registry,
                          TextureAtlas* atlas,
                          std::shared_ptr<WorldGenerator> generator) {
+    bool chunkManagerChanged = m_chunkManager != manager;
     bool bindingChanged =
-        m_chunkManager != manager ||
+        chunkManagerChanged ||
         m_meshStore != meshStore ||
         m_registry != registry ||
         m_atlas != atlas ||
@@ -105,14 +106,16 @@ void ChunkStreamer::bind(ChunkManager* manager,
         m_genCancel.clear();
         m_states.clear();
         m_countedMeshRetryRevisions.clear();
-        m_cache = ChunkCache();
-        m_cache.setMaxChunks(m_config.maxResidentChunks);
+        if (chunkManagerChanged) {
+            m_cache = ChunkCache();
+            m_cache.setMaxChunks(m_config.maxResidentChunks);
+            m_evictionRetryAfter.clear();
+            m_nextEvictionRetrySequence = 0;
+        }
         m_dirtyMeshQueue = {};
         m_dirtyMeshQueued.clear();
         m_priorityMeshRequests.clear();
-        m_evictionRetryAfter.clear();
         m_versionReplacementWaiting.clear();
-        m_nextEvictionRetrySequence = 0;
         m_loadGenQueue.clear();
         m_loadGenQueued.clear();
         m_generationCapacityWait.clear();

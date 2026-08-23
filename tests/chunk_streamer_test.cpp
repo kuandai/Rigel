@@ -4214,8 +4214,9 @@ TEST_CASE(ChunkStreamer_ConfigRetiredDebugSnapshotsTransferOnce) {
     missingChunk.clearPersistDirty();
 
     auto gate = std::make_shared<WorkerGate>();
-    WorkerGateRelease releaseOnExit(gate);
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    // Release the gated worker before streamer teardown attempts to join it.
+    WorkerGateRelease releaseOnExit(gate);
     StreamingConfig stream;
     stream.viewDistanceChunks = viewDistance;
     stream.unloadDistanceChunks = 3;

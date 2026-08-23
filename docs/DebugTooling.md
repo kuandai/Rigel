@@ -58,11 +58,11 @@ skipped.
   centered on the camera chunk and clipped to the current
   `viewDistanceChunks` radius.
 - Pipeline owner, voxel occupancy, installed CPU geometry, dirty/remesh intent,
-  failure category, retained historical trace identity/kind/outcomes, and
-  current-revision draw evidence are separate fields. A coordinate-matched
-  retained trace is labeled as history and is not presented as the current
-  pipeline owner. The presentation color is a summary, not an authoritative
-  visibility result.
+  failure category, and current-revision draw evidence are separate fields.
+  Trace detail is the configured tracer's latest retained historical key, kind,
+  and build/draw outcomes when that record's coordinate matches. It is never
+  proof of the current lifecycle owner. The presentation color is a summary,
+  not an authoritative visibility result.
 - The legend shows one detail record from the same bounded snapshot: the chunk
   with retained trace history when present, otherwise the tracked chunk nearest
   the camera center. Its rows expose those independent fields without

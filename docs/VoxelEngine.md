@@ -121,15 +121,18 @@ texture-array layer, and a flags byte. Geometry is grouped into per-layer index
 ranges in `ChunkMesh`.
 
 `WorldMeshStore` keys CPU meshes by chunk coordinate and assigns a stable
-`MeshId` plus a revision that advances on replacement. Empty chunks and empty
-mesh results have no stored geometry.
+`MeshId` plus a revision that advances on replacement. Voxel-empty chunks have
+no CPU mesh-store entry. Accepted-empty geometry for nonempty voxel data
+retains an empty CPU-mesh lifecycle entry.
 
 The chunk debug snapshot does not use mesh-store presence as draw evidence. It
 reports voxel occupancy, installed empty/nonempty CPU geometry, current remesh
-intent, trace outcome, and renderer-confirmed main-pass draw evidence as
-independent values. Consequently, a completed or empty lifecycle may have no
-draw, and installed nonempty geometry may still be distance-culled or awaiting
-its first main-pass submission.
+intent, and renderer-confirmed main-pass draw evidence as independent values.
+Trace detail is the configured tracer's latest retained historical key, kind,
+and build/draw outcomes, never proof of the current lifecycle owner.
+Consequently, a completed or empty lifecycle may have no draw, and installed
+nonempty geometry may still be distance-culled or awaiting its first main-pass
+submission.
 
 ## Rendering
 

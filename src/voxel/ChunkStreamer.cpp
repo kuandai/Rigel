@@ -536,6 +536,15 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     distanceSquared(center, coord) <= unloadRadiusSq &&
                     dirtyMeshPriority(coord).has_value();
                 m_generationCapacityWaiting.erase(coord);
+                if (m_versionReplacementRetries.erase(coord) > 0) {
+                    m_evictionRetryAfter.erase(coord);
+                    eraseFailure(
+                        m_evictionErrors, m_evictionFailureVersion, coord);
+                    if (m_evictionRetryAfter.empty()) {
+                        m_nextEvictionRetrySequence = 0;
+                    }
+                }
+                m_versionReplacementWaiting.erase(coord);
                 if (!retainedMesh) {
                     m_meshDependencyWaiting.erase(coord);
                     retireReplacementPending(coord);

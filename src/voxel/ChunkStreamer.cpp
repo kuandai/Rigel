@@ -2642,6 +2642,18 @@ size_t ChunkStreamer::meshDispatchLimit() const {
         : 0;
     if (workerCount > 0) {
         limit = std::min(limit, workerCount);
+    } else {
+        // Inline jobs complete during dispatch, but remain owned until the
+        // main-thread drain observes them. Match a finite drain budget and
+        // retain a validated ceiling when that drain is unlimited.
+        size_t inlineCompletionCapacity =
+            static_cast<size_t>(StreamingConfig::MaxQueueLimit);
+        if (m_config.applyBudgetPerFrame > 0) {
+            inlineCompletionCapacity = std::min(
+                inlineCompletionCapacity,
+                static_cast<size_t>(m_config.applyBudgetPerFrame));
+        }
+        limit = std::min(limit, inlineCompletionCapacity);
     }
     return limit;
 }

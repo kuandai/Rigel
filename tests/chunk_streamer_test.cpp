@@ -125,6 +125,10 @@ struct ChunkStreamerTestAccess {
         return streamer.m_configRetiredWork.size();
     }
 
+    static size_t meshDispatchLimit(const ChunkStreamer& streamer) {
+        return streamer.meshDispatchLimit();
+    }
+
     static bool hasConfigRetiredWork(const ChunkStreamer& streamer,
                                      ChunkCoord coord) {
         return streamer.m_configRetiredWork.find(coord) !=
@@ -3699,6 +3703,181 @@ TEST_CASE(ChunkStreamer_ConfigRetiredRetentionMeshHandsOffOnDeferredEviction) {
         CHECK(streamer.diagnostics().eviction.empty());
         CHECK_EQ(streamer.diagnostics().state,
                  StreamingLifecycleState::Quiescent);
+    }
+}
+
+TEST_CASE(ChunkStreamer_ConfigRetiredWorkBoundedForInlineMeshExecution) {
+    for (const int workerThreads : {0, 1}) {
+        ChunkManager manager;
+        BlockRegistry registry;
+        WorldMeshStore meshStore;
+        auto generator = makeGenerator(registry);
+        const BlockID solid = registerTestBlock(
+            registry,
+            "rigel:config_retired_inline_bound_" +
+                std::to_string(workerThreads));
+        const std::array<ChunkCoord, 4> cameraCoords{
+            ChunkCoord{0, 0, 0},
+            ChunkCoord{8, 0, 0},
+            ChunkCoord{16, 0, 0},
+            ChunkCoord{24, 0, 0}
+        };
+
+        size_t physicalBuilds = 0;
+        ChunkStreamer streamer(
+            manager, meshStore, registry, nullptr, generator);
+        StreamingConfig stream;
+        stream.viewDistanceChunks = 1;
+        stream.unloadDistanceChunks = 1;
+        stream.meshQueueLimit = 0;
+        stream.updateBudgetPerFrame = 0;
+        stream.applyBudgetPerFrame = 1;
+        stream.workerThreads = workerThreads;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.markSpawnDiscoveryComplete();
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            setMeshBuildStartCallback(streamer, [&]() {
+                ++physicalBuilds;
+            });
+
+        auto preloadView = [&](ChunkCoord center) {
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (dx * dx + dy * dy + dz * dz > 1) {
+                            continue;
+                        }
+                        Chunk& chunk = manager.getOrCreateChunk(
+                            center.offset(dx, dy, dz));
+                        chunk.setBlock(
+                            1, 1, 1, BlockState{solid}, registry);
+                        chunk.setWorldGenVersion(
+                            generator->config().world.version);
+                        chunk.setLoadedFromDisk(true);
+                        chunk.clearPersistDirty();
+                        chunk.clearDirty();
+                    }
+                }
+            }
+        };
+
+        for (size_t view = 0; view < cameraCoords.size(); ++view) {
+            preloadView(cameraCoords[view]);
+            streamer.update(cameraCoords[view].toWorldCenter());
+
+            CHECK_EQ(
+                Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                    meshDispatchLimit(streamer),
+                static_cast<size_t>(1));
+            CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+                     static_cast<uint64_t>(1));
+            CHECK_EQ(physicalBuilds, static_cast<size_t>(1));
+            CHECK_EQ(streamer.diagnostics().mesh.inFlight,
+                     static_cast<size_t>(1));
+            CHECK_EQ(
+                Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                    meshCompletionCount(streamer),
+                static_cast<size_t>(1));
+            CHECK_EQ(
+                Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                    configRetiredWorkCount(streamer),
+                static_cast<size_t>(0));
+            CHECK_EQ(streamer.diagnostics().mesh.pending,
+                     view == 0 ? static_cast<size_t>(6)
+                               : static_cast<size_t>(7));
+        }
+
+        const uint64_t schedulerBeforeShrink =
+            streamer.workMetrics().schedulerCoordinatesInspected;
+        stream.viewDistanceChunks = 0;
+        stream.unloadDistanceChunks = 0;
+        streamer.setConfig(stream);
+
+        CHECK_EQ(
+            streamer.workMetrics().schedulerCoordinatesInspected -
+                schedulerBeforeShrink,
+            static_cast<uint64_t>(8));
+        CHECK_EQ(
+            Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                configRetiredWorkCount(streamer),
+            static_cast<size_t>(7));
+        CHECK_EQ(streamer.diagnostics().mesh.pending,
+                 static_cast<size_t>(1));
+        CHECK_EQ(streamer.diagnostics().mesh.inFlight,
+                 static_cast<size_t>(1));
+        CHECK_NE(streamer.diagnostics().state,
+                 StreamingLifecycleState::Quiescent);
+
+        streamer.update(cameraCoords.back().toWorldCenter());
+        CHECK_EQ(
+            Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                configRetiredWorkCount(streamer),
+            static_cast<size_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+            static_cast<uint64_t>(9));
+        CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+                 static_cast<uint64_t>(1));
+        CHECK_EQ(streamer.diagnostics().mesh.pending,
+                 static_cast<size_t>(1));
+        CHECK_EQ(streamer.diagnostics().mesh.inFlight,
+                 static_cast<size_t>(1));
+
+        streamer.processCompletions();
+        CHECK_EQ(streamer.workMetrics().meshJobsCompleted,
+                 static_cast<uint64_t>(1));
+        CHECK_EQ(streamer.workMetrics().meshJobsAccepted,
+                 static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+                 static_cast<uint64_t>(1));
+        CHECK_EQ(streamer.diagnostics().mesh.pending,
+                 static_cast<size_t>(1));
+        CHECK_EQ(streamer.diagnostics().mesh.inFlight,
+                 static_cast<size_t>(0));
+
+        streamer.update(cameraCoords.back().toWorldCenter());
+        CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+                 static_cast<uint64_t>(2));
+        CHECK_EQ(physicalBuilds, static_cast<size_t>(2));
+        CHECK_EQ(streamer.diagnostics().mesh.pending,
+                 static_cast<size_t>(0));
+        CHECK_EQ(streamer.diagnostics().mesh.inFlight,
+                 static_cast<size_t>(1));
+        streamer.processCompletions();
+
+        CHECK_EQ(streamer.workMetrics().meshJobsCompleted,
+                 static_cast<uint64_t>(2));
+        CHECK_EQ(streamer.workMetrics().meshJobsAccepted,
+                 static_cast<uint64_t>(1));
+        CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+                 static_cast<uint64_t>(1));
+        CHECK(streamer.diagnostics().mesh.empty());
+
+        for (uint32_t stable = 0;
+             stable <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+             ++stable) {
+            streamer.update(cameraCoords.back().toWorldCenter());
+            streamer.processCompletions();
+            CHECK_EQ(
+                Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                    configRetiredWorkCount(streamer),
+                static_cast<size_t>(0));
+        }
+        CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+                 static_cast<uint64_t>(2));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK_EQ(streamer.diagnostics().state,
+                 StreamingLifecycleState::Quiescent);
+
+        stream.applyBudgetPerFrame = 0;
+        streamer.setConfig(stream);
+        CHECK_EQ(
+            Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                meshDispatchLimit(streamer),
+            static_cast<size_t>(StreamingConfig::MaxQueueLimit));
     }
 }
 

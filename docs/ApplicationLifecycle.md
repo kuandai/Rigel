@@ -218,8 +218,10 @@ Synchronization:
 **Queueing rules**:
 - Initial meshes and dirty remeshes remain in one priority scheduler until
   dispatch.
-- `streaming.mesh_queue_limit` caps selected mesh jobs (0 = unlimited), and
-  asynchronous submission is also capped at the mesh worker count.
+- `streaming.mesh_queue_limit` caps selected mesh jobs (0 = no configured
+  cap), and asynchronous submission is also capped at the mesh worker count.
+  Without a mesh worker, outstanding inline results are capped at the finite
+  apply budget, or at the validated queue maximum when apply is unlimited.
 - A portion of finite dispatch capacity is reserved for dirty remeshes when
   both request kinds are pending.
 - At most one mesh job is in flight for a chunk. Additional invalidations are

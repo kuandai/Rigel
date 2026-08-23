@@ -187,6 +187,12 @@ private:
         Dirty
     };
 
+    enum class ConfigRetiredWorkKind : uint8_t {
+        LoadGen,
+        MissingMesh,
+        DirtyMesh
+    };
+
     struct MeshInFlight {
         MeshRequestKind kind = MeshRequestKind::Missing;
         uint64_t requestId = 0;
@@ -266,9 +272,11 @@ private:
     std::deque<ChunkCoord> m_generationCapacityWait;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_generationCapacityWaiting;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_meshDependencyWaiting;
-    // Reconsider retired owners on the next desired-set rebuild without
-    // carrying explicit request priority across the configuration boundary.
-    std::unordered_set<ChunkCoord, ChunkCoordHash> m_configRetiredWork;
+    // Retain the kind, but not explicit priority, until a desired-set rebuild
+    // either transfers the work to its canonical owner or confirms departure.
+    std::unordered_map<ChunkCoord,
+                       ConfigRetiredWorkKind,
+                       ChunkCoordHash> m_configRetiredWork;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> m_desiredPriority;
@@ -335,6 +343,13 @@ private:
     void compactPendingMeshQueuesIfNeeded();
     void erasePendingMesh(ChunkCoord coord);
     void retirePendingMesh(ChunkCoord coord);
+    void rememberConfigRetiredWork(ChunkCoord coord,
+                                   ConfigRetiredWorkKind kind);
+    bool isConfigRetiredMeshEligible(
+        ChunkCoord coord,
+        ConfigRetiredWorkKind kind) const;
+    void reconcileConfigRetiredWork(
+        uint64_t& schedulerCoordinatesInspected);
     bool hasEligibleMeshWork(ChunkCoord coord) const;
     void setReplacementPending(ChunkCoord coord,
                                MeshInFlight& flight,

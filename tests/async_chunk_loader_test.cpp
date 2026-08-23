@@ -10,6 +10,7 @@
 #include "Rigel/Voxel/ChunkStreamer.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1248,6 +1249,7 @@ TEST_CASE(ChunkStreamer_ResidentReplacementCancelsPendingPayload) {
 
     BlockID persisted = registerTestBlock(registry, "rigel:resident_persisted");
     BlockID generated = registerTestBlock(registry, "rigel:resident_generated");
+    BlockID newerEdit = registerTestBlock(registry, "rigel:resident_newer_edit");
     const ChunkCoord coord{0, 0, 0};
     ChunkData payload = buildPayload(
         coord, registry, {persisted}, false, std::nullopt, false);
@@ -1303,29 +1305,84 @@ TEST_CASE(ChunkStreamer_ResidentReplacementCancelsPendingPayload) {
     replacement.fill(BlockState{generated}, registry);
     replacement.setWorldGenVersion(generator->config().world.version);
     replacement.setLoadedFromDisk(false);
-    replacement.clearPersistDirty();
-    replacement.clearDirty();
+    Chunk* const replacementIdentity = &replacement;
 
     streamer.update(coord.toWorldCenter());
     CHECK(!loader->isPending(coord));
     CHECK_EQ(loader->workCount().pending, static_cast<size_t>(0));
     CHECK_EQ(loader->workCount().inFlight, static_cast<size_t>(1));
+    CHECK_EQ(loader->workCount().started, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+             static_cast<uint64_t>(1));
+
+    replacement.setBlock(0, 0, 0, BlockState{newerEdit}, registry);
+    const uint32_t localWorldVersion = replacement.worldGenVersion();
+    const uint32_t localMeshRevision = replacement.meshRevision();
+    std::array<BlockState, Chunk::VOLUME> localBlocks{};
+    replacement.copyBlocks(localBlocks);
+    CHECK(replacement.isDirty());
+    CHECK(replacement.isPersistDirty());
+    CHECK(!replacement.loadedFromDisk());
 
     payloadGate->release();
     CHECK(waitForPayloadCompletions(*loader, 1));
     streamer.processCompletions();
 
     const Chunk* resident = world.chunkManager().getChunk(coord);
-    CHECK(resident != nullptr);
+    CHECK_EQ(resident, replacementIdentity);
     if (resident) {
-        CHECK_EQ(resident->getBlock(0, 0, 0).id, generated);
-        CHECK_EQ(resident->worldGenVersion(), generator->config().world.version);
+        std::array<BlockState, Chunk::VOLUME> residentBlocks{};
+        resident->copyBlocks(residentBlocks);
+        CHECK_EQ(residentBlocks, localBlocks);
+        CHECK_EQ(resident->getBlock(0, 0, 0).id, newerEdit);
+        CHECK_EQ(resident->worldGenVersion(), localWorldVersion);
+        CHECK_EQ(resident->meshRevision(), localMeshRevision);
         CHECK(!resident->loadedFromDisk());
-        CHECK(!resident->isPersistDirty());
+        CHECK(resident->isDirty());
+        CHECK(resident->isPersistDirty());
     }
     CHECK_EQ(loader->workCount().pending, static_cast<size_t>(0));
     CHECK_EQ(loader->workCount().inFlight, static_cast<size_t>(0));
+    CHECK_EQ(loader->workCount().started, static_cast<uint64_t>(1));
     CHECK(streamer.diagnostics().chunkLoad.empty());
+    CHECK_EQ(streamer.workMetrics().meshJobsCompleted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
+
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+             static_cast<uint64_t>(2));
+    streamer.processCompletions();
+    CHECK_EQ(world.chunkManager().getChunk(coord), replacementIdentity);
+    CHECK_EQ(streamer.workMetrics().meshJobsCompleted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+             static_cast<uint64_t>(1));
+    CHECK(meshStore.contains(coord));
+    CHECK(!replacement.isDirty());
+    CHECK(replacement.isPersistDirty());
+    CHECK(!replacement.loadedFromDisk());
+
+    streamer.markSpawnDiscoveryComplete();
+    for (uint32_t stable = 0;
+         stable < StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++stable) {
+        streamer.update(coord.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(loader->workCount().started, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK(streamer.diagnostics().chunkLoad.empty());
+    CHECK(streamer.diagnostics().mesh.empty());
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::Quiescent);
 }
 
 TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {

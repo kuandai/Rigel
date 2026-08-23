@@ -90,9 +90,14 @@ public:
     }
 
     bool cancel(JobId id) {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return erasePendingJob(m_highPriorityJobs, id) ||
-            erasePendingJob(m_jobs, id);
+        PendingJob cancelled;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            found = takePendingJob(m_highPriorityJobs, id, cancelled) ||
+                takePendingJob(m_jobs, id, cancelled);
+        }
+        return found;
     }
 
     bool promote(JobId id) {
@@ -148,11 +153,15 @@ private:
             [id](const PendingJob& job) { return job.id == id; });
     }
 
-    static bool erasePendingJob(JobQueue& queue, JobId id) {
+    static bool takePendingJob(JobQueue& queue,
+                               JobId id,
+                               PendingJob& out) {
         auto it = findPendingJob(queue, id);
         if (it == queue.end()) {
             return false;
         }
+        out.id = it->id;
+        out.run.swap(it->run);
         queue.erase(it);
         return true;
     }

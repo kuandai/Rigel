@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -27,6 +28,53 @@ namespace {
 class ThreadStartError : public std::runtime_error {
 public:
     ThreadStartError() : std::runtime_error("thread start failed") {}
+};
+
+class ExpectedFixtureError : public std::runtime_error {
+public:
+    ExpectedFixtureError() : std::runtime_error("expected fixture failure") {}
+};
+
+class ThreadPoolGate {
+public:
+    void enterAndWait() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_entered = true;
+        m_condition.notify_all();
+        m_condition.wait(lock, [this]() { return m_released; });
+    }
+
+    bool waitUntilEntered() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        return m_condition.wait_for(
+            lock,
+            std::chrono::seconds(5),
+            [this]() { return m_entered; });
+    }
+
+    void release() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_released = true;
+        m_condition.notify_all();
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    bool m_entered = false;
+    bool m_released = false;
+};
+
+class ThreadPoolRelease {
+public:
+    explicit ThreadPoolRelease(ThreadPoolGate& gate) : m_gate(gate) {}
+
+    ~ThreadPoolRelease() {
+        m_gate.release();
+    }
+
+private:
+    ThreadPoolGate& m_gate;
 };
 
 }
@@ -90,27 +138,15 @@ TEST_CASE(ThreadPool_DestructionDrainsQueuedJobs) {
 }
 
 TEST_CASE(ThreadPool_PromotesAndCancelsPendingJobs) {
-    Rigel::Voxel::detail::ThreadPool pool(1);
-    std::mutex mutex;
-    std::condition_variable condition;
-    bool blockerStarted = false;
-    bool releaseBlocker = false;
+    ThreadPoolGate blocker;
     std::vector<int> order;
+    Rigel::Voxel::detail::ThreadPool pool(1);
+    ThreadPoolRelease releaseOnExit(blocker);
 
     pool.enqueue([&]() {
-        std::unique_lock<std::mutex> lock(mutex);
-        blockerStarted = true;
-        condition.notify_all();
-        condition.wait(lock, [&]() { return releaseBlocker; });
+        blocker.enterAndWait();
     });
-    bool started = false;
-    {
-        std::unique_lock<std::mutex> lock(mutex);
-        started = condition.wait_for(
-            lock,
-            std::chrono::seconds(5),
-            [&]() { return blockerStarted; });
-    }
+    const bool started = blocker.waitUntilEntered();
 
     const auto normal = pool.enqueue([&]() { order.push_back(1); });
     const auto cancelled = pool.enqueue([&]() { order.push_back(2); });
@@ -119,11 +155,7 @@ TEST_CASE(ThreadPool_PromotesAndCancelsPendingJobs) {
     const bool cancelledTwice = pool.cancel(cancelled);
     const bool promotedPending = pool.promote(promoted);
 
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        releaseBlocker = true;
-        condition.notify_all();
-    }
+    blocker.release();
     pool.stop();
 
     CHECK(started);
@@ -134,4 +166,59 @@ TEST_CASE(ThreadPool_PromotesAndCancelsPendingJobs) {
     CHECK_EQ(order[0], 3);
     CHECK_EQ(order[1], 1);
     CHECK(!pool.cancel(normal));
+}
+
+TEST_CASE(ThreadPool_CancelDestroysCallableAfterUnlock) {
+    std::atomic<size_t> destroyed = 0;
+    std::atomic<size_t> reentrantRuns = 0;
+    std::atomic<bool> reentrantCancelled = false;
+
+    struct ReentrantCapture {
+        Rigel::Voxel::detail::ThreadPool* pool = nullptr;
+        std::atomic<size_t>* destroyed = nullptr;
+        std::atomic<size_t>* runs = nullptr;
+        std::atomic<bool>* cancelled = nullptr;
+
+        ~ReentrantCapture() {
+            destroyed->fetch_add(1, std::memory_order_relaxed);
+            const auto id = pool->enqueue([runs = runs]() {
+                runs->fetch_add(1, std::memory_order_relaxed);
+            });
+            cancelled->store(pool->cancel(id), std::memory_order_relaxed);
+        }
+    };
+
+    auto capture = std::make_shared<ReentrantCapture>();
+    Rigel::Voxel::detail::ThreadPool pool(0);
+    capture->pool = &pool;
+    capture->destroyed = &destroyed;
+    capture->runs = &reentrantRuns;
+    capture->cancelled = &reentrantCancelled;
+
+    const auto cancelledJob = pool.enqueue([capture]() {});
+    capture.reset();
+
+    CHECK(pool.cancel(cancelledJob));
+    CHECK_EQ(destroyed.load(std::memory_order_relaxed), static_cast<size_t>(1));
+    CHECK(reentrantCancelled.load(std::memory_order_relaxed));
+    CHECK_EQ(reentrantRuns.load(std::memory_order_relaxed), static_cast<size_t>(0));
+    CHECK(!pool.cancel(cancelledJob));
+    CHECK_NO_THROW(pool.stop());
+    CHECK_EQ(pool.enqueue([]() {}),
+             Rigel::Voxel::detail::ThreadPool::JobId{0});
+}
+
+TEST_CASE(ThreadPool_GatedFixtureUnwindsAfterExpectedException) {
+    bool exceptionReachedCaller = false;
+    try {
+        ThreadPoolGate blocker;
+        Rigel::Voxel::detail::ThreadPool pool(1);
+        ThreadPoolRelease releaseOnExit(blocker);
+        pool.enqueue([&blocker]() { blocker.enterAndWait(); });
+        CHECK(blocker.waitUntilEntered());
+        throw ExpectedFixtureError();
+    } catch (const ExpectedFixtureError&) {
+        exceptionReachedCaller = true;
+    }
+    CHECK(exceptionReachedCaller);
 }

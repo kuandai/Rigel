@@ -20,6 +20,55 @@ struct StreamingWorkCount {
     }
 };
 
+// Cumulative region scheduler accounting for one immutable admission origin.
+// Pool resubmissions are a subset of pool submissions, while retry admissions
+// are new logical admissions rather than resubmissions of an existing owner.
+struct RegionSchedulerOriginDiagnostics {
+    uint64_t logicalAdmissions = 0;
+    uint64_t retryAdmissions = 0;
+    uint64_t logicalPreStartCancellations = 0;
+    uint64_t poolSubmissions = 0;
+    uint64_t poolResubmissions = 0;
+    uint64_t successfulPoolYields = 0;
+    uint64_t terminalPoolCancellations = 0;
+    uint64_t poolWorkerStarts = 0;
+    uint64_t inlineExecutions = 0;
+    uint64_t resultsPublished = 0;
+    uint64_t resultsDrained = 0;
+    uint64_t missingProbes = 0;
+    uint64_t admissionToWorkerStartNanoseconds = 0;
+    uint64_t maxAdmissionToWorkerStartNanoseconds = 0;
+    uint64_t workerExecutionNanoseconds = 0;
+    uint64_t maxWorkerExecutionNanoseconds = 0;
+};
+
+struct RegionSchedulerDiagnosticSnapshot {
+    RegionSchedulerOriginDiagnostics directOrigin;
+    RegionSchedulerOriginDiagnostics speculativeOrigin;
+    uint64_t demandPromotions = 0;
+    uint64_t usefulPrefetchCacheHits = 0;
+    uint64_t speculativeEvictionsBeforeDemand = 0;
+
+    // Current ownership can change without changing admission origin.
+    size_t demandOwnedQueued = 0;
+    size_t speculativeOwnedQueued = 0;
+    // Includes submitted inline/pool work until its result is drained.
+    size_t demandOwnedDispatchedUndrained = 0;
+    size_t speculativeOwnedDispatchedUndrained = 0;
+
+    // Pool-pending speculative work tracked for bounded pre-start yield.
+    size_t speculativePoolJobsPending = 0;
+    size_t maxSpeculativePoolJobsPending = 0;
+    uint64_t speculativePoolYieldCalls = 0;
+    uint64_t speculativePoolYieldCandidateVisits = 0;
+    size_t maxSpeculativePoolYieldCandidateVisits = 0;
+};
+
+struct ChunkLoadDiagnosticSnapshot {
+    StreamingWorkCount work;
+    RegionSchedulerDiagnosticSnapshot regionScheduler;
+};
+
 enum class StreamingLifecycleState : uint8_t {
     DiscoveringSpawn,
     AwaitingInitialStream,
@@ -50,6 +99,7 @@ struct StreamingDiagnosticSnapshot {
     StreamingLifecycleState state = StreamingLifecycleState::DiscoveringSpawn;
     StreamingWorkCount generation;
     StreamingWorkCount chunkLoad;
+    RegionSchedulerDiagnosticSnapshot regionScheduler;
     StreamingWorkCount mesh;
     size_t meshWorkerCount = 0;
     // Maximum mesh jobs submitted but not yet observed by the completion

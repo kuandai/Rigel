@@ -30,37 +30,7 @@ struct AsyncChunkLoaderTestAccess;
 
 class AsyncChunkLoader {
 public:
-    // Cumulative for the loader lifetime. Jobs retain their submission origin
-    // when later demand promotes speculative work.
-    struct RegionJobMetrics {
-        uint64_t submitted = 0;
-        uint64_t workerStarted = 0;
-        uint64_t completed = 0;
-        uint64_t cancelledBeforeWorkerStart = 0;
-        uint64_t missingProbes = 0;
-        uint64_t schedulerWaitNanoseconds = 0;
-        uint64_t maxSchedulerWaitNanoseconds = 0;
-        uint64_t workerExecutionNanoseconds = 0;
-        uint64_t maxWorkerExecutionNanoseconds = 0;
-    };
-
-    struct Metrics {
-        RegionJobMetrics direct;
-        RegionJobMetrics speculative;
-        uint64_t demandPromotions = 0;
-        uint64_t usefulPrefetchCacheHits = 0;
-        uint64_t speculativeEvictionsBeforeDemand = 0;
-        size_t directRegionJobsQueued = 0;
-        size_t speculativeRegionJobsQueued = 0;
-        // Jobs submitted to the IO pool but not yet drained by the owner.
-        size_t directRegionJobsInFlight = 0;
-        size_t speculativeRegionJobsInFlight = 0;
-        size_t submittedUndemandedRegionJobs = 0;
-        size_t maxSubmittedUndemandedRegionJobs = 0;
-        uint64_t speculativeYieldCalls = 0;
-        uint64_t speculativeYieldCandidateVisits = 0;
-        size_t maxSpeculativeYieldCandidateVisits = 0;
-    };
+    using Metrics = Voxel::RegionSchedulerDiagnosticSnapshot;
 
     AsyncChunkLoader(PersistenceService& service,
                      PersistenceContext context,
@@ -79,6 +49,7 @@ public:
 
     Voxel::StreamingWorkCount workCount() const;
     Metrics metrics() const;
+    Voxel::ChunkLoadDiagnosticSnapshot diagnostics() const;
 
     std::vector<Voxel::ChunkLoadCompletion> drainCompletions(size_t budget);
 
@@ -113,11 +84,18 @@ private:
         Speculative
     };
 
+    enum class RegionAdmissionKind : uint8_t {
+        Initial,
+        Retry
+    };
+
     struct RegionJobState {
         RegionKey key;
+        uint64_t incarnation = 0;
         RegionJobOrigin origin = RegionJobOrigin::Direct;
-        std::chrono::steady_clock::time_point submittedAt{};
+        std::chrono::steady_clock::time_point admittedAt{};
         Voxel::detail::ThreadPool::JobId poolJobId = 0;
+        uint64_t poolSubmissionCount = 0;
         bool demanded = false;
         bool started = false;
     };
@@ -162,7 +140,8 @@ private:
                                  std::vector<Voxel::ChunkLoadCompletion>& resolved);
     Voxel::ChunkLoadRequestResult queueChunkLoad(
         Voxel::ChunkCoord coord,
-        ChunkRequestIdentity request);
+        ChunkRequestIdentity request,
+        RegionAdmissionKind admission = RegionAdmissionKind::Initial);
     void deferChunkLoad(Voxel::ChunkCoord coord,
                         ChunkRequestIdentity request);
     void startDeferredChunkLoads(
@@ -199,7 +178,8 @@ private:
     void undoRegionLoadAttempt(const RegionKey& key);
     bool queueRegionLoad(
         const RegionKey& key,
-        RegionJobOrigin origin = RegionJobOrigin::Direct);
+        RegionJobOrigin origin = RegionJobOrigin::Direct,
+        RegionAdmissionKind admission = RegionAdmissionKind::Initial);
     void queuePayloadBuild(const RegionEntry& entry,
                            Voxel::ChunkCoord coord,
                            ChunkRequestIdentity request);
@@ -216,15 +196,23 @@ private:
     using RetryClock = std::chrono::steady_clock;
     RetryClock::time_point retryNow() const;
     RetryClock::duration retryDelay(size_t failureRounds) const;
+    RetryClock::time_point metricNow() const;
 
     struct RegionMetricCounters {
-        std::atomic<uint64_t> submitted{0};
-        std::atomic<uint64_t> workerStarted{0};
-        std::atomic<uint64_t> completed{0};
-        std::atomic<uint64_t> cancelledBeforeWorkerStart{0};
+        std::atomic<uint64_t> logicalAdmissions{0};
+        std::atomic<uint64_t> retryAdmissions{0};
+        std::atomic<uint64_t> logicalPreStartCancellations{0};
+        std::atomic<uint64_t> poolSubmissions{0};
+        std::atomic<uint64_t> poolResubmissions{0};
+        std::atomic<uint64_t> successfulPoolYields{0};
+        std::atomic<uint64_t> terminalPoolCancellations{0};
+        std::atomic<uint64_t> poolWorkerStarts{0};
+        std::atomic<uint64_t> inlineExecutions{0};
+        std::atomic<uint64_t> resultsPublished{0};
+        std::atomic<uint64_t> resultsDrained{0};
         std::atomic<uint64_t> missingProbes{0};
-        std::atomic<uint64_t> schedulerWaitNanoseconds{0};
-        std::atomic<uint64_t> maxSchedulerWaitNanoseconds{0};
+        std::atomic<uint64_t> admissionToWorkerStartNanoseconds{0};
+        std::atomic<uint64_t> maxAdmissionToWorkerStartNanoseconds{0};
         std::atomic<uint64_t> workerExecutionNanoseconds{0};
         std::atomic<uint64_t> maxWorkerExecutionNanoseconds{0};
     };
@@ -232,7 +220,7 @@ private:
     RegionMetricCounters& regionMetricCounters(RegionJobOrigin origin);
     const RegionMetricCounters& regionMetricCounters(
         RegionJobOrigin origin) const;
-    static RegionJobMetrics regionJobMetrics(
+    static Voxel::RegionSchedulerOriginDiagnostics regionJobMetrics(
         const RegionMetricCounters& counters);
 
     PersistenceService* m_service = nullptr;
@@ -273,6 +261,9 @@ private:
     std::deque<std::shared_ptr<RegionJobState>>
         m_submittedSpeculativeRegionJobs;
     size_t m_queuedSpeculativeRegionJobCount = 0;
+    size_t m_demandOwnedQueuedRegionJobCount = 0;
+    size_t m_demandOwnedDispatchedRegionJobCount = 0;
+    size_t m_speculativeOwnedDispatchedRegionJobCount = 0;
     size_t m_maxSubmittedSpeculativeRegionJobCount = 0;
     uint64_t m_speculativeYieldCalls = 0;
     uint64_t m_speculativeYieldCandidateVisits = 0;
@@ -314,6 +305,7 @@ private:
     std::deque<Voxel::ChunkLoadCompletion> m_resolvedChunks;
     ChunkRequestMap m_payloadInFlight;
     uint64_t m_nextRequestIncarnation = 1;
+    uint64_t m_nextRegionJobIncarnation = 1;
     uint64_t m_requestsStarted = 0;
     std::deque<RegionKey> m_lru;
 
@@ -326,6 +318,7 @@ private:
     std::unordered_map<RegionKey, uint64_t, RegionKeyHash> m_regionRevisions;
 
     std::function<RetryClock::time_point()> m_retryClock;
+    std::function<RetryClock::time_point()> m_metricClock;
 
     RegionMetricCounters m_directRegionMetrics;
     RegionMetricCounters m_speculativeRegionMetrics;

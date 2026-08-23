@@ -108,7 +108,8 @@ public:
                 return findPendingJob(m_highPriorityJobs, id) !=
                     m_highPriorityJobs.end();
             }
-            m_highPriorityJobs.push_back(std::move(*it));
+            m_highPriorityJobs.push_back(PendingJob{it->id, {}});
+            m_highPriorityJobs.back().run.swap(it->run);
             m_jobs.erase(it);
         }
         m_cv.notify_one();

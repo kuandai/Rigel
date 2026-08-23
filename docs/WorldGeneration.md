@@ -225,24 +225,33 @@ configured region cap; when that cap is disabled, at most 64 unstarted
 speculative reads are retained. Direct demand can displace an unstarted
 speculative read at capacity without changing region coalescing.
 
-`AsyncChunkLoader::metrics()` exposes lifetime aggregate counters rather than
-per-region history. Direct and speculative jobs retain their submission origin
-for submission, worker-start, completion, cancellation-before-start, missing
-probe, scheduler-wait, and worker-execution accounting. Separate counters record
-same-region demand promotion, the first direct use of a prefetched cache entry,
-and speculative cache eviction before demand. Current queued and physically
-submitted gauges make the scheduler bound and quiescence observable. The
-submitted-undemanded gauge and yield candidate-visit counters expose the
-physical speculative displacement bound independently of logical region owners.
+`AsyncChunkLoader::metrics()` exposes bounded lifetime aggregates rather than
+per-region history. Direct and speculative admissions retain their immutable
+origin through promotion. Logical admissions, retry admissions, pool
+submissions and resubmissions, successful pre-start pool yields, terminal pool
+cancellations, pool and inline starts, published and drained results, missing
+probes, admission-to-worker-start time, and worker-execution time are accounted
+separately. At quiescence, logical admissions equal published results plus
+logical pre-start cancellations; pool submissions equal pool worker starts plus
+successful pool yields and terminal pool cancellations. Separate counters
+record same-region demand promotion, the first direct use of a prefetched cache
+entry, and speculative cache eviction before demand.
 
-A four-run headless Memory-format measurement used the shipped IO settings (2
-IO threads, 16-region cap, radius-1 prefetch, 12 speculative candidates, and a
-16-region drain budget). Two initial workers were capacity-gated until a later
-direct request had entered the scheduler. Fresh-empty stored no regions;
-sparse-persisted stored only the initial and later direct regions; dense-persisted
-stored one full solid chunk in every radius-1 neighbor region plus both direct
-regions. The reported duration is the later direct job's submission-to-worker
-start, which isolates region scheduler wait from region execution:
+The four current-owner gauges report demand-owned or speculative-owned work as
+loader-queued or dispatched-undrained. Dispatched-undrained includes pool and
+inline submissions through completed results that have not yet been drained.
+Pool-pending speculative and yield candidate-visit counters expose the physical
+speculative displacement bound independently of logical region owners.
+
+A four-run synthetic later-demand contention fixture used the headless Memory
+format with 2 IO threads, a 16-region cap, radius-1 prefetch, 12 speculative
+candidates, and a 16-region drain budget. Two initial workers were
+capacity-gated until a later direct request had entered the scheduler.
+Fresh-empty stored no regions; sparse-persisted stored only the initial and
+later direct regions; dense-persisted stored one full solid chunk in every
+radius-1 neighbor region plus both direct regions. The reported duration is the
+later direct admission-to-worker-start time, which isolates region scheduler
+wait from region execution:
 
 | Fixture | No prefetch | FIFO prefetch | Prioritized prefetch |
 | --- | ---: | ---: | ---: |
@@ -250,9 +259,12 @@ start, which isolates region scheduler wait from region execution:
 | Sparse-persisted | 0.008-0.011 ms | 0.237-0.277 ms | 0.052-0.106 ms |
 | Dense-persisted | 0.011-0.063 ms | 100.9-112.4 ms | 17.0-22.9 ms |
 
-The dense fixture established material camera-near contention in FIFO dispatch.
-Priority dispatch reduced that scheduler wait by 77-85% while still allowing a
-running speculative read to finish.
+The dense synthetic fixture established material later-demand contention in
+FIFO dispatch. Priority dispatch reduced that scheduler wait by 77-85%, which
+is the measured reason for direct-first scheduling, while still allowing a
+running speculative read to finish. These ranges are not camera-near timing or
+shipped-backend evidence; the camera-near conclusion is deferred to the
+representative interactive benchmark.
 
 If no stored data is found, generation proceeds normally. Region read failures
 are retried from completion events and never imply that stored data is absent.

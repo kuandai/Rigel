@@ -79,8 +79,9 @@ void WorldView::setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel
     m_streamer.setChunkLoadCancel(std::move(cancel));
 }
 
-void WorldView::setChunkLoadWorkCallback(ChunkStreamer::ChunkLoadWorkCallback work) {
-    m_streamer.setChunkLoadWorkCallback(std::move(work));
+void WorldView::setChunkLoadDiagnosticsCallback(
+    ChunkStreamer::ChunkLoadDiagnosticsCallback diagnostics) {
+    m_streamer.setChunkLoadDiagnosticsCallback(std::move(diagnostics));
 }
 
 void WorldView::setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback evict) {

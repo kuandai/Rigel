@@ -151,7 +151,8 @@ public:
     using ChunkLoadDrainCallback =
         std::function<std::vector<ChunkLoadCompletion>(size_t)>;
     using ChunkLoadCancelCallback = std::function<void(ChunkCoord)>;
-    using ChunkLoadWorkCallback = std::function<StreamingWorkCount()>;
+    using ChunkLoadDiagnosticsCallback =
+        std::function<ChunkLoadDiagnosticSnapshot()>;
     using ChunkEvictionCallback = std::function<bool(ChunkCoord)>;
 
     ChunkStreamer(ChunkManager& manager,
@@ -169,7 +170,7 @@ public:
     void setChunkPendingCallback(ChunkPendingCallback pending);
     void setChunkLoadDrain(ChunkLoadDrainCallback drain);
     void setChunkLoadCancel(ChunkLoadCancelCallback cancel);
-    void setChunkLoadWorkCallback(ChunkLoadWorkCallback work);
+    void setChunkLoadDiagnosticsCallback(ChunkLoadDiagnosticsCallback diagnostics);
     void setChunkEvictionCallback(ChunkEvictionCallback evict);
     void markSpawnDiscoveryComplete();
     void prioritizeMesh(ChunkCoord coord);
@@ -322,7 +323,7 @@ private:
     ChunkPendingCallback m_chunkPending;
     ChunkLoadDrainCallback m_chunkLoadDrain;
     ChunkLoadCancelCallback m_chunkLoadCancel;
-    ChunkLoadWorkCallback m_chunkLoadWork;
+    ChunkLoadDiagnosticsCallback m_chunkLoadDiagnostics;
     ChunkEvictionCallback m_chunkEviction;
 
     std::unique_ptr<detail::ThreadPool> m_genPool;

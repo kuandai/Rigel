@@ -659,8 +659,8 @@ void configurePersistedChunkLoader(
     streamer.setChunkLoadCancel([loader](ChunkCoord coord) {
         loader->cancel(coord);
     });
-    streamer.setChunkLoadWorkCallback([loader]() {
-        return loader->workCount();
+    streamer.setChunkLoadDiagnosticsCallback([loader]() {
+        return loader->diagnostics();
     });
     streamer.setChunkEvictionCallback([loader](ChunkCoord coord) {
         return loader->persistChunk(coord);
@@ -5921,13 +5921,15 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
                              : std::string{}}
                     };
                 });
-                streamer.setChunkLoadWorkCallback([&]() {
-                    return StreamingWorkCount{
-                        .pending = loadCancelled
-                            ? static_cast<size_t>(0)
-                            : physicalLoadInFlight,
-                        .inFlight = physicalLoadInFlight,
-                        .started = physicalLoadsStarted
+                streamer.setChunkLoadDiagnosticsCallback([&]() {
+                    return ChunkLoadDiagnosticSnapshot{
+                        .work = StreamingWorkCount{
+                            .pending = loadCancelled
+                                ? static_cast<size_t>(0)
+                                : physicalLoadInFlight,
+                            .inFlight = physicalLoadInFlight,
+                            .started = physicalLoadsStarted
+                        }
                     };
                 });
             } else if (completionKind == CompletionKind::Generation &&
@@ -13846,7 +13848,17 @@ TEST_CASE(ChunkStreamer_QuiescenceRequiresStableIdleUpdates) {
         .inFlight = 0,
         .started = 1
     };
-    streamer.setChunkLoadWorkCallback([&loadWork]() { return loadWork; });
+    RegionSchedulerDiagnosticSnapshot regionDiagnostics;
+    regionDiagnostics.directOrigin.logicalAdmissions = 7;
+    regionDiagnostics.directOrigin.poolSubmissions = 9;
+    regionDiagnostics.directOrigin.admissionToWorkerStartNanoseconds = 11;
+    regionDiagnostics.demandOwnedDispatchedUndrained = 1;
+    streamer.setChunkLoadDiagnosticsCallback([&]() {
+        return ChunkLoadDiagnosticSnapshot{
+            .work = loadWork,
+            .regionScheduler = regionDiagnostics
+        };
+    });
 
     CHECK_EQ(streamer.diagnostics().state,
              StreamingLifecycleState::DiscoveringSpawn);
@@ -13866,6 +13878,18 @@ TEST_CASE(ChunkStreamer_QuiescenceRequiresStableIdleUpdates) {
     CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Streaming);
     CHECK_EQ(streamer.diagnostics().chunkLoad.pending, static_cast<size_t>(1));
     CHECK_EQ(streamer.diagnostics().chunkLoad.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().regionScheduler.directOrigin.logicalAdmissions,
+             static_cast<uint64_t>(7));
+    CHECK_EQ(streamer.diagnostics().regionScheduler.directOrigin.poolSubmissions,
+             static_cast<uint64_t>(9));
+    CHECK_EQ(
+        streamer.diagnostics().regionScheduler.directOrigin
+            .admissionToWorkerStartNanoseconds,
+        static_cast<uint64_t>(11));
+    CHECK_EQ(
+        streamer.diagnostics().regionScheduler
+            .demandOwnedDispatchedUndrained,
+        static_cast<size_t>(1));
 
     loadWork.pending = 0;
     loadWork.inFlight = 1;

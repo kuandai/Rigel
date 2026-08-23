@@ -32,6 +32,30 @@ static_assert(std::is_same_v<
 static_assert(!PubliclyClearable<ChunkManager>);
 static_assert(!PubliclyClearable<World>);
 
+TEST_CASE(WorldView_StreamingDiagnosticsConsumeRegionSchedulerSnapshot) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    ChunkLoadDiagnosticSnapshot load;
+    load.work.pending = 3;
+    load.regionScheduler.speculativeOrigin.logicalAdmissions = 5;
+    load.regionScheduler.speculativeOrigin.poolSubmissions = 7;
+    load.regionScheduler.speculativeOwnedQueued = 2;
+    view.setChunkLoadDiagnosticsCallback([&load]() { return load; });
+
+    const auto& diagnostics = view.streamingDiagnostics();
+    CHECK_EQ(diagnostics.chunkLoad.pending, static_cast<size_t>(3));
+    CHECK_EQ(
+        diagnostics.regionScheduler.speculativeOrigin.logicalAdmissions,
+        static_cast<uint64_t>(5));
+    CHECK_EQ(
+        diagnostics.regionScheduler.speculativeOrigin.poolSubmissions,
+        static_cast<uint64_t>(7));
+    CHECK_EQ(diagnostics.regionScheduler.speculativeOwnedQueued,
+             static_cast<size_t>(2));
+}
+
 TEST_CASE(World_StreamingPopulatesChunks) {
     WorldResources resources;
     World world(resources);

@@ -46,7 +46,8 @@ public:
     void setChunkPendingCallback(ChunkStreamer::ChunkPendingCallback pending);
     void setChunkLoadDrain(ChunkStreamer::ChunkLoadDrainCallback drain);
     void setChunkLoadCancel(ChunkStreamer::ChunkLoadCancelCallback cancel);
-    void setChunkLoadWorkCallback(ChunkStreamer::ChunkLoadWorkCallback work);
+    void setChunkLoadDiagnosticsCallback(
+        ChunkStreamer::ChunkLoadDiagnosticsCallback diagnostics);
     void setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback evict);
     void setStreamConfig(const StreamingConfig& config);
     void setBenchmark(ChunkBenchmarkStats* stats);

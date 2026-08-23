@@ -360,11 +360,11 @@ void Application::initialize() {
                     loader->cancel(coord);
                 }
             });
-        m_impl->world.worldView->setChunkLoadWorkCallback(
+        m_impl->world.worldView->setChunkLoadDiagnosticsCallback(
             [loader = m_impl->world.chunkLoader]() {
                 return loader
-                    ? loader->workCount()
-                    : Voxel::StreamingWorkCount{};
+                    ? loader->diagnostics()
+                    : Voxel::ChunkLoadDiagnosticSnapshot{};
             });
         m_impl->world.worldView->setChunkEvictionCallback(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
@@ -480,7 +480,7 @@ void Application::Impl::shutdown() noexcept {
         activeView->setChunkPendingCallback({});
         activeView->setChunkLoadDrain({});
         activeView->setChunkLoadCancel({});
-        activeView->setChunkLoadWorkCallback({});
+        activeView->setChunkLoadDiagnosticsCallback({});
         activeView->setChunkEvictionCallback({});
     }
     world.chunkLoader.reset();
@@ -705,6 +705,59 @@ void Application::run() {
                             diagnostics.eviction.lastError,
                             diagnostics.stableUpdates,
                             Voxel::StreamingDiagnosticSnapshot::QuiescenceUpdateWindow);
+                        const auto& regions = diagnostics.regionScheduler;
+                        spdlog::info(
+                            "streaming.region_scheduler "
+                            "direct.logical_admissions={} direct.retry_admissions={} "
+                            "direct.pool_submissions={} direct.pool_resubmissions={} "
+                            "direct.pool_starts={} direct.inline_executions={} "
+                            "direct.pool_yields={} direct.terminal_pool_cancellations={} "
+                            "direct.logical_pre_start_cancellations={} "
+                            "direct.results_published={} direct.results_drained={} "
+                            "direct.admission_to_start_ns={} direct.worker_execution_ns={} "
+                            "speculative.logical_admissions={} speculative.retry_admissions={} "
+                            "speculative.pool_submissions={} speculative.pool_resubmissions={} "
+                            "speculative.pool_starts={} speculative.inline_executions={} "
+                            "speculative.pool_yields={} speculative.terminal_pool_cancellations={} "
+                            "speculative.logical_pre_start_cancellations={} "
+                            "speculative.results_published={} speculative.results_drained={} "
+                            "speculative.admission_to_start_ns={} speculative.worker_execution_ns={} "
+                            "demand_owned.queued={} demand_owned.dispatched_undrained={} "
+                            "speculative_owned.queued={} speculative_owned.dispatched_undrained={} "
+                            "promotions={} useful_prefetch_hits={} evicted_before_demand={}",
+                            regions.directOrigin.logicalAdmissions,
+                            regions.directOrigin.retryAdmissions,
+                            regions.directOrigin.poolSubmissions,
+                            regions.directOrigin.poolResubmissions,
+                            regions.directOrigin.poolWorkerStarts,
+                            regions.directOrigin.inlineExecutions,
+                            regions.directOrigin.successfulPoolYields,
+                            regions.directOrigin.terminalPoolCancellations,
+                            regions.directOrigin.logicalPreStartCancellations,
+                            regions.directOrigin.resultsPublished,
+                            regions.directOrigin.resultsDrained,
+                            regions.directOrigin.admissionToWorkerStartNanoseconds,
+                            regions.directOrigin.workerExecutionNanoseconds,
+                            regions.speculativeOrigin.logicalAdmissions,
+                            regions.speculativeOrigin.retryAdmissions,
+                            regions.speculativeOrigin.poolSubmissions,
+                            regions.speculativeOrigin.poolResubmissions,
+                            regions.speculativeOrigin.poolWorkerStarts,
+                            regions.speculativeOrigin.inlineExecutions,
+                            regions.speculativeOrigin.successfulPoolYields,
+                            regions.speculativeOrigin.terminalPoolCancellations,
+                            regions.speculativeOrigin.logicalPreStartCancellations,
+                            regions.speculativeOrigin.resultsPublished,
+                            regions.speculativeOrigin.resultsDrained,
+                            regions.speculativeOrigin.admissionToWorkerStartNanoseconds,
+                            regions.speculativeOrigin.workerExecutionNanoseconds,
+                            regions.demandOwnedQueued,
+                            regions.demandOwnedDispatchedUndrained,
+                            regions.speculativeOwnedQueued,
+                            regions.speculativeOwnedDispatchedUndrained,
+                            regions.demandPromotions,
+                            regions.usefulPrefetchCacheHits,
+                            regions.speculativeEvictionsBeforeDemand);
                         m_impl->world.lastStreamingLifecycle = diagnostics.state;
                         m_impl->world.lastStreamingDiagnostics = diagnostics;
                         m_impl->world.streamingLifecycleLogged = true;

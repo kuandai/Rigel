@@ -455,8 +455,9 @@ void ChunkStreamer::setChunkLoadCancel(ChunkLoadCancelCallback cancel) {
     m_chunkLoadCancel = std::move(cancel);
 }
 
-void ChunkStreamer::setChunkLoadWorkCallback(ChunkLoadWorkCallback work) {
-    m_chunkLoadWork = std::move(work);
+void ChunkStreamer::setChunkLoadDiagnosticsCallback(
+    ChunkLoadDiagnosticsCallback diagnostics) {
+    m_chunkLoadDiagnostics = std::move(diagnostics);
     refreshDiagnostics(false);
 }
 
@@ -1595,8 +1596,10 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
         ? m_meshPool->threadCount()
         : 0;
     snapshot.meshSubmissionLimit = meshDispatchLimit();
-    if (m_chunkLoadWork) {
-        snapshot.chunkLoad = m_chunkLoadWork();
+    if (m_chunkLoadDiagnostics) {
+        ChunkLoadDiagnosticSnapshot load = m_chunkLoadDiagnostics();
+        snapshot.chunkLoad = std::move(load.work);
+        snapshot.regionScheduler = load.regionScheduler;
     } else {
         snapshot.chunkLoad = StreamingWorkCount{
             .pending = m_loadPending.size(),

@@ -168,6 +168,11 @@ TAA, so they are stable.
 `WorldView::streamingDiagnostics()` exposes the current streaming lifecycle and
 generation, chunk-load, mesh, and eviction work counts. Each scheduled category
 reports pending requests, in-flight work, and a cumulative started count.
+The same bounded snapshot includes region scheduler lifetime counters split by
+immutable direct/speculative admission origin, plus demand-owned/speculative-
+owned queued and dispatched-undrained gauges. The application consumes these
+values in `streaming.region_scheduler` records, including admission-to-worker-
+start and worker-execution durations used by benchmark capture.
 Pending load counts include deferred region requests. Pending generation and
 mesh counts include scheduler and capacity wait queues; mesh requests waiting
 for neighbor data are also pending. Eviction pending counts cover deferred

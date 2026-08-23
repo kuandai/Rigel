@@ -36,6 +36,7 @@ public:
         uint64_t submitted = 0;
         uint64_t workerStarted = 0;
         uint64_t completed = 0;
+        uint64_t cancelledBeforeWorkerStart = 0;
         uint64_t missingProbes = 0;
         uint64_t schedulerWaitNanoseconds = 0;
         uint64_t maxSchedulerWaitNanoseconds = 0;
@@ -49,6 +50,8 @@ public:
         uint64_t demandPromotions = 0;
         uint64_t usefulPrefetchCacheHits = 0;
         uint64_t speculativeEvictionsBeforeDemand = 0;
+        size_t directRegionJobsQueued = 0;
+        size_t speculativeRegionJobsQueued = 0;
         // Jobs submitted to the IO pool but not yet drained by the owner.
         size_t directRegionJobsInFlight = 0;
         size_t speculativeRegionJobsInFlight = 0;
@@ -106,9 +109,12 @@ private:
     };
 
     struct RegionJobState {
+        RegionKey key;
         RegionJobOrigin origin = RegionJobOrigin::Direct;
         std::chrono::steady_clock::time_point submittedAt{};
+        Voxel::detail::ThreadPool::JobId poolJobId = 0;
         bool demanded = false;
+        bool started = false;
     };
 
     struct RegionEntry {
@@ -173,8 +179,14 @@ private:
                                std::string diagnostic);
     void clearTerminalChunkLoad(Voxel::ChunkCoord coord);
     void refreshLastTerminalError();
-    void deferRegionLoad(const RegionKey& key);
-    void startDeferredRegionLoads();
+    void startQueuedRegionLoads();
+    std::shared_ptr<RegionJobState> takeQueuedRegionLoad(bool direct);
+    void startRegionLoad(const RegionKey& key,
+                         const std::shared_ptr<RegionJobState>& jobState);
+    bool cancelQueuedSpeculativeRegionLoad();
+    bool yieldSubmittedSpeculativeRegionLoad();
+    void cancelQueuedDirectRegionLoad(const RegionKey& key);
+    void undoRegionLoadAttempt(const RegionKey& key);
     bool queueRegionLoad(
         const RegionKey& key,
         RegionJobOrigin origin = RegionJobOrigin::Direct);
@@ -199,6 +211,7 @@ private:
         std::atomic<uint64_t> submitted{0};
         std::atomic<uint64_t> workerStarted{0};
         std::atomic<uint64_t> completed{0};
+        std::atomic<uint64_t> cancelledBeforeWorkerStart{0};
         std::atomic<uint64_t> missingProbes{0};
         std::atomic<uint64_t> schedulerWaitNanoseconds{0};
         std::atomic<uint64_t> maxSchedulerWaitNanoseconds{0};
@@ -245,8 +258,9 @@ private:
     std::unordered_map<RegionKey,
                        ChunkRequestMap,
                        RegionKeyHash> m_regionPending;
-    std::deque<RegionKey> m_deferredRegionLoads;
-    std::unordered_set<RegionKey, RegionKeyHash> m_deferredRegionLoadSet;
+    std::deque<RegionKey> m_directRegionLoads;
+    std::deque<RegionKey> m_speculativeRegionLoads;
+    size_t m_queuedSpeculativeRegionJobCount = 0;
     ChunkRequestMap m_pendingChunks;
     std::deque<Voxel::ChunkCoord> m_deferredChunkLoads;
     ChunkRequestMap m_deferredChunkRequests;

@@ -33,6 +33,7 @@ void advanceFailureVersion(uint64_t& version) {
 }
 constexpr auto kInitialRegionRetryDelay = std::chrono::milliseconds(100);
 constexpr auto kMaxRegionRetryDelay = std::chrono::seconds(2);
+constexpr size_t kUnboundedSpeculativeRegionJobLimit = 64;
 
 uint64_t nanosecondsBetween(std::chrono::steady_clock::time_point start,
                             std::chrono::steady_clock::time_point end) {
@@ -52,6 +53,13 @@ void recordMaximum(std::atomic<uint64_t>& maximum, uint64_t value) {
                value,
                std::memory_order_relaxed,
                std::memory_order_relaxed)) {}
+}
+
+void eraseQueuedRegion(std::deque<RegionKey>& queue, const RegionKey& key) {
+    auto it = std::find(queue.begin(), queue.end(), key);
+    if (it != queue.end()) {
+        queue.erase(it);
+    }
 }
 
 std::string regionDecodeDiagnostic(const RegionKey& key,
@@ -146,7 +154,7 @@ void AsyncChunkLoader::setMaxCachedRegions(size_t maxRegions) {
 
 void AsyncChunkLoader::setMaxInFlightRegions(size_t maxRegions) {
     m_maxInFlightRegions = maxRegions;
-    startDeferredRegionLoads();
+    startQueuedRegionLoads();
 }
 
 void AsyncChunkLoader::setPrefetchRadius(int radius) {
@@ -244,9 +252,6 @@ Voxel::ChunkLoadRequestResult AsyncChunkLoader::queueChunkLoad(
     m_regionPending[key][coord] = request;
     if (queueRegionLoad(key)) {
         prefetchNeighbors(key);
-    } else if (m_cache.find(key) == m_cache.end() &&
-               m_inFlight.find(key) == m_inFlight.end()) {
-        deferRegionLoad(key);
     }
     return Voxel::ChunkLoadRequestResult::Queued;
 }
@@ -282,10 +287,15 @@ AsyncChunkLoader::Metrics AsyncChunkLoader::metrics() const {
         m_speculativeEvictionsBeforeDemand.load(std::memory_order_relaxed);
     for (const auto& [key, job] : m_regionJobs) {
         (void)key;
-        if (job->origin == RegionJobOrigin::Direct) {
+        const bool direct = job->demanded;
+        if (job->started && direct) {
             ++snapshot.directRegionJobsInFlight;
-        } else {
+        } else if (job->started) {
             ++snapshot.speculativeRegionJobsInFlight;
+        } else if (direct) {
+            ++snapshot.directRegionJobsQueued;
+        } else {
+            ++snapshot.speculativeRegionJobsQueued;
         }
     }
     return snapshot;
@@ -306,13 +316,13 @@ void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {
         it->second.erase(coord);
         if (it->second.empty()) {
             m_regionPending.erase(it);
-            m_deferredRegionLoadSet.erase(key);
+            cancelQueuedDirectRegionLoad(key);
         }
     }
     if (releasedCapacity) {
         startDeferredChunkLoads();
     }
-    startDeferredRegionLoads();
+    startQueuedRegionLoads();
 }
 
 bool AsyncChunkLoader::persistChunk(Voxel::ChunkCoord coord) {
@@ -394,8 +404,8 @@ void AsyncChunkLoader::drainRegionCompletions(
         if (result.revision != m_regionRevisions[result.key]) {
             m_regionLoadAttempts.erase(result.key);
             if (pendingIt != m_regionPending.end() && !pendingIt->second.empty() &&
-                !queueRegionLoad(result.key)) {
-                deferRegionLoad(result.key);
+                m_regionJobs.find(result.key) == m_regionJobs.end()) {
+                queueRegionLoad(result.key);
             }
             continue;
         }
@@ -413,9 +423,7 @@ void AsyncChunkLoader::drainRegionCompletions(
                     attempts,
                     kMaxRegionLoadAttempts,
                     result.error);
-                if (!queueRegionLoad(result.key)) {
-                    deferRegionLoad(result.key);
-                }
+                queueRegionLoad(result.key);
                 continue;
             }
 
@@ -486,7 +494,7 @@ void AsyncChunkLoader::drainRegionCompletions(
             }
         }
     }
-    startDeferredRegionLoads();
+    startQueuedRegionLoads();
 }
 
 void AsyncChunkLoader::drainPayloadCompletions(
@@ -732,9 +740,7 @@ void AsyncChunkLoader::restartChunkLoad(
     }
 
     m_regionPending[key][coord] = request;
-    if (!queueRegionLoad(key) && m_inFlight.find(key) == m_inFlight.end()) {
-        deferRegionLoad(key);
-    }
+    queueRegionLoad(key);
 }
 
 bool AsyncChunkLoader::applyPayload(const ChunkPayload& payload) {
@@ -761,56 +767,184 @@ bool AsyncChunkLoader::applyPayload(const ChunkPayload& payload) {
     return true;
 }
 
-void AsyncChunkLoader::deferRegionLoad(const RegionKey& key) {
-    if (m_deferredRegionLoadSet.insert(key).second) {
-        m_deferredRegionLoads.push_back(key);
-    }
-}
-
-void AsyncChunkLoader::startDeferredRegionLoads() {
-    while (!m_deferredRegionLoads.empty()) {
-        if (m_maxInFlightRegions > 0 &&
-            m_inFlight.size() >= m_maxInFlightRegions) {
-            return;
-        }
-
-        RegionKey key = m_deferredRegionLoads.front();
-        m_deferredRegionLoads.pop_front();
-        if (m_deferredRegionLoadSet.erase(key) == 0) {
-            continue;
-        }
-
-        auto pendingIt = m_regionPending.find(key);
-        if (pendingIt == m_regionPending.end() || pendingIt->second.empty()) {
-            continue;
-        }
-        queueRegionLoad(key);
-    }
-}
-
 bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key,
                                        RegionJobOrigin origin) {
     if (m_cache.find(key) != m_cache.end()) {
         return false;
     }
-    if (m_inFlight.find(key) != m_inFlight.end()) {
+    if (m_regionJobs.find(key) != m_regionJobs.end()) {
         if (origin == RegionJobOrigin::Direct) {
             promoteRegionDemand(key);
         }
         return false;
     }
-    if (m_maxInFlightRegions > 0 && m_inFlight.size() >= m_maxInFlightRegions) {
-        return false;
+
+    if (origin == RegionJobOrigin::Speculative) {
+        const size_t speculativeLimit = m_maxInFlightRegions > 0
+            ? m_maxInFlightRegions
+            : kUnboundedSpeculativeRegionJobLimit;
+        if (m_queuedSpeculativeRegionJobCount >= speculativeLimit ||
+            (m_maxInFlightRegions > 0 &&
+             m_regionJobs.size() >= m_maxInFlightRegions)) {
+            return false;
+        }
+    } else if (m_maxInFlightRegions > 0 &&
+               m_regionJobs.size() >= m_maxInFlightRegions) {
+        cancelQueuedSpeculativeRegionLoad();
     }
 
-    m_inFlight.insert(key);
     auto jobState = std::make_shared<RegionJobState>();
+    jobState->key = key;
     jobState->origin = origin;
     jobState->submittedAt = std::chrono::steady_clock::now();
     jobState->demanded = origin == RegionJobOrigin::Direct;
     m_regionJobs[key] = jobState;
+    if (origin == RegionJobOrigin::Direct) {
+        m_directRegionLoads.push_back(key);
+    } else {
+        m_speculativeRegionLoads.push_back(key);
+        ++m_queuedSpeculativeRegionJobCount;
+    }
     regionMetricCounters(origin).submitted.fetch_add(
         1, std::memory_order_relaxed);
+    startQueuedRegionLoads();
+    return true;
+}
+
+void AsyncChunkLoader::startQueuedRegionLoads() {
+    size_t dispatchLimit = m_ioPool.threadCount();
+    if (dispatchLimit == 0) {
+        dispatchLimit = std::numeric_limits<size_t>::max();
+    }
+    if (m_maxInFlightRegions > 0) {
+        dispatchLimit = std::min(dispatchLimit, m_maxInFlightRegions);
+    }
+
+    while (!m_directRegionLoads.empty() &&
+           m_inFlight.size() >= dispatchLimit &&
+           yieldSubmittedSpeculativeRegionLoad()) {}
+
+    while (m_inFlight.size() < dispatchLimit) {
+        std::shared_ptr<RegionJobState> jobState =
+            takeQueuedRegionLoad(true);
+        if (!jobState) {
+            jobState = takeQueuedRegionLoad(false);
+        }
+        if (!jobState) {
+            return;
+        }
+        startRegionLoad(jobState->key, jobState);
+    }
+}
+
+std::shared_ptr<AsyncChunkLoader::RegionJobState>
+AsyncChunkLoader::takeQueuedRegionLoad(bool direct) {
+    std::deque<RegionKey>& queue =
+        direct ? m_directRegionLoads : m_speculativeRegionLoads;
+    while (!queue.empty()) {
+        RegionKey key = queue.front();
+        queue.pop_front();
+        auto jobIt = m_regionJobs.find(key);
+        if (jobIt == m_regionJobs.end() || jobIt->second->started ||
+            jobIt->second->demanded != direct) {
+            continue;
+        }
+        jobIt->second->started = true;
+        if (!direct) {
+            --m_queuedSpeculativeRegionJobCount;
+        }
+        return jobIt->second;
+    }
+    return nullptr;
+}
+
+bool AsyncChunkLoader::cancelQueuedSpeculativeRegionLoad() {
+    while (!m_speculativeRegionLoads.empty()) {
+        RegionKey key = m_speculativeRegionLoads.back();
+        m_speculativeRegionLoads.pop_back();
+        auto jobIt = m_regionJobs.find(key);
+        if (jobIt == m_regionJobs.end() || jobIt->second->started ||
+            jobIt->second->demanded) {
+            continue;
+        }
+        m_regionJobs.erase(jobIt);
+        --m_queuedSpeculativeRegionJobCount;
+        m_speculativeRegionMetrics.cancelledBeforeWorkerStart.fetch_add(
+            1, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
+bool AsyncChunkLoader::yieldSubmittedSpeculativeRegionLoad() {
+    for (const auto& [key, job] : m_regionJobs) {
+        if (!job->started || job->demanded ||
+            job->origin != RegionJobOrigin::Speculative ||
+            job->poolJobId == 0 || !m_ioPool.cancel(job->poolJobId)) {
+            continue;
+        }
+        m_inFlight.erase(key);
+        undoRegionLoadAttempt(key);
+        job->poolJobId = 0;
+        job->started = false;
+        ++m_queuedSpeculativeRegionJobCount;
+        m_speculativeRegionLoads.push_front(key);
+        return true;
+    }
+    return false;
+}
+
+void AsyncChunkLoader::cancelQueuedDirectRegionLoad(const RegionKey& key) {
+    auto jobIt = m_regionJobs.find(key);
+    if (jobIt == m_regionJobs.end() || !jobIt->second->demanded) {
+        return;
+    }
+    if (jobIt->second->origin == RegionJobOrigin::Speculative) {
+        jobIt->second->demanded = false;
+        if (jobIt->second->started && jobIt->second->poolJobId != 0 &&
+            m_ioPool.cancel(jobIt->second->poolJobId)) {
+            m_inFlight.erase(key);
+            undoRegionLoadAttempt(key);
+            jobIt->second->poolJobId = 0;
+            jobIt->second->started = false;
+        }
+        if (!jobIt->second->started) {
+            eraseQueuedRegion(m_directRegionLoads, key);
+            ++m_queuedSpeculativeRegionJobCount;
+            m_speculativeRegionLoads.push_back(key);
+        }
+        return;
+    }
+    if (jobIt->second->started) {
+        if (jobIt->second->poolJobId == 0 ||
+            !m_ioPool.cancel(jobIt->second->poolJobId)) {
+            return;
+        }
+        m_inFlight.erase(key);
+        undoRegionLoadAttempt(key);
+    }
+    eraseQueuedRegion(m_directRegionLoads, key);
+    m_regionJobs.erase(jobIt);
+    m_directRegionMetrics.cancelledBeforeWorkerStart.fetch_add(
+        1, std::memory_order_relaxed);
+}
+
+void AsyncChunkLoader::undoRegionLoadAttempt(const RegionKey& key) {
+    auto attemptsIt = m_regionLoadAttempts.find(key);
+    if (attemptsIt == m_regionLoadAttempts.end()) {
+        return;
+    }
+    if (attemptsIt->second > 1) {
+        --attemptsIt->second;
+    } else {
+        m_regionLoadAttempts.erase(attemptsIt);
+    }
+}
+
+void AsyncChunkLoader::startRegionLoad(
+    const RegionKey& key,
+    const std::shared_ptr<RegionJobState>& jobState) {
+    m_inFlight.insert(key);
     ++m_regionLoadAttempts[key];
     uint64_t revision = m_regionRevisions[key];
     PersistenceService* servicePtr = m_service;
@@ -905,11 +1039,14 @@ bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key,
     };
 
     if (m_ioPool.threadCount() > 0) {
-        m_ioPool.enqueue(std::move(job));
+        jobState->poolJobId = m_ioPool.enqueue(
+            std::move(job),
+            jobState->demanded
+                ? Voxel::detail::ThreadPool::Priority::High
+                : Voxel::detail::ThreadPool::Priority::Normal);
     } else {
         job();
     }
-    return true;
 }
 
 void AsyncChunkLoader::queuePayloadBuild(
@@ -1105,7 +1242,15 @@ void AsyncChunkLoader::promoteRegionDemand(const RegionKey& key) {
         return;
     }
     jobIt->second->demanded = true;
+    if (!jobIt->second->started) {
+        eraseQueuedRegion(m_speculativeRegionLoads, key);
+        --m_queuedSpeculativeRegionJobCount;
+        m_directRegionLoads.push_back(key);
+    } else if (jobIt->second->poolJobId != 0) {
+        m_ioPool.promote(jobIt->second->poolJobId);
+    }
     m_demandPromotions.fetch_add(1, std::memory_order_relaxed);
+    startQueuedRegionLoads();
 }
 
 AsyncChunkLoader::RegionMetricCounters&
@@ -1128,6 +1273,9 @@ AsyncChunkLoader::RegionJobMetrics AsyncChunkLoader::regionJobMetrics(
         .submitted = counters.submitted.load(std::memory_order_relaxed),
         .workerStarted = counters.workerStarted.load(std::memory_order_relaxed),
         .completed = counters.completed.load(std::memory_order_relaxed),
+        .cancelledBeforeWorkerStart =
+            counters.cancelledBeforeWorkerStart.load(
+                std::memory_order_relaxed),
         .missingProbes = counters.missingProbes.load(std::memory_order_relaxed),
         .schedulerWaitNanoseconds =
             counters.schedulerWaitNanoseconds.load(std::memory_order_relaxed),

@@ -297,6 +297,12 @@ precedence.
 | `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request (0 = all candidates; maximum `728`). |
 | `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited, maximum explicit cap `65536`). |
 
+Region worker submission is also capped by the physical IO thread count.
+Unstarted speculative reads remain in a direct-first scheduler bounded by
+`load_max_inflight_regions`, or by a 64-region fallback when that setting is
+zero; the setting continues to control physical read concurrency rather than
+rejecting direct chunk demand.
+
 The embedded configuration shipped with Rigel sets the view distance to 12
 chunks and the unload distance to 13 chunks. The effective unload distance is
 the greater of the configured view and unload distances. Hysteresis exists only when

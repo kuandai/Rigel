@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -43,6 +45,13 @@ private:
 
 class ThreadPool {
 public:
+    using JobId = uint64_t;
+
+    enum class Priority : uint8_t {
+        Normal,
+        High
+    };
+
     explicit ThreadPool(size_t threadCount)
         : ThreadPool(
               threadCount,
@@ -57,15 +66,48 @@ public:
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
 
-    void enqueue(std::function<void()> job) {
+    JobId enqueue(std::function<void()> job,
+                  Priority priority = Priority::Normal) {
+        JobId id = 0;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (m_stopping) {
-                return;
+                return 0;
             }
-            m_jobs.push_back(std::move(job));
+            id = m_nextJobId++;
+            if (m_nextJobId == 0) {
+                m_nextJobId = 1;
+            }
+            PendingJob pending{id, std::move(job)};
+            if (priority == Priority::High) {
+                m_highPriorityJobs.push_back(std::move(pending));
+            } else {
+                m_jobs.push_back(std::move(pending));
+            }
         }
         m_cv.notify_one();
+        return id;
+    }
+
+    bool cancel(JobId id) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return erasePendingJob(m_highPriorityJobs, id) ||
+            erasePendingJob(m_jobs, id);
+    }
+
+    bool promote(JobId id) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto it = findPendingJob(m_jobs, id);
+            if (it == m_jobs.end()) {
+                return findPendingJob(m_highPriorityJobs, id) !=
+                    m_highPriorityJobs.end();
+            }
+            m_highPriorityJobs.push_back(std::move(*it));
+            m_jobs.erase(it);
+        }
+        m_cv.notify_one();
+        return true;
     }
 
     size_t threadCount() const {
@@ -93,6 +135,28 @@ public:
     }
 
 private:
+    struct PendingJob {
+        JobId id = 0;
+        std::function<void()> run;
+    };
+
+    using JobQueue = std::deque<PendingJob>;
+
+    static JobQueue::iterator findPendingJob(JobQueue& queue, JobId id) {
+        return std::find_if(
+            queue.begin(), queue.end(),
+            [id](const PendingJob& job) { return job.id == id; });
+    }
+
+    static bool erasePendingJob(JobQueue& queue, JobId id) {
+        auto it = findPendingJob(queue, id);
+        if (it == queue.end()) {
+            return false;
+        }
+        queue.erase(it);
+        return true;
+    }
+
     using ThreadStarter =
         std::function<std::thread(std::function<void()>)>;
 
@@ -119,12 +183,19 @@ private:
             std::function<void()> job;
             {
                 std::unique_lock<std::mutex> lock(m_mutex);
-                m_cv.wait(lock, [this]() { return m_stopping || !m_jobs.empty(); });
-                if (m_stopping && m_jobs.empty()) {
+                m_cv.wait(lock, [this]() {
+                    return m_stopping || !m_highPriorityJobs.empty() ||
+                        !m_jobs.empty();
+                });
+                if (m_stopping && m_highPriorityJobs.empty() &&
+                    m_jobs.empty()) {
                     return;
                 }
-                job = std::move(m_jobs.front());
-                m_jobs.pop_front();
+                JobQueue& queue = m_highPriorityJobs.empty()
+                    ? m_jobs
+                    : m_highPriorityJobs;
+                job = std::move(queue.front().run);
+                queue.pop_front();
             }
             try {
                 job();
@@ -137,8 +208,10 @@ private:
 
     std::mutex m_mutex;
     std::condition_variable m_cv;
-    std::deque<std::function<void()>> m_jobs;
+    JobQueue m_highPriorityJobs;
+    JobQueue m_jobs;
     std::vector<std::thread> m_threads;
+    JobId m_nextJobId = 1;
     bool m_stopping = false;
 };
 

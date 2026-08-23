@@ -3,10 +3,14 @@
 #include "Rigel/Voxel/ChunkTasks.h"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace Rigel::Voxel::detail {
 struct ThreadPoolTestAccess {
@@ -83,4 +87,46 @@ TEST_CASE(ThreadPool_DestructionDrainsQueuedJobs) {
     }
 
     CHECK_EQ(completed.load(std::memory_order_relaxed), 8u);
+}
+
+TEST_CASE(ThreadPool_PromotesAndCancelsPendingJobs) {
+    Rigel::Voxel::detail::ThreadPool pool(1);
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool blockerStarted = false;
+    bool releaseBlocker = false;
+    std::vector<int> order;
+
+    pool.enqueue([&]() {
+        std::unique_lock<std::mutex> lock(mutex);
+        blockerStarted = true;
+        condition.notify_all();
+        condition.wait(lock, [&]() { return releaseBlocker; });
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        CHECK(condition.wait_for(
+            lock,
+            std::chrono::seconds(5),
+            [&]() { return blockerStarted; }));
+    }
+
+    const auto normal = pool.enqueue([&]() { order.push_back(1); });
+    const auto cancelled = pool.enqueue([&]() { order.push_back(2); });
+    const auto promoted = pool.enqueue([&]() { order.push_back(3); });
+    CHECK(pool.cancel(cancelled));
+    CHECK(!pool.cancel(cancelled));
+    CHECK(pool.promote(promoted));
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        releaseBlocker = true;
+        condition.notify_all();
+    }
+    pool.stop();
+
+    CHECK_EQ(order.size(), static_cast<size_t>(2));
+    CHECK_EQ(order[0], 3);
+    CHECK_EQ(order[1], 1);
+    CHECK(!pool.cancel(normal));
 }

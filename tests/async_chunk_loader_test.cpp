@@ -173,6 +173,34 @@ bool waitForRegionJobsCompleted(const AsyncChunkLoader& loader, size_t count) {
     return metrics.direct.completed + metrics.speculative.completed >= count;
 }
 
+bool drainRegionJobsUntilSettled(
+    AsyncChunkLoader& loader,
+    std::vector<ChunkLoadCompletion>& resolved) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto completions = loader.drainCompletions(64);
+        resolved.insert(
+            resolved.end(), completions.begin(), completions.end());
+        const auto metrics = loader.metrics();
+        const uint64_t accounted =
+            metrics.direct.completed +
+            metrics.direct.cancelledBeforeWorkerStart +
+            metrics.speculative.completed +
+            metrics.speculative.cancelledBeforeWorkerStart;
+        const uint64_t submitted =
+            metrics.direct.submitted + metrics.speculative.submitted;
+        if (accounted == submitted &&
+            metrics.directRegionJobsQueued == 0 &&
+            metrics.speculativeRegionJobsQueued == 0 &&
+            metrics.directRegionJobsInFlight == 0 &&
+            metrics.speculativeRegionJobsInFlight == 0) {
+            return true;
+        }
+        std::this_thread::yield();
+    }
+    return false;
+}
+
 bool waitForPayloadCompletions(const AsyncChunkLoader& loader, size_t count) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -2565,7 +2593,7 @@ TEST_CASE(AsyncChunkLoader_PrefetchMetricsTrackCacheUseAndUnusedEviction) {
     CHECK_EQ(evictionLoader.workCount().inFlight, static_cast<size_t>(0));
 }
 
-TEST_CASE(AsyncChunkLoader_LaterDirectRegionStartsBehindSubmittedPrefetch) {
+TEST_CASE(AsyncChunkLoader_LaterDirectRegionOutranksUnstartedPrefetch) {
     WorldResources resources;
     World world;
     world.initialize(resources);
@@ -2620,32 +2648,36 @@ TEST_CASE(AsyncChunkLoader_LaterDirectRegionStartsBehindSubmittedPrefetch) {
              ChunkLoadRequestResult::Queued);
     CHECK_EQ(loader.metrics().direct.submitted, static_cast<uint64_t>(2));
     CHECK_EQ(loader.metrics().directRegionJobsInFlight,
-             static_cast<size_t>(2));
+             static_cast<size_t>(1));
+    CHECK_EQ(loader.metrics().directRegionJobsQueued,
+             static_cast<size_t>(1));
     CHECK_EQ(loader.metrics().speculativeRegionJobsInFlight,
+             static_cast<size_t>(0));
+    CHECK_EQ(loader.metrics().speculativeRegionJobsQueued,
              static_cast<size_t>(14));
 
     firstStartGate->release();
-    CHECK(waitForRegionJobsCompleted(loader, 16));
+    CHECK(waitForRegionJobsCompleted(loader, 1));
+    auto resolved = loader.drainCompletions(1);
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK(waitForRegionJobsCompleted(loader, 2));
     {
         std::lock_guard<std::mutex> lock(startsMutex);
-        CHECK_EQ(directStarts.size(), static_cast<size_t>(16));
+        CHECK_EQ(directStarts.size(), static_cast<size_t>(2));
         CHECK(directStarts.front());
-        CHECK(directStarts[13]);
-        CHECK_EQ(
-            std::count(directStarts.begin() + 1, directStarts.begin() + 13, true),
-            static_cast<std::ptrdiff_t>(0));
-        CHECK_EQ(std::count(
-                     directStarts.begin() + 14, directStarts.end(), true),
-                 static_cast<std::ptrdiff_t>(0));
+        CHECK(directStarts.back());
     }
 
-    auto resolved = loader.drainCompletions(64);
+    CHECK(drainRegionJobsUntilSettled(loader, resolved));
     CHECK_EQ(resolved.size(), static_cast<size_t>(2));
+    const auto settled = loader.metrics();
+    CHECK_EQ(settled.direct.submitted, settled.direct.completed);
+    CHECK_EQ(settled.speculative.submitted, settled.speculative.completed);
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
 }
 
-TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
+TEST_CASE(AsyncChunkLoader_DirectDemandDisplacesBoundedQueuedPrefetch) {
     WorldResources resources;
     World world;
     world.initialize(resources);
@@ -2681,6 +2713,159 @@ TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
     CHECK_EQ(loader.request(makeLoadRequest({0, 0, 0})),
              ChunkLoadRequestResult::Queued);
     CHECK(firstStartGate->waitUntilEntered());
+    CHECK_EQ(loader.request(makeLoadRequest({160, 0, 0})),
+             ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.request(makeLoadRequest({320, 0, 0})),
+             ChunkLoadRequestResult::Queued);
+
+    const auto saturated = loader.metrics();
+    CHECK_EQ(saturated.direct.submitted, static_cast<uint64_t>(3));
+    CHECK_EQ(saturated.speculative.submitted, static_cast<uint64_t>(14));
+    CHECK_EQ(saturated.speculative.cancelledBeforeWorkerStart,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(saturated.directRegionJobsInFlight, static_cast<size_t>(1));
+    CHECK_EQ(saturated.directRegionJobsQueued, static_cast<size_t>(2));
+    CHECK_EQ(saturated.speculativeRegionJobsInFlight,
+             static_cast<size_t>(0));
+    CHECK_EQ(saturated.speculativeRegionJobsQueued,
+             static_cast<size_t>(13));
+    CHECK_EQ(
+        saturated.directRegionJobsInFlight +
+            saturated.directRegionJobsQueued +
+            saturated.speculativeRegionJobsInFlight +
+            saturated.speculativeRegionJobsQueued,
+        static_cast<size_t>(16));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
+
+    firstStartGate->release();
+    std::vector<ChunkLoadCompletion> resolved;
+    CHECK(drainRegionJobsUntilSettled(loader, resolved));
+    CHECK_EQ(resolved.size(), static_cast<size_t>(3));
+    const auto settled = loader.metrics();
+    CHECK_EQ(
+        settled.direct.completed +
+            settled.direct.cancelledBeforeWorkerStart,
+        settled.direct.submitted);
+    CHECK_EQ(
+        settled.speculative.completed +
+            settled.speculative.cancelledBeforeWorkerStart,
+        settled.speculative.submitted);
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+}
+
+TEST_CASE(AsyncChunkLoader_CancelRemovesQueuedDirectRegionJob) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+
+    MemoryContext ctx;
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        1,
+        0,
+        12,
+        generator);
+    loader.setMaxInFlightRegions(16);
+    loader.setPrefetchRadius(0);
+
+    auto firstStartGate = std::make_shared<LoaderWorkGate>();
+    auto unusedPayloadGate = std::make_shared<LoaderWorkGate>();
+    LoaderWorkRelease releaseOnExit(firstStartGate, unusedPayloadGate);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setRegionLoadStartObserver(
+            loader,
+            [firstStartGate](const RegionKey& key, bool direct) {
+                if (direct && key.x == 0 && key.y == 0 && key.z == 0) {
+                    firstStartGate->enterAndWait();
+                }
+            });
+
+    const ChunkCoord active{0, 0, 0};
+    const ChunkCoord cancelled{160, 0, 0};
+    CHECK_EQ(loader.request(makeLoadRequest(active)),
+             ChunkLoadRequestResult::Queued);
+    CHECK(firstStartGate->waitUntilEntered());
+    CHECK_EQ(loader.request(makeLoadRequest(cancelled)),
+             ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.metrics().directRegionJobsQueued, static_cast<size_t>(1));
+
+    loader.cancel(cancelled);
+    CHECK(!loader.isPending(cancelled));
+    CHECK_EQ(loader.metrics().direct.cancelledBeforeWorkerStart,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(loader.metrics().directRegionJobsQueued, static_cast<size_t>(0));
+
+    firstStartGate->release();
+    std::vector<ChunkLoadCompletion> resolved;
+    CHECK(drainRegionJobsUntilSettled(loader, resolved));
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front().coord, active);
+    CHECK_EQ(loader.metrics().direct.submitted, static_cast<uint64_t>(2));
+    CHECK_EQ(loader.metrics().direct.completed, static_cast<uint64_t>(1));
+
+    CHECK_EQ(loader.request(makeLoadRequest(cancelled)),
+             ChunkLoadRequestResult::Queued);
+    CHECK(drainRegionJobsUntilSettled(loader, resolved));
+    CHECK_EQ(resolved.size(), static_cast<size_t>(2));
+    CHECK_EQ(resolved.back().coord, cancelled);
+    CHECK_EQ(loader.metrics().direct.submitted, static_cast<uint64_t>(3));
+    CHECK_EQ(loader.metrics().direct.completed, static_cast<uint64_t>(2));
+    CHECK_EQ(loader.metrics().direct.cancelledBeforeWorkerStart,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+}
+
+TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+
+    MemoryContext ctx;
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        1,
+        0,
+        12,
+        generator);
+    loader.setMaxInFlightRegions(16);
+    loader.setPrefetchRadius(1);
+    loader.setPrefetchPerRequest(12);
+
+    auto firstStartGate = std::make_shared<LoaderWorkGate>();
+    auto unusedPayloadGate = std::make_shared<LoaderWorkGate>();
+    LoaderWorkRelease releaseOnExit(firstStartGate, unusedPayloadGate);
+    std::mutex startsMutex;
+    std::vector<RegionKey> starts;
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setRegionLoadStartObserver(
+            loader,
+            [firstStartGate, &startsMutex, &starts](
+                const RegionKey& key,
+                bool direct) {
+                {
+                    std::lock_guard<std::mutex> lock(startsMutex);
+                    starts.push_back(key);
+                }
+                if (direct && key.x == 0 && key.y == 0 && key.z == 0) {
+                    firstStartGate->enterAndWait();
+                }
+            });
+
+    CHECK_EQ(loader.request(makeLoadRequest({0, 0, 0})),
+             ChunkLoadRequestResult::Queued);
+    CHECK(firstStartGate->waitUntilEntered());
     const auto beforeDemand = loader.metrics();
     CHECK_EQ(beforeDemand.direct.submitted, static_cast<uint64_t>(1));
     CHECK_EQ(beforeDemand.speculative.submitted, static_cast<uint64_t>(12));
@@ -2693,11 +2878,41 @@ TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
     CHECK_EQ(promoted.speculative.submitted,
              beforeDemand.speculative.submitted);
     CHECK_EQ(promoted.demandPromotions, static_cast<uint64_t>(1));
+    CHECK_EQ(promoted.directRegionJobsInFlight, static_cast<size_t>(1));
+    CHECK_EQ(promoted.directRegionJobsQueued, static_cast<size_t>(1));
+    CHECK_EQ(promoted.speculativeRegionJobsQueued, static_cast<size_t>(11));
     CHECK(loader.isPending(prefetchedNeighbor));
 
+    loader.cancel(prefetchedNeighbor);
+    const auto cancelledPromotion = loader.metrics();
+    CHECK(!loader.isPending(prefetchedNeighbor));
+    CHECK_EQ(cancelledPromotion.directRegionJobsQueued,
+             static_cast<size_t>(0));
+    CHECK_EQ(cancelledPromotion.speculativeRegionJobsQueued,
+             static_cast<size_t>(12));
+    CHECK_EQ(cancelledPromotion.speculative.cancelledBeforeWorkerStart,
+             static_cast<uint64_t>(0));
+
+    CHECK_EQ(loader.request(makeLoadRequest(prefetchedNeighbor)),
+             ChunkLoadRequestResult::Queued);
+    const auto replacementPromotion = loader.metrics();
+    CHECK_EQ(replacementPromotion.demandPromotions, static_cast<uint64_t>(2));
+    CHECK_EQ(replacementPromotion.directRegionJobsQueued,
+             static_cast<size_t>(1));
+    CHECK_EQ(replacementPromotion.speculativeRegionJobsQueued,
+             static_cast<size_t>(11));
+
     firstStartGate->release();
-    CHECK(waitForRegionJobsCompleted(loader, 13));
-    auto resolved = loader.drainCompletions(64);
+    CHECK(waitForRegionJobsCompleted(loader, 1));
+    auto resolved = loader.drainCompletions(1);
+    CHECK(waitForRegionJobsCompleted(loader, 2));
+    {
+        std::lock_guard<std::mutex> lock(startsMutex);
+        CHECK_EQ(starts.size(), static_cast<size_t>(2));
+        CHECK_EQ(starts.front(), (RegionKey{"rigel:default", 0, 0, 0}));
+        CHECK_EQ(starts.back(), (RegionKey{"rigel:default", 1, 0, 0}));
+    }
+    CHECK(drainRegionJobsUntilSettled(loader, resolved));
     CHECK_EQ(resolved.size(), static_cast<size_t>(2));
     CHECK(!loader.isPending(prefetchedNeighbor));
     CHECK_EQ(loader.metrics().usefulPrefetchCacheHits,

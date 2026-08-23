@@ -309,6 +309,7 @@ private:
     std::optional<size_t> dirtyMeshPriority(ChunkCoord coord) const;
     void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
     void ensureVisibilityTrace(ChunkCoord coord);
+    void markDirtyMeshEligibility(ChunkCoord coord);
     void markVisibilityStage(ChunkCoord coord, ChunkVisibilityStage stage);
     std::optional<ChunkVisibilityTraceIdentity> bindVisibilityTrace(
         ChunkCoord coord,
@@ -317,6 +318,7 @@ private:
         ChunkCoord coord,
         ChunkVisibilityOutcome outcome,
         const Chunk* chunk = nullptr);
+    void abandonVisibilityTraces();
     void reprioritizeDirtyMeshes();
     void enqueueGeneration(ChunkCoord coord);
     void enqueueMesh(ChunkCoord coord,

@@ -98,6 +98,7 @@ ChunkStreamer::~ChunkStreamer() {
         m_meshPool->stop();
         m_meshPool.reset();
     }
+    abandonVisibilityTraces();
 }
 
 void ChunkStreamer::setConfig(const StreamingConfig& config) {
@@ -247,6 +248,7 @@ void ChunkStreamer::setVisibilityTracer(
                 markVisibilityStage(
                     coord, ChunkVisibilityStage::DataReady);
             }
+            markDirtyMeshEligibility(coord);
         }
     }
 }
@@ -1739,6 +1741,7 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     if (newlyQueued || promoted) {
         m_dirtyMeshQueue.push({*priority, coord, prioritized});
     }
+    markDirtyMeshEligibility(coord);
 }
 
 void ChunkStreamer::ensureVisibilityTrace(ChunkCoord coord) {
@@ -1761,6 +1764,38 @@ void ChunkStreamer::ensureVisibilityTrace(ChunkCoord coord) {
     pending.stages[static_cast<size_t>(ChunkVisibilityStage::Desired)] =
         m_visibilityTracer->capture();
     m_pendingVisibilityTrace = std::move(pending);
+}
+
+void ChunkStreamer::markDirtyMeshEligibility(ChunkCoord coord) {
+    if (!m_visibilityTracer || !m_pendingVisibilityTrace ||
+        m_pendingVisibilityTrace->identity.coord != coord ||
+        !m_chunkManager || !m_meshStore ||
+        m_meshInFlight.find(coord) != m_meshInFlight.end()) {
+        return;
+    }
+
+    Chunk* chunk = m_chunkManager->getChunk(coord);
+    if (!chunk) {
+        return;
+    }
+
+    ChunkState state = ChunkState::Missing;
+    auto stateIt = m_states.find(coord);
+    if (stateIt != m_states.end()) {
+        state = stateIt->second;
+    }
+    const bool isMeshed =
+        m_meshStore->contains(coord) || state == ChunkState::ReadyMesh;
+    const bool prioritized =
+        m_priorityMeshRequests.find(coord) != m_priorityMeshRequests.end();
+    if ((isMeshed && !chunk->isDirty()) || (!isMeshed && !prioritized) ||
+        !hasAllNeighborsLoaded(coord)) {
+        return;
+    }
+
+    markVisibilityStage(coord, ChunkVisibilityStage::NeighborReady);
+    markVisibilityStage(coord, ChunkVisibilityStage::MeshEligible);
+    markVisibilityStage(coord, ChunkVisibilityStage::SchedulerWait);
 }
 
 void ChunkStreamer::markVisibilityStage(ChunkCoord coord,
@@ -1812,6 +1847,27 @@ void ChunkStreamer::completePendingVisibilityTrace(
     m_visibilityTracer->begin(identity, m_pendingVisibilityTrace->stages);
     m_visibilityTracer->complete(identity, outcome);
     m_pendingVisibilityTrace.reset();
+}
+
+void ChunkStreamer::abandonVisibilityTraces() {
+    if (m_pendingVisibilityTrace) {
+        completePendingVisibilityTrace(
+            m_pendingVisibilityTrace->identity.coord,
+            ChunkVisibilityOutcome::Stale,
+            m_chunkManager
+                ? m_chunkManager->getChunk(
+                      m_pendingVisibilityTrace->identity.coord)
+                : nullptr);
+    }
+
+    MeshResult meshResult;
+    while (m_meshComplete.tryPop(meshResult)) {
+        if (meshResult.visibilityTracer && meshResult.visibilityTrace) {
+            meshResult.visibilityTracer->complete(
+                *meshResult.visibilityTrace,
+                ChunkVisibilityOutcome::Stale);
+        }
+    }
 }
 
 void ChunkStreamer::reprioritizeDirtyMeshes() {

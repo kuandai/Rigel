@@ -211,3 +211,39 @@ TEST_CASE(ChunkRenderer_VisibilityTraceRequiresRealNonemptyDraw) {
     CHECK_EQ(records.size(), static_cast<size_t>(2));
     CHECK(!records.back().stage(ChunkVisibilityStage::FirstDraw).has_value());
 }
+
+TEST_CASE(ChunkRenderer_RemovedTraceIsNotDrawnByReplacementMesh) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+
+    const ChunkCoord coord{0, 0, 0};
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 1});
+    const ChunkVisibilityTraceIdentity removedIdentity{
+        coord, 1, 2, 3, 4
+    };
+    tracer->begin(removedIdentity);
+    tracer->complete(
+        removedIdentity,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+
+    WorldMeshStore store;
+    store.set(
+        coord,
+        makeMesh(3, 3),
+        ChunkVisibilityTraceLink{removedIdentity, tracer});
+    store.remove(coord);
+    store.set(coord, makeMesh(6, 6));
+
+    WorldRenderContext renderContext;
+    renderContext.meshes = &store;
+    renderContext.shader = makeShader();
+    ChunkRenderer renderer;
+    renderer.render(renderContext);
+
+    const auto records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(1));
+    CHECK(!records.front()
+               .stage(ChunkVisibilityStage::FirstDraw)
+               .has_value());
+}

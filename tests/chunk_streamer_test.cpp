@@ -149,6 +149,23 @@ private:
     size_t m_reads = 0;
 };
 
+class ManualTraceClock {
+public:
+    ChunkVisibilityTimePoint now() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_now;
+    }
+
+    void advance(ChunkVisibilityDuration duration) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_now += duration;
+    }
+
+private:
+    mutable std::mutex m_mutex;
+    ChunkVisibilityTimePoint m_now{};
+};
+
 bool waitForGenerationCompletion(const ChunkStreamer& streamer) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -3128,6 +3145,27 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesSchedulerPoolAndWorkerTime) {
     CHECK(records.front().stage(ChunkVisibilityStage::ResultAccepted).has_value());
     CHECK(!records.front().stage(ChunkVisibilityStage::FirstDraw).has_value());
 
+    const std::array orderedStages{
+        ChunkVisibilityStage::Desired,
+        ChunkVisibilityStage::DataRequest,
+        ChunkVisibilityStage::DataReady,
+        ChunkVisibilityStage::NeighborReady,
+        ChunkVisibilityStage::MeshEligible,
+        ChunkVisibilityStage::SchedulerWait,
+        ChunkVisibilityStage::PoolSubmit,
+        ChunkVisibilityStage::WorkerStart,
+        ChunkVisibilityStage::WorkerFinish,
+        ChunkVisibilityStage::ResultAccepted
+    };
+    for (size_t index = 1; index < orderedStages.size(); ++index) {
+        const auto previous =
+            records.front().stage(orderedStages[index - 1]);
+        const auto current = records.front().stage(orderedStages[index]);
+        CHECK(previous.has_value());
+        CHECK(current.has_value());
+        CHECK(*previous < *current);
+    }
+
     const auto durations = records.front().durations();
     CHECK(durations.schedulerWait.has_value());
     CHECK(durations.poolWait.has_value());
@@ -3148,6 +3186,108 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesSchedulerPoolAndWorkerTime) {
     CHECK_EQ(
         streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
         static_cast<uint64_t>(0));
+}
+
+TEST_CASE(ChunkStreamer_VisibilityTraceIncludesDirtyMeshCapacityWait) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(
+        registry, "rigel:trace_dirty_capacity_solid");
+    const ChunkCoord blockerCoord{0, 0, 0};
+    const ChunkCoord tracedCoord{1, 0, 0};
+    const std::array<ChunkCoord, 7> desired{
+        blockerCoord,
+        tracedCoord,
+        ChunkCoord{-1, 0, 0},
+        ChunkCoord{0, 1, 0},
+        ChunkCoord{0, -1, 0},
+        ChunkCoord{0, 0, 1},
+        ChunkCoord{0, 0, -1}
+    };
+    for (const ChunkCoord& coord : desired) {
+        Chunk& chunk = manager.getOrCreateChunk(coord);
+        chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setLoadedFromDisk(true);
+        chunk.clearDirty();
+        meshStore.set(coord, {});
+    }
+
+    auto clock = std::make_shared<ManualTraceClock>();
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{tracedCoord, 2},
+        [clock]() { return clock->now(); });
+    auto gate = std::make_shared<WorkerGate>();
+    WorkerGateRelease releaseOnExit(gate);
+    std::atomic<size_t> buildsEntered{0};
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.meshQueueLimit = 1;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.setVisibilityTracer(tracer);
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer,
+        [gate, &buildsEntered]() {
+            if (buildsEntered.fetch_add(1, std::memory_order_relaxed) == 0) {
+                gate->enterAndWait();
+            }
+        });
+
+    streamer.update(blockerCoord.toWorldCenter());
+    streamer.processCompletions();
+
+    Chunk& blocker = *manager.getChunk(blockerCoord);
+    Chunk& traced = *manager.getChunk(tracedCoord);
+    blocker.setBlock(1, 0, 0, BlockState{solid}, registry);
+    traced.setBlock(1, 0, 0, BlockState{solid}, registry);
+    streamer.update(blockerCoord.toWorldCenter());
+    bool workerEntered = gate->waitUntilEntered();
+    if (!workerEntered) {
+        gate->release();
+    }
+    CHECK(workerEntered);
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK(traced.isDirty());
+
+    clock->advance(std::chrono::milliseconds(25));
+    gate->release();
+    CHECK(waitForMeshCompletions(streamer, 1));
+    streamer.update(blockerCoord.toWorldCenter());
+    CHECK(waitForMeshCompletions(streamer, 2));
+
+    const auto records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(1));
+    const auto& record = records.front();
+    CHECK_EQ(
+        record.outcome,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    const auto neighborReady =
+        record.stage(ChunkVisibilityStage::NeighborReady);
+    const auto meshEligible =
+        record.stage(ChunkVisibilityStage::MeshEligible);
+    const auto schedulerWait =
+        record.stage(ChunkVisibilityStage::SchedulerWait);
+    const auto poolSubmit =
+        record.stage(ChunkVisibilityStage::PoolSubmit);
+    CHECK(neighborReady.has_value());
+    CHECK(meshEligible.has_value());
+    CHECK(schedulerWait.has_value());
+    CHECK(poolSubmit.has_value());
+    CHECK(*neighborReady <= *meshEligible);
+    CHECK(*meshEligible <= *schedulerWait);
+    CHECK(*schedulerWait <= *poolSubmit);
+    const auto durations = record.durations();
+    CHECK(durations.schedulerWait.has_value());
+    CHECK_EQ(*durations.schedulerWait, std::chrono::milliseconds(25));
 }
 
 TEST_CASE(ChunkStreamer_VisibilityTraceKeepsStaleAndReplacementSeparate) {
@@ -3215,6 +3355,78 @@ TEST_CASE(ChunkStreamer_VisibilityTraceKeepsStaleAndReplacementSeparate) {
         records[0].identity.chunkInstanceId,
         records[1].identity.chunkInstanceId);
     CHECK_NE(records[0].identity.revision, records[1].identity.revision);
+}
+
+TEST_CASE(ChunkStreamer_VisibilityTraceTeardownStalesPendingAndLateResults) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(
+        registry, "rigel:trace_teardown_solid");
+    const ChunkCoord coord{0, 0, 0};
+
+    Chunk& chunk = manager.getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 4});
+    auto gate = std::make_shared<WorkerGate>();
+    WorkerGateRelease releaseOnExit(gate);
+
+    {
+        ChunkStreamer streamer(
+            manager, meshStore, registry, nullptr, generator);
+        StreamingConfig stream;
+        stream.viewDistanceChunks = 0;
+        stream.unloadDistanceChunks = 0;
+        stream.meshQueueLimit = 1;
+        stream.updateBudgetPerFrame = 0;
+        stream.applyBudgetPerFrame = 0;
+        stream.workerThreads = 2;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.setVisibilityTracer(tracer);
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+            streamer,
+            [gate]() { gate->enterAndWait(); });
+
+        streamer.update(coord.toWorldCenter());
+        bool workerEntered = gate->waitUntilEntered();
+        if (!workerEntered) {
+            gate->release();
+        }
+        CHECK(workerEntered);
+
+        chunk.setBlock(1, 0, 0, BlockState{solid}, registry);
+        streamer.update(coord.toWorldCenter());
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::reset(streamer);
+
+        auto records = tracer->snapshot();
+        CHECK_EQ(records.size(), static_cast<size_t>(2));
+        CHECK_EQ(records[0].outcome, ChunkVisibilityOutcome::Pending);
+        CHECK_EQ(records[1].outcome, ChunkVisibilityOutcome::Stale);
+        CHECK_NE(
+            records[0].identity.requestId,
+            records[1].identity.requestId);
+
+        gate->release();
+        CHECK(waitForPendingMeshCompletion(streamer));
+    }
+
+    const auto records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(2));
+    CHECK_EQ(records[0].outcome, ChunkVisibilityOutcome::Stale);
+    CHECK_EQ(records[1].outcome, ChunkVisibilityOutcome::Stale);
+    CHECK(records[0].stage(ChunkVisibilityStage::WorkerFinish).has_value());
+    CHECK(!records[0]
+               .stage(ChunkVisibilityStage::ResultAccepted)
+               .has_value());
+    CHECK(!records[1]
+               .stage(ChunkVisibilityStage::PoolSubmit)
+               .has_value());
 }
 
 TEST_CASE(ChunkStreamer_VisibilityTraceDistinguishesVoxelAndGeometryEmpty) {

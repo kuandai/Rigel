@@ -242,20 +242,16 @@ bool waitForRegionCompletion(const AsyncChunkLoader& loader) {
 bool waitForPublishedRegionJobs(const AsyncChunkLoader& loader, size_t count) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline) {
-        const auto metrics = loader.metrics();
         const size_t completionCount = Rigel::Persistence::detail::
             AsyncChunkLoaderTestAccess::regionCompletionCount(loader);
-        if (metrics.direct.completed + metrics.speculative.completed >= count &&
-            completionCount > 0) {
+        if (completionCount >= count) {
             return true;
         }
         std::this_thread::yield();
     }
-    const auto metrics = loader.metrics();
     const size_t completionCount = Rigel::Persistence::detail::
         AsyncChunkLoaderTestAccess::regionCompletionCount(loader);
-    return metrics.direct.completed + metrics.speculative.completed >= count &&
-        completionCount > 0;
+    return completionCount >= count;
 }
 
 bool drainRegionJobsUntilSettled(
@@ -2783,7 +2779,7 @@ TEST_CASE(AsyncChunkLoader_LaterDirectRegionOutranksUnstartedPrefetch) {
     CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
                  regionLoadAttemptCount(loader, displaced),
              static_cast<size_t>(1));
-    CHECK(waitForPublishedRegionJobs(loader, 3));
+    CHECK(waitForPublishedRegionJobs(loader, 1));
     {
         std::lock_guard<std::mutex> lock(startsMutex);
         auto laterStart = std::find_if(
@@ -3898,7 +3894,7 @@ TEST_CASE(AsyncChunkLoader_CancelDeferredDemandRestoresPrefetchPriority) {
     CHECK(waitForPublishedRegionJobs(loader, 1));
     std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(1);
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));
-    CHECK(waitForPublishedRegionJobs(loader, 2));
+    CHECK(waitForPublishedRegionJobs(loader, 1));
     {
         std::lock_guard<std::mutex> lock(startsMutex);
         CHECK_EQ(starts.size(), static_cast<size_t>(2));

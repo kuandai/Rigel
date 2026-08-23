@@ -113,6 +113,61 @@ TEST_CASE(ThreadPool_ConstructionFailureJoinsStartedWorker) {
     CHECK_EQ(startCount, 2u);
 }
 
+TEST_CASE(ConcurrentQueue_PublicationCallbackCompletesBeforeDrain) {
+    Rigel::Voxel::detail::ConcurrentQueue<int> queue;
+    ThreadPoolGate publicationGate;
+    ThreadPoolRelease releaseOnExit(publicationGate);
+    std::atomic<uint64_t> published{0};
+    std::atomic<uint64_t> drained{0};
+    std::atomic<bool> drainAttempted{false};
+    std::atomic<bool> drainReturned{false};
+    bool popped = false;
+    int value = 0;
+
+    std::thread producer([&]() {
+        queue.push(
+            42,
+            [&]() noexcept {
+                published.fetch_add(1, std::memory_order_seq_cst);
+                publicationGate.enterAndWait();
+            });
+    });
+    const bool publicationEntered = publicationGate.waitUntilEntered();
+
+    std::thread consumer([&]() {
+        drainAttempted.store(true, std::memory_order_release);
+        popped = queue.tryPop(value);
+        if (popped) {
+            drained.fetch_add(1, std::memory_order_seq_cst);
+        }
+        drainReturned.store(true, std::memory_order_release);
+    });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!drainAttempted.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    const bool consumerReachedQueue =
+        drainAttempted.load(std::memory_order_acquire);
+    const bool drainBlockedDuringPublication =
+        !drainReturned.load(std::memory_order_acquire);
+
+    publicationGate.release();
+    producer.join();
+    consumer.join();
+
+    CHECK(publicationEntered);
+    CHECK(consumerReachedQueue);
+    CHECK(drainBlockedDuringPublication);
+    CHECK(popped);
+    CHECK_EQ(value, 42);
+    CHECK_EQ(published.load(std::memory_order_seq_cst),
+             static_cast<uint64_t>(1));
+    CHECK_EQ(drained.load(std::memory_order_seq_cst),
+             static_cast<uint64_t>(1));
+}
+
 TEST_CASE(ThreadPool_StopDrainsQueuedJobs) {
     std::atomic<size_t> completed = 0;
     Rigel::Voxel::detail::ThreadPool pool(2);

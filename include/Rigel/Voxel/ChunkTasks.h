@@ -24,6 +24,14 @@ public:
         m_queue.push_back(std::move(value));
     }
 
+    template <typename OnPublished>
+    void push(T value, OnPublished&& onPublished) {
+        static_assert(std::is_nothrow_invocable_v<OnPublished&>);
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_queue.push_back(std::move(value));
+        std::invoke(onPublished);
+    }
+
     bool tryPop(T& out) {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_queue.empty()) {

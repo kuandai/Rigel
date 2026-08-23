@@ -217,13 +217,15 @@ as air.
 
 Region reads enter a loader-owned priority scheduler. Direct chunk demand and
 promoted same-region prefetch are selected before unstarted speculative reads.
-Only the smaller of the configured in-flight cap and the physical IO worker
-count is submitted to the worker pool. Its pending lane supports promotion and
+Submission is bounded by the physical IO worker count and, when nonzero, the
+configured in-flight cap. The pool's pending lane supports promotion and
 removal before worker start, so priority survives the final dispatch boundary;
 running reads are not cancelled. The speculative scheduler is bounded by the
-configured region cap; when that cap is disabled, at most 64 unstarted
-speculative reads are retained. Direct demand can displace an unstarted
-speculative read at capacity without changing region coalescing.
+configured region cap. When that cap is disabled, at most 64 speculative
+owners are retained in the loader-owned queue. Dispatched-undrained work,
+including an unstarted pool-pending submission, is bounded separately by the
+IO executor capacity. Direct demand can displace an unstarted speculative read
+at capacity without changing region coalescing.
 
 `AsyncChunkLoader::metrics()` exposes bounded lifetime aggregates rather than
 per-region history. Direct and speculative admissions retain their immutable

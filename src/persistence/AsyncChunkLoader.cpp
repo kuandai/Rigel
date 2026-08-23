@@ -421,7 +421,7 @@ void AsyncChunkLoader::drainRegionCompletions(
                 --m_speculativeOwnedDispatchedRegionJobCount;
             }
             regionMetricCounters(result.job->origin)
-                .resultsDrained.fetch_add(1, std::memory_order_relaxed);
+                .resultsDrained.fetch_add(1, std::memory_order_seq_cst);
         }
         auto jobIt = m_regionJobs.find(result.key);
         if (jobIt != m_regionJobs.end() && jobIt->second == result.job) {
@@ -498,9 +498,7 @@ void AsyncChunkLoader::drainRegionCompletions(
             presence.nextCheck = now + std::chrono::seconds(2);
         }
         result.entry.prefetched =
-            result.job &&
-            result.job->origin == RegionJobOrigin::Speculative &&
-            !result.job->demanded;
+            result.job && !result.job->demanded;
         m_cache[result.key] = std::move(result.entry);
         touch(result.key);
         evictIfNeeded();
@@ -1044,6 +1042,9 @@ void AsyncChunkLoader::cancelQueuedDirectRegionLoad(const RegionKey& key) {
     if (jobIt->second->started) {
         if (jobIt->second->poolJobId == 0 ||
             !m_ioPool.cancel(jobIt->second->poolJobId)) {
+            --m_demandOwnedDispatchedRegionJobCount;
+            ++m_speculativeOwnedDispatchedRegionJobCount;
+            jobIt->second->demanded = false;
             return;
         }
         m_inFlight.erase(key);
@@ -1096,7 +1097,8 @@ void AsyncChunkLoader::startRegionLoad(
     PersistenceContext contextCopy = m_context;
     auto regionLoadStartCallback = m_regionLoadStartCallback;
     auto regionLoadStartObserver = m_regionLoadStartObserver;
-    auto regionResultAccountedCallback = m_regionResultAccountedCallback;
+    auto regionResultReadyToPublishCallback =
+        m_regionResultReadyToPublishCallback;
     const bool poolExecution = m_ioPool.threadCount() > 0;
 
     auto job = [this,
@@ -1108,8 +1110,8 @@ void AsyncChunkLoader::startRegionLoad(
                 poolExecution,
                 regionLoadStartCallback = std::move(regionLoadStartCallback),
                 regionLoadStartObserver = std::move(regionLoadStartObserver),
-                regionResultAccountedCallback =
-                    std::move(regionResultAccountedCallback)]() mutable {
+                regionResultReadyToPublishCallback =
+                    std::move(regionResultReadyToPublishCallback)]() mutable {
         if (poolExecution) {
             retireSpeculativeRegionPoolPending(jobState);
         }
@@ -1193,11 +1195,15 @@ void AsyncChunkLoader::startRegionLoad(
             result.error = "unknown error";
         }
         recordExecutionMetrics();
-        counters.resultsPublished.fetch_add(1, std::memory_order_relaxed);
-        if (regionResultAccountedCallback) {
-            regionResultAccountedCallback();
+        if (regionResultReadyToPublishCallback) {
+            regionResultReadyToPublishCallback();
         }
-        m_regionComplete.push(std::move(result));
+        m_regionComplete.push(
+            std::move(result),
+            [&counters]() noexcept {
+                counters.resultsPublished.fetch_add(
+                    1, std::memory_order_seq_cst);
+            });
     };
 
     if (poolExecution) {
@@ -1420,9 +1426,7 @@ void AsyncChunkLoader::evictIfNeeded() {
 
 void AsyncChunkLoader::promoteRegionDemand(const RegionKey& key) {
     auto jobIt = m_regionJobs.find(key);
-    if (jobIt == m_regionJobs.end() ||
-        jobIt->second->origin != RegionJobOrigin::Speculative ||
-        jobIt->second->demanded) {
+    if (jobIt == m_regionJobs.end() || jobIt->second->demanded) {
         return;
     }
     if (jobIt->second->started) {
@@ -1482,9 +1486,9 @@ Voxel::RegionSchedulerOriginDiagnostics AsyncChunkLoader::regionJobMetrics(
         .inlineExecutions =
             counters.inlineExecutions.load(std::memory_order_relaxed),
         .resultsPublished =
-            counters.resultsPublished.load(std::memory_order_relaxed),
+            counters.resultsPublished.load(std::memory_order_seq_cst),
         .resultsDrained =
-            counters.resultsDrained.load(std::memory_order_relaxed),
+            counters.resultsDrained.load(std::memory_order_seq_cst),
         .missingProbes = counters.missingProbes.load(std::memory_order_relaxed),
         .admissionToWorkerStartNanoseconds =
             counters.admissionToWorkerStartNanoseconds.load(

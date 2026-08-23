@@ -245,7 +245,7 @@ private:
     std::function<void()> m_regionLoadStartCallback;
     std::function<void(const RegionKey&, RegionJobOrigin)>
         m_regionLoadStartObserver;
-    std::function<void()> m_regionResultAccountedCallback;
+    std::function<void()> m_regionResultReadyToPublishCallback;
     std::function<void()> m_payloadBuildStartCallback;
     std::function<void()> m_ioPoolStopStartCallback;
     std::function<void()> m_workerPoolStopStartCallback;

@@ -10,7 +10,6 @@
 #include <optional>
 #include <shared_mutex>
 #include <unordered_map>
-#include <vector>
 
 namespace Rigel::Voxel {
 
@@ -110,22 +109,17 @@ public:
     }
 
     void clear() {
-        std::vector<ChunkVisibilityTraceLink> removedTraces;
+        decltype(m_meshes) removedMeshes;
         {
             std::unique_lock lock(m_mutex);
-            removedTraces.reserve(m_meshes.size());
-            for (auto& [coord, entry] : m_meshes) {
-                if (entry.visibilityTrace) {
-                    removedTraces.push_back(
-                        std::move(*entry.visibilityTrace));
-                }
-            }
             if (!m_meshes.empty()) {
                 m_version.fetch_add(1, std::memory_order_relaxed);
             }
-            m_meshes.clear();
+            removedMeshes.swap(m_meshes);
         }
-        for (const auto& trace : removedTraces) {
+        for (auto& meshEntry : removedMeshes) {
+            auto trace = std::move(meshEntry.second.visibilityTrace);
+            meshEntry.second.visibilityTrace.reset();
             finishTrace(
                 trace,
                 ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
@@ -178,6 +172,24 @@ public:
             ChunkVisibilityDrawOutcome::CameraLeftBeforeDraw);
     }
 
+    void endVisibilityTrace(
+        ChunkCoord coord,
+        const std::shared_ptr<ChunkVisibilityTracer>& tracer,
+        ChunkVisibilityDrawOutcome outcome) {
+        std::optional<ChunkVisibilityTraceLink> endedTrace;
+        {
+            std::unique_lock lock(m_mutex);
+            auto it = m_meshes.find(coord);
+            if (it == m_meshes.end() || !it->second.visibilityTrace ||
+                it->second.visibilityTrace->tracer != tracer) {
+                return;
+            }
+            endedTrace = std::move(it->second.visibilityTrace);
+            it->second.visibilityTrace.reset();
+        }
+        finishTrace(endedTrace, outcome);
+    }
+
     void finishVisibilityDraw(const ChunkVisibilityLifecycleKey& key) const {
         std::unique_lock lock(m_mutex);
         auto it = m_meshes.find(key.coord);
@@ -205,9 +217,12 @@ public:
 private:
     static void finishTrace(
         const std::optional<ChunkVisibilityTraceLink>& trace,
-        ChunkVisibilityDrawOutcome outcome) {
-        if (trace && trace->tracer) {
-            trace->tracer->observeMeshUnavailable(trace->key, outcome);
+        ChunkVisibilityDrawOutcome outcome) noexcept {
+        try {
+            if (trace && trace->tracer) {
+                trace->tracer->observeMeshUnavailable(trace->key, outcome);
+            }
+        } catch (...) {
         }
     }
 

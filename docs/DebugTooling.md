@@ -172,9 +172,10 @@ for discovery.
 
 `WorldView::setVisibilityTracer` installs an opt-in trace for one identified
 chunk coordinate. Construct `ChunkVisibilityTracer` with the coordinate and a
-nonzero record capacity, then retain the shared tracer and call `snapshot()` to
-inspect completed and in-progress lifecycles. A capacity of zero disables the
-trace without reading its clock or adding streamer inspection work.
+nonzero record capacity, then retain the shared tracer and call `measurement()`
+to atomically copy the records and accounting. Each measurement has a sequence
+identifying the captured tracer state. A capacity of zero disables the trace
+without reading its clock or adding streamer inspection work.
 
 Each record has an immutable coordinate/lifecycle ID key and a lifecycle kind:
 `camera_demand` or `remesh`. Tracers allocate lifecycle IDs from one process-wide
@@ -185,10 +186,18 @@ epoch, chunk instance ID, and mesh revision. Voxel-empty and cached lifecycles
 therefore have no MeshTask identity, while a stale completion remains correlated
 with its own dispatched input rather than a replacement lifecycle.
 
+The record origin classifies observed persisted loads, observed generation,
+remeshes, and already-resident data whose earlier history is left-censored.
+`unresolved` means the data source had not reached an observed terminal choice
+when the measurement was taken. A trace installed after eligibility can begin
+at physical mesh dispatch; its resident-left-censored origin and absent earlier
+stages make that late start explicit.
+
 Retention is FIFO and includes pending records in the configured capacity.
-`ChunkVisibilityTracer::stats()` reports retained, dropped, dropped-unfinished,
-and unmatched-event counts, so capacity eviction and a later draw observation
-for an evicted record are visible rather than silent.
+The accounting returned with `measurement()` reports retained, dropped,
+dropped-unfinished, unmatched-event, and clock-failure counts, so capacity
+eviction, late events for evicted records, and unusable timestamps are visible
+rather than silent.
 
 The trace timestamps these stages:
 
@@ -233,9 +242,23 @@ only by the renderer after a real nonempty main-pass draw call.
 Clock callbacks are serialized for worker safety, are invoked without the
 record mutex held, and cannot propagate exceptions into streaming or rendering
 work. A callback failure leaves that event timestamp absent while terminal and
-draw outcomes still close normally. Installing or disabling a tracer does not
+draw outcomes still close normally. `observed(stage)` remains true for such a
+transition, and a later idempotent notification does not retimestamp it.
+Installing or disabling a tracer does not
 synthesize stages, requeue scheduler work, or add stationary desired-set scans;
 only subsequent production lifecycle events create or advance records.
+
+Do not treat an absent timestamp or duration as zero. Reject a measurement
+window used for latency claims when it contains pending build outcomes,
+nonempty outcomes still awaiting a draw transition, retention drops, unmatched
+events, or clock failures. Also reject `unresolved` and
+resident-left-censored records from end-to-end demand latency aggregates;
+classify them separately if resident reuse is the metric being studied. Use
+persisted, generated, camera-demand, and remesh populations separately, and
+include a duration only when both endpoint stages are present. These rules also
+apply when a measurement sequence is internally consistent: atomic capture
+prevents mixed accounting, but it cannot make an incomplete or censored sample
+complete.
 
 ---
 

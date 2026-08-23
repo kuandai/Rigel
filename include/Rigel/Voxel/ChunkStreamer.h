@@ -233,7 +233,8 @@ private:
     ChunkCache m_cache;
     ChunkBenchmarkStats* m_benchmark = nullptr;
     std::shared_ptr<ChunkVisibilityTracer> m_visibilityTracer;
-    std::optional<PendingVisibilityTrace> m_pendingVisibilityTrace;
+    std::array<std::optional<PendingVisibilityTrace>, 2>
+        m_pendingVisibilityTraces;
     ChunkLoadCallback m_chunkLoader;
     ChunkPendingCallback m_chunkPending;
     ChunkLoadDrainCallback m_chunkLoadDrain;
@@ -314,13 +315,18 @@ private:
     void waitForMeshDependencies(ChunkCoord coord);
     void wakeGenerationCapacityWaiter();
     void wakeMissingMeshCapacityWaiter();
-    void queueLoadedNeighbors(ChunkCoord coord, bool dataBecameReady = false);
+    void queueLoadedNeighbors(ChunkCoord coord);
     std::optional<size_t> dirtyMeshPriority(ChunkCoord coord) const;
     void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
     void ensureVisibilityTrace(
         ChunkCoord coord,
-        ChunkVisibilityLifecycleKind kind);
+        ChunkVisibilityLifecycleKind kind,
+        ChunkVisibilityOrigin origin = ChunkVisibilityOrigin::Unresolved);
     void beginCameraVisibilityTrace(ChunkCoord coord);
+    void observeVisibilityDataReady(
+        ChunkCoord coord,
+        ChunkVisibilityOrigin origin);
+    void observeVisibilityNeighborReadiness(ChunkCoord coord);
     void markVisibilityMeshEligible(ChunkCoord coord,
                                     bool neighborBecameReady);
     void markVisibilityStage(ChunkCoord coord, ChunkVisibilityStage stage);
@@ -330,6 +336,11 @@ private:
         ChunkVisibilityLifecycleKind kind);
     void completePendingVisibilityTrace(
         ChunkCoord coord,
+        ChunkVisibilityOutcome outcome,
+        const Chunk* chunk = nullptr);
+    void completePendingVisibilityTrace(
+        ChunkCoord coord,
+        ChunkVisibilityLifecycleKind kind,
         ChunkVisibilityOutcome outcome,
         const Chunk* chunk = nullptr);
     void completeInFlightVisibilityTrace(

@@ -5,7 +5,9 @@
 #include "Rigel/Voxel/ChunkRenderer.h"
 #include "Rigel/Voxel/WorldMeshStore.h"
 
+#include <array>
 #include <memory>
+#include <stdexcept>
 
 using namespace Rigel::Voxel;
 namespace Asset = Rigel::Asset;
@@ -243,6 +245,74 @@ TEST_CASE(WorldMeshStore_ReleasesTraceOwnershipAfterDraw) {
     CHECK(!observer.expired());
     store.finishVisibilityDraw(key);
     CHECK(observer.expired());
+}
+
+TEST_CASE(WorldMeshStore_TraceReplacementConsumesPublishedDrawLink) {
+    WorldMeshStore store;
+    const ChunkCoord coord{5, 0, 0};
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 1});
+    const auto key = *tracer->begin(
+        ChunkVisibilityLifecycleKind::CameraDemand);
+    store.set(
+        coord,
+        makeMesh(3, 3),
+        ChunkVisibilityTraceLink{
+            key,
+            ChunkVisibilityLifecycleKind::CameraDemand,
+            tracer});
+    tracer->complete(
+        key,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+
+    store.endVisibilityTrace(
+        coord,
+        tracer,
+        ChunkVisibilityDrawOutcome::TraceReplacedBeforeDraw);
+
+    CHECK_EQ(
+        tracer->measurement().records.front().drawOutcome,
+        ChunkVisibilityDrawOutcome::TraceReplacedBeforeDraw);
+    std::weak_ptr<ChunkVisibilityTracer> observer = tracer;
+    tracer.reset();
+    CHECK(observer.expired());
+}
+
+TEST_CASE(WorldMeshStore_ClearContainsThrowingTraceClocks) {
+    WorldMeshStore store;
+    const std::array coords{
+        ChunkCoord{6, 0, 0},
+        ChunkCoord{7, 0, 0}
+    };
+    std::array<std::shared_ptr<ChunkVisibilityTracer>, 2> tracers;
+    for (size_t index = 0; index < tracers.size(); ++index) {
+        tracers[index] = std::make_shared<ChunkVisibilityTracer>(
+            ChunkVisibilityTracer::Config{coords[index], 1},
+            []() -> ChunkVisibilityTimePoint {
+                throw std::runtime_error("clock failure during clear");
+            });
+        const auto key = *tracers[index]->begin(
+            ChunkVisibilityLifecycleKind::CameraDemand);
+        store.set(
+            coords[index],
+            makeMesh(3, 3),
+            ChunkVisibilityTraceLink{
+                key,
+                ChunkVisibilityLifecycleKind::CameraDemand,
+                tracers[index]});
+        tracers[index]->complete(
+            key,
+            ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    }
+
+    CHECK_NO_THROW(store.clear());
+    for (const auto& tracer : tracers) {
+        const auto measurement = tracer->measurement();
+        CHECK_EQ(
+            measurement.records.front().drawOutcome,
+            ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
+        CHECK_EQ(measurement.stats.clockFailures, static_cast<uint64_t>(2));
+    }
 }
 
 TEST_CASE(ChunkRenderer_ReinsertUploadsWhenRemovalWasNotRendered) {

@@ -209,35 +209,48 @@ TEST_CASE(ThreadPool_CancelDestroysCallableAfterUnlock) {
 }
 
 TEST_CASE(ThreadPool_PromotionRetainsReentrantCallableUntilUnlockedRemoval) {
-    std::atomic<size_t> destroyed = 0;
-    std::atomic<bool> reentrantCancelled = false;
-
-    struct ReentrantCapture {
+    struct ReentrantState {
         Rigel::Voxel::detail::ThreadPool* pool = nullptr;
-        std::atomic<size_t>* destroyed = nullptr;
-        std::atomic<bool>* cancelled = nullptr;
+        std::atomic<bool> armed = false;
+        std::atomic<size_t> destroyed = 0;
+        std::atomic<bool> cancelled = false;
+    };
 
-        ~ReentrantCapture() {
-            destroyed->fetch_add(1, std::memory_order_relaxed);
-            const auto id = pool->enqueue([]() {});
-            cancelled->store(pool->cancel(id), std::memory_order_relaxed);
+    struct ReentrantCallable {
+        std::shared_ptr<ReentrantState> state;
+
+        explicit ReentrantCallable(std::shared_ptr<ReentrantState> value)
+            : state(std::move(value)) {}
+        ReentrantCallable(const ReentrantCallable&) = default;
+        ReentrantCallable(ReentrantCallable&& other) noexcept
+            : state(other.state) {}
+
+        void operator()() const {}
+
+        ~ReentrantCallable() {
+            if (!state || !state->armed.load(std::memory_order_relaxed)) {
+                return;
+            }
+            state->destroyed.fetch_add(1, std::memory_order_relaxed);
+            const auto id = state->pool->enqueue([]() {});
+            state->cancelled.store(
+                state->pool->cancel(id), std::memory_order_relaxed);
         }
     };
 
     Rigel::Voxel::detail::ThreadPool pool(0);
-    auto capture = std::make_shared<ReentrantCapture>();
-    capture->pool = &pool;
-    capture->destroyed = &destroyed;
-    capture->cancelled = &reentrantCancelled;
-
-    const auto job = pool.enqueue([capture]() {});
-    capture.reset();
+    auto state = std::make_shared<ReentrantState>();
+    state->pool = &pool;
+    const auto job = pool.enqueue(ReentrantCallable{state});
+    state->armed.store(true, std::memory_order_relaxed);
 
     CHECK(pool.promote(job));
-    CHECK_EQ(destroyed.load(std::memory_order_relaxed), static_cast<size_t>(0));
+    CHECK_EQ(state->destroyed.load(std::memory_order_relaxed),
+             static_cast<size_t>(0));
     CHECK(pool.cancel(job));
-    CHECK_EQ(destroyed.load(std::memory_order_relaxed), static_cast<size_t>(1));
-    CHECK(reentrantCancelled.load(std::memory_order_relaxed));
+    CHECK_EQ(state->destroyed.load(std::memory_order_relaxed),
+             static_cast<size_t>(1));
+    CHECK(state->cancelled.load(std::memory_order_relaxed));
     CHECK(!pool.cancel(job));
 }
 

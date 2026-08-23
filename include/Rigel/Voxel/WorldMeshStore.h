@@ -191,12 +191,17 @@ public:
     }
 
     void finishVisibilityDraw(const ChunkVisibilityLifecycleKey& key) const {
-        std::unique_lock lock(m_mutex);
-        auto it = m_meshes.find(key.coord);
-        if (it != m_meshes.end() && it->second.visibilityTrace &&
-            it->second.visibilityTrace->key == key) {
-            it->second.visibilityTrace.reset();
+        std::optional<ChunkVisibilityTraceLink> finishedTrace;
+        {
+            std::unique_lock lock(m_mutex);
+            auto it = m_meshes.find(key.coord);
+            if (it != m_meshes.end() && it->second.visibilityTrace &&
+                it->second.visibilityTrace->key == key) {
+                finishedTrace = std::move(it->second.visibilityTrace);
+                it->second.visibilityTrace.reset();
+            }
         }
+        finishedTrace.reset();
     }
 
     bool contains(ChunkCoord coord) const {

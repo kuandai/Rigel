@@ -6,8 +6,11 @@
 #include "Rigel/Voxel/WorldMeshStore.h"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <stdexcept>
+#include <thread>
 
 using namespace Rigel::Voxel;
 namespace Asset = Rigel::Asset;
@@ -245,6 +248,63 @@ TEST_CASE(WorldMeshStore_ReleasesTraceOwnershipAfterDraw) {
     CHECK(!observer.expired());
     store.finishVisibilityDraw(key);
     CHECK(observer.expired());
+}
+
+TEST_CASE(WorldMeshStore_ReleasesFinalDrawOwnerOutsideMutex) {
+    struct DestructionState {
+        std::atomic_bool reentered{false};
+        std::atomic_bool reentryFailed{false};
+        std::atomic_bool finished{false};
+    };
+
+    auto* store = new WorldMeshStore();
+    const ChunkCoord coord{4, 1, 0};
+    auto state = std::make_shared<DestructionState>();
+    auto tracer = std::shared_ptr<ChunkVisibilityTracer>(
+        new ChunkVisibilityTracer({coord, 1}),
+        [store, state, coord](ChunkVisibilityTracer* value) {
+            try {
+                state->reentered.store(
+                    store->contains(coord), std::memory_order_release);
+            } catch (...) {
+                state->reentryFailed.store(true, std::memory_order_release);
+            }
+            delete value;
+        });
+    const auto key = *tracer->begin(
+        ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer->complete(
+        key,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    tracer->observeDraw(key);
+    store->set(
+        coord,
+        makeMesh(3, 3),
+        ChunkVisibilityTraceLink{
+            key,
+            ChunkVisibilityLifecycleKind::CameraDemand,
+            tracer});
+    tracer.reset();
+
+    std::thread release([store, state, key]() {
+        store->finishVisibilityDraw(key);
+        state->finished.store(true, std::memory_order_release);
+    });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!state->finished.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    if (!state->finished.load(std::memory_order_acquire)) {
+        release.detach();
+        CHECK(state->finished.load(std::memory_order_acquire));
+    }
+    release.join();
+
+    CHECK(state->reentered.load(std::memory_order_acquire));
+    CHECK(!state->reentryFailed.load(std::memory_order_acquire));
+    delete store;
 }
 
 TEST_CASE(WorldMeshStore_TraceReplacementConsumesPublishedDrawLink) {

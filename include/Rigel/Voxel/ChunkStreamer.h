@@ -324,6 +324,7 @@ private:
     void observeVisibilityDataReady(
         ChunkCoord coord,
         ChunkVisibilityOrigin origin);
+    static bool areFaceNeighbors(ChunkCoord lhs, ChunkCoord rhs);
     void observeVisibilityNeighborReadiness(ChunkCoord coord);
     void markVisibilityMeshEligible(ChunkCoord coord,
                                     bool neighborBecameReady);

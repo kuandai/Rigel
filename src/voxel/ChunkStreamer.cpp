@@ -708,6 +708,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 }
                 chunk = m_chunkManager->getChunk(coord);
                 if (chunk) {
+                    cancelPendingLoad(coord);
                     observeVisibilityDataReady(
                         coord, ChunkVisibilityOrigin::Persisted);
                     observeVisibilityNeighborReadiness(coord);
@@ -1859,17 +1860,24 @@ void ChunkStreamer::observeVisibilityDataReady(
     pending->tracer->markDataReady(pending->key, origin);
 }
 
+bool ChunkStreamer::areFaceNeighbors(ChunkCoord lhs, ChunkCoord rhs) {
+    const int64_t dx = std::abs(
+        static_cast<int64_t>(lhs.x) - static_cast<int64_t>(rhs.x));
+    const int64_t dy = std::abs(
+        static_cast<int64_t>(lhs.y) - static_cast<int64_t>(rhs.y));
+    const int64_t dz = std::abs(
+        static_cast<int64_t>(lhs.z) - static_cast<int64_t>(rhs.z));
+    return dx + dy + dz == 1;
+}
+
 void ChunkStreamer::observeVisibilityNeighborReadiness(ChunkCoord coord) {
     if (!m_visibilityTracer) {
         return;
     }
     const ChunkCoord traced = m_visibilityTracer->coord();
-    const int dx = std::abs(traced.x - coord.x);
-    const int dy = std::abs(traced.y - coord.y);
-    const int dz = std::abs(traced.z - coord.z);
     if (coord == traced) {
         markVisibilityMeshEligible(traced, false);
-    } else if (dx + dy + dz == 1 &&
+    } else if (areFaceNeighbors(traced, coord) &&
                m_desiredSet.find(coord) != m_desiredSet.end()) {
         markVisibilityMeshEligible(traced, true);
     }

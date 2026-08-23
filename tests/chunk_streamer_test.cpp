@@ -2959,7 +2959,15 @@ TEST_CASE(ChunkStreamer_CameraMovementReprioritizesPendingMeshes) {
             pendingMeshQueueRecordCount(streamer),
         static_cast<size_t>(3));
 
+    const uint64_t schedulerInspectionsBeforeMovement =
+        streamer.workMetrics().schedulerCoordinatesInspected;
     streamer.update(movedNearCoord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(36));
+    CHECK_EQ(
+        streamer.workMetrics().schedulerCoordinatesInspected -
+            schedulerInspectionsBeforeMovement,
+        static_cast<uint64_t>(36));
 
     const auto movedFarPriority =
         Rigel::Voxel::detail::ChunkStreamerTestAccess::pendingMeshPriority(
@@ -4870,7 +4878,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredWorkBoundedForInlineMeshExecution) {
             static_cast<size_t>(0));
         CHECK_EQ(
             streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
-            static_cast<uint64_t>(9));
+            static_cast<uint64_t>(10));
         CHECK_EQ(streamer.workMetrics().meshJobsStarted,
                  static_cast<uint64_t>(1));
         CHECK_EQ(streamer.diagnostics().mesh.pending,

@@ -578,10 +578,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             m_priorityMeshRequests.erase(coord);
         }
         for (auto& [coord, flight] : m_meshInFlight) {
+            ++schedulerCoordinatesInspected;
             if (!flight.replacementPending) {
                 continue;
             }
-            ++schedulerCoordinatesInspected;
             if (m_desiredSet.find(coord) == m_desiredSet.end() &&
                 distanceSquared(center, coord) > unloadRadiusSq) {
                 setReplacementPending(coord, flight, false);

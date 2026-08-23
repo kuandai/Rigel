@@ -1365,10 +1365,17 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
             continue;
         }
         const PendingWorkKind work = classifyPendingWork(coord);
+        const Chunk* chunk = m_chunkManager
+            ? m_chunkManager->getChunk(coord)
+            : nullptr;
+        const bool retainedVoxelCleanup =
+            work == PendingWorkKind::Mesh && chunk && chunk->isEmpty() &&
+            m_meshStore && m_meshStore->contains(coord);
         const bool eligible = work == PendingWorkKind::Generation
             ? hasDirectStreamingDemand(coord)
             : work == PendingWorkKind::Mesh &&
-                dirtyMeshPriority(coord).has_value();
+                (dirtyMeshPriority(coord).has_value() ||
+                 retainedVoxelCleanup);
         if (eligible) {
             countPending(coord);
         }
@@ -2045,7 +2052,9 @@ ChunkStreamer::PendingWorkKind ChunkStreamer::classifyPendingWork(
         return PendingWorkKind::Generation;
     }
     if (chunk->isEmpty()) {
-        return PendingWorkKind::None;
+        return m_meshStore && m_meshStore->contains(coord)
+            ? PendingWorkKind::Mesh
+            : PendingWorkKind::None;
     }
 
     ChunkState state = ChunkState::Missing;
@@ -2724,14 +2733,8 @@ size_t ChunkStreamer::meshDispatchLimit() const {
         limit = std::min(limit, workerCount);
     } else {
         // Inline jobs complete during dispatch, but remain owned until the
-        // main-thread drain observes them. Match a finite drain budget and
-        // use one executor slot when that drain is unlimited.
-        size_t inlineCompletionCapacity = 1;
-        if (m_config.applyBudgetPerFrame > 0) {
-            inlineCompletionCapacity =
-                static_cast<size_t>(m_config.applyBudgetPerFrame);
-        }
-        limit = std::min(limit, inlineCompletionCapacity);
+        // main-thread drain observes the single executor slot.
+        limit = std::min(limit, static_cast<size_t>(1));
     }
     return limit;
 }

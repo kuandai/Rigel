@@ -1732,25 +1732,33 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     if (!priority) {
         return;
     }
-    Chunk* chunk = m_chunkManager
-        ? m_chunkManager->getChunk(coord)
-        : nullptr;
-    const bool hasMesh = m_meshStore && m_meshStore->contains(coord);
-    const bool meshInFlight =
-        m_meshInFlight.find(coord) != m_meshInFlight.end();
-    const bool replacementNeeded =
-        (!hasMesh || (chunk && chunk->isDirty())) &&
-        (!meshInFlight || (chunk && chunk->isDirty()));
-    if (replacementNeeded) {
-        const auto lifecycleKind = hasMesh
-            ? ChunkVisibilityLifecycleKind::Remesh
-            : ChunkVisibilityLifecycleKind::CameraDemand;
-        ensureVisibilityTrace(
-            coord,
-            lifecycleKind,
-            lifecycleKind == ChunkVisibilityLifecycleKind::Remesh
-                ? ChunkVisibilityOrigin::Remesh
-                : ChunkVisibilityOrigin::ResidentLeftCensored);
+    if (m_visibilityTracer && m_visibilityTracer->traces(coord)) {
+        Chunk* chunk = m_chunkManager
+            ? m_chunkManager->getChunk(coord)
+            : nullptr;
+        const bool hasMesh = m_meshStore && m_meshStore->contains(coord);
+        ChunkState state = ChunkState::Missing;
+        auto stateIt = m_states.find(coord);
+        if (stateIt != m_states.end()) {
+            state = stateIt->second;
+        }
+        const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+        const bool meshInFlight =
+            m_meshInFlight.find(coord) != m_meshInFlight.end();
+        const bool dirty = chunk && chunk->isDirty();
+        const bool replacementNeeded =
+            (!isMeshed || dirty) && (!meshInFlight || dirty);
+        if (replacementNeeded) {
+            const auto lifecycleKind = isMeshed
+                ? ChunkVisibilityLifecycleKind::Remesh
+                : ChunkVisibilityLifecycleKind::CameraDemand;
+            ensureVisibilityTrace(
+                coord,
+                lifecycleKind,
+                lifecycleKind == ChunkVisibilityLifecycleKind::Remesh
+                    ? ChunkVisibilityOrigin::Remesh
+                    : ChunkVisibilityOrigin::ResidentLeftCensored);
+        }
     }
     m_meshDependencyWaiting.erase(coord);
     bool newlyQueued = m_dirtyMeshQueued.insert(coord).second;

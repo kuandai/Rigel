@@ -193,6 +193,12 @@ private:
         DirtyMesh
     };
 
+    enum class PendingWorkKind : uint8_t {
+        None,
+        Generation,
+        Mesh
+    };
+
     struct MeshInFlight {
         MeshRequestKind kind = MeshRequestKind::Missing;
         uint64_t requestId = 0;
@@ -348,6 +354,11 @@ private:
     bool isConfigRetiredMeshEligible(
         ChunkCoord coord,
         ConfigRetiredWorkKind kind) const;
+    bool hasMeshReconciliationWork(ChunkCoord coord) const;
+    PendingWorkKind classifyPendingWork(ChunkCoord coord) const;
+    bool hasCanonicalWorkOwner(
+        ChunkCoord coord,
+        bool includeLoadGenQueue = true) const;
     void reconcileConfigRetiredWork(
         uint64_t& schedulerCoordinatesInspected);
     bool hasEligibleMeshWork(ChunkCoord coord) const;

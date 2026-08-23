@@ -149,8 +149,8 @@ explicit failed state until a later streaming requeue retries them.
 - `streaming.gen_queue_limit` caps in-flight generation work, while
   `streaming.mesh_queue_limit` caps mesh work selected from the pending
   scheduler (`0` means no configured cap). Inline mesh execution bounds
-  outstanding results by the finite apply budget, or by the validated queue
-  maximum when apply is unlimited.
+  outstanding results by the finite apply budget, or by one executor slot
+  when apply is unlimited.
 - Eligible initial meshes and dirty remeshes share a distance-prioritized
   scheduler. Asynchronous submission is additionally capped at the actual
   mesh worker count so work that has not started remains reprioritizable.

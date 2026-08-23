@@ -1539,11 +1539,6 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             continue;
         }
 
-        const ChunkVisibilityLifecycleKind visibilityKind =
-            flight.kind == MeshRequestKind::Dirty
-            ? ChunkVisibilityLifecycleKind::Remesh
-            : ChunkVisibilityLifecycleKind::CameraDemand;
-        bool completesPendingVisibility = false;
         std::optional<ChunkVisibilityTraceLink> visibilityTrace;
         if (flight.visibilityTracer && flight.visibilityTrace) {
             visibilityTrace = ChunkVisibilityTraceLink{
@@ -1551,28 +1546,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
                 flight.visibilityKind,
                 flight.visibilityTracer
             };
-        } else {
-            auto& pending = m_pendingVisibilityTraces[
-                visibilityKindIndex(visibilityKind)];
-            if (pending && pending->key.coord == meshResult.coord) {
-                visibilityTrace = ChunkVisibilityTraceLink{
-                    pending->key,
-                    pending->kind,
-                    pending->tracer
-                };
-                completesPendingVisibility = true;
-            }
         }
-        auto completeResolvedVisibility =
-            [&](ChunkVisibilityOutcome outcome) {
-                completeVisibility(outcome);
-                if (completesPendingVisibility) {
-                    completePendingVisibilityTrace(
-                        meshResult.coord,
-                        visibilityKind,
-                        outcome);
-                }
-            };
 
         if (meshResult.failed) {
             chunk->m_dirty = true;
@@ -1582,7 +1556,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             m_meshDependencyWaiting.erase(meshResult.coord);
             m_priorityMeshRequests.erase(meshResult.coord);
             ++m_workMetrics.meshJobsFailed;
-            completeResolvedVisibility(ChunkVisibilityOutcome::Failed);
+            completeVisibility(ChunkVisibilityOutcome::Failed);
             setFailure(
                 m_meshErrors,
                 m_meshFailureVersion,
@@ -1618,7 +1592,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         chunk->clearDirty();
         eraseFailure(m_meshErrors, m_meshFailureVersion, meshResult.coord);
         stateIt->second = ChunkState::ReadyMesh;
-        completeResolvedVisibility(meshResult.empty
+        completeVisibility(meshResult.empty
                 ? ChunkVisibilityOutcome::AcceptedEmptyGeometry
                 : ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
 

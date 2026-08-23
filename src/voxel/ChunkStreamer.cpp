@@ -137,7 +137,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_desired.clear();
     m_desiredSet.clear();
     m_desiredPriority.clear();
-    m_pendingMeshQueue = {};
+    m_pendingMeshQueues = {};
     m_pendingMeshes.clear();
     m_priorityMeshRequests.clear();
     m_evictionRetryAfter.clear();
@@ -189,12 +189,39 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
     }
     m_genCancel.clear();
 
+    std::vector<std::pair<ChunkCoord, bool>> retiredMeshRequests;
+    retiredMeshRequests.reserve(
+        m_pendingMeshes.size() + m_meshDependencyWaiting.size());
+    std::unordered_set<ChunkCoord, ChunkCoordHash> retiredCoordinates;
+    auto rememberRetiredRequest = [&](ChunkCoord coord) {
+        if (retiredCoordinates.insert(coord).second) {
+            retiredMeshRequests.emplace_back(
+                coord,
+                m_priorityMeshRequests.find(coord) !=
+                    m_priorityMeshRequests.end());
+        }
+    };
+    for (const auto& entry : m_pendingMeshes) {
+        rememberRetiredRequest(entry.first);
+    }
+    for (const ChunkCoord& coord : m_meshDependencyWaiting) {
+        rememberRetiredRequest(coord);
+    }
+    m_pendingMeshQueues = {};
+    m_pendingMeshes.clear();
+    m_meshDependencyWaiting.clear();
+    m_priorityMeshRequests.clear();
+    m_countedMeshRetryRevisions.clear();
+    m_nextPendingMeshSequence = 1;
+
     uint64_t nextEpoch = m_workEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
     if (nextEpoch == 0) {
         m_workEpoch.store(1, std::memory_order_relaxed);
     }
     for (auto& [coord, flight] : m_meshInFlight) {
         flight.obsolete = true;
+        flight.replacementPending = false;
+        flight.prioritized = false;
         completeInFlightVisibilityTrace(
             flight,
             ChunkVisibilityOutcome::GeneratorReplaced);
@@ -218,6 +245,21 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
     m_generator = std::move(generator);
     for (const ChunkCoord& coord : m_desired) {
         queueLoadGen(coord);
+    }
+    for (const auto& [coord, prioritized] : retiredMeshRequests) {
+        if (m_desiredSet.find(coord) != m_desiredSet.end()) {
+            if (prioritized) {
+                m_priorityMeshRequests.insert(coord);
+            }
+            continue;
+        }
+        Chunk* chunk = m_chunkManager
+            ? m_chunkManager->getChunk(coord)
+            : nullptr;
+        if (chunk && m_generator &&
+            chunk->worldGenVersion() == m_generator->config().world.version) {
+            queueDirtyMesh(coord, prioritized);
+        }
     }
     refreshDiagnostics(false);
 }
@@ -516,9 +558,11 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         while (queued < budget && scanned < candidates && !m_loadGenQueue.empty()) {
             ChunkCoord coord = m_loadGenQueue.front();
             m_loadGenQueue.pop_front();
-            m_loadGenQueued.erase(coord);
             ++scanned;
             ++schedulerCoordinatesInspected;
+            if (m_loadGenQueued.erase(coord) == 0) {
+                continue;
+            }
 
             if (m_desiredSet.find(coord) == m_desiredSet.end()) {
                 continue;
@@ -590,6 +634,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     }
                     chunk->clearDirty();
                     m_priorityMeshRequests.erase(coord);
+                    retirePendingMesh(coord);
                     m_states[coord] = ChunkState::ReadyMesh;
                     m_countedMeshRetryRevisions.erase(coord);
                     completePendingVisibilityTrace(
@@ -857,6 +902,8 @@ void ChunkStreamer::reset() {
     m_states.clear();
     for (auto& entry : m_meshInFlight) {
         entry.second.obsolete = true;
+        entry.second.replacementPending = false;
+        entry.second.prioritized = false;
         completeInFlightVisibilityTrace(
             entry.second,
             ChunkVisibilityOutcome::Reset);
@@ -867,7 +914,7 @@ void ChunkStreamer::reset() {
     m_desired.clear();
     m_desiredSet.clear();
     m_desiredPriority.clear();
-    m_pendingMeshQueue = {};
+    m_pendingMeshQueues = {};
     m_pendingMeshes.clear();
     m_priorityMeshRequests.clear();
     m_evictionRetryAfter.clear();
@@ -953,10 +1000,20 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
     if (chunk) {
         chunk->setLoadedFromDisk(false);
         m_chunkManager->unloadChunk(coord);
+        for (int i = 0; i < DirectionCount; ++i) {
+            int dx = 0;
+            int dy = 0;
+            int dz = 0;
+            directionOffset(static_cast<Direction>(i), dx, dy, dz);
+            const ChunkCoord neighbor = coord.offset(dx, dy, dz);
+            if (m_pendingMeshes.find(neighbor) != m_pendingMeshes.end() &&
+                !hasAllNeighborsLoaded(neighbor)) {
+                waitForMeshDependencies(neighbor);
+            }
+        }
     }
     m_states.erase(coord);
-    erasePendingMesh(coord);
-    m_meshDependencyWaiting.erase(coord);
+    retirePendingMesh(coord);
     m_priorityMeshRequests.erase(coord);
     m_countedMeshRetryRevisions.erase(coord);
     eraseFailure(m_generationErrors, m_generationFailureVersion, coord);
@@ -1278,6 +1335,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             }
             chunk.clearDirty();
             m_priorityMeshRequests.erase(genResult.coord);
+            retirePendingMesh(genResult.coord);
             eraseFailure(m_meshErrors, m_meshFailureVersion, genResult.coord);
             stateIt->second = ChunkState::ReadyMesh;
             completePendingVisibilityTrace(
@@ -1328,11 +1386,26 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         }
         m_meshInFlight.erase(flightIt);
 
+        auto wakeReplacement = [&]() {
+            if (!flight.replacementPending) {
+                return;
+            }
+            if (flight.prioritized) {
+                m_priorityMeshRequests.insert(meshResult.coord);
+            }
+            if (m_desiredSet.find(meshResult.coord) != m_desiredSet.end()) {
+                queueLoadGen(meshResult.coord);
+            } else {
+                queueDirtyMesh(meshResult.coord, flight.prioritized);
+            }
+        };
+
         if (flight.obsolete ||
             flight.workEpoch != m_workEpoch.load(std::memory_order_relaxed) ||
             meshResult.workEpoch != flight.workEpoch) {
             ++m_workMetrics.meshJobsRejectedStale;
             completeVisibility(ChunkVisibilityOutcome::Stale);
+            wakeReplacement();
             continue;
         }
 
@@ -1385,8 +1458,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         if (meshResult.failed) {
             chunk->m_dirty = true;
             stateIt->second = ChunkState::MeshFailed;
-            erasePendingMesh(meshResult.coord);
-            m_meshDependencyWaiting.erase(meshResult.coord);
+            retirePendingMesh(meshResult.coord);
             m_priorityMeshRequests.erase(meshResult.coord);
             ++m_workMetrics.meshJobsFailed;
             completeVisibility(ChunkVisibilityOutcome::Failed);
@@ -1465,12 +1537,9 @@ void ChunkStreamer::queueLoadGen(ChunkCoord coord) {
         return;
     }
     m_generationCapacityWaiting.erase(coord);
-    m_meshDependencyWaiting.erase(coord);
+    retirePendingMesh(coord);
     if (m_loadGenQueued.insert(coord).second) {
         m_loadGenQueue.push_back(coord);
-    }
-    if (m_priorityMeshRequests.find(coord) != m_priorityMeshRequests.end()) {
-        queueDirtyMesh(coord);
     }
     markVisibilityMeshEligible(coord, false);
 }
@@ -1486,8 +1555,11 @@ void ChunkStreamer::waitForGenerationCapacity(ChunkCoord coord) {
 
 void ChunkStreamer::waitForMeshDependencies(ChunkCoord coord) {
     if (!dirtyMeshPriority(coord)) {
+        retirePendingMesh(coord);
         return;
     }
+    erasePendingMesh(coord);
+    m_loadGenQueued.erase(coord);
     m_meshDependencyWaiting.insert(coord);
 }
 
@@ -1516,11 +1588,11 @@ void ChunkStreamer::queueLoadedNeighbors(ChunkCoord coord) {
         directionOffset(dir, dx, dy, dz);
         ChunkCoord neighbor = coord.offset(dx, dy, dz);
         if (m_chunkManager->getChunk(neighbor)) {
-            if (m_desiredSet.find(neighbor) != m_desiredSet.end()) {
-                queueLoadGen(neighbor);
-            } else if (m_meshDependencyWaiting.find(neighbor) !=
-                       m_meshDependencyWaiting.end()) {
+            if (m_meshDependencyWaiting.find(neighbor) !=
+                m_meshDependencyWaiting.end()) {
                 queueDirtyMesh(neighbor);
+            } else if (m_desiredSet.find(neighbor) != m_desiredSet.end()) {
+                queueLoadGen(neighbor);
             }
         }
     }
@@ -1552,6 +1624,18 @@ bool ChunkStreamer::queuePendingMesh(ChunkCoord coord,
     const bool prioritized =
         m_priorityMeshRequests.find(coord) != m_priorityMeshRequests.end();
     m_meshDependencyWaiting.erase(coord);
+    m_loadGenQueued.erase(coord);
+
+    auto flightIt = m_meshInFlight.find(coord);
+    if (flightIt != m_meshInFlight.end()) {
+        if (flightIt->second.obsolete) {
+            flightIt->second.replacementPending = true;
+            flightIt->second.prioritized =
+                flightIt->second.prioritized || prioritized;
+        }
+        erasePendingMesh(coord);
+        return false;
+    }
 
     auto pendingIt = m_pendingMeshes.find(coord);
     if (pendingIt != m_pendingMeshes.end()) {
@@ -1568,7 +1652,7 @@ bool ChunkStreamer::queuePendingMesh(ChunkCoord coord,
         if (m_nextPendingMeshSequence == 0) {
             m_nextPendingMeshSequence = 1;
         }
-        m_pendingMeshQueue.push(pending);
+        m_pendingMeshQueues[static_cast<size_t>(kind)].push(pending);
         markVisibilityMeshEligible(coord, false);
         return false;
     }
@@ -1584,7 +1668,7 @@ bool ChunkStreamer::queuePendingMesh(ChunkCoord coord,
         m_nextPendingMeshSequence = 1;
     }
     m_pendingMeshes.emplace(coord, pending);
-    m_pendingMeshQueue.push(pending);
+    m_pendingMeshQueues[static_cast<size_t>(kind)].push(pending);
     markVisibilityMeshEligible(coord, false);
     return true;
 }
@@ -1593,11 +1677,19 @@ void ChunkStreamer::erasePendingMesh(ChunkCoord coord) {
     m_pendingMeshes.erase(coord);
 }
 
+void ChunkStreamer::retirePendingMesh(ChunkCoord coord) {
+    erasePendingMesh(coord);
+    m_meshDependencyWaiting.erase(coord);
+}
+
 void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     const auto priority = dirtyMeshPriority(coord);
     if (!priority) {
         return;
     }
+    const bool wasDependencyWaiting =
+        m_meshDependencyWaiting.find(coord) !=
+        m_meshDependencyWaiting.end();
     if (prioritize) {
         m_priorityMeshRequests.insert(coord);
     }
@@ -1633,6 +1725,35 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     Chunk* chunk = m_chunkManager
         ? m_chunkManager->getChunk(coord)
         : nullptr;
+    if (!chunk) {
+        retirePendingMesh(coord);
+        markVisibilityMeshEligible(coord, false);
+        return;
+    }
+    if (m_generator &&
+        chunk->worldGenVersion() != m_generator->config().world.version) {
+        retirePendingMesh(coord);
+        if (m_desiredSet.find(coord) != m_desiredSet.end()) {
+            queueLoadGen(coord);
+        }
+        return;
+    }
+    if (chunk->isEmpty() &&
+        (!m_meshStore || !m_meshStore->contains(coord))) {
+        if (m_meshStore) {
+            m_meshStore->remove(coord);
+        }
+        chunk->clearDirty();
+        retirePendingMesh(coord);
+        m_priorityMeshRequests.erase(coord);
+        m_countedMeshRetryRevisions.erase(coord);
+        m_states[coord] = ChunkState::ReadyMesh;
+        queueLoadedNeighbors(coord);
+        completePendingVisibilityTrace(
+            coord, ChunkVisibilityOutcome::VoxelEmpty);
+        return;
+    }
+
     auto flightIt = m_meshInFlight.find(coord);
     const bool prioritized =
         m_priorityMeshRequests.find(coord) != m_priorityMeshRequests.end();
@@ -1649,11 +1770,6 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
         return;
     }
 
-    if (!chunk) {
-        markVisibilityMeshEligible(coord, false);
-        return;
-    }
-
     ChunkState state = ChunkState::Missing;
     auto stateIt = m_states.find(coord);
     if (stateIt != m_states.end()) {
@@ -1663,10 +1779,10 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
     if (isMeshed && !chunk->isDirty()) {
         m_priorityMeshRequests.erase(coord);
-        erasePendingMesh(coord);
+        retirePendingMesh(coord);
         return;
     }
-    if (!isMeshed && !prioritized) {
+    if (!isMeshed && !prioritized && !wasDependencyWaiting) {
         queueLoadGen(coord);
         return;
     }
@@ -1952,7 +2068,7 @@ void ChunkStreamer::abandonVisibilityTraces(
 }
 
 void ChunkStreamer::reprioritizePendingMeshes() {
-    decltype(m_pendingMeshQueue) prioritized;
+    decltype(m_pendingMeshQueues) prioritized;
     for (auto it = m_priorityMeshRequests.begin();
          it != m_priorityMeshRequests.end(); ) {
         if (!dirtyMeshPriority(*it)) {
@@ -1971,10 +2087,10 @@ void ChunkStreamer::reprioritizePendingMeshes() {
         request.priority = *priority;
         request.prioritized = m_priorityMeshRequests.find(it->first) !=
             m_priorityMeshRequests.end();
-        prioritized.push(request);
+        prioritized[static_cast<size_t>(request.kind)].push(request);
         ++it;
     }
-    m_pendingMeshQueue = std::move(prioritized);
+    m_pendingMeshQueues = std::move(prioritized);
 }
 
 size_t ChunkStreamer::meshDispatchLimit() const {
@@ -1999,158 +2115,166 @@ void ChunkStreamer::dispatchPendingMeshes(
 
     PROFILE_SCOPE("Streaming/Update/MeshDispatch");
 
-    auto hasPendingKind = [&](MeshRequestKind kind) {
-        return std::any_of(
-            m_pendingMeshes.begin(),
-            m_pendingMeshes.end(),
-            [kind](const auto& entry) {
-                return entry.second.kind == kind &&
-                    !entry.second.prioritized;
-            });
-    };
-
-    auto takeRequest = [&](std::optional<MeshRequestKind> preferredKind)
-        -> std::optional<PendingMeshRequest> {
-        std::vector<PendingMeshRequest> blocked;
-        std::optional<PendingMeshRequest> selected;
-
-        while (!m_pendingMeshQueue.empty()) {
-            PendingMeshRequest request = m_pendingMeshQueue.top();
-            m_pendingMeshQueue.pop();
+    auto cleanQueue = [&](MeshRequestKind kind) {
+        PendingMeshQueue& queue =
+            m_pendingMeshQueues[static_cast<size_t>(kind)];
+        while (!queue.empty()) {
+            const PendingMeshRequest& request = queue.top();
             auto pendingIt = m_pendingMeshes.find(request.coord);
             if (pendingIt == m_pendingMeshes.end() ||
-                pendingIt->second.sequence != request.sequence) {
+                pendingIt->second.sequence != request.sequence ||
+                pendingIt->second.kind != kind) {
+                queue.pop();
+                ++schedulerCoordinatesInspected;
                 continue;
             }
-            request = pendingIt->second;
-
-            if (preferredKind && !request.prioritized &&
-                request.kind != *preferredKind) {
-                blocked.push_back(request);
-                continue;
-            }
-
-            ++schedulerCoordinatesInspected;
-            const auto priority = dirtyMeshPriority(request.coord);
-            if (!priority) {
-                m_priorityMeshRequests.erase(request.coord);
-                m_pendingMeshes.erase(pendingIt);
-                continue;
-            }
-
-            Chunk* chunk = m_chunkManager->getChunk(request.coord);
-            if (!chunk) {
-                m_pendingMeshes.erase(pendingIt);
-                if (m_desiredSet.find(request.coord) != m_desiredSet.end()) {
-                    queueLoadGen(request.coord);
-                } else {
-                    m_priorityMeshRequests.erase(request.coord);
-                }
-                continue;
-            }
-
-            auto flightIt = m_meshInFlight.find(request.coord);
-            if (flightIt != m_meshInFlight.end()) {
-                if (flightIt->second.obsolete) {
-                    blocked.push_back(request);
-                    continue;
-                }
-                if (chunk->isDirty() &&
-                    flightIt->second.observedRevision !=
-                        chunk->meshRevision()) {
-                    flightIt->second.observedRevision = chunk->meshRevision();
-                    ++m_workMetrics.meshInvalidations;
-                    ++m_workMetrics.meshRequestsCoalesced;
-                }
-                flightIt->second.prioritized =
-                    flightIt->second.prioritized || request.prioritized;
-                m_priorityMeshRequests.erase(request.coord);
-                m_pendingMeshes.erase(pendingIt);
-                continue;
-            }
-
-            ChunkState state = ChunkState::Missing;
-            auto stateIt = m_states.find(request.coord);
-            if (stateIt != m_states.end()) {
-                state = stateIt->second;
-            }
-            const bool hasMesh =
-                m_meshStore && m_meshStore->contains(request.coord);
-            const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
-            if (isMeshed && !chunk->isDirty()) {
-                m_priorityMeshRequests.erase(request.coord);
-                m_pendingMeshes.erase(pendingIt);
-                continue;
-            }
-
-            const MeshRequestKind actualKind = isMeshed
-                ? MeshRequestKind::Dirty
-                : MeshRequestKind::Missing;
-            if (request.kind != actualKind) {
-                pendingIt->second.kind = actualKind;
-                pendingIt->second.sequence = m_nextPendingMeshSequence++;
-                if (m_nextPendingMeshSequence == 0) {
-                    m_nextPendingMeshSequence = 1;
-                }
-                m_pendingMeshQueue.push(pendingIt->second);
-                continue;
-            }
-            if (!hasAllNeighborsLoaded(request.coord)) {
-                m_pendingMeshes.erase(pendingIt);
-                waitForMeshDependencies(request.coord);
-                continue;
-            }
-
-            selected = request;
-            m_pendingMeshes.erase(pendingIt);
             break;
         }
+    };
 
-        for (const PendingMeshRequest& request : blocked) {
-            m_pendingMeshQueue.push(request);
-        }
-        return selected;
+    const auto higherPriorityKind = [&](const PendingMeshRequest& missing,
+                                        const PendingMeshRequest& dirty) {
+        return PendingMeshRequestGreater{}(missing, dirty)
+            ? MeshRequestKind::Dirty
+            : MeshRequestKind::Missing;
     };
 
     while (m_inFlightMesh < dispatchLimit && !m_pendingMeshes.empty()) {
-        std::optional<MeshRequestKind> preferredKind;
-        if (dispatchLimit == 1) {
-            if (hasPendingKind(m_nextSingleSlotMeshKind)) {
-                preferredKind = m_nextSingleSlotMeshKind;
-            }
-        } else if (dispatchLimit != std::numeric_limits<size_t>::max()) {
-            size_t dirtySlots = std::max<size_t>(1, dispatchLimit / 4);
-            if (dirtySlots >= dispatchLimit) {
-                dirtySlots = dispatchLimit - 1;
-            }
-            const size_t missingSlots = dispatchLimit - dirtySlots;
-            if (m_inFlightMeshMissing >= missingSlots &&
-                hasPendingKind(MeshRequestKind::Dirty)) {
-                preferredKind = MeshRequestKind::Dirty;
-            } else if (m_inFlightMeshDirty >= dirtySlots &&
-                       hasPendingKind(MeshRequestKind::Missing)) {
-                preferredKind = MeshRequestKind::Missing;
-            }
-        }
-
-        std::optional<PendingMeshRequest> request =
-            takeRequest(preferredKind);
-        if (!request && preferredKind) {
-            request = takeRequest(std::nullopt);
-        }
-        if (!request) {
+        cleanQueue(MeshRequestKind::Missing);
+        cleanQueue(MeshRequestKind::Dirty);
+        PendingMeshQueue& missingQueue =
+            m_pendingMeshQueues[static_cast<size_t>(MeshRequestKind::Missing)];
+        PendingMeshQueue& dirtyQueue =
+            m_pendingMeshQueues[static_cast<size_t>(MeshRequestKind::Dirty)];
+        const bool hasMissing = !missingQueue.empty();
+        const bool hasDirty = !dirtyQueue.empty();
+        if (!hasMissing && !hasDirty) {
             break;
         }
 
-        Chunk* chunk = m_chunkManager->getChunk(request->coord);
-        if (!chunk) {
+        MeshRequestKind selectedKind = hasMissing
+            ? MeshRequestKind::Missing
+            : MeshRequestKind::Dirty;
+        if (hasMissing && hasDirty) {
+            const PendingMeshRequest& missing = missingQueue.top();
+            const PendingMeshRequest& dirty = dirtyQueue.top();
+            if (missing.prioritized || dirty.prioritized) {
+                selectedKind = higherPriorityKind(missing, dirty);
+            } else if (dispatchLimit == 1) {
+                selectedKind = m_nextSingleSlotMeshKind;
+            } else if (dispatchLimit != std::numeric_limits<size_t>::max()) {
+                size_t dirtySlots = std::max<size_t>(1, dispatchLimit / 4);
+                if (dirtySlots >= dispatchLimit) {
+                    dirtySlots = dispatchLimit - 1;
+                }
+                const size_t missingSlots = dispatchLimit - dirtySlots;
+                if (m_inFlightMeshMissing >= missingSlots) {
+                    selectedKind = MeshRequestKind::Dirty;
+                } else if (m_inFlightMeshDirty >= dirtySlots) {
+                    selectedKind = MeshRequestKind::Missing;
+                } else {
+                    selectedKind = higherPriorityKind(missing, dirty);
+                }
+            } else {
+                selectedKind = higherPriorityKind(missing, dirty);
+            }
+        }
+
+        PendingMeshQueue& selectedQueue =
+            m_pendingMeshQueues[static_cast<size_t>(selectedKind)];
+        PendingMeshRequest request = selectedQueue.top();
+        selectedQueue.pop();
+        ++schedulerCoordinatesInspected;
+        auto pendingIt = m_pendingMeshes.find(request.coord);
+        if (pendingIt == m_pendingMeshes.end() ||
+            pendingIt->second.sequence != request.sequence ||
+            pendingIt->second.kind != selectedKind) {
             continue;
         }
+        request = pendingIt->second;
+
+        const auto priority = dirtyMeshPriority(request.coord);
+        if (!priority) {
+            m_priorityMeshRequests.erase(request.coord);
+            m_pendingMeshes.erase(pendingIt);
+            continue;
+        }
+
+        Chunk* chunk = m_chunkManager->getChunk(request.coord);
+        if (!chunk) {
+            m_pendingMeshes.erase(pendingIt);
+            if (m_desiredSet.find(request.coord) != m_desiredSet.end()) {
+                queueLoadGen(request.coord);
+            } else {
+                m_priorityMeshRequests.erase(request.coord);
+            }
+            continue;
+        }
+        if (m_generator &&
+            chunk->worldGenVersion() != m_generator->config().world.version) {
+            m_pendingMeshes.erase(pendingIt);
+            if (m_desiredSet.find(request.coord) != m_desiredSet.end()) {
+                queueLoadGen(request.coord);
+            }
+            continue;
+        }
+
+        auto flightIt = m_meshInFlight.find(request.coord);
+        if (flightIt != m_meshInFlight.end()) {
+            if (flightIt->second.obsolete) {
+                flightIt->second.replacementPending = true;
+            } else if (chunk->isDirty() &&
+                       flightIt->second.observedRevision !=
+                           chunk->meshRevision()) {
+                flightIt->second.observedRevision = chunk->meshRevision();
+                ++m_workMetrics.meshInvalidations;
+                ++m_workMetrics.meshRequestsCoalesced;
+            }
+            flightIt->second.prioritized =
+                flightIt->second.prioritized || request.prioritized;
+            m_priorityMeshRequests.erase(request.coord);
+            m_pendingMeshes.erase(pendingIt);
+            continue;
+        }
+
+        ChunkState state = ChunkState::Missing;
+        auto stateIt = m_states.find(request.coord);
+        if (stateIt != m_states.end()) {
+            state = stateIt->second;
+        }
+        const bool hasMesh =
+            m_meshStore && m_meshStore->contains(request.coord);
+        const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+        if (isMeshed && !chunk->isDirty()) {
+            m_priorityMeshRequests.erase(request.coord);
+            m_pendingMeshes.erase(pendingIt);
+            continue;
+        }
+
+        const MeshRequestKind actualKind = isMeshed
+            ? MeshRequestKind::Dirty
+            : MeshRequestKind::Missing;
+        if (request.kind != actualKind) {
+            pendingIt->second.kind = actualKind;
+            pendingIt->second.sequence = m_nextPendingMeshSequence++;
+            if (m_nextPendingMeshSequence == 0) {
+                m_nextPendingMeshSequence = 1;
+            }
+            m_pendingMeshQueues[static_cast<size_t>(actualKind)].push(
+                pendingIt->second);
+            continue;
+        }
+        if (!hasAllNeighborsLoaded(request.coord)) {
+            waitForMeshDependencies(request.coord);
+            continue;
+        }
+
+        m_pendingMeshes.erase(pendingIt);
         enqueueMesh(
-            request->coord,
+            request.coord,
             *chunk,
-            request->kind,
-            request->prioritized);
+            request.kind,
+            request.prioritized);
     }
 }
 

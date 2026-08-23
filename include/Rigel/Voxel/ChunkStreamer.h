@@ -194,6 +194,7 @@ private:
         uint32_t observedRevision = 0;
         bool prioritized = false;
         bool obsolete = false;
+        bool replacementPending = false;
         std::optional<ChunkVisibilityLifecycleKey> visibilityTrace;
         std::shared_ptr<ChunkVisibilityTracer> visibilityTracer;
         ChunkVisibilityLifecycleKind visibilityKind =
@@ -227,6 +228,11 @@ private:
             return lhs.sequence > rhs.sequence;
         }
     };
+
+    using PendingMeshQueue = std::priority_queue<
+        PendingMeshRequest,
+        std::vector<PendingMeshRequest>,
+        PendingMeshRequestGreater>;
 
     StreamingConfig m_config;
     ChunkManager* const m_chunkManager;
@@ -263,9 +269,7 @@ private:
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> m_desiredPriority;
-    std::priority_queue<PendingMeshRequest,
-                        std::vector<PendingMeshRequest>,
-                        PendingMeshRequestGreater> m_pendingMeshQueue;
+    std::array<PendingMeshQueue, 2> m_pendingMeshQueues;
     std::unordered_map<ChunkCoord,
                        PendingMeshRequest,
                        ChunkCoordHash> m_pendingMeshes;
@@ -324,6 +328,7 @@ private:
                           MeshRequestKind kind,
                           bool prioritize = false);
     void erasePendingMesh(ChunkCoord coord);
+    void retirePendingMesh(ChunkCoord coord);
     void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
     void ensureVisibilityTrace(
         ChunkCoord coord,

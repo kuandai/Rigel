@@ -2077,11 +2077,13 @@ TEST_CASE(ChunkStreamer_GenerationFailureCompletesJob) {
         CHECK(!manager.hasChunk(coord));
 
         std::vector<ChunkStreamer::DebugChunkState> states;
-        streamer.getDebugStates(states);
+        streamer.getDebugStates(states, coord, 0);
         CHECK_EQ(states.size(), static_cast<size_t>(1));
         CHECK_EQ(states.front().coord, coord);
         CHECK_EQ(states.front().state,
-                 ChunkStreamer::DebugState::GenerationFailed);
+                 ChunkStreamer::DebugState::TerminalFailure);
+        CHECK_EQ(states.front().failure,
+                 ChunkStreamer::DebugFailure::Generation);
 
         for (uint32_t update = 0;
              update <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
@@ -2115,11 +2117,13 @@ TEST_CASE(ChunkStreamer_GenerationFailureCompletesJob) {
         CHECK(streamer.diagnostics().generation.lastError.find("(1, 0, 0)") !=
               std::string::npos);
         states.clear();
-        streamer.getDebugStates(states);
+        streamer.getDebugStates(states, nextCoord, 0);
         CHECK_EQ(states.size(), static_cast<size_t>(1));
         CHECK_EQ(states.front().coord, nextCoord);
         CHECK_EQ(states.front().state,
-                 ChunkStreamer::DebugState::GenerationFailed);
+                 ChunkStreamer::DebugState::TerminalFailure);
+        CHECK_EQ(states.front().failure,
+                 ChunkStreamer::DebugFailure::Generation);
     }
 }
 
@@ -3361,6 +3365,135 @@ TEST_CASE(ChunkStreamer_DependencyLossMovesReadyPendingOwnership) {
     CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
         hasDependencyPendingMesh(streamer, pendingCoord));
     CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    streamer.getDebugStates(states, pendingCoord, 0);
+    CHECK_EQ(states.size(), static_cast<size_t>(1));
+    CHECK_EQ(states.front().state,
+             ChunkStreamer::DebugState::WaitingForNeighbors);
+    CHECK_EQ(states.front().pipelineOwner,
+             ChunkStreamer::DebugPipelineOwner::WaitingForNeighbors);
+    CHECK_EQ(states.front().voxelOccupancy,
+             ChunkStreamer::DebugVoxelOccupancy::Nonempty);
+}
+
+TEST_CASE(ChunkStreamer_DebugSnapshotDistinguishesMeshOwnership) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const BlockID solid =
+        registerTestBlock(registry, "rigel:debug_snapshot_mesh_solid");
+    const ChunkCoord blocker{0, 0, 0};
+    const ChunkCoord schedulerWait{1, 0, 0};
+    const ChunkCoord remeshWait{-1, 0, 0};
+    const std::array<ChunkCoord, 7> desired{
+        blocker,
+        schedulerWait,
+        remeshWait,
+        ChunkCoord{0, 1, 0},
+        ChunkCoord{0, -1, 0},
+        ChunkCoord{0, 0, 1},
+        ChunkCoord{0, 0, -1}
+    };
+    for (const ChunkCoord coord : desired) {
+        Chunk& chunk = manager.getOrCreateChunk(coord);
+        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setLoadedFromDisk(true);
+        chunk.clearPersistDirty();
+        chunk.clearDirty();
+    }
+    manager.getChunk(blocker)->setBlock(
+        0, 0, 0, BlockState{solid}, registry);
+    manager.getChunk(schedulerWait)->setBlock(
+        0, 0, 0, BlockState{solid}, registry);
+    manager.getChunk(remeshWait)->setBlock(
+        0, 0, 0, BlockState{solid}, registry);
+
+    ChunkMesh installed;
+    installed.vertices.resize(3);
+    installed.indices.resize(3);
+    installed.layers[static_cast<size_t>(RenderLayer::Opaque)].indexCount = 3;
+    meshStore.set(remeshWait, std::move(installed));
+    manager.getChunk(remeshWait)->clearDirty();
+    manager.getChunk(remeshWait)->markDirty();
+
+    auto gate = std::make_shared<WorkerGate>();
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{blocker, 2});
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, generator);
+    WorkerGateRelease releaseOnExit(gate);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.meshQueueLimit = 1;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.setVisibilityTracer(tracer);
+    streamer.markSpawnDiscoveryComplete();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer, [gate]() { gate->enterAndWait(); });
+
+    streamer.update(blocker.toWorldCenter());
+    CHECK(gate->waitUntilEntered());
+
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    streamer.getDebugStates(states, blocker, 1);
+    auto stateFor = [&](ChunkCoord coord)
+        -> const ChunkStreamer::DebugChunkState* {
+        const auto stateIt = std::find_if(
+            states.begin(), states.end(), [coord](const auto& state) {
+                return state.coord == coord;
+            });
+        return stateIt == states.end() ? nullptr : &*stateIt;
+    };
+
+    const auto* building = stateFor(blocker);
+    CHECK(building != nullptr);
+    if (building) {
+        CHECK_EQ(building->state,
+                 ChunkStreamer::DebugState::MeshSubmittedOrBuilding);
+        CHECK_EQ(building->pipelineOwner,
+                 ChunkStreamer::DebugPipelineOwner::MeshWork);
+        CHECK_EQ(building->installedGeometry,
+                 ChunkStreamer::DebugInstalledGeometry::None);
+        CHECK_EQ(building->traceOutcome,
+                 ChunkVisibilityOutcome::Pending);
+        CHECK_EQ(building->drawEvidence,
+                 ChunkStreamer::DebugDrawEvidence::NotApplicable);
+    }
+
+    const auto* eligible = stateFor(schedulerWait);
+    CHECK(eligible != nullptr);
+    if (eligible) {
+        CHECK_EQ(eligible->state,
+                 ChunkStreamer::DebugState::MeshSchedulerWait);
+        CHECK_EQ(eligible->pipelineOwner,
+                 ChunkStreamer::DebugPipelineOwner::MeshScheduler);
+        CHECK_EQ(eligible->remeshIntent,
+                 ChunkStreamer::DebugRemeshIntent::None);
+    }
+
+    const auto* remesh = stateFor(remeshWait);
+    CHECK(remesh != nullptr);
+    if (remesh) {
+        CHECK_EQ(remesh->state,
+                 ChunkStreamer::DebugState::DirtyRemeshPending);
+        CHECK_EQ(remesh->pipelineOwner,
+                 ChunkStreamer::DebugPipelineOwner::MeshScheduler);
+        CHECK_EQ(remesh->installedGeometry,
+                 ChunkStreamer::DebugInstalledGeometry::Nonempty);
+        CHECK_EQ(remesh->remeshIntent,
+                 ChunkStreamer::DebugRemeshIntent::Pending);
+        CHECK_EQ(remesh->drawEvidence,
+                 ChunkStreamer::DebugDrawEvidence::NotDrawn);
+    }
+
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(2));
+    gate->release();
+    CHECK(waitForMeshCompletions(streamer, 1));
 }
 
 TEST_CASE(ChunkStreamer_VoxelEmptyRemovesInstalledMeshWithoutDependencies) {
@@ -6354,6 +6487,17 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
     });
 
     streamer.update(coord.toWorldCenter());
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    streamer.getDebugStates(states, coord, 0);
+    CHECK_EQ(states.size(), static_cast<size_t>(1));
+    CHECK_EQ(states.front().state,
+             ChunkStreamer::DebugState::WaitingForData);
+    CHECK_EQ(states.front().pipelineOwner,
+             ChunkStreamer::DebugPipelineOwner::WaitingForData);
+    CHECK_EQ(states.front().voxelOccupancy,
+             ChunkStreamer::DebugVoxelOccupancy::Unknown);
+    CHECK_EQ(states.front().installedGeometry,
+             ChunkStreamer::DebugInstalledGeometry::None);
     streamer.processCompletions();
     streamer.update(coord.toWorldCenter());
 
@@ -6367,6 +6511,13 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
           std::string::npos);
     CHECK(streamer.diagnostics().chunkLoad.lastError.find("(0, 0, 0)") !=
           std::string::npos);
+    streamer.getDebugStates(states, coord, 0);
+    CHECK_EQ(states.size(), static_cast<size_t>(1));
+    CHECK_EQ(states.front().state,
+             ChunkStreamer::DebugState::TerminalFailure);
+    CHECK_EQ(states.front().pipelineOwner,
+             ChunkStreamer::DebugPipelineOwner::TerminalFailure);
+    CHECK_EQ(states.front().failure, ChunkStreamer::DebugFailure::Load);
 
     for (uint32_t update = 0;
          update <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
@@ -8094,13 +8245,13 @@ TEST_CASE(ChunkStreamer_DepartureTraceModesPreserveStaleScheduling) {
             streamer.diagnostics().mesh.terminalErrors,
             static_cast<size_t>(0));
         std::vector<ChunkStreamer::DebugChunkState> debugStates;
-        streamer.getDebugStates(debugStates);
+        streamer.getDebugStates(debugStates, coord, 0);
         CHECK(std::none_of(
             debugStates.begin(),
             debugStates.end(),
             [coord](const ChunkStreamer::DebugChunkState& state) {
                 return state.coord == coord &&
-                    state.state == ChunkStreamer::DebugState::MeshFailed;
+                    state.failure == ChunkStreamer::DebugFailure::Mesh;
             }));
         if (mode == TraceMode::Enabled) {
             const auto records = tracer->snapshot();
@@ -8183,7 +8334,7 @@ TEST_CASE(ChunkStreamer_DepartureTraceModesPreserveStaleScheduling) {
             diagnostics.eviction.inFlight
         };
         result.lifecycle = diagnostics.state;
-        streamer.getDebugStates(debugStates);
+        streamer.getDebugStates(debugStates, coord, 0);
         const auto debugState = std::find_if(
             debugStates.begin(),
             debugStates.end(),
@@ -8244,7 +8395,7 @@ TEST_CASE(ChunkStreamer_DepartureTraceModesPreserveStaleScheduling) {
                 absent.chunkState,
                 cameraPath == CameraPath::Reenter
                     ? std::optional<ChunkStreamer::DebugState>(
-                          ChunkStreamer::DebugState::ReadyMesh)
+                          ChunkStreamer::DebugState::AcceptedNonemptyGeometry)
                     : std::nullopt);
             CHECK_EQ(absent.meshInstalled, disabled.meshInstalled);
             CHECK_EQ(absent.meshInstalled, enabled.meshInstalled);
@@ -9158,6 +9309,38 @@ TEST_CASE(ChunkStreamer_VisibilityTraceDistinguishesVoxelAndGeometryEmpty) {
         CHECK_EQ(
             streamer.workMetrics().meshJobsStarted,
             static_cast<uint64_t>(0));
+        std::vector<ChunkStreamer::DebugChunkState> states;
+        streamer.getDebugStates(states, coord, 0);
+        CHECK_EQ(states.size(), static_cast<size_t>(1));
+        CHECK_EQ(states.front().state, ChunkStreamer::DebugState::VoxelEmpty);
+        CHECK_EQ(states.front().pipelineOwner,
+                 ChunkStreamer::DebugPipelineOwner::Complete);
+        CHECK_EQ(states.front().voxelOccupancy,
+                 ChunkStreamer::DebugVoxelOccupancy::Empty);
+        CHECK_EQ(states.front().installedGeometry,
+                 ChunkStreamer::DebugInstalledGeometry::None);
+        CHECK_EQ(states.front().traceOutcome,
+                 ChunkVisibilityOutcome::VoxelEmpty);
+        CHECK_EQ(states.front().drawEvidence,
+                 ChunkStreamer::DebugDrawEvidence::NotApplicable);
+        const auto metricsBeforeDebugCollection = streamer.workMetrics();
+        std::vector<ChunkStreamer::DebugChunkState> outsideStates;
+        streamer.getDebugStates(outsideStates, ChunkCoord{1, 0, 0}, 0);
+        CHECK(outsideStates.empty());
+        streamer.getDebugStates(states, coord, 0);
+        CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+                 metricsBeforeDebugCollection.meshJobsStarted);
+        CHECK_EQ(streamer.workMetrics().meshJobsCompleted,
+                 metricsBeforeDebugCollection.meshJobsCompleted);
+        CHECK_EQ(streamer.workMetrics().schedulerCoordinatesInspected,
+                 metricsBeforeDebugCollection.schedulerCoordinatesInspected);
+
+        std::weak_ptr<ChunkVisibilityTracer> traceOwner = tracer;
+        streamer.setVisibilityTracer({});
+        tracer.reset();
+        CHECK(traceOwner.expired());
+        CHECK_EQ(states.front().traceOutcome,
+                 ChunkVisibilityOutcome::VoxelEmpty);
     }
 
     {
@@ -9211,6 +9394,19 @@ TEST_CASE(ChunkStreamer_VisibilityTraceDistinguishesVoxelAndGeometryEmpty) {
                    .stage(ChunkVisibilityStage::FirstDraw)
                    .has_value());
         CHECK(meshStore.contains(coord));
+        std::vector<ChunkStreamer::DebugChunkState> states;
+        streamer.getDebugStates(states, coord, 0);
+        CHECK_EQ(states.size(), static_cast<size_t>(1));
+        CHECK_EQ(states.front().state,
+                 ChunkStreamer::DebugState::AcceptedEmptyGeometry);
+        CHECK_EQ(states.front().voxelOccupancy,
+                 ChunkStreamer::DebugVoxelOccupancy::Nonempty);
+        CHECK_EQ(states.front().installedGeometry,
+                 ChunkStreamer::DebugInstalledGeometry::Empty);
+        CHECK_EQ(states.front().traceOutcome,
+                 ChunkVisibilityOutcome::AcceptedEmptyGeometry);
+        CHECK_EQ(states.front().drawEvidence,
+                 ChunkStreamer::DebugDrawEvidence::NotApplicable);
     }
 }
 
@@ -9278,6 +9474,22 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRemeshesResidentVoxelEmptyChunk) {
         static_cast<uint64_t>(1));
     CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
     CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(0));
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    streamer.getDebugStates(states, coord, 0);
+    CHECK_EQ(states.size(), static_cast<size_t>(1));
+    CHECK_EQ(states.front().state,
+             ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
+    CHECK_EQ(states.front().pipelineOwner,
+             ChunkStreamer::DebugPipelineOwner::Complete);
+    CHECK_EQ(states.front().voxelOccupancy,
+             ChunkStreamer::DebugVoxelOccupancy::Nonempty);
+    CHECK_EQ(states.front().installedGeometry,
+             ChunkStreamer::DebugInstalledGeometry::Nonempty);
+    CHECK_EQ(states.front().traceOutcome,
+             ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    CHECK_EQ(states.front().traceDrawOutcome, std::nullopt);
+    CHECK_EQ(states.front().drawEvidence,
+             ChunkStreamer::DebugDrawEvidence::NotDrawn);
 }
 
 TEST_CASE(ChunkStreamer_DisabledVisibilityTracePreservesStationaryWork) {
@@ -9729,10 +9941,12 @@ TEST_CASE(ChunkStreamer_MeshFailureCompletesJob) {
                    .has_value());
 
         std::vector<ChunkStreamer::DebugChunkState> states;
-        streamer.getDebugStates(states);
+        streamer.getDebugStates(states, coord, 0);
         CHECK_EQ(states.size(), static_cast<size_t>(1));
         CHECK_EQ(states.front().coord, coord);
-        CHECK_EQ(states.front().state, ChunkStreamer::DebugState::MeshFailed);
+        CHECK_EQ(states.front().state,
+                 ChunkStreamer::DebugState::TerminalFailure);
+        CHECK_EQ(states.front().failure, ChunkStreamer::DebugFailure::Mesh);
 
         for (uint32_t update = 0;
              update <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
@@ -10023,9 +10237,14 @@ TEST_CASE(ChunkStreamer_StaleMeshFailureRetriesLatestRevision) {
     CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
 
     std::vector<ChunkStreamer::DebugChunkState> states;
-    streamer.getDebugStates(states);
+    streamer.getDebugStates(states, coord, 0);
     CHECK_EQ(states.size(), static_cast<size_t>(1));
-    CHECK_EQ(states.front().state, ChunkStreamer::DebugState::LoadedFromDisk);
+    CHECK_EQ(states.front().state,
+             ChunkStreamer::DebugState::WaitingForData);
+    CHECK_EQ(states.front().voxelOccupancy,
+             ChunkStreamer::DebugVoxelOccupancy::Nonempty);
+    CHECK_EQ(states.front().installedGeometry,
+             ChunkStreamer::DebugInstalledGeometry::None);
 
     streamer.update(coord.toWorldCenter());
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
@@ -11052,13 +11271,15 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
         }
         return it->state;
     };
-    streamer.getDebugStates(states);
+    streamer.getDebugStates(states, survivingCoord, 1);
     const auto survivingState = stateFor(survivingCoord);
     const auto removedState = stateFor(removedCoord);
     CHECK(survivingState.has_value());
     CHECK(removedState.has_value());
-    CHECK_EQ(*survivingState, ChunkStreamer::DebugState::ReadyMesh);
-    CHECK_EQ(*removedState, ChunkStreamer::DebugState::ReadyMesh);
+    CHECK_EQ(*survivingState,
+             ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
+    CHECK_EQ(*removedState,
+             ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
 
     CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
              static_cast<size_t>(30));
@@ -11103,7 +11324,7 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     CHECK_EQ(installedMeshRevision(meshStore, survivingCoord),
              installedRevision);
     CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
-    streamer.getDebugStates(states);
+    streamer.getDebugStates(states, survivingCoord, 1);
     CHECK(!stateFor(removedCoord).has_value());
 
     streamer.update(cameraCoord.toWorldCenter());
@@ -11146,10 +11367,11 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
              static_cast<size_t>(36));
     CHECK(installedMeshRevision(meshStore, survivingCoord) > installedRevision);
-    streamer.getDebugStates(states);
+    streamer.getDebugStates(states, survivingCoord, 1);
     const auto finalSurvivingState = stateFor(survivingCoord);
     CHECK(finalSurvivingState.has_value());
-    CHECK_EQ(*finalSurvivingState, ChunkStreamer::DebugState::ReadyMesh);
+    CHECK_EQ(*finalSurvivingState,
+             ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
 
     for (int i = 0; i < 8; ++i) {
         streamer.update(cameraCoord.toWorldCenter());
@@ -12899,11 +13121,13 @@ TEST_CASE(ChunkStreamer_MeshRetirementPreservesReplacementGenerationFailure) {
     CHECK(!manager.hasChunk(coord));
 
     std::vector<ChunkStreamer::DebugChunkState> states;
-    streamer.getDebugStates(states);
+    streamer.getDebugStates(states, coord, 0);
     CHECK_EQ(states.size(), static_cast<size_t>(1));
     CHECK_EQ(states.front().coord, coord);
     CHECK_EQ(states.front().state,
-             ChunkStreamer::DebugState::GenerationFailed);
+             ChunkStreamer::DebugState::TerminalFailure);
+    CHECK_EQ(states.front().failure,
+             ChunkStreamer::DebugFailure::Generation);
 
     const uint64_t acceptedBeforeRetirement =
         streamer.workMetrics().meshJobsAccepted;
@@ -12916,11 +13140,13 @@ TEST_CASE(ChunkStreamer_MeshRetirementPreservesReplacementGenerationFailure) {
     CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(0));
 
     states.clear();
-    streamer.getDebugStates(states);
+    streamer.getDebugStates(states, coord, 0);
     CHECK_EQ(states.size(), static_cast<size_t>(1));
     CHECK_EQ(states.front().coord, coord);
     CHECK_EQ(states.front().state,
-             ChunkStreamer::DebugState::GenerationFailed);
+             ChunkStreamer::DebugState::TerminalFailure);
+    CHECK_EQ(states.front().failure,
+             ChunkStreamer::DebugFailure::Generation);
 
     streamer.update(coord.toWorldCenter());
     CHECK_EQ(streamer.workMetrics().generationJobsStarted,
@@ -12933,10 +13159,12 @@ TEST_CASE(ChunkStreamer_MeshRetirementPreservesReplacementGenerationFailure) {
     CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
              static_cast<uint64_t>(0));
     states.clear();
-    streamer.getDebugStates(states);
+    streamer.getDebugStates(states, coord, 0);
     CHECK_EQ(states.size(), static_cast<size_t>(1));
     CHECK_EQ(states.front().state,
-             ChunkStreamer::DebugState::GenerationFailed);
+             ChunkStreamer::DebugState::TerminalFailure);
+    CHECK_EQ(states.front().failure,
+             ChunkStreamer::DebugFailure::Generation);
 }
 
 TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {

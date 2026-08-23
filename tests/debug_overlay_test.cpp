@@ -1,8 +1,11 @@
 #include "TestFramework.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Render/ChunkDebugPresentation.h"
 #include "Rigel/Render/FrameRenderer.h"
 
+#include <algorithm>
+#include <array>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
@@ -10,6 +13,8 @@
 namespace {
 
 struct DeleteCalls {
+    GLsizei generatedVertexArrays = 0;
+    GLsizei generatedBuffers = 0;
     GLsizei vertexArrays = 0;
     GLsizei buffers = 0;
     GLuint nextHandle = 1;
@@ -17,10 +22,20 @@ struct DeleteCalls {
 
 DeleteCalls* g_deleteCalls = nullptr;
 
-void GLAPIENTRY generateObjects(GLsizei count, GLuint* objects) {
+void generateObjects(GLsizei count, GLuint* objects) {
     for (GLsizei i = 0; i < count; ++i) {
         objects[i] = g_deleteCalls->nextHandle++;
     }
+}
+
+void GLAPIENTRY generateVertexArrays(GLsizei count, GLuint* objects) {
+    g_deleteCalls->generatedVertexArrays += count;
+    generateObjects(count, objects);
+}
+
+void GLAPIENTRY generateBuffers(GLsizei count, GLuint* objects) {
+    g_deleteCalls->generatedBuffers += count;
+    generateObjects(count, objects);
 }
 
 void GLAPIENTRY countDeleteVertexArrays(GLsizei count, const GLuint*) {
@@ -61,8 +76,8 @@ public:
         , m_previousBindVertexArray(__glewBindVertexArray)
         , m_previousGetUniformLocation(__glewGetUniformLocation) {
         g_deleteCalls = &calls;
-        __glewGenVertexArrays = &generateObjects;
-        __glewGenBuffers = &generateObjects;
+        __glewGenVertexArrays = &generateVertexArrays;
+        __glewGenBuffers = &generateBuffers;
         __glewDeleteVertexArrays = &countDeleteVertexArrays;
         __glewDeleteBuffers = &countDeleteBuffers;
         __glewBindVertexArray = &bindVertexArray;
@@ -93,6 +108,36 @@ private:
 
 } // namespace
 
+TEST_CASE(DebugOverlay_EveryStateMapsToCheckedPresentationStorage) {
+    using Rigel::Render::chunkDebugPresentationIndex;
+    using Rigel::Render::kChunkDebugPresentationCount;
+    using Rigel::Render::kChunkDebugPresentations;
+    using DebugState = Rigel::Voxel::ChunkStreamer::DebugState;
+
+    std::array<bool, kChunkDebugPresentationCount> seen{};
+    for (size_t value = 0;
+         value < static_cast<size_t>(DebugState::Count);
+         ++value) {
+        const DebugState state = static_cast<DebugState>(value);
+        const auto index = chunkDebugPresentationIndex(state);
+        CHECK(index.has_value());
+        if (!index) {
+            continue;
+        }
+        CHECK(*index < seen.size());
+        CHECK(!seen[*index]);
+        seen[*index] = true;
+        CHECK_EQ(kChunkDebugPresentations[*index].state, state);
+        CHECK(!kChunkDebugPresentations[*index].legend.empty());
+    }
+    CHECK(std::all_of(seen.begin(), seen.end(), [](bool value) {
+        return value;
+    }));
+    CHECK(!chunkDebugPresentationIndex(DebugState::Count).has_value());
+    CHECK(Rigel::Render::kChunkDebugLegendQualification.find(
+              "not necessarily drawn") != std::string_view::npos);
+}
+
 TEST_CASE(DebugOverlay_PartialAcquisitionCleanupRunsOnce) {
     Rigel::Asset::AssetManager assets;
     assets.registerLoader("shaders", std::make_unique<ShaderLoader>());
@@ -112,6 +157,10 @@ TEST_CASE(DebugOverlay_PartialAcquisitionCleanupRunsOnce) {
         }
     }()));
 
-    CHECK_EQ(deleteCalls.vertexArrays, 1);
-    CHECK_EQ(deleteCalls.buffers, 5);
+    CHECK_EQ(deleteCalls.generatedVertexArrays, 1);
+    CHECK_EQ(deleteCalls.generatedBuffers,
+             static_cast<GLsizei>(
+                 Rigel::Render::kChunkDebugPresentationCount));
+    CHECK_EQ(deleteCalls.vertexArrays, deleteCalls.generatedVertexArrays);
+    CHECK_EQ(deleteCalls.buffers, deleteCalls.generatedBuffers);
 }

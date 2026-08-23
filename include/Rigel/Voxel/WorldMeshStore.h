@@ -46,6 +46,12 @@ struct WorldMeshEntry {
     mutable std::optional<ChunkVisibilityTraceLink> visibilityTrace;
 };
 
+struct WorldMeshSnapshot {
+    MeshId id{};
+    MeshRevision revision{};
+    bool empty = true;
+};
+
 enum class CachedMeshTraceAttachment : uint8_t {
     Missing,
     EmptyGeometry,
@@ -211,6 +217,19 @@ public:
     bool contains(ChunkCoord coord) const {
         std::shared_lock lock(m_mutex);
         return m_meshes.find(coord) != m_meshes.end();
+    }
+
+    std::optional<WorldMeshSnapshot> snapshot(ChunkCoord coord) const {
+        std::shared_lock lock(m_mutex);
+        auto it = m_meshes.find(coord);
+        if (it == m_meshes.end()) {
+            return std::nullopt;
+        }
+        return WorldMeshSnapshot{
+            it->second.id,
+            it->second.revision,
+            it->second.mesh.isEmpty()
+        };
     }
 
     void forEach(const std::function<void(const WorldMeshEntry&)>& fn) const {

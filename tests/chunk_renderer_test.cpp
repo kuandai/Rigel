@@ -69,6 +69,9 @@ TEST_CASE(WorldMeshStore_RevisionTracking) {
     mesh.indices.resize(3);
 
     store.set({0, 0, 0}, mesh);
+    const auto firstSnapshot = store.snapshot({0, 0, 0});
+    CHECK(firstSnapshot.has_value());
+    CHECK(!firstSnapshot->empty);
     MeshRevision firstRevision{};
     store.forEach([&](const WorldMeshEntry& entry) {
         firstRevision = entry.revision;
@@ -85,6 +88,7 @@ TEST_CASE(WorldMeshStore_RevisionTracking) {
     CHECK(store.contains({0, 0, 0}));
     store.remove({0, 0, 0});
     CHECK(!store.contains({0, 0, 0}));
+    CHECK(!store.snapshot({0, 0, 0}).has_value());
 }
 
 TEST_CASE(WorldMeshStore_VersionIncrement) {
@@ -455,7 +459,13 @@ TEST_CASE(ChunkRenderer_VisibilityTraceRequiresRealNonemptyDraw) {
     renderContext.meshes = &store;
     renderContext.shader = makeShader();
     ChunkRenderer renderer;
+    const auto installed = store.snapshot(coord);
+    CHECK(installed.has_value());
+    CHECK(!renderer.hasDrawnMesh(
+        store.storeId(), coord, installed->revision));
     renderer.render(renderContext);
+    CHECK(renderer.hasDrawnMesh(
+        store.storeId(), coord, installed->revision));
     tracer->complete(
         drawnKey,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
@@ -475,10 +485,17 @@ TEST_CASE(ChunkRenderer_VisibilityTraceRequiresRealNonemptyDraw) {
             emptyKey,
             ChunkVisibilityLifecycleKind::Remesh,
             tracer});
+    const auto emptyInstalled = store.snapshot(coord);
+    CHECK(emptyInstalled.has_value());
+    CHECK(emptyInstalled->empty);
+    CHECK(!renderer.hasDrawnMesh(
+        store.storeId(), coord, emptyInstalled->revision));
     tracer->complete(
         emptyKey,
         ChunkVisibilityOutcome::AcceptedEmptyGeometry);
     renderer.render(renderContext);
+    CHECK(!renderer.hasDrawnMesh(
+        store.storeId(), coord, emptyInstalled->revision));
 
     records = tracer->snapshot();
     CHECK_EQ(records.size(), static_cast<size_t>(2));

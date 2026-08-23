@@ -1030,42 +1030,212 @@ void ChunkStreamer::processCompletions() {
     }
 }
 
-void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out) const {
+void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
+                                   ChunkCoord center,
+                                   int radius) const {
     out.clear();
-    out.reserve(m_states.size());
+    radius = std::max(0, radius);
 
-    for (const auto& [coord, state] : m_states) {
-        DebugState debugState;
-        switch (state) {
-            case ChunkState::QueuedGen:
-                debugState = DebugState::QueuedGen;
-                break;
-            case ChunkState::ReadyData:
-                debugState = DebugState::ReadyData;
-                break;
-            case ChunkState::QueuedMesh:
-                debugState = DebugState::QueuedMesh;
-                break;
-            case ChunkState::ReadyMesh:
-                debugState = DebugState::ReadyMesh;
-                break;
-            case ChunkState::GenerationFailed:
-                debugState = DebugState::GenerationFailed;
-                break;
-            case ChunkState::MeshFailed:
-                debugState = DebugState::MeshFailed;
-                break;
-            default:
-                continue;
+    std::optional<ChunkVisibilityTraceRecord> latestTrace;
+    if (m_visibilityTracer) {
+        const ChunkCoord traceCoord = m_visibilityTracer->coord();
+        const int64_t dx = static_cast<int64_t>(traceCoord.x) - center.x;
+        const int64_t dy = static_cast<int64_t>(traceCoord.y) - center.y;
+        const int64_t dz = static_cast<int64_t>(traceCoord.z) - center.z;
+        if (std::abs(dx) <= radius && std::abs(dy) <= radius &&
+            std::abs(dz) <= radius) {
+            latestTrace = m_visibilityTracer->latestRecord();
         }
-        if (debugState == DebugState::ReadyData && m_chunkManager) {
-            if (Chunk* chunk = m_chunkManager->getChunk(coord)) {
-                if (chunk->loadedFromDisk()) {
-                    debugState = DebugState::LoadedFromDisk;
+    }
+
+    const int64_t minX = static_cast<int64_t>(center.x) - radius;
+    const int64_t maxX = static_cast<int64_t>(center.x) + radius;
+    const int64_t minY = static_cast<int64_t>(center.y) - radius;
+    const int64_t maxY = static_cast<int64_t>(center.y) + radius;
+    const int64_t minZ = static_cast<int64_t>(center.z) - radius;
+    const int64_t maxZ = static_cast<int64_t>(center.z) + radius;
+    for (int64_t z = minZ; z <= maxZ; ++z) {
+        if (z < std::numeric_limits<int>::min() ||
+            z > std::numeric_limits<int>::max()) {
+            continue;
+        }
+        for (int64_t y = minY; y <= maxY; ++y) {
+            if (y < std::numeric_limits<int>::min() ||
+                y > std::numeric_limits<int>::max()) {
+                continue;
+            }
+            for (int64_t x = minX; x <= maxX; ++x) {
+                if (x < std::numeric_limits<int>::min() ||
+                    x > std::numeric_limits<int>::max()) {
+                    continue;
                 }
+                const ChunkCoord coord{
+                    static_cast<int>(x),
+                    static_cast<int>(y),
+                    static_cast<int>(z)};
+                const auto stateIt = m_states.find(coord);
+                const auto loadIt = m_loadPending.find(coord);
+                const auto pendingMeshIt = m_pendingMeshes.find(coord);
+                const auto meshFlightIt = m_meshInFlight.find(coord);
+                const auto retiredIt = m_configRetiredWork.find(coord);
+                const auto meshSnapshot = m_meshStore
+                    ? m_meshStore->snapshot(coord)
+                    : std::nullopt;
+                const bool tracked =
+                    stateIt != m_states.end() ||
+                    loadIt != m_loadPending.end() ||
+                    m_loadGenQueued.find(coord) != m_loadGenQueued.end() ||
+                    m_generationCapacityWaiting.find(coord) !=
+                        m_generationCapacityWaiting.end() ||
+                    m_meshDependencyWaiting.find(coord) !=
+                        m_meshDependencyWaiting.end() ||
+                    pendingMeshIt != m_pendingMeshes.end() ||
+                    meshFlightIt != m_meshInFlight.end() ||
+                    retiredIt != m_configRetiredWork.end() ||
+                    m_generationErrors.find(coord) != m_generationErrors.end() ||
+                    m_loadErrors.find(coord) != m_loadErrors.end() ||
+                    m_meshErrors.find(coord) != m_meshErrors.end() ||
+                    m_evictionErrors.find(coord) != m_evictionErrors.end() ||
+                    meshSnapshot.has_value();
+                if (!tracked) {
+                    continue;
+                }
+
+                DebugChunkState debug;
+                debug.coord = coord;
+                Chunk* chunk = m_chunkManager
+                    ? m_chunkManager->getChunk(coord)
+                    : nullptr;
+                if (chunk) {
+                    debug.voxelOccupancy = chunk->isEmpty()
+                        ? DebugVoxelOccupancy::Empty
+                        : DebugVoxelOccupancy::Nonempty;
+                }
+                if (meshSnapshot) {
+                    debug.installedGeometry = meshSnapshot->empty
+                        ? DebugInstalledGeometry::Empty
+                        : DebugInstalledGeometry::Nonempty;
+                    debug.installedGeometryRevision =
+                        meshSnapshot->revision.value;
+                    debug.drawEvidence = meshSnapshot->empty
+                        ? DebugDrawEvidence::NotApplicable
+                        : DebugDrawEvidence::NotDrawn;
+                }
+
+                if ((stateIt != m_states.end() &&
+                     stateIt->second == ChunkState::GenerationFailed) ||
+                    m_generationErrors.find(coord) !=
+                        m_generationErrors.end()) {
+                    debug.failure = DebugFailure::Generation;
+                } else if (m_loadErrors.find(coord) != m_loadErrors.end()) {
+                    debug.failure = DebugFailure::Load;
+                } else if ((stateIt != m_states.end() &&
+                            stateIt->second == ChunkState::MeshFailed) ||
+                           m_meshErrors.find(coord) != m_meshErrors.end()) {
+                    debug.failure = DebugFailure::Mesh;
+                } else if (m_evictionErrors.find(coord) !=
+                           m_evictionErrors.end()) {
+                    debug.failure = DebugFailure::Eviction;
+                }
+
+                bool remeshPending = chunk && chunk->isDirty() &&
+                    (meshSnapshot.has_value() ||
+                     (stateIt != m_states.end() &&
+                      stateIt->second == ChunkState::ReadyMesh));
+                remeshPending = remeshPending ||
+                    (pendingMeshIt != m_pendingMeshes.end() &&
+                     pendingMeshIt->second.kind == MeshRequestKind::Dirty);
+                remeshPending = remeshPending ||
+                    (meshFlightIt != m_meshInFlight.end() &&
+                     (meshFlightIt->second.kind == MeshRequestKind::Dirty ||
+                      meshFlightIt->second.replacementPending));
+                remeshPending = remeshPending ||
+                    (retiredIt != m_configRetiredWork.end() &&
+                     retiredIt->second == ConfigRetiredWorkKind::DirtyMesh);
+                if (remeshPending) {
+                    debug.remeshIntent = DebugRemeshIntent::Pending;
+                }
+
+                if (debug.failure != DebugFailure::None) {
+                    debug.pipelineOwner = DebugPipelineOwner::TerminalFailure;
+                } else if (m_meshDependencyWaiting.find(coord) !=
+                           m_meshDependencyWaiting.end()) {
+                    debug.pipelineOwner =
+                        DebugPipelineOwner::WaitingForNeighbors;
+                } else if (pendingMeshIt != m_pendingMeshes.end()) {
+                    debug.pipelineOwner = DebugPipelineOwner::MeshScheduler;
+                } else if (meshFlightIt != m_meshInFlight.end() &&
+                           !meshFlightIt->second.obsolete) {
+                    debug.pipelineOwner = DebugPipelineOwner::MeshWork;
+                } else if (meshFlightIt != m_meshInFlight.end() &&
+                           meshFlightIt->second.replacementPending) {
+                    debug.pipelineOwner = DebugPipelineOwner::DirtyRemesh;
+                } else if (loadIt != m_loadPending.end() ||
+                           m_loadGenQueued.find(coord) !=
+                               m_loadGenQueued.end() ||
+                           m_generationCapacityWaiting.find(coord) !=
+                               m_generationCapacityWaiting.end() ||
+                           (stateIt != m_states.end() &&
+                            stateIt->second == ChunkState::QueuedGen)) {
+                    debug.pipelineOwner = DebugPipelineOwner::WaitingForData;
+                } else if (remeshPending) {
+                    debug.pipelineOwner = DebugPipelineOwner::DirtyRemesh;
+                } else if (stateIt != m_states.end() &&
+                           stateIt->second == ChunkState::ReadyData) {
+                    debug.pipelineOwner = hasAllNeighborsLoaded(coord)
+                        ? DebugPipelineOwner::MeshScheduler
+                        : DebugPipelineOwner::WaitingForNeighbors;
+                } else {
+                    debug.pipelineOwner = DebugPipelineOwner::Complete;
+                }
+
+                switch (debug.pipelineOwner) {
+                    case DebugPipelineOwner::WaitingForData:
+                        debug.state = DebugState::WaitingForData;
+                        break;
+                    case DebugPipelineOwner::WaitingForNeighbors:
+                        debug.state = DebugState::WaitingForNeighbors;
+                        break;
+                    case DebugPipelineOwner::MeshScheduler:
+                        debug.state = remeshPending
+                            ? DebugState::DirtyRemeshPending
+                            : DebugState::MeshSchedulerWait;
+                        break;
+                    case DebugPipelineOwner::MeshWork:
+                        debug.state = DebugState::MeshSubmittedOrBuilding;
+                        break;
+                    case DebugPipelineOwner::DirtyRemesh:
+                        debug.state = DebugState::DirtyRemeshPending;
+                        break;
+                    case DebugPipelineOwner::TerminalFailure:
+                        debug.state = DebugState::TerminalFailure;
+                        break;
+                    case DebugPipelineOwner::Complete:
+                        if (debug.voxelOccupancy ==
+                            DebugVoxelOccupancy::Empty) {
+                            debug.state = DebugState::VoxelEmpty;
+                        } else if (debug.installedGeometry ==
+                                   DebugInstalledGeometry::Empty) {
+                            debug.state = DebugState::AcceptedEmptyGeometry;
+                        } else if (debug.installedGeometry ==
+                                   DebugInstalledGeometry::Nonempty) {
+                            debug.state =
+                                DebugState::AcceptedNonemptyGeometry;
+                        } else {
+                            debug.state = DebugState::WaitingForNeighbors;
+                            debug.pipelineOwner =
+                                DebugPipelineOwner::WaitingForNeighbors;
+                        }
+                        break;
+                }
+
+                if (latestTrace && latestTrace->key.coord == coord) {
+                    debug.traceOutcome = latestTrace->outcome;
+                    debug.traceDrawOutcome = latestTrace->drawOutcome;
+                }
+                out.push_back(std::move(debug));
             }
         }
-        out.push_back({coord, debugState});
     }
 }
 

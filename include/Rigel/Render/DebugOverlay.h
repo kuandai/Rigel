@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rigel/Asset/Handle.h"
+#include "Rigel/Render/ChunkDebugPresentation.h"
 #include "Rigel/Voxel/ChunkStreamer.h"
 
 #include <array>
@@ -20,7 +21,7 @@ constexpr float kDefaultDebugDistance = 8.0f;
 
 struct DebugField {
     GLuint vao = 0;
-    std::array<GLuint, 5> vbos{};
+    std::array<GLuint, kChunkDebugPresentationCount> vbos{};
     Asset::Handle<Asset::ShaderAsset> shader;
     GLint locViewProjection = -1;
     GLint locFieldOrigin = -1;

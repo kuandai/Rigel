@@ -1582,10 +1582,18 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
              settledGenerationJobs);
 
     std::vector<ChunkStreamer::DebugChunkState> states;
-    streamer.getDebugStates(states);
-    CHECK(std::any_of(states.begin(), states.end(), [coord](const auto& state) {
-        return state.coord == coord;
-    }));
+    streamer.getDebugStates(states, coord, 0);
+    const auto failedEviction = std::find_if(
+        states.begin(), states.end(), [coord](const auto& state) {
+            return state.coord == coord;
+        });
+    CHECK(failedEviction != states.end());
+    if (failedEviction != states.end()) {
+        CHECK_EQ(failedEviction->state,
+                 ChunkStreamer::DebugState::TerminalFailure);
+        CHECK_EQ(failedEviction->failure,
+                 ChunkStreamer::DebugFailure::Eviction);
+    }
 
     for (int update = 0; update < 59; ++update) {
         streamer.update(coord.toWorldCenter());

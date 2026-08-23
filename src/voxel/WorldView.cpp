@@ -191,8 +191,24 @@ void WorldView::render(const glm::mat4& view,
     }
 }
 
-void WorldView::getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const {
-    m_streamer.getDebugStates(out);
+void WorldView::getChunkDebugStates(
+    std::vector<ChunkStreamer::DebugChunkState>& out,
+    ChunkCoord center,
+    int radius) const {
+    m_streamer.getDebugStates(out, center, radius);
+    for (auto& state : out) {
+        if (state.installedGeometry !=
+                ChunkStreamer::DebugInstalledGeometry::Nonempty ||
+            state.installedGeometryRevision == 0) {
+            continue;
+        }
+        state.drawEvidence = m_renderer.hasDrawnMesh(
+                m_meshStore.storeId(),
+                state.coord,
+                MeshRevision{state.installedGeometryRevision})
+            ? ChunkStreamer::DebugDrawEvidence::Drawn
+            : ChunkStreamer::DebugDrawEvidence::NotDrawn;
+    }
 }
 
 int WorldView::viewDistanceChunks() const {

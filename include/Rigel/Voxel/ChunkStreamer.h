@@ -72,18 +72,74 @@ public:
     };
 
     enum class DebugState : uint8_t {
-        QueuedGen,
-        LoadedFromDisk,
-        ReadyData,
-        QueuedMesh,
-        ReadyMesh,
-        GenerationFailed,
-        MeshFailed
+        WaitingForData,
+        WaitingForNeighbors,
+        MeshSchedulerWait,
+        MeshSubmittedOrBuilding,
+        VoxelEmpty,
+        AcceptedEmptyGeometry,
+        AcceptedNonemptyGeometry,
+        DirtyRemeshPending,
+        TerminalFailure,
+        Count
+    };
+
+    enum class DebugPipelineOwner : uint8_t {
+        WaitingForData,
+        WaitingForNeighbors,
+        MeshScheduler,
+        MeshWork,
+        DirtyRemesh,
+        Complete,
+        TerminalFailure
+    };
+
+    enum class DebugVoxelOccupancy : uint8_t {
+        Unknown,
+        Empty,
+        Nonempty
+    };
+
+    enum class DebugInstalledGeometry : uint8_t {
+        None,
+        Empty,
+        Nonempty
+    };
+
+    enum class DebugRemeshIntent : uint8_t {
+        None,
+        Pending
+    };
+
+    enum class DebugFailure : uint8_t {
+        None,
+        Load,
+        Generation,
+        Mesh,
+        Eviction
+    };
+
+    enum class DebugDrawEvidence : uint8_t {
+        NotApplicable,
+        NotDrawn,
+        Drawn
     };
 
     struct DebugChunkState {
-        ChunkCoord coord;
-        DebugState state;
+        ChunkCoord coord{};
+        DebugState state = DebugState::WaitingForData;
+        DebugPipelineOwner pipelineOwner =
+            DebugPipelineOwner::WaitingForData;
+        DebugVoxelOccupancy voxelOccupancy =
+            DebugVoxelOccupancy::Unknown;
+        DebugInstalledGeometry installedGeometry =
+            DebugInstalledGeometry::None;
+        DebugRemeshIntent remeshIntent = DebugRemeshIntent::None;
+        DebugFailure failure = DebugFailure::None;
+        std::optional<ChunkVisibilityOutcome> traceOutcome;
+        std::optional<ChunkVisibilityDrawOutcome> traceDrawOutcome;
+        DebugDrawEvidence drawEvidence = DebugDrawEvidence::NotApplicable;
+        uint64_t installedGeometryRevision = 0;
     };
 
     using ChunkLoadCallback =
@@ -117,7 +173,9 @@ public:
 
     void update(const glm::vec3& cameraPos);
     void processCompletions();
-    void getDebugStates(std::vector<DebugChunkState>& out) const;
+    void getDebugStates(std::vector<DebugChunkState>& out,
+                        ChunkCoord center,
+                        int radius) const;
     int viewDistanceChunks() const { return m_config.viewDistanceChunks; }
     const WorkMetrics& workMetrics() const { return m_workMetrics; }
     const StreamingDiagnosticSnapshot& diagnostics() const { return m_diagnostics; }

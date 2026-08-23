@@ -540,6 +540,18 @@ std::vector<ChunkVisibilityTraceRecord> ChunkVisibilityTracer::snapshot() const 
     return {m_records.begin(), m_records.end()};
 }
 
+std::optional<ChunkVisibilityTraceRecord>
+ChunkVisibilityTracer::latestRecord() const {
+    if (!enabled()) {
+        return std::nullopt;
+    }
+    std::lock_guard lock(m_mutex);
+    if (m_records.empty()) {
+        return std::nullopt;
+    }
+    return m_records.back();
+}
+
 ChunkVisibilityTracer::RecordIterator ChunkVisibilityTracer::findRecord(
     const ChunkVisibilityLifecycleKey& key) {
     return std::find_if(

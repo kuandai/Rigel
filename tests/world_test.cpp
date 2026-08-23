@@ -111,16 +111,17 @@ TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
     CHECK(view.meshStore().contains(coord));
 
     std::vector<ChunkStreamer::DebugChunkState> states;
-    view.getChunkDebugStates(states);
+    view.getChunkDebugStates(states, coord, 0);
     CHECK_EQ(states.size(), static_cast<size_t>(1));
     CHECK_EQ(states.front().coord, coord);
-    CHECK_EQ(states.front().state, ChunkStreamer::DebugState::ReadyMesh);
+    CHECK_EQ(states.front().state,
+             ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
 
     view.clear();
 
     CHECK(world.chunkManager().hasChunk(coord));
     CHECK(!view.meshStore().contains(coord));
-    view.getChunkDebugStates(states);
+    view.getChunkDebugStates(states, coord, 0);
     CHECK(states.empty());
 
     view.updateStreaming(coord.toWorldCenter());
@@ -128,10 +129,11 @@ TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
 
     CHECK(world.chunkManager().hasChunk(coord));
     CHECK(view.meshStore().contains(coord));
-    view.getChunkDebugStates(states);
+    view.getChunkDebugStates(states, coord, 0);
     CHECK_EQ(states.size(), static_cast<size_t>(1));
     CHECK_EQ(states.front().coord, coord);
-    CHECK_EQ(states.front().state, ChunkStreamer::DebugState::ReadyMesh);
+    CHECK_EQ(states.front().state,
+             ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
 }
 
 TEST_CASE(WorldView_StreamAndRenderDistancesRemainIndependent) {

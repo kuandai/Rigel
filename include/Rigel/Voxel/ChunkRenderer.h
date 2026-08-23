@@ -86,6 +86,10 @@ public:
      */
     size_t cachedMeshCount() const { return m_meshes.size(); }
 
+    bool hasDrawnMesh(uint32_t storeId,
+                      ChunkCoord coord,
+                      MeshRevision revision) const;
+
 private:
     static constexpr int kMaxShadowCascades = ShadowConfig::MaxCascades;
 
@@ -114,6 +118,7 @@ private:
         ChunkCoord coord{};
         MeshRevision revision{};
         GpuMesh mesh;
+        bool drawn = false;
     };
 
     std::unordered_map<MeshId, GpuMeshEntry, MeshIdHash> m_meshes;

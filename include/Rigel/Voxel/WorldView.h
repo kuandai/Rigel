@@ -67,7 +67,9 @@ public:
                 float nearPlane,
                 float farPlane,
                 float dt = 0.0f);
-    void getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out) const;
+    void getChunkDebugStates(std::vector<ChunkStreamer::DebugChunkState>& out,
+                             ChunkCoord center,
+                             int radius) const;
     int viewDistanceChunks() const;
     void prioritizeChunkMesh(ChunkCoord coord);
 

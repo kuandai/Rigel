@@ -111,6 +111,15 @@ void ChunkRenderer::releaseResources() {
     releaseShadowResources();
 }
 
+bool ChunkRenderer::hasDrawnMesh(uint32_t storeId,
+                                 ChunkCoord coord,
+                                 MeshRevision revision) const {
+    const auto meshIt = m_meshes.find(MeshId{storeId, coord});
+    return meshIt != m_meshes.end() &&
+        meshIt->second.revision.value == revision.value &&
+        meshIt->second.drawn;
+}
+
 void ChunkRenderer::uploadMesh(GpuMesh& gpu, const ChunkMesh& mesh) const {
     if (mesh.vertices.empty() || mesh.indices.empty()) {
         gpu.release();
@@ -215,6 +224,7 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
             meshIt->second.coord = entry.coord;
             meshIt->second.revision = entry.revision;
             uploadMesh(meshIt->second.mesh, entry.mesh);
+            meshIt->second.drawn = false;
         }
 
         if (!meshIt->second.mesh.isValid()) {
@@ -461,6 +471,7 @@ void ChunkRenderer::renderPass(RenderLayer layer,
             reinterpret_cast<void*>(static_cast<uintptr_t>(range.indexStart * sizeof(uint32_t)))
         );
         glBindVertexArray(0);
+        meshIt->second.drawn = true;
         if (entry.visibilityTrace && entry.visibilityTrace->tracer) {
             entry.visibilityTrace->tracer->observeDraw(
                 entry.visibilityTrace->key);

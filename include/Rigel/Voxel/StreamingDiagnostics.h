@@ -51,6 +51,10 @@ struct StreamingDiagnosticSnapshot {
     StreamingWorkCount generation;
     StreamingWorkCount chunkLoad;
     StreamingWorkCount mesh;
+    size_t meshWorkerCount = 0;
+    // Maximum mesh jobs submitted but not yet observed by the completion
+    // drain. Zero denotes inline execution without a mesh worker pool.
+    size_t meshSubmissionLimit = 0;
     StreamingWorkCount eviction;
     uint32_t stableUpdates = 0;
 

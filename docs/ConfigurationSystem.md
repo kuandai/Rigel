@@ -282,7 +282,7 @@ precedence.
 | `streaming.view_distance_chunks` | int | `6` | Desired chunk radius around the camera (maximum `16`). |
 | `streaming.unload_distance_chunks` | int | `8` | Configured unload radius (maximum `24`); the view radius is its effective minimum. |
 | `streaming.gen_queue_limit` | int | `0` | In-flight generation cap (0 = unlimited; maximum explicit cap `32768`). |
-| `streaming.mesh_queue_limit` | int | `0` | In-flight mesh cap (0 = unlimited; maximum explicit cap `32768`). |
+| `streaming.mesh_queue_limit` | int | `0` | Mesh dispatch cap before the worker-count bound (0 = unlimited; maximum explicit cap `32768`). |
 | `streaming.update_budget_per_frame` | int | `0` | Load/generation/missing-mesh requests advanced per update (0 = unlimited). |
 | `streaming.apply_budget_per_frame` | int | `0` | Generation and mesh results applied per category (0 = unlimited). |
 | `streaming.worker_threads` | int | `2` | Total worker count partitioned between generation and meshing. |

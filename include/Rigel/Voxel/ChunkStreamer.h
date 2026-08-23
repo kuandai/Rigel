@@ -200,10 +200,12 @@ private:
             ChunkVisibilityLifecycleKind::CameraDemand;
     };
 
-    struct PendingDirtyMesh {
+    struct PendingMeshRequest {
         size_t priority = 0;
         ChunkCoord coord;
+        MeshRequestKind kind = MeshRequestKind::Missing;
         bool prioritized = false;
+        uint64_t sequence = 0;
     };
 
     struct PendingVisibilityTrace {
@@ -213,12 +215,16 @@ private:
         std::shared_ptr<ChunkVisibilityTracer> tracer;
     };
 
-    struct PendingDirtyMeshGreater {
-        bool operator()(const PendingDirtyMesh& lhs, const PendingDirtyMesh& rhs) const {
+    struct PendingMeshRequestGreater {
+        bool operator()(const PendingMeshRequest& lhs,
+                        const PendingMeshRequest& rhs) const {
             if (lhs.prioritized != rhs.prioritized) {
                 return lhs.prioritized < rhs.prioritized;
             }
-            return lhs.priority > rhs.priority;
+            if (lhs.priority != rhs.priority) {
+                return lhs.priority > rhs.priority;
+            }
+            return lhs.sequence > rhs.sequence;
         }
     };
 
@@ -253,16 +259,16 @@ private:
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_loadGenQueued;
     std::deque<ChunkCoord> m_generationCapacityWait;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_generationCapacityWaiting;
-    std::deque<ChunkCoord> m_missingMeshCapacityWait;
-    std::unordered_set<ChunkCoord, ChunkCoordHash> m_missingMeshCapacityWaiting;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_meshDependencyWaiting;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> m_desiredPriority;
-    std::priority_queue<PendingDirtyMesh,
-                        std::vector<PendingDirtyMesh>,
-                        PendingDirtyMeshGreater> m_dirtyMeshQueue;
-    std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;
+    std::priority_queue<PendingMeshRequest,
+                        std::vector<PendingMeshRequest>,
+                        PendingMeshRequestGreater> m_pendingMeshQueue;
+    std::unordered_map<ChunkCoord,
+                       PendingMeshRequest,
+                       ChunkCoordHash> m_pendingMeshes;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityMeshRequests;
     std::unordered_map<ChunkCoord, uint64_t, ChunkCoordHash> m_evictionRetryAfter;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_versionReplacementRetries;
@@ -286,6 +292,7 @@ private:
     size_t m_inFlightMeshDirty = 0;
     ChunkLoadRequestId m_nextLoadRequestId = 1;
     uint64_t m_nextMeshRequestId = 1;
+    uint64_t m_nextPendingMeshSequence = 1;
     std::atomic<uint64_t> m_workEpoch{1};
     MeshRequestKind m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
     std::optional<ChunkCoord> m_lastCenter;
@@ -309,12 +316,14 @@ private:
     void cancelPendingLoad(ChunkCoord coord);
     void queueLoadGen(ChunkCoord coord);
     void waitForGenerationCapacity(ChunkCoord coord);
-    void waitForMissingMeshCapacity(ChunkCoord coord);
     void waitForMeshDependencies(ChunkCoord coord);
     void wakeGenerationCapacityWaiter();
-    void wakeMissingMeshCapacityWaiter();
     void queueLoadedNeighbors(ChunkCoord coord);
     std::optional<size_t> dirtyMeshPriority(ChunkCoord coord) const;
+    bool queuePendingMesh(ChunkCoord coord,
+                          MeshRequestKind kind,
+                          bool prioritize = false);
+    void erasePendingMesh(ChunkCoord coord);
     void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
     void ensureVisibilityTrace(
         ChunkCoord coord,
@@ -344,7 +353,9 @@ private:
         MeshInFlight& flight,
         ChunkVisibilityOutcome outcome);
     void abandonVisibilityTraces(ChunkVisibilityOutcome outcome);
-    void reprioritizeDirtyMeshes();
+    void reprioritizePendingMeshes();
+    void dispatchPendingMeshes(uint64_t& schedulerCoordinatesInspected);
+    size_t meshDispatchLimit() const;
     void enqueueGeneration(ChunkCoord coord);
     void enqueueMesh(ChunkCoord coord,
                      Chunk& chunk,

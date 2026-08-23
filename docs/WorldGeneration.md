@@ -146,10 +146,14 @@ explicit failed state until a later streaming requeue retries them.
 
 - Generation and meshing use separate pools partitioned from
   `streaming.worker_threads`. A pool with no worker executes its job inline.
-- `streaming.gen_queue_limit` and `streaming.mesh_queue_limit` cap in-flight
-  work (`0` means unlimited).
-- Mesh queue capacity reserves roughly 1/4 of the slots for dirty remeshes to
-  keep player edits responsive.
+- `streaming.gen_queue_limit` caps in-flight generation work, while
+  `streaming.mesh_queue_limit` caps mesh work selected from the pending
+  scheduler (`0` means unlimited).
+- Eligible initial meshes and dirty remeshes share a distance-prioritized
+  scheduler. Asynchronous submission is additionally capped at the actual
+  mesh worker count so work that has not started remains reprioritizable.
+- When both kinds are pending, mesh dispatch reserves roughly 1/4 of finite
+  dispatch slots for dirty remeshes while remaining work-conserving.
 - `streaming.update_budget_per_frame` limits how many queued load, generation,
   or missing-mesh requests advance during an update (`0` means unlimited). A
   desired-set rebuild itself is not spread across frames.

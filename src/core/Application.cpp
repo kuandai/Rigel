@@ -678,7 +678,8 @@ void Application::run() {
                             "generation.terminal_errors={} generation.last_error=\"{}\" "
                             "load.pending={} load.in_flight={} load.started={} "
                             "load.terminal_errors={} load.last_error=\"{}\" "
-                            "mesh.pending={} mesh.in_flight={} mesh.started={} "
+                            "mesh.pending={} mesh.in_flight={} mesh.workers={} "
+                            "mesh.submission_limit={} mesh.started={} "
                             "mesh.terminal_errors={} mesh.last_error=\"{}\" "
                             "eviction.pending={} eviction.last_error=\"{}\" "
                             "stable_updates={}/{}",
@@ -695,6 +696,8 @@ void Application::run() {
                             diagnostics.chunkLoad.lastError,
                             diagnostics.mesh.pending,
                             diagnostics.mesh.inFlight,
+                            diagnostics.meshWorkerCount,
+                            diagnostics.meshSubmissionLimit,
                             diagnostics.mesh.started,
                             diagnostics.mesh.terminalErrors,
                             diagnostics.mesh.lastError,

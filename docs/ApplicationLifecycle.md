@@ -216,8 +216,12 @@ Synchronization:
 - Main thread applies mesh results in `processCompletions()`.
 
 **Queueing rules**:
-- `streaming.mesh_queue_limit` caps in-flight mesh jobs (0 = unlimited).
-- A portion of a finite limit is reserved for dirty remeshes.
+- Initial meshes and dirty remeshes remain in one priority scheduler until
+  dispatch.
+- `streaming.mesh_queue_limit` caps selected mesh jobs (0 = unlimited), and
+  asynchronous submission is also capped at the mesh worker count.
+- A portion of finite dispatch capacity is reserved for dirty remeshes when
+  both request kinds are pending.
 - At most one mesh job is in flight for a chunk. Additional invalidations are
   coalesced and cause a replacement build after the current result returns.
 

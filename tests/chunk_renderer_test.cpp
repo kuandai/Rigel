@@ -159,3 +159,55 @@ TEST_CASE(ChunkRenderer_EmptyInstalledMeshReleasesCachedGeometry) {
     renderer.render(renderContext);
     CHECK_EQ(renderer.cachedMeshCount(), static_cast<size_t>(0));
 }
+
+TEST_CASE(ChunkRenderer_VisibilityTraceRequiresRealNonemptyDraw) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+
+    const ChunkCoord coord{0, 0, 0};
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 2});
+    const ChunkVisibilityTraceIdentity drawnIdentity{
+        coord, 1, 2, 3, 4
+    };
+    tracer->begin(drawnIdentity);
+    tracer->complete(
+        drawnIdentity,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+
+    WorldMeshStore store;
+    store.set(
+        coord,
+        makeMesh(3, 3),
+        ChunkVisibilityTraceLink{drawnIdentity, tracer});
+    CHECK(!tracer->snapshot()
+               .front()
+               .stage(ChunkVisibilityStage::FirstDraw)
+               .has_value());
+
+    WorldRenderContext renderContext;
+    renderContext.meshes = &store;
+    renderContext.shader = makeShader();
+    ChunkRenderer renderer;
+    renderer.render(renderContext);
+
+    auto records = tracer->snapshot();
+    CHECK(records.front().stage(ChunkVisibilityStage::FirstDraw).has_value());
+
+    const ChunkVisibilityTraceIdentity emptyIdentity{
+        coord, 2, 2, 3, 5
+    };
+    tracer->begin(emptyIdentity);
+    tracer->complete(
+        emptyIdentity,
+        ChunkVisibilityOutcome::AcceptedEmptyGeometry);
+    store.set(
+        coord,
+        ChunkMesh{},
+        ChunkVisibilityTraceLink{emptyIdentity, tracer});
+    renderer.render(renderContext);
+
+    records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(2));
+    CHECK(!records.back().stage(ChunkVisibilityStage::FirstDraw).has_value());
+}

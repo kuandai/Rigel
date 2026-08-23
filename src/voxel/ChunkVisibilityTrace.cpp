@@ -540,20 +540,6 @@ std::vector<ChunkVisibilityTraceRecord> ChunkVisibilityTracer::snapshot() const 
     return {m_records.begin(), m_records.end()};
 }
 
-ChunkVisibilityTraceStats ChunkVisibilityTracer::stats() const {
-    if (!enabled()) {
-        return {};
-    }
-    std::lock_guard lock(m_mutex);
-    return {
-        .retainedRecords = m_records.size(),
-        .droppedRecords = m_droppedRecords,
-        .droppedUnfinishedRecords = m_droppedUnfinishedRecords,
-        .unmatchedEvents = m_unmatchedEvents,
-        .clockFailures = m_clockFailures
-    };
-}
-
 ChunkVisibilityTracer::RecordIterator ChunkVisibilityTracer::findRecord(
     const ChunkVisibilityLifecycleKey& key) {
     return std::find_if(

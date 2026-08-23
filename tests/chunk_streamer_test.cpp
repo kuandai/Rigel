@@ -4740,6 +4740,61 @@ TEST_CASE(ChunkStreamer_VisibilityTraceModesPreserveSchedulingAndQuiescence) {
     CHECK_EQ(enabled.lifecycle, absent.lifecycle);
 }
 
+TEST_CASE(ChunkStreamer_AbsentAndDisabledTraceIgnoreDepartureTraceState) {
+    for (const bool installDisabledTracer : {false, true}) {
+        ChunkManager manager;
+        BlockRegistry registry;
+        WorldMeshStore meshStore;
+        auto generator = makeGenerator(registry);
+        const ChunkCoord departed{0, 0, 0};
+
+        ChunkStreamer streamer(
+            manager, meshStore, registry, nullptr, generator);
+        StreamingConfig stream;
+        stream.viewDistanceChunks = 0;
+        stream.unloadDistanceChunks = 8;
+        stream.updateBudgetPerFrame = 0;
+        stream.workerThreads = 0;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.markSpawnDiscoveryComplete();
+
+        auto disabledClock = std::make_shared<IncrementingTraceClock>();
+        if (installDisabledTracer) {
+            streamer.setVisibilityTracer(
+                std::make_shared<ChunkVisibilityTracer>(
+                    ChunkVisibilityTracer::Config{departed, 0},
+                    [disabledClock]() { return disabledClock->now(); }));
+        }
+        streamer.update(departed.toWorldCenter());
+
+        auto drawTracer = std::make_shared<ChunkVisibilityTracer>(
+            ChunkVisibilityTracer::Config{departed, 1});
+        const auto drawKey = *drawTracer->begin(
+            ChunkVisibilityLifecycleKind::CameraDemand);
+        drawTracer->complete(
+            drawKey,
+            ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+        ChunkMesh mesh;
+        mesh.vertices.resize(3);
+        mesh.indices.resize(3);
+        meshStore.set(
+            departed,
+            std::move(mesh),
+            ChunkVisibilityTraceLink{
+                drawKey,
+                ChunkVisibilityLifecycleKind::CameraDemand,
+                drawTracer});
+
+        streamer.update(ChunkCoord{1, 0, 0}.toWorldCenter());
+
+        const auto measurement = drawTracer->measurement();
+        CHECK_EQ(measurement.records.size(), static_cast<size_t>(1));
+        CHECK(!measurement.records.front().drawOutcome.has_value());
+        CHECK_EQ(disabledClock->reads(), static_cast<size_t>(0));
+    }
+}
+
 TEST_CASE(ChunkStreamer_MeshFailureCompletesJob) {
     for (int workerThreads : {0, 2}) {
         ChunkManager manager;

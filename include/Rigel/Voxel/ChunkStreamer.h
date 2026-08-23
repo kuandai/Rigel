@@ -175,8 +175,6 @@ private:
         uint32_t revision = 0;
         std::optional<ChunkVisibilityLifecycleKey> visibilityTrace;
         std::shared_ptr<ChunkVisibilityTracer> visibilityTracer;
-        ChunkVisibilityLifecycleKind visibilityKind =
-            ChunkVisibilityLifecycleKind::CameraDemand;
         ChunkMesh mesh;
         double seconds = 0.0;
         std::string error;
@@ -336,13 +334,11 @@ private:
         ChunkVisibilityLifecycleKind kind);
     void completePendingVisibilityTrace(
         ChunkCoord coord,
-        ChunkVisibilityOutcome outcome,
-        const Chunk* chunk = nullptr);
+        ChunkVisibilityOutcome outcome);
     void completePendingVisibilityTrace(
         ChunkCoord coord,
         ChunkVisibilityLifecycleKind kind,
-        ChunkVisibilityOutcome outcome,
-        const Chunk* chunk = nullptr);
+        ChunkVisibilityOutcome outcome);
     void completeInFlightVisibilityTrace(
         MeshInFlight& flight,
         ChunkVisibilityOutcome outcome);

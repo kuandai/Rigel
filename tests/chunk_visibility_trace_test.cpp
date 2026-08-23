@@ -223,13 +223,13 @@ TEST_CASE(ChunkVisibilityTrace_BoundsRetentionAndAccountsDroppedWork) {
     CHECK_EQ(records.size(), static_cast<size_t>(2));
     CHECK_EQ(records[0].key, secondKey);
     CHECK_EQ(records[1].key, thirdKey);
-    auto stats = tracer.stats();
+    auto stats = tracer.measurement().stats;
     CHECK_EQ(stats.retainedRecords, static_cast<size_t>(2));
     CHECK_EQ(stats.droppedRecords, static_cast<uint64_t>(1));
     CHECK_EQ(stats.droppedUnfinishedRecords, static_cast<uint64_t>(1));
 
     tracer.observeDraw(firstKey);
-    stats = tracer.stats();
+    stats = tracer.measurement().stats;
     CHECK_EQ(stats.unmatchedEvents, static_cast<uint64_t>(1));
 
     const auto measurement = tracer.measurement();
@@ -407,7 +407,9 @@ TEST_CASE(ChunkVisibilityTrace_DisabledDoesNotReadClockOrRetainRecords) {
 
     CHECK_EQ(clock.reads(), static_cast<size_t>(0));
     CHECK(tracer.snapshot().empty());
-    CHECK_EQ(tracer.stats().retainedRecords, static_cast<size_t>(0));
+    CHECK_EQ(
+        tracer.measurement().stats.retainedRecords,
+        static_cast<size_t>(0));
     const auto measurement = tracer.measurement();
     CHECK_EQ(measurement.sequence, static_cast<uint64_t>(0));
     CHECK(measurement.records.empty());

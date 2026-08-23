@@ -195,7 +195,6 @@ public:
 
     ChunkVisibilityTraceMeasurement measurement() const;
     std::vector<ChunkVisibilityTraceRecord> snapshot() const;
-    ChunkVisibilityTraceStats stats() const;
 
 private:
     using RecordIterator = std::deque<ChunkVisibilityTraceRecord>::iterator;

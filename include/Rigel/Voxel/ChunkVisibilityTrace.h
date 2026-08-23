@@ -9,6 +9,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -102,6 +103,7 @@ public:
         return enabled() && coord == m_config.coord;
     }
     size_t capacity() const { return m_config.capacity; }
+    ChunkCoord coord() const { return m_config.coord; }
 
     // capture() is used for stages collected before a mesh identity is known.
     // A disabled tracer never invokes its clock.
@@ -127,6 +129,11 @@ private:
     Clock m_clock;
     mutable std::mutex m_mutex;
     std::deque<ChunkVisibilityTraceRecord> m_records;
+};
+
+struct ChunkVisibilityTraceLink {
+    ChunkVisibilityTraceIdentity identity{};
+    std::weak_ptr<ChunkVisibilityTracer> tracer;
 };
 
 } // namespace Rigel::Voxel

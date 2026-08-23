@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ChunkTasks.h"
+#include "ChunkVisibilityTrace.h"
 #include "ChunkCache.h"
 #include "ChunkBenchmark.h"
 #include "ChunkLoadRequest.h"
@@ -104,6 +105,7 @@ public:
     void setConfig(const StreamingConfig& config);
     void setGenerator(std::shared_ptr<const WorldGenerator> generator);
     void setBenchmark(ChunkBenchmarkStats* stats);
+    void setVisibilityTracer(std::shared_ptr<ChunkVisibilityTracer> tracer);
     void setChunkLoader(ChunkLoadCallback loader);
     void setChunkPendingCallback(ChunkPendingCallback pending);
     void setChunkLoadDrain(ChunkLoadDrainCallback drain);
@@ -157,6 +159,8 @@ private:
         uint64_t workEpoch = 0;
         uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
+        std::optional<ChunkVisibilityTraceIdentity> visibilityTrace;
+        std::shared_ptr<ChunkVisibilityTracer> visibilityTracer;
         std::array<BlockState, Chunk::VOLUME> blocks{};
         std::array<BlockState, kPaddedVolume> paddedBlocks{};
     };
@@ -167,6 +171,8 @@ private:
         uint64_t workEpoch = 0;
         uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
+        std::optional<ChunkVisibilityTraceIdentity> visibilityTrace;
+        std::shared_ptr<ChunkVisibilityTracer> visibilityTracer;
         ChunkMesh mesh;
         double seconds = 0.0;
         std::string error;
@@ -194,6 +200,11 @@ private:
         bool prioritized = false;
     };
 
+    struct PendingVisibilityTrace {
+        ChunkVisibilityTraceIdentity identity{};
+        ChunkVisibilityStageTimes stages{};
+    };
+
     struct PendingDirtyMeshGreater {
         bool operator()(const PendingDirtyMesh& lhs, const PendingDirtyMesh& rhs) const {
             if (lhs.prioritized != rhs.prioritized) {
@@ -211,6 +222,8 @@ private:
     std::shared_ptr<const WorldGenerator> m_generator;
     ChunkCache m_cache;
     ChunkBenchmarkStats* m_benchmark = nullptr;
+    std::shared_ptr<ChunkVisibilityTracer> m_visibilityTracer;
+    std::optional<PendingVisibilityTrace> m_pendingVisibilityTrace;
     ChunkLoadCallback m_chunkLoader;
     ChunkPendingCallback m_chunkPending;
     ChunkLoadDrainCallback m_chunkLoadDrain;
@@ -264,6 +277,7 @@ private:
     size_t m_inFlightMeshDirty = 0;
     ChunkLoadRequestId m_nextLoadRequestId = 1;
     uint64_t m_nextMeshRequestId = 1;
+    uint64_t m_nextVisibilityRequestId = 1;
     std::atomic<uint64_t> m_workEpoch{1};
     MeshRequestKind m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
     std::optional<ChunkCoord> m_lastCenter;
@@ -294,6 +308,15 @@ private:
     void queueLoadedNeighbors(ChunkCoord coord);
     std::optional<size_t> dirtyMeshPriority(ChunkCoord coord) const;
     void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
+    void ensureVisibilityTrace(ChunkCoord coord);
+    void markVisibilityStage(ChunkCoord coord, ChunkVisibilityStage stage);
+    std::optional<ChunkVisibilityTraceIdentity> bindVisibilityTrace(
+        ChunkCoord coord,
+        const Chunk& chunk);
+    void completePendingVisibilityTrace(
+        ChunkCoord coord,
+        ChunkVisibilityOutcome outcome,
+        const Chunk* chunk = nullptr);
     void reprioritizeDirtyMeshes();
     void enqueueGeneration(ChunkCoord coord);
     void enqueueMesh(ChunkCoord coord,

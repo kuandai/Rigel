@@ -185,6 +185,7 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
 
     uint32_t storeId = ctx.meshes->storeId();
     uint64_t version = ctx.meshes->version();
+    const auto visibilityTrace = ctx.meshes->visibilityTrace();
     auto versionIt = m_storeVersions.find(storeId);
     if (versionIt == m_storeVersions.end() || versionIt->second != version) {
         pruneCache(*ctx.meshes);
@@ -230,7 +231,8 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         }
 
         float viewDepth = glm::dot(delta, viewDir);
-        entries.push_back(RenderEntry{entry.coord, entry.id, distanceSq, viewDepth});
+        entries.push_back(
+            RenderEntry{entry.coord, entry.id, distanceSq, viewDepth});
     });
 
     if (entries.empty()) {
@@ -327,10 +329,10 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         glUniform1i(m_locShadowCascadeCount, 0);
     }
 
-    renderPass(RenderLayer::Opaque, entries, ctx);
-    renderPass(RenderLayer::Cutout, entries, ctx);
-    renderPass(RenderLayer::Transparent, entries, ctx);
-    renderPass(RenderLayer::Emissive, entries, ctx);
+    renderPass(RenderLayer::Opaque, entries, ctx, visibilityTrace);
+    renderPass(RenderLayer::Cutout, entries, ctx, visibilityTrace);
+    renderPass(RenderLayer::Transparent, entries, ctx, visibilityTrace);
+    renderPass(RenderLayer::Emissive, entries, ctx, visibilityTrace);
 
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
@@ -407,7 +409,9 @@ void ChunkRenderer::cacheShadowUniforms() {
 
 void ChunkRenderer::renderPass(RenderLayer layer,
                                const std::vector<RenderEntry>& entries,
-                               const WorldRenderContext& ctx) {
+                               const WorldRenderContext& ctx,
+                               const std::optional<ChunkVisibilityTraceLink>&
+                                   visibilityTrace) {
     setupLayerState(layer);
 
     float alphaMultiplier = 1.0f;
@@ -455,6 +459,12 @@ void ChunkRenderer::renderPass(RenderLayer layer,
             reinterpret_cast<void*>(static_cast<uintptr_t>(range.indexStart * sizeof(uint32_t)))
         );
         glBindVertexArray(0);
+        if (visibilityTrace &&
+            visibilityTrace->identity.coord == entry.coord) {
+            if (auto tracer = visibilityTrace->tracer.lock()) {
+                tracer->observeDraw(visibilityTrace->identity);
+            }
+        }
     };
 
     if (layer == RenderLayer::Transparent) {

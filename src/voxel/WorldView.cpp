@@ -96,6 +96,11 @@ void WorldView::setBenchmark(ChunkBenchmarkStats* stats) {
     m_streamer.setBenchmark(stats);
 }
 
+void WorldView::setVisibilityTracer(
+    std::shared_ptr<ChunkVisibilityTracer> tracer) {
+    m_streamer.setVisibilityTracer(std::move(tracer));
+}
+
 void WorldView::markSpawnDiscoveryComplete() {
     m_streamer.markSpawnDiscoveryComplete();
 }

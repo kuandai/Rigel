@@ -2,10 +2,12 @@
 
 #include "ChunkCoord.h"
 #include "ChunkMesh.h"
+#include "ChunkVisibilityTrace.h"
 
 #include <atomic>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <unordered_map>
 
@@ -48,7 +50,10 @@ public:
     WorldMeshStore(const WorldMeshStore&) = delete;
     WorldMeshStore& operator=(const WorldMeshStore&) = delete;
 
-    void set(ChunkCoord coord, ChunkMesh mesh) {
+    void set(
+        ChunkCoord coord,
+        ChunkMesh mesh,
+        std::optional<ChunkVisibilityTraceLink> visibilityTrace = std::nullopt) {
         std::unique_lock lock(m_mutex);
         auto [it, inserted] = m_meshes.emplace(coord, WorldMeshEntry{});
         WorldMeshEntry& entry = it->second;
@@ -57,6 +62,12 @@ public:
             entry.id = makeMeshId(coord);
         }
         entry.mesh = std::move(mesh);
+        if (visibilityTrace) {
+            m_visibilityTrace = std::move(visibilityTrace);
+        } else if (m_visibilityTrace &&
+                   m_visibilityTrace->identity.coord == coord) {
+            m_visibilityTrace.reset();
+        }
         entry.revision.value =
             m_version.fetch_add(1, std::memory_order_relaxed) + 1;
     }
@@ -64,6 +75,10 @@ public:
     void remove(ChunkCoord coord) {
         std::unique_lock lock(m_mutex);
         bool removed = m_meshes.erase(coord) > 0;
+        if (m_visibilityTrace &&
+            m_visibilityTrace->identity.coord == coord) {
+            m_visibilityTrace.reset();
+        }
         if (removed) {
             m_version.fetch_add(1, std::memory_order_relaxed);
         }
@@ -75,6 +90,7 @@ public:
             m_meshes.clear();
             m_version.fetch_add(1, std::memory_order_relaxed);
         }
+        m_visibilityTrace.reset();
     }
 
     bool contains(ChunkCoord coord) const {
@@ -92,6 +108,11 @@ public:
     uint64_t version() const { return m_version.load(std::memory_order_relaxed); }
     uint32_t storeId() const { return m_storeId; }
 
+    std::optional<ChunkVisibilityTraceLink> visibilityTrace() const {
+        std::shared_lock lock(m_mutex);
+        return m_visibilityTrace;
+    }
+
 private:
     MeshId makeMeshId(ChunkCoord coord) const {
         return MeshId{m_storeId, coord};
@@ -102,6 +123,7 @@ private:
     uint32_t m_storeId = 0;
     mutable std::shared_mutex m_mutex;
     std::unordered_map<ChunkCoord, WorldMeshEntry, ChunkCoordHash> m_meshes;
+    std::optional<ChunkVisibilityTraceLink> m_visibilityTrace;
     std::atomic<uint64_t> m_version{0};
 };
 

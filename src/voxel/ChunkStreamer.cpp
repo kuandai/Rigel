@@ -120,6 +120,16 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
         return;
     }
 
+    if (m_pendingVisibilityTrace) {
+        completePendingVisibilityTrace(
+            m_pendingVisibilityTrace->identity.coord,
+            ChunkVisibilityOutcome::Stale,
+            m_chunkManager
+                ? m_chunkManager->getChunk(
+                      m_pendingVisibilityTrace->identity.coord)
+                : nullptr);
+    }
+
     m_desired.clear();
     m_desiredSet.clear();
     m_desiredPriority.clear();
@@ -155,6 +165,16 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
 void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
     if (m_generator == generator) {
         return;
+    }
+
+    if (m_pendingVisibilityTrace) {
+        completePendingVisibilityTrace(
+            m_pendingVisibilityTrace->identity.coord,
+            ChunkVisibilityOutcome::Stale,
+            m_chunkManager
+                ? m_chunkManager->getChunk(
+                      m_pendingVisibilityTrace->identity.coord)
+                : nullptr);
     }
 
     for (auto& [coord, cancelToken] : m_genCancel) {
@@ -199,6 +219,36 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
 
 void ChunkStreamer::setBenchmark(ChunkBenchmarkStats* stats) {
     m_benchmark = stats;
+}
+
+void ChunkStreamer::setVisibilityTracer(
+    std::shared_ptr<ChunkVisibilityTracer> tracer) {
+    m_pendingVisibilityTrace.reset();
+    m_visibilityTracer = tracer && tracer->enabled()
+        ? std::move(tracer)
+        : nullptr;
+    if (m_visibilityTracer &&
+        m_desiredSet.find(m_visibilityTracer->coord()) != m_desiredSet.end()) {
+        const ChunkCoord coord = m_visibilityTracer->coord();
+        Chunk* chunk = m_chunkManager
+            ? m_chunkManager->getChunk(coord)
+            : nullptr;
+        const bool hasMesh = m_meshStore && m_meshStore->contains(coord);
+        const bool meshInFlight =
+            m_meshInFlight.find(coord) != m_meshInFlight.end();
+        if ((!hasMesh && !meshInFlight) || (chunk && chunk->isDirty())) {
+            ensureVisibilityTrace(coord);
+            if (m_loadPending.find(coord) != m_loadPending.end() ||
+                m_states.find(coord) != m_states.end()) {
+                markVisibilityStage(
+                    coord, ChunkVisibilityStage::DataRequest);
+            }
+            if (chunk) {
+                markVisibilityStage(
+                    coord, ChunkVisibilityStage::DataReady);
+            }
+        }
+    }
 }
 
 void ChunkStreamer::setChunkLoader(ChunkLoadCallback loader) {
@@ -318,8 +368,14 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             center, viewRadiusSq, unloadRadiusSq);
         reprioritizeDirtyMeshes();
         for (const ChunkCoord& coord : m_desired) {
+            const bool newlyDesired =
+                previousDesired.find(coord) == previousDesired.end();
+            if (newlyDesired &&
+                (!m_meshStore || !m_meshStore->contains(coord))) {
+                ensureVisibilityTrace(coord);
+            }
             if (previouslyQueued.find(coord) != previouslyQueued.end() ||
-                previousDesired.find(coord) == previousDesired.end()) {
+                newlyDesired) {
                 queueLoadGen(coord);
             }
         }
@@ -336,6 +392,13 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 eraseFailure(m_loadErrors, m_loadFailureVersion, coord);
                 if (!retainedMesh) {
                     eraseFailure(m_meshErrors, m_meshFailureVersion, coord);
+                }
+                if (!retainedMesh && m_pendingVisibilityTrace &&
+                    m_pendingVisibilityTrace->identity.coord == coord) {
+                    completePendingVisibilityTrace(
+                        coord,
+                        ChunkVisibilityOutcome::Stale,
+                        m_chunkManager->getChunk(coord));
                 }
                 queueLoadedNeighbors(coord);
             }
@@ -557,6 +620,13 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 continue;
             }
 
+            markVisibilityStage(
+                coord, ChunkVisibilityStage::NeighborReady);
+            markVisibilityStage(
+                coord, ChunkVisibilityStage::MeshEligible);
+            markVisibilityStage(
+                coord, ChunkVisibilityStage::SchedulerWait);
+
             MeshRequestKind kind = isMeshed
                 ? MeshRequestKind::Dirty
                 : MeshRequestKind::Missing;
@@ -613,6 +683,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             ChunkLoadRequestResult loadResult = ChunkLoadRequestResult::Missing;
             ChunkLoadRequestId loadRequestId = 0;
             if (!chunk && state != ChunkState::QueuedGen && m_chunkLoader) {
+                markVisibilityStage(
+                    coord, ChunkVisibilityStage::DataRequest);
                 auto pendingIt = m_loadPending.find(coord);
                 bool wasPending = pendingIt != m_loadPending.end();
                 loadRequestId = wasPending
@@ -626,6 +698,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             }
 
             if (chunk) {
+                markVisibilityStage(
+                    coord, ChunkVisibilityStage::DataRequest);
+                markVisibilityStage(
+                    coord, ChunkVisibilityStage::DataReady);
                 cancelPendingLoad(coord);
                 if (m_generator &&
                     chunk->worldGenVersion() != m_generator->config().world.version) {
@@ -663,6 +739,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     m_priorityMeshRequests.erase(coord);
                     m_states[coord] = ChunkState::ReadyMesh;
                     m_countedMeshRetryRevisions.erase(coord);
+                    completePendingVisibilityTrace(
+                        coord,
+                        ChunkVisibilityOutcome::VoxelEmpty,
+                        chunk);
                     continue;
                 }
 
@@ -673,10 +753,19 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 if (!isMeshed && state != ChunkState::QueuedMesh) {
                     bool coordinateMeshInFlight =
                         m_meshInFlight.find(coord) != m_meshInFlight.end();
+                    bool neighborsLoaded = hasAllNeighborsLoaded(coord);
+                    if (neighborsLoaded) {
+                        markVisibilityStage(
+                            coord, ChunkVisibilityStage::NeighborReady);
+                        markVisibilityStage(
+                            coord, ChunkVisibilityStage::MeshEligible);
+                        markVisibilityStage(
+                            coord, ChunkVisibilityStage::SchedulerWait);
+                    }
                     if (coordinateMeshInFlight) {
                         waitForMissingMeshCapacity(coord);
                     } else if (!meshFull && !meshFullMissing &&
-                               hasAllNeighborsLoaded(coord)) {
+                               neighborsLoaded) {
                         enqueueMesh(coord, *chunk, MeshRequestKind::Missing);
                         meshFullMissing = m_inFlightMeshMissing >= meshLimitMissing;
                         meshFull = m_inFlightMesh >= meshLimit;
@@ -817,10 +906,18 @@ void ChunkStreamer::processCompletions() {
                     completion.coord,
                     failureDiagnostic(
                         "load", completion.coord, completion.error));
+                completePendingVisibilityTrace(
+                    completion.coord,
+                    ChunkVisibilityOutcome::Failed,
+                    m_chunkManager->getChunk(completion.coord));
                 continue;
             }
             eraseFailure(
                 m_loadErrors, m_loadFailureVersion, completion.coord);
+            if (completion.outcome == ChunkLoadOutcome::Loaded) {
+                markVisibilityStage(
+                    completion.coord, ChunkVisibilityStage::DataReady);
+            }
             queueLoadGen(completion.coord);
         }
     }
@@ -891,6 +988,15 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out) const {
 }
 
 void ChunkStreamer::reset() {
+    if (m_pendingVisibilityTrace) {
+        completePendingVisibilityTrace(
+            m_pendingVisibilityTrace->identity.coord,
+            ChunkVisibilityOutcome::Stale,
+            m_chunkManager
+                ? m_chunkManager->getChunk(
+                      m_pendingVisibilityTrace->identity.coord)
+                : nullptr);
+    }
     for (auto& entry : m_genCancel) {
         entry.second->store(true, std::memory_order_relaxed);
     }
@@ -983,6 +1089,11 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
     }
     if (m_meshStore) {
         m_meshStore->remove(coord);
+    }
+    if (m_pendingVisibilityTrace &&
+        m_pendingVisibilityTrace->identity.coord == coord) {
+        completePendingVisibilityTrace(
+            coord, ChunkVisibilityOutcome::Stale, chunk);
     }
     if (chunk) {
         chunk->setLoadedFromDisk(false);
@@ -1282,6 +1393,9 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
                           genResult.coord.y,
                           genResult.coord.z,
                           genResult.error);
+            completePendingVisibilityTrace(
+                genResult.coord,
+                ChunkVisibilityOutcome::Failed);
             ++applied;
             continue;
         }
@@ -1300,6 +1414,8 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         chunk.clearPersistDirty();
         chunk.setLoadedFromDisk(false);
         chunk.setWorldGenVersion(genResult.worldGenVersion);
+        markVisibilityStage(
+            genResult.coord, ChunkVisibilityStage::DataReady);
 
         if (m_benchmark) {
             m_benchmark->addGeneration(genResult.seconds);
@@ -1313,6 +1429,10 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             m_priorityMeshRequests.erase(genResult.coord);
             eraseFailure(m_meshErrors, m_meshFailureVersion, genResult.coord);
             stateIt->second = ChunkState::ReadyMesh;
+            completePendingVisibilityTrace(
+                genResult.coord,
+                ChunkVisibilityOutcome::VoxelEmpty,
+                &chunk);
         } else {
             stateIt->second = ChunkState::ReadyData;
         }
@@ -1330,10 +1450,17 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
     MeshResult meshResult;
     while (applied < budget && m_meshComplete.tryPop(meshResult)) {
         ++m_workMetrics.meshJobsCompleted;
+        auto completeVisibility = [&](ChunkVisibilityOutcome outcome) {
+            if (meshResult.visibilityTracer && meshResult.visibilityTrace) {
+                meshResult.visibilityTracer->complete(
+                    *meshResult.visibilityTrace, outcome);
+            }
+        };
         auto flightIt = m_meshInFlight.find(meshResult.coord);
         if (flightIt == m_meshInFlight.end() ||
             flightIt->second.requestId != meshResult.requestId) {
             ++m_workMetrics.meshJobsRejectedStale;
+            completeVisibility(ChunkVisibilityOutcome::Stale);
             queueLoadGen(meshResult.coord);
             continue;
         }
@@ -1356,12 +1483,14 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             flight.workEpoch != m_workEpoch.load(std::memory_order_relaxed) ||
             meshResult.workEpoch != flight.workEpoch) {
             ++m_workMetrics.meshJobsRejectedStale;
+            completeVisibility(ChunkVisibilityOutcome::Stale);
             continue;
         }
 
         auto stateIt = m_states.find(meshResult.coord);
         if (stateIt == m_states.end() || stateIt->second != ChunkState::QueuedMesh) {
             ++m_workMetrics.meshJobsRejectedStale;
+            completeVisibility(ChunkVisibilityOutcome::Stale);
             queueLoadGen(meshResult.coord);
             continue;
         }
@@ -1370,6 +1499,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         if (!chunk) {
             m_states.erase(meshResult.coord);
             ++m_workMetrics.meshJobsRejectedStale;
+            completeVisibility(ChunkVisibilityOutcome::Stale);
             continue;
         }
 
@@ -1388,6 +1518,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             }
             stateIt->second = ChunkState::ReadyData;
             ++m_workMetrics.meshJobsRejectedStale;
+            completeVisibility(ChunkVisibilityOutcome::Stale);
             queueLoadGen(meshResult.coord);
             queueDirtyMesh(meshResult.coord, flight.prioritized);
             continue;
@@ -1401,6 +1532,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             m_meshDependencyWaiting.erase(meshResult.coord);
             m_priorityMeshRequests.erase(meshResult.coord);
             ++m_workMetrics.meshJobsFailed;
+            completeVisibility(ChunkVisibilityOutcome::Failed);
             setFailure(
                 m_meshErrors,
                 m_meshFailureVersion,
@@ -1416,21 +1548,36 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             continue;
         }
 
+        std::optional<ChunkVisibilityTraceLink> visibilityTrace;
+        if (meshResult.visibilityTracer && meshResult.visibilityTrace) {
+            visibilityTrace = ChunkVisibilityTraceLink{
+                *meshResult.visibilityTrace,
+                meshResult.visibilityTracer
+            };
+        }
         if (meshResult.empty) {
             if (m_meshStore) {
                 if (chunk->isEmpty()) {
                     m_meshStore->remove(meshResult.coord);
                 } else {
                     m_meshStore->set(
-                        meshResult.coord, std::move(meshResult.mesh));
+                        meshResult.coord,
+                        std::move(meshResult.mesh),
+                        visibilityTrace);
                 }
             }
         } else if (m_meshStore) {
-            m_meshStore->set(meshResult.coord, std::move(meshResult.mesh));
+            m_meshStore->set(
+                meshResult.coord,
+                std::move(meshResult.mesh),
+                visibilityTrace);
         }
         chunk->clearDirty();
         eraseFailure(m_meshErrors, m_meshFailureVersion, meshResult.coord);
         stateIt->second = ChunkState::ReadyMesh;
+        completeVisibility(meshResult.empty
+                ? ChunkVisibilityOutcome::AcceptedEmptyGeometry
+                : ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
 
         if (m_benchmark) {
             m_benchmark->addMesh(meshResult.seconds, meshResult.empty);
@@ -1568,6 +1715,22 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     if (!priority) {
         return;
     }
+    Chunk* chunk = m_chunkManager
+        ? m_chunkManager->getChunk(coord)
+        : nullptr;
+    const bool hasMesh = m_meshStore && m_meshStore->contains(coord);
+    const bool meshInFlight =
+        m_meshInFlight.find(coord) != m_meshInFlight.end();
+    const bool replacementNeeded =
+        (!hasMesh || (chunk && chunk->isDirty())) &&
+        (!meshInFlight || (chunk && chunk->isDirty()));
+    if (replacementNeeded) {
+        ensureVisibilityTrace(coord);
+    }
+    if (replacementNeeded && chunk) {
+        markVisibilityStage(coord, ChunkVisibilityStage::DataRequest);
+        markVisibilityStage(coord, ChunkVisibilityStage::DataReady);
+    }
     m_meshDependencyWaiting.erase(coord);
     bool newlyQueued = m_dirtyMeshQueued.insert(coord).second;
     bool promoted = prioritize && m_priorityMeshRequests.insert(coord).second;
@@ -1576,6 +1739,79 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     if (newlyQueued || promoted) {
         m_dirtyMeshQueue.push({*priority, coord, prioritized});
     }
+}
+
+void ChunkStreamer::ensureVisibilityTrace(ChunkCoord coord) {
+    if (!m_visibilityTracer || !m_visibilityTracer->traces(coord)) {
+        return;
+    }
+    if (m_pendingVisibilityTrace &&
+        m_pendingVisibilityTrace->identity.coord == coord) {
+        return;
+    }
+
+    PendingVisibilityTrace pending;
+    pending.identity.coord = coord;
+    pending.identity.requestId = m_nextVisibilityRequestId++;
+    pending.identity.workEpoch =
+        m_workEpoch.load(std::memory_order_relaxed);
+    if (m_nextVisibilityRequestId == 0) {
+        m_nextVisibilityRequestId = 1;
+    }
+    pending.stages[static_cast<size_t>(ChunkVisibilityStage::Desired)] =
+        m_visibilityTracer->capture();
+    m_pendingVisibilityTrace = std::move(pending);
+}
+
+void ChunkStreamer::markVisibilityStage(ChunkCoord coord,
+                                        ChunkVisibilityStage stage) {
+    if (!m_visibilityTracer || !m_pendingVisibilityTrace ||
+        m_pendingVisibilityTrace->identity.coord != coord ||
+        stage == ChunkVisibilityStage::Count) {
+        return;
+    }
+    auto& timestamp = m_pendingVisibilityTrace->stages[
+        static_cast<size_t>(stage)];
+    if (!timestamp) {
+        timestamp = m_visibilityTracer->capture();
+    }
+}
+
+std::optional<ChunkVisibilityTraceIdentity>
+ChunkStreamer::bindVisibilityTrace(ChunkCoord coord, const Chunk& chunk) {
+    ensureVisibilityTrace(coord);
+    if (!m_visibilityTracer || !m_pendingVisibilityTrace ||
+        m_pendingVisibilityTrace->identity.coord != coord) {
+        return std::nullopt;
+    }
+
+    m_pendingVisibilityTrace->identity.chunkInstanceId = chunk.m_instanceId;
+    m_pendingVisibilityTrace->identity.revision = chunk.meshRevision();
+    const ChunkVisibilityTraceIdentity identity =
+        m_pendingVisibilityTrace->identity;
+    m_visibilityTracer->begin(identity, m_pendingVisibilityTrace->stages);
+    m_pendingVisibilityTrace.reset();
+    return identity;
+}
+
+void ChunkStreamer::completePendingVisibilityTrace(
+    ChunkCoord coord,
+    ChunkVisibilityOutcome outcome,
+    const Chunk* chunk) {
+    if (!m_visibilityTracer || !m_pendingVisibilityTrace ||
+        m_pendingVisibilityTrace->identity.coord != coord) {
+        return;
+    }
+    if (chunk) {
+        m_pendingVisibilityTrace->identity.chunkInstanceId =
+            chunk->m_instanceId;
+        m_pendingVisibilityTrace->identity.revision = chunk->meshRevision();
+    }
+    const ChunkVisibilityTraceIdentity identity =
+        m_pendingVisibilityTrace->identity;
+    m_visibilityTracer->begin(identity, m_pendingVisibilityTrace->stages);
+    m_visibilityTracer->complete(identity, outcome);
+    m_pendingVisibilityTrace.reset();
 }
 
 void ChunkStreamer::reprioritizeDirtyMeshes() {
@@ -1609,6 +1845,9 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
         m_inFlightGen >= m_config.genQueueLimit) {
         return;
     }
+
+    ensureVisibilityTrace(coord);
+    markVisibilityStage(coord, ChunkVisibilityStage::DataRequest);
 
     m_states[coord] = ChunkState::QueuedGen;
     ++m_inFlightGen;
@@ -1704,6 +1943,10 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord,
     }
     task.chunkInstanceId = chunk.m_instanceId;
     task.revision = chunk.meshRevision();
+    task.visibilityTrace = bindVisibilityTrace(coord, chunk);
+    if (task.visibilityTrace) {
+        task.visibilityTracer = m_visibilityTracer;
+    }
     chunk.copyBlocks(task.blocks);
 
     std::array<const Chunk*, 27> neighborChunks{};
@@ -1803,6 +2046,11 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord,
 
     BlockRegistry* registry = m_registry;
     TextureAtlas* atlas = m_atlas;
+    if (task.visibilityTracer && task.visibilityTrace) {
+        task.visibilityTracer->mark(
+            *task.visibilityTrace,
+            ChunkVisibilityStage::PoolSubmit);
+    }
     auto meshBuildStartCallback = m_meshBuildStartCallback;
     auto job = [this,
                 task = std::move(task),
@@ -1815,41 +2063,52 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord,
         result.workEpoch = task.workEpoch;
         result.chunkInstanceId = task.chunkInstanceId;
         result.revision = task.revision;
+        result.visibilityTrace = task.visibilityTrace;
+        result.visibilityTracer = task.visibilityTracer;
+        if (result.visibilityTracer && result.visibilityTrace) {
+            result.visibilityTracer->mark(
+                *result.visibilityTrace,
+                ChunkVisibilityStage::WorkerStart);
+        }
         try {
             if (meshBuildStartCallback) {
                 meshBuildStartCallback();
             }
-            if (task.workEpoch !=
+            if (task.workEpoch ==
                 m_workEpoch.load(std::memory_order_relaxed)) {
-                m_meshComplete.push(std::move(result));
-                return;
+                Chunk chunk(task.coord);
+                chunk.copyFrom(task.blocks);
+
+                std::array<const Chunk*, DirectionCount> neighborPtrs{};
+
+                MeshBuilder builder;
+                MeshBuilder::BuildContext ctx{
+                    .chunk = chunk,
+                    .registry = *registry,
+                    .atlas = atlas,
+                    .neighbors = neighborPtrs,
+                    .paddedBlocks = &task.paddedBlocks
+                };
+
+                auto start = std::chrono::steady_clock::now();
+                result.mesh = builder.build(ctx);
+                auto end = std::chrono::steady_clock::now();
+
+                result.seconds =
+                    std::chrono::duration<double>(end - start).count();
+                result.empty = result.mesh.isEmpty();
             }
-            Chunk chunk(task.coord);
-            chunk.copyFrom(task.blocks);
-
-            std::array<const Chunk*, DirectionCount> neighborPtrs{};
-
-            MeshBuilder builder;
-            MeshBuilder::BuildContext ctx{
-                .chunk = chunk,
-                .registry = *registry,
-                .atlas = atlas,
-                .neighbors = neighborPtrs,
-                .paddedBlocks = &task.paddedBlocks
-            };
-
-            auto start = std::chrono::steady_clock::now();
-            result.mesh = builder.build(ctx);
-            auto end = std::chrono::steady_clock::now();
-
-            result.seconds = std::chrono::duration<double>(end - start).count();
-            result.empty = result.mesh.isEmpty();
         } catch (const std::exception& e) {
             result.failed = true;
             result.error = e.what();
         } catch (...) {
             result.failed = true;
             result.error = "unknown error";
+        }
+        if (result.visibilityTracer && result.visibilityTrace) {
+            result.visibilityTracer->mark(
+                *result.visibilityTrace,
+                ChunkVisibilityStage::WorkerFinish);
         }
         m_meshComplete.push(std::move(result));
     };

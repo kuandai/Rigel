@@ -168,6 +168,37 @@ Quiescence bookkeeping examines active requests and explicitly retained
 unresolved state; it does not rescan the desired chunk set or poll persistence
 for discovery.
 
+### 8.1 Chunk visibility latency trace
+
+`WorldView::setVisibilityTracer` installs an opt-in trace for one identified
+chunk coordinate. Construct `ChunkVisibilityTracer` with the coordinate and a
+nonzero record capacity, then retain the shared tracer and call `snapshot()` to
+inspect completed and in-progress lifecycles. A capacity of zero disables the
+trace without reading its clock or adding streamer inspection work.
+
+Each record carries a trace request ID, streamer work epoch, chunk instance ID,
+and mesh revision. These fields identify the exact mesh input; a stale worker
+completion therefore terminates its own record rather than a replacement
+lifecycle. Retention is FIFO and includes pending records in the configured
+capacity.
+
+The trace timestamps these stages:
+
+- `desired`, `data_request`, and `data_ready` cover camera demand and chunk data.
+- `neighbor_ready` and `mesh_eligible` isolate dependency readiness.
+- `scheduler_wait`, `pool_submit`, and `worker_start` isolate scheduler and pool
+  delay from worker execution.
+- `worker_finish` and `result_accepted` cover build completion and main-thread
+  validation.
+- `first_draw` is recorded only after the renderer issues a nonempty main-pass
+  draw. Mesh-store insertion and the streamer's `ReadyMesh` state do not set it.
+
+`ChunkVisibilityTraceRecord::durations()` derives data, dependency, scheduler,
+pool, worker, result-drain, accepted, and first-draw intervals from those
+timestamps. Terminal outcomes distinguish voxel-empty chunks, accepted empty
+geometry, accepted nonempty geometry, stale results, and failures. Empty and
+failed lifecycles never report a first draw.
+
 ---
 
 ## 9. Reproducible Streaming Validation

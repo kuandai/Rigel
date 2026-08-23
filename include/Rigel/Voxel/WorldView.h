@@ -50,6 +50,7 @@ public:
     void setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback evict);
     void setStreamConfig(const StreamingConfig& config);
     void setBenchmark(ChunkBenchmarkStats* stats);
+    void setVisibilityTracer(std::shared_ptr<ChunkVisibilityTracer> tracer);
     void markSpawnDiscoveryComplete();
 
     void updateStreaming(const glm::vec3& cameraPos);

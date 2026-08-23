@@ -20,6 +20,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <array>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include <GL/glew.h>
@@ -185,7 +186,9 @@ private:
     void cacheShadowUniforms();
     void renderPass(RenderLayer layer,
                     const std::vector<RenderEntry>& entries,
-                    const WorldRenderContext& ctx);
+                    const WorldRenderContext& ctx,
+                    const std::optional<ChunkVisibilityTraceLink>&
+                        visibilityTrace);
     void setupLayerState(RenderLayer layer) const;
     void releaseShadowResources();
     bool ensureShadowResources(const ShadowConfig& config);

@@ -3612,6 +3612,7 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
                 streamer.setChunkLoader([&](ChunkLoadRequest request) {
                     CHECK_EQ(request.coord, retiringCoord);
                     loadRequestId = request.requestId;
+                    loadCancelled = false;
                     loadCompletionPending = true;
                     physicalLoadInFlight = 1;
                     ++physicalLoadsStarted;
@@ -3771,6 +3772,89 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
                          static_cast<size_t>(0));
             }
 
+            if (!completionFails) {
+                stream.viewDistanceChunks = 1;
+                stream.unloadDistanceChunks = 2;
+                streamer.setConfig(stream);
+                CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                    desiredContains(streamer, retiringCoord));
+                streamer.update(cameraCoord.toWorldCenter());
+                CHECK_EQ(streamer.diagnostics().state,
+                         StreamingLifecycleState::Streaming);
+
+                if (completionKind == CompletionKind::Load) {
+                    CHECK_EQ(physicalLoadsStarted, static_cast<uint64_t>(2));
+                    CHECK_EQ(streamer.workMetrics().chunkLoadRequestsStarted,
+                             static_cast<uint64_t>(2));
+                    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                        hasPendingLoad(streamer, retiringCoord));
+                    CHECK(!manager.hasChunk(retiringCoord));
+                    CHECK_EQ(streamer.diagnostics().chunkLoad.pending,
+                             static_cast<size_t>(1));
+                    CHECK_EQ(streamer.diagnostics().chunkLoad.inFlight,
+                             static_cast<size_t>(1));
+                    streamer.processCompletions();
+                    CHECK(!meshStore.contains(retiringCoord));
+                    streamer.update(cameraCoord.toWorldCenter());
+                    CHECK(!meshStore.contains(retiringCoord));
+                    CHECK_EQ(streamer.diagnostics().mesh.inFlight,
+                             static_cast<size_t>(1));
+                    streamer.processCompletions();
+                    CHECK(manager.hasChunk(retiringCoord));
+                    CHECK(!manager.getChunk(retiringCoord)->isDirty());
+                    CHECK(meshStore.contains(retiringCoord));
+                    CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+                             static_cast<uint64_t>(1));
+                    CHECK_EQ(streamer.workMetrics().meshJobsCompleted,
+                             static_cast<uint64_t>(1));
+                    CHECK_EQ(streamer.workMetrics().meshJobsAccepted,
+                             static_cast<uint64_t>(1));
+                    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+                             static_cast<uint64_t>(0));
+                } else if (completionKind == CompletionKind::Generation) {
+                    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+                             static_cast<uint64_t>(2));
+                    CHECK(!manager.hasChunk(retiringCoord));
+                    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+                             static_cast<size_t>(1));
+                    CHECK(waitForGenerationCompletion(streamer));
+                    streamer.processCompletions();
+                    CHECK(manager.hasChunk(retiringCoord));
+                    CHECK(!manager.getChunk(retiringCoord)->isDirty());
+                } else {
+                    CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+                             static_cast<uint64_t>(2));
+                    CHECK(!meshStore.contains(retiringCoord));
+                    CHECK_EQ(streamer.diagnostics().mesh.inFlight,
+                             static_cast<size_t>(1));
+                    CHECK(waitForMeshCompletions(streamer, 2));
+                    CHECK(meshStore.contains(retiringCoord));
+                    CHECK(!manager.getChunk(retiringCoord)->isDirty());
+                }
+
+                CHECK_EQ(streamer.workMetrics().generationJobsFailed,
+                         static_cast<uint64_t>(0));
+                CHECK_EQ(streamer.workMetrics().meshJobsFailed,
+                         static_cast<uint64_t>(0));
+                CHECK_EQ(streamer.diagnostics().generation.terminalErrors,
+                         static_cast<size_t>(0));
+                CHECK_EQ(streamer.diagnostics().chunkLoad.terminalErrors,
+                         static_cast<size_t>(0));
+                CHECK_EQ(streamer.diagnostics().mesh.terminalErrors,
+                         static_cast<size_t>(0));
+                if (completionKind == CompletionKind::Mesh) {
+                    CHECK_EQ(streamer.workMetrics().meshJobsCompleted,
+                             static_cast<uint64_t>(2));
+                    CHECK_EQ(streamer.workMetrics().meshJobsAccepted,
+                             static_cast<uint64_t>(1));
+                    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+                             static_cast<uint64_t>(1));
+                }
+
+                stream.viewDistanceChunks = 0;
+                stream.unloadDistanceChunks = 0;
+                streamer.setConfig(stream);
+            }
             streamer.update(cameraCoord.toWorldCenter());
             streamer.processCompletions();
             CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
@@ -3788,6 +3872,34 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
             CHECK(streamer.diagnostics().eviction.empty());
             CHECK_EQ(streamer.diagnostics().state,
                      StreamingLifecycleState::Quiescent);
+            CHECK_EQ(
+                meshStore.version(),
+                meshStoreVersion +
+                    ((!completionFails &&
+                      completionKind != CompletionKind::Generation)
+                         ? static_cast<uint64_t>(2)
+                         : static_cast<uint64_t>(0)));
+            if (completionKind == CompletionKind::Load) {
+                const uint64_t expectedLoads = completionFails ? 1 : 2;
+                CHECK_EQ(physicalLoadsStarted, expectedLoads);
+                CHECK_EQ(streamer.workMetrics().chunkLoadRequestsStarted,
+                         expectedLoads);
+                CHECK_EQ(physicalLoadInFlight, static_cast<size_t>(0));
+                CHECK_EQ(streamer.diagnostics().chunkLoad.started,
+                         expectedLoads);
+                CHECK_EQ(streamer.diagnostics().chunkLoad.inFlight,
+                         static_cast<size_t>(0));
+            } else if (completionKind == CompletionKind::Generation) {
+                CHECK_EQ(
+                    streamer.workMetrics().generationJobsStarted,
+                    completionFails ? static_cast<uint64_t>(1)
+                                    : static_cast<uint64_t>(2));
+            } else {
+                CHECK_EQ(
+                    streamer.workMetrics().meshJobsStarted,
+                    completionFails ? static_cast<uint64_t>(1)
+                                    : static_cast<uint64_t>(2));
+            }
     };
 
     for (const int workerThreads : {0, 1}) {

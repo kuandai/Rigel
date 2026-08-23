@@ -143,6 +143,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                 }
             }
             for (const ChunkCoord& coord : retiredLoads) {
+                m_configRetiredWork.insert(coord);
                 cancelPendingLoad(coord);
             }
             for (auto it = m_genCancel.begin(); it != m_genCancel.end();) {
@@ -152,6 +153,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                     continue;
                 }
                 const ChunkCoord coord = it->first;
+                m_configRetiredWork.insert(coord);
                 it->second->store(true, std::memory_order_relaxed);
                 it = m_genCancel.erase(it);
                 auto stateIt = m_states.find(coord);
@@ -164,6 +166,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                  it != m_generationCapacityWaiting.end();) {
                 ++schedulerCoordinatesInspected;
                 if (!remainsDirectlyDesired(*it)) {
+                    m_configRetiredWork.insert(*it);
                     m_loadGenQueued.erase(*it);
                     it = m_generationCapacityWaiting.erase(it);
                 } else {
@@ -174,6 +177,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                  it != m_loadGenQueued.end();) {
                 ++schedulerCoordinatesInspected;
                 if (!remainsDirectlyDesired(*it)) {
+                    m_configRetiredWork.insert(*it);
                     it = m_loadGenQueued.erase(it);
                 } else {
                     ++it;
@@ -195,12 +199,14 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                 }
             }
             for (const ChunkCoord& coord : retiredMeshOwners) {
+                m_configRetiredWork.insert(coord);
                 retirePendingMesh(coord);
                 m_priorityMeshRequests.erase(coord);
             }
             for (auto& [coord, flight] : m_meshInFlight) {
                 ++schedulerCoordinatesInspected;
                 if (!remainsMeshEligible(coord)) {
+                    m_configRetiredWork.insert(coord);
                     flight.obsolete = true;
                     setReplacementPending(coord, flight, false);
                     flight.prioritized = false;
@@ -259,6 +265,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_generationCapacityWait.clear();
     m_generationCapacityWaiting.clear();
     m_meshDependencyWaiting.clear();
+    m_configRetiredWork.clear();
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
@@ -576,6 +583,48 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 queueLoadGen(coord);
             }
         }
+        for (const ChunkCoord& coord : m_configRetiredWork) {
+            ++schedulerCoordinatesInspected;
+            const bool directlyDesired = hasDirectStreamingDemand(coord);
+            const bool meshEligible = hasEligibleMeshWork(coord);
+            if (!directlyDesired && !meshEligible) {
+                continue;
+            }
+            auto stateIt = m_states.find(coord);
+            if (stateIt != m_states.end() &&
+                stateIt->second == ChunkState::QueuedGen &&
+                m_genCancel.find(coord) == m_genCancel.end()) {
+                m_states.erase(stateIt);
+                stateIt = m_states.end();
+            }
+            if (stateIt != m_states.end() &&
+                stateIt->second == ChunkState::QueuedMesh) {
+                auto flightIt = m_meshInFlight.find(coord);
+                const bool hasMeshOwner =
+                    m_pendingMeshes.find(coord) != m_pendingMeshes.end() ||
+                    m_meshDependencyWaiting.find(coord) !=
+                        m_meshDependencyWaiting.end() ||
+                    (flightIt != m_meshInFlight.end() &&
+                     (!flightIt->second.obsolete ||
+                      flightIt->second.replacementPending));
+                if (!hasMeshOwner) {
+                    Chunk* chunk = m_chunkManager->getChunk(coord);
+                    if (!chunk) {
+                        m_states.erase(stateIt);
+                    } else if (m_meshStore->contains(coord)) {
+                        stateIt->second = ChunkState::ReadyMesh;
+                    } else {
+                        stateIt->second = ChunkState::ReadyData;
+                    }
+                }
+            }
+            if (directlyDesired) {
+                queueLoadGen(coord);
+            } else if (meshEligible) {
+                queueDirtyMesh(coord);
+            }
+        }
+        m_configRetiredWork.clear();
         for (const ChunkCoord& coord : previousDesired) {
             if (m_desiredSet.find(coord) == m_desiredSet.end()) {
                 bool retainedMesh =
@@ -1091,6 +1140,7 @@ void ChunkStreamer::reset() {
     m_generationCapacityWait.clear();
     m_generationCapacityWaiting.clear();
     m_meshDependencyWaiting.clear();
+    m_configRetiredWork.clear();
     if (m_chunkLoadCancel) {
         for (const auto& pending : m_loadPending) {
             m_chunkLoadCancel(pending.first);

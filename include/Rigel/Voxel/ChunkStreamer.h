@@ -266,6 +266,9 @@ private:
     std::deque<ChunkCoord> m_generationCapacityWait;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_generationCapacityWaiting;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_meshDependencyWaiting;
+    // Reconsider retired owners on the next desired-set rebuild without
+    // carrying explicit request priority across the configuration boundary.
+    std::unordered_set<ChunkCoord, ChunkCoordHash> m_configRetiredWork;
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> m_desiredPriority;

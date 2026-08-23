@@ -1,5 +1,7 @@
 #include "TestFramework.h"
+#include "OpenGLFixture.h"
 
+#include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/WorldView.h"
@@ -134,6 +136,102 @@ TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
     CHECK_EQ(states.front().coord, coord);
     CHECK_EQ(states.front().state,
              ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
+}
+
+TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+    view.initialize(assets);
+
+    BlockType solid;
+    solid.identifier = "rigel:world_view_draw_evidence_solid";
+    solid.isOpaque = true;
+    solid.isSolid = true;
+    const BlockID solidId =
+        resources.registry().registerBlock(solid.identifier, solid);
+
+    WorldGenConfig generation;
+    generation.solidBlock = solid.identifier;
+    generation.surfaceBlock = solid.identifier;
+    auto generator = std::make_shared<WorldGenerator>(
+        resources.registry(), generation);
+    world.setGenerator(generator);
+    view.setGenerator(generator);
+
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 0;
+    streaming.unloadDistanceChunks = 0;
+    streaming.genQueueLimit = 0;
+    streaming.meshQueueLimit = 0;
+    streaming.updateBudgetPerFrame = 0;
+    streaming.applyBudgetPerFrame = 0;
+    streaming.workerThreads = 0;
+    streaming.maxResidentChunks = 0;
+    view.setStreamConfig(streaming);
+
+    const ChunkCoord coord{0, 0, 0};
+    Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solidId}, resources.registry());
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+
+    view.updateStreaming(coord.toWorldCenter());
+    view.updateMeshes();
+
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    const auto snapshot = [&]() {
+        view.getChunkDebugStates(states, coord, 0);
+        CHECK_EQ(states.size(), static_cast<size_t>(1));
+        CHECK_EQ(states.front().coord, coord);
+        CHECK_EQ(states.front().state,
+                 ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
+        return states.front();
+    };
+    const auto render = [&]() {
+        view.render(
+            glm::mat4(1.0f),
+            glm::mat4(1.0f),
+            coord.toWorldCenter(),
+            0.1f,
+            100.0f);
+    };
+
+    const auto beforeFirstDraw = snapshot();
+    CHECK(beforeFirstDraw.installedGeometryRevision > 0);
+    CHECK_EQ(beforeFirstDraw.drawEvidence,
+             ChunkStreamer::DebugDrawEvidence::NotDrawn);
+
+    render();
+    const auto afterFirstDraw = snapshot();
+    CHECK_EQ(afterFirstDraw.installedGeometryRevision,
+             beforeFirstDraw.installedGeometryRevision);
+    CHECK_EQ(afterFirstDraw.drawEvidence,
+             ChunkStreamer::DebugDrawEvidence::Drawn);
+
+    world.setBlock(1, 0, 0, BlockState{solidId});
+    view.prioritizeChunkMesh(coord);
+    view.updateStreaming(coord.toWorldCenter());
+    view.updateMeshes();
+
+    const auto beforeReplacementDraw = snapshot();
+    CHECK(beforeReplacementDraw.installedGeometryRevision >
+          beforeFirstDraw.installedGeometryRevision);
+    CHECK_EQ(beforeReplacementDraw.drawEvidence,
+             ChunkStreamer::DebugDrawEvidence::NotDrawn);
+
+    render();
+    const auto afterReplacementDraw = snapshot();
+    CHECK_EQ(afterReplacementDraw.installedGeometryRevision,
+             beforeReplacementDraw.installedGeometryRevision);
+    CHECK_EQ(afterReplacementDraw.drawEvidence,
+             ChunkStreamer::DebugDrawEvidence::Drawn);
 }
 
 TEST_CASE(WorldView_StreamAndRenderDistancesRemainIndependent) {

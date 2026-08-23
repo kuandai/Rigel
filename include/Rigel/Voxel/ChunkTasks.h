@@ -8,6 +8,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -78,11 +79,12 @@ public:
             if (m_nextJobId == 0) {
                 m_nextJobId = 1;
             }
-            PendingJob pending{id, std::move(job)};
             if (priority == Priority::High) {
-                m_highPriorityJobs.push_back(std::move(pending));
+                m_highPriorityJobs.emplace_back(id);
+                m_highPriorityJobs.back().run.swap(job);
             } else {
-                m_jobs.push_back(std::move(pending));
+                m_jobs.emplace_back(id);
+                m_jobs.back().run.swap(job);
             }
         }
         m_cv.notify_one();
@@ -108,7 +110,7 @@ public:
                 return findPendingJob(m_highPriorityJobs, id) !=
                     m_highPriorityJobs.end();
             }
-            m_highPriorityJobs.push_back(PendingJob{it->id, {}});
+            m_highPriorityJobs.emplace_back(it->id);
             m_highPriorityJobs.back().run.swap(it->run);
             m_jobs.erase(it);
         }
@@ -142,9 +144,24 @@ public:
 
 private:
     struct PendingJob {
+        explicit PendingJob(JobId jobId = 0) : id(jobId) {}
+
+        PendingJob(const PendingJob&) = delete;
+        PendingJob& operator=(const PendingJob&) = delete;
+        PendingJob(PendingJob&&) = delete;
+        PendingJob& operator=(PendingJob&& other) noexcept {
+            if (this != &other) {
+                id = other.id;
+                run.swap(other.run);
+            }
+            return *this;
+        }
+
         JobId id = 0;
         std::function<void()> run;
     };
+
+    static_assert(!std::is_move_constructible_v<PendingJob>);
 
     using JobQueue = std::deque<PendingJob>;
 
@@ -204,7 +221,7 @@ private:
                 JobQueue& queue = m_highPriorityJobs.empty()
                     ? m_jobs
                     : m_highPriorityJobs;
-                job = std::move(queue.front().run);
+                job.swap(queue.front().run);
                 queue.pop_front();
             }
             try {

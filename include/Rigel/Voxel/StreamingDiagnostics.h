@@ -56,7 +56,8 @@ struct RegionSchedulerDiagnosticSnapshot {
     size_t demandOwnedDispatchedUndrained = 0;
     size_t speculativeOwnedDispatchedUndrained = 0;
 
-    // Pool-pending speculative work tracked for bounded pre-start yield.
+    // Unstarted speculative pool submissions eligible for bounded yield.
+    // Running and completed work remains in dispatched-undrained instead.
     size_t speculativePoolJobsPending = 0;
     size_t maxSpeculativePoolJobsPending = 0;
     uint64_t speculativePoolYieldCalls = 0;

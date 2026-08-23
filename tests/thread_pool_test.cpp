@@ -20,8 +20,15 @@ struct ThreadPoolTestAccess {
         std::function<std::thread(std::function<void()>)> startThread) {
         ThreadPool pool(threadCount, std::move(startThread));
     }
+
+    static constexpr bool pendingJobsAreMovable() {
+        return std::is_move_constructible_v<ThreadPool::PendingJob>;
+    }
 };
 }
+
+static_assert(
+    !Rigel::Voxel::detail::ThreadPoolTestAccess::pendingJobsAreMovable());
 
 namespace {
 

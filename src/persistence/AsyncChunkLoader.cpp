@@ -298,9 +298,9 @@ AsyncChunkLoader::Metrics AsyncChunkLoader::metrics() const {
     snapshot.speculativeOwnedDispatchedUndrained =
         m_speculativeOwnedDispatchedRegionJobCount;
     snapshot.speculativePoolJobsPending =
-        m_submittedSpeculativeRegionJobs.size();
+        m_speculativePoolJobsPending.load(std::memory_order_relaxed);
     snapshot.maxSpeculativePoolJobsPending =
-        m_maxSubmittedSpeculativeRegionJobCount;
+        m_maxSpeculativePoolJobsPending;
     snapshot.speculativePoolYieldCalls = m_speculativeYieldCalls;
     snapshot.speculativePoolYieldCandidateVisits =
         m_speculativeYieldCandidateVisits;
@@ -829,10 +829,6 @@ bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key,
 
     auto jobState = std::make_shared<RegionJobState>();
     jobState->key = key;
-    jobState->incarnation = m_nextRegionJobIncarnation++;
-    if (m_nextRegionJobIncarnation == 0) {
-        m_nextRegionJobIncarnation = 1;
-    }
     jobState->origin = origin;
     jobState->admittedAt = metricNow();
     jobState->demanded = origin == RegionJobOrigin::Direct;
@@ -934,7 +930,8 @@ bool AsyncChunkLoader::yieldSubmittedSpeculativeRegionLoad() {
         if (ownerIt == m_regionJobs.end() || ownerIt->second != job ||
             !job->started || job->demanded ||
             job->origin != RegionJobOrigin::Speculative ||
-            job->poolJobId == 0) {
+            job->poolJobId == 0 ||
+            !job->speculativePoolPending.load(std::memory_order_relaxed)) {
             it = m_submittedSpeculativeRegionJobs.erase(it);
             continue;
         }
@@ -943,6 +940,7 @@ bool AsyncChunkLoader::yieldSubmittedSpeculativeRegionLoad() {
             continue;
         }
         it = m_submittedSpeculativeRegionJobs.erase(it);
+        retireSpeculativeRegionPoolPending(job);
         m_inFlight.erase(job->key);
         undoRegionLoadAttempt(job->key);
         --m_speculativeOwnedDispatchedRegionJobCount;
@@ -965,6 +963,9 @@ bool AsyncChunkLoader::yieldSubmittedSpeculativeRegionLoad() {
 
 void AsyncChunkLoader::trackSubmittedSpeculativeRegionJob(
     const std::shared_ptr<RegionJobState>& job) {
+    if (!job->speculativePoolPending.load(std::memory_order_relaxed)) {
+        return;
+    }
     auto tracked = std::find(
         m_submittedSpeculativeRegionJobs.begin(),
         m_submittedSpeculativeRegionJobs.end(),
@@ -973,13 +974,31 @@ void AsyncChunkLoader::trackSubmittedSpeculativeRegionJob(
         return;
     }
     m_submittedSpeculativeRegionJobs.push_back(job);
-    m_maxSubmittedSpeculativeRegionJobCount = std::max(
-        m_maxSubmittedSpeculativeRegionJobCount,
-        m_submittedSpeculativeRegionJobs.size());
+}
+
+void AsyncChunkLoader::markSpeculativeRegionPoolPending(
+    const std::shared_ptr<RegionJobState>& job) {
+    if (job->speculativePoolPending.exchange(
+            true, std::memory_order_relaxed)) {
+        return;
+    }
+    const size_t pending = m_speculativePoolJobsPending.fetch_add(
+        1, std::memory_order_relaxed) + 1;
+    m_maxSpeculativePoolJobsPending = std::max(
+        m_maxSpeculativePoolJobsPending, pending);
+}
+
+void AsyncChunkLoader::retireSpeculativeRegionPoolPending(
+    const std::shared_ptr<RegionJobState>& job) {
+    if (job && job->speculativePoolPending.exchange(
+                   false, std::memory_order_relaxed)) {
+        m_speculativePoolJobsPending.fetch_sub(1, std::memory_order_relaxed);
+    }
 }
 
 bool AsyncChunkLoader::retireSubmittedSpeculativeRegionJob(
     const std::shared_ptr<RegionJobState>& job) {
+    retireSpeculativeRegionPoolPending(job);
     auto tracked = std::find(
         m_submittedSpeculativeRegionJobs.begin(),
         m_submittedSpeculativeRegionJobs.end(),
@@ -1014,9 +1033,6 @@ void AsyncChunkLoader::cancelQueuedDirectRegionLoad(const RegionKey& key) {
                 1, std::memory_order_relaxed);
             jobIt->second->poolJobId = 0;
             jobIt->second->started = false;
-        } else if (jobIt->second->started &&
-                   jobIt->second->poolJobId != 0) {
-            trackSubmittedSpeculativeRegionJob(jobIt->second);
         }
         if (!jobIt->second->started) {
             eraseQueuedRegion(m_directRegionLoads, key);
@@ -1080,6 +1096,7 @@ void AsyncChunkLoader::startRegionLoad(
     PersistenceContext contextCopy = m_context;
     auto regionLoadStartCallback = m_regionLoadStartCallback;
     auto regionLoadStartObserver = m_regionLoadStartObserver;
+    auto regionResultAccountedCallback = m_regionResultAccountedCallback;
     const bool poolExecution = m_ioPool.threadCount() > 0;
 
     auto job = [this,
@@ -1090,7 +1107,12 @@ void AsyncChunkLoader::startRegionLoad(
                 jobState,
                 poolExecution,
                 regionLoadStartCallback = std::move(regionLoadStartCallback),
-                regionLoadStartObserver = std::move(regionLoadStartObserver)]() mutable {
+                regionLoadStartObserver = std::move(regionLoadStartObserver),
+                regionResultAccountedCallback =
+                    std::move(regionResultAccountedCallback)]() mutable {
+        if (poolExecution) {
+            retireSpeculativeRegionPoolPending(jobState);
+        }
         const auto workerStart = metricNow();
         RegionMetricCounters& counters =
             regionMetricCounters(jobState->origin);
@@ -1171,14 +1193,23 @@ void AsyncChunkLoader::startRegionLoad(
             result.error = "unknown error";
         }
         recordExecutionMetrics();
-        m_regionComplete.push(std::move(result));
         counters.resultsPublished.fetch_add(1, std::memory_order_relaxed);
+        if (regionResultAccountedCallback) {
+            regionResultAccountedCallback();
+        }
+        m_regionComplete.push(std::move(result));
     };
 
     if (poolExecution) {
         RegionMetricCounters& counters =
             regionMetricCounters(jobState->origin);
         const bool resubmission = jobState->poolSubmissionCount > 0;
+        const bool speculativePoolPending =
+            jobState->origin == RegionJobOrigin::Speculative &&
+            !jobState->demanded;
+        if (speculativePoolPending) {
+            markSpeculativeRegionPoolPending(jobState);
+        }
         jobState->poolJobId = m_ioPool.enqueue(
             std::move(job),
             jobState->demanded
@@ -1191,10 +1222,10 @@ void AsyncChunkLoader::startRegionLoad(
                 counters.poolResubmissions.fetch_add(
                     1, std::memory_order_relaxed);
             }
+        } else if (speculativePoolPending) {
+            retireSpeculativeRegionPoolPending(jobState);
         }
-        if (jobState->poolJobId != 0 &&
-            jobState->origin == RegionJobOrigin::Speculative &&
-            !jobState->demanded) {
+        if (jobState->poolJobId != 0 && speculativePoolPending) {
             trackSubmittedSpeculativeRegionJob(jobState);
         }
     } else {

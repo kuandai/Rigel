@@ -91,11 +91,11 @@ private:
 
     struct RegionJobState {
         RegionKey key;
-        uint64_t incarnation = 0;
         RegionJobOrigin origin = RegionJobOrigin::Direct;
         std::chrono::steady_clock::time_point admittedAt{};
         Voxel::detail::ThreadPool::JobId poolJobId = 0;
         uint64_t poolSubmissionCount = 0;
+        std::atomic<bool> speculativePoolPending{false};
         bool demanded = false;
         bool started = false;
     };
@@ -171,6 +171,10 @@ private:
     bool yieldSubmittedSpeculativeRegionLoad();
     void trackSubmittedSpeculativeRegionJob(
         const std::shared_ptr<RegionJobState>& job);
+    void markSpeculativeRegionPoolPending(
+        const std::shared_ptr<RegionJobState>& job);
+    void retireSpeculativeRegionPoolPending(
+        const std::shared_ptr<RegionJobState>& job);
     bool retireSubmittedSpeculativeRegionJob(
         const std::shared_ptr<RegionJobState>& job);
     void cancelQueuedDirectRegionLoad(const RegionKey& key);
@@ -241,6 +245,7 @@ private:
     std::function<void()> m_regionLoadStartCallback;
     std::function<void(const RegionKey&, RegionJobOrigin)>
         m_regionLoadStartObserver;
+    std::function<void()> m_regionResultAccountedCallback;
     std::function<void()> m_payloadBuildStartCallback;
     std::function<void()> m_ioPoolStopStartCallback;
     std::function<void()> m_workerPoolStopStartCallback;
@@ -264,7 +269,8 @@ private:
     size_t m_demandOwnedQueuedRegionJobCount = 0;
     size_t m_demandOwnedDispatchedRegionJobCount = 0;
     size_t m_speculativeOwnedDispatchedRegionJobCount = 0;
-    size_t m_maxSubmittedSpeculativeRegionJobCount = 0;
+    std::atomic<size_t> m_speculativePoolJobsPending{0};
+    size_t m_maxSpeculativePoolJobsPending = 0;
     uint64_t m_speculativeYieldCalls = 0;
     uint64_t m_speculativeYieldCandidateVisits = 0;
     size_t m_maxSpeculativeYieldCandidateVisits = 0;
@@ -305,7 +311,6 @@ private:
     std::deque<Voxel::ChunkLoadCompletion> m_resolvedChunks;
     ChunkRequestMap m_payloadInFlight;
     uint64_t m_nextRequestIncarnation = 1;
-    uint64_t m_nextRegionJobIncarnation = 1;
     uint64_t m_requestsStarted = 0;
     std::deque<RegionKey> m_lru;
 

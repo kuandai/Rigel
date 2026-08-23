@@ -4490,9 +4490,9 @@ TEST_CASE(ChunkStreamer_ConfigRetiredMissingMeshesRecoverInCameraOrder) {
     }
 
     auto gate = std::make_shared<WorkerGate>();
-    WorkerGateRelease releaseOnExit(gate);
     std::atomic<size_t> physicalBuilds{0};
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    WorkerGateRelease releaseOnExit(gate);
     StreamingConfig stream;
     stream.viewDistanceChunks = 2;
     stream.unloadDistanceChunks = 2;

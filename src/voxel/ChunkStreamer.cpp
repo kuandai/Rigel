@@ -1034,7 +1034,8 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                                    ChunkCoord center,
                                    int radius) const {
     out.clear();
-    radius = std::max(0, radius);
+    radius = std::clamp(
+        radius, 0, StreamingConfig::MaxViewDistanceChunks);
 
     std::optional<ChunkVisibilityTraceRecord> latestTrace;
     if (m_visibilityTracer) {
@@ -1078,9 +1079,6 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                 const auto pendingMeshIt = m_pendingMeshes.find(coord);
                 const auto meshFlightIt = m_meshInFlight.find(coord);
                 const auto retiredIt = m_configRetiredWork.find(coord);
-                const auto meshSnapshot = m_meshStore
-                    ? m_meshStore->snapshot(coord)
-                    : std::nullopt;
                 const bool tracked =
                     stateIt != m_states.end() ||
                     loadIt != m_loadPending.end() ||
@@ -1095,11 +1093,13 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                     m_generationErrors.find(coord) != m_generationErrors.end() ||
                     m_loadErrors.find(coord) != m_loadErrors.end() ||
                     m_meshErrors.find(coord) != m_meshErrors.end() ||
-                    m_evictionErrors.find(coord) != m_evictionErrors.end() ||
-                    meshSnapshot.has_value();
+                    m_evictionErrors.find(coord) != m_evictionErrors.end();
                 if (!tracked) {
                     continue;
                 }
+                const auto meshSnapshot = m_meshStore
+                    ? m_meshStore->snapshot(coord)
+                    : std::nullopt;
 
                 DebugChunkState debug;
                 debug.coord = coord;
@@ -1156,6 +1156,25 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                     debug.remeshIntent = DebugRemeshIntent::Pending;
                 }
 
+                const auto reconciliationOwner = [&]() {
+                    switch (classifyPendingWork(coord)) {
+                        case PendingWorkKind::Generation:
+                            return DebugPipelineOwner::WaitingForData;
+                        case PendingWorkKind::Mesh: {
+                            if (chunk && !chunk->isEmpty() &&
+                                !hasAllNeighborsLoaded(coord)) {
+                                return DebugPipelineOwner::WaitingForNeighbors;
+                            }
+                            return remeshPending
+                                ? DebugPipelineOwner::DirtyRemesh
+                                : DebugPipelineOwner::MeshScheduler;
+                        }
+                        case PendingWorkKind::None:
+                            return DebugPipelineOwner::Complete;
+                    }
+                    return DebugPipelineOwner::Complete;
+                };
+
                 if (debug.failure != DebugFailure::None) {
                     debug.pipelineOwner = DebugPipelineOwner::TerminalFailure;
                 } else if (m_meshDependencyWaiting.find(coord) !=
@@ -1171,13 +1190,15 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                            meshFlightIt->second.replacementPending) {
                     debug.pipelineOwner = DebugPipelineOwner::DirtyRemesh;
                 } else if (loadIt != m_loadPending.end() ||
-                           m_loadGenQueued.find(coord) !=
-                               m_loadGenQueued.end() ||
                            m_generationCapacityWaiting.find(coord) !=
                                m_generationCapacityWaiting.end() ||
                            (stateIt != m_states.end() &&
                             stateIt->second == ChunkState::QueuedGen)) {
                     debug.pipelineOwner = DebugPipelineOwner::WaitingForData;
+                } else if (retiredIt != m_configRetiredWork.end() ||
+                           m_loadGenQueued.find(coord) !=
+                               m_loadGenQueued.end()) {
+                    debug.pipelineOwner = reconciliationOwner();
                 } else if (remeshPending) {
                     debug.pipelineOwner = DebugPipelineOwner::DirtyRemesh;
                 } else if (stateIt != m_states.end() &&
@@ -1230,8 +1251,11 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                 }
 
                 if (latestTrace && latestTrace->key.coord == coord) {
-                    debug.traceOutcome = latestTrace->outcome;
-                    debug.traceDrawOutcome = latestTrace->drawOutcome;
+                    debug.historicalTraceKey = latestTrace->key;
+                    debug.historicalTraceKind = latestTrace->kind;
+                    debug.historicalTraceOutcome = latestTrace->outcome;
+                    debug.historicalTraceDrawOutcome =
+                        latestTrace->drawOutcome;
                 }
                 out.push_back(std::move(debug));
             }

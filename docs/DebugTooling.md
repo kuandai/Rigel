@@ -47,20 +47,26 @@ skipped.
 ### 3.1 Data Source
 
 - `WorldView::getChunkDebugStates` collects a value snapshot from the streamer,
-  CPU mesh store, active visibility trace, and renderer draw cache.
+  CPU mesh store, retained visibility-trace records, and renderer draw cache.
 - Collection walks only the center/radius cube requested by the enabled
-  visualizer. It does not scan all tracked chunks, retain mesh-store entries,
-  or place trace owners in the returned values.
-- Only coordinates with a production lifecycle owner, installed CPU mesh, or
-  reported failure appear. The field is centered on the camera chunk and
-  clipped to the current `viewDistanceChunks` radius.
+  visualizer. Programmatic radii are clamped to the supported maximum view
+  radius before iteration. Coordinates without cheap production ownership are
+  discarded before the mesh-store snapshot lookup; returned values contain no
+  pointers and do not retain mesh-store entries or trace owners.
+- Only coordinates with production lifecycle tracking or a reported failure
+  appear; their installed CPU mesh is included when present. The field is
+  centered on the camera chunk and clipped to the current
+  `viewDistanceChunks` radius.
 - Pipeline owner, voxel occupancy, installed CPU geometry, dirty/remesh intent,
-  failure category, trace build/draw outcome, and current-revision draw evidence
-  are separate fields. The presentation color is a summary, not an
-  authoritative visibility result.
-- The legend shows one detail record from the same bounded snapshot: the traced
-  chunk when present, otherwise the tracked chunk nearest the camera center.
-  Its rows expose those independent fields without rescanning streamer state.
+  failure category, retained historical trace identity/kind/outcomes, and
+  current-revision draw evidence are separate fields. A coordinate-matched
+  retained trace is labeled as history and is not presented as the current
+  pipeline owner. The presentation color is a summary, not an authoritative
+  visibility result.
+- The legend shows one detail record from the same bounded snapshot: the chunk
+  with retained trace history when present, otherwise the tracked chunk nearest
+  the camera center. Its rows expose those independent fields without
+  rescanning streamer state.
 
 ### 3.2 Layout and Scale
 
@@ -84,8 +90,9 @@ The runtime legend and cube colors use this state mapping:
 - Cyan: mesh work is eligible and waiting in the bounded scheduler.
 - Blue: the current mesh task is submitted or building.
 - Gray: the voxel chunk is empty and its lifecycle completed without a mesh
-  build.
-- Light violet: the accepted CPU mesh has empty geometry.
+  build. Voxel-empty chunks have no CPU mesh-store entry.
+- Light violet: nonempty voxel data whose accepted CPU mesh has empty geometry;
+  this lifecycle retains an empty mesh-store entry.
 - Violet: the accepted CPU mesh has nonempty geometry.
 - Pink: a dirty/remesh owner is pending while prior CPU geometry may remain
   installed.

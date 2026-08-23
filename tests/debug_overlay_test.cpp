@@ -163,8 +163,13 @@ TEST_CASE(DebugOverlay_DetailPrefersTraceAndKeepsEvidenceSeparate) {
         ChunkStreamer::DebugInstalledGeometry::Nonempty;
     traced.remeshIntent = ChunkStreamer::DebugRemeshIntent::Pending;
     traced.failure = ChunkStreamer::DebugFailure::Mesh;
-    traced.traceOutcome = Rigel::Voxel::ChunkVisibilityOutcome::Failed;
-    traced.traceDrawOutcome =
+    traced.historicalTraceKey =
+        Rigel::Voxel::ChunkVisibilityLifecycleKey{traced.coord, 17};
+    traced.historicalTraceKind =
+        Rigel::Voxel::ChunkVisibilityLifecycleKind::Remesh;
+    traced.historicalTraceOutcome =
+        Rigel::Voxel::ChunkVisibilityOutcome::Failed;
+    traced.historicalTraceDrawOutcome =
         Rigel::Voxel::ChunkVisibilityDrawOutcome::MeshReplacedBeforeDraw;
     traced.drawEvidence = ChunkStreamer::DebugDrawEvidence::NotDrawn;
 
@@ -181,7 +186,7 @@ TEST_CASE(DebugOverlay_DetailPrefersTraceAndKeepsEvidenceSeparate) {
         CHECK(it != detail->lines.end());
         return it != detail->lines.end()
             ? it->value
-            : std::string_view{};
+            : std::string{};
     };
     CHECK_EQ(valueFor("Primary state"), "Terminal pipeline failure");
     CHECK_EQ(valueFor("Pipeline owner"), "terminal_failure");
@@ -189,8 +194,11 @@ TEST_CASE(DebugOverlay_DetailPrefersTraceAndKeepsEvidenceSeparate) {
     CHECK_EQ(valueFor("Installed CPU geometry"), "nonempty");
     CHECK_EQ(valueFor("Remesh intent"), "pending");
     CHECK_EQ(valueFor("Failure"), "mesh");
-    CHECK_EQ(valueFor("Trace outcome"), "failed");
-    CHECK_EQ(valueFor("Trace draw outcome"), "mesh_replaced_before_draw");
+    CHECK_EQ(valueFor("Historical trace key"), "(3, 2, 1) #17");
+    CHECK_EQ(valueFor("Historical trace kind"), "remesh");
+    CHECK_EQ(valueFor("Historical trace outcome"), "failed");
+    CHECK_EQ(valueFor("Historical trace draw outcome"),
+             "mesh_replaced_before_draw");
     CHECK_EQ(valueFor("Main-pass draw evidence"), "not_drawn");
 
     CHECK(!selectChunkDebugDetail(

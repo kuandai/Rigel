@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
 
 namespace Rigel::Render {
 
@@ -78,10 +80,18 @@ inline constexpr std::string_view kChunkDebugLegendQualification =
 
 struct ChunkDebugDetailLine {
     std::string_view label;
-    std::string_view value;
+    std::string value;
+
+    ChunkDebugDetailLine() = default;
+    ChunkDebugDetailLine(std::string_view labelValue,
+                         std::string_view valueValue)
+        : label(labelValue), value(valueValue) {}
+    ChunkDebugDetailLine(std::string_view labelValue,
+                         std::string valueValue)
+        : label(labelValue), value(std::move(valueValue)) {}
 };
 
-inline constexpr size_t kChunkDebugDetailLineCount = 9;
+inline constexpr size_t kChunkDebugDetailLineCount = 11;
 
 struct ChunkDebugDetailPresentation {
     Voxel::ChunkCoord coord{};

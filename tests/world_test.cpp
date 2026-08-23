@@ -194,11 +194,11 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
                  ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
         return states.front();
     };
-    const auto render = [&]() {
+    const auto render = [&](const glm::vec3& cameraPos) {
         view.render(
             glm::mat4(1.0f),
             glm::mat4(1.0f),
-            coord.toWorldCenter(),
+            cameraPos,
             0.1f,
             100.0f);
     };
@@ -208,7 +208,7 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
     CHECK_EQ(beforeFirstDraw.drawEvidence,
              ChunkStreamer::DebugDrawEvidence::NotDrawn);
 
-    render();
+    render(coord.toWorldCenter());
     const auto afterFirstDraw = snapshot();
     CHECK_EQ(afterFirstDraw.installedGeometryRevision,
              beforeFirstDraw.installedGeometryRevision);
@@ -226,7 +226,20 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
     CHECK_EQ(beforeReplacementDraw.drawEvidence,
              ChunkStreamer::DebugDrawEvidence::NotDrawn);
 
-    render();
+    const glm::vec3 outsideRenderDistance =
+        coord.toWorldCenter() + glm::vec3(
+            view.renderConfig().renderDistance +
+                static_cast<float>(Chunk::SIZE),
+            0.0f,
+            0.0f);
+    render(outsideRenderDistance);
+    const auto afterReplacementUpload = snapshot();
+    CHECK_EQ(afterReplacementUpload.installedGeometryRevision,
+             beforeReplacementDraw.installedGeometryRevision);
+    CHECK_EQ(afterReplacementUpload.drawEvidence,
+             ChunkStreamer::DebugDrawEvidence::NotDrawn);
+
+    render(coord.toWorldCenter());
     const auto afterReplacementDraw = snapshot();
     CHECK_EQ(afterReplacementDraw.installedGeometryRevision,
              beforeReplacementDraw.installedGeometryRevision);

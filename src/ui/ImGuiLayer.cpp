@@ -349,7 +349,8 @@ void renderChunkDebugLegend(
     ImGui::PopTextWrapPos();
     ImGui::Separator();
     ImGui::TextUnformatted(
-        "Detail: traced chunk when available, otherwise nearest tracked chunk");
+        "Detail: retained trace-history chunk when available, otherwise "
+        "nearest tracked chunk");
     if (detail) {
         ImGui::Text(
             "Chunk: (%d, %d, %d)",

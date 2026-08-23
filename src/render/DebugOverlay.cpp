@@ -144,6 +144,17 @@ std::string_view drawEvidenceName(
     return "unknown";
 }
 
+std::string historicalTraceKeyName(
+    const std::optional<Voxel::ChunkVisibilityLifecycleKey>& key) {
+    if (!key) {
+        return "none";
+    }
+    return "(" + std::to_string(key->coord.x) + ", " +
+        std::to_string(key->coord.y) + ", " +
+        std::to_string(key->coord.z) + ") #" +
+        std::to_string(key->lifecycleId);
+}
+
 } // namespace
 
 std::optional<ChunkDebugDetailPresentation> selectChunkDebugDetail(
@@ -156,7 +167,7 @@ std::optional<ChunkDebugDetailPresentation> selectChunkDebugDetail(
     const auto* selected = &states.front();
     uint64_t selectedDistance = std::numeric_limits<uint64_t>::max();
     for (const auto& state : states) {
-        if (state.traceOutcome || state.traceDrawOutcome) {
+        if (state.historicalTraceKey) {
             selected = &state;
             break;
         }
@@ -189,12 +200,20 @@ std::optional<ChunkDebugDetailPresentation> selectChunkDebugDetail(
              installedGeometryName(selected->installedGeometry)},
             {"Remesh intent", remeshIntentName(selected->remeshIntent)},
             {"Failure", failureName(selected->failure)},
-            {"Trace outcome", selected->traceOutcome
-                ? Voxel::chunkVisibilityOutcomeName(*selected->traceOutcome)
+            {"Historical trace key",
+             historicalTraceKeyName(selected->historicalTraceKey)},
+            {"Historical trace kind", selected->historicalTraceKind
+                ? Voxel::chunkVisibilityLifecycleKindName(
+                    *selected->historicalTraceKind)
                 : std::string_view{"none"}},
-            {"Trace draw outcome", selected->traceDrawOutcome
+            {"Historical trace outcome", selected->historicalTraceOutcome
+                ? Voxel::chunkVisibilityOutcomeName(
+                    *selected->historicalTraceOutcome)
+                : std::string_view{"none"}},
+            {"Historical trace draw outcome",
+             selected->historicalTraceDrawOutcome
                 ? Voxel::chunkVisibilityDrawOutcomeName(
-                    *selected->traceDrawOutcome)
+                    *selected->historicalTraceDrawOutcome)
                 : std::string_view{"none"}},
             {"Main-pass draw evidence",
              drawEvidenceName(selected->drawEvidence)}
@@ -385,7 +404,10 @@ void renderDebugField(DebugState& debug,
         return;
     }
 
-    int radius = std::max(0, worldView->viewDistanceChunks());
+    int radius = std::clamp(
+        worldView->viewDistanceChunks(),
+        0,
+        Voxel::StreamingConfig::MaxViewDistanceChunks);
     int diameter = radius * 2 + 1;
     if (diameter <= 0) {
         return;

@@ -136,8 +136,11 @@ public:
             DebugInstalledGeometry::None;
         DebugRemeshIntent remeshIntent = DebugRemeshIntent::None;
         DebugFailure failure = DebugFailure::None;
-        std::optional<ChunkVisibilityOutcome> traceOutcome;
-        std::optional<ChunkVisibilityDrawOutcome> traceDrawOutcome;
+        std::optional<ChunkVisibilityLifecycleKey> historicalTraceKey;
+        std::optional<ChunkVisibilityLifecycleKind> historicalTraceKind;
+        std::optional<ChunkVisibilityOutcome> historicalTraceOutcome;
+        std::optional<ChunkVisibilityDrawOutcome>
+            historicalTraceDrawOutcome;
         DebugDrawEvidence drawEvidence = DebugDrawEvidence::NotApplicable;
         uint64_t installedGeometryRevision = 0;
     };

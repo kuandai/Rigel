@@ -47,7 +47,6 @@ struct WorldMeshEntry {
 };
 
 struct WorldMeshSnapshot {
-    MeshId id{};
     MeshRevision revision{};
     bool empty = true;
 };
@@ -226,7 +225,6 @@ public:
             return std::nullopt;
         }
         return WorldMeshSnapshot{
-            it->second.id,
             it->second.revision,
             it->second.mesh.isEmpty()
         };

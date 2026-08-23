@@ -46,6 +46,13 @@ uint64_t nextLifecycleId() {
     }
     return id;
 }
+
+void advanceSequence(uint64_t& sequence) {
+    ++sequence;
+    if (sequence == 0) {
+        ++sequence;
+    }
+}
 } // namespace
 
 std::string_view chunkVisibilityStageName(ChunkVisibilityStage stage) {
@@ -121,6 +128,22 @@ std::string_view chunkVisibilityLifecycleKindName(
     return "unknown";
 }
 
+std::string_view chunkVisibilityOriginName(ChunkVisibilityOrigin origin) {
+    switch (origin) {
+        case ChunkVisibilityOrigin::Unresolved:
+            return "unresolved";
+        case ChunkVisibilityOrigin::ResidentLeftCensored:
+            return "resident_left_censored";
+        case ChunkVisibilityOrigin::Persisted:
+            return "persisted";
+        case ChunkVisibilityOrigin::Generated:
+            return "generated";
+        case ChunkVisibilityOrigin::Remesh:
+            return "remesh";
+    }
+    return "unknown";
+}
+
 std::string_view chunkVisibilityDrawOutcomeName(
     ChunkVisibilityDrawOutcome outcome) {
     switch (outcome) {
@@ -144,6 +167,12 @@ std::optional<ChunkVisibilityTimePoint> ChunkVisibilityTraceRecord::stage(
         return std::nullopt;
     }
     return stages[stageIndex(value)];
+}
+
+bool ChunkVisibilityTraceRecord::observed(
+    ChunkVisibilityStage value) const {
+    return value != ChunkVisibilityStage::Count &&
+        observedStages[stageIndex(value)];
 }
 
 ChunkVisibilityDurations ChunkVisibilityTraceRecord::durations() const {
@@ -198,7 +227,8 @@ ChunkVisibilityTracer::ChunkVisibilityTracer(Config config, Clock clock)
       }) {}
 
 std::optional<ChunkVisibilityLifecycleKey> ChunkVisibilityTracer::begin(
-    ChunkVisibilityLifecycleKind kind) {
+    ChunkVisibilityLifecycleKind kind,
+    ChunkVisibilityOrigin origin) {
     if (!enabled()) {
         return std::nullopt;
     }
@@ -218,8 +248,10 @@ std::optional<ChunkVisibilityLifecycleKey> ChunkVisibilityTracer::begin(
     }
     m_records.push_back({
         .key = key,
-        .kind = kind
+        .kind = kind,
+        .origin = origin
     });
+    advanceSequence(m_sequence);
     return key;
 }
 
@@ -234,10 +266,65 @@ void ChunkVisibilityTracer::bindMeshTask(
     auto record = findRecord(key);
     if (record == m_records.end()) {
         ++m_unmatchedEvents;
+        advanceSequence(m_sequence);
         return;
     }
     if (!record->meshTask) {
         record->meshTask = meshTask;
+        advanceSequence(m_sequence);
+    }
+}
+
+void ChunkVisibilityTracer::markDataReady(
+    const ChunkVisibilityLifecycleKey& key,
+    ChunkVisibilityOrigin origin) {
+    if (!traces(key.coord) ||
+        (origin != ChunkVisibilityOrigin::Persisted &&
+         origin != ChunkVisibilityOrigin::Generated)) {
+        return;
+    }
+
+    {
+        std::lock_guard lock(m_mutex);
+        auto record = findRecord(key);
+        if (record == m_records.end()) {
+            ++m_unmatchedEvents;
+            advanceSequence(m_sequence);
+            return;
+        }
+        if (record->observed(ChunkVisibilityStage::DataReady)) {
+            return;
+        }
+    }
+
+    const auto timestamp = now();
+    std::lock_guard lock(m_mutex);
+    auto record = findRecord(key);
+    if (record == m_records.end()) {
+        ++m_unmatchedEvents;
+        advanceSequence(m_sequence);
+        return;
+    }
+
+    bool changed = false;
+    if (record->origin == ChunkVisibilityOrigin::Unresolved) {
+        record->origin = origin;
+        changed = true;
+    }
+    auto& dataReady =
+        record->stages[stageIndex(ChunkVisibilityStage::DataReady)];
+    auto& dataReadyObserved =
+        record->observedStages[stageIndex(ChunkVisibilityStage::DataReady)];
+    if (!dataReadyObserved) {
+        dataReadyObserved = true;
+        changed = true;
+    }
+    if (!dataReady && timestamp) {
+        dataReady = *timestamp;
+        changed = true;
+    }
+    if (changed) {
+        advanceSequence(m_sequence);
     }
 }
 
@@ -259,31 +346,31 @@ void ChunkVisibilityTracer::mark(
         auto record = findRecord(key);
         if (record == m_records.end()) {
             ++m_unmatchedEvents;
+            advanceSequence(m_sequence);
             return;
         }
-        const bool needsTimestamp = std::any_of(
+        const bool needsObservation = std::any_of(
             stageValues.begin(), stageValues.end(),
             [&](ChunkVisibilityStage stage) {
                 return stage != ChunkVisibilityStage::Count &&
                     stage != ChunkVisibilityStage::ResultAccepted &&
                     stage != ChunkVisibilityStage::FirstDraw &&
-                    !record->stages[stageIndex(stage)];
+                    !record->observed(stage);
             });
-        if (!needsTimestamp) {
+        if (!needsObservation) {
             return;
         }
     }
 
     const auto timestamp = now();
-    if (!timestamp) {
-        return;
-    }
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
         ++m_unmatchedEvents;
+        advanceSequence(m_sequence);
         return;
     }
+    bool changed = false;
     for (ChunkVisibilityStage stage : stageValues) {
         if (stage == ChunkVisibilityStage::Count ||
             stage == ChunkVisibilityStage::ResultAccepted ||
@@ -291,9 +378,17 @@ void ChunkVisibilityTracer::mark(
             continue;
         }
         auto& stageTime = record->stages[stageIndex(stage)];
-        if (!stageTime) {
-            stageTime = *timestamp;
+        auto& stageObserved = record->observedStages[stageIndex(stage)];
+        if (!stageObserved) {
+            stageObserved = true;
+            if (timestamp) {
+                stageTime = *timestamp;
+            }
+            changed = true;
         }
+    }
+    if (changed) {
+        advanceSequence(m_sequence);
     }
 }
 
@@ -309,6 +404,7 @@ void ChunkVisibilityTracer::complete(
         auto record = findRecord(key);
         if (record == m_records.end()) {
             ++m_unmatchedEvents;
+            advanceSequence(m_sequence);
             return;
         }
         if (record->outcome != ChunkVisibilityOutcome::Pending) {
@@ -321,6 +417,7 @@ void ChunkVisibilityTracer::complete(
     auto record = findRecord(key);
     if (record == m_records.end()) {
         ++m_unmatchedEvents;
+        advanceSequence(m_sequence);
         return;
     }
     if (record->outcome != ChunkVisibilityOutcome::Pending) {
@@ -332,8 +429,14 @@ void ChunkVisibilityTracer::complete(
         record->stages[stageIndex(ChunkVisibilityStage::ResultAccepted)] =
             *timestamp;
     }
+    if (outcome == ChunkVisibilityOutcome::AcceptedEmptyGeometry ||
+        outcome == ChunkVisibilityOutcome::AcceptedNonemptyGeometry) {
+        record->observedStages[
+            stageIndex(ChunkVisibilityStage::ResultAccepted)] = true;
+    }
     record->terminalTime = timestamp;
     record->outcome = outcome;
+    advanceSequence(m_sequence);
 }
 
 void ChunkVisibilityTracer::observeDraw(
@@ -347,6 +450,7 @@ void ChunkVisibilityTracer::observeDraw(
         auto record = findRecord(key);
         if (record == m_records.end()) {
             ++m_unmatchedEvents;
+            advanceSequence(m_sequence);
             return;
         }
         if (!canRecordDrawTransition(*record)) {
@@ -359,6 +463,7 @@ void ChunkVisibilityTracer::observeDraw(
     auto record = findRecord(key);
     if (record == m_records.end()) {
         ++m_unmatchedEvents;
+        advanceSequence(m_sequence);
         return;
     }
     if (!canRecordDrawTransition(*record)) {
@@ -368,8 +473,10 @@ void ChunkVisibilityTracer::observeDraw(
         record->stages[stageIndex(ChunkVisibilityStage::FirstDraw)] =
             *timestamp;
     }
+    record->observedStages[stageIndex(ChunkVisibilityStage::FirstDraw)] = true;
     record->drawOutcome = ChunkVisibilityDrawOutcome::Drawn;
     record->drawTerminalTime = timestamp;
+    advanceSequence(m_sequence);
 }
 
 void ChunkVisibilityTracer::observeMeshUnavailable(
@@ -384,6 +491,7 @@ void ChunkVisibilityTracer::observeMeshUnavailable(
         auto record = findRecord(key);
         if (record == m_records.end()) {
             ++m_unmatchedEvents;
+            advanceSequence(m_sequence);
             return;
         }
         if (!canRecordDrawTransition(*record)) {
@@ -396,12 +504,32 @@ void ChunkVisibilityTracer::observeMeshUnavailable(
     auto record = findRecord(key);
     if (record == m_records.end()) {
         ++m_unmatchedEvents;
+        advanceSequence(m_sequence);
         return;
     }
     if (canRecordDrawTransition(*record)) {
         record->drawOutcome = outcome;
         record->drawTerminalTime = timestamp;
+        advanceSequence(m_sequence);
     }
+}
+
+ChunkVisibilityTraceMeasurement ChunkVisibilityTracer::measurement() const {
+    if (!enabled()) {
+        return {};
+    }
+    std::lock_guard lock(m_mutex);
+    return {
+        .sequence = m_sequence,
+        .records = {m_records.begin(), m_records.end()},
+        .stats = {
+            .retainedRecords = m_records.size(),
+            .droppedRecords = m_droppedRecords,
+            .droppedUnfinishedRecords = m_droppedUnfinishedRecords,
+            .unmatchedEvents = m_unmatchedEvents,
+            .clockFailures = m_clockFailures
+        }
+    };
 }
 
 std::vector<ChunkVisibilityTraceRecord> ChunkVisibilityTracer::snapshot() const {
@@ -421,7 +549,8 @@ ChunkVisibilityTraceStats ChunkVisibilityTracer::stats() const {
         .retainedRecords = m_records.size(),
         .droppedRecords = m_droppedRecords,
         .droppedUnfinishedRecords = m_droppedUnfinishedRecords,
-        .unmatchedEvents = m_unmatchedEvents
+        .unmatchedEvents = m_unmatchedEvents,
+        .clockFailures = m_clockFailures
     };
 }
 
@@ -441,6 +570,12 @@ std::optional<ChunkVisibilityTimePoint> ChunkVisibilityTracer::now()
         std::lock_guard lock(m_clockMutex);
         return m_clock();
     } catch (...) {
+        try {
+            std::lock_guard lock(m_mutex);
+            ++m_clockFailures;
+            advanceSequence(m_sequence);
+        } catch (...) {
+        }
         return std::nullopt;
     }
 }

@@ -231,6 +231,57 @@ TEST_CASE(ChunkVisibilityTrace_BoundsRetentionAndAccountsDroppedWork) {
     tracer.observeDraw(firstKey);
     stats = tracer.stats();
     CHECK_EQ(stats.unmatchedEvents, static_cast<uint64_t>(1));
+
+    const auto measurement = tracer.measurement();
+    CHECK(measurement.sequence > 0);
+    CHECK_EQ(measurement.records.size(), tracer.snapshot().size());
+    CHECK_EQ(
+        measurement.stats.retainedRecords,
+        measurement.records.size());
+    CHECK_EQ(
+        measurement.stats.droppedRecords,
+        static_cast<uint64_t>(1));
+    CHECK_EQ(
+        measurement.stats.droppedUnfinishedRecords,
+        static_cast<uint64_t>(1));
+    CHECK_EQ(
+        measurement.stats.unmatchedEvents,
+        static_cast<uint64_t>(1));
+}
+
+TEST_CASE(ChunkVisibilityTrace_ClassifiesObservedAndCensoredOrigins) {
+    ChunkVisibilityTracer tracer({{1, 2, 3}, 3});
+    const auto persisted = *tracer.begin(
+        ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer.markDataReady(persisted, ChunkVisibilityOrigin::Persisted);
+    const auto resident = *tracer.begin(
+        ChunkVisibilityLifecycleKind::CameraDemand,
+        ChunkVisibilityOrigin::ResidentLeftCensored);
+    const auto remesh = *tracer.begin(
+        ChunkVisibilityLifecycleKind::Remesh,
+        ChunkVisibilityOrigin::Remesh);
+
+    const auto measurement = tracer.measurement();
+    CHECK_EQ(measurement.records.size(), static_cast<size_t>(3));
+    CHECK_EQ(
+        measurement.records[0].origin,
+        ChunkVisibilityOrigin::Persisted);
+    CHECK(measurement.records[0]
+              .stage(ChunkVisibilityStage::DataReady)
+              .has_value());
+    CHECK_EQ(
+        measurement.records[1].origin,
+        ChunkVisibilityOrigin::ResidentLeftCensored);
+    CHECK(!measurement.records[1]
+               .stage(ChunkVisibilityStage::DataReady)
+               .has_value());
+    CHECK_EQ(
+        measurement.records[2].origin,
+        ChunkVisibilityOrigin::Remesh);
+    CHECK_EQ(
+        chunkVisibilityOriginName(ChunkVisibilityOrigin::Generated),
+        std::string_view("generated"));
+    CHECK(measurement.sequence > 0);
 }
 
 TEST_CASE(ChunkVisibilityTrace_CustomClockRunsSerializedWithoutRecordLock) {
@@ -307,6 +358,38 @@ TEST_CASE(ChunkVisibilityTrace_ClockFailureCannotEscapeOrHoldLifecycleOpen) {
                .stage(ChunkVisibilityStage::ResultAccepted)
                .has_value());
     CHECK(!records.front().stage(ChunkVisibilityStage::FirstDraw).has_value());
+    const auto measurement = tracer.measurement();
+    CHECK_EQ(measurement.stats.clockFailures, static_cast<uint64_t>(3));
+    CHECK_EQ(
+        measurement.stats.retainedRecords,
+        measurement.records.size());
+}
+
+TEST_CASE(ChunkVisibilityTrace_ClockFailureDoesNotRetimestampTransition) {
+    size_t reads = 0;
+    ChunkVisibilityTracer tracer(
+        {{1, 2, 3}, 1},
+        [&]() {
+            ++reads;
+            if (reads == 1) {
+                throw std::runtime_error("first read fails");
+            }
+            return ChunkVisibilityTimePoint{} + std::chrono::seconds(1);
+        });
+    const auto lifecycleKey = *tracer.begin(
+        ChunkVisibilityLifecycleKind::CameraDemand);
+
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::MeshEligible);
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::MeshEligible);
+
+    const auto measurement = tracer.measurement();
+    CHECK_EQ(reads, static_cast<size_t>(1));
+    CHECK_EQ(measurement.stats.clockFailures, static_cast<uint64_t>(1));
+    CHECK(measurement.records.front().observed(
+        ChunkVisibilityStage::MeshEligible));
+    CHECK(!measurement.records.front()
+               .stage(ChunkVisibilityStage::MeshEligible)
+               .has_value());
 }
 
 TEST_CASE(ChunkVisibilityTrace_DisabledDoesNotReadClockOrRetainRecords) {
@@ -325,4 +408,8 @@ TEST_CASE(ChunkVisibilityTrace_DisabledDoesNotReadClockOrRetainRecords) {
     CHECK_EQ(clock.reads(), static_cast<size_t>(0));
     CHECK(tracer.snapshot().empty());
     CHECK_EQ(tracer.stats().retainedRecords, static_cast<size_t>(0));
+    const auto measurement = tracer.measurement();
+    CHECK_EQ(measurement.sequence, static_cast<uint64_t>(0));
+    CHECK(measurement.records.empty());
+    CHECK_EQ(measurement.stats.clockFailures, static_cast<uint64_t>(0));
 }

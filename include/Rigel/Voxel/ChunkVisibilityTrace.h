@@ -60,6 +60,16 @@ enum class ChunkVisibilityLifecycleKind : uint8_t {
 std::string_view chunkVisibilityLifecycleKindName(
     ChunkVisibilityLifecycleKind kind);
 
+enum class ChunkVisibilityOrigin : uint8_t {
+    Unresolved,
+    ResidentLeftCensored,
+    Persisted,
+    Generated,
+    Remesh
+};
+
+std::string_view chunkVisibilityOriginName(ChunkVisibilityOrigin origin);
+
 enum class ChunkVisibilityDrawOutcome : uint8_t {
     Drawn,
     CameraLeftBeforeDraw,
@@ -93,6 +103,9 @@ using ChunkVisibilityDuration = ChunkVisibilityClock::duration;
 using ChunkVisibilityStageTimes = std::array<
     std::optional<ChunkVisibilityTimePoint>,
     static_cast<size_t>(ChunkVisibilityStage::Count)>;
+using ChunkVisibilityStageObservations = std::array<
+    bool,
+    static_cast<size_t>(ChunkVisibilityStage::Count)>;
 
 struct ChunkVisibilityDurations {
     std::optional<ChunkVisibilityDuration> desiredToDataRequest;
@@ -111,8 +124,10 @@ struct ChunkVisibilityTraceRecord {
     ChunkVisibilityLifecycleKey key{};
     ChunkVisibilityLifecycleKind kind =
         ChunkVisibilityLifecycleKind::CameraDemand;
+    ChunkVisibilityOrigin origin = ChunkVisibilityOrigin::Unresolved;
     std::optional<ChunkVisibilityMeshTaskIdentity> meshTask;
     ChunkVisibilityStageTimes stages{};
+    ChunkVisibilityStageObservations observedStages{};
     ChunkVisibilityOutcome outcome = ChunkVisibilityOutcome::Pending;
     std::optional<ChunkVisibilityTimePoint> terminalTime;
     std::optional<ChunkVisibilityDrawOutcome> drawOutcome;
@@ -120,6 +135,7 @@ struct ChunkVisibilityTraceRecord {
 
     std::optional<ChunkVisibilityTimePoint> stage(
         ChunkVisibilityStage value) const;
+    bool observed(ChunkVisibilityStage value) const;
     ChunkVisibilityDurations durations() const;
 };
 
@@ -128,6 +144,13 @@ struct ChunkVisibilityTraceStats {
     uint64_t droppedRecords = 0;
     uint64_t droppedUnfinishedRecords = 0;
     uint64_t unmatchedEvents = 0;
+    uint64_t clockFailures = 0;
+};
+
+struct ChunkVisibilityTraceMeasurement {
+    uint64_t sequence = 0;
+    std::vector<ChunkVisibilityTraceRecord> records;
+    ChunkVisibilityTraceStats stats;
 };
 
 // Opt-in trace for repeated visibility lifecycles of one identified chunk.
@@ -151,10 +174,14 @@ public:
     ChunkCoord coord() const { return m_config.coord; }
 
     std::optional<ChunkVisibilityLifecycleKey> begin(
-        ChunkVisibilityLifecycleKind kind);
+        ChunkVisibilityLifecycleKind kind,
+        ChunkVisibilityOrigin origin = ChunkVisibilityOrigin::Unresolved);
     void bindMeshTask(
         const ChunkVisibilityLifecycleKey& key,
         const ChunkVisibilityMeshTaskIdentity& meshTask);
+    void markDataReady(
+        const ChunkVisibilityLifecycleKey& key,
+        ChunkVisibilityOrigin origin);
     void mark(const ChunkVisibilityLifecycleKey& key,
               ChunkVisibilityStage stage);
     void mark(const ChunkVisibilityLifecycleKey& key,
@@ -166,6 +193,7 @@ public:
         const ChunkVisibilityLifecycleKey& key,
         ChunkVisibilityDrawOutcome outcome);
 
+    ChunkVisibilityTraceMeasurement measurement() const;
     std::vector<ChunkVisibilityTraceRecord> snapshot() const;
     ChunkVisibilityTraceStats stats() const;
 
@@ -183,6 +211,8 @@ private:
     uint64_t m_droppedRecords = 0;
     uint64_t m_droppedUnfinishedRecords = 0;
     uint64_t m_unmatchedEvents = 0;
+    mutable uint64_t m_clockFailures = 0;
+    mutable uint64_t m_sequence = 0;
 };
 
 struct ChunkVisibilityTraceLink {

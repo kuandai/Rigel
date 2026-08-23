@@ -183,6 +183,35 @@ TEST_CASE(WorldMeshStore_ReplacingMeshTerminatesPriorDrawCorrelation) {
     CHECK(!secondTracer->snapshot().front().drawOutcome.has_value());
 }
 
+TEST_CASE(WorldMeshStore_ReleasesTraceOwnershipAfterDraw) {
+    WorldMeshStore store;
+    const ChunkCoord coord{4, 0, 0};
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 1});
+    const ChunkVisibilityLifecycleKey key{coord, 1};
+    tracer->begin(key, ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer->complete(
+        key,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    store.set(
+        coord,
+        makeMesh(3, 3),
+        ChunkVisibilityTraceLink{
+            key,
+            ChunkVisibilityLifecycleKind::CameraDemand,
+            tracer});
+
+    std::weak_ptr<ChunkVisibilityTracer> observer = tracer;
+    tracer->observeDraw(key);
+    CHECK_EQ(
+        tracer->snapshot().front().drawOutcome,
+        ChunkVisibilityDrawOutcome::Drawn);
+    tracer.reset();
+    CHECK(!observer.expired());
+    store.finishVisibilityDraw(key);
+    CHECK(observer.expired());
+}
+
 TEST_CASE(ChunkRenderer_ReinsertUploadsWhenRemovalWasNotRendered) {
     Rigel::Test::HiddenOpenGLContext context;
     context.require();

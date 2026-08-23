@@ -1791,10 +1791,7 @@ void ChunkStreamer::beginCameraVisibilityTrace(ChunkCoord coord) {
 void ChunkStreamer::markVisibilityMeshEligible(
     ChunkCoord coord,
     bool neighborBecameReady) {
-    if (!m_pendingVisibilityTrace ||
-        m_pendingVisibilityTrace->key.coord != coord ||
-        !m_chunkManager || !m_meshStore ||
-        m_meshInFlight.find(coord) != m_meshInFlight.end()) {
+    if (!m_chunkManager || !m_meshStore) {
         return;
     }
 
@@ -1814,13 +1811,33 @@ void ChunkStreamer::markVisibilityMeshEligible(
         (m_desiredSet.find(coord) != m_desiredSet.end() ||
          m_priorityMeshRequests.find(coord) !=
              m_priorityMeshRequests.end());
-    const bool remeshRequested = isMeshed && chunk->isDirty();
+    const bool meshInFlight =
+        m_meshInFlight.find(coord) != m_meshInFlight.end();
+    const bool remeshRequested = chunk->isDirty() &&
+        (isMeshed || meshInFlight);
     if ((!initialMeshRequested && !remeshRequested) || chunk->isEmpty() ||
         !hasAllNeighborsLoaded(coord)) {
         return;
     }
+    if (meshInFlight && !neighborBecameReady) {
+        return;
+    }
 
-    if (neighborBecameReady) {
+    ensureVisibilityTrace(
+        coord,
+        remeshRequested
+            ? ChunkVisibilityLifecycleKind::Remesh
+            : ChunkVisibilityLifecycleKind::CameraDemand);
+    if (!m_pendingVisibilityTrace ||
+        m_pendingVisibilityTrace->key.coord != coord) {
+        return;
+    }
+
+    if (neighborBecameReady && meshInFlight) {
+        m_pendingVisibilityTrace->tracer->mark(
+            m_pendingVisibilityTrace->key,
+            ChunkVisibilityStage::NeighborReady);
+    } else if (neighborBecameReady) {
         m_pendingVisibilityTrace->tracer->mark(
             m_pendingVisibilityTrace->key,
             {
@@ -1828,7 +1845,7 @@ void ChunkStreamer::markVisibilityMeshEligible(
                 ChunkVisibilityStage::MeshEligible,
                 ChunkVisibilityStage::SchedulerWait
             });
-    } else {
+    } else if (!meshInFlight) {
         m_pendingVisibilityTrace->tracer->mark(
             m_pendingVisibilityTrace->key,
             {
@@ -1840,6 +1857,14 @@ void ChunkStreamer::markVisibilityMeshEligible(
 
 void ChunkStreamer::markVisibilityStage(ChunkCoord coord,
                                         ChunkVisibilityStage stage) {
+    if ((!m_pendingVisibilityTrace ||
+         m_pendingVisibilityTrace->key.coord != coord) &&
+        (stage == ChunkVisibilityStage::DataRequest ||
+         stage == ChunkVisibilityStage::DataReady)) {
+        ensureVisibilityTrace(
+            coord,
+            ChunkVisibilityLifecycleKind::CameraDemand);
+    }
     if (!m_pendingVisibilityTrace ||
         m_pendingVisibilityTrace->key.coord != coord ||
         stage == ChunkVisibilityStage::Count) {

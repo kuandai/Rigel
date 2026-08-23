@@ -40,7 +40,7 @@ struct WorldMeshEntry {
     ChunkMesh mesh;
     MeshId id;
     MeshRevision revision;
-    std::optional<ChunkVisibilityTraceLink> visibilityTrace;
+    mutable std::optional<ChunkVisibilityTraceLink> visibilityTrace;
 };
 
 enum class CachedMeshTraceAttachment : uint8_t {
@@ -176,6 +176,15 @@ public:
         finishTrace(
             endedTrace,
             ChunkVisibilityDrawOutcome::CameraLeftBeforeDraw);
+    }
+
+    void finishVisibilityDraw(const ChunkVisibilityLifecycleKey& key) const {
+        std::unique_lock lock(m_mutex);
+        auto it = m_meshes.find(key.coord);
+        if (it != m_meshes.end() && it->second.visibilityTrace &&
+            it->second.visibilityTrace->key == key) {
+            it->second.visibilityTrace.reset();
+        }
     }
 
     bool contains(ChunkCoord coord) const {

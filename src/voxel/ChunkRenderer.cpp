@@ -464,6 +464,7 @@ void ChunkRenderer::renderPass(RenderLayer layer,
         if (entry.visibilityTrace && entry.visibilityTrace->tracer) {
             entry.visibilityTrace->tracer->observeDraw(
                 entry.visibilityTrace->key);
+            ctx.meshes->finishVisibilityDraw(entry.visibilityTrace->key);
         }
     };
 

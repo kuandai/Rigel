@@ -3608,11 +3608,21 @@ TEST_CASE(ChunkStreamer_VisibilityTracerReplacementDoesNotSynthesizeStages) {
         ChunkLoadOutcome::Loaded,
         {}});
     streamer.processCompletions();
-    CHECK(replacementTracer->snapshot().empty());
+    auto replacementRecords = replacementTracer->snapshot();
+    CHECK_EQ(replacementRecords.size(), static_cast<size_t>(1));
+    CHECK_EQ(
+        replacementRecords.front().outcome,
+        ChunkVisibilityOutcome::Pending);
+    CHECK(replacementRecords.front()
+              .stage(ChunkVisibilityStage::NeighborReady)
+              .has_value());
+    CHECK(replacementRecords.front()
+              .stage(ChunkVisibilityStage::SchedulerWait)
+              .has_value());
 
     streamer.update(coord.toWorldCenter());
     streamer.processCompletions();
-    const auto replacementRecords = replacementTracer->snapshot();
+    replacementRecords = replacementTracer->snapshot();
     CHECK_EQ(replacementRecords.size(), static_cast<size_t>(1));
     CHECK_EQ(
         replacementRecords.front().outcome,
@@ -3621,12 +3631,12 @@ TEST_CASE(ChunkStreamer_VisibilityTracerReplacementDoesNotSynthesizeStages) {
     CHECK(!replacementRecords.front()
                .stage(ChunkVisibilityStage::Desired)
                .has_value());
-    CHECK(!replacementRecords.front()
-               .stage(ChunkVisibilityStage::NeighborReady)
-               .has_value());
-    CHECK(!replacementRecords.front()
-               .stage(ChunkVisibilityStage::SchedulerWait)
-               .has_value());
+    CHECK(replacementRecords.front()
+              .stage(ChunkVisibilityStage::NeighborReady)
+              .has_value());
+    CHECK(replacementRecords.front()
+              .stage(ChunkVisibilityStage::SchedulerWait)
+              .has_value());
 }
 
 TEST_CASE(ChunkStreamer_VisibilityTraceTeardownStalesPendingAndLateResults) {

@@ -294,6 +294,7 @@ private:
     size_t m_inFlightMesh = 0;
     size_t m_inFlightMeshMissing = 0;
     size_t m_inFlightMeshDirty = 0;
+    size_t m_replacementPendingMeshCount = 0;
     ChunkLoadRequestId m_nextLoadRequestId = 1;
     uint64_t m_nextMeshRequestId = 1;
     uint64_t m_nextPendingMeshSequence = 1;
@@ -330,6 +331,11 @@ private:
     void compactPendingMeshQueuesIfNeeded();
     void erasePendingMesh(ChunkCoord coord);
     void retirePendingMesh(ChunkCoord coord);
+    bool hasEligibleMeshWork(ChunkCoord coord) const;
+    void setReplacementPending(ChunkCoord coord,
+                               MeshInFlight& flight,
+                               bool pending);
+    void retireReplacementPending(ChunkCoord coord);
     void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
     void ensureVisibilityTrace(
         ChunkCoord coord,

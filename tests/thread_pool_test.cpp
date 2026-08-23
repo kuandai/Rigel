@@ -103,20 +103,21 @@ TEST_CASE(ThreadPool_PromotesAndCancelsPendingJobs) {
         condition.notify_all();
         condition.wait(lock, [&]() { return releaseBlocker; });
     });
+    bool started = false;
     {
         std::unique_lock<std::mutex> lock(mutex);
-        CHECK(condition.wait_for(
+        started = condition.wait_for(
             lock,
             std::chrono::seconds(5),
-            [&]() { return blockerStarted; }));
+            [&]() { return blockerStarted; });
     }
 
     const auto normal = pool.enqueue([&]() { order.push_back(1); });
     const auto cancelled = pool.enqueue([&]() { order.push_back(2); });
     const auto promoted = pool.enqueue([&]() { order.push_back(3); });
-    CHECK(pool.cancel(cancelled));
-    CHECK(!pool.cancel(cancelled));
-    CHECK(pool.promote(promoted));
+    const bool cancelledPending = pool.cancel(cancelled);
+    const bool cancelledTwice = pool.cancel(cancelled);
+    const bool promotedPending = pool.promote(promoted);
 
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -125,6 +126,10 @@ TEST_CASE(ThreadPool_PromotesAndCancelsPendingJobs) {
     }
     pool.stop();
 
+    CHECK(started);
+    CHECK(cancelledPending);
+    CHECK(!cancelledTwice);
+    CHECK(promotedPending);
     CHECK_EQ(order.size(), static_cast<size_t>(2));
     CHECK_EQ(order[0], 3);
     CHECK_EQ(order[1], 1);

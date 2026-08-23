@@ -186,6 +186,7 @@ private:
     bool cancelQueuedSpeculativeRegionLoad();
     bool yieldSubmittedSpeculativeRegionLoad();
     void cancelQueuedDirectRegionLoad(const RegionKey& key);
+    bool hasDirectRegionDemand(const RegionKey& key) const;
     void undoRegionLoadAttempt(const RegionKey& key);
     bool queueRegionLoad(
         const RegionKey& key,

@@ -316,8 +316,10 @@ void AsyncChunkLoader::cancel(Voxel::ChunkCoord coord) {
         it->second.erase(coord);
         if (it->second.empty()) {
             m_regionPending.erase(it);
-            cancelQueuedDirectRegionLoad(key);
         }
+    }
+    if (!hasDirectRegionDemand(key)) {
+        cancelQueuedDirectRegionLoad(key);
     }
     if (releasedCapacity) {
         startDeferredChunkLoads();
@@ -927,6 +929,20 @@ void AsyncChunkLoader::cancelQueuedDirectRegionLoad(const RegionKey& key) {
     m_regionJobs.erase(jobIt);
     m_directRegionMetrics.cancelledBeforeWorkerStart.fetch_add(
         1, std::memory_order_relaxed);
+}
+
+bool AsyncChunkLoader::hasDirectRegionDemand(const RegionKey& key) const {
+    auto pendingIt = m_regionPending.find(key);
+    if (pendingIt != m_regionPending.end() && !pendingIt->second.empty()) {
+        return true;
+    }
+    for (const auto& [coord, request] : m_deferredChunkRequests) {
+        (void)request;
+        if (m_format->regionLayout().regionForChunk(m_zoneId, coord) == key) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void AsyncChunkLoader::undoRegionLoadAttempt(const RegionKey& key) {

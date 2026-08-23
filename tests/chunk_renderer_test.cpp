@@ -167,19 +167,25 @@ TEST_CASE(ChunkRenderer_VisibilityTraceRequiresRealNonemptyDraw) {
     const ChunkCoord coord{0, 0, 0};
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{coord, 2});
-    const ChunkVisibilityTraceIdentity drawnIdentity{
-        coord, 1, 2, 3, 4
-    };
-    tracer->begin(drawnIdentity);
+    const ChunkVisibilityLifecycleKey drawnKey{coord, 1};
+    tracer->begin(
+        drawnKey,
+        ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer->bindMeshTask(
+        drawnKey,
+        ChunkVisibilityMeshTaskIdentity{1, 2, 3, 4});
     tracer->complete(
-        drawnIdentity,
+        drawnKey,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
 
     WorldMeshStore store;
     store.set(
         coord,
         makeMesh(3, 3),
-        ChunkVisibilityTraceLink{drawnIdentity, tracer});
+        ChunkVisibilityTraceLink{
+            drawnKey,
+            ChunkVisibilityLifecycleKind::CameraDemand,
+            tracer});
     CHECK(!tracer->snapshot()
                .front()
                .stage(ChunkVisibilityStage::FirstDraw)
@@ -194,17 +200,23 @@ TEST_CASE(ChunkRenderer_VisibilityTraceRequiresRealNonemptyDraw) {
     auto records = tracer->snapshot();
     CHECK(records.front().stage(ChunkVisibilityStage::FirstDraw).has_value());
 
-    const ChunkVisibilityTraceIdentity emptyIdentity{
-        coord, 2, 2, 3, 5
-    };
-    tracer->begin(emptyIdentity);
+    const ChunkVisibilityLifecycleKey emptyKey{coord, 2};
+    tracer->begin(
+        emptyKey,
+        ChunkVisibilityLifecycleKind::Remesh);
+    tracer->bindMeshTask(
+        emptyKey,
+        ChunkVisibilityMeshTaskIdentity{2, 2, 3, 5});
     tracer->complete(
-        emptyIdentity,
+        emptyKey,
         ChunkVisibilityOutcome::AcceptedEmptyGeometry);
     store.set(
         coord,
         ChunkMesh{},
-        ChunkVisibilityTraceLink{emptyIdentity, tracer});
+        ChunkVisibilityTraceLink{
+            emptyKey,
+            ChunkVisibilityLifecycleKind::Remesh,
+            tracer});
     renderer.render(renderContext);
 
     records = tracer->snapshot();
@@ -219,19 +231,22 @@ TEST_CASE(ChunkRenderer_RemovedTraceIsNotDrawnByReplacementMesh) {
     const ChunkCoord coord{0, 0, 0};
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{coord, 1});
-    const ChunkVisibilityTraceIdentity removedIdentity{
-        coord, 1, 2, 3, 4
-    };
-    tracer->begin(removedIdentity);
+    const ChunkVisibilityLifecycleKey removedKey{coord, 1};
+    tracer->begin(
+        removedKey,
+        ChunkVisibilityLifecycleKind::CameraDemand);
     tracer->complete(
-        removedIdentity,
+        removedKey,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
 
     WorldMeshStore store;
     store.set(
         coord,
         makeMesh(3, 3),
-        ChunkVisibilityTraceLink{removedIdentity, tracer});
+        ChunkVisibilityTraceLink{
+            removedKey,
+            ChunkVisibilityLifecycleKind::CameraDemand,
+            tracer});
     store.remove(coord);
     store.set(coord, makeMesh(6, 6));
 
@@ -246,4 +261,7 @@ TEST_CASE(ChunkRenderer_RemovedTraceIsNotDrawnByReplacementMesh) {
     CHECK(!records.front()
                .stage(ChunkVisibilityStage::FirstDraw)
                .has_value());
+    CHECK_EQ(
+        records.front().drawOutcome,
+        ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
 }

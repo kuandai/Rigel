@@ -165,6 +165,7 @@ private:
         MeshId meshId{};
         float distanceSq = 0.0f;
         float viewDepth = 0.0f;
+        std::optional<ChunkVisibilityTraceLink> visibilityTrace;
     };
 
     struct ShadowState {
@@ -186,9 +187,7 @@ private:
     void cacheShadowUniforms();
     void renderPass(RenderLayer layer,
                     const std::vector<RenderEntry>& entries,
-                    const WorldRenderContext& ctx,
-                    const std::optional<ChunkVisibilityTraceLink>&
-                        visibilityTrace);
+                    const WorldRenderContext& ctx);
     void setupLayerState(RenderLayer layer) const;
     void releaseShadowResources();
     bool ensureShadowResources(const ShadowConfig& config);

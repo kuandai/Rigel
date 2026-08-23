@@ -10,6 +10,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace Rigel::Voxel {
 
@@ -39,6 +40,13 @@ struct WorldMeshEntry {
     ChunkMesh mesh;
     MeshId id;
     MeshRevision revision;
+    std::optional<ChunkVisibilityTraceLink> visibilityTrace;
+};
+
+enum class CachedMeshTraceAttachment : uint8_t {
+    Missing,
+    EmptyGeometry,
+    NonemptyGeometry
 };
 
 class WorldMeshStore {
@@ -47,6 +55,8 @@ public:
         : m_storeId(s_nextStoreId.fetch_add(1, std::memory_order_relaxed))
     {}
 
+    ~WorldMeshStore() { clear(); }
+
     WorldMeshStore(const WorldMeshStore&) = delete;
     WorldMeshStore& operator=(const WorldMeshStore&) = delete;
 
@@ -54,43 +64,118 @@ public:
         ChunkCoord coord,
         ChunkMesh mesh,
         std::optional<ChunkVisibilityTraceLink> visibilityTrace = std::nullopt) {
-        std::unique_lock lock(m_mutex);
-        auto [it, inserted] = m_meshes.emplace(coord, WorldMeshEntry{});
-        WorldMeshEntry& entry = it->second;
-        entry.coord = coord;
-        if (inserted) {
-            entry.id = makeMeshId(coord);
+        std::optional<ChunkVisibilityTraceLink> displacedTrace;
+        {
+            std::unique_lock lock(m_mutex);
+            auto [it, inserted] = m_meshes.emplace(coord, WorldMeshEntry{});
+            WorldMeshEntry& entry = it->second;
+            entry.coord = coord;
+            if (inserted) {
+                entry.id = makeMeshId(coord);
+            } else if (entry.visibilityTrace &&
+                       (!visibilityTrace ||
+                        entry.visibilityTrace->key != visibilityTrace->key)) {
+                displacedTrace = std::move(entry.visibilityTrace);
+            }
+            entry.mesh = std::move(mesh);
+            entry.visibilityTrace = entry.mesh.isEmpty()
+                ? std::nullopt
+                : std::move(visibilityTrace);
+            entry.revision.value =
+                m_version.fetch_add(1, std::memory_order_relaxed) + 1;
         }
-        entry.mesh = std::move(mesh);
-        if (visibilityTrace) {
-            m_visibilityTrace = std::move(visibilityTrace);
-        } else if (m_visibilityTrace &&
-                   m_visibilityTrace->identity.coord == coord) {
-            m_visibilityTrace.reset();
-        }
-        entry.revision.value =
-            m_version.fetch_add(1, std::memory_order_relaxed) + 1;
+        finishTrace(
+            displacedTrace,
+            ChunkVisibilityDrawOutcome::MeshReplacedBeforeDraw);
     }
 
     void remove(ChunkCoord coord) {
-        std::unique_lock lock(m_mutex);
-        bool removed = m_meshes.erase(coord) > 0;
-        if (m_visibilityTrace &&
-            m_visibilityTrace->identity.coord == coord) {
-            m_visibilityTrace.reset();
+        std::optional<ChunkVisibilityTraceLink> removedTrace;
+        bool removed = false;
+        {
+            std::unique_lock lock(m_mutex);
+            auto it = m_meshes.find(coord);
+            if (it != m_meshes.end()) {
+                removedTrace = std::move(it->second.visibilityTrace);
+                m_meshes.erase(it);
+                removed = true;
+            }
+            if (removed) {
+                m_version.fetch_add(1, std::memory_order_relaxed);
+            }
         }
-        if (removed) {
-            m_version.fetch_add(1, std::memory_order_relaxed);
-        }
+        finishTrace(
+            removedTrace,
+            ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
     }
 
     void clear() {
-        std::unique_lock lock(m_mutex);
-        if (!m_meshes.empty()) {
+        std::vector<ChunkVisibilityTraceLink> removedTraces;
+        {
+            std::unique_lock lock(m_mutex);
+            removedTraces.reserve(m_meshes.size());
+            for (auto& [coord, entry] : m_meshes) {
+                if (entry.visibilityTrace) {
+                    removedTraces.push_back(
+                        std::move(*entry.visibilityTrace));
+                }
+            }
+            if (!m_meshes.empty()) {
+                m_version.fetch_add(1, std::memory_order_relaxed);
+            }
             m_meshes.clear();
-            m_version.fetch_add(1, std::memory_order_relaxed);
         }
-        m_visibilityTrace.reset();
+        for (const auto& trace : removedTraces) {
+            finishTrace(
+                trace,
+                ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
+        }
+    }
+
+    CachedMeshTraceAttachment attachCachedVisibilityTrace(
+        ChunkCoord coord,
+        ChunkVisibilityTraceLink visibilityTrace) {
+        std::optional<ChunkVisibilityTraceLink> displacedTrace;
+        CachedMeshTraceAttachment result =
+            CachedMeshTraceAttachment::Missing;
+        {
+            std::unique_lock lock(m_mutex);
+            auto it = m_meshes.find(coord);
+            if (it == m_meshes.end()) {
+                return result;
+            }
+            if (it->second.mesh.isEmpty()) {
+                return CachedMeshTraceAttachment::EmptyGeometry;
+            }
+            if (it->second.visibilityTrace &&
+                it->second.visibilityTrace->key != visibilityTrace.key) {
+                displacedTrace = std::move(it->second.visibilityTrace);
+            }
+            it->second.visibilityTrace = std::move(visibilityTrace);
+            result = CachedMeshTraceAttachment::NonemptyGeometry;
+        }
+        finishTrace(
+            displacedTrace,
+            ChunkVisibilityDrawOutcome::TraceReplacedBeforeDraw);
+        return result;
+    }
+
+    void endCameraVisibilityTrace(ChunkCoord coord) {
+        std::optional<ChunkVisibilityTraceLink> endedTrace;
+        {
+            std::unique_lock lock(m_mutex);
+            auto it = m_meshes.find(coord);
+            if (it == m_meshes.end() || !it->second.visibilityTrace ||
+                it->second.visibilityTrace->kind !=
+                    ChunkVisibilityLifecycleKind::CameraDemand) {
+                return;
+            }
+            endedTrace = std::move(it->second.visibilityTrace);
+            it->second.visibilityTrace.reset();
+        }
+        finishTrace(
+            endedTrace,
+            ChunkVisibilityDrawOutcome::CameraLeftBeforeDraw);
     }
 
     bool contains(ChunkCoord coord) const {
@@ -108,12 +193,15 @@ public:
     uint64_t version() const { return m_version.load(std::memory_order_relaxed); }
     uint32_t storeId() const { return m_storeId; }
 
-    std::optional<ChunkVisibilityTraceLink> visibilityTrace() const {
-        std::shared_lock lock(m_mutex);
-        return m_visibilityTrace;
+private:
+    static void finishTrace(
+        const std::optional<ChunkVisibilityTraceLink>& trace,
+        ChunkVisibilityDrawOutcome outcome) {
+        if (trace && trace->tracer) {
+            trace->tracer->observeMeshUnavailable(trace->key, outcome);
+        }
     }
 
-private:
     MeshId makeMeshId(ChunkCoord coord) const {
         return MeshId{m_storeId, coord};
     }
@@ -123,7 +211,6 @@ private:
     uint32_t m_storeId = 0;
     mutable std::shared_mutex m_mutex;
     std::unordered_map<ChunkCoord, WorldMeshEntry, ChunkCoordHash> m_meshes;
-    std::optional<ChunkVisibilityTraceLink> m_visibilityTrace;
     std::atomic<uint64_t> m_version{0};
 };
 

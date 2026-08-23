@@ -8,8 +8,9 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <mutex>
+#include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -36,22 +37,54 @@ std::string_view chunkVisibilityStageName(ChunkVisibilityStage stage);
 enum class ChunkVisibilityOutcome : uint8_t {
     Pending,
     VoxelEmpty,
+    CachedEmptyGeometry,
+    CachedNonemptyGeometry,
     AcceptedEmptyGeometry,
     AcceptedNonemptyGeometry,
     Stale,
-    Failed
+    Failed,
+    CameraLeft,
+    TracerReplaced,
+    Reset,
+    GeneratorReplaced,
+    StreamerDestroyed
 };
 
 std::string_view chunkVisibilityOutcomeName(ChunkVisibilityOutcome outcome);
 
-struct ChunkVisibilityTraceIdentity {
+enum class ChunkVisibilityLifecycleKind : uint8_t {
+    CameraDemand,
+    Remesh
+};
+
+std::string_view chunkVisibilityLifecycleKindName(
+    ChunkVisibilityLifecycleKind kind);
+
+enum class ChunkVisibilityDrawOutcome : uint8_t {
+    Drawn,
+    CameraLeftBeforeDraw,
+    MeshRemovedBeforeDraw,
+    MeshReplacedBeforeDraw,
+    TraceReplacedBeforeDraw
+};
+
+std::string_view chunkVisibilityDrawOutcomeName(
+    ChunkVisibilityDrawOutcome outcome);
+
+struct ChunkVisibilityLifecycleKey {
     ChunkCoord coord{};
+    uint64_t lifecycleId = 0;
+
+    bool operator==(const ChunkVisibilityLifecycleKey&) const = default;
+};
+
+struct ChunkVisibilityMeshTaskIdentity {
     uint64_t requestId = 0;
     uint64_t workEpoch = 0;
     uint64_t chunkInstanceId = 0;
     uint32_t revision = 0;
 
-    bool operator==(const ChunkVisibilityTraceIdentity&) const = default;
+    bool operator==(const ChunkVisibilityMeshTaskIdentity&) const = default;
 };
 
 using ChunkVisibilityClock = std::chrono::steady_clock;
@@ -75,14 +108,26 @@ struct ChunkVisibilityDurations {
 };
 
 struct ChunkVisibilityTraceRecord {
-    ChunkVisibilityTraceIdentity identity{};
+    ChunkVisibilityLifecycleKey key{};
+    ChunkVisibilityLifecycleKind kind =
+        ChunkVisibilityLifecycleKind::CameraDemand;
+    std::optional<ChunkVisibilityMeshTaskIdentity> meshTask;
     ChunkVisibilityStageTimes stages{};
     ChunkVisibilityOutcome outcome = ChunkVisibilityOutcome::Pending;
     std::optional<ChunkVisibilityTimePoint> terminalTime;
+    std::optional<ChunkVisibilityDrawOutcome> drawOutcome;
+    std::optional<ChunkVisibilityTimePoint> drawTerminalTime;
 
     std::optional<ChunkVisibilityTimePoint> stage(
         ChunkVisibilityStage value) const;
     ChunkVisibilityDurations durations() const;
+};
+
+struct ChunkVisibilityTraceStats {
+    size_t retainedRecords = 0;
+    uint64_t droppedRecords = 0;
+    uint64_t droppedUnfinishedRecords = 0;
+    uint64_t unmatchedEvents = 0;
 };
 
 // Opt-in trace for repeated visibility lifecycles of one identified chunk.
@@ -109,31 +154,47 @@ public:
     // A disabled tracer never invokes its clock.
     std::optional<ChunkVisibilityTimePoint> capture() const;
 
-    void begin(const ChunkVisibilityTraceIdentity& identity,
+    void begin(const ChunkVisibilityLifecycleKey& key,
+               ChunkVisibilityLifecycleKind kind,
                ChunkVisibilityStageTimes initialStages = {});
-    void mark(const ChunkVisibilityTraceIdentity& identity,
+    void bindMeshTask(
+        const ChunkVisibilityLifecycleKey& key,
+        const ChunkVisibilityMeshTaskIdentity& meshTask);
+    void mark(const ChunkVisibilityLifecycleKey& key,
               ChunkVisibilityStage stage);
-    void complete(const ChunkVisibilityTraceIdentity& identity,
+    void mark(const ChunkVisibilityLifecycleKey& key,
+              std::initializer_list<ChunkVisibilityStage> stages);
+    void complete(const ChunkVisibilityLifecycleKey& key,
                   ChunkVisibilityOutcome outcome);
-    void observeDraw(const ChunkVisibilityTraceIdentity& identity);
+    void observeDraw(const ChunkVisibilityLifecycleKey& key);
+    void observeMeshUnavailable(
+        const ChunkVisibilityLifecycleKey& key,
+        ChunkVisibilityDrawOutcome outcome);
 
     std::vector<ChunkVisibilityTraceRecord> snapshot() const;
+    ChunkVisibilityTraceStats stats() const;
 
 private:
     using RecordIterator = std::deque<ChunkVisibilityTraceRecord>::iterator;
 
-    RecordIterator findRecord(const ChunkVisibilityTraceIdentity& identity);
+    RecordIterator findRecord(const ChunkVisibilityLifecycleKey& key);
     ChunkVisibilityTimePoint now() const;
 
     Config m_config;
     Clock m_clock;
+    mutable std::mutex m_clockMutex;
     mutable std::mutex m_mutex;
     std::deque<ChunkVisibilityTraceRecord> m_records;
+    uint64_t m_droppedRecords = 0;
+    uint64_t m_droppedUnfinishedRecords = 0;
+    uint64_t m_unmatchedEvents = 0;
 };
 
 struct ChunkVisibilityTraceLink {
-    ChunkVisibilityTraceIdentity identity{};
-    std::weak_ptr<ChunkVisibilityTracer> tracer;
+    ChunkVisibilityLifecycleKey key{};
+    ChunkVisibilityLifecycleKind kind =
+        ChunkVisibilityLifecycleKind::CameraDemand;
+    std::shared_ptr<ChunkVisibilityTracer> tracer;
 };
 
 } // namespace Rigel::Voxel

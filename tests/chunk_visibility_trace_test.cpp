@@ -2,7 +2,10 @@
 
 #include "Rigel/Voxel/ChunkVisibilityTrace.h"
 
+#include <atomic>
 #include <chrono>
+#include <future>
+#include <thread>
 
 using namespace Rigel::Voxel;
 
@@ -25,11 +28,15 @@ private:
     size_t m_reads = 0;
 };
 
-ChunkVisibilityTraceIdentity identity(uint64_t requestId,
-                                      uint64_t instanceId = 10,
-                                      uint32_t revision = 4) {
+ChunkVisibilityLifecycleKey key(uint64_t lifecycleId) {
+    return {{1, 2, 3}, lifecycleId};
+}
+
+ChunkVisibilityMeshTaskIdentity meshTask(
+    uint64_t requestId,
+    uint64_t instanceId = 10,
+    uint32_t revision = 4) {
     return {
-        .coord = {1, 2, 3},
         .requestId = requestId,
         .workEpoch = 7,
         .chunkInstanceId = instanceId,
@@ -49,7 +56,7 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     ChunkVisibilityTracer tracer(
         {{1, 2, 3}, 4},
         [&]() { return clock.now(); });
-    const auto traceIdentity = identity(11);
+    const auto lifecycleKey = key(11);
 
     ChunkVisibilityStageTimes initial{};
     initial[static_cast<size_t>(ChunkVisibilityStage::Desired)] =
@@ -68,33 +75,42 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
         *tracer.capture();
     initial[static_cast<size_t>(ChunkVisibilityStage::SchedulerWait)] =
         initial[static_cast<size_t>(ChunkVisibilityStage::MeshEligible)];
-    tracer.begin(traceIdentity, initial);
+    tracer.begin(
+        lifecycleKey,
+        ChunkVisibilityLifecycleKind::CameraDemand,
+        initial);
+    tracer.bindMeshTask(lifecycleKey, meshTask(99));
 
     clock.advance(std::chrono::milliseconds(5));
-    tracer.mark(traceIdentity, ChunkVisibilityStage::PoolSubmit);
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::PoolSubmit);
     clock.advance(std::chrono::milliseconds(6));
-    tracer.mark(traceIdentity, ChunkVisibilityStage::WorkerStart);
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::WorkerStart);
     clock.advance(std::chrono::milliseconds(7));
-    tracer.mark(traceIdentity, ChunkVisibilityStage::WorkerFinish);
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::WorkerFinish);
     clock.advance(std::chrono::milliseconds(8));
     tracer.complete(
-        traceIdentity,
+        lifecycleKey,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
     clock.advance(std::chrono::milliseconds(9));
-    tracer.observeDraw(traceIdentity);
+    tracer.observeDraw(lifecycleKey);
 
     const auto records = tracer.snapshot();
     CHECK_EQ(records.size(), static_cast<size_t>(1));
     const auto& record = records.front();
+    CHECK_EQ(record.key, lifecycleKey);
+    CHECK_EQ(record.kind, ChunkVisibilityLifecycleKind::CameraDemand);
+    CHECK(record.meshTask.has_value());
+    CHECK_EQ(*record.meshTask, meshTask(99));
     CHECK_EQ(
         record.outcome,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
-    for (size_t i = 0;
-         i < static_cast<size_t>(ChunkVisibilityStage::Count);
-         ++i) {
-        CHECK(record.stages[i].has_value());
-        if (i > 0) {
-            CHECK(*record.stages[i] >= *record.stages[i - 1]);
+    CHECK_EQ(record.drawOutcome, ChunkVisibilityDrawOutcome::Drawn);
+    for (size_t index = 0;
+         index < static_cast<size_t>(ChunkVisibilityStage::Count);
+         ++index) {
+        CHECK(record.stages[index].has_value());
+        if (index > 0) {
+            CHECK(*record.stages[index] >= *record.stages[index - 1]);
         }
     }
 
@@ -111,7 +127,7 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     CHECK_EQ(milliseconds(durations.desiredToFirstDraw), 45);
 }
 
-TEST_CASE(ChunkVisibilityTrace_DistinguishesTerminalOutcomesAndRealDraw) {
+TEST_CASE(ChunkVisibilityTrace_DistinguishesBuildAndDrawOutcomes) {
     ManualClock clock;
     ChunkVisibilityTracer tracer(
         {{1, 2, 3}, 8},
@@ -119,17 +135,29 @@ TEST_CASE(ChunkVisibilityTrace_DistinguishesTerminalOutcomesAndRealDraw) {
 
     const std::array outcomes{
         ChunkVisibilityOutcome::VoxelEmpty,
+        ChunkVisibilityOutcome::CachedEmptyGeometry,
+        ChunkVisibilityOutcome::CachedNonemptyGeometry,
         ChunkVisibilityOutcome::AcceptedEmptyGeometry,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry,
         ChunkVisibilityOutcome::Stale,
         ChunkVisibilityOutcome::Failed
     };
     for (size_t index = 0; index < outcomes.size(); ++index) {
-        const auto traceIdentity = identity(index + 1);
-        tracer.begin(traceIdentity);
-        tracer.complete(traceIdentity, outcomes[index]);
-        tracer.observeDraw(traceIdentity);
+        const auto lifecycleKey = key(index + 1);
+        tracer.begin(
+            lifecycleKey,
+            index < 3
+                ? ChunkVisibilityLifecycleKind::CameraDemand
+                : ChunkVisibilityLifecycleKind::Remesh);
+        if (index >= 3) {
+            tracer.bindMeshTask(lifecycleKey, meshTask(index + 10));
+        }
+        tracer.complete(lifecycleKey, outcomes[index]);
     }
+    tracer.observeDraw(key(3));
+    tracer.observeMeshUnavailable(
+        key(5),
+        ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
 
     const auto records = tracer.snapshot();
     CHECK_EQ(records.size(), outcomes.size());
@@ -145,34 +173,39 @@ TEST_CASE(ChunkVisibilityTrace_DistinguishesTerminalOutcomesAndRealDraw) {
                 .stage(ChunkVisibilityStage::ResultAccepted)
                 .has_value(),
             accepted);
-        CHECK_EQ(
-            records[index].stage(ChunkVisibilityStage::FirstDraw).has_value(),
-            outcomes[index] ==
-                ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+        CHECK_EQ(records[index].meshTask.has_value(), index >= 3);
     }
+    CHECK_EQ(records[2].drawOutcome, ChunkVisibilityDrawOutcome::Drawn);
+    CHECK_EQ(
+        records[4].drawOutcome,
+        ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
+    CHECK(!records[4].stage(ChunkVisibilityStage::FirstDraw).has_value());
 }
 
-TEST_CASE(ChunkVisibilityTrace_StaleIdentityCannotCloseReplacement) {
-    ManualClock clock;
-    ChunkVisibilityTracer tracer(
-        {{1, 2, 3}, 4},
-        [&]() { return clock.now(); });
-    const auto stale = identity(20, 30, 1);
-    const auto replacement = identity(21, 31, 2);
+TEST_CASE(ChunkVisibilityTrace_LifecycleKeyIsolatesReplacementTask) {
+    ChunkVisibilityTracer tracer({{1, 2, 3}, 4});
+    const auto staleKey = key(20);
+    const auto replacementKey = key(21);
+    const auto staleTask = meshTask(30, 40, 1);
+    const auto replacementTask = meshTask(31, 40, 2);
 
-    tracer.begin(stale);
-    tracer.begin(replacement);
-    tracer.complete(stale, ChunkVisibilityOutcome::Stale);
+    tracer.begin(staleKey, ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer.bindMeshTask(staleKey, staleTask);
+    tracer.begin(replacementKey, ChunkVisibilityLifecycleKind::Remesh);
+    tracer.bindMeshTask(replacementKey, replacementTask);
+    tracer.complete(staleKey, ChunkVisibilityOutcome::Stale);
     tracer.complete(
-        stale,
+        staleKey,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
 
     auto records = tracer.snapshot();
     CHECK_EQ(records[0].outcome, ChunkVisibilityOutcome::Stale);
+    CHECK_EQ(records[0].meshTask, staleTask);
     CHECK_EQ(records[1].outcome, ChunkVisibilityOutcome::Pending);
+    CHECK_EQ(records[1].meshTask, replacementTask);
 
     tracer.complete(
-        replacement,
+        replacementKey,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
     records = tracer.snapshot();
     CHECK_EQ(
@@ -180,16 +213,68 @@ TEST_CASE(ChunkVisibilityTrace_StaleIdentityCannotCloseReplacement) {
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
 }
 
-TEST_CASE(ChunkVisibilityTrace_BoundsRetentionIncludingPendingRecords) {
+TEST_CASE(ChunkVisibilityTrace_BoundsRetentionAndAccountsDroppedWork) {
     ChunkVisibilityTracer tracer({{1, 2, 3}, 2});
-    tracer.begin(identity(1));
-    tracer.begin(identity(2));
-    tracer.begin(identity(3));
+    tracer.begin(key(1), ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer.complete(
+        key(1),
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    tracer.begin(key(2), ChunkVisibilityLifecycleKind::Remesh);
+    tracer.begin(key(3), ChunkVisibilityLifecycleKind::Remesh);
 
-    const auto records = tracer.snapshot();
+    auto records = tracer.snapshot();
     CHECK_EQ(records.size(), static_cast<size_t>(2));
-    CHECK_EQ(records[0].identity.requestId, static_cast<uint64_t>(2));
-    CHECK_EQ(records[1].identity.requestId, static_cast<uint64_t>(3));
+    CHECK_EQ(records[0].key, key(2));
+    CHECK_EQ(records[1].key, key(3));
+    auto stats = tracer.stats();
+    CHECK_EQ(stats.retainedRecords, static_cast<size_t>(2));
+    CHECK_EQ(stats.droppedRecords, static_cast<uint64_t>(1));
+    CHECK_EQ(stats.droppedUnfinishedRecords, static_cast<uint64_t>(1));
+
+    tracer.observeDraw(key(1));
+    stats = tracer.stats();
+    CHECK_EQ(stats.unmatchedEvents, static_cast<uint64_t>(1));
+}
+
+TEST_CASE(ChunkVisibilityTrace_CustomClockRunsSerializedWithoutRecordLock) {
+    std::shared_ptr<ChunkVisibilityTracer> tracer;
+    std::atomic<int> activeClockCalls{0};
+    std::atomic<bool> concurrentClockCall{false};
+    std::atomic<bool> recordMutexWasFree{true};
+    ChunkVisibilityTimePoint now{};
+    tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{{1, 2, 3}, 2},
+        [&]() {
+            if (activeClockCalls.fetch_add(1, std::memory_order_acq_rel) != 0) {
+                concurrentClockCall.store(true, std::memory_order_relaxed);
+            }
+            auto snapshot = std::async(std::launch::async, [&]() {
+                return tracer->snapshot().size();
+            });
+            if (snapshot.wait_for(std::chrono::seconds(1)) !=
+                std::future_status::ready) {
+                recordMutexWasFree.store(false, std::memory_order_relaxed);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            const auto result = now;
+            now += std::chrono::milliseconds(1);
+            activeClockCalls.fetch_sub(1, std::memory_order_acq_rel);
+            return result;
+        });
+    tracer->begin(key(1), ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer->begin(key(2), ChunkVisibilityLifecycleKind::Remesh);
+
+    std::thread first([&]() {
+        tracer->mark(key(1), ChunkVisibilityStage::WorkerStart);
+    });
+    std::thread second([&]() {
+        tracer->mark(key(2), ChunkVisibilityStage::WorkerStart);
+    });
+    first.join();
+    second.join();
+
+    CHECK(recordMutexWasFree.load(std::memory_order_relaxed));
+    CHECK(!concurrentClockCall.load(std::memory_order_relaxed));
 }
 
 TEST_CASE(ChunkVisibilityTrace_DisabledDoesNotReadClockOrRetainRecords) {
@@ -197,14 +282,18 @@ TEST_CASE(ChunkVisibilityTrace_DisabledDoesNotReadClockOrRetainRecords) {
     ChunkVisibilityTracer tracer(
         {{1, 2, 3}, 0},
         [&]() { return clock.now(); });
-    const auto traceIdentity = identity(1);
+    const auto lifecycleKey = key(1);
 
     CHECK(!tracer.capture().has_value());
-    tracer.begin(traceIdentity);
-    tracer.mark(traceIdentity, ChunkVisibilityStage::WorkerStart);
-    tracer.complete(traceIdentity, ChunkVisibilityOutcome::Failed);
-    tracer.observeDraw(traceIdentity);
+    tracer.begin(
+        lifecycleKey,
+        ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer.bindMeshTask(lifecycleKey, meshTask(1));
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::WorkerStart);
+    tracer.complete(lifecycleKey, ChunkVisibilityOutcome::Failed);
+    tracer.observeDraw(lifecycleKey);
 
     CHECK_EQ(clock.reads(), static_cast<size_t>(0));
     CHECK(tracer.snapshot().empty());
+    CHECK_EQ(tracer.stats().retainedRecords, static_cast<size_t>(0));
 }

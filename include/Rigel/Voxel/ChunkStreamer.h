@@ -159,8 +159,10 @@ private:
         uint64_t workEpoch = 0;
         uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
-        std::optional<ChunkVisibilityTraceIdentity> visibilityTrace;
+        std::optional<ChunkVisibilityLifecycleKey> visibilityTrace;
         std::shared_ptr<ChunkVisibilityTracer> visibilityTracer;
+        ChunkVisibilityLifecycleKind visibilityKind =
+            ChunkVisibilityLifecycleKind::CameraDemand;
         std::array<BlockState, Chunk::VOLUME> blocks{};
         std::array<BlockState, kPaddedVolume> paddedBlocks{};
     };
@@ -171,8 +173,10 @@ private:
         uint64_t workEpoch = 0;
         uint64_t chunkInstanceId = 0;
         uint32_t revision = 0;
-        std::optional<ChunkVisibilityTraceIdentity> visibilityTrace;
+        std::optional<ChunkVisibilityLifecycleKey> visibilityTrace;
         std::shared_ptr<ChunkVisibilityTracer> visibilityTracer;
+        ChunkVisibilityLifecycleKind visibilityKind =
+            ChunkVisibilityLifecycleKind::CameraDemand;
         ChunkMesh mesh;
         double seconds = 0.0;
         std::string error;
@@ -192,6 +196,10 @@ private:
         uint32_t observedRevision = 0;
         bool prioritized = false;
         bool obsolete = false;
+        std::optional<ChunkVisibilityLifecycleKey> visibilityTrace;
+        std::shared_ptr<ChunkVisibilityTracer> visibilityTracer;
+        ChunkVisibilityLifecycleKind visibilityKind =
+            ChunkVisibilityLifecycleKind::CameraDemand;
     };
 
     struct PendingDirtyMesh {
@@ -201,8 +209,10 @@ private:
     };
 
     struct PendingVisibilityTrace {
-        ChunkVisibilityTraceIdentity identity{};
-        ChunkVisibilityStageTimes stages{};
+        ChunkVisibilityLifecycleKey key{};
+        ChunkVisibilityLifecycleKind kind =
+            ChunkVisibilityLifecycleKind::CameraDemand;
+        std::shared_ptr<ChunkVisibilityTracer> tracer;
     };
 
     struct PendingDirtyMeshGreater {
@@ -277,7 +287,7 @@ private:
     size_t m_inFlightMeshDirty = 0;
     ChunkLoadRequestId m_nextLoadRequestId = 1;
     uint64_t m_nextMeshRequestId = 1;
-    uint64_t m_nextVisibilityRequestId = 1;
+    uint64_t m_nextVisibilityLifecycleId = 1;
     std::atomic<uint64_t> m_workEpoch{1};
     MeshRequestKind m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
     std::optional<ChunkCoord> m_lastCenter;
@@ -305,20 +315,28 @@ private:
     void waitForMeshDependencies(ChunkCoord coord);
     void wakeGenerationCapacityWaiter();
     void wakeMissingMeshCapacityWaiter();
-    void queueLoadedNeighbors(ChunkCoord coord);
+    void queueLoadedNeighbors(ChunkCoord coord, bool dataBecameReady = false);
     std::optional<size_t> dirtyMeshPriority(ChunkCoord coord) const;
     void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
-    void ensureVisibilityTrace(ChunkCoord coord);
-    void markDirtyMeshEligibility(ChunkCoord coord);
-    void markVisibilityStage(ChunkCoord coord, ChunkVisibilityStage stage);
-    std::optional<ChunkVisibilityTraceIdentity> bindVisibilityTrace(
+    void ensureVisibilityTrace(
         ChunkCoord coord,
-        const Chunk& chunk);
+        ChunkVisibilityLifecycleKind kind);
+    void beginCameraVisibilityTrace(ChunkCoord coord);
+    void markVisibilityMeshEligible(ChunkCoord coord,
+                                    bool neighborBecameReady);
+    void markVisibilityStage(ChunkCoord coord, ChunkVisibilityStage stage);
+    std::optional<ChunkVisibilityTraceLink> bindVisibilityTrace(
+        ChunkCoord coord,
+        const ChunkVisibilityMeshTaskIdentity& meshTask,
+        ChunkVisibilityLifecycleKind kind);
     void completePendingVisibilityTrace(
         ChunkCoord coord,
         ChunkVisibilityOutcome outcome,
         const Chunk* chunk = nullptr);
-    void abandonVisibilityTraces();
+    void completeInFlightVisibilityTrace(
+        MeshInFlight& flight,
+        ChunkVisibilityOutcome outcome);
+    void abandonVisibilityTraces(ChunkVisibilityOutcome outcome);
     void reprioritizeDirtyMeshes();
     void enqueueGeneration(ChunkCoord coord);
     void enqueueMesh(ChunkCoord coord,

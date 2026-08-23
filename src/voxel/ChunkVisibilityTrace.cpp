@@ -1,6 +1,7 @@
 #include "Rigel/Voxel/ChunkVisibilityTrace.h"
 
 #include <algorithm>
+#include <atomic>
 
 namespace Rigel::Voxel {
 
@@ -27,6 +28,15 @@ bool hasPendingDraw(const ChunkVisibilityTraceRecord& record) {
             record.outcome ==
                 ChunkVisibilityOutcome::AcceptedNonemptyGeometry) &&
         !record.drawOutcome;
+}
+
+uint64_t nextLifecycleId() {
+    static std::atomic<uint64_t> next{1};
+    uint64_t id = 0;
+    while (id == 0) {
+        id = next.fetch_add(1, std::memory_order_relaxed);
+    }
+    return id;
 }
 } // namespace
 
@@ -179,18 +189,17 @@ ChunkVisibilityTracer::ChunkVisibilityTracer(Config config, Clock clock)
           return ChunkVisibilityClock::now();
       }) {}
 
-void ChunkVisibilityTracer::begin(
-    const ChunkVisibilityLifecycleKey& key,
-    ChunkVisibilityLifecycleKind kind,
-    ChunkVisibilityStageTimes initialStages) {
-    if (!traces(key.coord)) {
-        return;
+std::optional<ChunkVisibilityLifecycleKey> ChunkVisibilityTracer::begin(
+    ChunkVisibilityLifecycleKind kind) {
+    if (!enabled()) {
+        return std::nullopt;
     }
 
     std::lock_guard lock(m_mutex);
-    if (findRecord(key) != m_records.end()) {
-        return;
-    }
+    const ChunkVisibilityLifecycleKey key{
+        m_config.coord,
+        nextLifecycleId()
+    };
     while (m_records.size() >= m_config.capacity) {
         ++m_droppedRecords;
         if (m_records.front().outcome == ChunkVisibilityOutcome::Pending ||
@@ -201,9 +210,9 @@ void ChunkVisibilityTracer::begin(
     }
     m_records.push_back({
         .key = key,
-        .kind = kind,
-        .stages = std::move(initialStages)
+        .kind = kind
     });
+    return key;
 }
 
 void ChunkVisibilityTracer::bindMeshTask(
@@ -258,6 +267,9 @@ void ChunkVisibilityTracer::mark(
     }
 
     const auto timestamp = now();
+    if (!timestamp) {
+        return;
+    }
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
@@ -272,7 +284,7 @@ void ChunkVisibilityTracer::mark(
         }
         auto& stageTime = record->stages[stageIndex(stage)];
         if (!stageTime) {
-            stageTime = timestamp;
+            stageTime = *timestamp;
         }
     }
 }
@@ -306,10 +318,11 @@ void ChunkVisibilityTracer::complete(
     if (record->outcome != ChunkVisibilityOutcome::Pending) {
         return;
     }
-    if (outcome == ChunkVisibilityOutcome::AcceptedEmptyGeometry ||
-        outcome == ChunkVisibilityOutcome::AcceptedNonemptyGeometry) {
+    if (timestamp &&
+        (outcome == ChunkVisibilityOutcome::AcceptedEmptyGeometry ||
+         outcome == ChunkVisibilityOutcome::AcceptedNonemptyGeometry)) {
         record->stages[stageIndex(ChunkVisibilityStage::ResultAccepted)] =
-            timestamp;
+            *timestamp;
     }
     record->terminalTime = timestamp;
     record->outcome = outcome;
@@ -343,12 +356,12 @@ void ChunkVisibilityTracer::observeDraw(
     if (!hasPendingDraw(*record)) {
         return;
     }
-    auto& firstDraw = record->stages[stageIndex(ChunkVisibilityStage::FirstDraw)];
-    if (!firstDraw) {
-        firstDraw = timestamp;
-        record->drawOutcome = ChunkVisibilityDrawOutcome::Drawn;
-        record->drawTerminalTime = timestamp;
+    if (timestamp) {
+        record->stages[stageIndex(ChunkVisibilityStage::FirstDraw)] =
+            *timestamp;
     }
+    record->drawOutcome = ChunkVisibilityDrawOutcome::Drawn;
+    record->drawTerminalTime = timestamp;
 }
 
 void ChunkVisibilityTracer::observeMeshUnavailable(
@@ -414,9 +427,14 @@ ChunkVisibilityTracer::RecordIterator ChunkVisibilityTracer::findRecord(
         });
 }
 
-ChunkVisibilityTimePoint ChunkVisibilityTracer::now() const {
-    std::lock_guard lock(m_clockMutex);
-    return m_clock();
+std::optional<ChunkVisibilityTimePoint> ChunkVisibilityTracer::now()
+    const noexcept {
+    try {
+        std::lock_guard lock(m_clockMutex);
+        return m_clock();
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 } // namespace Rigel::Voxel

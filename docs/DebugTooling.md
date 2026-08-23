@@ -177,12 +177,13 @@ inspect completed and in-progress lifecycles. A capacity of zero disables the
 trace without reading its clock or adding streamer inspection work.
 
 Each record has an immutable coordinate/lifecycle ID key and a lifecycle kind:
-`camera_demand` or `remesh`. A record receives an optional MeshTask identity
-only when the streamer physically dispatches that task. The task identity is
-the actual mesh request ID, work epoch, chunk instance ID, and mesh revision.
-Voxel-empty and cached lifecycles therefore have no MeshTask identity, while a
-stale completion remains correlated with its own dispatched input rather than
-a replacement lifecycle.
+`camera_demand` or `remesh`. Tracers allocate lifecycle IDs from one process-wide
+sequence, so keys do not collide across tracer or streamer replacement. A
+record receives an optional MeshTask identity only when the streamer physically
+dispatches that task. The task identity is the actual mesh request ID, work
+epoch, chunk instance ID, and mesh revision. Voxel-empty and cached lifecycles
+therefore have no MeshTask identity, while a stale completion remains correlated
+with its own dispatched input rather than a replacement lifecycle.
 
 Retention is FIFO and includes pending records in the configured capacity.
 `ChunkVisibilityTracer::stats()` reports retained, dropped, dropped-unfinished,
@@ -219,6 +220,7 @@ Stage absence is intentional and follows the lifecycle:
 | Accepted empty geometry | `first_draw`; resident or remesh rules still determine which earlier stages are absent. |
 | Accepted nonempty geometry | `first_draw` remains absent until an actual main-pass draw submission. |
 | Camera leave, tracer replacement, reset, generator replacement, or streamer destruction before dispatch | MeshTask identity and all task stages; any earlier stages remain recorded. |
+| Clock callback failure | The timestamp for that event; lifecycle outcomes and scheduler work still advance normally. |
 
 Build outcomes distinguish cached empty/nonempty geometry, voxel-empty chunks,
 accepted empty/nonempty geometry, stale results, failures, and each lifecycle
@@ -228,10 +230,12 @@ lifecycle as `drawn`, `camera_left_before_draw`, `mesh_removed_before_draw`,
 strong tracer ownership until one of those transitions, and `first_draw` is set
 only by the renderer after a real nonempty main-pass draw call.
 
-Clock callbacks are serialized for worker safety and are invoked without the
-record mutex held. Installing or disabling a tracer does not synthesize stages,
-requeue scheduler work, or add stationary desired-set scans; only subsequent
-production lifecycle events create or advance records.
+Clock callbacks are serialized for worker safety, are invoked without the
+record mutex held, and cannot propagate exceptions into streaming or rendering
+work. A callback failure leaves that event timestamp absent while terminal and
+draw outcomes still close normally. Installing or disabling a tracer does not
+synthesize stages, requeue scheduler work, or add stationary desired-set scans;
+only subsequent production lifecycle events create or advance records.
 
 ---
 

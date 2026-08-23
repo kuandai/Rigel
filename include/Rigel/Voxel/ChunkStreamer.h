@@ -287,7 +287,6 @@ private:
     size_t m_inFlightMeshDirty = 0;
     ChunkLoadRequestId m_nextLoadRequestId = 1;
     uint64_t m_nextMeshRequestId = 1;
-    uint64_t m_nextVisibilityLifecycleId = 1;
     std::atomic<uint64_t> m_workEpoch{1};
     MeshRequestKind m_nextSingleSlotMeshKind = MeshRequestKind::Missing;
     std::optional<ChunkCoord> m_lastCenter;

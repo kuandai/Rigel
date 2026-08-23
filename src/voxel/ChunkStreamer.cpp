@@ -1671,7 +1671,7 @@ void ChunkStreamer::queueLoadedNeighbors(ChunkCoord coord,
         return;
     }
     if (dataBecameReady) {
-        markVisibilityMeshEligible(coord, true);
+        markVisibilityMeshEligible(coord, false);
     }
     for (int i = 0; i < DirectionCount; ++i) {
         Direction dir = static_cast<Direction>(i);
@@ -1750,14 +1750,13 @@ void ChunkStreamer::ensureVisibilityTrace(
     }
 
     PendingVisibilityTrace pending;
-    pending.key.coord = coord;
-    pending.key.lifecycleId = m_nextVisibilityLifecycleId++;
-    if (m_nextVisibilityLifecycleId == 0) {
-        m_nextVisibilityLifecycleId = 1;
-    }
     pending.kind = kind;
     pending.tracer = m_visibilityTracer;
-    pending.tracer->begin(pending.key, pending.kind);
+    const auto key = pending.tracer->begin(pending.kind);
+    if (!key) {
+        return;
+    }
+    pending.key = *key;
     m_pendingVisibilityTrace = std::move(pending);
 }
 

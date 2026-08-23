@@ -150,9 +150,8 @@ public:
     size_t capacity() const { return m_config.capacity; }
     ChunkCoord coord() const { return m_config.coord; }
 
-    void begin(const ChunkVisibilityLifecycleKey& key,
-               ChunkVisibilityLifecycleKind kind,
-               ChunkVisibilityStageTimes initialStages = {});
+    std::optional<ChunkVisibilityLifecycleKey> begin(
+        ChunkVisibilityLifecycleKind kind);
     void bindMeshTask(
         const ChunkVisibilityLifecycleKey& key,
         const ChunkVisibilityMeshTaskIdentity& meshTask);
@@ -174,7 +173,7 @@ private:
     using RecordIterator = std::deque<ChunkVisibilityTraceRecord>::iterator;
 
     RecordIterator findRecord(const ChunkVisibilityLifecycleKey& key);
-    ChunkVisibilityTimePoint now() const;
+    std::optional<ChunkVisibilityTimePoint> now() const noexcept;
 
     Config m_config;
     Clock m_clock;

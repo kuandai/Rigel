@@ -426,8 +426,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         for (auto it = m_states.begin(); it != m_states.end(); ) {
             bool retainedMeshRequest =
                 it->second == ChunkState::QueuedMesh &&
-                (m_meshInFlight.find(it->first) != m_meshInFlight.end() ||
-                 dirtyMeshPriority(it->first).has_value());
+                dirtyMeshPriority(it->first).has_value();
             if ((it->second == ChunkState::QueuedGen ||
                  it->second == ChunkState::QueuedMesh ||
                  it->second == ChunkState::GenerationFailed) &&

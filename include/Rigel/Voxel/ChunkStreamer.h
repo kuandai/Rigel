@@ -324,6 +324,7 @@ private:
     void waitForMeshDependencies(ChunkCoord coord);
     void wakeGenerationCapacityWaiter();
     void queueLoadedNeighbors(ChunkCoord coord);
+    bool hasDirectStreamingDemand(ChunkCoord coord) const;
     std::optional<size_t> dirtyMeshPriority(ChunkCoord coord) const;
     bool queuePendingMesh(ChunkCoord coord,
                           MeshRequestKind kind,

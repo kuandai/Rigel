@@ -122,6 +122,9 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
             const int viewRadiusSq = viewDistance * viewDistance;
             const int unloadRadiusSq = unloadDistance * unloadDistance;
             uint64_t schedulerCoordinatesInspected = 0;
+            auto remainsDirectlyDesired = [&](ChunkCoord coord) {
+                return hasDirectStreamingDemand(coord);
+            };
             auto remainsMeshEligible = [&](ChunkCoord coord) {
                 const int distSq = distanceSquared(*m_lastCenter, coord);
                 if (distSq <= viewRadiusSq) {
@@ -131,6 +134,51 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                     m_chunkManager && m_chunkManager->getChunk(coord) &&
                     m_meshStore && m_meshStore->contains(coord);
             };
+            std::vector<ChunkCoord> retiredLoads;
+            retiredLoads.reserve(m_loadPending.size());
+            for (const auto& [coord, requestId] : m_loadPending) {
+                ++schedulerCoordinatesInspected;
+                if (!remainsDirectlyDesired(coord)) {
+                    retiredLoads.push_back(coord);
+                }
+            }
+            for (const ChunkCoord& coord : retiredLoads) {
+                cancelPendingLoad(coord);
+            }
+            for (auto it = m_genCancel.begin(); it != m_genCancel.end();) {
+                ++schedulerCoordinatesInspected;
+                if (remainsDirectlyDesired(it->first)) {
+                    ++it;
+                    continue;
+                }
+                const ChunkCoord coord = it->first;
+                it->second->store(true, std::memory_order_relaxed);
+                it = m_genCancel.erase(it);
+                auto stateIt = m_states.find(coord);
+                if (stateIt != m_states.end() &&
+                    stateIt->second == ChunkState::QueuedGen) {
+                    m_states.erase(stateIt);
+                }
+            }
+            for (auto it = m_generationCapacityWaiting.begin();
+                 it != m_generationCapacityWaiting.end();) {
+                ++schedulerCoordinatesInspected;
+                if (!remainsDirectlyDesired(*it)) {
+                    m_loadGenQueued.erase(*it);
+                    it = m_generationCapacityWaiting.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            for (auto it = m_loadGenQueued.begin();
+                 it != m_loadGenQueued.end();) {
+                ++schedulerCoordinatesInspected;
+                if (!remainsDirectlyDesired(*it)) {
+                    it = m_loadGenQueued.erase(it);
+                } else {
+                    ++it;
+                }
+            }
             std::vector<ChunkCoord> retiredMeshOwners;
             retiredMeshOwners.reserve(
                 m_pendingMeshes.size() + m_meshDependencyWaiting.size());
@@ -151,11 +199,9 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                 m_priorityMeshRequests.erase(coord);
             }
             for (auto& [coord, flight] : m_meshInFlight) {
-                if (!flight.replacementPending) {
-                    continue;
-                }
                 ++schedulerCoordinatesInspected;
                 if (!remainsMeshEligible(coord)) {
+                    flight.obsolete = true;
                     setReplacementPending(coord, flight, false);
                     flight.prioritized = false;
                     m_priorityMeshRequests.erase(coord);
@@ -902,7 +948,7 @@ void ChunkStreamer::processCompletions() {
             auto pendingIt = m_loadPending.find(completion.coord);
             if (pendingIt == m_loadPending.end() ||
                 pendingIt->second != completion.requestId ||
-                m_desiredSet.find(completion.coord) == m_desiredSet.end()) {
+                !hasDirectStreamingDemand(completion.coord)) {
                 continue;
             }
             m_loadPending.erase(pendingIt);
@@ -1399,6 +1445,10 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             continue;
         }
 
+        if (!hasDirectStreamingDemand(genResult.coord)) {
+            continue;
+        }
+
         auto stateIt = m_states.find(genResult.coord);
         if (stateIt == m_states.end() || stateIt->second != ChunkState::QueuedGen) {
             continue;
@@ -1520,7 +1570,8 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
 
         if (flight.obsolete ||
             flight.workEpoch != m_workEpoch.load(std::memory_order_relaxed) ||
-            meshResult.workEpoch != flight.workEpoch) {
+            meshResult.workEpoch != flight.workEpoch ||
+            !dirtyMeshPriority(meshResult.coord)) {
             ++m_workMetrics.meshJobsRejectedStale;
             completeVisibility(ChunkVisibilityOutcome::Stale);
             wakeReplacement();
@@ -1655,15 +1706,8 @@ ChunkLoadRequestId ChunkStreamer::nextLoadRequestId() {
 }
 
 void ChunkStreamer::queueLoadGen(ChunkCoord coord) {
-    if (m_desiredSet.find(coord) == m_desiredSet.end()) {
+    if (!hasDirectStreamingDemand(coord)) {
         return;
-    }
-    if (m_lastCenter) {
-        const int viewDistance = std::max(0, m_config.viewDistanceChunks);
-        if (distanceSquared(*m_lastCenter, coord) >
-            viewDistance * viewDistance) {
-            return;
-        }
     }
     m_generationCapacityWaiting.erase(coord);
     if (m_pendingMeshes.find(coord) != m_pendingMeshes.end()) {
@@ -1686,7 +1730,7 @@ void ChunkStreamer::queueLoadGen(ChunkCoord coord) {
 }
 
 void ChunkStreamer::waitForGenerationCapacity(ChunkCoord coord) {
-    if (m_desiredSet.find(coord) == m_desiredSet.end()) {
+    if (!hasDirectStreamingDemand(coord)) {
         return;
     }
     if (m_generationCapacityWaiting.insert(coord).second) {
@@ -1755,6 +1799,18 @@ void ChunkStreamer::queueLoadedNeighbors(ChunkCoord coord) {
             }
         }
     }
+}
+
+bool ChunkStreamer::hasDirectStreamingDemand(ChunkCoord coord) const {
+    if (m_desiredSet.find(coord) == m_desiredSet.end()) {
+        return false;
+    }
+    if (!m_lastCenter) {
+        return true;
+    }
+    const int viewDistance = std::max(0, m_config.viewDistanceChunks);
+    return distanceSquared(*m_lastCenter, coord) <=
+        viewDistance * viewDistance;
 }
 
 std::optional<size_t> ChunkStreamer::dirtyMeshPriority(ChunkCoord coord) const {

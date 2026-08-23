@@ -426,7 +426,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         for (auto it = m_states.begin(); it != m_states.end(); ) {
             bool retainedMeshRequest =
                 it->second == ChunkState::QueuedMesh &&
-                dirtyMeshPriority(it->first).has_value();
+                (m_meshInFlight.find(it->first) != m_meshInFlight.end() ||
+                 dirtyMeshPriority(it->first).has_value());
             if ((it->second == ChunkState::QueuedGen ||
                  it->second == ChunkState::QueuedMesh ||
                  it->second == ChunkState::GenerationFailed) &&
@@ -1537,6 +1538,41 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             continue;
         }
 
+        const ChunkVisibilityLifecycleKind visibilityKind =
+            flight.kind == MeshRequestKind::Dirty
+            ? ChunkVisibilityLifecycleKind::Remesh
+            : ChunkVisibilityLifecycleKind::CameraDemand;
+        bool completesPendingVisibility = false;
+        std::optional<ChunkVisibilityTraceLink> visibilityTrace;
+        if (flight.visibilityTracer && flight.visibilityTrace) {
+            visibilityTrace = ChunkVisibilityTraceLink{
+                *flight.visibilityTrace,
+                flight.visibilityKind,
+                flight.visibilityTracer
+            };
+        } else {
+            auto& pending = m_pendingVisibilityTraces[
+                visibilityKindIndex(visibilityKind)];
+            if (pending && pending->key.coord == meshResult.coord) {
+                visibilityTrace = ChunkVisibilityTraceLink{
+                    pending->key,
+                    pending->kind,
+                    pending->tracer
+                };
+                completesPendingVisibility = true;
+            }
+        }
+        auto completeResolvedVisibility =
+            [&](ChunkVisibilityOutcome outcome) {
+                completeVisibility(outcome);
+                if (completesPendingVisibility) {
+                    completePendingVisibilityTrace(
+                        meshResult.coord,
+                        visibilityKind,
+                        outcome);
+                }
+            };
+
         if (meshResult.failed) {
             chunk->m_dirty = true;
             stateIt->second = ChunkState::MeshFailed;
@@ -1545,7 +1581,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             m_meshDependencyWaiting.erase(meshResult.coord);
             m_priorityMeshRequests.erase(meshResult.coord);
             ++m_workMetrics.meshJobsFailed;
-            completeVisibility(ChunkVisibilityOutcome::Failed);
+            completeResolvedVisibility(ChunkVisibilityOutcome::Failed);
             setFailure(
                 m_meshErrors,
                 m_meshFailureVersion,
@@ -1561,14 +1597,6 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
             continue;
         }
 
-        std::optional<ChunkVisibilityTraceLink> visibilityTrace;
-        if (flight.visibilityTracer && flight.visibilityTrace) {
-            visibilityTrace = ChunkVisibilityTraceLink{
-                *flight.visibilityTrace,
-                flight.visibilityKind,
-                flight.visibilityTracer
-            };
-        }
         if (meshResult.empty) {
             if (m_meshStore) {
                 if (chunk->isEmpty()) {
@@ -1589,7 +1617,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
         chunk->clearDirty();
         eraseFailure(m_meshErrors, m_meshFailureVersion, meshResult.coord);
         stateIt->second = ChunkState::ReadyMesh;
-        completeVisibility(meshResult.empty
+        completeResolvedVisibility(meshResult.empty
                 ? ChunkVisibilityOutcome::AcceptedEmptyGeometry
                 : ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
 

@@ -3851,84 +3851,180 @@ TEST_CASE(ChunkStreamer_VisibilityTraceKeepsStaleAndReplacementSeparate) {
         records[1].meshTask->revision);
 }
 
-TEST_CASE(ChunkStreamer_VisibilityTraceIsolatesCameraLeaveAndReentry) {
-    ChunkManager manager;
-    BlockRegistry registry;
-    WorldMeshStore meshStore;
-    auto generator = makeGenerator(registry);
-    BlockID solid = registerTestBlock(
-        registry, "rigel:trace_reentry_solid");
-    const ChunkCoord coord{0, 0, 0};
-    const ChunkCoord away{0, 2, 0};
+TEST_CASE(ChunkStreamer_VisibilityTraceHandsLateInitialResultToCameraReentry) {
+    enum class ResultKind {
+        Nonempty,
+        EmptyGeometry,
+        Failed
+    };
 
-    Chunk& chunk = manager.getOrCreateChunk(coord);
-    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
-    chunk.setLoadedFromDisk(true);
+    for (const ResultKind resultKind : {
+             ResultKind::Nonempty,
+             ResultKind::EmptyGeometry,
+             ResultKind::Failed}) {
+        ChunkManager manager;
+        BlockRegistry registry;
+        WorldMeshStore meshStore;
+        auto generator = makeGenerator(registry);
+        BlockID solid = registerTestBlock(
+            registry, "rigel:trace_reentry_solid");
+        const ChunkCoord coord{0, 0, 0};
+        const ChunkCoord away{0, 2, 0};
 
-    auto tracer = std::make_shared<ChunkVisibilityTracer>(
-        ChunkVisibilityTracer::Config{coord, 4});
-    auto gate = std::make_shared<WorkerGate>();
-    WorkerGateRelease releaseOnExit(gate);
-    std::atomic<size_t> buildsEntered{0};
+        Chunk& chunk = manager.getOrCreateChunk(coord);
+        if (resultKind == ResultKind::EmptyGeometry) {
+            chunk.fill(BlockState{solid}, registry);
+            for (int index = 0; index < DirectionCount; ++index) {
+                int dx = 0;
+                int dy = 0;
+                int dz = 0;
+                directionOffset(
+                    static_cast<Direction>(index), dx, dy, dz);
+                Chunk& neighbor = manager.getOrCreateChunk(
+                    coord.offset(dx, dy, dz));
+                neighbor.fill(BlockState{solid}, registry);
+                neighbor.setWorldGenVersion(
+                    generator->config().world.version);
+                neighbor.setLoadedFromDisk(true);
+            }
+        } else {
+            chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+        }
+        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setLoadedFromDisk(true);
 
-    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
-    StreamingConfig stream;
-    stream.viewDistanceChunks = 0;
-    stream.unloadDistanceChunks = 10;
-    stream.meshQueueLimit = 1;
-    stream.workerThreads = 2;
-    stream.maxResidentChunks = 0;
-    streamer.setConfig(stream);
-    streamer.setVisibilityTracer(tracer);
-    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
-        streamer,
-        [gate, &buildsEntered]() {
-            if (buildsEntered.fetch_add(1, std::memory_order_relaxed) == 0) {
+        auto tracer = std::make_shared<ChunkVisibilityTracer>(
+            ChunkVisibilityTracer::Config{coord, 4});
+        auto gate = std::make_shared<WorkerGate>();
+        WorkerGateRelease releaseOnExit(gate);
+
+        ChunkStreamer streamer(
+            manager, meshStore, registry, nullptr, generator);
+        StreamingConfig stream;
+        stream.viewDistanceChunks = 0;
+        stream.unloadDistanceChunks = 10;
+        stream.meshQueueLimit = 1;
+        stream.workerThreads = 2;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.setVisibilityTracer(tracer);
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+            streamer,
+            [gate, resultKind]() {
                 gate->enterAndWait();
+                if (resultKind == ResultKind::Failed) {
+                    throw std::runtime_error("injected late mesh failure");
+                }
+            });
+
+        streamer.update(coord.toWorldCenter());
+        const bool workerEntered = gate->waitUntilEntered();
+        if (!workerEntered) {
+            gate->release();
+        }
+        CHECK(workerEntered);
+        CHECK_EQ(
+            streamer.workMetrics().meshJobsStarted,
+            static_cast<uint64_t>(1));
+
+        streamer.update(away.toWorldCenter());
+        auto records = tracer->snapshot();
+        CHECK_EQ(records.size(), static_cast<size_t>(1));
+        CHECK_EQ(records.front().outcome, ChunkVisibilityOutcome::CameraLeft);
+        CHECK(records.front().meshTask.has_value());
+        const auto departedKey = records.front().key;
+
+        streamer.update(coord.toWorldCenter());
+        records = tracer->snapshot();
+        CHECK_EQ(records.size(), static_cast<size_t>(2));
+        CHECK_EQ(records[1].outcome, ChunkVisibilityOutcome::Pending);
+        CHECK(!records[1].meshTask.has_value());
+        CHECK_NE(records[0].key, records[1].key);
+        const auto replacementKey = records[1].key;
+
+        gate->release();
+        CHECK(waitForMeshCompletions(streamer, 1));
+
+        records = tracer->snapshot();
+        CHECK_EQ(records.size(), static_cast<size_t>(2));
+        CHECK_EQ(records[0].outcome, ChunkVisibilityOutcome::CameraLeft);
+        CHECK(!records[1].meshTask.has_value());
+        CHECK(!records[1]
+                   .stage(ChunkVisibilityStage::PoolSubmit)
+                   .has_value());
+        CHECK(!records[1]
+                   .stage(ChunkVisibilityStage::WorkerStart)
+                   .has_value());
+        CHECK(!records[1]
+                   .stage(ChunkVisibilityStage::WorkerFinish)
+                   .has_value());
+        const auto expectedOutcome =
+            resultKind == ResultKind::Nonempty
+            ? ChunkVisibilityOutcome::AcceptedNonemptyGeometry
+            : resultKind == ResultKind::EmptyGeometry
+            ? ChunkVisibilityOutcome::AcceptedEmptyGeometry
+            : ChunkVisibilityOutcome::Failed;
+        CHECK_EQ(records[1].outcome, expectedOutcome);
+        CHECK_EQ(
+            records[1]
+                .stage(ChunkVisibilityStage::ResultAccepted)
+                .has_value(),
+            resultKind != ResultKind::Failed);
+        CHECK_EQ(
+            streamer.workMetrics().meshJobsAccepted,
+            resultKind == ResultKind::Failed
+                ? static_cast<uint64_t>(0)
+                : static_cast<uint64_t>(1));
+        CHECK_EQ(
+            streamer.workMetrics().meshJobsFailed,
+            resultKind == ResultKind::Failed
+                ? static_cast<uint64_t>(1)
+                : static_cast<uint64_t>(0));
+        CHECK_EQ(
+            streamer.workMetrics().meshJobsRejectedStale,
+            static_cast<uint64_t>(0));
+
+        bool departedTracePublished = false;
+        bool replacementTracePublished = false;
+        meshStore.forEach([&](const WorldMeshEntry& entry) {
+            if (entry.visibilityTrace) {
+                departedTracePublished = departedTracePublished ||
+                    entry.visibilityTrace->key == departedKey;
+                replacementTracePublished = replacementTracePublished ||
+                    entry.visibilityTrace->key == replacementKey;
             }
         });
+        CHECK(!departedTracePublished);
+        CHECK_EQ(
+            replacementTracePublished,
+            resultKind == ResultKind::Nonempty);
+        CHECK_EQ(
+            meshStore.contains(coord),
+            resultKind != ResultKind::Failed);
+        CHECK_EQ(
+            std::count_if(
+                records.begin(), records.end(),
+                [](const ChunkVisibilityTraceRecord& record) {
+                    return record.outcome == ChunkVisibilityOutcome::Pending;
+                }),
+            static_cast<std::ptrdiff_t>(0));
 
-    streamer.update(coord.toWorldCenter());
-    bool workerEntered = gate->waitUntilEntered();
-    if (!workerEntered) {
-        gate->release();
+        for (uint32_t update = 0;
+             update <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+             ++update) {
+            streamer.update(coord.toWorldCenter());
+            streamer.processCompletions();
+            CHECK_EQ(
+                streamer.workMetrics().meshJobsStarted,
+                static_cast<uint64_t>(1));
+            CHECK_EQ(
+                streamer.diagnostics().mesh.inFlight,
+                static_cast<size_t>(0));
+            CHECK_EQ(
+                streamer.diagnostics().mesh.pending,
+                static_cast<size_t>(0));
+        }
     }
-    CHECK(workerEntered);
-
-    streamer.update(away.toWorldCenter());
-    auto records = tracer->snapshot();
-    CHECK_EQ(records.size(), static_cast<size_t>(1));
-    CHECK_EQ(records.front().outcome, ChunkVisibilityOutcome::CameraLeft);
-
-    streamer.update(coord.toWorldCenter());
-    records = tracer->snapshot();
-    CHECK_EQ(records.size(), static_cast<size_t>(2));
-    CHECK_EQ(records[1].outcome, ChunkVisibilityOutcome::Pending);
-    CHECK_NE(records[0].key, records[1].key);
-
-    gate->release();
-    CHECK(waitForMeshCompletions(streamer, 1));
-    bool departedTracePublished = false;
-    meshStore.forEach([&](const WorldMeshEntry& entry) {
-        departedTracePublished = departedTracePublished ||
-            (entry.visibilityTrace &&
-             entry.visibilityTrace->key == records[0].key);
-    });
-    CHECK(!departedTracePublished);
-    streamer.update(coord.toWorldCenter());
-    CHECK(waitForMeshCompletions(streamer, 2));
-
-    records = tracer->snapshot();
-    CHECK_EQ(records[0].outcome, ChunkVisibilityOutcome::CameraLeft);
-    CHECK_EQ(
-        records[1].outcome,
-        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
-    CHECK(records[0].meshTask.has_value());
-    CHECK(records[1].meshTask.has_value());
-    CHECK_NE(
-        records[0].meshTask->requestId,
-        records[1].meshTask->requestId);
 }
 
 TEST_CASE(ChunkStreamer_VisibilityTracerReplacementDoesNotSynthesizeStages) {

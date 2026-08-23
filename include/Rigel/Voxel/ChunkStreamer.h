@@ -327,6 +327,7 @@ private:
     bool queuePendingMesh(ChunkCoord coord,
                           MeshRequestKind kind,
                           bool prioritize = false);
+    void compactPendingMeshQueuesIfNeeded();
     void erasePendingMesh(ChunkCoord coord);
     void retirePendingMesh(ChunkCoord coord);
     void queueDirtyMesh(ChunkCoord coord, bool prioritize = false);
@@ -358,7 +359,7 @@ private:
         MeshInFlight& flight,
         ChunkVisibilityOutcome outcome);
     void abandonVisibilityTraces(ChunkVisibilityOutcome outcome);
-    void reprioritizePendingMeshes();
+    void reprioritizePendingMeshes(uint64_t& schedulerCoordinatesInspected);
     void dispatchPendingMeshes(uint64_t& schedulerCoordinatesInspected);
     size_t meshDispatchLimit() const;
     void enqueueGeneration(ChunkCoord coord);

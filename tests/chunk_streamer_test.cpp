@@ -84,6 +84,58 @@ struct ChunkStreamerTestAccess {
         return streamer.m_pendingMeshes.size();
     }
 
+    static size_t pendingMeshQueueRecordCount(const ChunkStreamer& streamer) {
+        return streamer.m_pendingMeshQueues[static_cast<size_t>(
+                   ChunkStreamer::MeshRequestKind::Missing)].size() +
+            streamer.m_pendingMeshQueues[static_cast<size_t>(
+                ChunkStreamer::MeshRequestKind::Dirty)].size();
+    }
+
+    static bool queuePendingMissingMesh(ChunkStreamer& streamer,
+                                        ChunkCoord coord) {
+        return streamer.queuePendingMesh(
+            coord, ChunkStreamer::MeshRequestKind::Missing);
+    }
+
+    static bool queuePendingDirtyMesh(ChunkStreamer& streamer,
+                                      ChunkCoord coord) {
+        return streamer.queuePendingMesh(
+            coord, ChunkStreamer::MeshRequestKind::Dirty);
+    }
+
+    static void waitForMeshDependencies(ChunkStreamer& streamer,
+                                        ChunkCoord coord) {
+        streamer.waitForMeshDependencies(coord);
+    }
+
+    static void retirePendingMesh(ChunkStreamer& streamer, ChunkCoord coord) {
+        streamer.retirePendingMesh(coord);
+    }
+
+    static uint64_t reprioritizePendingMeshes(ChunkStreamer& streamer) {
+        uint64_t inspected = 0;
+        streamer.reprioritizePendingMeshes(inspected);
+        return inspected;
+    }
+
+    static void pushStalePendingMeshHead(ChunkStreamer& streamer,
+                                         ChunkCoord coord) {
+        auto pendingIt = streamer.m_pendingMeshes.find(coord);
+        if (pendingIt == streamer.m_pendingMeshes.end()) {
+            return;
+        }
+        ChunkStreamer::PendingMeshRequest stale = pendingIt->second;
+        stale.sequence = 0;
+        streamer.m_pendingMeshQueues[static_cast<size_t>(stale.kind)].push(
+            stale);
+    }
+
+    static uint64_t dispatchPendingMeshes(ChunkStreamer& streamer) {
+        uint64_t inspected = 0;
+        streamer.dispatchPendingMeshes(inspected);
+        return inspected;
+    }
+
     static std::vector<ChunkCoord> pendingLoadGenOrder(
         const ChunkStreamer& streamer) {
         return {
@@ -2439,7 +2491,7 @@ TEST_CASE(ChunkStreamer_SingleMeshSlotAlternatesMissingAndDirtyWork) {
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
     CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
-             static_cast<uint64_t>(1));
+             static_cast<uint64_t>(3));
     CHECK(!dirty.isDirty());
 
     CHECK(waitForMeshCompletions(streamer, 2));
@@ -2531,7 +2583,7 @@ TEST_CASE(ChunkStreamer_DirtyMeshCapacityPreservesNearestFirstPriority) {
     CHECK(!nearest.isDirty());
     CHECK(farther.isDirty());
     CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
-             static_cast<uint64_t>(1));
+             static_cast<uint64_t>(2));
 
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
@@ -2722,6 +2774,290 @@ TEST_CASE(ChunkStreamer_DependencyLossMovesReadyPendingOwnership) {
     CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
         hasDependencyPendingMesh(streamer, pendingCoord));
     CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
+}
+
+TEST_CASE(ChunkStreamer_VoxelEmptyRemovesInstalledMeshWithoutDependencies) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const BlockID solid =
+        registerTestBlock(registry, "rigel:voxel_empty_retirement_solid");
+    const ChunkCoord blockerCoord{0, 0, 0};
+    const ChunkCoord emptyCoord{10, 0, 0};
+
+    Chunk& blocker = manager.getOrCreateChunk(blockerCoord);
+    blocker.setBlock(0, 0, 0, BlockState{solid}, registry);
+    blocker.setWorldGenVersion(generator->config().world.version);
+    blocker.setLoadedFromDisk(true);
+    blocker.clearDirty();
+    for (int i = 0; i < DirectionCount; ++i) {
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(static_cast<Direction>(i), dx, dy, dz);
+        Chunk& neighbor = manager.getOrCreateChunk(
+            blockerCoord.offset(dx, dy, dz));
+        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setLoadedFromDisk(true);
+        neighbor.clearDirty();
+    }
+
+    Chunk& emptied = manager.getOrCreateChunk(emptyCoord);
+    emptied.setWorldGenVersion(generator->config().world.version);
+    emptied.setLoadedFromDisk(true);
+    emptied.setBlock(0, 0, 0, BlockState{solid}, registry);
+    emptied.clearDirty();
+    meshStore.set(emptyCoord, {});
+    emptied.setBlock(0, 0, 0, BlockState{}, registry);
+    emptied.clearPersistDirty();
+
+    auto gate = std::make_shared<WorkerGate>();
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 1;
+    stream.meshQueueLimit = 1;
+    stream.workerThreads = 2;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer, [gate]() { gate->enterAndWait(); });
+    WorkerGateRelease releaseOnExit(gate);
+
+    streamer.update(blockerCoord.toWorldCenter());
+    CHECK(gate->waitUntilEntered());
+    CHECK(!meshStore.contains(emptyCoord));
+    CHECK(!emptied.isDirty());
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::hasReadyPendingMesh(
+        streamer, emptyCoord));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, emptyCoord));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
+
+    gate->release();
+    CHECK(waitForMeshCompletions(streamer, 1));
+    for (size_t update = 0;
+         update < 8 &&
+         streamer.diagnostics().state != StreamingLifecycleState::Quiescent;
+         ++update) {
+        streamer.update(blockerCoord.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK(streamer.diagnostics().mesh.empty());
+    CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Quiescent);
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+}
+
+TEST_CASE(ChunkStreamer_PendingMeshHeapStorageFollowsCanonicalOwnership) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const BlockID solid =
+        registerTestBlock(registry, "rigel:pending_heap_storage_solid");
+    const ChunkCoord coord{8, 0, 0};
+
+    Chunk& chunk = manager.getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+    chunk.clearDirty();
+    chunk.invalidateMesh();
+    meshStore.set(coord, {});
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.meshQueueLimit = 1;
+    stream.workerThreads = 0;
+    streamer.setConfig(stream);
+
+    for (size_t cycle = 0; cycle < 64; ++cycle) {
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::queuePendingDirtyMesh(
+            streamer, coord);
+        CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            hasReadyPendingMesh(streamer, coord));
+        CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            hasDependencyPendingMesh(streamer, coord));
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::waitForMeshDependencies(
+            streamer, coord);
+        CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            hasReadyPendingMesh(streamer, coord));
+        CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            hasDependencyPendingMesh(streamer, coord));
+        CHECK_EQ(
+            Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                pendingMeshQueueRecordCount(streamer),
+            static_cast<size_t>(0));
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::retirePendingMesh(
+            streamer, coord);
+    }
+
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::queuePendingDirtyMesh(
+        streamer, coord);
+    for (size_t incarnation = 0; incarnation < 64; ++incarnation) {
+        if (incarnation % 2 == 0) {
+            Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                queuePendingMissingMesh(streamer, coord);
+        } else {
+            Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                queuePendingDirtyMesh(streamer, coord);
+        }
+    }
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        pendingMeshQueueRecordCount(streamer) <= static_cast<size_t>(10));
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::retirePendingMesh(
+        streamer, coord);
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingMeshQueueRecordCount(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
+}
+
+TEST_CASE(ChunkStreamer_MeshInspectionMetricsCountEveryCandidateVisit) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const BlockID solid =
+        registerTestBlock(registry, "rigel:mesh_inspection_solid");
+    const ChunkCoord missingCoord{0, 0, 0};
+    const ChunkCoord dirtyCoord{10, 0, 0};
+
+    Chunk& missing = manager.getOrCreateChunk(missingCoord);
+    missing.setWorldGenVersion(generator->config().world.version);
+    missing.setLoadedFromDisk(true);
+    missing.clearDirty();
+    for (int i = 0; i < DirectionCount; ++i) {
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(static_cast<Direction>(i), dx, dy, dz);
+        Chunk& neighbor = manager.getOrCreateChunk(
+            missingCoord.offset(dx, dy, dz));
+        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setLoadedFromDisk(true);
+        neighbor.clearDirty();
+    }
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.meshQueueLimit = 1;
+    stream.workerThreads = 0;
+    streamer.setConfig(stream);
+    streamer.update(missingCoord.toWorldCenter());
+    streamer.processCompletions();
+
+    missing.setBlock(0, 0, 0, BlockState{solid}, registry);
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        queuePendingMissingMesh(streamer, missingCoord));
+
+    Chunk& dirty = manager.getOrCreateChunk(dirtyCoord);
+    dirty.setBlock(0, 0, 0, BlockState{solid}, registry);
+    dirty.setWorldGenVersion(generator->config().world.version);
+    dirty.setLoadedFromDisk(true);
+    dirty.clearDirty();
+    meshStore.set(dirtyCoord, {});
+    dirty.invalidateMesh();
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        queuePendingDirtyMesh(streamer, dirtyCoord));
+    streamer.prioritizeMesh(dirtyCoord);
+
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            reprioritizePendingMeshes(streamer),
+        static_cast<uint64_t>(3));
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::pushStalePendingMeshHead(
+        streamer, missingCoord);
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            dispatchPendingMeshes(streamer),
+        static_cast<uint64_t>(4));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::hasReadyPendingMesh(
+        streamer, missingCoord));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::hasReadyPendingMesh(
+        streamer, dirtyCoord));
+    streamer.processCompletions();
+}
+
+TEST_CASE(ChunkStreamer_ConfigShrinkRetiresPendingMeshImmediately) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const BlockID solid =
+        registerTestBlock(registry, "rigel:config_shrink_pending_solid");
+    const ChunkCoord blockerCoord{0, 0, 0};
+    const ChunkCoord pendingCoord{1, 0, 0};
+
+    for (int z = -2; z <= 2; ++z) {
+        for (int y = -2; y <= 2; ++y) {
+            for (int x = -2; x <= 2; ++x) {
+                if (x * x + y * y + z * z > 4) {
+                    continue;
+                }
+                Chunk& chunk = manager.getOrCreateChunk({x, y, z});
+                chunk.setWorldGenVersion(generator->config().world.version);
+                chunk.setLoadedFromDisk(true);
+                chunk.clearDirty();
+            }
+        }
+    }
+    manager.getChunk(blockerCoord)->setBlock(
+        0, 0, 0, BlockState{solid}, registry);
+    manager.getChunk(blockerCoord)->clearDirty();
+    meshStore.set(blockerCoord, {});
+    manager.getChunk(blockerCoord)->invalidateMesh();
+    manager.getChunk(pendingCoord)->setBlock(
+        0, 0, 0, BlockState{solid}, registry);
+    manager.getChunk(pendingCoord)->clearDirty();
+
+    auto gate = std::make_shared<WorkerGate>();
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 2;
+    stream.meshQueueLimit = 1;
+    stream.workerThreads = 2;
+    streamer.setConfig(stream);
+    streamer.prioritizeMesh(blockerCoord);
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer, [gate]() { gate->enterAndWait(); });
+    WorkerGateRelease releaseOnExit(gate);
+
+    streamer.update(blockerCoord.toWorldCenter());
+    CHECK(gate->waitUntilEntered());
+    const auto initialDispatch =
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            inFlightMeshDispatchOrder(streamer);
+    CHECK_EQ(initialDispatch.size(), static_cast<size_t>(1));
+    if (!initialDispatch.empty()) {
+        CHECK_EQ(initialDispatch.front(), blockerCoord);
+    }
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, pendingCoord));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::hasReadyPendingMesh(
+        streamer, pendingCoord));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
+
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    streamer.setConfig(stream);
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::hasReadyPendingMesh(
+        streamer, pendingCoord));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, pendingCoord));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingMeshQueueRecordCount(streamer),
+        static_cast<size_t>(0));
 }
 
 TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPrecedesDistancePriority) {
@@ -8177,33 +8513,53 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
         std::make_shared<WorldGenerator>(registry, replacementConfig);
     const BlockID solid = registerTestBlock(
         registry, "rigel:pending_generator_replacement_solid");
+    const ChunkCoord cameraCoord{0, 0, 0};
+    const ChunkCoord oldPendingCoord{10, 0, 0};
 
-    const std::array<ChunkCoord, 7> desired{
-        ChunkCoord{0, 0, 0},
-        ChunkCoord{1, 0, 0},
-        ChunkCoord{-1, 0, 0},
-        ChunkCoord{0, 1, 0},
-        ChunkCoord{0, -1, 0},
-        ChunkCoord{0, 0, 1},
-        ChunkCoord{0, 0, -1}
+    auto loadFaceNeighborhood = [&](ChunkCoord center) {
+        Chunk& centerChunk = manager.getOrCreateChunk(center);
+        centerChunk.setWorldGenVersion(
+            originalGenerator->config().world.version);
+        centerChunk.setLoadedFromDisk(true);
+        centerChunk.clearPersistDirty();
+        centerChunk.clearDirty();
+        for (int i = 0; i < DirectionCount; ++i) {
+            int dx = 0;
+            int dy = 0;
+            int dz = 0;
+            directionOffset(static_cast<Direction>(i), dx, dy, dz);
+            Chunk& neighbor = manager.getOrCreateChunk(
+                center.offset(dx, dy, dz));
+            neighbor.setWorldGenVersion(
+                originalGenerator->config().world.version);
+            neighbor.setLoadedFromDisk(true);
+            neighbor.clearPersistDirty();
+            neighbor.clearDirty();
+        }
     };
-    for (const ChunkCoord& coord : desired) {
-        Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(originalGenerator->config().world.version);
-        chunk.setLoadedFromDisk(true);
-        chunk.clearPersistDirty();
-        chunk.clearDirty();
-    }
+    loadFaceNeighborhood(cameraCoord);
+    loadFaceNeighborhood(oldPendingCoord);
+
+    Chunk& cameraChunk = *manager.getChunk(cameraCoord);
+    cameraChunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    cameraChunk.clearPersistDirty();
+    cameraChunk.clearDirty();
+    Chunk& oldPending = *manager.getChunk(oldPendingCoord);
+    oldPending.setBlock(0, 0, 0, BlockState{solid}, registry);
+    oldPending.clearPersistDirty();
+    oldPending.clearDirty();
+    meshStore.set(oldPendingCoord, {});
+    oldPending.invalidateMesh();
 
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
-    stream.viewDistanceChunks = 1;
-    stream.unloadDistanceChunks = 1;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 20;
     stream.genQueueLimit = 1;
     stream.meshQueueLimit = 1;
     stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 1;
     stream.workerThreads = 4;
     streamer.setConfig(stream);
 
@@ -8224,14 +8580,22 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
     WorkerGateRelease releaseOriginalOnExit(originalGate);
     WorkerGateRelease releaseReplacementOnExit(replacementGate);
 
-    streamer.update(glm::vec3(0.0f));
+    streamer.update(cameraCoord.toWorldCenter());
     CHECK(originalGate->waitUntilEntered());
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
-    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(6));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::hasReadyPendingMesh(
+        streamer, oldPendingCoord));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, oldPendingCoord));
 
     stream.updateBudgetPerFrame = 1;
     streamer.setConfig(stream);
     streamer.setGenerator(replacementGenerator);
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::hasReadyPendingMesh(
+        streamer, oldPendingCoord));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, oldPendingCoord));
     CHECK_EQ(
         Rigel::Voxel::detail::ChunkStreamerTestAccess::readyPendingMeshCount(
             streamer),
@@ -8241,19 +8605,37 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
     CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
              static_cast<uint64_t>(1));
 
-    streamer.update(glm::vec3(0.0f));
-    if (streamer.workMetrics().meshJobsStarted > 1) {
-        CHECK(replacementGate->waitUntilEntered());
-        replacementGate->release();
-        CHECK(waitForMeshCompletions(streamer, 2));
-    }
+    streamer.update(cameraCoord.toWorldCenter());
+    CHECK(waitForGenerationCompletion(streamer));
     streamer.processCompletions();
-
-    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
-    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(0));
-    for (const ChunkCoord& coord : desired) {
-        CHECK(!meshStore.contains(coord));
+    Chunk* replacementChunk = manager.getChunk(cameraCoord);
+    CHECK(replacementChunk != nullptr);
+    if (replacementChunk) {
+        CHECK_EQ(replacementChunk->worldGenVersion(),
+                 replacementGenerator->config().world.version);
     }
+
+    streamer.update(cameraCoord.toWorldCenter());
+    CHECK(replacementGate->waitUntilEntered());
+    const auto replacementDispatch =
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            inFlightMeshDispatchOrder(streamer);
+    CHECK_EQ(replacementDispatch.size(), static_cast<size_t>(1));
+    if (!replacementDispatch.empty()) {
+        CHECK_EQ(replacementDispatch.front(), cameraCoord);
+    }
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));
+    CHECK(oldPending.isDirty());
+
+    replacementGate->release();
+    CHECK(waitForMeshCompletions(streamer, 2));
+
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+             static_cast<uint64_t>(1));
+    CHECK(meshStore.contains(cameraCoord));
+    CHECK(meshStore.contains(oldPendingCoord));
+    CHECK(oldPending.isDirty());
 }
 
 TEST_CASE(ChunkStreamer_ObsoleteDirtyFlightDoesNotBlockUnrelatedDirtyMesh) {
@@ -8855,7 +9237,7 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
     center->markDirty();
     streamer.update(glm::vec3(0.0f));
     CHECK_EQ(quiescent.meshJobsStarted, settled.meshJobsStarted + 1);
-    CHECK_EQ(quiescent.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(1));
+    CHECK_EQ(quiescent.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(2));
     streamer.processCompletions();
 
     streamer.update(glm::vec3(0.0f));

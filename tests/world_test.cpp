@@ -235,14 +235,15 @@ TEST_CASE(WorldView_EditDrivenMeshingMatchesInitialStreaming) {
             world.setBlock(1, 0, 0, BlockState{});
             view.prioritizeChunkMesh(coord);
 
-            CHECK_EQ(view.meshStore().version(), storeVersion);
+            CHECK(!view.meshStore().contains(coord));
+            CHECK_EQ(view.meshStore().version(), storeVersion + 1);
             view.updateStreaming(glm::vec3(0.0f));
-            CHECK_EQ(view.meshStore().version(), storeVersion);
-            CHECK_EQ(view.streamingMetrics().meshJobsStarted, jobsStarted + 1);
+            CHECK_EQ(view.meshStore().version(), storeVersion + 1);
+            CHECK_EQ(view.streamingMetrics().meshJobsStarted, jobsStarted);
             CHECK_EQ(view.streamingMetrics().meshJobsAccepted, jobsAccepted);
             view.updateMeshes();
             CHECK(!view.meshStore().contains(coord));
-            CHECK_EQ(view.streamingMetrics().meshJobsAccepted, jobsAccepted + 1);
+            CHECK_EQ(view.streamingMetrics().meshJobsAccepted, jobsAccepted);
         }
         return result;
     };

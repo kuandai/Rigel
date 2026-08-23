@@ -30,6 +30,30 @@ struct AsyncChunkLoaderTestAccess;
 
 class AsyncChunkLoader {
 public:
+    // Cumulative for the loader lifetime. Jobs retain their submission origin
+    // when later demand promotes speculative work.
+    struct RegionJobMetrics {
+        uint64_t submitted = 0;
+        uint64_t workerStarted = 0;
+        uint64_t completed = 0;
+        uint64_t missingProbes = 0;
+        uint64_t schedulerWaitNanoseconds = 0;
+        uint64_t maxSchedulerWaitNanoseconds = 0;
+        uint64_t workerExecutionNanoseconds = 0;
+        uint64_t maxWorkerExecutionNanoseconds = 0;
+    };
+
+    struct Metrics {
+        RegionJobMetrics direct;
+        RegionJobMetrics speculative;
+        uint64_t demandPromotions = 0;
+        uint64_t usefulPrefetchCacheHits = 0;
+        uint64_t speculativeEvictionsBeforeDemand = 0;
+        // Jobs submitted to the IO pool but not yet drained by the owner.
+        size_t directRegionJobsInFlight = 0;
+        size_t speculativeRegionJobsInFlight = 0;
+    };
+
     AsyncChunkLoader(PersistenceService& service,
                      PersistenceContext context,
                      Voxel::World& world,
@@ -46,6 +70,7 @@ public:
     bool persistChunk(Voxel::ChunkCoord coord);
 
     Voxel::StreamingWorkCount workCount() const;
+    Metrics metrics() const;
 
     std::vector<Voxel::ChunkLoadCompletion> drainCompletions(size_t budget);
 
@@ -75,17 +100,30 @@ private:
                            ChunkRequestIdentity,
                            Voxel::ChunkCoordHash>;
 
+    enum class RegionJobOrigin : uint8_t {
+        Direct,
+        Speculative
+    };
+
+    struct RegionJobState {
+        RegionJobOrigin origin = RegionJobOrigin::Direct;
+        std::chrono::steady_clock::time_point submittedAt{};
+        bool demanded = false;
+    };
+
     struct RegionEntry {
         std::shared_ptr<ChunkRegionSnapshot> region;
         std::unordered_set<Voxel::ChunkCoord, Voxel::ChunkCoordHash> present;
         std::unordered_map<Voxel::ChunkCoord,
                            std::vector<const ChunkSnapshot*>,
                            Voxel::ChunkCoordHash> spansByCoord;
+        bool prefetched = false;
     };
 
     struct RegionResult {
         RegionKey key;
         uint64_t revision = 0;
+        std::shared_ptr<RegionJobState> job;
         RegionEntry entry;
         std::string error;
         bool ok = false;
@@ -137,13 +175,16 @@ private:
     void refreshLastTerminalError();
     void deferRegionLoad(const RegionKey& key);
     void startDeferredRegionLoads();
-    bool queueRegionLoad(const RegionKey& key);
+    bool queueRegionLoad(
+        const RegionKey& key,
+        RegionJobOrigin origin = RegionJobOrigin::Direct);
     void queuePayloadBuild(const RegionEntry& entry,
                            Voxel::ChunkCoord coord,
                            ChunkRequestIdentity request);
     void prefetchNeighbors(const RegionKey& center);
     void touch(const RegionKey& key);
     void evictIfNeeded();
+    void promoteRegionDemand(const RegionKey& key);
     int estimateRegionSpan() const;
     bool regionMayExist(const RegionKey& key);
 
@@ -153,6 +194,23 @@ private:
     using RetryClock = std::chrono::steady_clock;
     RetryClock::time_point retryNow() const;
     RetryClock::duration retryDelay(size_t failureRounds) const;
+
+    struct RegionMetricCounters {
+        std::atomic<uint64_t> submitted{0};
+        std::atomic<uint64_t> workerStarted{0};
+        std::atomic<uint64_t> completed{0};
+        std::atomic<uint64_t> missingProbes{0};
+        std::atomic<uint64_t> schedulerWaitNanoseconds{0};
+        std::atomic<uint64_t> maxSchedulerWaitNanoseconds{0};
+        std::atomic<uint64_t> workerExecutionNanoseconds{0};
+        std::atomic<uint64_t> maxWorkerExecutionNanoseconds{0};
+    };
+
+    RegionMetricCounters& regionMetricCounters(RegionJobOrigin origin);
+    const RegionMetricCounters& regionMetricCounters(
+        RegionJobOrigin origin) const;
+    static RegionJobMetrics regionJobMetrics(
+        const RegionMetricCounters& counters);
 
     PersistenceService* m_service = nullptr;
     PersistenceContext m_context;
@@ -170,6 +228,8 @@ private:
     std::shared_ptr<const Voxel::WorldGenerator> m_generator;
 
     std::function<void()> m_regionLoadStartCallback;
+    std::function<void(const RegionKey&, RegionJobOrigin)>
+        m_regionLoadStartObserver;
     std::function<void()> m_payloadBuildStartCallback;
     std::function<void()> m_ioPoolStopStartCallback;
     std::function<void()> m_workerPoolStopStartCallback;
@@ -179,6 +239,9 @@ private:
 
     std::unordered_map<RegionKey, RegionEntry, RegionKeyHash> m_cache;
     std::unordered_set<RegionKey, RegionKeyHash> m_inFlight;
+    std::unordered_map<RegionKey,
+                       std::shared_ptr<RegionJobState>,
+                       RegionKeyHash> m_regionJobs;
     std::unordered_map<RegionKey,
                        ChunkRequestMap,
                        RegionKeyHash> m_regionPending;
@@ -233,6 +296,12 @@ private:
     std::unordered_map<RegionKey, uint64_t, RegionKeyHash> m_regionRevisions;
 
     std::function<RetryClock::time_point()> m_retryClock;
+
+    RegionMetricCounters m_directRegionMetrics;
+    RegionMetricCounters m_speculativeRegionMetrics;
+    std::atomic<uint64_t> m_demandPromotions{0};
+    std::atomic<uint64_t> m_usefulPrefetchCacheHits{0};
+    std::atomic<uint64_t> m_speculativeEvictionsBeforeDemand{0};
 
     Voxel::detail::ThreadPool m_ioPool;
     Voxel::detail::ThreadPool m_workerPool;

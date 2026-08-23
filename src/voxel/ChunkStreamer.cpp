@@ -377,6 +377,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     m_workMetrics.lastUpdateCacheEvictionCoordinatesInspected = 0;
     m_workMetrics.lastUpdateResidentEvictionCoordinatesInspected = 0;
     m_workMetrics.lastUpdateDeferredEvictionCoordinatesInspected = 0;
+    const uint64_t schedulerCoordinatesInspectedBeforeUpdate =
+        m_workMetrics.schedulerCoordinatesInspected;
     if (!m_chunkManager || !m_generator || !m_meshStore) {
         return;
     }
@@ -770,8 +772,6 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
 
     m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected =
         desiredBuildCoordinatesInspected;
-    m_workMetrics.lastUpdateSchedulerCoordinatesInspected =
-        schedulerCoordinatesInspected;
     m_workMetrics.lastUpdateCacheEvictionCoordinatesInspected =
         cacheEvictionCoordinatesInspected;
     m_workMetrics.lastUpdateResidentEvictionCoordinatesInspected =
@@ -781,6 +781,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     m_workMetrics.desiredBuildCoordinatesInspected +=
         desiredBuildCoordinatesInspected;
     m_workMetrics.schedulerCoordinatesInspected += schedulerCoordinatesInspected;
+    m_workMetrics.lastUpdateSchedulerCoordinatesInspected =
+        m_workMetrics.schedulerCoordinatesInspected -
+        schedulerCoordinatesInspectedBeforeUpdate;
     m_workMetrics.cacheEvictionCoordinatesInspected +=
         cacheEvictionCoordinatesInspected;
     m_workMetrics.residentEvictionCoordinatesInspected +=
@@ -1725,6 +1728,7 @@ void ChunkStreamer::compactPendingMeshQueuesIfNeeded() {
 
     decltype(m_pendingMeshQueues) compacted;
     for (const auto& entry : m_pendingMeshes) {
+        ++m_workMetrics.schedulerCoordinatesInspected;
         const PendingMeshRequest& request = entry.second;
         compacted[static_cast<size_t>(request.kind)].push(request);
     }

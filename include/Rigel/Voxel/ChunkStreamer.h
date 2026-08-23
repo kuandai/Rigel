@@ -56,7 +56,7 @@ public:
         uint64_t meshRequestsCoalesced = 0;
         // Candidate coordinates tested while rebuilding the desired set.
         uint64_t desiredBuildCoordinatesInspected = 0;
-        // Pending load/generation and dirty-mesh entries visited by the scheduler.
+        // Pending load/generation and mesh candidates visited by the scheduler.
         uint64_t schedulerCoordinatesInspected = 0;
         // Resident cache entries considered for capacity eviction.
         uint64_t cacheEvictionCoordinatesInspected = 0;

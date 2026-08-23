@@ -1260,9 +1260,13 @@ uint64_t ChunkStreamer::retireIneligibleEvictions(ChunkCoord center,
         bool cachePressure = m_cache.maxChunks() > 0 &&
             m_cache.size() > m_cache.maxChunks() && !desired;
         if (!outsideUnloadRadius && !cachePressure) {
+            const bool meshWorkEligible = hasEligibleMeshWork(coord);
             eraseFailure(
                 m_evictionErrors, m_evictionFailureVersion, coord);
             it = m_evictionRetryAfter.erase(it);
+            if (meshWorkEligible) {
+                queueDirtyMesh(coord);
+            }
             continue;
         }
 
@@ -1990,6 +1994,15 @@ void ChunkStreamer::retirePendingMesh(ChunkCoord coord) {
 void ChunkStreamer::rememberConfigRetiredWork(
     ChunkCoord coord,
     ConfigRetiredWorkKind kind) {
+    if (kind == ConfigRetiredWorkKind::DirtyMesh) {
+        Chunk* chunk = m_chunkManager
+            ? m_chunkManager->getChunk(coord)
+            : nullptr;
+        if (chunk && !chunk->isEmpty() && m_generator &&
+            chunk->worldGenVersion() == m_generator->config().world.version) {
+            chunk->markDirty();
+        }
+    }
     auto [it, inserted] = m_configRetiredWork.emplace(coord, kind);
     if (inserted) {
         return;
@@ -2066,9 +2079,6 @@ void ChunkStreamer::reconcileConfigRetiredWork(
         const bool directlyDesired = hasDirectStreamingDemand(coord);
         const bool meshEligible =
             isConfigRetiredMeshEligible(coord, kind);
-        if (!directlyDesired && !meshEligible) {
-            continue;
-        }
 
         auto stateIt = m_states.find(coord);
         if (stateIt != m_states.end() &&
@@ -2097,6 +2107,11 @@ void ChunkStreamer::reconcileConfigRetiredWork(
                     stateIt->second = ChunkState::ReadyData;
                 }
             }
+        }
+
+        if (!directlyDesired && !meshEligible) {
+            m_configRetiredWork.erase(coord);
+            continue;
         }
 
         if (kind == ConfigRetiredWorkKind::LoadGen) {

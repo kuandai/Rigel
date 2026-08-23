@@ -203,7 +203,7 @@ Voxel::ChunkLoadRequestResult AsyncChunkLoader::request(
         return Voxel::ChunkLoadRequestResult::Missing;
     }
     if (cacheIt == m_cache.end() &&
-        m_inFlight.find(key) == m_inFlight.end() &&
+        m_regionJobs.find(key) == m_regionJobs.end() &&
         !regionMayExist(key)) {
         return Voxel::ChunkLoadRequestResult::Missing;
     }
@@ -242,7 +242,7 @@ Voxel::ChunkLoadRequestResult AsyncChunkLoader::queueChunkLoad(
         touch(key);
         return Voxel::ChunkLoadRequestResult::Queued;
     }
-    if (m_inFlight.find(key) == m_inFlight.end()) {
+    if (m_regionJobs.find(key) == m_regionJobs.end()) {
         if (!regionMayExist(key)) {
             return Voxel::ChunkLoadRequestResult::Missing;
         }

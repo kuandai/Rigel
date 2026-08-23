@@ -148,9 +148,11 @@ explicit failed state until a later streaming requeue retries them.
   `streaming.worker_threads`. A pool with no worker executes its job inline.
 - `streaming.gen_queue_limit` caps in-flight generation work, while
   `streaming.mesh_queue_limit` caps mesh work selected from the pending
-  scheduler (`0` means no configured cap). Inline mesh execution bounds
-  outstanding results by the finite apply budget, or by one executor slot
-  when apply is unlimited.
+  scheduler (`0` means no configured cap). Executor capacity may narrow that
+  cap but the configured cap cannot expand executor capacity. With no mesh
+  worker, the inline executor owns at most one completed-but-unapplied mesh
+  result regardless of `streaming.apply_budget_per_frame`; this effective
+  bound is observable as the `meshSubmissionLimit` streaming diagnostic.
 - Eligible initial meshes and dirty remeshes share a distance-prioritized
   scheduler. Asynchronous submission is additionally capped at the actual
   mesh worker count so work that has not started remains reprioritizable.

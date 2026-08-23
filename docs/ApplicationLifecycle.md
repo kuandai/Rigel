@@ -219,9 +219,12 @@ Synchronization:
 - Initial meshes and dirty remeshes remain in one priority scheduler until
   dispatch.
 - `streaming.mesh_queue_limit` caps selected mesh jobs (0 = no configured
-  cap), and asynchronous submission is also capped at the mesh worker count.
-  Without a mesh worker, outstanding inline results are capped at the finite
-  apply budget, or at one executor slot when apply is unlimited.
+  cap). Executor capacity can narrow that configured cap: asynchronous
+  submission is capped at the mesh worker count, while an executor with no
+  mesh worker owns at most one completed-but-unapplied inline result regardless
+  of `streaming.apply_budget_per_frame`. The queue cap cannot expand that
+  physical slot. The effective bound is reported by the `meshSubmissionLimit`
+  streaming diagnostic.
 - A portion of finite dispatch capacity is reserved for dirty remeshes when
   both request kinds are pending.
 - At most one mesh job is in flight for a chunk. Additional invalidations are

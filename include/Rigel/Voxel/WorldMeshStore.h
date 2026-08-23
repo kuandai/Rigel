@@ -13,6 +13,10 @@
 
 namespace Rigel::Voxel {
 
+namespace detail {
+struct WorldMeshStoreTestAccess;
+}
+
 struct MeshId {
     uint32_t storeId = 0;
     ChunkCoord coord{};
@@ -220,6 +224,8 @@ public:
     uint32_t storeId() const { return m_storeId; }
 
 private:
+    friend struct detail::WorldMeshStoreTestAccess;
+
     static void finishTrace(
         const std::optional<ChunkVisibilityTraceLink>& trace,
         ChunkVisibilityDrawOutcome outcome) noexcept {

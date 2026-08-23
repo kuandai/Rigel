@@ -231,6 +231,12 @@ Stage absence is intentional and follows the lifecycle:
 | Camera leave, tracer replacement, reset, generator replacement, or streamer destruction before dispatch | MeshTask identity and all task stages; any earlier stages remain recorded. |
 | Clock callback failure | The timestamp for that event; lifecycle outcomes and scheduler work still advance normally. |
 
+Camera departure after physical mesh dispatch preserves the original record's
+MeshTask identity. Its late successful or failed result is rejected as stale
+without publishing a mesh or terminal error. Re-entry starts a new camera
+lifecycle; after the stale result is drained, the replacement dispatch receives
+a distinct MeshTask identity.
+
 Build outcomes distinguish cached empty/nonempty geometry, voxel-empty chunks,
 accepted empty/nonempty geometry, stale results, failures, and each lifecycle
 exit listed above. A nonempty cached or accepted record separately ends its draw

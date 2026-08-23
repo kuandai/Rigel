@@ -7,13 +7,24 @@
 
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <thread>
 
 using namespace Rigel::Voxel;
 namespace Asset = Rigel::Asset;
+
+namespace Rigel::Voxel::detail {
+struct WorldMeshStoreTestAccess {
+    static bool tryLock(WorldMeshStore& store) {
+        if (!store.m_mutex.try_lock()) {
+            return false;
+        }
+        store.m_mutex.unlock();
+        return true;
+    }
+};
+}
 
 namespace {
 
@@ -251,25 +262,23 @@ TEST_CASE(WorldMeshStore_ReleasesTraceOwnershipAfterDraw) {
 }
 
 TEST_CASE(WorldMeshStore_ReleasesFinalDrawOwnerOutsideMutex) {
-    struct DestructionState {
-        std::atomic_bool reentered{false};
-        std::atomic_bool reentryFailed{false};
-        std::atomic_bool finished{false};
-    };
-
-    auto* store = new WorldMeshStore();
+    WorldMeshStore store;
     const ChunkCoord coord{4, 1, 0};
-    auto state = std::make_shared<DestructionState>();
+    std::atomic_bool storeMutexWasUnlocked{false};
+    std::atomic_bool ownerDestroyed{false};
     auto tracer = std::shared_ptr<ChunkVisibilityTracer>(
         new ChunkVisibilityTracer({coord, 1}),
-        [store, state, coord](ChunkVisibilityTracer* value) {
-            try {
-                state->reentered.store(
-                    store->contains(coord), std::memory_order_release);
-            } catch (...) {
-                state->reentryFailed.store(true, std::memory_order_release);
-            }
+        [&store, &storeMutexWasUnlocked, &ownerDestroyed](
+            ChunkVisibilityTracer* value) {
+            std::thread probe([&store, &storeMutexWasUnlocked]() {
+                storeMutexWasUnlocked.store(
+                    Rigel::Voxel::detail::WorldMeshStoreTestAccess::tryLock(
+                        store),
+                    std::memory_order_release);
+            });
+            probe.join();
             delete value;
+            ownerDestroyed.store(true, std::memory_order_release);
         });
     const auto key = *tracer->begin(
         ChunkVisibilityLifecycleKind::CameraDemand);
@@ -277,34 +286,25 @@ TEST_CASE(WorldMeshStore_ReleasesFinalDrawOwnerOutsideMutex) {
         key,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
     tracer->observeDraw(key);
-    store->set(
+    store.set(
         coord,
         makeMesh(3, 3),
         ChunkVisibilityTraceLink{
             key,
             ChunkVisibilityLifecycleKind::CameraDemand,
             tracer});
+    std::weak_ptr<ChunkVisibilityTracer> observer = tracer;
     tracer.reset();
 
-    std::thread release([store, state, key]() {
-        store->finishVisibilityDraw(key);
-        state->finished.store(true, std::memory_order_release);
+    std::thread release([&store, key]() {
+        store.finishVisibilityDraw(key);
     });
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (!state->finished.load(std::memory_order_acquire) &&
-           std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::yield();
-    }
-    if (!state->finished.load(std::memory_order_acquire)) {
-        release.detach();
-        CHECK(state->finished.load(std::memory_order_acquire));
-    }
     release.join();
 
-    CHECK(state->reentered.load(std::memory_order_acquire));
-    CHECK(!state->reentryFailed.load(std::memory_order_acquire));
-    delete store;
+    CHECK(ownerDestroyed.load(std::memory_order_acquire));
+    CHECK(observer.expired());
+    CHECK(storeMutexWasUnlocked.load(std::memory_order_acquire));
+    CHECK(store.contains(coord));
 }
 
 TEST_CASE(WorldMeshStore_TraceReplacementConsumesPublishedDrawLink) {

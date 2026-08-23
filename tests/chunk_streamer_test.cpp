@@ -4349,6 +4349,10 @@ TEST_CASE(ChunkStreamer_DepartureTraceModesPreserveStaleScheduling) {
         Disabled,
         Enabled
     };
+    enum class FirstResult : uint8_t {
+        Successful,
+        Failed
+    };
     enum class CameraPath : uint8_t {
         StayAway,
         Reenter
@@ -4359,11 +4363,15 @@ TEST_CASE(ChunkStreamer_DepartureTraceModesPreserveStaleScheduling) {
         std::array<size_t, 9> finalWork{};
         StreamingLifecycleState lifecycle =
             StreamingLifecycleState::Streaming;
+        std::optional<ChunkStreamer::DebugState> chunkState;
         bool meshInstalled = false;
         size_t clockReads = 0;
     };
 
-    auto run = [](TraceMode mode, CameraPath cameraPath) {
+    auto run = [](
+        TraceMode mode,
+        FirstResult firstResult,
+        CameraPath cameraPath) {
         ChunkManager manager;
         BlockRegistry registry;
         WorldMeshStore meshStore;
@@ -4413,13 +4421,15 @@ TEST_CASE(ChunkStreamer_DepartureTraceModesPreserveStaleScheduling) {
         }
         Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
             streamer,
-            [gate, &buildsEntered]() {
+            [gate, &buildsEntered, firstResult]() {
                 const size_t build =
                     buildsEntered.fetch_add(1, std::memory_order_relaxed);
                 if (build == 0) {
                     gate->enterAndWait();
-                    throw std::runtime_error(
-                        "injected stale departure mesh failure");
+                    if (firstResult == FirstResult::Failed) {
+                        throw std::runtime_error(
+                            "injected stale departure mesh failure");
+                    }
                 }
             });
 
@@ -4482,6 +4492,22 @@ TEST_CASE(ChunkStreamer_DepartureTraceModesPreserveStaleScheduling) {
         CHECK_EQ(
             streamer.diagnostics().mesh.terminalErrors,
             static_cast<size_t>(0));
+        std::vector<ChunkStreamer::DebugChunkState> debugStates;
+        streamer.getDebugStates(debugStates);
+        CHECK(std::none_of(
+            debugStates.begin(),
+            debugStates.end(),
+            [coord](const ChunkStreamer::DebugChunkState& state) {
+                return state.coord == coord &&
+                    state.state == ChunkStreamer::DebugState::MeshFailed;
+            }));
+        if (mode == TraceMode::Enabled) {
+            const auto records = tracer->snapshot();
+            CHECK(records.front().meshTask.has_value());
+            CHECK_EQ(
+                records.front().outcome,
+                ChunkVisibilityOutcome::CameraLeft);
+        }
 
         if (cameraPath == CameraPath::Reenter) {
             streamer.update(coord.toWorldCenter());
@@ -4556,52 +4582,92 @@ TEST_CASE(ChunkStreamer_DepartureTraceModesPreserveStaleScheduling) {
             diagnostics.eviction.inFlight
         };
         result.lifecycle = diagnostics.state;
+        streamer.getDebugStates(debugStates);
+        const auto debugState = std::find_if(
+            debugStates.begin(),
+            debugStates.end(),
+            [coord](const ChunkStreamer::DebugChunkState& state) {
+                return state.coord == coord;
+            });
+        if (debugState != debugStates.end()) {
+            result.chunkState = debugState->state;
+        }
         result.meshInstalled = meshStore.contains(coord);
         result.clockReads = clock->reads();
         return result;
     };
 
-    for (const CameraPath cameraPath : {
-             CameraPath::StayAway,
-             CameraPath::Reenter}) {
-        const auto absent = run(TraceMode::Absent, cameraPath);
-        const auto disabled = run(TraceMode::Disabled, cameraPath);
-        const auto enabled = run(TraceMode::Enabled, cameraPath);
-        const std::vector<ChunkCoord> expectedDispatchOrder(
-            cameraPath == CameraPath::Reenter ? 2 : 1,
-            ChunkCoord{0, 0, 0});
-        CHECK_EQ(absent.dispatchOrder, expectedDispatchOrder);
-        CHECK_EQ(absent.dispatchOrder, disabled.dispatchOrder);
-        CHECK_EQ(absent.dispatchOrder, enabled.dispatchOrder);
-        CHECK_EQ(absent.counters, disabled.counters);
-        CHECK_EQ(absent.counters, enabled.counters);
-        CHECK_EQ(absent.finalWork, disabled.finalWork);
-        CHECK_EQ(absent.finalWork, enabled.finalWork);
-        CHECK_EQ(absent.finalWork, (std::array<size_t, 9>{}));
-        CHECK_EQ(
-            absent.counters[2],
-            cameraPath == CameraPath::Reenter
-                ? static_cast<uint64_t>(2)
-                : static_cast<uint64_t>(1));
-        CHECK_EQ(absent.counters[3], absent.counters[2]);
-        CHECK_EQ(
-            absent.counters[4],
-            cameraPath == CameraPath::Reenter
-                ? static_cast<uint64_t>(1)
-                : static_cast<uint64_t>(0));
-        CHECK_EQ(absent.counters[5], static_cast<uint64_t>(1));
-        CHECK_EQ(absent.counters[6], static_cast<uint64_t>(0));
-        CHECK_EQ(absent.lifecycle, StreamingLifecycleState::Quiescent);
-        CHECK_EQ(disabled.lifecycle, absent.lifecycle);
-        CHECK_EQ(enabled.lifecycle, absent.lifecycle);
-        CHECK_EQ(absent.meshInstalled, disabled.meshInstalled);
-        CHECK_EQ(absent.meshInstalled, enabled.meshInstalled);
-        CHECK_EQ(
-            absent.meshInstalled,
-            cameraPath == CameraPath::Reenter);
-        CHECK_EQ(absent.clockReads, static_cast<size_t>(0));
-        CHECK_EQ(disabled.clockReads, static_cast<size_t>(0));
-        CHECK(enabled.clockReads > 0);
+    std::array<std::optional<Result>, 2> successfulResults;
+    for (const FirstResult firstResult : {
+             FirstResult::Successful,
+             FirstResult::Failed}) {
+        for (const CameraPath cameraPath : {
+                 CameraPath::StayAway,
+                 CameraPath::Reenter}) {
+            const auto absent =
+                run(TraceMode::Absent, firstResult, cameraPath);
+            const auto disabled =
+                run(TraceMode::Disabled, firstResult, cameraPath);
+            const auto enabled =
+                run(TraceMode::Enabled, firstResult, cameraPath);
+            const std::vector<ChunkCoord> expectedDispatchOrder(
+                cameraPath == CameraPath::Reenter ? 2 : 1,
+                ChunkCoord{0, 0, 0});
+            CHECK_EQ(absent.dispatchOrder, expectedDispatchOrder);
+            CHECK_EQ(absent.dispatchOrder, disabled.dispatchOrder);
+            CHECK_EQ(absent.dispatchOrder, enabled.dispatchOrder);
+            CHECK_EQ(absent.counters, disabled.counters);
+            CHECK_EQ(absent.counters, enabled.counters);
+            CHECK_EQ(absent.finalWork, disabled.finalWork);
+            CHECK_EQ(absent.finalWork, enabled.finalWork);
+            CHECK_EQ(absent.finalWork, (std::array<size_t, 9>{}));
+            CHECK_EQ(
+                absent.counters[2],
+                cameraPath == CameraPath::Reenter
+                    ? static_cast<uint64_t>(2)
+                    : static_cast<uint64_t>(1));
+            CHECK_EQ(absent.counters[3], absent.counters[2]);
+            CHECK_EQ(
+                absent.counters[4],
+                cameraPath == CameraPath::Reenter
+                    ? static_cast<uint64_t>(1)
+                    : static_cast<uint64_t>(0));
+            CHECK_EQ(absent.counters[5], static_cast<uint64_t>(1));
+            CHECK_EQ(absent.counters[6], static_cast<uint64_t>(0));
+            CHECK_EQ(absent.lifecycle, StreamingLifecycleState::Quiescent);
+            CHECK_EQ(disabled.lifecycle, absent.lifecycle);
+            CHECK_EQ(enabled.lifecycle, absent.lifecycle);
+            CHECK_EQ(absent.chunkState, disabled.chunkState);
+            CHECK_EQ(absent.chunkState, enabled.chunkState);
+            CHECK_EQ(
+                absent.chunkState,
+                cameraPath == CameraPath::Reenter
+                    ? std::optional<ChunkStreamer::DebugState>(
+                          ChunkStreamer::DebugState::ReadyMesh)
+                    : std::nullopt);
+            CHECK_EQ(absent.meshInstalled, disabled.meshInstalled);
+            CHECK_EQ(absent.meshInstalled, enabled.meshInstalled);
+            CHECK_EQ(
+                absent.meshInstalled,
+                cameraPath == CameraPath::Reenter);
+            CHECK_EQ(absent.clockReads, static_cast<size_t>(0));
+            CHECK_EQ(disabled.clockReads, static_cast<size_t>(0));
+            CHECK(enabled.clockReads > 0);
+
+            const size_t pathIndex = static_cast<size_t>(cameraPath);
+            if (firstResult == FirstResult::Successful) {
+                successfulResults[pathIndex] = absent;
+            } else {
+                CHECK(successfulResults[pathIndex].has_value());
+                const Result& successful = *successfulResults[pathIndex];
+                CHECK_EQ(successful.dispatchOrder, absent.dispatchOrder);
+                CHECK_EQ(successful.counters, absent.counters);
+                CHECK_EQ(successful.finalWork, absent.finalWork);
+                CHECK_EQ(successful.lifecycle, absent.lifecycle);
+                CHECK_EQ(successful.chunkState, absent.chunkState);
+                CHECK_EQ(successful.meshInstalled, absent.meshInstalled);
+            }
+        }
     }
 }
 

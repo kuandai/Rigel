@@ -110,6 +110,79 @@ TEST_CASE(WorldMeshStore_ReinsertAdvancesRevision) {
     CHECK(replacementRevision.value > publishedRevision.value);
 }
 
+TEST_CASE(WorldMeshStore_TraceOwnershipSurvivesUntilNegativeDrawTransition) {
+    WorldMeshStore store;
+    const ChunkCoord coord{2, 0, 0};
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 1});
+    const ChunkVisibilityLifecycleKey key{coord, 1};
+    tracer->begin(key, ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer->complete(
+        key,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    std::weak_ptr<ChunkVisibilityTracer> observer = tracer;
+
+    store.set(
+        coord,
+        makeMesh(3, 3),
+        ChunkVisibilityTraceLink{
+            key,
+            ChunkVisibilityLifecycleKind::CameraDemand,
+            tracer});
+    tracer.reset();
+    CHECK(!observer.expired());
+
+    auto retainedTracer = observer.lock();
+    store.remove(coord);
+    CHECK(retainedTracer != nullptr);
+    const auto records = retainedTracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(1));
+    CHECK_EQ(
+        records.front().drawOutcome,
+        ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
+    CHECK(!records.front().stage(ChunkVisibilityStage::FirstDraw).has_value());
+}
+
+TEST_CASE(WorldMeshStore_ReplacingMeshTerminatesPriorDrawCorrelation) {
+    WorldMeshStore store;
+    const ChunkCoord coord{3, 0, 0};
+    auto firstTracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 1});
+    auto secondTracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 1});
+    const ChunkVisibilityLifecycleKey firstKey{coord, 1};
+    const ChunkVisibilityLifecycleKey secondKey{coord, 2};
+    firstTracer->begin(
+        firstKey, ChunkVisibilityLifecycleKind::CameraDemand);
+    firstTracer->complete(
+        firstKey,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    secondTracer->begin(secondKey, ChunkVisibilityLifecycleKind::Remesh);
+    secondTracer->complete(
+        secondKey,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+
+    store.set(
+        coord,
+        makeMesh(3, 3),
+        ChunkVisibilityTraceLink{
+            firstKey,
+            ChunkVisibilityLifecycleKind::CameraDemand,
+            firstTracer});
+    store.set(
+        coord,
+        makeMesh(6, 6),
+        ChunkVisibilityTraceLink{
+            secondKey,
+            ChunkVisibilityLifecycleKind::Remesh,
+            secondTracer});
+
+    CHECK_EQ(
+        firstTracer->snapshot().front().drawOutcome,
+        ChunkVisibilityDrawOutcome::MeshReplacedBeforeDraw);
+    CHECK(!secondTracer->snapshot().front().drawOutcome.has_value());
+}
+
 TEST_CASE(ChunkRenderer_ReinsertUploadsWhenRemovalWasNotRendered) {
     Rigel::Test::HiddenOpenGLContext context;
     context.require();

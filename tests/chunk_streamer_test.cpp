@@ -3298,6 +3298,97 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIncludesDirtyMeshCapacityWait) {
     CHECK_EQ(*durations.schedulerWait, std::chrono::milliseconds(25));
 }
 
+TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(
+        registry, "rigel:trace_neighbor_event_solid");
+    const ChunkCoord coord{0, 0, 0};
+    const ChunkCoord finalNeighbor{1, 0, 0};
+
+    Chunk& chunk = manager.getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+    addLoadedNeighborShell(
+        manager,
+        coord,
+        finalNeighbor,
+        generator->config().world.version);
+
+    auto clock = std::make_shared<ManualTraceClock>();
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 2},
+        [clock]() { return clock->now(); });
+    std::unordered_map<ChunkCoord, ChunkLoadRequestId, ChunkCoordHash> requests;
+    std::vector<ChunkLoadCompletion> completions;
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.setVisibilityTracer(tracer);
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        requests[request.coord] = request.requestId;
+        return ChunkLoadRequestResult::Queued;
+    });
+    streamer.setChunkLoadDrain([&](size_t) {
+        auto drained = std::move(completions);
+        completions.clear();
+        return drained;
+    });
+
+    streamer.update(coord.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+    CHECK(requests.find(finalNeighbor) != requests.end());
+
+    clock->advance(std::chrono::milliseconds(10));
+    Chunk& neighbor = manager.getOrCreateChunk(finalNeighbor);
+    neighbor.setWorldGenVersion(generator->config().world.version);
+    neighbor.setLoadedFromDisk(true);
+    neighbor.clearDirty();
+    completions.push_back({
+        finalNeighbor,
+        requests.at(finalNeighbor),
+        ChunkLoadOutcome::Loaded,
+        {}});
+    streamer.processCompletions();
+
+    auto records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(1));
+    const auto neighborReady =
+        records.front().stage(ChunkVisibilityStage::NeighborReady);
+    const auto schedulerWait =
+        records.front().stage(ChunkVisibilityStage::SchedulerWait);
+    CHECK(neighborReady.has_value());
+    CHECK(schedulerWait.has_value());
+    CHECK_EQ(*neighborReady, *schedulerWait);
+    CHECK(!records.front().stage(ChunkVisibilityStage::PoolSubmit).has_value());
+
+    clock->advance(std::chrono::milliseconds(25));
+    streamer.update(coord.toWorldCenter());
+    streamer.processCompletions();
+
+    records = tracer->snapshot();
+    CHECK_EQ(
+        records.front().outcome,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    CHECK(!records.front().stage(ChunkVisibilityStage::DataRequest).has_value());
+    CHECK(!records.front().stage(ChunkVisibilityStage::DataReady).has_value());
+    CHECK(records.front().meshTask.has_value());
+    CHECK_EQ(
+        records.front().meshTask->requestId,
+        static_cast<uint64_t>(1));
+    CHECK_EQ(
+        records.front().durations().schedulerWait,
+        std::chrono::milliseconds(25));
+}
+
 TEST_CASE(ChunkStreamer_VisibilityTraceKeepsStaleAndReplacementSeparate) {
     ChunkManager manager;
     BlockRegistry registry;
@@ -3610,6 +3701,161 @@ TEST_CASE(ChunkStreamer_VisibilityTraceTeardownStalesPendingAndLateResults) {
                .has_value());
 }
 
+TEST_CASE(ChunkStreamer_VisibilityTraceCompletesOnStreamerDestruction) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(
+        registry, "rigel:trace_destruction_solid");
+    const ChunkCoord coord{0, 0, 0};
+    const ChunkCoord missingNeighbor{1, 0, 0};
+
+    Chunk& chunk = manager.getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+    addLoadedNeighborShell(
+        manager,
+        coord,
+        missingNeighbor,
+        generator->config().world.version);
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 1});
+
+    {
+        ChunkStreamer streamer(
+            manager, meshStore, registry, nullptr, generator);
+        StreamingConfig stream;
+        stream.viewDistanceChunks = 1;
+        stream.unloadDistanceChunks = 1;
+        stream.workerThreads = 0;
+        stream.maxResidentChunks = 0;
+        streamer.setConfig(stream);
+        streamer.setVisibilityTracer(tracer);
+        streamer.setChunkLoader([](ChunkLoadRequest) {
+            return ChunkLoadRequestResult::Queued;
+        });
+        streamer.update(coord.toWorldCenter());
+
+        const auto records = tracer->snapshot();
+        CHECK_EQ(records.size(), static_cast<size_t>(1));
+        CHECK_EQ(records.front().outcome, ChunkVisibilityOutcome::Pending);
+        CHECK(!records.front().meshTask.has_value());
+    }
+
+    const auto records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(1));
+    CHECK_EQ(
+        records.front().outcome,
+        ChunkVisibilityOutcome::StreamerDestroyed);
+}
+
+TEST_CASE(ChunkStreamer_VisibilityTraceCompletesOnGeneratorReplacement) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(
+        registry, "rigel:trace_generator_replacement_solid");
+    const ChunkCoord coord{0, 0, 0};
+    const ChunkCoord missingNeighbor{1, 0, 0};
+
+    Chunk& chunk = manager.getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+    addLoadedNeighborShell(
+        manager,
+        coord,
+        missingNeighbor,
+        generator->config().world.version);
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 1});
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.setVisibilityTracer(tracer);
+    streamer.setChunkLoader([](ChunkLoadRequest) {
+        return ChunkLoadRequestResult::Queued;
+    });
+    streamer.update(coord.toWorldCenter());
+
+    auto replacement =
+        std::make_shared<WorldGenerator>(registry, generator->config());
+    streamer.setGenerator(replacement);
+
+    const auto records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(1));
+    CHECK_EQ(
+        records.front().outcome,
+        ChunkVisibilityOutcome::GeneratorReplaced);
+    CHECK(!records.front().meshTask.has_value());
+}
+
+TEST_CASE(ChunkStreamer_VisibilityTraceTracksCachedCameraLifecycle) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    BlockID solid = registerTestBlock(
+        registry, "rigel:trace_cached_solid");
+    const ChunkCoord coord{0, 0, 0};
+    const ChunkCoord away{0, 2, 0};
+
+    Chunk& chunk = manager.getOrCreateChunk(coord);
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setLoadedFromDisk(true);
+    chunk.clearDirty();
+    ChunkMesh cachedMesh;
+    cachedMesh.vertices.push_back(VoxelVertex{});
+    cachedMesh.indices.push_back(0);
+    meshStore.set(coord, std::move(cachedMesh));
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 2});
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 10;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.setVisibilityTracer(tracer);
+
+    streamer.update(coord.toWorldCenter());
+    auto records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(1));
+    CHECK_EQ(
+        records.front().outcome,
+        ChunkVisibilityOutcome::CachedNonemptyGeometry);
+    CHECK(records.front().stage(ChunkVisibilityStage::Desired).has_value());
+    CHECK(!records.front().stage(ChunkVisibilityStage::DataRequest).has_value());
+    CHECK(!records.front().stage(ChunkVisibilityStage::DataReady).has_value());
+    CHECK(!records.front().meshTask.has_value());
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+
+    streamer.update(away.toWorldCenter());
+    records = tracer->snapshot();
+    CHECK_EQ(
+        records.front().drawOutcome,
+        ChunkVisibilityDrawOutcome::CameraLeftBeforeDraw);
+
+    streamer.update(coord.toWorldCenter());
+    records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(2));
+    CHECK_EQ(
+        records.back().outcome,
+        ChunkVisibilityOutcome::CachedNonemptyGeometry);
+    CHECK_NE(records.front().key, records.back().key);
+}
+
 TEST_CASE(ChunkStreamer_VisibilityTraceDistinguishesVoxelAndGeometryEmpty) {
     const ChunkCoord coord{0, 0, 0};
 
@@ -3723,9 +3969,18 @@ TEST_CASE(ChunkStreamer_DisabledVisibilityTracePreservesStationaryWork) {
     stream.workerThreads = 0;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
     streamer.update(coord.toWorldCenter());
     streamer.processCompletions();
-    streamer.update(coord.toWorldCenter());
+    for (uint32_t update = 0;
+         update <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++update) {
+        streamer.update(coord.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(
+        streamer.diagnostics().state,
+        StreamingLifecycleState::Quiescent);
     const auto baseline = streamer.workMetrics();
 
     auto clock = std::make_shared<IncrementingTraceClock>();
@@ -3737,6 +3992,9 @@ TEST_CASE(ChunkStreamer_DisabledVisibilityTracePreservesStationaryWork) {
     const auto disabled = streamer.workMetrics();
 
     CHECK_EQ(clock->reads(), static_cast<size_t>(0));
+    CHECK_EQ(
+        streamer.diagnostics().state,
+        StreamingLifecycleState::Quiescent);
     CHECK_EQ(disabled.meshJobsStarted, baseline.meshJobsStarted);
     CHECK_EQ(
         disabled.lastUpdateDesiredBuildCoordinatesInspected,

@@ -150,10 +150,6 @@ public:
     size_t capacity() const { return m_config.capacity; }
     ChunkCoord coord() const { return m_config.coord; }
 
-    // capture() is used for stages collected before a mesh identity is known.
-    // A disabled tracer never invokes its clock.
-    std::optional<ChunkVisibilityTimePoint> capture() const;
-
     void begin(const ChunkVisibilityLifecycleKey& key,
                ChunkVisibilityLifecycleKind kind,
                ChunkVisibilityStageTimes initialStages = {});

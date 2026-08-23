@@ -176,16 +176,25 @@ nonzero record capacity, then retain the shared tracer and call `snapshot()` to
 inspect completed and in-progress lifecycles. A capacity of zero disables the
 trace without reading its clock or adding streamer inspection work.
 
-Each record carries a trace request ID, streamer work epoch, chunk instance ID,
-and mesh revision. These fields identify the exact mesh input; a stale worker
-completion therefore terminates its own record rather than a replacement
-lifecycle. Retention is FIFO and includes pending records in the configured
-capacity.
+Each record has an immutable coordinate/lifecycle ID key and a lifecycle kind:
+`camera_demand` or `remesh`. A record receives an optional MeshTask identity
+only when the streamer physically dispatches that task. The task identity is
+the actual mesh request ID, work epoch, chunk instance ID, and mesh revision.
+Voxel-empty and cached lifecycles therefore have no MeshTask identity, while a
+stale completion remains correlated with its own dispatched input rather than
+a replacement lifecycle.
+
+Retention is FIFO and includes pending records in the configured capacity.
+`ChunkVisibilityTracer::stats()` reports retained, dropped, dropped-unfinished,
+and unmatched-event counts, so capacity eviction and a later draw observation
+for an evicted record are visible rather than silent.
 
 The trace timestamps these stages:
 
-- `desired`, `data_request`, and `data_ready` cover camera demand and chunk data.
-- `neighbor_ready` and `mesh_eligible` isolate dependency readiness.
+- `desired`, `data_request`, and `data_ready` cover actual camera-demand and
+  chunk-data transitions.
+- `neighbor_ready` records the event that supplies the final required neighbor;
+  `mesh_eligible` records the transition to dispatchable mesh work.
 - `scheduler_wait`, `pool_submit`, and `worker_start` isolate scheduler and pool
   delay from worker execution.
 - `worker_finish` and `result_accepted` cover build completion and main-thread
@@ -193,11 +202,36 @@ The trace timestamps these stages:
 - `first_draw` is recorded only after the renderer issues a nonempty main-pass
   draw. Mesh-store insertion and the streamer's `ReadyMesh` state do not set it.
 
-`ChunkVisibilityTraceRecord::durations()` derives data, dependency, scheduler,
-pool, worker, result-drain, accepted, and first-draw intervals from those
-timestamps. Terminal outcomes distinguish voxel-empty chunks, accepted empty
-geometry, accepted nonempty geometry, stale results, and failures. Empty and
-failed lifecycles never report a first draw.
+The final-neighbor event can precede the next scheduler visit. In that case
+dependency wait ends at the neighbor event and the intervening backlog is part
+of `scheduler_wait`, not dependency wait. `ChunkVisibilityTraceRecord::durations()`
+returns an interval only when both of its endpoint stages exist.
+
+Stage absence is intentional and follows the lifecycle:
+
+| Lifecycle or outcome | Legitimately absent stages |
+| --- | --- |
+| Camera demand for already-resident data | `data_request` and `data_ready`; `neighbor_ready` is also absent when required neighbors were already resident. |
+| Remesh, including retained fringe work | `desired`, `data_request`, and `data_ready`; `neighbor_ready` is absent unless the remesh actually waits for a missing required neighbor. |
+| Cached mesh | No MeshTask identity and no data, dependency, scheduler, pool, worker, or `result_accepted` stages. Cached empty geometry also has no `first_draw`. |
+| Voxel-empty chunk | No MeshTask identity, pool/worker, `result_accepted`, or `first_draw` stages. Earlier demand or data stages remain only if those transitions occurred. |
+| Dispatched stale or failed task | `result_accepted` and `first_draw`; pre-dispatch stages remain absent when tracing began after those transitions. |
+| Accepted empty geometry | `first_draw`; resident or remesh rules still determine which earlier stages are absent. |
+| Accepted nonempty geometry | `first_draw` remains absent until an actual main-pass draw submission. |
+| Camera leave, tracer replacement, reset, generator replacement, or streamer destruction before dispatch | MeshTask identity and all task stages; any earlier stages remain recorded. |
+
+Build outcomes distinguish cached empty/nonempty geometry, voxel-empty chunks,
+accepted empty/nonempty geometry, stale results, failures, and each lifecycle
+exit listed above. A nonempty cached or accepted record separately ends its draw
+lifecycle as `drawn`, `camera_left_before_draw`, `mesh_removed_before_draw`,
+`mesh_replaced_before_draw`, or `trace_replaced_before_draw`. Mesh entries retain
+strong tracer ownership until one of those transitions, and `first_draw` is set
+only by the renderer after a real nonempty main-pass draw call.
+
+Clock callbacks are serialized for worker safety and are invoked without the
+record mutex held. Installing or disabling a tracer does not synthesize stages,
+requeue scheduler work, or add stationary desired-set scans; only subsequent
+production lifecycle events create or advance records.
 
 ---
 

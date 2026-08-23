@@ -60,19 +60,19 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
 
     ChunkVisibilityStageTimes initial{};
     initial[static_cast<size_t>(ChunkVisibilityStage::Desired)] =
-        *tracer.capture();
+        clock.now();
     clock.advance(std::chrono::milliseconds(1));
     initial[static_cast<size_t>(ChunkVisibilityStage::DataRequest)] =
-        *tracer.capture();
+        clock.now();
     clock.advance(std::chrono::milliseconds(2));
     initial[static_cast<size_t>(ChunkVisibilityStage::DataReady)] =
-        *tracer.capture();
+        clock.now();
     clock.advance(std::chrono::milliseconds(3));
     initial[static_cast<size_t>(ChunkVisibilityStage::NeighborReady)] =
-        *tracer.capture();
+        clock.now();
     clock.advance(std::chrono::milliseconds(4));
     initial[static_cast<size_t>(ChunkVisibilityStage::MeshEligible)] =
-        *tracer.capture();
+        clock.now();
     initial[static_cast<size_t>(ChunkVisibilityStage::SchedulerWait)] =
         initial[static_cast<size_t>(ChunkVisibilityStage::MeshEligible)];
     tracer.begin(
@@ -284,7 +284,6 @@ TEST_CASE(ChunkVisibilityTrace_DisabledDoesNotReadClockOrRetainRecords) {
         [&]() { return clock.now(); });
     const auto lifecycleKey = key(1);
 
-    CHECK(!tracer.capture().has_value());
     tracer.begin(
         lifecycleKey,
         ChunkVisibilityLifecycleKind::CameraDemand);

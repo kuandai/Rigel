@@ -179,13 +179,6 @@ ChunkVisibilityTracer::ChunkVisibilityTracer(Config config, Clock clock)
           return ChunkVisibilityClock::now();
       }) {}
 
-std::optional<ChunkVisibilityTimePoint> ChunkVisibilityTracer::capture() const {
-    if (!enabled()) {
-        return std::nullopt;
-    }
-    return now();
-}
-
 void ChunkVisibilityTracer::begin(
     const ChunkVisibilityLifecycleKey& key,
     ChunkVisibilityLifecycleKind kind,

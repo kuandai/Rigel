@@ -4,21 +4,40 @@
 #include <Rigel/Voxel/WorldView.h>
 #include <Rigel/input/InputState.h>
 
+uint64_t consumeRegionSchedulerBenchmark(
+    const Rigel::Voxel::WorldView& view) {
+    const auto& regions = view.streamingDiagnostics().regionScheduler;
+    const auto consumeOrigin = [](const auto& origin) {
+        return origin.logicalAdmissions + origin.retryAdmissions +
+            origin.logicalPreStartCancellations + origin.poolSubmissions +
+            origin.poolResubmissions + origin.successfulPoolYields +
+            origin.terminalPoolCancellations + origin.poolWorkerStarts +
+            origin.inlineExecutions + origin.resultsPublished +
+            origin.resultsDrained + origin.missingProbes +
+            origin.admissionToWorkerStartNanoseconds +
+            origin.maxAdmissionToWorkerStartNanoseconds +
+            origin.workerExecutionNanoseconds +
+            origin.maxWorkerExecutionNanoseconds;
+    };
+    const uint64_t benchmarkValue =
+        consumeOrigin(regions.directOrigin) +
+        consumeOrigin(regions.speculativeOrigin) +
+        regions.demandPromotions + regions.usefulPrefetchCacheHits +
+        regions.speculativeEvictionsBeforeDemand +
+        regions.demandOwnedQueued + regions.speculativeOwnedQueued +
+        regions.demandOwnedDispatchedUndrained +
+        regions.speculativeOwnedDispatchedUndrained +
+        regions.speculativePoolJobsPending +
+        regions.maxSpeculativePoolJobsPending +
+        regions.speculativePoolYieldCalls +
+        regions.speculativePoolYieldCandidateVisits +
+        regions.maxSpeculativePoolYieldCandidateVisits;
+    return benchmarkValue;
+}
+
 int main() {
     Rigel::Render::TemporalJitterSequence jitter;
     (void)jitter.next(1280, 720, 1.0f);
-    Rigel::Voxel::StreamingDiagnosticSnapshot streaming;
-    const auto& regions = streaming.regionScheduler;
-    const uint64_t benchmarkValue =
-        regions.directOrigin.logicalAdmissions +
-        regions.directOrigin.poolSubmissions +
-        regions.directOrigin.poolWorkerStarts +
-        regions.directOrigin.resultsPublished +
-        regions.directOrigin.resultsDrained +
-        regions.directOrigin.admissionToWorkerStartNanoseconds +
-        regions.speculativeOrigin.logicalAdmissions +
-        regions.speculativeOrigin.successfulPoolYields +
-        regions.speculativeOrigin.workerExecutionNanoseconds +
-        regions.demandPromotions + regions.usefulPrefetchCacheHits;
-    return benchmarkValue == 0 ? 0 : 1;
+    const auto consumer = &consumeRegionSchedulerBenchmark;
+    return consumer ? 0 : 1;
 }

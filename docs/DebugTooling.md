@@ -173,6 +173,9 @@ immutable direct/speculative admission origin, plus demand-owned/speculative-
 owned queued and dispatched-undrained gauges. The application consumes these
 values in `streaming.region_scheduler` records, including admission-to-worker-
 start and worker-execution durations used by benchmark capture.
+The speculative pool-pending gauge counts only unstarted submissions that can
+still yield capacity; running and completed reads remain in the applicable
+dispatched-undrained ownership gauge until their results are drained.
 Pending load counts include deferred region requests. Pending generation and
 mesh counts include scheduler and capacity wait queues; mesh requests waiting
 for neighbor data are also pending. Eviction pending counts cover deferred

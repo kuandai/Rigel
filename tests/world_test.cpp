@@ -2,6 +2,10 @@
 #include "OpenGLFixture.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Persistence/AsyncChunkLoader.h"
+#include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
+#include "Rigel/Persistence/PersistenceService.h"
+#include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/WorldView.h"
@@ -32,28 +36,105 @@ static_assert(std::is_same_v<
 static_assert(!PubliclyClearable<ChunkManager>);
 static_assert(!PubliclyClearable<World>);
 
-TEST_CASE(WorldView_StreamingDiagnosticsConsumeRegionSchedulerSnapshot) {
+TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
     WorldResources resources;
     World world(resources);
-    WorldView view(world, resources);
+    auto& registry = resources.registry();
+    BlockType solid;
+    solid.identifier = "rigel:diagnostic_stone";
+    solid.isOpaque = true;
+    solid.isSolid = true;
+    registry.registerBlock(solid.identifier, solid);
+    BlockType surface = solid;
+    surface.identifier = "rigel:diagnostic_surface";
+    registry.registerBlock(surface.identifier, surface);
 
-    ChunkLoadDiagnosticSnapshot load;
-    load.work.pending = 3;
-    load.regionScheduler.speculativeOrigin.logicalAdmissions = 5;
-    load.regionScheduler.speculativeOrigin.poolSubmissions = 7;
-    load.regionScheduler.speculativeOwnedQueued = 2;
-    view.setChunkLoadDiagnosticsCallback([&load]() { return load; });
+    WorldGenConfig generation;
+    generation.solidBlock = solid.identifier;
+    generation.surfaceBlock = surface.identifier;
+    generation.terrain.baseHeight = 0.0f;
+    generation.terrain.heightVariation = 0.0f;
+    generation.terrain.surfaceDepth = 1;
+    auto generator = std::make_shared<WorldGenerator>(registry, generation);
+    world.setGenerator(generator);
+
+    Rigel::Test::TemporaryDirectory directory("rigel_world_diagnostics");
+    Rigel::Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Rigel::Persistence::Backends::Memory::descriptor(),
+        Rigel::Persistence::Backends::Memory::factory(),
+        Rigel::Persistence::Backends::Memory::probe());
+    Rigel::Persistence::PersistenceService service(formats);
+    Rigel::Persistence::PersistenceContext context;
+    context.rootPath = directory.path().string();
+    context.preferredFormat = "memory";
+    context.storage =
+        std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    auto loader = std::make_shared<Rigel::Persistence::AsyncChunkLoader>(
+        service,
+        context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        0,
+        generator);
+    loader->setPrefetchRadius(0);
+
+    WorldView view(world, resources);
+    view.setGenerator(generator);
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 0;
+    streaming.unloadDistanceChunks = 0;
+    streaming.genQueueLimit = 0;
+    streaming.meshQueueLimit = 0;
+    streaming.updateBudgetPerFrame = 0;
+    streaming.applyBudgetPerFrame = 0;
+    streaming.workerThreads = 0;
+    view.setStreamConfig(streaming);
+    view.setChunkLoader([loader](ChunkLoadRequest request) {
+        return loader->request(request);
+    });
+    view.setChunkPendingCallback([loader](ChunkCoord coord) {
+        return loader->isPending(coord);
+    });
+    view.setChunkLoadDrain([loader](size_t budget) {
+        return loader->drainCompletions(budget);
+    });
+    view.setChunkLoadCancel([loader](ChunkCoord coord) {
+        loader->cancel(coord);
+    });
+    view.setChunkLoadDiagnosticsCallback([loader]() {
+        return loader->diagnostics();
+    });
+    view.markSpawnDiscoveryComplete();
+
+    view.updateStreaming(glm::vec3(0.0f));
 
     const auto& diagnostics = view.streamingDiagnostics();
-    CHECK_EQ(diagnostics.chunkLoad.pending, static_cast<size_t>(3));
-    CHECK_EQ(
-        diagnostics.regionScheduler.speculativeOrigin.logicalAdmissions,
-        static_cast<uint64_t>(5));
-    CHECK_EQ(
-        diagnostics.regionScheduler.speculativeOrigin.poolSubmissions,
-        static_cast<uint64_t>(7));
-    CHECK_EQ(diagnostics.regionScheduler.speculativeOwnedQueued,
-             static_cast<size_t>(2));
+    const auto& direct = diagnostics.regionScheduler.directOrigin;
+    CHECK_EQ(direct.logicalAdmissions, static_cast<uint64_t>(1));
+    CHECK_EQ(direct.inlineExecutions, static_cast<uint64_t>(1));
+    CHECK_EQ(direct.resultsPublished, static_cast<uint64_t>(1));
+    CHECK_EQ(direct.resultsDrained, static_cast<uint64_t>(0));
+    CHECK_EQ(direct.missingProbes, static_cast<uint64_t>(1));
+    CHECK(direct.admissionToWorkerStartNanoseconds > 0);
+    CHECK_EQ(direct.maxAdmissionToWorkerStartNanoseconds,
+             direct.admissionToWorkerStartNanoseconds);
+    CHECK(direct.workerExecutionNanoseconds > 0);
+    CHECK_EQ(direct.maxWorkerExecutionNanoseconds,
+             direct.workerExecutionNanoseconds);
+    CHECK_EQ(diagnostics.regionScheduler.demandOwnedDispatchedUndrained,
+             static_cast<size_t>(1));
+
+    view.updateMeshes();
+    const auto& drained = view.streamingDiagnostics().regionScheduler;
+    CHECK_EQ(drained.directOrigin.resultsPublished,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(drained.directOrigin.resultsDrained,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(drained.demandOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
 }
 
 TEST_CASE(World_StreamingPopulatesChunks) {

@@ -714,16 +714,23 @@ void Application::run() {
                             "direct.pool_yields={} direct.terminal_pool_cancellations={} "
                             "direct.logical_pre_start_cancellations={} "
                             "direct.results_published={} direct.results_drained={} "
-                            "direct.admission_to_start_ns={} direct.worker_execution_ns={} "
+                            "direct.missing_probes={} "
+                            "direct.admission_to_start_ns={} direct.max_admission_to_start_ns={} "
+                            "direct.worker_execution_ns={} direct.max_worker_execution_ns={} "
                             "speculative.logical_admissions={} speculative.retry_admissions={} "
                             "speculative.pool_submissions={} speculative.pool_resubmissions={} "
                             "speculative.pool_starts={} speculative.inline_executions={} "
                             "speculative.pool_yields={} speculative.terminal_pool_cancellations={} "
                             "speculative.logical_pre_start_cancellations={} "
                             "speculative.results_published={} speculative.results_drained={} "
-                            "speculative.admission_to_start_ns={} speculative.worker_execution_ns={} "
+                            "speculative.missing_probes={} "
+                            "speculative.admission_to_start_ns={} speculative.max_admission_to_start_ns={} "
+                            "speculative.worker_execution_ns={} speculative.max_worker_execution_ns={} "
                             "demand_owned.queued={} demand_owned.dispatched_undrained={} "
                             "speculative_owned.queued={} speculative_owned.dispatched_undrained={} "
+                            "speculative_pool.pending={} speculative_pool.max_pending={} "
+                            "speculative_pool.yield_calls={} speculative_pool.yield_candidate_visits={} "
+                            "speculative_pool.max_yield_candidate_visits={} "
                             "promotions={} useful_prefetch_hits={} evicted_before_demand={}",
                             regions.directOrigin.logicalAdmissions,
                             regions.directOrigin.retryAdmissions,
@@ -736,8 +743,11 @@ void Application::run() {
                             regions.directOrigin.logicalPreStartCancellations,
                             regions.directOrigin.resultsPublished,
                             regions.directOrigin.resultsDrained,
+                            regions.directOrigin.missingProbes,
                             regions.directOrigin.admissionToWorkerStartNanoseconds,
+                            regions.directOrigin.maxAdmissionToWorkerStartNanoseconds,
                             regions.directOrigin.workerExecutionNanoseconds,
+                            regions.directOrigin.maxWorkerExecutionNanoseconds,
                             regions.speculativeOrigin.logicalAdmissions,
                             regions.speculativeOrigin.retryAdmissions,
                             regions.speculativeOrigin.poolSubmissions,
@@ -749,12 +759,20 @@ void Application::run() {
                             regions.speculativeOrigin.logicalPreStartCancellations,
                             regions.speculativeOrigin.resultsPublished,
                             regions.speculativeOrigin.resultsDrained,
+                            regions.speculativeOrigin.missingProbes,
                             regions.speculativeOrigin.admissionToWorkerStartNanoseconds,
+                            regions.speculativeOrigin.maxAdmissionToWorkerStartNanoseconds,
                             regions.speculativeOrigin.workerExecutionNanoseconds,
+                            regions.speculativeOrigin.maxWorkerExecutionNanoseconds,
                             regions.demandOwnedQueued,
                             regions.demandOwnedDispatchedUndrained,
                             regions.speculativeOwnedQueued,
                             regions.speculativeOwnedDispatchedUndrained,
+                            regions.speculativePoolJobsPending,
+                            regions.maxSpeculativePoolJobsPending,
+                            regions.speculativePoolYieldCalls,
+                            regions.speculativePoolYieldCandidateVisits,
+                            regions.maxSpeculativePoolYieldCandidateVisits,
                             regions.demandPromotions,
                             regions.usefulPrefetchCacheHits,
                             regions.speculativeEvictionsBeforeDemand);

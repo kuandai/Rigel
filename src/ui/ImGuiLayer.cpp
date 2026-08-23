@@ -316,7 +316,9 @@ void renderProfilerWindow(bool enabled) {
 #endif
 }
 
-void renderChunkDebugLegend(bool enabled) {
+void renderChunkDebugLegend(
+    bool enabled,
+    const Render::ChunkDebugDetailPresentation* detail) {
 #if defined(RIGEL_ENABLE_IMGUI)
     if (!g_initialized || !enabled) {
         return;
@@ -345,9 +347,36 @@ void renderChunkDebugLegend(bool enabled) {
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 390.0f);
     ImGui::TextUnformatted(Render::kChunkDebugLegendQualification.data());
     ImGui::PopTextWrapPos();
+    ImGui::Separator();
+    ImGui::TextUnformatted(
+        "Detail: traced chunk when available, otherwise nearest tracked chunk");
+    if (detail) {
+        ImGui::Text(
+            "Chunk: (%d, %d, %d)",
+            detail->coord.x,
+            detail->coord.y,
+            detail->coord.z);
+        if (ImGui::BeginTable(
+                "chunk_debug_detail",
+                2,
+                ImGuiTableFlags_BordersInnerH |
+                    ImGuiTableFlags_SizingStretchProp)) {
+            for (const auto& line : detail->lines) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(line.label.data());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(line.value.data());
+            }
+            ImGui::EndTable();
+        }
+    } else {
+        ImGui::TextUnformatted("No tracked chunk in the requested field.");
+    }
     ImGui::End();
 #else
     (void)enabled;
+    (void)detail;
 #endif
 }
 

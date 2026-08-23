@@ -9,7 +9,9 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -72,7 +74,133 @@ constexpr float kCubeVertices[] = {
     -0.5f, -0.5f, -0.5f
 };
 
+std::string_view pipelineOwnerName(
+    Voxel::ChunkStreamer::DebugPipelineOwner owner) {
+    using Owner = Voxel::ChunkStreamer::DebugPipelineOwner;
+    switch (owner) {
+        case Owner::WaitingForData: return "waiting_for_data";
+        case Owner::WaitingForNeighbors: return "waiting_for_neighbors";
+        case Owner::MeshScheduler: return "mesh_scheduler";
+        case Owner::MeshWork: return "mesh_work";
+        case Owner::DirtyRemesh: return "dirty_remesh";
+        case Owner::Complete: return "complete";
+        case Owner::TerminalFailure: return "terminal_failure";
+    }
+    return "unknown";
+}
+
+std::string_view voxelOccupancyName(
+    Voxel::ChunkStreamer::DebugVoxelOccupancy occupancy) {
+    using Occupancy = Voxel::ChunkStreamer::DebugVoxelOccupancy;
+    switch (occupancy) {
+        case Occupancy::Unknown: return "unknown";
+        case Occupancy::Empty: return "empty";
+        case Occupancy::Nonempty: return "nonempty";
+    }
+    return "unknown";
+}
+
+std::string_view installedGeometryName(
+    Voxel::ChunkStreamer::DebugInstalledGeometry geometry) {
+    using Geometry = Voxel::ChunkStreamer::DebugInstalledGeometry;
+    switch (geometry) {
+        case Geometry::None: return "none";
+        case Geometry::Empty: return "empty";
+        case Geometry::Nonempty: return "nonempty";
+    }
+    return "unknown";
+}
+
+std::string_view remeshIntentName(
+    Voxel::ChunkStreamer::DebugRemeshIntent intent) {
+    using Intent = Voxel::ChunkStreamer::DebugRemeshIntent;
+    switch (intent) {
+        case Intent::None: return "none";
+        case Intent::Pending: return "pending";
+    }
+    return "unknown";
+}
+
+std::string_view failureName(Voxel::ChunkStreamer::DebugFailure failure) {
+    using Failure = Voxel::ChunkStreamer::DebugFailure;
+    switch (failure) {
+        case Failure::None: return "none";
+        case Failure::Load: return "load";
+        case Failure::Generation: return "generation";
+        case Failure::Mesh: return "mesh";
+        case Failure::Eviction: return "eviction";
+    }
+    return "unknown";
+}
+
+std::string_view drawEvidenceName(
+    Voxel::ChunkStreamer::DebugDrawEvidence evidence) {
+    using Evidence = Voxel::ChunkStreamer::DebugDrawEvidence;
+    switch (evidence) {
+        case Evidence::NotApplicable: return "not_applicable";
+        case Evidence::NotDrawn: return "not_drawn";
+        case Evidence::Drawn: return "drawn";
+    }
+    return "unknown";
+}
+
 } // namespace
+
+std::optional<ChunkDebugDetailPresentation> selectChunkDebugDetail(
+    std::span<const Voxel::ChunkStreamer::DebugChunkState> states,
+    Voxel::ChunkCoord center) {
+    if (states.empty()) {
+        return std::nullopt;
+    }
+
+    const auto* selected = &states.front();
+    uint64_t selectedDistance = std::numeric_limits<uint64_t>::max();
+    for (const auto& state : states) {
+        if (state.traceOutcome || state.traceDrawOutcome) {
+            selected = &state;
+            break;
+        }
+        const auto coordinateDistance = [](int lhs, int rhs) {
+            const int64_t delta =
+                static_cast<int64_t>(lhs) - static_cast<int64_t>(rhs);
+            return static_cast<uint64_t>(delta < 0 ? -delta : delta);
+        };
+        const uint64_t distance =
+            coordinateDistance(state.coord.x, center.x) +
+            coordinateDistance(state.coord.y, center.y) +
+            coordinateDistance(state.coord.z, center.z);
+        if (distance < selectedDistance) {
+            selected = &state;
+            selectedDistance = distance;
+        }
+    }
+
+    const auto presentationIndex = chunkDebugPresentationIndex(selected->state);
+    const std::string_view stateName = presentationIndex
+        ? kChunkDebugPresentations[*presentationIndex].legend
+        : "Unknown state";
+    return ChunkDebugDetailPresentation{
+        selected->coord,
+        {{
+            {"Primary state", stateName},
+            {"Pipeline owner", pipelineOwnerName(selected->pipelineOwner)},
+            {"Voxel occupancy", voxelOccupancyName(selected->voxelOccupancy)},
+            {"Installed CPU geometry",
+             installedGeometryName(selected->installedGeometry)},
+            {"Remesh intent", remeshIntentName(selected->remeshIntent)},
+            {"Failure", failureName(selected->failure)},
+            {"Trace outcome", selected->traceOutcome
+                ? Voxel::chunkVisibilityOutcomeName(*selected->traceOutcome)
+                : std::string_view{"none"}},
+            {"Trace draw outcome", selected->traceDrawOutcome
+                ? Voxel::chunkVisibilityDrawOutcomeName(
+                    *selected->traceDrawOutcome)
+                : std::string_view{"none"}},
+            {"Main-pass draw evidence",
+             drawEvidenceName(selected->drawEvidence)}
+        }}
+    };
+}
 
 void initDebugField(DebugState& debug, Asset::AssetManager& assets) {
     try {
@@ -169,6 +297,8 @@ void releaseDebugResources(DebugState& debug) {
         debug.entityDebug.vbo = 0;
     }
     debug.entityDebug.initialized = false;
+    debug.debugStates.clear();
+    debug.chunkDetail.reset();
 }
 
 void recordFrameTime(DebugState& debug, float seconds) {
@@ -249,7 +379,9 @@ void renderDebugField(DebugState& debug,
                       const glm::vec3& viewForward,
                       int viewportWidth,
                       int viewportHeight) {
+    debug.chunkDetail.reset();
     if (!debug.overlayEnabled || !debug.field.initialized || !worldView) {
+        debug.debugStates.clear();
         return;
     }
 
@@ -269,6 +401,7 @@ void renderDebugField(DebugState& debug,
 
     worldView->getChunkDebugStates(
         debug.debugStates, centerCoord, radius);
+    debug.chunkDetail = selectChunkDebugDetail(debug.debugStates, centerCoord);
     if (debug.debugStates.empty()) {
         return;
     }

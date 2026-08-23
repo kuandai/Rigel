@@ -418,6 +418,8 @@ void FrameRenderer::render(const FrameRenderContext& context) {
 }
 
 void FrameRenderer::clear(int viewportWidth, int viewportHeight) {
+    m_impl->debug.debugStates.clear();
+    m_impl->debug.chunkDetail.reset();
     m_impl->clearTarget(0, viewportWidth, viewportHeight);
 }
 
@@ -427,6 +429,12 @@ bool& FrameRenderer::debugOverlayEnabled() {
 
 bool& FrameRenderer::profilerWindowEnabled() {
     return m_impl->debug.imguiEnabled;
+}
+
+const ChunkDebugDetailPresentation* FrameRenderer::chunkDebugDetail() const {
+    return m_impl->debug.chunkDetail
+        ? &*m_impl->debug.chunkDetail
+        : nullptr;
 }
 
 } // namespace Rigel::Render

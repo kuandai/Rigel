@@ -58,6 +58,9 @@ skipped.
   failure category, trace build/draw outcome, and current-revision draw evidence
   are separate fields. The presentation color is a summary, not an
   authoritative visibility result.
+- The legend shows one detail record from the same bounded snapshot: the traced
+  chunk when present, otherwise the tracked chunk nearest the camera center.
+  Its rows expose those independent fields without rescanning streamer state.
 
 ### 3.2 Layout and Scale
 

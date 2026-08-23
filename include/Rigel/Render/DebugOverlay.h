@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 #include <GL/glew.h>
@@ -63,6 +64,7 @@ struct DebugState {
     FrameTimeGraph frameGraph;
     EntityDebug entityDebug;
     std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
+    std::optional<ChunkDebugDetailPresentation> chunkDetail;
     float debugDistance = kDefaultDebugDistance;
     bool overlayEnabled = true;
     bool imguiEnabled = false;

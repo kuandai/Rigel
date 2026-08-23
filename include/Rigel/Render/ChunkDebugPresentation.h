@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string_view>
 
 namespace Rigel::Render {
@@ -74,5 +75,21 @@ constexpr std::optional<size_t> chunkDebugPresentationIndex(
 inline constexpr std::string_view kChunkDebugLegendQualification =
     "Lifecycle-complete, empty, or installed CPU geometry is not necessarily "
     "drawn; Drawn requires real main-pass draw evidence.";
+
+struct ChunkDebugDetailLine {
+    std::string_view label;
+    std::string_view value;
+};
+
+inline constexpr size_t kChunkDebugDetailLineCount = 9;
+
+struct ChunkDebugDetailPresentation {
+    Voxel::ChunkCoord coord{};
+    std::array<ChunkDebugDetailLine, kChunkDebugDetailLineCount> lines{};
+};
+
+std::optional<ChunkDebugDetailPresentation> selectChunkDebugDetail(
+    std::span<const Voxel::ChunkStreamer::DebugChunkState> states,
+    Voxel::ChunkCoord center);
 
 } // namespace Rigel::Render

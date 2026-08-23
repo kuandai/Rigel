@@ -726,7 +726,8 @@ void Application::run() {
                     UI::renderProfilerWindow(
                         m_impl->renderer.profilerWindowEnabled());
                     UI::renderChunkDebugLegend(
-                        m_impl->renderer.debugOverlayEnabled());
+                        m_impl->renderer.debugOverlayEnabled(),
+                        m_impl->renderer.chunkDebugDetail());
 #else
                     (void)width;
                     (void)height;

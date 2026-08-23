@@ -138,6 +138,66 @@ TEST_CASE(DebugOverlay_EveryStateMapsToCheckedPresentationStorage) {
               "not necessarily drawn") != std::string_view::npos);
 }
 
+TEST_CASE(DebugOverlay_DetailPrefersTraceAndKeepsEvidenceSeparate) {
+    using ChunkStreamer = Rigel::Voxel::ChunkStreamer;
+    using Rigel::Render::selectChunkDebugDetail;
+
+    ChunkStreamer::DebugChunkState nearest;
+    nearest.coord = {0, 0, 0};
+    nearest.state = ChunkStreamer::DebugState::AcceptedNonemptyGeometry;
+    nearest.pipelineOwner = ChunkStreamer::DebugPipelineOwner::Complete;
+    nearest.voxelOccupancy =
+        ChunkStreamer::DebugVoxelOccupancy::Nonempty;
+    nearest.installedGeometry =
+        ChunkStreamer::DebugInstalledGeometry::Nonempty;
+    nearest.drawEvidence = ChunkStreamer::DebugDrawEvidence::Drawn;
+
+    ChunkStreamer::DebugChunkState traced;
+    traced.coord = {3, 2, 1};
+    traced.state = ChunkStreamer::DebugState::TerminalFailure;
+    traced.pipelineOwner =
+        ChunkStreamer::DebugPipelineOwner::TerminalFailure;
+    traced.voxelOccupancy =
+        ChunkStreamer::DebugVoxelOccupancy::Nonempty;
+    traced.installedGeometry =
+        ChunkStreamer::DebugInstalledGeometry::Nonempty;
+    traced.remeshIntent = ChunkStreamer::DebugRemeshIntent::Pending;
+    traced.failure = ChunkStreamer::DebugFailure::Mesh;
+    traced.traceOutcome = Rigel::Voxel::ChunkVisibilityOutcome::Failed;
+    traced.traceDrawOutcome =
+        Rigel::Voxel::ChunkVisibilityDrawOutcome::MeshReplacedBeforeDraw;
+    traced.drawEvidence = ChunkStreamer::DebugDrawEvidence::NotDrawn;
+
+    const std::array states{nearest, traced};
+    const auto detail = selectChunkDebugDetail(states, {0, 0, 0});
+    CHECK(detail.has_value());
+    CHECK_EQ(detail->coord, traced.coord);
+
+    const auto valueFor = [&](std::string_view label) {
+        const auto it = std::find_if(
+            detail->lines.begin(),
+            detail->lines.end(),
+            [&](const auto& line) { return line.label == label; });
+        CHECK(it != detail->lines.end());
+        return it != detail->lines.end()
+            ? it->value
+            : std::string_view{};
+    };
+    CHECK_EQ(valueFor("Primary state"), "Terminal pipeline failure");
+    CHECK_EQ(valueFor("Pipeline owner"), "terminal_failure");
+    CHECK_EQ(valueFor("Voxel occupancy"), "nonempty");
+    CHECK_EQ(valueFor("Installed CPU geometry"), "nonempty");
+    CHECK_EQ(valueFor("Remesh intent"), "pending");
+    CHECK_EQ(valueFor("Failure"), "mesh");
+    CHECK_EQ(valueFor("Trace outcome"), "failed");
+    CHECK_EQ(valueFor("Trace draw outcome"), "mesh_replaced_before_draw");
+    CHECK_EQ(valueFor("Main-pass draw evidence"), "not_drawn");
+
+    CHECK(!selectChunkDebugDetail(
+        std::span<const ChunkStreamer::DebugChunkState>{},
+        {0, 0, 0}).has_value());
+}
+
 TEST_CASE(DebugOverlay_PartialAcquisitionCleanupRunsOnce) {
     Rigel::Asset::AssetManager assets;
     assets.registerLoader("shaders", std::make_unique<ShaderLoader>());

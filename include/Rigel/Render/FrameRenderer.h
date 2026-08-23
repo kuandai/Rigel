@@ -10,6 +10,8 @@ namespace Voxel { class World; class WorldView; }
 
 namespace Render {
 
+struct ChunkDebugDetailPresentation;
+
 struct FrameRenderContext {
     Voxel::World& world;
     Voxel::WorldView& worldView;
@@ -38,6 +40,7 @@ public:
 
     bool& debugOverlayEnabled();
     bool& profilerWindowEnabled();
+    const ChunkDebugDetailPresentation* chunkDebugDetail() const;
 
 private:
     struct Impl;

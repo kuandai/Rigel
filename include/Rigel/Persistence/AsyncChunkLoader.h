@@ -55,6 +55,11 @@ public:
         // Jobs submitted to the IO pool but not yet drained by the owner.
         size_t directRegionJobsInFlight = 0;
         size_t speculativeRegionJobsInFlight = 0;
+        size_t submittedUndemandedRegionJobs = 0;
+        size_t maxSubmittedUndemandedRegionJobs = 0;
+        uint64_t speculativeYieldCalls = 0;
+        uint64_t speculativeYieldCandidateVisits = 0;
+        size_t maxSpeculativeYieldCandidateVisits = 0;
     };
 
     AsyncChunkLoader(PersistenceService& service,
@@ -185,6 +190,10 @@ private:
                          const std::shared_ptr<RegionJobState>& jobState);
     bool cancelQueuedSpeculativeRegionLoad();
     bool yieldSubmittedSpeculativeRegionLoad();
+    void trackSubmittedSpeculativeRegionJob(
+        const std::shared_ptr<RegionJobState>& job);
+    bool retireSubmittedSpeculativeRegionJob(
+        const std::shared_ptr<RegionJobState>& job);
     void cancelQueuedDirectRegionLoad(const RegionKey& key);
     bool hasDirectRegionDemand(const RegionKey& key) const;
     void undoRegionLoadAttempt(const RegionKey& key);
@@ -261,7 +270,13 @@ private:
                        RegionKeyHash> m_regionPending;
     std::deque<RegionKey> m_directRegionLoads;
     std::deque<RegionKey> m_speculativeRegionLoads;
+    std::deque<std::shared_ptr<RegionJobState>>
+        m_submittedSpeculativeRegionJobs;
     size_t m_queuedSpeculativeRegionJobCount = 0;
+    size_t m_maxSubmittedSpeculativeRegionJobCount = 0;
+    uint64_t m_speculativeYieldCalls = 0;
+    uint64_t m_speculativeYieldCandidateVisits = 0;
+    size_t m_maxSpeculativeYieldCandidateVisits = 0;
     ChunkRequestMap m_pendingChunks;
     std::deque<Voxel::ChunkCoord> m_deferredChunkLoads;
     ChunkRequestMap m_deferredChunkRequests;

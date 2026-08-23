@@ -231,7 +231,9 @@ for submission, worker-start, completion, cancellation-before-start, missing
 probe, scheduler-wait, and worker-execution accounting. Separate counters record
 same-region demand promotion, the first direct use of a prefetched cache entry,
 and speculative cache eviction before demand. Current queued and physically
-submitted gauges make the scheduler bound and quiescence observable.
+submitted gauges make the scheduler bound and quiescence observable. The
+submitted-undemanded gauge and yield candidate-visit counters expose the
+physical speculative displacement bound independently of logical region owners.
 
 A four-run headless Memory-format measurement used the shipped IO settings (2
 IO threads, 16-region cap, radius-1 prefetch, 12 speculative candidates, and a

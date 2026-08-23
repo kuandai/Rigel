@@ -30,6 +30,14 @@ bool hasPendingDraw(const ChunkVisibilityTraceRecord& record) {
         !record.drawOutcome;
 }
 
+bool canRecordDrawTransition(const ChunkVisibilityTraceRecord& record) {
+    // The mesh store publishes its trace link immediately before the streamer
+    // commits the corresponding nonempty outcome.
+    return !record.drawOutcome &&
+        (record.outcome == ChunkVisibilityOutcome::Pending ||
+         hasPendingDraw(record));
+}
+
 uint64_t nextLifecycleId() {
     static std::atomic<uint64_t> next{1};
     uint64_t id = 0;
@@ -341,7 +349,7 @@ void ChunkVisibilityTracer::observeDraw(
             ++m_unmatchedEvents;
             return;
         }
-        if (!hasPendingDraw(*record)) {
+        if (!canRecordDrawTransition(*record)) {
             return;
         }
     }
@@ -353,7 +361,7 @@ void ChunkVisibilityTracer::observeDraw(
         ++m_unmatchedEvents;
         return;
     }
-    if (!hasPendingDraw(*record)) {
+    if (!canRecordDrawTransition(*record)) {
         return;
     }
     if (timestamp) {
@@ -378,7 +386,7 @@ void ChunkVisibilityTracer::observeMeshUnavailable(
             ++m_unmatchedEvents;
             return;
         }
-        if (!hasPendingDraw(*record)) {
+        if (!canRecordDrawTransition(*record)) {
             return;
         }
     }
@@ -390,7 +398,7 @@ void ChunkVisibilityTracer::observeMeshUnavailable(
         ++m_unmatchedEvents;
         return;
     }
-    if (hasPendingDraw(*record)) {
+    if (canRecordDrawTransition(*record)) {
         record->drawOutcome = outcome;
         record->drawTerminalTime = timestamp;
     }

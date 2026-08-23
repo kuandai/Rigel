@@ -3883,6 +3883,156 @@ TEST_CASE(ChunkStreamer_ConfigRetiredMeshTransfersToCanonicalWakeOwner) {
     }
 }
 
+TEST_CASE(ChunkStreamer_ConfigRetiredDirtyWakeTransfersToDependencyOwner) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const BlockID solid = registerTestBlock(
+        registry, "rigel:config_retired_dependency_transfer");
+    const ChunkCoord missingDependency{0, 0, 0};
+    const ChunkCoord remeshCoord{1, 0, 0};
+
+    addLoadedNeighborShell(
+        manager,
+        remeshCoord,
+        missingDependency,
+        generator->config().world.version);
+    for (const ChunkCoord& coord : {
+             remeshCoord,
+             ChunkCoord{-1, 0, 0},
+             ChunkCoord{0, 1, 0},
+             ChunkCoord{0, -1, 0},
+             ChunkCoord{0, 0, 1},
+             ChunkCoord{0, 0, -1}}) {
+        Chunk& resident = manager.getOrCreateChunk(coord);
+        resident.setWorldGenVersion(generator->config().world.version);
+        resident.setLoadedFromDisk(true);
+        resident.clearPersistDirty();
+        resident.clearDirty();
+    }
+    Chunk& chunk = *manager.getChunk(remeshCoord);
+    chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    chunk.clearPersistDirty();
+    chunk.clearDirty();
+    meshStore.set(remeshCoord, {});
+    chunk.invalidateMesh();
+
+    bool dependencyPending = true;
+    size_t physicalBuilds = 0;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 2;
+    stream.meshQueueLimit = 1;
+    stream.genQueueLimit = 1;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.setChunkLoader(
+        [&](ChunkLoadRequest request) {
+            return request.coord == missingDependency
+                ? ChunkLoadRequestResult::Queued
+                : ChunkLoadRequestResult::Missing;
+        });
+    streamer.setChunkPendingCallback(
+        [&](ChunkCoord coord) {
+            return coord == missingDependency && dependencyPending;
+        });
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
+        streamer, [&physicalBuilds]() { ++physicalBuilds; });
+    streamer.markSpawnDiscoveryComplete();
+
+    streamer.update(missingDependency.toWorldCenter());
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, remeshCoord));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasConfigRetiredWork(streamer, remeshCoord));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    streamer.setConfig(stream);
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, remeshCoord));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasConfigRetiredWork(streamer, remeshCoord));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            configRetiredWorkCount(streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
+
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 2;
+    streamer.setConfig(stream);
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
+
+    chunk.invalidateMesh();
+    streamer.prioritizeMesh(remeshCoord);
+
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasConfigRetiredWork(streamer, remeshCoord));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            configRetiredWorkCount(streamer),
+        static_cast<size_t>(0));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, remeshCoord));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasReadyPendingMesh(streamer, remeshCoord));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(0));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+
+    dependencyPending = false;
+    Chunk& dependency = manager.getOrCreateChunk(missingDependency);
+    dependency.setWorldGenVersion(generator->config().world.version);
+    dependency.setLoadedFromDisk(true);
+    dependency.clearPersistDirty();
+    dependency.clearDirty();
+
+    streamer.update(missingDependency.toWorldCenter());
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, remeshCoord));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasReadyPendingMesh(streamer, remeshCoord));
+    CHECK_EQ(physicalBuilds, static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::meshCompletionCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().mesh.pending, static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().mesh.inFlight, static_cast<size_t>(1));
+
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().meshJobsCompleted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsAccepted, static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().meshJobsRejectedStale,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(physicalBuilds, static_cast<size_t>(1));
+    CHECK(!chunk.isDirty());
+    CHECK(meshStore.contains(remeshCoord));
+    CHECK(streamer.diagnostics().mesh.empty());
+
+    for (uint32_t stable = 0;
+         stable <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++stable) {
+        streamer.update(missingDependency.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(1));
+    CHECK_EQ(physicalBuilds, static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::Quiescent);
+}
+
 TEST_CASE(ChunkStreamer_ConfigRetiredLoadTransfersToReplacementLoader) {
     ChunkManager manager;
     BlockRegistry registry;

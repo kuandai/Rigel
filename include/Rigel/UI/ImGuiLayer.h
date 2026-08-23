@@ -11,6 +11,7 @@ void beginFrame();
 void endFrame();
 
 void renderProfilerWindow(bool enabled);
+void renderChunkDebugLegend(bool enabled);
 
 bool wantsCaptureKeyboard();
 bool wantsCaptureMouse();

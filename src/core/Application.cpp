@@ -725,6 +725,8 @@ void Application::run() {
 #if defined(RIGEL_ENABLE_IMGUI)
                     UI::renderProfilerWindow(
                         m_impl->renderer.profilerWindowEnabled());
+                    UI::renderChunkDebugLegend(
+                        m_impl->renderer.debugOverlayEnabled());
 #else
                     (void)width;
                     (void)height;

@@ -124,6 +124,13 @@ ranges in `ChunkMesh`.
 `MeshId` plus a revision that advances on replacement. Empty chunks and empty
 mesh results have no stored geometry.
 
+The chunk debug snapshot does not use mesh-store presence as draw evidence. It
+reports voxel occupancy, installed empty/nonempty CPU geometry, current remesh
+intent, trace outcome, and renderer-confirmed main-pass draw evidence as
+independent values. Consequently, a completed or empty lifecycle may have no
+draw, and installed nonempty geometry may still be distance-culled or awaiting
+its first main-pass submission.
+
 ## Rendering
 
 `ChunkRenderer` consumes `WorldMeshStore` through `WorldRenderContext`. Its GPU

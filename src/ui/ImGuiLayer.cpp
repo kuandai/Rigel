@@ -1,6 +1,7 @@
 #include "Rigel/UI/ImGuiLayer.h"
 
 #include "Rigel/Core/Profiler.h"
+#include "Rigel/Render/ChunkDebugPresentation.h"
 #include "Rigel/Render/OpenGLRuntime.h"
 
 #include <algorithm>
@@ -309,6 +310,41 @@ void renderProfilerWindow(bool enabled) {
         ImGui::EndTooltip();
     }
 
+    ImGui::End();
+#else
+    (void)enabled;
+#endif
+}
+
+void renderChunkDebugLegend(bool enabled) {
+#if defined(RIGEL_ENABLE_IMGUI)
+    if (!g_initialized || !enabled) {
+        return;
+    }
+
+    ImGui::SetNextWindowPos(ImVec2(12.0f, 286.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.65f);
+    ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav;
+    ImGui::Begin("Chunk streaming states", nullptr, flags);
+    for (const auto& presentation : Render::kChunkDebugPresentations) {
+        const auto& color = presentation.color;
+        ImGui::ColorButton(
+            presentation.legend.data(),
+            ImVec4(color[0], color[1], color[2], 1.0f),
+            ImGuiColorEditFlags_NoTooltip |
+                ImGuiColorEditFlags_NoDragDrop,
+            ImVec2(12.0f, 12.0f));
+        ImGui::SameLine();
+        ImGui::TextUnformatted(presentation.legend.data());
+    }
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 390.0f);
+    ImGui::TextUnformatted(Render::kChunkDebugLegendQualification.data());
+    ImGui::PopTextWrapPos();
     ImGui::End();
 #else
     (void)enabled;

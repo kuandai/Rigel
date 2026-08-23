@@ -13,6 +13,7 @@ overlays after the main scene; Application renders the ImGui profiler
 window from the same state. When enabled the tooling draws:
 
 - Chunk streaming field (colored cubes for pipeline state).
+- Chunk streaming legend (when ImGui is available).
 - Frame time graph (ms per frame).
 - ImGui profiler window (flame graph of per-frame scopes).
 - Entity bounds wireframes.
@@ -45,10 +46,18 @@ skipped.
 
 ### 3.1 Data Source
 
-- `WorldView::getChunkDebugStates` exposes `ChunkStreamer` state.
-- Only tracked chunks appear (queued, ready, or failed states).
-- The field is centered on the camera chunk and clipped to the current
-  `viewDistanceChunks` radius.
+- `WorldView::getChunkDebugStates` collects a value snapshot from the streamer,
+  CPU mesh store, active visibility trace, and renderer draw cache.
+- Collection walks only the center/radius cube requested by the enabled
+  visualizer. It does not scan all tracked chunks, retain mesh-store entries,
+  or place trace owners in the returned values.
+- Only coordinates with a production lifecycle owner, installed CPU mesh, or
+  reported failure appear. The field is centered on the camera chunk and
+  clipped to the current `viewDistanceChunks` radius.
+- Pipeline owner, voxel occupancy, installed CPU geometry, dirty/remesh intent,
+  failure category, trace build/draw outcome, and current-revision draw evidence
+  are separate fields. The presentation color is a summary, not an
+  authoritative visibility result.
 
 ### 3.2 Layout and Scale
 
@@ -64,15 +73,27 @@ skipped.
 
 ### 3.3 Colors and Meanings
 
-State mapping (from `ChunkStreamer::DebugState`):
+The runtime legend and cube colors use this state mapping:
 
-- `QueuedGen` (red): waiting for world generation.
-- `LoadedFromDisk` (gray): persisted chunk data is ready but not yet meshed.
-- `ReadyData` (yellow): chunk data loaded/generated, mesh not queued.
-- `QueuedMesh` (blue): waiting for mesh build.
-- `ReadyMesh` (green): mesh available.
-- `GenerationFailed` (magenta): generation terminated with an error.
-- `MeshFailed` (orange): mesh construction terminated with an error.
+- Red: waiting for chunk data, including pending load, generation, and their
+  capacity waits.
+- Amber: chunk data exists but required neighbor data is still missing.
+- Cyan: mesh work is eligible and waiting in the bounded scheduler.
+- Blue: the current mesh task is submitted or building.
+- Gray: the voxel chunk is empty and its lifecycle completed without a mesh
+  build.
+- Light violet: the accepted CPU mesh has empty geometry.
+- Violet: the accepted CPU mesh has nonempty geometry.
+- Pink: a dirty/remesh owner is pending while prior CPU geometry may remain
+  installed.
+- Magenta: a load, generation, mesh, or eviction failure currently owns the
+  coordinate.
+
+Lifecycle-complete, voxel-empty, accepted-empty, and accepted-nonempty chunks
+are not necessarily drawn. In particular, accepted nonempty CPU geometry is
+not a visibility claim. `Drawn` is reported separately and only when the
+current mesh revision has produced a real main-pass draw call; store presence,
+GPU upload, and the streamer's lifecycle-complete state do not imply it.
 
 ### 3.4 Rendering Rules
 
@@ -81,6 +102,9 @@ State mapping (from `ChunkStreamer::DebugState`):
 - Faces between different states are not culled (state boundaries remain
   visible).
 - Backface culling is disabled; depth testing is off; alpha blending is on.
+- One checked presentation table owns the state index, legend label, color,
+  mesh bucket, and VBO count, so buffer allocation and rendering cardinality
+  cannot diverge.
 
 ---
 

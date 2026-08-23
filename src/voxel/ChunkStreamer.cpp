@@ -898,6 +898,7 @@ void ChunkStreamer::processCompletions() {
             }
             m_loadPending.erase(pendingIt);
             if (completion.outcome == ChunkLoadOutcome::Failed) {
+                m_priorityMeshRequests.erase(completion.coord);
                 setFailure(
                     m_loadErrors,
                     m_loadFailureVersion,
@@ -1396,6 +1397,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
 
         if (genResult.failed) {
             stateIt->second = ChunkState::GenerationFailed;
+            m_priorityMeshRequests.erase(genResult.coord);
             ++m_workMetrics.generationJobsFailed;
             setFailure(
                 m_generationErrors,
@@ -1747,12 +1749,21 @@ void ChunkStreamer::queueLoadedNeighbors(ChunkCoord coord) {
 }
 
 std::optional<size_t> ChunkStreamer::dirtyMeshPriority(ChunkCoord coord) const {
+    int distanceSq = 0;
+    if (m_lastCenter) {
+        distanceSq = distanceSquared(*m_lastCenter, coord);
+    }
     auto priorityIt = m_desiredPriority.find(coord);
-    if (priorityIt != m_desiredPriority.end()) {
+    const int viewDistance = std::max(0, m_config.viewDistanceChunks);
+    if (priorityIt != m_desiredPriority.end() &&
+        (!m_lastCenter || distanceSq <= viewDistance * viewDistance)) {
         return priorityIt->second;
     }
+    const int unloadDistance = std::max(
+        viewDistance, m_config.unloadDistanceChunks);
     if (m_chunkManager && m_chunkManager->getChunk(coord) &&
-        m_meshStore && m_meshStore->contains(coord)) {
+        m_meshStore && m_meshStore->contains(coord) &&
+        (!m_lastCenter || distanceSq <= unloadDistance * unloadDistance)) {
         return m_desired.size();
     }
     return std::nullopt;
@@ -1861,6 +1872,9 @@ void ChunkStreamer::retirePendingMesh(ChunkCoord coord) {
 }
 
 bool ChunkStreamer::hasEligibleMeshWork(ChunkCoord coord) const {
+    if (!dirtyMeshPriority(coord)) {
+        return false;
+    }
     Chunk* chunk = m_chunkManager
         ? m_chunkManager->getChunk(coord)
         : nullptr;
@@ -1876,9 +1890,6 @@ bool ChunkStreamer::hasEligibleMeshWork(ChunkCoord coord) const {
     }
     const bool hasMesh = m_meshStore && m_meshStore->contains(coord);
     const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
-    if (m_desiredSet.find(coord) == m_desiredSet.end() && !hasMesh) {
-        return false;
-    }
     return !isMeshed || chunk->isDirty();
 }
 
@@ -1913,6 +1924,26 @@ void ChunkStreamer::retireReplacementPending(ChunkCoord coord) {
 void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     const auto priority = dirtyMeshPriority(coord);
     if (!priority) {
+        Chunk* chunk = m_chunkManager
+            ? m_chunkManager->getChunk(coord)
+            : nullptr;
+        const bool currentVersion = chunk &&
+            (!m_generator ||
+             chunk->worldGenVersion() ==
+                 m_generator->config().world.version);
+        if (currentVersion && chunk->isEmpty()) {
+            if (m_meshStore) {
+                m_meshStore->remove(coord);
+            }
+            chunk->clearDirty();
+            m_countedMeshRetryRevisions.erase(coord);
+            eraseFailure(m_meshErrors, m_meshFailureVersion, coord);
+            m_states[coord] = ChunkState::ReadyMesh;
+            queueLoadedNeighbors(coord);
+            completePendingVisibilityTrace(
+                coord, ChunkVisibilityOutcome::VoxelEmpty);
+        }
+        retirePendingMesh(coord);
         retireReplacementPending(coord);
         m_priorityMeshRequests.erase(coord);
         return;

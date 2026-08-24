@@ -2190,6 +2190,8 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesGenerationLifecycleDelay) {
     auto record = tracer->latestRecord();
     CHECK(record.has_value());
     CHECK(record->observed(
+        ChunkVisibilityStage::SourceResolutionPending));
+    CHECK(record->observed(
         ChunkVisibilityStage::GenerationSchedulerPending));
     CHECK(record->observed(ChunkVisibilityStage::GenerationCapacityWait));
     CHECK_EQ(
@@ -2220,11 +2222,14 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesGenerationLifecycleDelay) {
     CHECK_EQ(record->origin, ChunkVisibilityOrigin::Generated);
     CHECK(record->observed(ChunkVisibilityStage::DataReady));
     const auto durations = record->durations();
+    CHECK(durations.sourceResolutionWait.has_value());
     CHECK(durations.generationQueueWait.has_value());
     CHECK(durations.generationCapacityWait.has_value());
     CHECK(durations.generationPoolWait.has_value());
     CHECK(durations.generationExecution.has_value());
     CHECK(durations.generationResultWait.has_value());
+    CHECK(*durations.sourceResolutionWait >
+          ChunkVisibilityDuration::zero());
     CHECK(*durations.generationQueueWait > ChunkVisibilityDuration::zero());
     CHECK(*durations.generationCapacityWait >
           ChunkVisibilityDuration::zero());
@@ -2233,7 +2238,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesGenerationLifecycleDelay) {
     CHECK(*durations.generationResultWait > ChunkVisibilityDuration::zero());
 }
 
-TEST_CASE(ChunkStreamer_BlockerClassifierSeparatesGenerationSchedulerPending) {
+TEST_CASE(ChunkStreamer_BlockerClassifierSeparatesSourceResolutionPending) {
     ChunkManager manager;
     BlockRegistry registry;
     WorldMeshStore meshStore;
@@ -2257,17 +2262,17 @@ TEST_CASE(ChunkStreamer_BlockerClassifierSeparatesGenerationSchedulerPending) {
     const ChunkCoord center{0, 0, 0};
     streamer.update(center.toWorldCenter());
     CHECK(gate->waitUntilEntered());
-    size_t schedulerPending = 0;
+    size_t sourcePending = 0;
     for (const ChunkCoord coord :
          Rigel::Voxel::detail::ChunkStreamerTestAccess::
              desiredCoordinates(streamer)) {
         if (Rigel::Voxel::detail::ChunkStreamerTestAccess::
                 classifyVisibilityBlocker(streamer, coord) ==
-            ChunkVisibilityBlockerState::GenerationSchedulerPending) {
-            ++schedulerPending;
+            ChunkVisibilityBlockerState::SourceResolutionPending) {
+            ++sourcePending;
         }
     }
-    CHECK_EQ(schedulerPending, static_cast<size_t>(6));
+    CHECK_EQ(sourcePending, static_cast<size_t>(6));
 
     gate->release();
     stream.viewDistanceChunks = 0;
@@ -2287,7 +2292,7 @@ TEST_CASE(ChunkStreamer_BlockerClassifierSeparatesGenerationSchedulerPending) {
     CHECK(streamer.diagnostics().workEmpty());
 }
 
-TEST_CASE(ChunkStreamer_LoadSourceResolutionIsUnownedBeforeBudgetVisit) {
+TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesBudgetedSourceResolution) {
     WorldResources resources;
     World world(resources);
     auto& registry = resources.registry();
@@ -2308,6 +2313,34 @@ TEST_CASE(ChunkStreamer_LoadSourceResolutionIsUnownedBeforeBudgetVisit) {
         generator);
     loader->setPrefetchRadius(0);
 
+    const ChunkCoord center{0, 0, 0};
+    const BlockID solid =
+        registerTestBlock(registry, "rigel:source_resolution_center");
+    Chunk& centerChunk = manager.getOrCreateChunk(center);
+    centerChunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    centerChunk.setWorldGenVersion(generator->config().world.version);
+    centerChunk.setLoadedFromDisk(true);
+    centerChunk.clearPersistDirty();
+    centerChunk.clearDirty();
+    meshStore.set(center, {});
+    std::array<ChunkCoord, DirectionCount> faceNeighbors{};
+    for (int index = 0; index < DirectionCount; ++index) {
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(static_cast<Direction>(index), dx, dy, dz);
+        const ChunkCoord neighbor = center.offset(dx, dy, dz);
+        faceNeighbors[static_cast<size_t>(index)] = neighbor;
+        Chunk& chunk = manager.getOrCreateChunk(neighbor);
+        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setLoadedFromDisk(true);
+        chunk.clearPersistDirty();
+        chunk.clearDirty();
+    }
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{center, 2});
+    size_t loaderCalls = 0;
+
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
@@ -2320,24 +2353,77 @@ TEST_CASE(ChunkStreamer_LoadSourceResolutionIsUnownedBeforeBudgetVisit) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
     streamer.markSpawnDiscoveryComplete();
-    configurePersistedChunkLoader(streamer, loader);
-
-    const ChunkCoord center{0, 0, 0};
     streamer.update(center.toWorldCenter());
-    size_t unresolved = 0;
-    size_t generationPending = 0;
-    for (const ChunkCoord coord : Rigel::Voxel::detail::
-             ChunkStreamerTestAccess::desiredCoordinates(streamer)) {
-        const auto state = Rigel::Voxel::detail::ChunkStreamerTestAccess::
-            classifyVisibilityBlocker(streamer, coord);
-        unresolved += state == ChunkVisibilityBlockerState::Unowned ? 1 : 0;
-        generationPending +=
-            state == ChunkVisibilityBlockerState::GenerationSchedulerPending
+    for (const ChunkCoord neighbor : faceNeighbors) {
+        CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::evictChunk(
+            streamer, neighbor));
+    }
+    streamer.setVisibilityTracer(tracer);
+    configurePersistedChunkLoader(streamer, loader);
+    streamer.setChunkLoader([loader, &loaderCalls](ChunkLoadRequest request) {
+        ++loaderCalls;
+        return loader->request(request);
+    });
+    centerChunk.invalidateMesh();
+    streamer.prioritizeMesh(center);
+
+    CHECK_EQ(loaderCalls, static_cast<size_t>(0));
+    CHECK_EQ(loader->workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader->workCount().inFlight, static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationFlightCount(streamer),
+        static_cast<size_t>(0));
+
+    const auto firstMeasurement = tracer->measurement();
+    CHECK_EQ(firstMeasurement.records.size(), static_cast<size_t>(1));
+    const auto lifecycleKey = firstMeasurement.records.front().key;
+    CHECK(firstMeasurement.records.front()
+              .firstObservedBlockingDesiredCardinalNeighbors
+              .has_value());
+    CHECK(firstMeasurement.records.front()
+              .blockingDesiredCardinalNeighbors
+              .has_value());
+    const auto first = *firstMeasurement.records.front()
+        .blockingDesiredCardinalNeighbors;
+    CHECK_EQ(first.count, static_cast<uint8_t>(DirectionCount));
+    for (const auto& blocker : first.neighbors) {
+        CHECK(blocker.required);
+        CHECK_EQ(
+            blocker.state,
+            ChunkVisibilityBlockerState::SourceResolutionPending);
+        CHECK_EQ(
+            chunkVisibilityBlockerStateName(blocker.state),
+            std::string_view("source_resolution_pending"));
+        CHECK(!loader->executionState(blocker.coord).has_value());
+    }
+
+    streamer.update(center.toWorldCenter());
+    CHECK_EQ(loaderCalls, static_cast<size_t>(1));
+    const auto secondMeasurement = tracer->measurement();
+    CHECK_EQ(secondMeasurement.records.size(), static_cast<size_t>(1));
+    CHECK_EQ(secondMeasurement.records.front().key, lifecycleKey);
+    CHECK_EQ(
+        secondMeasurement.records.front()
+            .firstObservedBlockingDesiredCardinalNeighbors,
+        firstMeasurement.records.front()
+            .firstObservedBlockingDesiredCardinalNeighbors);
+    const auto second = *secondMeasurement.records.front()
+        .blockingDesiredCardinalNeighbors;
+    size_t sourcePending = 0;
+    size_t resultPublished = 0;
+    for (const auto& blocker : second.neighbors) {
+        sourcePending += blocker.state ==
+                ChunkVisibilityBlockerState::SourceResolutionPending
+            ? 1
+            : 0;
+        resultPublished += blocker.state ==
+                ChunkVisibilityBlockerState::LoadRegionResultPublished
             ? 1
             : 0;
     }
-    CHECK_EQ(unresolved, static_cast<size_t>(6));
-    CHECK_EQ(generationPending, static_cast<size_t>(0));
+    CHECK_EQ(sourcePending, static_cast<size_t>(5));
+    CHECK_EQ(resultPublished, static_cast<size_t>(1));
 
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -2357,12 +2443,15 @@ TEST_CASE(ChunkStreamer_LoadSourceResolutionIsUnownedBeforeBudgetVisit) {
     CHECK_EQ(
         streamer.diagnostics().state,
         StreamingLifecycleState::Quiescent);
+    CHECK_EQ(loader->workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader->workCount().inFlight, static_cast<size_t>(0));
 }
 
 TEST_CASE(ChunkStreamer_GenerationWorkerEntryMatchesWithTracingEnabled) {
     struct Result {
-        ChunkVisibilityBlockerState boundaryState =
-            ChunkVisibilityBlockerState::Unowned;
+        size_t workerEntries = 0;
+        size_t completionPublications = 0;
+        size_t publishedCompletionCount = 0;
         uint64_t generationJobsStarted = 0;
         StreamingLifecycleState lifecycle = StreamingLifecycleState::Streaming;
     };
@@ -2381,6 +2470,8 @@ TEST_CASE(ChunkStreamer_GenerationWorkerEntryMatchesWithTracingEnabled) {
                                : static_cast<size_t>(0)});
         std::atomic<bool> enqueueReturnEntered{false};
         std::atomic<bool> enqueueReturnReleased{false};
+        std::atomic<size_t> workerEntries{0};
+        std::atomic<size_t> completionPublications{0};
 
         ChunkStreamer streamer(
             manager, meshStore, registry, nullptr, generator);
@@ -2400,7 +2491,18 @@ TEST_CASE(ChunkStreamer_GenerationWorkerEntryMatchesWithTracingEnabled) {
         Rigel::Voxel::detail::ChunkStreamerTestAccess::
             setGenerationStartCallback(
                 streamer,
-                [workerGate]() { workerGate->enterAndWait(); });
+                [workerGate, &workerEntries]() {
+                    workerEntries.fetch_add(1, std::memory_order_relaxed);
+                    workerGate->enterAndWait();
+                });
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            setGenerationResultPublishedObserver(
+                streamer,
+                [&](ChunkCoord published) {
+                    CHECK_EQ(published, coord);
+                    completionPublications.fetch_add(
+                        1, std::memory_order_relaxed);
+                });
         Rigel::Voxel::detail::ChunkStreamerTestAccess::
             gateNextGenerationPoolEnqueueReturn(
                 streamer,
@@ -2416,12 +2518,6 @@ TEST_CASE(ChunkStreamer_GenerationWorkerEntryMatchesWithTracingEnabled) {
         CHECK(waitUntilTrue(enqueueReturnEntered));
         CHECK(workerGate->waitUntilEntered());
         Result result;
-        result.boundaryState = Rigel::Voxel::detail::
-            ChunkStreamerTestAccess::classifyVisibilityBlocker(
-                streamer, coord);
-        CHECK_EQ(
-            result.boundaryState,
-            ChunkVisibilityBlockerState::GenerationWorkerRunning);
         if (tracingEnabled) {
             const auto record = tracer->latestRecord();
             CHECK(record.has_value());
@@ -2429,12 +2525,31 @@ TEST_CASE(ChunkStreamer_GenerationWorkerEntryMatchesWithTracingEnabled) {
                 ChunkVisibilityStage::GenerationExecutorSubmit));
             CHECK(record->observed(
                 ChunkVisibilityStage::GenerationWorkerStart));
+            CHECK(
+                record->stage(
+                    ChunkVisibilityStage::GenerationExecutorSubmit)
+                    .has_value());
+            CHECK(
+                record->stage(
+                    ChunkVisibilityStage::GenerationWorkerStart)
+                    .has_value());
+            CHECK(
+                *record->stage(
+                    ChunkVisibilityStage::GenerationExecutorSubmit) <=
+                *record->stage(
+                    ChunkVisibilityStage::GenerationWorkerStart));
         }
 
         releaseEnqueueOnExit.release();
         submitter.join();
         workerGate->release();
         CHECK(waitForGenerationCompletion(streamer));
+        result.workerEntries =
+            workerEntries.load(std::memory_order_relaxed);
+        result.completionPublications =
+            completionPublications.load(std::memory_order_relaxed);
+        result.publishedCompletionCount = Rigel::Voxel::detail::
+            ChunkStreamerTestAccess::generationCompletionCount(streamer);
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (std::chrono::steady_clock::now() < deadline) {
@@ -2456,7 +2571,16 @@ TEST_CASE(ChunkStreamer_GenerationWorkerEntryMatchesWithTracingEnabled) {
 
     const Result untraced = run(false);
     const Result traced = run(true);
-    CHECK_EQ(traced.boundaryState, untraced.boundaryState);
+    CHECK_EQ(traced.workerEntries, untraced.workerEntries);
+    CHECK_EQ(
+        traced.completionPublications,
+        untraced.completionPublications);
+    CHECK_EQ(
+        traced.publishedCompletionCount,
+        untraced.publishedCompletionCount);
+    CHECK_EQ(traced.workerEntries, static_cast<size_t>(1));
+    CHECK_EQ(traced.completionPublications, static_cast<size_t>(1));
+    CHECK_EQ(traced.publishedCompletionCount, static_cast<size_t>(1));
     CHECK_EQ(traced.generationJobsStarted, untraced.generationJobsStarted);
     CHECK_EQ(traced.lifecycle, untraced.lifecycle);
 }
@@ -2802,6 +2926,10 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     auto replacementGenerator =
         std::make_shared<WorldGenerator>(registry, replacementConfig);
 
+    auto originalGate = std::make_shared<WorkerGate>();
+    auto replacementGate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> jobsEntered{0};
+
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
@@ -2815,12 +2943,8 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
     streamer.markSpawnDiscoveryComplete();
-
-    auto originalGate = std::make_shared<WorkerGate>();
-    auto replacementGate = std::make_shared<WorkerGate>();
     WorkerGateRelease releaseOriginalOnExit(originalGate);
     WorkerGateRelease releaseReplacementOnExit(replacementGate);
-    std::atomic<size_t> jobsEntered{0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
         streamer,
         [originalGate, replacementGate, &jobsEntered]() {
@@ -2983,6 +3107,10 @@ TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGene
     });
     CHECK_NE(originalMesh.indexCount(), replacementMesh.indexCount());
 
+    auto originalGate = std::make_shared<WorkerGate>();
+    auto replacementGate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> jobsEntered{0};
+
     ChunkStreamer streamer(
         manager, meshStore, registry, &atlas, originalGenerator);
     StreamingConfig stream;
@@ -2996,11 +3124,8 @@ TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGene
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
     streamer.markSpawnDiscoveryComplete();
-    auto originalGate = std::make_shared<WorkerGate>();
-    auto replacementGate = std::make_shared<WorkerGate>();
     WorkerGateRelease releaseOriginalOnExit(originalGate);
     WorkerGateRelease releaseReplacementOnExit(replacementGate);
-    std::atomic<size_t> jobsEntered{0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
         streamer,
         [originalGate, replacementGate, &jobsEntered]() {
@@ -6490,6 +6615,11 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
             }
 
             auto gate = std::make_shared<WorkerGate>();
+            ChunkLoadRequestId loadRequestId = 0;
+            bool loadCancelled = false;
+            bool loadCompletionPending = false;
+            size_t physicalLoadInFlight = 0;
+            uint64_t physicalLoadsStarted = 0;
             ChunkStreamer streamer(
                 manager, meshStore, registry, nullptr, generator);
             WorkerGateRelease releaseOnExit(gate);
@@ -6505,11 +6635,6 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
             streamer.setConfig(stream);
             streamer.markSpawnDiscoveryComplete();
 
-            ChunkLoadRequestId loadRequestId = 0;
-            bool loadCancelled = false;
-            bool loadCompletionPending = false;
-            size_t physicalLoadInFlight = 0;
-            uint64_t physicalLoadsStarted = 0;
             if (completionKind == CompletionKind::Load) {
                 streamer.setChunkLoader([&](ChunkLoadRequest request) {
                     CHECK_EQ(request.coord, retiringCoord);
@@ -8350,6 +8475,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIdentifiesRunningGenerationBlocker) {
     stream.workerThreads = 1;
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
     streamer.setVisibilityTracer(tracer);
     streamer.setChunkLoader([&](ChunkLoadRequest request) {
         if (request.coord == traced) {
@@ -8429,6 +8555,24 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIdentifiesRunningGenerationBlocker) {
             neighbor.state,
             ChunkVisibilityBlockerState::NoLongerRequired);
     }
+
+    gate->release();
+    CHECK(waitForGenerationCompletion(streamer));
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        streamer.processCompletions();
+        streamer.update(traced.toWorldCenter());
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            break;
+        }
+        std::this_thread::yield();
+    }
+    CHECK(streamer.diagnostics().workEmpty());
+    CHECK_EQ(
+        streamer.diagnostics().state,
+        StreamingLifecycleState::Quiescent);
 }
 
 TEST_CASE(ChunkStreamer_LateVisibilityOptInObservesExistingGenerationFlight) {
@@ -8482,6 +8626,7 @@ TEST_CASE(ChunkStreamer_LateVisibilityOptInObservesExistingGenerationFlight) {
     streamer.setVisibilityTracer(tracer);
     const auto record = tracer->latestRecord();
     CHECK(record.has_value());
+    const auto lifecycleKey = record->key;
     CHECK_EQ(record->origin, ChunkVisibilityOrigin::ResidentLeftCensored);
     CHECK(record->blockingDesiredCardinalNeighbors.has_value());
     CHECK_EQ(
@@ -8498,16 +8643,43 @@ TEST_CASE(ChunkStreamer_LateVisibilityOptInObservesExistingGenerationFlight) {
 
     gate->release();
     CHECK(publicationGate->waitUntilEntered());
+    streamer.update(traced.toWorldCenter());
+    auto refreshed = tracer->measurement();
+    CHECK_EQ(refreshed.records.size(), static_cast<size_t>(1));
+    CHECK(refreshed.records.front()
+              .blockingDesiredCardinalNeighbors
+              .has_value());
     CHECK_EQ(
-        Rigel::Voxel::detail::ChunkStreamerTestAccess::
-            classifyVisibilityBlocker(streamer, blocker),
+        refreshed.records.front()
+            .blockingDesiredCardinalNeighbors->neighbors[0].state,
         ChunkVisibilityBlockerState::GenerationWorkerRunning);
     publicationGate->release();
     CHECK(waitForGenerationCompletion(streamer));
+    streamer.update(traced.toWorldCenter());
+    refreshed = tracer->measurement();
     CHECK_EQ(
-        Rigel::Voxel::detail::ChunkStreamerTestAccess::
-            classifyVisibilityBlocker(streamer, blocker),
+        refreshed.records.front()
+            .blockingDesiredCardinalNeighbors->neighbors[0].state,
         ChunkVisibilityBlockerState::GenerationResultPublished);
+    const auto publishedBlockers =
+        refreshed.records.front().blockingDesiredCardinalNeighbors;
+    auto replacementGenerator = std::make_shared<WorldGenerator>(
+        registry, generator->config());
+    streamer.setGenerator(replacementGenerator);
+    auto replacedRecords = tracer->snapshot();
+    const auto replaced = std::find_if(
+        replacedRecords.begin(),
+        replacedRecords.end(),
+        [&](const auto& candidate) {
+            return candidate.key == lifecycleKey;
+        });
+    CHECK(replaced != replacedRecords.end());
+    CHECK_EQ(
+        replaced->outcome,
+        ChunkVisibilityOutcome::GeneratorReplaced);
+    CHECK_EQ(
+        replaced->blockingDesiredCardinalNeighbors,
+        publishedBlockers);
     bool quiescent = false;
     const auto quiescenceDeadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -8527,6 +8699,17 @@ TEST_CASE(ChunkStreamer_LateVisibilityOptInObservesExistingGenerationFlight) {
         Rigel::Voxel::detail::ChunkStreamerTestAccess::
             generationFlightCount(streamer),
         static_cast<size_t>(0));
+    replacedRecords = tracer->snapshot();
+    const auto settledReplacement = std::find_if(
+        replacedRecords.begin(),
+        replacedRecords.end(),
+        [&](const auto& candidate) {
+            return candidate.key == lifecycleKey;
+        });
+    CHECK(settledReplacement != replacedRecords.end());
+    CHECK_EQ(
+        settledReplacement->blockingDesiredCardinalNeighbors,
+        publishedBlockers);
 }
 
 TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
@@ -8581,8 +8764,6 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
     });
 
     streamer.update(traced.toWorldCenter());
-    Rigel::Voxel::detail::ChunkStreamerTestAccess::queueLoadGen(
-        streamer, traced);
 
     const auto record = tracer->latestRecord();
     CHECK(record.has_value());
@@ -8606,8 +8787,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
     blockerExecution = {
         ChunkLoadExecutionOwner::Region,
         ChunkLoadExecutionPhase::RetryWaiting};
-    Rigel::Voxel::detail::ChunkStreamerTestAccess::queueLoadGen(
-        streamer, traced);
+    streamer.update(traced.toWorldCenter());
     CHECK_EQ(
         tracer->latestRecord()
             ->blockingDesiredCardinalNeighbors->neighbors[0].state,
@@ -8616,8 +8796,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
     blockerExecution = {
         ChunkLoadExecutionOwner::Payload,
         ChunkLoadExecutionPhase::ResultPublished};
-    Rigel::Voxel::detail::ChunkStreamerTestAccess::queueLoadGen(
-        streamer, traced);
+    streamer.update(traced.toWorldCenter());
     CHECK_EQ(
         tracer->latestRecord()
             ->blockingDesiredCardinalNeighbors->neighbors[0].state,
@@ -8626,8 +8805,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
     blockerExecution = {
         ChunkLoadExecutionOwner::Payload,
         ChunkLoadExecutionPhase::TerminalFailed};
-    Rigel::Voxel::detail::ChunkStreamerTestAccess::queueLoadGen(
-        streamer, traced);
+    streamer.update(traced.toWorldCenter());
     CHECK_EQ(
         tracer->latestRecord()
             ->blockingDesiredCardinalNeighbors->neighbors[0].state,
@@ -8706,8 +8884,6 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSnapshotsEveryBlockingFace) {
         });
 
     streamer.update(traced.toWorldCenter());
-    Rigel::Voxel::detail::ChunkStreamerTestAccess::queueLoadGen(
-        streamer, traced);
     auto record = tracer->latestRecord();
     CHECK(record.has_value());
     const ChunkVisibilityLifecycleKey lifecycleKey = record->key;
@@ -8752,8 +8928,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSnapshotsEveryBlockingFace) {
         neighbor.setLoadedFromDisk(true);
         neighbor.clearDirty();
     }
-    Rigel::Voxel::detail::ChunkStreamerTestAccess::queueLoadGen(
-        streamer, traced);
+    streamer.update(traced.toWorldCenter());
     blockers = *tracer->latestRecord()->blockingDesiredCardinalNeighbors;
     CHECK_EQ(blockers.count, static_cast<uint8_t>(DirectionCount));
     CHECK_EQ(activeBlockerCount(blockers), static_cast<size_t>(2));
@@ -8776,8 +8951,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSnapshotsEveryBlockingFace) {
     posXChunk.setWorldGenVersion(generator->config().world.version);
     posXChunk.setLoadedFromDisk(true);
     posXChunk.clearDirty();
-    Rigel::Voxel::detail::ChunkStreamerTestAccess::queueLoadGen(
-        streamer, traced);
+    streamer.update(traced.toWorldCenter());
     blockers = *tracer->latestRecord()->blockingDesiredCardinalNeighbors;
     CHECK_EQ(blockers.count, static_cast<uint8_t>(DirectionCount));
     CHECK_EQ(activeBlockerCount(blockers), static_cast<size_t>(1));
@@ -8786,10 +8960,6 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSnapshotsEveryBlockingFace) {
         Direction::PosZ);
     CHECK_EQ(
         blockers.neighbors[static_cast<size_t>(Direction::PosX)].state,
-        ChunkVisibilityBlockerState::ReadyResident);
-    CHECK_EQ(
-        Rigel::Voxel::detail::ChunkStreamerTestAccess::
-            classifyVisibilityBlocker(streamer, posX),
         ChunkVisibilityBlockerState::ReadyResident);
 
     const ChunkCoord posZ = traced.offset(0, 0, 1);
@@ -8813,10 +8983,6 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSnapshotsEveryBlockingFace) {
             neighbor.state,
             ChunkVisibilityBlockerState::NoLongerRequired);
     }
-    CHECK_EQ(
-        Rigel::Voxel::detail::ChunkStreamerTestAccess::
-            classifyVisibilityBlocker(streamer, posZ),
-        ChunkVisibilityBlockerState::NoLongerRequired);
 }
 
 TEST_CASE(ChunkStreamer_VisibilityTraceRecordsSynchronousLoadReadiness) {
@@ -8969,6 +9135,9 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRecordsCallbackRepollReadinessOnce) {
     CHECK_EQ(streamer.diagnostics().chunkLoad.pending, static_cast<size_t>(1));
     CHECK_EQ(pendingMeasurement.records.size(), static_cast<size_t>(1));
     const auto lifecycleKey = pendingMeasurement.records.front().key;
+    CHECK(pendingMeasurement.records.front()
+              .stage(ChunkVisibilityStage::SourceResolutionPending)
+              .has_value());
     CHECK(!pendingMeasurement.records.front()
                .stage(ChunkVisibilityStage::DataReady)
                .has_value());
@@ -8980,7 +9149,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRecordsCallbackRepollReadinessOnce) {
     CHECK_EQ(requestIds.size(), static_cast<size_t>(2));
     CHECK_EQ(requestIds.front(), requestIds.back());
     CHECK_EQ(cancellations, static_cast<size_t>(1));
-    CHECK_EQ(clockReadsAtCancellation, static_cast<size_t>(2));
+    CHECK_EQ(clockReadsAtCancellation, static_cast<size_t>(3));
     CHECK_EQ(
         streamer.workMetrics().chunkLoadRequestsStarted,
         static_cast<uint64_t>(1));
@@ -9019,7 +9188,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRecordsCallbackRepollReadinessOnce) {
     streamer.processCompletions();
     const auto repeatedMeasurement = tracer->measurement();
     CHECK_EQ(repeatedMeasurement.sequence, settledMeasurement.sequence);
-    CHECK_EQ(clock->reads(), static_cast<size_t>(8));
+    CHECK_EQ(clock->reads(), static_cast<size_t>(9));
     CHECK_EQ(
         streamer.workMetrics().chunkLoadRequestsStarted,
         static_cast<uint64_t>(1));
@@ -13497,6 +13666,10 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDirtyMeshCapacity) {
     cameraChunk.clearPersistDirty();
     cameraChunk.clearDirty();
 
+    auto originalGate = std::make_shared<WorkerGate>();
+    auto replacementGate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> buildsEntered{0};
+
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
@@ -13510,11 +13683,8 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDirtyMeshCapacity) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
-    auto originalGate = std::make_shared<WorkerGate>();
-    auto replacementGate = std::make_shared<WorkerGate>();
     WorkerGateRelease releaseOriginalOnExit(originalGate);
     WorkerGateRelease releaseReplacementOnExit(replacementGate);
-    std::atomic<size_t> buildsEntered{0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [originalGate, replacementGate, &buildsEntered]() {
@@ -13804,6 +13974,9 @@ TEST_CASE(ChunkStreamer_TerminalDataFailureRetiresExplicitMeshPriority) {
                 : "rigel:generation_failure_priority_solid");
         const ChunkCoord failedCoord{0, 0, 0};
         const ChunkCoord genuinePriorityCoord{3, 0, 0};
+        auto gate = std::make_shared<WorkerGate>();
+        ChunkLoadRequestId failedLoadRequest = 0;
+        bool loadCompletionPending = failureKind == FailureKind::Load;
 
         ChunkStreamer streamer(
             manager, meshStore, registry, nullptr, generator);
@@ -13816,8 +13989,6 @@ TEST_CASE(ChunkStreamer_TerminalDataFailureRetiresExplicitMeshPriority) {
         streamer.setConfig(stream);
         streamer.markSpawnDiscoveryComplete();
 
-        ChunkLoadRequestId failedLoadRequest = 0;
-        bool loadCompletionPending = failureKind == FailureKind::Load;
         if (failureKind == FailureKind::Load) {
             streamer.setChunkLoader([&](ChunkLoadRequest request) {
                 failedLoadRequest = request.requestId;
@@ -13873,7 +14044,6 @@ TEST_CASE(ChunkStreamer_TerminalDataFailureRetiresExplicitMeshPriority) {
         meshStore.set(genuinePriorityCoord, {});
         genuine.invalidateMesh();
 
-        auto gate = std::make_shared<WorkerGate>();
         WorkerGateRelease releaseOnExit(gate);
         Rigel::Voxel::detail::ChunkStreamerTestAccess::
             setMeshBuildStartCallback(
@@ -14029,6 +14199,7 @@ TEST_CASE(ChunkStreamer_CameraDepartureRetiresObsoleteReplacementIdentity) {
     original.invalidateMesh();
 
     auto gate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
     WorkerGateRelease releaseOnExit(gate);
@@ -14041,7 +14212,6 @@ TEST_CASE(ChunkStreamer_CameraDepartureRetiresObsoleteReplacementIdentity) {
     streamer.setConfig(stream);
     streamer.markSpawnDiscoveryComplete();
     streamer.prioritizeMesh(coord);
-    std::atomic<size_t> buildsEntered{0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [gate, &buildsEntered]() {
@@ -14176,6 +14346,7 @@ TEST_CASE(ChunkStreamer_VersionRegenerationDoesNotRecoverOldMeshPriority) {
     oldData.invalidateMesh();
 
     auto oldMeshGate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> buildsEntered{0};
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
     WorkerGateRelease releaseOnExit(oldMeshGate);
@@ -14192,7 +14363,6 @@ TEST_CASE(ChunkStreamer_VersionRegenerationDoesNotRecoverOldMeshPriority) {
     streamer.markSpawnDiscoveryComplete();
     streamer.prioritizeMesh(regeneratedCoord);
 
-    std::atomic<size_t> buildsEntered{0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [oldMeshGate, &buildsEntered]() {
@@ -14684,6 +14854,10 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
     meshStore.set(oldPendingCoord, {});
     oldPending.invalidateMesh();
 
+    auto originalGate = std::make_shared<WorkerGate>();
+    auto replacementGate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> buildsEntered{0};
+
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
@@ -14696,9 +14870,6 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
     stream.workerThreads = 4;
     streamer.setConfig(stream);
 
-    auto originalGate = std::make_shared<WorkerGate>();
-    auto replacementGate = std::make_shared<WorkerGate>();
-    std::atomic<size_t> buildsEntered{0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [originalGate, replacementGate, &buildsEntered]() {
@@ -14790,6 +14961,10 @@ TEST_CASE(ChunkStreamer_ObsoleteDirtyFlightDoesNotBlockUnrelatedDirtyMesh) {
     obsolete.clearPersistDirty();
     meshStore.set(obsoleteCoord, {});
 
+    auto obsoleteGate = std::make_shared<WorkerGate>();
+    auto unrelatedGate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> buildsEntered{0};
+
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
@@ -14804,11 +14979,8 @@ TEST_CASE(ChunkStreamer_ObsoleteDirtyFlightDoesNotBlockUnrelatedDirtyMesh) {
     streamer.setConfig(stream);
     streamer.markSpawnDiscoveryComplete();
 
-    auto obsoleteGate = std::make_shared<WorkerGate>();
-    auto unrelatedGate = std::make_shared<WorkerGate>();
     WorkerGateRelease releaseObsoleteOnExit(obsoleteGate);
     WorkerGateRelease releaseUnrelatedOnExit(unrelatedGate);
-    std::atomic<size_t> buildsEntered{0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [obsoleteGate, unrelatedGate, &buildsEntered]() {
@@ -14936,6 +15108,9 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementInstallsOnlyCurrentMesh) {
     original.setLoadedFromDisk(true);
     original.clearPersistDirty();
 
+    auto meshGate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> meshBuildsEntered{0};
+
     ChunkStreamer streamer(
         manager, meshStore, registry, &atlas, originalGenerator);
     StreamingConfig stream;
@@ -14949,9 +15124,7 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementInstallsOnlyCurrentMesh) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
-    auto meshGate = std::make_shared<WorkerGate>();
     WorkerGateRelease releaseMeshOnExit(meshGate);
-    std::atomic<size_t> meshBuildsEntered{0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [meshGate, &meshBuildsEntered]() {
@@ -15055,6 +15228,9 @@ TEST_CASE(ChunkStreamer_MeshRetirementPreservesReplacementGenerationFailure) {
     original.setLoadedFromDisk(true);
     original.clearPersistDirty();
 
+    auto meshGate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> meshBuildsEntered{0};
+
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, originalGenerator);
     StreamingConfig stream;
@@ -15068,9 +15244,7 @@ TEST_CASE(ChunkStreamer_MeshRetirementPreservesReplacementGenerationFailure) {
     stream.maxResidentChunks = 0;
     streamer.setConfig(stream);
 
-    auto meshGate = std::make_shared<WorkerGate>();
     WorkerGateRelease releaseMeshOnExit(meshGate);
-    std::atomic<size_t> meshBuildsEntered{0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::setMeshBuildStartCallback(
         streamer,
         [meshGate, &meshBuildsEntered]() {

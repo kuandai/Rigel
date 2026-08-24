@@ -3622,6 +3622,8 @@ TEST_CASE(AsyncChunkLoader_PromotionRetainsOriginTimingAndConsumesNoPrefetchHit)
     MemoryContext ctx;
     auto poolGate = std::make_shared<LoaderWorkGate>();
     auto unusedPayloadGate = std::make_shared<LoaderWorkGate>();
+    const std::array<int64_t, 3> clockNanoseconds{10, 30, 45};
+    std::atomic<size_t> clockIndex{0};
     AsyncChunkLoader loader(
         ctx.service,
         ctx.context,
@@ -3638,8 +3640,6 @@ TEST_CASE(AsyncChunkLoader_PromotionRetainsOriginTimingAndConsumesNoPrefetchHit)
         loader, [poolGate]() { poolGate->enterAndWait(); });
     CHECK(poolGate->waitUntilEntered());
 
-    const std::array<int64_t, 3> clockNanoseconds{10, 30, 45};
-    std::atomic<size_t> clockIndex{0};
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setMetricClock(
         loader,
         [&clockNanoseconds, &clockIndex]() {
@@ -4609,6 +4609,11 @@ TEST_CASE(AsyncChunkLoader_RunningDirectRegionOwnerSurvivesDemandChurn) {
              static_cast<size_t>(1));
     CHECK_EQ(running.speculativeOwnedDispatchedUndrained,
              static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, key),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::WorkerRunning});
 
     loader.cancel(demand);
     CHECK(!loader.isPending(demand));
@@ -4636,6 +4641,11 @@ TEST_CASE(AsyncChunkLoader_RunningDirectRegionOwnerSurvivesDemandChurn) {
     CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
                  regionLoadAttemptCount(loader, key),
              static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, key),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::WorkerRunning});
 
     CHECK_EQ(loader.request(replacementRequest),
              ChunkLoadRequestResult::Queued);
@@ -4659,9 +4669,19 @@ TEST_CASE(AsyncChunkLoader_RunningDirectRegionOwnerSurvivesDemandChurn) {
     CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
                  regionPoolJobId(loader, key),
              poolJob);
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, key),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::WorkerRunning});
 
     runningGate->release();
     CHECK(waitForPublishedRegionJobs(loader, 1));
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, key),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::ResultPublished});
     std::vector<ChunkLoadCompletion> resolved;
     CHECK(drainRegionJobsUntilSettled(loader, resolved));
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));

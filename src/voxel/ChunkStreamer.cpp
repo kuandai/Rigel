@@ -953,6 +953,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         cacheEvictionCoordinatesInspected = m_cache.lastEvictionInspections();
     }
     consumeDirtyMeshNotifications();
+    refreshVisibilityDependencySnapshot();
 
     m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected =
         desiredBuildCoordinatesInspected;
@@ -2010,6 +2011,10 @@ void ChunkStreamer::queueLoadGen(ChunkCoord coord) {
     if (m_loadGenQueued.insert(coord).second) {
         m_loadGenQueue.push_back(coord);
     }
+    if (!m_chunkManager || !m_chunkManager->getChunk(coord)) {
+        markVisibilityStage(
+            coord, ChunkVisibilityStage::SourceResolutionPending);
+    }
     m_configRetiredWork.erase(coord);
     markVisibilityMeshEligible(coord, false);
 }
@@ -2760,6 +2765,60 @@ void ChunkStreamer::observeVisibilityNeighborReadiness(ChunkCoord coord) {
     }
 }
 
+void ChunkStreamer::refreshVisibilityDependencySnapshot() {
+    if (!m_visibilityTracer || !m_chunkManager) {
+        return;
+    }
+    const ChunkCoord traced = m_visibilityTracer->coord();
+    if (!m_chunkManager->getChunk(traced)) {
+        return;
+    }
+    const bool hasPendingTrace = std::any_of(
+        m_pendingVisibilityTraces.begin(),
+        m_pendingVisibilityTraces.end(),
+        [&](const auto& pending) {
+            return pending && pending->key.coord == traced;
+        });
+    if (!hasPendingTrace) {
+        return;
+    }
+
+    const uint8_t missingNeighbors =
+        countMissingDesiredCardinalNeighbors(traced);
+    const auto blockers = visibilityDependencySnapshot(traced);
+    for (const auto& pending : m_pendingVisibilityTraces) {
+        if (!pending || pending->key.coord != traced) {
+            continue;
+        }
+        pending->tracer->observeMissingDesiredCardinalNeighborCount(
+            pending->key, missingNeighbors);
+        pending->tracer->observeBlockingDesiredCardinalNeighbors(
+            pending->key, blockers);
+    }
+}
+
+ChunkVisibilityBlockingNeighborSnapshot
+ChunkStreamer::visibilityDependencySnapshot(ChunkCoord coord) const {
+    ChunkVisibilityBlockingNeighborSnapshot blockers;
+    for (int index = 0; index < DirectionCount; ++index) {
+        const Direction direction = static_cast<Direction>(index);
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(direction, dx, dy, dz);
+        const ChunkCoord neighbor = coord.offset(dx, dy, dz);
+        const bool required =
+            m_desiredSet.find(neighbor) != m_desiredSet.end();
+        blockers.neighbors[static_cast<size_t>(index)] = {
+            direction,
+            neighbor,
+            required,
+            classifyVisibilityBlocker(neighbor)};
+    }
+    blockers.count = static_cast<uint8_t>(DirectionCount);
+    return blockers;
+}
+
 void ChunkStreamer::markVisibilityMeshEligible(
     ChunkCoord coord,
     bool neighborBecameReady) {
@@ -2819,23 +2878,7 @@ void ChunkStreamer::markVisibilityMeshEligible(
         countMissingDesiredCardinalNeighbors(coord);
     pending->tracer->observeMissingDesiredCardinalNeighborCount(
         pending->key, missingNeighbors);
-    ChunkVisibilityBlockingNeighborSnapshot blockers;
-    for (int index = 0; index < DirectionCount; ++index) {
-        const Direction direction = static_cast<Direction>(index);
-        int dx = 0;
-        int dy = 0;
-        int dz = 0;
-        directionOffset(direction, dx, dy, dz);
-        const ChunkCoord neighbor = coord.offset(dx, dy, dz);
-        const bool required =
-            m_desiredSet.find(neighbor) != m_desiredSet.end();
-        blockers.neighbors[static_cast<size_t>(index)] = {
-            direction,
-            neighbor,
-            required,
-            classifyVisibilityBlocker(neighbor)};
-    }
-    blockers.count = static_cast<uint8_t>(DirectionCount);
+    const auto blockers = visibilityDependencySnapshot(coord);
     pending->tracer->observeBlockingDesiredCardinalNeighbors(
         pending->key, blockers);
     if (missingNeighbors != 0) {
@@ -2974,9 +3017,7 @@ ChunkVisibilityBlockerState ChunkStreamer::classifyVisibilityBlocker(
         return ChunkVisibilityBlockerState::GenerationTerminalFailed;
     }
     if (m_loadGenQueued.find(coord) != m_loadGenQueued.end()) {
-        return m_chunkLoader
-            ? ChunkVisibilityBlockerState::Unowned
-            : ChunkVisibilityBlockerState::GenerationSchedulerPending;
+        return ChunkVisibilityBlockerState::SourceResolutionPending;
     }
     return ChunkVisibilityBlockerState::Unowned;
 }

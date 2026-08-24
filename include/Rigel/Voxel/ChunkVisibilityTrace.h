@@ -20,6 +20,7 @@ namespace Rigel::Voxel {
 
 enum class ChunkVisibilityStage : uint8_t {
     Desired,
+    SourceResolutionPending,
     DataRequest,
     GenerationSchedulerPending,
     GenerationCapacityWait,
@@ -78,6 +79,7 @@ enum class ChunkVisibilityOrigin : uint8_t {
 std::string_view chunkVisibilityOriginName(ChunkVisibilityOrigin origin);
 
 enum class ChunkVisibilityBlockerState : uint8_t {
+    SourceResolutionPending,
     LoadRegionSchedulerPending,
     LoadRegionPoolQueued,
     LoadRegionWorkerRunning,
@@ -117,6 +119,7 @@ std::string_view chunkVisibilityDrawOutcomeName(
 struct ChunkVisibilityLifecycleKey {
     ChunkCoord coord{};
     uint64_t lifecycleId = 0;
+    uint64_t traceInstanceId = 0;
 
     bool operator==(const ChunkVisibilityLifecycleKey&) const = default;
 };
@@ -141,6 +144,7 @@ using ChunkVisibilityStageObservations = std::array<
     static_cast<size_t>(ChunkVisibilityStage::Count)>;
 
 struct ChunkVisibilityDurations {
+    std::optional<ChunkVisibilityDuration> sourceResolutionWait;
     std::optional<ChunkVisibilityDuration> desiredToDataRequest;
     std::optional<ChunkVisibilityDuration> dataWait;
     std::optional<ChunkVisibilityDuration> generationQueueWait;
@@ -250,9 +254,6 @@ public:
     void observeBlockingDesiredCardinalNeighbors(
         const ChunkVisibilityLifecycleKey& key,
         ChunkVisibilityBlockingNeighborSnapshot neighbors);
-    std::optional<ChunkVisibilityBlockingNeighborSnapshot>
-        blockingDesiredCardinalNeighbors(
-            const ChunkVisibilityLifecycleKey& key) const;
     void mark(const ChunkVisibilityLifecycleKey& key,
               ChunkVisibilityStage stage);
     void mark(const ChunkVisibilityLifecycleKey& key,
@@ -276,17 +277,17 @@ private:
     RecordIterator findRecord(const ChunkVisibilityLifecycleKey& key);
     ConstRecordIterator findRecord(
         const ChunkVisibilityLifecycleKey& key) const;
-    bool isRetiredTerminalKey(
+    bool isRetiredEvictedKey(
         const ChunkVisibilityLifecycleKey& key) const;
-    void retainTerminalKey(const ChunkVisibilityLifecycleKey& key);
     std::optional<ChunkVisibilityTimePoint> now() const noexcept;
 
     Config m_config;
+    uint64_t m_traceInstanceId = 0;
     Clock m_clock;
     mutable std::mutex m_clockMutex;
     mutable std::mutex m_mutex;
     std::deque<ChunkVisibilityTraceRecord> m_records;
-    std::deque<ChunkVisibilityLifecycleKey> m_retiredTerminalKeys;
+    uint64_t m_evictedLifecycleIdHighWatermark = 0;
     uint64_t m_droppedRecords = 0;
     uint64_t m_droppedUnfinishedRecords = 0;
     uint64_t m_unmatchedEvents = 0;

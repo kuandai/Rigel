@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <limits>
 
 namespace Rigel::Voxel {
 
@@ -46,13 +47,33 @@ bool canMutateLifecycle(const ChunkVisibilityTraceRecord& record) {
     return record.outcome == ChunkVisibilityOutcome::Pending;
 }
 
-uint64_t nextLifecycleId() {
-    static std::atomic<uint64_t> next{1};
-    uint64_t id = 0;
-    while (id == 0) {
-        id = next.fetch_add(1, std::memory_order_relaxed);
+std::optional<uint64_t> consumeMonotonicId(
+    std::atomic<uint64_t>& next) {
+    uint64_t current = next.load(std::memory_order_relaxed);
+    while (current != 0) {
+        const uint64_t successor =
+            current == std::numeric_limits<uint64_t>::max()
+            ? 0
+            : current + 1;
+        if (next.compare_exchange_weak(
+                current,
+                successor,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return current;
+        }
     }
-    return id;
+    return std::nullopt;
+}
+
+std::optional<uint64_t> nextLifecycleId() {
+    static std::atomic<uint64_t> next{1};
+    return consumeMonotonicId(next);
+}
+
+std::optional<uint64_t> nextTraceInstanceId() {
+    static std::atomic<uint64_t> next{1};
+    return consumeMonotonicId(next);
 }
 
 void advanceSequence(uint64_t& sequence) {
@@ -67,6 +88,8 @@ std::string_view chunkVisibilityStageName(ChunkVisibilityStage stage) {
     switch (stage) {
         case ChunkVisibilityStage::Desired:
             return "desired";
+        case ChunkVisibilityStage::SourceResolutionPending:
+            return "source_resolution_pending";
         case ChunkVisibilityStage::DataRequest:
             return "data_request";
         case ChunkVisibilityStage::GenerationSchedulerPending:
@@ -167,6 +190,8 @@ std::string_view chunkVisibilityOriginName(ChunkVisibilityOrigin origin) {
 std::string_view chunkVisibilityBlockerStateName(
     ChunkVisibilityBlockerState state) {
     switch (state) {
+        case ChunkVisibilityBlockerState::SourceResolutionPending:
+            return "source_resolution_pending";
         case ChunkVisibilityBlockerState::LoadRegionSchedulerPending:
             return "load_region_scheduler_pending";
         case ChunkVisibilityBlockerState::LoadRegionPoolQueued:
@@ -244,6 +269,10 @@ bool ChunkVisibilityTraceRecord::observed(
 
 ChunkVisibilityDurations ChunkVisibilityTraceRecord::durations() const {
     return {
+        .sourceResolutionWait = between(
+            stages,
+            ChunkVisibilityStage::SourceResolutionPending,
+            ChunkVisibilityStage::DataRequest),
         .desiredToDataRequest = between(
             stages,
             ChunkVisibilityStage::Desired,
@@ -315,6 +344,8 @@ ChunkVisibilityDurations ChunkVisibilityTraceRecord::durations() const {
 
 ChunkVisibilityTracer::ChunkVisibilityTracer(Config config, Clock clock)
     : m_config(config),
+      m_traceInstanceId(
+          config.capacity > 0 ? nextTraceInstanceId().value_or(0) : 0),
       m_clock(clock ? std::move(clock) : []() {
           return ChunkVisibilityClock::now();
       }) {}
@@ -327,9 +358,17 @@ std::optional<ChunkVisibilityLifecycleKey> ChunkVisibilityTracer::begin(
     }
 
     std::lock_guard lock(m_mutex);
+    if (m_traceInstanceId == 0) {
+        return std::nullopt;
+    }
+    const auto lifecycleId = nextLifecycleId();
+    if (!lifecycleId) {
+        return std::nullopt;
+    }
     const ChunkVisibilityLifecycleKey key{
         m_config.coord,
-        nextLifecycleId()
+        *lifecycleId,
+        m_traceInstanceId
     };
     while (m_records.size() >= m_config.capacity) {
         ++m_droppedRecords;
@@ -337,10 +376,9 @@ std::optional<ChunkVisibilityLifecycleKey> ChunkVisibilityTracer::begin(
             hasPendingDraw(m_records.front())) {
             ++m_droppedUnfinishedRecords;
         }
-        if (m_records.front().outcome != ChunkVisibilityOutcome::Pending &&
-            !canRecordDrawTransition(m_records.front())) {
-            retainTerminalKey(m_records.front().key);
-        }
+        m_evictedLifecycleIdHighWatermark = std::max(
+            m_evictedLifecycleIdHighWatermark,
+            m_records.front().key.lifecycleId);
         m_records.pop_front();
     }
     m_records.push_back({
@@ -362,7 +400,7 @@ void ChunkVisibilityTracer::bindMeshTask(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
-        if (isRetiredTerminalKey(key)) {
+        if (isRetiredEvictedKey(key)) {
             return;
         }
         ++m_unmatchedEvents;
@@ -388,7 +426,7 @@ void ChunkVisibilityTracer::markDataReady(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
-            if (isRetiredTerminalKey(key)) {
+            if (isRetiredEvictedKey(key)) {
                 return;
             }
             ++m_unmatchedEvents;
@@ -405,7 +443,7 @@ void ChunkVisibilityTracer::markDataReady(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
-        if (isRetiredTerminalKey(key)) {
+        if (isRetiredEvictedKey(key)) {
             return;
         }
         ++m_unmatchedEvents;
@@ -449,7 +487,7 @@ void ChunkVisibilityTracer::observeMissingDesiredCardinalNeighborCount(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
-        if (isRetiredTerminalKey(key)) {
+        if (isRetiredEvictedKey(key)) {
             return;
         }
         ++m_unmatchedEvents;
@@ -473,7 +511,7 @@ void ChunkVisibilityTracer::observeBlockingDesiredCardinalNeighbors(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
-        if (isRetiredTerminalKey(key)) {
+        if (isRetiredEvictedKey(key)) {
             return;
         }
         ++m_unmatchedEvents;
@@ -499,19 +537,6 @@ void ChunkVisibilityTracer::observeBlockingDesiredCardinalNeighbors(
     }
 }
 
-std::optional<ChunkVisibilityBlockingNeighborSnapshot>
-ChunkVisibilityTracer::blockingDesiredCardinalNeighbors(
-    const ChunkVisibilityLifecycleKey& key) const {
-    if (!traces(key.coord)) {
-        return std::nullopt;
-    }
-    std::lock_guard lock(m_mutex);
-    const auto record = findRecord(key);
-    return record == m_records.end()
-        ? std::nullopt
-        : record->blockingDesiredCardinalNeighbors;
-}
-
 void ChunkVisibilityTracer::mark(
     const ChunkVisibilityLifecycleKey& key,
     ChunkVisibilityStage stageValue) {
@@ -529,7 +554,7 @@ void ChunkVisibilityTracer::mark(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
-            if (isRetiredTerminalKey(key)) {
+            if (isRetiredEvictedKey(key)) {
                 return;
             }
             ++m_unmatchedEvents;
@@ -556,7 +581,7 @@ void ChunkVisibilityTracer::mark(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
-        if (isRetiredTerminalKey(key)) {
+        if (isRetiredEvictedKey(key)) {
             return;
         }
         ++m_unmatchedEvents;
@@ -599,7 +624,7 @@ void ChunkVisibilityTracer::complete(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
-            if (isRetiredTerminalKey(key)) {
+            if (isRetiredEvictedKey(key)) {
                 return;
             }
             ++m_unmatchedEvents;
@@ -615,7 +640,7 @@ void ChunkVisibilityTracer::complete(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
-        if (isRetiredTerminalKey(key)) {
+        if (isRetiredEvictedKey(key)) {
             return;
         }
         ++m_unmatchedEvents;
@@ -651,7 +676,7 @@ void ChunkVisibilityTracer::observeDraw(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
-            if (isRetiredTerminalKey(key)) {
+            if (isRetiredEvictedKey(key)) {
                 return;
             }
             ++m_unmatchedEvents;
@@ -667,7 +692,7 @@ void ChunkVisibilityTracer::observeDraw(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
-        if (isRetiredTerminalKey(key)) {
+        if (isRetiredEvictedKey(key)) {
             return;
         }
         ++m_unmatchedEvents;
@@ -698,7 +723,7 @@ void ChunkVisibilityTracer::observeMeshUnavailable(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
-            if (isRetiredTerminalKey(key)) {
+            if (isRetiredEvictedKey(key)) {
                 return;
             }
             ++m_unmatchedEvents;
@@ -714,7 +739,7 @@ void ChunkVisibilityTracer::observeMeshUnavailable(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
-        if (isRetiredTerminalKey(key)) {
+        if (isRetiredEvictedKey(key)) {
             return;
         }
         ++m_unmatchedEvents;
@@ -786,20 +811,11 @@ ChunkVisibilityTracer::ConstRecordIterator ChunkVisibilityTracer::findRecord(
         });
 }
 
-bool ChunkVisibilityTracer::isRetiredTerminalKey(
+bool ChunkVisibilityTracer::isRetiredEvictedKey(
     const ChunkVisibilityLifecycleKey& key) const {
-    return std::find(
-               m_retiredTerminalKeys.begin(),
-               m_retiredTerminalKeys.end(),
-               key) != m_retiredTerminalKeys.end();
-}
-
-void ChunkVisibilityTracer::retainTerminalKey(
-    const ChunkVisibilityLifecycleKey& key) {
-    while (m_retiredTerminalKeys.size() >= m_config.capacity) {
-        m_retiredTerminalKeys.pop_front();
-    }
-    m_retiredTerminalKeys.push_back(key);
+    return key.traceInstanceId == m_traceInstanceId &&
+        key.lifecycleId != 0 &&
+        key.lifecycleId <= m_evictedLifecycleIdHighWatermark;
 }
 
 std::optional<ChunkVisibilityTimePoint> ChunkVisibilityTracer::now()

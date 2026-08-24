@@ -465,6 +465,9 @@ private:
         ChunkVisibilityOrigin origin);
     static bool areFaceNeighbors(ChunkCoord lhs, ChunkCoord rhs);
     void observeVisibilityNeighborReadiness(ChunkCoord coord);
+    void refreshVisibilityDependencySnapshot();
+    ChunkVisibilityBlockingNeighborSnapshot visibilityDependencySnapshot(
+        ChunkCoord coord) const;
     void markVisibilityMeshEligible(ChunkCoord coord,
                                     bool neighborBecameReady);
     void markVisibilityStage(ChunkCoord coord, ChunkVisibilityStage stage);

@@ -164,9 +164,9 @@ explicit failed state until a later streaming requeue retries them.
   already submitted to the pool. Cancellation tokens suppress departed work;
   they do not remove its physical pool entry or release its in-flight count
   before the completion drain observes the cancelled result.
-  When a loader is configured, a coordinate waiting in `m_loadGenQueue` has not
-  selected persisted load versus generation yet and is reported as unresolved
-  rather than generation-pending.
+  A coordinate waiting in `m_loadGenQueue` has not selected persisted load
+  versus generation yet and is reported as source-resolution-pending rather
+  than unowned or generation-pending.
 - Eligible initial meshes and dirty remeshes share a distance-prioritized
   scheduler. Asynchronous submission is additionally capped at the actual
   mesh worker count so work that has not started remains reprioritizable.

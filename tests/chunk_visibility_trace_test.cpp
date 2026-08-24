@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <limits>
 #include <thread>
 
 using namespace Rigel::Voxel;
@@ -60,6 +61,8 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
         ChunkVisibilityLifecycleKind::CameraDemand);
 
     tracer.mark(lifecycleKey, ChunkVisibilityStage::Desired);
+    tracer.mark(
+        lifecycleKey, ChunkVisibilityStage::SourceResolutionPending);
     clock.advance(std::chrono::milliseconds(1));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::DataRequest);
     clock.advance(std::chrono::milliseconds(2));
@@ -138,9 +141,6 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
         firstBlockers);
     CHECK_EQ(record.blockingDesiredCardinalNeighbors, currentBlockers);
     CHECK_EQ(
-        tracer.blockingDesiredCardinalNeighbors(lifecycleKey),
-        currentBlockers);
-    CHECK_EQ(
         record.outcome,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
     CHECK_EQ(record.drawOutcome, ChunkVisibilityDrawOutcome::Drawn);
@@ -154,6 +154,7 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     }
 
     const auto durations = record.durations();
+    CHECK_EQ(milliseconds(durations.sourceResolutionWait), 1);
     CHECK_EQ(milliseconds(durations.desiredToDataRequest), 1);
     CHECK_EQ(milliseconds(durations.dataWait), 23);
     CHECK_EQ(milliseconds(durations.generationQueueWait), 3);
@@ -336,6 +337,12 @@ TEST_CASE(ChunkVisibilityTrace_EvictedTerminalLifecycleRejectsLateMutations) {
             ChunkVisibilityLifecycleKind::CameraDemand);
         tracer.mark(retiredKey, ChunkVisibilityStage::Desired);
         tracer.complete(retiredKey, outcome);
+        for (size_t index = 0; index < 3; ++index) {
+            const auto churnKey = *tracer.begin(
+                ChunkVisibilityLifecycleKind::Remesh,
+                ChunkVisibilityOrigin::Remesh);
+            tracer.complete(churnKey, ChunkVisibilityOutcome::Reset);
+        }
         const auto replacementKey = *tracer.begin(
             ChunkVisibilityLifecycleKind::CameraDemand,
             ChunkVisibilityOrigin::ResidentLeftCensored);
@@ -372,17 +379,47 @@ TEST_CASE(ChunkVisibilityTrace_EvictedTerminalLifecycleRejectsLateMutations) {
 
         const auto after = tracer.measurement();
         CHECK_EQ(after.sequence, before.sequence);
+        CHECK_EQ(after.stats.retainedRecords, before.stats.retainedRecords);
+        CHECK_EQ(after.stats.droppedRecords, before.stats.droppedRecords);
+        CHECK_EQ(
+            after.stats.droppedUnfinishedRecords,
+            before.stats.droppedUnfinishedRecords);
         CHECK_EQ(after.stats.unmatchedEvents, before.stats.unmatchedEvents);
+        CHECK_EQ(after.stats.clockFailures, before.stats.clockFailures);
         CHECK_EQ(clock.reads(), clockReads);
         CHECK_EQ(after.records.size(), static_cast<size_t>(1));
         CHECK_EQ(after.records.front().key, replacementKey);
+        CHECK_EQ(after.records.front().key, before.records.front().key);
+        CHECK_EQ(after.records.front().kind, before.records.front().kind);
         CHECK_EQ(after.records.front().origin, before.records.front().origin);
         CHECK_EQ(after.records.front().meshTask, before.records.front().meshTask);
+        CHECK_EQ(
+            after.records.front()
+                .firstObservedMissingDesiredCardinalNeighborCount,
+            before.records.front()
+                .firstObservedMissingDesiredCardinalNeighborCount);
+        CHECK_EQ(
+            after.records.front()
+                .firstObservedBlockingDesiredCardinalNeighbors,
+            before.records.front()
+                .firstObservedBlockingDesiredCardinalNeighbors);
+        CHECK_EQ(
+            after.records.front().blockingDesiredCardinalNeighbors,
+            before.records.front().blockingDesiredCardinalNeighbors);
         CHECK_EQ(after.records.front().stages, before.records.front().stages);
         CHECK_EQ(
             after.records.front().observedStages,
             before.records.front().observedStages);
-        CHECK_EQ(after.records.front().outcome, ChunkVisibilityOutcome::Pending);
+        CHECK_EQ(after.records.front().outcome, before.records.front().outcome);
+        CHECK_EQ(
+            after.records.front().terminalTime,
+            before.records.front().terminalTime);
+        CHECK_EQ(
+            after.records.front().drawOutcome,
+            before.records.front().drawOutcome);
+        CHECK_EQ(
+            after.records.front().drawTerminalTime,
+            before.records.front().drawTerminalTime);
     }
 }
 
@@ -440,7 +477,7 @@ TEST_CASE(ChunkVisibilityTrace_BoundsRetentionAndAccountsDroppedWork) {
 
     tracer.observeDraw(firstKey);
     stats = tracer.measurement().stats;
-    CHECK_EQ(stats.unmatchedEvents, static_cast<uint64_t>(1));
+    CHECK_EQ(stats.unmatchedEvents, static_cast<uint64_t>(0));
 
     const auto measurement = tracer.measurement();
     CHECK(measurement.sequence > 0);
@@ -456,7 +493,26 @@ TEST_CASE(ChunkVisibilityTrace_BoundsRetentionAndAccountsDroppedWork) {
         static_cast<uint64_t>(1));
     CHECK_EQ(
         measurement.stats.unmatchedEvents,
-        static_cast<uint64_t>(1));
+        static_cast<uint64_t>(0));
+}
+
+TEST_CASE(ChunkVisibilityTrace_ForeignAndFutureKeysRemainUnmatched) {
+    ChunkVisibilityTracer tracer({{1, 2, 3}, 1});
+    const auto issued = *tracer.begin(
+        ChunkVisibilityLifecycleKind::CameraDemand);
+    tracer.complete(issued, ChunkVisibilityOutcome::Reset);
+    (void)tracer.begin(ChunkVisibilityLifecycleKind::CameraDemand);
+
+    auto foreign = issued;
+    ++foreign.traceInstanceId;
+    auto future = issued;
+    future.lifecycleId = std::numeric_limits<uint64_t>::max();
+    tracer.mark(foreign, ChunkVisibilityStage::WorkerStart);
+    tracer.mark(future, ChunkVisibilityStage::WorkerStart);
+
+    CHECK_EQ(
+        tracer.measurement().stats.unmatchedEvents,
+        static_cast<uint64_t>(2));
 }
 
 TEST_CASE(ChunkVisibilityTrace_ClassifiesObservedAndCensoredOrigins) {

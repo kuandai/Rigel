@@ -219,9 +219,11 @@ to atomically copy the records and accounting. Each measurement has a sequence
 identifying the captured tracer state. A capacity of zero disables the trace
 without reading its clock or adding streamer inspection work.
 
-Each record has an immutable coordinate/lifecycle ID key and a lifecycle kind:
-`camera_demand` or `remesh`. Tracers allocate lifecycle IDs from one process-wide
-sequence, so keys do not collide across tracer or streamer replacement. A
+Each record has an immutable coordinate, lifecycle ID, and trace-instance key
+and a lifecycle kind: `camera_demand` or `remesh`. Tracers allocate lifecycle
+IDs from one process-wide monotonic sequence, while the trace instance keeps a
+key associated with its issuing tracer across streamer replacement. ID
+exhaustion stops new lifecycle admission rather than wrapping. A
 record receives an optional MeshTask identity only when the streamer physically
 dispatches that task. The task identity is the actual mesh request ID, work
 epoch, chunk instance ID, and mesh revision. Voxel-empty and cached lifecycles
@@ -239,14 +241,17 @@ Retention is FIFO and includes pending records in the configured capacity.
 The accounting returned with `measurement()` reports retained, dropped,
 dropped-unfinished, unmatched-event, and clock-failure counts, so capacity
 eviction, unmatched nonterminal events, and unusable timestamps are visible.
-The tracer also retains at most `capacity` terminal lifecycle keys after record
-eviction. Late callbacks for those keys remain no-ops and cannot alter a
-replacement record or its sequence.
+Each tracer retains an O(1) evicted-lifecycle high-water mark. A missing key
+issued by that trace instance at or below the watermark remains a no-op for the
+rest of the tracer's lifetime, regardless of how many later records pass
+through the FIFO. Foreign trace-instance keys and future lifecycle IDs remain
+unmatched events.
 
 The trace timestamps these stages:
 
-- `desired` and `data_request` cover actual camera-demand and chunk-data
-  request transitions.
+- `desired`, `source_resolution_pending`, and `data_request` cover actual
+  camera demand, canonical pre-source ownership for absent data, and the
+  scheduler visit that begins resolving the source.
 - `generation_scheduler_pending`, `generation_capacity_wait`, and
   `generation_executor_submitted` distinguish logical admission,
   configured-capacity delay, and the executor submission boundary. The final
@@ -289,18 +294,24 @@ snapshots containing all six face values. Each value names the direction and
 coordinate, whether that face is currently required, and its current state.
 The array stays fixed while active blockers can transition from two to one to
 zero; resident and no-longer-required faces therefore remain observable
-without losing the first snapshot. Load states distinguish region and
+without losing the first snapshot. `source_resolution_pending` identifies a
+coordinate in the streamer's canonical load/generation queue before the
+scheduler has called a loader or chosen generation. Load states distinguish region and
 payload scheduler pending, physical pool queued, actual worker running,
 completion published but undrained, region retry waiting, and terminal failure.
 Generation states distinguish scheduler pending, capacity waiting, executor
 queued, worker running, result published, and terminal failure. Ready resident,
 no longer required, and explicitly unowned are separate; the presence of a
 loader callback alone never creates a load owner. The streamer resolves this
-only for the six face neighbors of the traced chunk. With tracing absent or
-capacity zero, the classifier is not called, no debug-volume scan is added,
-and no scheduling state is mutated.
+only for the six face neighbors of the traced chunk. Their current values are
+refreshed once at the end of an owner-thread streaming update and describe that
+last observation; they are not a continuously atomic cross-thread view. With
+tracing absent or capacity zero, the classifier is not called, no debug-volume
+scan is added, and no scheduling state is mutated.
 
-Derived generation intervals are `generationQueueWait` (logical generation
+`sourceResolutionWait` covers canonical pre-source admission through the
+source-resolution scheduler visit. Derived generation intervals are
+`generationQueueWait` (logical generation
 pending to the start of capacity wait when capacity blocks, otherwise to
 executor admission), `generationCapacityWait` (capacity wait to executor
 admission), `generationPoolWait`, `generationExecution`, and
@@ -314,8 +325,8 @@ Stage absence is intentional and follows the lifecycle:
 
 | Lifecycle or outcome | Legitimately absent stages |
 | --- | --- |
-| Camera demand for already-resident data | `data_request`, all generation stages, and `data_ready`; `neighbor_ready` is also absent when required neighbors were already resident. |
-| Remesh, including retained fringe work | `desired`, `data_request`, and `data_ready`; `neighbor_ready` is absent unless the remesh actually waits for a missing required neighbor. |
+| Camera demand for already-resident data | `source_resolution_pending`, `data_request`, all generation stages, and `data_ready`; `neighbor_ready` is also absent when required neighbors were already resident. |
+| Remesh, including retained fringe work | `desired`, `source_resolution_pending`, `data_request`, and `data_ready`; `neighbor_ready` is absent unless the remesh actually waits for a missing required neighbor. |
 | Cached mesh | No MeshTask identity and no data, generation, dependency, mesh scheduler/pool/worker, or `result_accepted` stages. Cached empty geometry also has no `first_draw`. |
 | Voxel-empty chunk | No MeshTask identity, pool/worker, `result_accepted`, or `first_draw` stages. Earlier demand or data stages remain only if those transitions occurred. |
 | Dispatched stale or failed task | `result_accepted` and `first_draw`; pre-dispatch stages remain absent when tracing began after those transitions. |
@@ -333,8 +344,9 @@ a distinct MeshTask identity.
 Camera departure, reset, generator replacement, and tracer replacement freeze
 the captured pre-draw lifecycle. Late worker and completion callbacks cannot
 change its origin, task identity, blocker snapshots, stages, timestamps,
-sequence, or terminal outcome, including after bounded record eviction while
-its terminal key remains in the bounded retired-key set. An accepted nonempty
+sequence, or terminal outcome, including after record eviction. The issuing
+trace instance and evicted-lifecycle watermark make that immutability
+independent of subsequent FIFO churn. An accepted nonempty
 geometry record remains eligible for the separate real `first_draw`
 observation until its draw outcome terminates.
 

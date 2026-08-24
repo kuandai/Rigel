@@ -3455,7 +3455,7 @@ void ChunkStreamer::ensureThreadPool() {
 
 uint8_t ChunkStreamer::missingMeshDependencyCount(ChunkCoord coord) const {
     if (!m_chunkManager) {
-        return DirectionCount;
+        return static_cast<uint8_t>(DirectionCount);
     }
     uint8_t missing = 0;
     for (int i = 0; i < DirectionCount; ++i) {
@@ -3477,7 +3477,25 @@ uint8_t ChunkStreamer::missingMeshDependencyCount(ChunkCoord coord) const {
 }
 
 bool ChunkStreamer::hasAllNeighborsLoaded(ChunkCoord coord) const {
-    return missingMeshDependencyCount(coord) == 0;
+    if (!m_chunkManager) {
+        return false;
+    }
+    for (int i = 0; i < DirectionCount; ++i) {
+        Direction dir = static_cast<Direction>(i);
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(dir, dx, dy, dz);
+        ChunkCoord neighbor = coord.offset(dx, dy, dz);
+        if (m_chunkManager->getChunk(neighbor)) {
+            continue;
+        }
+        if (m_desiredSet.find(neighbor) == m_desiredSet.end()) {
+            continue;
+        }
+        return false;
+    }
+    return true;
 }
 
 } // namespace Rigel::Voxel

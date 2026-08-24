@@ -165,9 +165,15 @@ explicit failed state until a later streaming requeue retries them.
   updates do not scan it when executor capacity is full. Submitted jobs retain
   request epoch, generator version, and cancellation validity checks. A
   completion drain refills available generation slots before returning.
-  Departed submitted jobs retain token-only physical ownership until their
-  result is drained; retained jobs are not cancelled when only their relative
-  priority changes.
+  When demand is retired, an executor-queued generation job is removed with an
+  executor-incarnation-qualified job handle and releases its dispatch capacity
+  immediately. A job that the worker has already claimed, or whose result is
+  published but undrained, keeps the single coordinate-keyed physical owner
+  until the owner thread drains its result. Re-demand for that coordinate
+  coalesces as one logical pending record behind the retained owner, remains out
+  of the dispatch-ready index, and is handed back exactly once after settlement
+  (through source resolution when the source must be selected again).
+  Relative-priority changes alone do not cancel submitted work.
 - Eligible initial meshes and dirty remeshes share a distance-prioritized
   scheduler. Asynchronous submission is additionally capped at the actual
   mesh worker count so work that has not started remains reprioritizable.
@@ -200,9 +206,11 @@ The constrained-worker regression holds the single generation worker while
 one submitted standby job occupies the second bounded dispatch slot, then
 moves the center twice in both +X and +Z. Newly leading work at squared
 distance 1 dispatches before retained older work at squared distance 2. The
-running retained job is not cancelled, equal-distance work follows coordinate
-order, and the pending ownership map and ordered index remain equal through
-disjoint saturated windows and final quiescence.
+departed unstarted standby is physically cancelled so the leading demand can
+consume its released slot. The still-demanded running job is not cancelled for
+priority alone, equal-distance work follows coordinate order, and the pending
+ownership map and ordered index remain equal through disjoint saturated windows
+and final quiescence.
 
 ### 5.4 Meshing Constraints
 
@@ -217,8 +225,12 @@ disjoint saturated windows and final quiescence.
 
 ### 5.5 Cancellation and Eviction
 
-- Generation tasks carry cancellation tokens; leaving the desired set cancels
-  work before it is applied.
+- Generation tasks carry cancellation tokens; leaving the desired set prevents
+  obsolete work from being applied. An unstarted executor-queued task is also
+  removed physically and releases capacity immediately. If cancellation loses
+  the worker-claim race, the running or published task retains one physical
+  coordinate owner until result drain, so a retry or replacement cannot overlap
+  it.
 - `streaming.max_resident_chunks` enables an LRU eviction pass (via `ChunkCache`).
   Desired chunks are protected, so the cache can remain above this limit when
   the desired set alone exceeds it.

@@ -89,9 +89,14 @@ chunk set to rediscover them.
 
 ## Asynchronous Validity
 
-Generation workers produce detached `ChunkBuffer` values. Cancellation tokens
-stop work that leaves the desired set, and the main thread applies a result
-only while its coordinate still has the queued-generation state.
+Generation workers produce detached `ChunkBuffer` values. When demand is
+retired, an executor-queued job that remains unstarted is removed by an
+incarnation-qualified handle and releases capacity immediately. A job already
+claimed by a worker keeps its cancellation token and the single
+coordinate-keyed physical owner until the main thread drains the exact result.
+Re-demand coalesces behind that owner. The main thread settles the matching
+owner and applies a result only when the queued-generation state, epoch,
+generator version, and current demand remain valid.
 
 Mesh tasks copy the chunk and a one-block padded neighborhood before leaving
 the main thread. A coordinate has at most one mesh build in flight. Further

@@ -197,17 +197,27 @@ Synchronization:
 - With no generation worker, one inline result remains submitted until the
   owner-thread completion drain observes it.
 - A completion drain refills newly available generation slots before returning.
-- Camera movement reprioritizes pending generation without changing retained
-  submitted jobs.
-- Chunks outside the desired set are cancelled (token flipped).
+- Camera movement reprioritizes pending generation. A submitted job that remains
+  demanded is not cancelled merely because its relative priority changes.
+- Chunks outside the desired set are retired. Unstarted executor-queued jobs are
+  physically cancelled; claimed jobs retain a cancellation token and one
+  coordinate-keyed owner until result drain.
 
 **Cancellation**:
-- Each gen task holds a shared `atomic_bool` cancel token.
-- If a chunk falls outside the desired set, pending ownership is erased and a
-  submitted job's token is flipped. Submitted ownership remains accounted until
-  its result is drained.
-- The worker checks the token; the main thread also requires the coordinate to
-  remain in `QueuedGen` before applying the result.
+- Each gen task holds a shared `atomic_bool` cancel token and, for asynchronous
+  submission, an executor-incarnation-qualified job handle.
+- If a chunk falls outside the desired set, logical pending ownership is erased
+  and the submitted job's token is flipped. If the executor still owns the job
+  in its queue, exact cancellation removes it and releases generation capacity
+  immediately.
+- If the executor has already claimed the job, cancellation does not detach its
+  physical ownership. The coordinate remains owned until the exact result is
+  drained, and re-demand coalesces behind that owner instead of starting a
+  duplicate. Settlement activates an existing coalesced generation request, or
+  returns the coordinate to source resolution when no such request exists.
+- The worker checks the token; the main thread settles the matching physical
+  owner and requires the queued-generation state, work epoch, generator version,
+  and current demand before applying a result.
 
 **Thread-safety**:
 - Worker threads never mutate live `Chunk` instances.

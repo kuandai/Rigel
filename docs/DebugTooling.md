@@ -206,6 +206,11 @@ streaming.lifecycle state=quiescent generation.pending=0 generation.in_flight=0 
 
 The started counts remain cumulative, so tests can take a snapshot at
 quiescence and verify that stationary updates do not start additional work.
+`generationJobsCompleted` counts submitted results observed by the owner-thread
+completion drain, including stale or cancelled running results;
+`generationJobsCancelled` counts jobs removed physically before worker start.
+At owner-thread observation boundaries, `generationJobsStarted` equals those
+two counters plus the current physical generation-owner count.
 Quiescence bookkeeping examines active requests and explicitly retained
 unresolved state; it does not rescan the desired chunk set or poll persistence
 for discovery.

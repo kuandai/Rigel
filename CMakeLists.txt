@@ -102,6 +102,21 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+option(RIGEL_BUILD_BENCHMARKS "Build Rigel performance benchmarks" ON)
+if (RIGEL_BUILD_BENCHMARKS)
+    add_executable(Rigel_near_camera_visibility_benchmark
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/NearCameraVisibilityBenchmark.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/near_camera_visibility_benchmark.cpp
+    )
+    target_include_directories(Rigel_near_camera_visibility_benchmark PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks
+    )
+    target_compile_definitions(Rigel_near_camera_visibility_benchmark PRIVATE
+        RIGEL_BENCHMARK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+    )
+    target_link_libraries(Rigel_near_camera_visibility_benchmark PRIVATE RigelLib)
+endif()
+
 get_target_property(RIGEL_LIBRARY_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
 
 option(RIGEL_BUILD_TESTS "Build Rigel tests" ON)
@@ -126,8 +141,12 @@ if (RIGEL_BUILD_TESTS)
         ${PUBLIC_HEADER_CONSUMER_SOURCE}
     )
 
-    add_executable(Rigel_tests ${TEST_SOURCES})
+    add_executable(Rigel_tests
+        ${TEST_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/NearCameraVisibilityBenchmark.cpp
+    )
     target_include_directories(Rigel_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks
         ${CMAKE_CURRENT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )

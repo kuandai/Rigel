@@ -238,8 +238,10 @@ stages make that late start explicit.
 Retention is FIFO and includes pending records in the configured capacity.
 The accounting returned with `measurement()` reports retained, dropped,
 dropped-unfinished, unmatched-event, and clock-failure counts, so capacity
-eviction, late events for evicted records, and unusable timestamps are visible
-rather than silent.
+eviction, unmatched nonterminal events, and unusable timestamps are visible.
+The tracer also retains at most `capacity` terminal lifecycle keys after record
+eviction. Late callbacks for those keys remain no-ops and cannot alter a
+replacement record or its sequence.
 
 The trace timestamps these stages:
 
@@ -247,7 +249,9 @@ The trace timestamps these stages:
   request transitions.
 - `generation_scheduler_pending`, `generation_capacity_wait`, and
   `generation_executor_submitted` distinguish logical admission,
-  configured-capacity delay, and successful physical executor admission.
+  configured-capacity delay, and the executor submission boundary. The final
+  stage is recorded immediately before enqueue or inline execution so callable
+  entry cannot precede it or occupy a worker waiting for trace publication.
 - `generation_worker_start`, `generation_worker_finish`, and
   `generation_ready` distinguish executor queueing, generation execution, and
   a result published for main-thread application. `generation_ready` is
@@ -264,6 +268,8 @@ The trace timestamps these stages:
   main-thread validation.
 - `first_draw` is recorded only after the renderer issues a nonempty main-pass
   draw. Mesh-store insertion and the streamer's `ReadyMesh` state do not set it.
+  A correlated draw in the narrow interval after mesh-store publication and
+  before accepted-outcome publication is retained.
 
 The final-neighbor event can precede the next scheduler visit. In that case
 dependency wait ends at the neighbor event and the intervening backlog is part
@@ -278,11 +284,12 @@ check. This is a retained first observation, not a live count. A value of zero
 is retained rather than treated as a missing observation, and partial or final
 neighbor arrivals do not rewrite the cohort.
 
-For missing desired face neighbors, a record retains fixed-capacity first and
-current snapshots containing every blocking face, up to six. Each value names
-the direction and coordinate, whether that face is currently required, and its
-owner state. A later snapshot can shrink from two blockers to one and then
-zero without losing the first snapshot. Load states distinguish region and
+For the traced chunk, a record retains fixed-capacity first and current
+snapshots containing all six face values. Each value names the direction and
+coordinate, whether that face is currently required, and its current state.
+The array stays fixed while active blockers can transition from two to one to
+zero; resident and no-longer-required faces therefore remain observable
+without losing the first snapshot. Load states distinguish region and
 payload scheduler pending, physical pool queued, actual worker running,
 completion published but undrained, region retry waiting, and terminal failure.
 Generation states distinguish scheduler pending, capacity waiting, executor
@@ -326,9 +333,10 @@ a distinct MeshTask identity.
 Camera departure, reset, generator replacement, and tracer replacement freeze
 the captured pre-draw lifecycle. Late worker and completion callbacks cannot
 change its origin, task identity, blocker snapshots, stages, timestamps,
-sequence, or terminal outcome. An accepted nonempty geometry record remains
-eligible for the separate real `first_draw` observation until its draw outcome
-terminates.
+sequence, or terminal outcome, including after bounded record eviction while
+its terminal key remains in the bounded retired-key set. An accepted nonempty
+geometry record remains eligible for the separate real `first_draw`
+observation until its draw outcome terminates.
 
 Build outcomes distinguish cached empty/nonempty geometry, voxel-empty chunks,
 accepted empty/nonempty geometry, stale results, failures, and each lifecycle

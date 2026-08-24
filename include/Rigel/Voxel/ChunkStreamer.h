@@ -218,7 +218,6 @@ private:
         std::atomic_bool cancelled{false};
         std::atomic<GenerationExecutorPhase> phase{
             GenerationExecutorPhase::Submitting};
-        std::atomic_bool traceSubmissionRecorded{false};
     };
 
     struct GenResult {

@@ -37,7 +37,9 @@ bool canRecordDrawTransition(const ChunkVisibilityTraceRecord& record) {
 }
 
 bool canRecordFirstDraw(const ChunkVisibilityTraceRecord& record) {
-    return !record.drawOutcome && hasPendingDraw(record);
+    return !record.drawOutcome &&
+        (record.outcome == ChunkVisibilityOutcome::Pending ||
+         hasPendingDraw(record));
 }
 
 bool canMutateLifecycle(const ChunkVisibilityTraceRecord& record) {
@@ -335,6 +337,10 @@ std::optional<ChunkVisibilityLifecycleKey> ChunkVisibilityTracer::begin(
             hasPendingDraw(m_records.front())) {
             ++m_droppedUnfinishedRecords;
         }
+        if (m_records.front().outcome != ChunkVisibilityOutcome::Pending &&
+            !canRecordDrawTransition(m_records.front())) {
+            retainTerminalKey(m_records.front().key);
+        }
         m_records.pop_front();
     }
     m_records.push_back({
@@ -356,6 +362,9 @@ void ChunkVisibilityTracer::bindMeshTask(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
+        if (isRetiredTerminalKey(key)) {
+            return;
+        }
         ++m_unmatchedEvents;
         advanceSequence(m_sequence);
         return;
@@ -379,6 +388,9 @@ void ChunkVisibilityTracer::markDataReady(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
+            if (isRetiredTerminalKey(key)) {
+                return;
+            }
             ++m_unmatchedEvents;
             advanceSequence(m_sequence);
             return;
@@ -393,6 +405,9 @@ void ChunkVisibilityTracer::markDataReady(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
+        if (isRetiredTerminalKey(key)) {
+            return;
+        }
         ++m_unmatchedEvents;
         advanceSequence(m_sequence);
         return;
@@ -434,6 +449,9 @@ void ChunkVisibilityTracer::observeMissingDesiredCardinalNeighborCount(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
+        if (isRetiredTerminalKey(key)) {
+            return;
+        }
         ++m_unmatchedEvents;
         advanceSequence(m_sequence);
         return;
@@ -455,6 +473,9 @@ void ChunkVisibilityTracer::observeBlockingDesiredCardinalNeighbors(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
+        if (isRetiredTerminalKey(key)) {
+            return;
+        }
         ++m_unmatchedEvents;
         advanceSequence(m_sequence);
         return;
@@ -508,6 +529,9 @@ void ChunkVisibilityTracer::mark(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
+            if (isRetiredTerminalKey(key)) {
+                return;
+            }
             ++m_unmatchedEvents;
             advanceSequence(m_sequence);
             return;
@@ -532,6 +556,9 @@ void ChunkVisibilityTracer::mark(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
+        if (isRetiredTerminalKey(key)) {
+            return;
+        }
         ++m_unmatchedEvents;
         advanceSequence(m_sequence);
         return;
@@ -572,6 +599,9 @@ void ChunkVisibilityTracer::complete(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
+            if (isRetiredTerminalKey(key)) {
+                return;
+            }
             ++m_unmatchedEvents;
             advanceSequence(m_sequence);
             return;
@@ -585,6 +615,9 @@ void ChunkVisibilityTracer::complete(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
+        if (isRetiredTerminalKey(key)) {
+            return;
+        }
         ++m_unmatchedEvents;
         advanceSequence(m_sequence);
         return;
@@ -618,6 +651,9 @@ void ChunkVisibilityTracer::observeDraw(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
+            if (isRetiredTerminalKey(key)) {
+                return;
+            }
             ++m_unmatchedEvents;
             advanceSequence(m_sequence);
             return;
@@ -631,6 +667,9 @@ void ChunkVisibilityTracer::observeDraw(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
+        if (isRetiredTerminalKey(key)) {
+            return;
+        }
         ++m_unmatchedEvents;
         advanceSequence(m_sequence);
         return;
@@ -659,6 +698,9 @@ void ChunkVisibilityTracer::observeMeshUnavailable(
         std::lock_guard lock(m_mutex);
         auto record = findRecord(key);
         if (record == m_records.end()) {
+            if (isRetiredTerminalKey(key)) {
+                return;
+            }
             ++m_unmatchedEvents;
             advanceSequence(m_sequence);
             return;
@@ -672,6 +714,9 @@ void ChunkVisibilityTracer::observeMeshUnavailable(
     std::lock_guard lock(m_mutex);
     auto record = findRecord(key);
     if (record == m_records.end()) {
+        if (isRetiredTerminalKey(key)) {
+            return;
+        }
         ++m_unmatchedEvents;
         advanceSequence(m_sequence);
         return;
@@ -739,6 +784,22 @@ ChunkVisibilityTracer::ConstRecordIterator ChunkVisibilityTracer::findRecord(
         [&](const ChunkVisibilityTraceRecord& record) {
             return record.key == key;
         });
+}
+
+bool ChunkVisibilityTracer::isRetiredTerminalKey(
+    const ChunkVisibilityLifecycleKey& key) const {
+    return std::find(
+               m_retiredTerminalKeys.begin(),
+               m_retiredTerminalKeys.end(),
+               key) != m_retiredTerminalKeys.end();
+}
+
+void ChunkVisibilityTracer::retainTerminalKey(
+    const ChunkVisibilityLifecycleKey& key) {
+    while (m_retiredTerminalKeys.size() >= m_config.capacity) {
+        m_retiredTerminalKeys.pop_front();
+    }
+    m_retiredTerminalKeys.push_back(key);
 }
 
 std::optional<ChunkVisibilityTimePoint> ChunkVisibilityTracer::now()

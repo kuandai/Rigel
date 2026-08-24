@@ -276,6 +276,9 @@ private:
     RecordIterator findRecord(const ChunkVisibilityLifecycleKey& key);
     ConstRecordIterator findRecord(
         const ChunkVisibilityLifecycleKey& key) const;
+    bool isRetiredTerminalKey(
+        const ChunkVisibilityLifecycleKey& key) const;
+    void retainTerminalKey(const ChunkVisibilityLifecycleKey& key);
     std::optional<ChunkVisibilityTimePoint> now() const noexcept;
 
     Config m_config;
@@ -283,6 +286,7 @@ private:
     mutable std::mutex m_clockMutex;
     mutable std::mutex m_mutex;
     std::deque<ChunkVisibilityTraceRecord> m_records;
+    std::deque<ChunkVisibilityLifecycleKey> m_retiredTerminalKeys;
     uint64_t m_droppedRecords = 0;
     uint64_t m_droppedUnfinishedRecords = 0;
     uint64_t m_unmatchedEvents = 0;

@@ -265,6 +265,38 @@ TEST_CASE(WorldMeshStore_ReleasesTraceOwnershipAfterDraw) {
     CHECK(observer.expired());
 }
 
+TEST_CASE(WorldMeshStore_DrawDuringAcceptedPublicationWindowIsRetained) {
+    WorldMeshStore store;
+    const ChunkCoord coord{4, 2, 0};
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{coord, 1});
+    const auto key = *tracer->begin(
+        ChunkVisibilityLifecycleKind::CameraDemand);
+
+    store.set(
+        coord,
+        makeMesh(3, 3),
+        ChunkVisibilityTraceLink{
+            key,
+            ChunkVisibilityLifecycleKind::CameraDemand,
+            tracer});
+    tracer->observeDraw(key);
+    store.finishVisibilityDraw(key);
+    tracer->complete(
+        key,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+
+    const auto record = tracer->latestRecord();
+    CHECK(record.has_value());
+    CHECK_EQ(
+        record->outcome,
+        ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+    CHECK_EQ(record->drawOutcome, ChunkVisibilityDrawOutcome::Drawn);
+    CHECK(record->observed(ChunkVisibilityStage::FirstDraw));
+    CHECK(record->stage(ChunkVisibilityStage::FirstDraw).has_value());
+    CHECK(record->stage(ChunkVisibilityStage::ResultAccepted).has_value());
+}
+
 TEST_CASE(WorldMeshStore_ReleasesFinalDrawOwnerOutsideMutex) {
     WorldMeshStore store;
     const ChunkCoord coord{4, 1, 0};

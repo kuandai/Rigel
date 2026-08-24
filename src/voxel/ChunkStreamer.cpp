@@ -2829,15 +2829,13 @@ void ChunkStreamer::markVisibilityMeshEligible(
         const ChunkCoord neighbor = coord.offset(dx, dy, dz);
         const bool required =
             m_desiredSet.find(neighbor) != m_desiredSet.end();
-        if (!required || m_chunkManager->getChunk(neighbor)) {
-            continue;
-        }
-        blockers.neighbors[blockers.count++] = {
+        blockers.neighbors[static_cast<size_t>(index)] = {
             direction,
             neighbor,
             required,
             classifyVisibilityBlocker(neighbor)};
     }
+    blockers.count = static_cast<uint8_t>(DirectionCount);
     pending->tracer->observeBlockingDesiredCardinalNeighbors(
         pending->key, blockers);
     if (missingNeighbors != 0) {
@@ -2976,7 +2974,9 @@ ChunkVisibilityBlockerState ChunkStreamer::classifyVisibilityBlocker(
         return ChunkVisibilityBlockerState::GenerationTerminalFailed;
     }
     if (m_loadGenQueued.find(coord) != m_loadGenQueued.end()) {
-        return ChunkVisibilityBlockerState::GenerationSchedulerPending;
+        return m_chunkLoader
+            ? ChunkVisibilityBlockerState::Unowned
+            : ChunkVisibilityBlockerState::GenerationSchedulerPending;
     }
     return ChunkVisibilityBlockerState::Unowned;
 }
@@ -3341,6 +3341,9 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
                     generationResultReadyToPublishCallback),
                 generationResultPublishedObserver = std::move(
                     generationResultPublishedObserver)]() {
+        flight->phase.store(
+            GenerationExecutorPhase::WorkerRunning,
+            std::memory_order_release);
         GenResult result;
         result.coord = coord;
         result.workEpoch = workEpoch;
@@ -3349,20 +3352,8 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
         if (visibilityLink) {
             result.visibilityTrace = visibilityLink->key;
             result.visibilityTracer = visibilityLink->tracer;
-        }
-        if (visibilityLink) {
-            while (!flight->traceSubmissionRecorded.load(
-                std::memory_order_acquire)) {
-                flight->traceSubmissionRecorded.wait(
-                    false, std::memory_order_acquire);
-            }
-        }
-        flight->phase.store(
-            GenerationExecutorPhase::WorkerRunning,
-            std::memory_order_release);
-        if (result.visibilityTracer && result.visibilityTrace) {
-            result.visibilityTracer->mark(
-                *result.visibilityTrace,
+            visibilityLink->tracer->mark(
+                visibilityLink->key,
                 ChunkVisibilityStage::GenerationWorkerStart);
         }
         auto publish = [&]() {
@@ -3439,6 +3430,14 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
         publish();
     };
 
+    if (visibilityLink) {
+        visibilityLink->tracer->mark(
+            visibilityLink->key,
+            ChunkVisibilityStage::GenerationExecutorSubmit);
+    }
+    flight->phase.store(
+        GenerationExecutorPhase::ExecutorQueued,
+        std::memory_order_release);
     if (m_genPool && m_genPool->threadCount() > 0) {
         const auto jobId = m_genPool->enqueue(std::move(job));
         if (jobId == 0) {
@@ -3461,24 +3460,7 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
             wakeGenerationCapacityWaiter();
             return;
         }
-        auto expected = GenerationExecutorPhase::Submitting;
-        flight->phase.compare_exchange_strong(
-            expected,
-            GenerationExecutorPhase::ExecutorQueued,
-            std::memory_order_release,
-            std::memory_order_relaxed);
-    } else {
-        flight->phase.store(
-            GenerationExecutorPhase::ExecutorQueued,
-            std::memory_order_release);
     }
-    if (visibilityLink) {
-        visibilityLink->tracer->mark(
-            visibilityLink->key,
-            ChunkVisibilityStage::GenerationExecutorSubmit);
-    }
-    flight->traceSubmissionRecorded.store(true, std::memory_order_release);
-    flight->traceSubmissionRecorded.notify_all();
     if (!m_genPool || m_genPool->threadCount() == 0) {
         job();
     }

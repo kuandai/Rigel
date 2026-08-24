@@ -320,6 +320,72 @@ TEST_CASE(ChunkVisibilityTrace_TerminalLifecycleRejectsLateMutations) {
     }
 }
 
+TEST_CASE(ChunkVisibilityTrace_EvictedTerminalLifecycleRejectsLateMutations) {
+    const std::array terminalOutcomes{
+        ChunkVisibilityOutcome::CameraLeft,
+        ChunkVisibilityOutcome::Reset,
+        ChunkVisibilityOutcome::GeneratorReplaced,
+        ChunkVisibilityOutcome::TracerReplaced};
+
+    for (const auto outcome : terminalOutcomes) {
+        ManualClock clock;
+        ChunkVisibilityTracer tracer(
+            {{1, 2, 3}, 1},
+            [&]() { return clock.now(); });
+        const auto retiredKey = *tracer.begin(
+            ChunkVisibilityLifecycleKind::CameraDemand);
+        tracer.mark(retiredKey, ChunkVisibilityStage::Desired);
+        tracer.complete(retiredKey, outcome);
+        const auto replacementKey = *tracer.begin(
+            ChunkVisibilityLifecycleKind::CameraDemand,
+            ChunkVisibilityOrigin::ResidentLeftCensored);
+        const auto before = tracer.measurement();
+        const size_t clockReads = clock.reads();
+
+        ChunkVisibilityBlockingNeighborSnapshot blockers;
+        blockers.count = 1;
+        blockers.neighbors[0] = {
+            Direction::PosX,
+            {2, 2, 3},
+            true,
+            ChunkVisibilityBlockerState::GenerationWorkerRunning};
+        tracer.bindMeshTask(retiredKey, meshTask(500));
+        tracer.markDataReady(
+            retiredKey, ChunkVisibilityOrigin::Generated);
+        tracer.observeMissingDesiredCardinalNeighborCount(retiredKey, 1);
+        tracer.observeBlockingDesiredCardinalNeighbors(
+            retiredKey, blockers);
+        tracer.mark(
+            retiredKey,
+            {
+                ChunkVisibilityStage::GenerationWorkerStart,
+                ChunkVisibilityStage::GenerationWorkerFinish,
+                ChunkVisibilityStage::GenerationReady
+            });
+        tracer.complete(
+            retiredKey,
+            ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+        tracer.observeDraw(retiredKey);
+        tracer.observeMeshUnavailable(
+            retiredKey,
+            ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
+
+        const auto after = tracer.measurement();
+        CHECK_EQ(after.sequence, before.sequence);
+        CHECK_EQ(after.stats.unmatchedEvents, before.stats.unmatchedEvents);
+        CHECK_EQ(clock.reads(), clockReads);
+        CHECK_EQ(after.records.size(), static_cast<size_t>(1));
+        CHECK_EQ(after.records.front().key, replacementKey);
+        CHECK_EQ(after.records.front().origin, before.records.front().origin);
+        CHECK_EQ(after.records.front().meshTask, before.records.front().meshTask);
+        CHECK_EQ(after.records.front().stages, before.records.front().stages);
+        CHECK_EQ(
+            after.records.front().observedStages,
+            before.records.front().observedStages);
+        CHECK_EQ(after.records.front().outcome, ChunkVisibilityOutcome::Pending);
+    }
+}
+
 TEST_CASE(ChunkVisibilityTrace_LifecycleKeyIsolatesReplacementTask) {
     ChunkVisibilityTracer tracer({{1, 2, 3}, 4});
     const auto staleKey = *tracer.begin(

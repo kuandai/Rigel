@@ -394,11 +394,14 @@ complete.
 ### 8.2 Near-camera visibility benchmark
 
 `Rigel_near_camera_visibility_benchmark` is a controlled cold-generation
-fixture for the camera-containing chunk and one face-adjacent chunk. It uses the
-production generator, streamer, worker pools, mesh builder, and visibility
-trace, but it is neither shipped nor interactive scheduling. Persistence
-returns a controlled missing-probe outcome, so every sample follows generation
-without changing production scheduler settings.
+fixture for stationary, continuous +X, continuous +Z, and diagonal XZ camera
+workloads. A moving sample traces the final camera-containing chunk while the
+camera advances one chunk on each of six updates, then holds that position
+until the real streaming lifecycle becomes quiescent. It uses the production
+generator, streamer, worker pools, mesh builder, and visibility trace, but it
+is neither shipped nor interactive scheduling. Persistence returns a
+controlled missing-probe outcome, so every sample follows generation without
+changing production scheduler settings.
 
 The application-like mode is the default and starts updates at 16.667 ms
 intervals, approximately 60 Hz. Every successful sample still terminates only
@@ -427,12 +430,23 @@ cmake --build <build-directory> --target Rigel_near_camera_visibility_benchmark
 `RIGEL_BUILD_BENCHMARKS` defaults to `OFF`; enabling it does not change normal
 production scheduling or configuration.
 
-The runner emits each raw sample followed by nearest-rank P50/P95 summaries for
-distance and distance/first-observed-missing-desired-cardinal-neighbor cohorts.
-`desired_to_visible` uses `first_draw` when a renderer supplies it and otherwise
-uses `result_accepted`. The current runner is headless, so its header explicitly
-reports `accepted` as the endpoint. Dependency wait, eligible-to-worker-start,
-scheduler wait, pool wait, and worker execution are reported separately.
+Version 4 emits each raw sample followed by nearest-rank P50/P95/P99 summaries
+for workload and workload/first-observed-missing-desired-cardinal-neighbor
+cohorts. It reports desired-to-generation-start, aggregate generation queue
+wait, logical generation scheduler wait, generation capacity wait, generation
+pool wait, generation execution, data-ready-to-neighbors-ready,
+neighbors-ready-to-mesh-start, mesh execution, desired-to-accepted geometry,
+and desired-to-first-draw. The current runner is headless, so every raw sample
+and zero-sample first-draw summary prints `unavailable`, and the header
+explicitly reports `accepted` as the available endpoint. A generated trace
+without a capacity-wait transition contributes zero capacity wait; other
+absent trace durations continue to invalidate the sample rather than being
+coerced to zero.
+
+`--collect-debug-detail` is a separate opt-in measurement mode. It calls the
+same bounded streamer snapshot used by the chunk field after each streaming
+update, but it does not create a GPU context or render the overlay. Normal
+benchmark runs leave this collection disabled.
 The configured mesh queue setting and effective submission limit are distinct.
 Version 3 reads an effective limit from the streamer's runtime diagnostic
 snapshot, the same source used by production diagnostics, rather than
@@ -584,6 +598,164 @@ No interactive first-draw capture was possible in this headless environment;
 this Release evidence stops at accepted geometry. Interactive first-draw
 validation with the shipped persistence backend remains an explicit external
 gate.
+
+#### Moving-camera Release capture
+
+The moving-camera comparison used the FIFO generation engine at
+`217b54448b94464836b9dcc7f52ef03d862f987a` as the baseline and the bounded
+priority generation engine at
+`e17b6899cedc0f3200d2a3a4b62c41160dfea0a0` as the repaired engine. Both were
+built with the byte-identical version 4 benchmark sources committed at
+`8bec158`. SHA-256 checks matched for all three benchmark source files in the
+two source trees.
+
+Both builds used Release, GCC 16.1.1, Linux 7.0.12, and the same 12th Gen Intel
+Core i7-12700 host with 20 logical CPUs. Runs were sequential with otherwise
+uncontrolled host load. Each build used 20 samples per workload, view distance
+2, six movement updates, two total workers split into one generation and one
+mesh worker, unbounded configured generation, mesh, update, and apply limits,
+a 16.667 ms cadence, and controlled missing persistence:
+
+```text
+./Rigel_near_camera_visibility_benchmark --samples 20 --view-distance 2 --worker-threads 2 --motion-steps 6 --timeout-seconds 30 --update-interval-ms 16.667 --comparison-budget-ms 50
+```
+
+All 160 samples reached quiescence, accepted geometry, reported three stable
+updates and zero stale mesh results, and retained clean trace accounting.
+Times are P50/P95/P99 milliseconds. `Gen queue` spans generation scheduler
+admission through actual generation worker start; the narrower logical,
+capacity, and pool waits remain in the raw capture. `Data-neighbors` is the
+remaining desired-cardinal-neighbor dependency. `Neighbors-mesh` ends at the
+actual mesh worker start. No first-draw sample exists because the runner is
+headless.
+
+| Workload | Engine | Desired-gen start | Gen queue | Gen execution | Data-neighbors | Neighbors-mesh | Mesh execution | Desired-accepted | Desired-first draw |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stationary | FIFO | 0.069/0.102/0.110 | 0.063/0.094/0.104 | 26.254/32.639/32.716 | 150.096/166.739/166.750 | 16.792/16.859/16.977 | 0.265/0.322/0.360 | 216.839/233.424/233.447 | unavailable (0) |
+| Stationary | Priority | 0.085/0.103/0.113 | 0.066/0.098/0.108 | 26.084/29.862/33.156 | 150.004/166.674/166.719 | 16.846/16.920/17.136 | 0.262/0.374/0.388 | 216.801/233.371/233.498 | unavailable (0) |
+| Continuous +X | FIFO | 286.795/290.399/291.470 | 286.787/290.391/291.462 | 25.156/26.279/26.462 | 233.331/233.510/233.522 | 16.826/33.328/33.328 | 0.147/0.168/0.253 | 583.384/600.087/600.162 | unavailable (0) |
+| Continuous +X | Priority | 33.388/33.465/33.501 | 33.382/33.458/33.495 | 25.388/26.933/31.053 | 150.009/150.057/166.675 | 16.835/16.883/16.899 | 0.251/0.266/0.287 | 250.072/250.120/266.731 | unavailable (0) |
+| Continuous +Z | FIFO | 288.545/290.870/291.740 | 288.537/290.862/291.731 | 25.482/26.507/26.918 | 233.489/233.593/249.941 | 33.251/33.328/33.332 | 0.149/0.250/0.253 | 600.028/600.080/600.097 | unavailable (0) |
+| Continuous +Z | Priority | 33.431/33.491/33.497 | 33.425/33.485/33.491 | 25.247/25.875/25.977 | 150.004/150.051/150.053 | 16.840/16.918/17.008 | 0.252/0.278/0.305 | 250.072/250.111/250.129 | unavailable (0) |
+| Diagonal XZ | FIFO | 270.369/276.057/276.319 | 270.360/276.048/276.310 | 25.193/25.893/26.763 | 183.142/183.227/183.250 | 16.833/16.889/16.940 | 0.152/0.269/0.311 | 516.707/516.798/516.808 | unavailable (0) |
+| Diagonal XZ | Priority | 34.274/35.709/36.919 | 34.268/35.702/36.912 | 25.402/26.022/26.149 | 150.008/166.715/183.300 | 16.850/16.896/16.931 | 0.260/0.288/0.305 | 250.086/266.733/283.290 | unavailable (0) |
+
+The target's generation-queue P95 fell 88.5% in +X, 88.5% in +Z, and
+87.1% diagonally. Desired-to-accepted P95 fell 58.3%, 58.3%, and 48.4%,
+respectively, while stationary P95 remained within 0.1 ms. The FIFO target
+spent nearly all of its pre-generation latency in the physical pool queue;
+the priority target instead started within 37 ms at P99. This, together with
+the constrained-worker ordering regressions, demonstrates that an approached
+chunk is no longer buried behind the older unstarted generation backlog.
+
+Neighbor dependency remains the largest repaired P95 stage: 150.1 ms in both
+cardinal workloads and 166.7 ms diagonally, versus at most 35.7 ms for
+generation queue wait and 26.9 ms for generation execution. This controlled
+result identifies the residual without establishing interactive impact. It
+does not justify adding a provisional neighbor policy; a separately bounded
+interactive first-draw study would be required before such a change.
+
+The two-worker fixture exercises the production split as one generation plus
+one mesh worker. The shipped `worker_threads=12` setting remains a six/six
+split, with generation submission narrowed to twelve submitted-but-undrained
+jobs. No split or worker-pool policy changed in this validation.
+
+The shipped view radius is 12 and the shipped vertical bounds are -64 through
+320. A direct enumeration of the spherical desired set around chunk Y=0
+contains 7,153 coordinates. Of those, 2,482 chunks are wholly below the world,
+70 are wholly above it, and 2,552 total (35.7%) are wholly out of world. For
+surface camera chunk Y values 1, 2, and 3, the wholly out-of-world shares are
+31.7%, 28.7%, and 27.0%. The generator currently returns empty data for this
+demand through the normal lifecycle. The count is material capacity overhead,
+but this capture does not prove a remaining moving-camera P1 because repaired
+target ordering is bounded and neighbor readiness, not generation queue wait,
+is the largest stage. Vertical clipping remains a separate performance change.
+
+#### Debug-detail comparison
+
+The repaired stationary workload was repeated on the same Release build and
+host with `--collect-debug-detail`. The disabled run's P95
+desired-to-generation-start and desired-to-accepted times were 0.103 ms and
+233.371 ms. With detail collection they were 0.170 ms and 233.438 ms. The
+enabled run collected 1,584 full snapshots and 52,272 returned records across
+20 samples, averaging 33 records per snapshot. The 0.067 ms accepted-geometry
+P95 difference is 0.03%, so the bounded radius-2 snapshot was not a material
+end-to-end perturbation in this capture.
+
+This comparison excludes GL field drawing and ImGui presentation and is not an
+interactive overlay cost claim. Production detail collection remains opt-in
+behind the F1 debug-overlay action and walks only the requested, clamped view
+cube. At the shipped radius that walk can still be much larger than this
+fixture; it should remain opt-in unless a future interactive profile justifies
+sampling or a tighter bound.
+
+#### Scheduler boundary assessment
+
+The following structural count treats a mechanism as one distinct policy/data
+model, not every branch or container used to implement it. Mesh scheduling is
+listed separately even though `ChunkStreamer` owns it.
+
+| Area | Priority | Capacity | Pending | Cancellation | Wake/refill | Retry | Ownership |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ChunkStreamer` source/generation | 2 | 3 | 2 | 2 | 2 | 2 | 4 |
+| `ChunkStreamer` mesh scheduling | 3 | 3 | 3 | 2 | 3 | 3 | 3 |
+| `AsyncChunkLoader` | 3 | 4 | 5 | 4 | 4 | 2 | 5 |
+| `ThreadPool` | 2 | 1 | 2 | 1 | 2 | 0 | 1 |
+
+The source/generation row counts the shared desired importance and ordered
+generation index; update, dispatch, and apply bounds; the canonical source and
+generation pending lanes; load and generation retirement; update/completion
+refill; terminal requeue/config reconciliation; and source, load-request,
+logical-generation, and physical-flight ownership. The mesh row counts shared
+importance, missing/dirty class ordering, explicit dirty priority; dispatch,
+class, and apply bounds; ready, dependency, and replacement pending state;
+pending retirement and stale-flight rejection; neighbor, completion, and dirty
+wakes; failure/revision/config reconciliation; and pending, in-flight, and
+completion ownership.
+
+The loader row counts direct/speculative ordering, promotion, and executor
+priority; chunk, region, executor, and drain bounds; direct, deferred, retry,
+region, and payload pending state; coordinate, direct, speculative, and
+submitted-pool cancellation; request, completion, retry-deadline, and prefetch
+wakes; region and chunk retry policies; and request, region, dispatched,
+payload, and terminal owners. The pool row counts its two priority lanes and
+promotion, fixed worker capacity, two pending deques, incarnation-qualified
+cancellation, enqueue/stop notifications, and pool-local job ownership.
+
+A narrow generation-scheduler boundary has emerged inside `ChunkStreamer`:
+`ChunkImportance`, the pending-generation map and ordered index,
+`generationDispatchLimit`, reprioritization, dispatch, activation, retirement,
+and settlement form one coherent unit. It is not yet an independently owned
+module. Request epoch, generator version, visibility tracing, cancellation,
+completion validity, state transitions, and source-resolution handoff still
+cross that boundary. Extracting only the queue would duplicate ownership or
+callbacks; an eventual extraction should move the complete logical-to-physical
+owner transition, not introduce a public scheduler interface now.
+
+Remaining maintainability debt is bounded and non-blocking:
+
+- Configuration: `worker_threads` owns an implicit generation/mesh split, and
+  the effective generation submission bound is not exposed alongside the
+  mesh submission diagnostic. No new setting is needed for current behavior.
+- Overlay language: the red field summary intentionally collapses source,
+  load, generation-pending, capacity, queued, and running states into “waiting
+  for chunk data”; the selected detail record is required for exact phase
+  attribution and may describe retained history rather than the live owner.
+- Test coupling: mutation-sensitive streamer regressions use a large private
+  test-access surface and container-level assertions. This catches ownership
+  mutations but makes internal extraction costly.
+- Module boundary: source selection, logical generation scheduling, physical
+  flight ownership, and completion settlement remain in one streamer class.
+  That preserves one execution path today but raises change-review cost.
+- Instrumentation: mesh exposes its effective submission limit directly while
+  generation does not; visibility tracing is intentionally one-coordinate,
+  bounded, and opt-in; full overlay snapshots remain per-enabled-frame cube
+  walks rather than sampled telemetry.
+
+Runtime merge readiness is unaffected by these P2 maintainability items. The
+matched motion evidence, deterministic regressions, exact lifecycle accounting,
+and quiescence checks cover the current behavioral change. Interactive shipped-
+backend first-draw timing remains the only external performance gate.
 
 ---
 

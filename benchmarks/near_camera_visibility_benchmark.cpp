@@ -32,6 +32,7 @@
 namespace {
 
 using namespace Rigel;
+using BenchmarkClock = std::chrono::steady_clock;
 
 constexpr double kDefaultUpdateIntervalMilliseconds = 1000.0 / 60.0;
 
@@ -41,6 +42,10 @@ struct Options {
     int workerThreads = 2;
     int timeoutSeconds = 30;
     double updateIntervalMilliseconds = kDefaultUpdateIntervalMilliseconds;
+    BenchmarkClock::duration updateInterval =
+        std::chrono::duration_cast<BenchmarkClock::duration>(
+            std::chrono::duration<double, std::milli>(
+                kDefaultUpdateIntervalMilliseconds));
     double comparisonBudgetMilliseconds = 50.0;
     bool updateIntervalSpecified = false;
     bool schedulerLowerBoundStress = false;
@@ -78,6 +83,27 @@ std::optional<double> parseDouble(std::string_view value) {
         return std::nullopt;
     }
     return parsed;
+}
+
+std::optional<BenchmarkClock::duration> toUpdateInterval(double milliseconds) {
+    using Milliseconds = std::chrono::duration<double, std::milli>;
+    const auto minimumMilliseconds =
+        Milliseconds(BenchmarkClock::duration{1}).count();
+    const auto maximumMilliseconds =
+        Milliseconds(BenchmarkClock::duration::max()).count();
+    if (!std::isfinite(milliseconds) ||
+        milliseconds < minimumMilliseconds ||
+        milliseconds >= maximumMilliseconds) {
+        return std::nullopt;
+    }
+
+    const auto interval =
+        std::chrono::duration_cast<BenchmarkClock::duration>(
+            Milliseconds(milliseconds));
+    if (interval <= BenchmarkClock::duration::zero()) {
+        return std::nullopt;
+    }
+    return interval;
 }
 
 void printUsage() {
@@ -124,6 +150,15 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 return false;
             }
             if (argument == "--update-interval-ms") {
+                const auto interval = toUpdateInterval(*parsed);
+                if (!interval) {
+                    std::cerr
+                        << "Invalid application-like update interval: "
+                        << value
+                        << " (must convert to a positive, representable "
+                           "steady-clock duration)\n";
+                    return false;
+                }
                 if (options.schedulerLowerBoundStress) {
                     std::cerr
                         << "An explicit update interval cannot be combined "
@@ -131,6 +166,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
                     return false;
                 }
                 options.updateIntervalMilliseconds = *parsed;
+                options.updateInterval = *interval;
                 options.updateIntervalSpecified = true;
             } else {
                 options.comparisonBudgetMilliseconds = *parsed;
@@ -209,12 +245,9 @@ RunResult runSample(const Options& options,
     streamer.markSpawnDiscoveryComplete();
 
     RunResult result;
-    using Clock = std::chrono::steady_clock;
+    using Clock = BenchmarkClock;
     const auto deadline = Clock::now() +
         std::chrono::seconds(options.timeoutSeconds);
-    const auto updateInterval = std::chrono::duration_cast<Clock::duration>(
-        std::chrono::duration<double, std::milli>(
-            options.updateIntervalMilliseconds));
     auto nextUpdate = Clock::now();
     const Voxel::ChunkCoord cameraChunk{0, 0, 0};
     while (Clock::now() < deadline) {
@@ -234,7 +267,7 @@ RunResult runSample(const Options& options,
         if (options.schedulerLowerBoundStress) {
             std::this_thread::yield();
         } else {
-            nextUpdate += updateInterval;
+            nextUpdate += options.updateInterval;
             const auto now = Clock::now();
             if (nextUpdate < now) {
                 nextUpdate = now;

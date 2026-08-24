@@ -219,6 +219,14 @@ if (RIGEL_BUILD_TESTS)
     set_tests_properties(Rigel_tests_filtered_count PROPERTIES
         PASS_REGULAR_EXPRESSION "Ran 1 tests, 0 failed, 0 skipped\\."
     )
+    if (RIGEL_BUILD_BENCHMARKS)
+        add_test(
+            NAME Rigel_near_camera_visibility_cadence_options
+            COMMAND ${CMAKE_COMMAND}
+                "-DBENCHMARK_EXECUTABLE=$<TARGET_FILE:Rigel_near_camera_visibility_benchmark>"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/near_camera_visibility_cadence_options.cmake
+        )
+    endif()
 
     get_target_property(RIGEL_LIBRARY_TEST_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
     if (NOT RIGEL_LIBRARY_TEST_COMPILE_DEFINITIONS STREQUAL RIGEL_LIBRARY_COMPILE_DEFINITIONS)

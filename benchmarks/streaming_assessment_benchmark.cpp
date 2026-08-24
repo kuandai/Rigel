@@ -44,6 +44,7 @@ namespace {
 using namespace Rigel;
 using Clock = std::chrono::steady_clock;
 constexpr size_t kMaxFramesPerMode = 10000;
+constexpr auto kVerticalLifecycleTimeout = std::chrono::minutes(2);
 
 template <typename Callback>
 class ScopeExit {
@@ -147,17 +148,14 @@ LifecycleResult runOutOfBoundsLifecycle(
     Voxel::WorldMeshStore meshStore;
     Voxel::ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, generator);
-    Voxel::StreamingConfig config = shippedStreaming;
-    config.viewDistanceChunks = 1;
-    config.unloadDistanceChunks = 1;
-    streamer.setConfig(config);
+    streamer.setConfig(shippedStreaming);
     streamer.setChunkLoader([](Voxel::ChunkLoadRequest) {
         return Voxel::ChunkLoadRequestResult::Missing;
     });
     streamer.markSpawnDiscoveryComplete();
 
     LifecycleResult result;
-    const auto deadline = Clock::now() + std::chrono::seconds(30);
+    const auto deadline = Clock::now() + kVerticalLifecycleTimeout;
     while (Clock::now() < deadline) {
         streamer.update(target.toWorldCenter());
         streamer.processCompletions();
@@ -244,6 +242,16 @@ bool overlayExecutionSettled(
         work.meshJobsFailed == 0;
 }
 
+bool lifecycleAccountingSettled(
+    const Voxel::ChunkStreamer::WorkMetrics& work) {
+    return work.generationJobsStarted ==
+            work.generationJobsCompleted + work.generationJobsCancelled &&
+        work.generationJobsFailed <= work.generationJobsCompleted &&
+        work.meshJobsStarted == work.meshJobsCompleted &&
+        work.meshJobsCompleted == work.meshJobsAccepted +
+            work.meshJobsRejectedStale + work.meshJobsFailed;
+}
+
 OverlayStartupSnapshot captureOverlayStartup(
     Voxel::WorldView& view,
     Voxel::ChunkCoord center,
@@ -322,7 +330,10 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
             registry,
             generator);
         std::cout << "vertical_lifecycle position=" << label
-                  << " radius=1"
+                  << " view_radius="
+                  << configuration.streaming.viewDistanceChunks
+                  << " unload_radius="
+                  << configuration.streaming.unloadDistanceChunks
                   << " shipped_worker_threads="
                   << configuration.streaming.workerThreads
                   << " generation_workers="
@@ -399,7 +410,8 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
             lifecycle.diagnostics.generationSchedulerPending != 0 ||
             lifecycle.diagnostics.generationCompletionsPending != 0 ||
             lifecycle.diagnostics.meshCompletionsPending != 0 ||
-            lifecycle.diagnostics.retiredWorkPending != 0) {
+            lifecycle.diagnostics.retiredWorkPending != 0 ||
+            !lifecycleAccountingSettled(lifecycle.work)) {
             return false;
         }
     }
@@ -984,7 +996,7 @@ int runBenchmark(int argc, char** argv) {
     const bool overlayCpu = mode == Mode::OverlayCpu;
 
     std::cout << std::fixed << std::setprecision(3)
-              << "benchmark name=streaming_assessment version=2"
+              << "benchmark name=streaming_assessment version=3"
               << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
               << " hardware_threads=" << std::thread::hardware_concurrency()
               << " shipped_world_configuration=true"

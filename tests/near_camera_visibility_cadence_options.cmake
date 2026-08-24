@@ -83,6 +83,42 @@ if (NOT APPLICATION_QUIESCENT_COUNT EQUAL APPLICATION_SAMPLE_COUNT)
     message(FATAL_ERROR
         "Application-like benchmark accepted a sample before Quiescent")
 endif()
+foreach(SAMPLE_LINE IN LISTS APPLICATION_SAMPLE_LINES)
+    if (NOT SAMPLE_LINE MATCHES
+        "generation_started=([0-9]+) generation_completed=([0-9]+) generation_cancelled=([0-9]+) generation_failed=([0-9]+)")
+        message(FATAL_ERROR
+            "Application-like benchmark omitted a generation accounting partition")
+    endif()
+    set(GENERATION_STARTED "${CMAKE_MATCH_1}")
+    set(GENERATION_COMPLETED "${CMAKE_MATCH_2}")
+    set(GENERATION_CANCELLED "${CMAKE_MATCH_3}")
+    set(GENERATION_FAILED "${CMAKE_MATCH_4}")
+    math(EXPR GENERATION_SETTLED
+        "${GENERATION_COMPLETED} + ${GENERATION_CANCELLED}")
+    if (NOT GENERATION_STARTED EQUAL GENERATION_SETTLED OR
+        GENERATION_FAILED GREATER GENERATION_COMPLETED)
+        message(FATAL_ERROR
+            "Application-like benchmark emitted an invalid generation accounting partition: ${SAMPLE_LINE}")
+    endif()
+
+    if (NOT SAMPLE_LINE MATCHES
+        "mesh_started=([0-9]+) mesh_completed=([0-9]+) mesh_accepted=([0-9]+) mesh_stale=([0-9]+) mesh_failed=([0-9]+)")
+        message(FATAL_ERROR
+            "Application-like benchmark omitted a mesh accounting partition")
+    endif()
+    set(MESH_STARTED "${CMAKE_MATCH_1}")
+    set(MESH_COMPLETED "${CMAKE_MATCH_2}")
+    set(MESH_ACCEPTED "${CMAKE_MATCH_3}")
+    set(MESH_STALE "${CMAKE_MATCH_4}")
+    set(MESH_FAILED "${CMAKE_MATCH_5}")
+    math(EXPR MESH_TERMINAL
+        "${MESH_ACCEPTED} + ${MESH_STALE} + ${MESH_FAILED}")
+    if (NOT MESH_STARTED EQUAL MESH_COMPLETED OR
+        NOT MESH_COMPLETED EQUAL MESH_TERMINAL)
+        message(FATAL_ERROR
+            "Application-like benchmark emitted an invalid mesh accounting partition: ${SAMPLE_LINE}")
+    endif()
+endforeach()
 string(REGEX MATCHALL
     "sample index=[^\n]*generation_pending=0 generation_in_flight=0 generation_completion_pending=0 generation_terminal_failures=0 canonical_source_work=0 canonical_generation_work=0 canonical_retired_work=0[^\n]*mesh_pending=0 mesh_in_flight=0 mesh_completion_pending=0 mesh_terminal_failures=0 chunk_load_pending=0 chunk_load_in_flight=0 chunk_load_terminal_failures=0 eviction_pending=0 eviction_in_flight=0 eviction_terminal_failures=0[^\n]*completion_state=quiescent"
     APPLICATION_ZERO_OWNER_SAMPLES "${APPLICATION_OUTPUT}")

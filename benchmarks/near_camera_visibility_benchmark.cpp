@@ -459,7 +459,14 @@ RunResult runSample(const Options& options, const Workload& workload) {
         diagnostics.retiredWorkPending != 0 ||
         result.work.generationJobsStarted !=
             result.work.generationJobsCompleted +
-                result.work.generationJobsCancelled) {
+                result.work.generationJobsCancelled ||
+        result.work.generationJobsFailed >
+            result.work.generationJobsCompleted ||
+        result.work.meshJobsStarted != result.work.meshJobsCompleted ||
+        result.work.meshJobsCompleted !=
+            result.work.meshJobsAccepted +
+                result.work.meshJobsRejectedStale +
+                result.work.meshJobsFailed) {
         result.error = "quiescence retained streaming work ownership";
         return result;
     }
@@ -579,7 +586,7 @@ int runBenchmark(int argc, char** argv) {
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout
-        << "benchmark name=near_camera_visibility version=4"
+        << "benchmark name=near_camera_visibility version=5"
         << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
         << " hardware_threads=" << std::thread::hardware_concurrency()
         << " fixture=controlled_cold_moving_generation"
@@ -761,6 +768,8 @@ int runBenchmark(int argc, char** argv) {
                 << result.work.generationJobsCompleted
                 << " generation_cancelled="
                 << result.work.generationJobsCancelled
+                << " generation_failed="
+                << result.work.generationJobsFailed
                 << " generation_pending="
                 << result.diagnostics.generation.pending
                 << " generation_in_flight="
@@ -777,7 +786,9 @@ int runBenchmark(int argc, char** argv) {
                 << result.diagnostics.retiredWorkPending
                 << " mesh_started=" << result.work.meshJobsStarted
                 << " mesh_completed=" << result.work.meshJobsCompleted
+                << " mesh_accepted=" << result.work.meshJobsAccepted
                 << " mesh_stale=" << result.work.meshJobsRejectedStale
+                << " mesh_failed=" << result.work.meshJobsFailed
                 << " mesh_pending=" << result.diagnostics.mesh.pending
                 << " mesh_in_flight=" << result.diagnostics.mesh.inFlight
                 << " mesh_completion_pending="

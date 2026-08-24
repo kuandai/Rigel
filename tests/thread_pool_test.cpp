@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -326,6 +327,40 @@ TEST_CASE(ThreadPool_PromotesAndCancelsPendingJobs) {
     CHECK_EQ(order[0], 3);
     CHECK_EQ(order[1], 1);
     CHECK(!pool.cancel(normal));
+}
+
+TEST_CASE(ThreadPool_CancellableHandleRejectsReusedIdFromNewIncarnation) {
+    using Rigel::Voxel::detail::ThreadPool;
+    std::optional<ThreadPool> storage;
+    storage.emplace(0);
+    ThreadPool* const reusedAddress = &*storage;
+    const auto retired = storage->enqueueCancellable([]() {});
+    CHECK(retired);
+    CHECK_EQ(
+        Rigel::Voxel::detail::ThreadPoolTestAccess::pendingJobCount(*storage),
+        static_cast<size_t>(1));
+
+    storage.reset();
+    storage.emplace(0);
+    CHECK_EQ(&*storage, reusedAddress);
+    const auto current = storage->enqueueCancellable([]() {});
+    CHECK(current);
+    CHECK_EQ(
+        Rigel::Voxel::detail::ThreadPoolTestAccess::jobId(retired),
+        Rigel::Voxel::detail::ThreadPoolTestAccess::jobId(current));
+    CHECK(!Rigel::Voxel::detail::ThreadPoolTestAccess::sameIncarnation(
+        retired, current));
+
+    CHECK(!storage->cancel(retired));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ThreadPoolTestAccess::pendingJobCount(
+            *storage),
+        static_cast<size_t>(1));
+    CHECK(storage->cancel(current));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ThreadPoolTestAccess::pendingJobCount(
+            *storage),
+        static_cast<size_t>(0));
 }
 
 TEST_CASE(ThreadPool_CancelDestroysCallableAfterUnlock) {

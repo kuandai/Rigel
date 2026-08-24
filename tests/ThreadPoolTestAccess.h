@@ -21,6 +21,20 @@ struct ThreadPoolTestAccess {
         return std::is_move_constructible_v<ThreadPool::PendingJob>;
     }
 
+    static size_t pendingJobCount(ThreadPool& pool) {
+        std::lock_guard<std::mutex> lock(pool.m_mutex);
+        return pool.m_highPriorityJobs.size() + pool.m_jobs.size();
+    }
+
+    static ThreadPool::JobId jobId(const ThreadPool::JobHandle& handle) {
+        return handle.m_id;
+    }
+
+    static bool sameIncarnation(const ThreadPool::JobHandle& lhs,
+                                const ThreadPool::JobHandle& rhs) {
+        return lhs.m_incarnation == rhs.m_incarnation;
+    }
+
     static void gateNextEnqueueReturn(ThreadPool& pool,
                                       std::atomic<bool>& entered,
                                       std::atomic<bool>& released) {

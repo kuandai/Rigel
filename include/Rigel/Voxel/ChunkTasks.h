@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <type_traits>
@@ -56,8 +57,33 @@ private:
 };
 
 class ThreadPool {
+    struct Incarnation;
+
 public:
     using JobId = uint64_t;
+
+    class JobHandle {
+    public:
+        JobHandle() noexcept = default;
+
+        explicit operator bool() const noexcept {
+            return m_id != 0 && m_incarnation != nullptr;
+        }
+
+    private:
+        friend class ThreadPool;
+        friend struct ThreadPoolTestAccess;
+
+        JobHandle(JobId id,
+                  std::shared_ptr<const Incarnation> incarnation) noexcept
+            : m_id(id),
+              m_incarnation(std::move(incarnation)) {}
+
+        JobId m_id = 0;
+        // Keeps a retired pool distinct even if a replacement reuses both
+        // its storage address and its pool-local job ID.
+        std::shared_ptr<const Incarnation> m_incarnation;
+    };
 
     // Counter-only publication performed while the queued job is still
     // protected by the pool mutex. This deliberately cannot run user code.
@@ -163,6 +189,15 @@ public:
         return id;
     }
 
+    JobHandle enqueueCancellable(
+        std::function<void()> job,
+        Priority priority = Priority::Normal,
+        SubmissionCommitAccounting accounting = {}) {
+        const JobId id = enqueue(
+            std::move(job), priority, std::move(accounting));
+        return id == 0 ? JobHandle{} : JobHandle{id, m_incarnation};
+    }
+
     bool cancel(JobId id) {
         PendingJob cancelled;
         bool found = false;
@@ -172,6 +207,13 @@ public:
                 takePendingJob(m_jobs, id, cancelled);
         }
         return found;
+    }
+
+    bool cancel(const JobHandle& handle) {
+        if (handle.m_incarnation != m_incarnation) {
+            return false;
+        }
+        return cancel(handle.m_id);
     }
 
     bool promote(JobId id) {
@@ -215,6 +257,8 @@ public:
     }
 
 private:
+    struct Incarnation {};
+
     struct PendingJob {
         explicit PendingJob(JobId jobId = 0) : id(jobId) {}
 
@@ -316,6 +360,8 @@ private:
     std::atomic<bool>* m_nextEnqueueReturnEntered = nullptr;
     std::atomic<bool>* m_nextEnqueueReturnReleased = nullptr;
     JobId m_nextJobId = 1;
+    std::shared_ptr<const Incarnation> m_incarnation =
+        std::make_shared<Incarnation>();
     bool m_stopping = false;
 };
 

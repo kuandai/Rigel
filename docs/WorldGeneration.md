@@ -196,7 +196,8 @@ pending scheduler.
 
 ### 5.3.1 Cardinal-motion ordering
 
-The constrained-worker regression holds the one physical generation slot and
+The constrained-worker regression holds the single generation worker while
+one submitted standby job occupies the second bounded dispatch slot, then
 moves the center twice in both +X and +Z. Newly leading work at squared
 distance 1 dispatches before retained older work at squared distance 2. The
 running retained job is not cancelled, equal-distance work follows coordinate

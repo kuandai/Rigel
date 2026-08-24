@@ -3679,6 +3679,197 @@ TEST_CASE(AsyncChunkLoader_ZeroCapYieldKeepsQueuedPrefetchBounded) {
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
 }
 
+TEST_CASE(AsyncChunkLoader_ZeroCapCancelsPoolPendingPromotionIntoFullQueue) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+
+    MemoryContext ctx;
+    auto firstPoolBlocker = std::make_shared<LoaderWorkGate>();
+    auto secondPoolBlocker = std::make_shared<LoaderWorkGate>();
+    std::mutex startsMutex;
+    std::vector<RegionKey> starts;
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        2,
+        0,
+        12,
+        generator);
+    LoaderWorkRelease releaseOnExit(firstPoolBlocker, secondPoolBlocker);
+    loader.setMaxInFlightRegions(0);
+    loader.setPrefetchRadius(2);
+    loader.setPrefetchPerRequest(0);
+
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::enqueueIoPoolJob(
+        loader,
+        [firstPoolBlocker]() { firstPoolBlocker->enterAndWait(); });
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::enqueueIoPoolJob(
+        loader,
+        [secondPoolBlocker]() { secondPoolBlocker->enterAndWait(); });
+    CHECK(firstPoolBlocker->waitUntilEntered());
+    CHECK(secondPoolBlocker->waitUntilEntered());
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setRegionLoadStartObserver(
+            loader,
+            [&startsMutex, &starts](const RegionKey& key, bool) {
+                std::lock_guard<std::mutex> lock(startsMutex);
+                starts.push_back(key);
+            });
+
+    const ChunkCoord initialDemand{0, 0, 0};
+    CHECK_EQ(loader.request(makeLoadRequest(initialDemand)),
+             ChunkLoadRequestResult::Queued);
+    const auto full = loader.metrics();
+    CHECK_EQ(full.directOrigin.logicalAdmissions, static_cast<uint64_t>(1));
+    CHECK_EQ(full.speculativeOrigin.logicalAdmissions,
+             static_cast<uint64_t>(65));
+    CHECK_EQ(full.demandOwnedDispatchedUndrained, static_cast<size_t>(1));
+    CHECK_EQ(full.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(1));
+    CHECK_EQ(full.speculativeOwnedQueued, static_cast<size_t>(64));
+    CHECK_EQ(full.speculativePoolJobsPending, static_cast<size_t>(1));
+
+    const auto submitted = Rigel::Persistence::detail::
+        AsyncChunkLoaderTestAccess::submittedSpeculativeRegionKeys(loader);
+    CHECK_EQ(submitted.size(), static_cast<size_t>(1));
+    const RegionKey promotedKey = submitted.front();
+    const ChunkCoord promotedDemand{
+        promotedKey.x * 16, promotedKey.y * 16, promotedKey.z * 16};
+    const auto promotedIdentity = Rigel::Persistence::detail::
+        AsyncChunkLoaderTestAccess::regionJobIdentity(loader, promotedKey);
+    const auto submittedPoolJob = Rigel::Persistence::detail::
+        AsyncChunkLoaderTestAccess::regionPoolJobId(loader, promotedKey);
+    CHECK(promotedIdentity);
+    CHECK(submittedPoolJob != 0);
+    const auto queuedBefore = Rigel::Persistence::detail::
+        AsyncChunkLoaderTestAccess::queuedSpeculativeRegionKeys(loader);
+    CHECK_EQ(queuedBefore.size(), static_cast<size_t>(64));
+
+    loader.setPrefetchRadius(0);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        markRegionKnownMissing(loader, promotedKey);
+    CHECK_EQ(loader.request(makeLoadRequest(promotedDemand)),
+             ChunkLoadRequestResult::Queued);
+    const auto promoted = loader.metrics();
+    CHECK_EQ(promoted.demandPromotions, static_cast<uint64_t>(1));
+    CHECK_EQ(promoted.demandOwnedDispatchedUndrained,
+             static_cast<size_t>(2));
+    CHECK_EQ(promoted.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
+    CHECK_EQ(promoted.speculativeOwnedQueued, static_cast<size_t>(64));
+    CHECK_EQ(promoted.speculativePoolJobsPending, static_cast<size_t>(0));
+    CHECK_EQ(promoted.speculativeOrigin.successfulPoolYields,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionJobIdentity(loader, promotedKey),
+             promotedIdentity);
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionPoolJobId(loader, promotedKey),
+             submittedPoolJob);
+    CHECK(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+              regionJobHasDirectDemand(loader, promotedKey));
+
+    const ChunkCoord replacementDemand{320, 0, 0};
+    CHECK_EQ(loader.request(makeLoadRequest(replacementDemand)),
+             ChunkLoadRequestResult::Queued);
+    CHECK_EQ(loader.metrics().demandOwnedQueued, static_cast<size_t>(1));
+    CHECK_EQ(loader.metrics().speculativeOwnedQueued, static_cast<size_t>(64));
+
+    loader.cancel(promotedDemand);
+    CHECK(!loader.isPending(promotedDemand));
+    const auto cancelled = loader.metrics();
+    CHECK_EQ(cancelled.speculativeOrigin.logicalAdmissions,
+             static_cast<uint64_t>(65));
+    CHECK_EQ(cancelled.speculativeOrigin.logicalPreStartCancellations,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(cancelled.speculativeOrigin.successfulPoolYields,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(cancelled.demandOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(cancelled.demandOwnedDispatchedUndrained,
+             static_cast<size_t>(2));
+    CHECK_EQ(cancelled.speculativeOwnedQueued, static_cast<size_t>(64));
+    CHECK_EQ(cancelled.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
+    CHECK_EQ(cancelled.speculativePoolJobsPending, static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionJobIdentity(loader, promotedKey),
+             promotedIdentity);
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionPoolJobId(loader, promotedKey),
+             Rigel::Voxel::detail::ThreadPool::JobId{0});
+    CHECK(!Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+               regionJobHasDirectDemand(loader, promotedKey));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionLoadAttemptCount(loader, promotedKey),
+             static_cast<size_t>(0));
+
+    const auto queuedAfter = Rigel::Persistence::detail::
+        AsyncChunkLoaderTestAccess::queuedSpeculativeRegionKeys(loader);
+    CHECK_EQ(queuedAfter.size(), static_cast<size_t>(64));
+    CHECK(std::find(queuedAfter.begin(), queuedAfter.end(), promotedKey) !=
+          queuedAfter.end());
+    size_t displacedCount = 0;
+    for (const RegionKey& key : queuedBefore) {
+        if (std::find(queuedAfter.begin(), queuedAfter.end(), key) ==
+            queuedAfter.end()) {
+            ++displacedCount;
+            CHECK(!Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                       regionJobIdentity(loader, key));
+        }
+    }
+    CHECK_EQ(displacedCount, static_cast<size_t>(1));
+
+    firstPoolBlocker->release();
+    secondPoolBlocker->release();
+    std::vector<ChunkLoadCompletion> resolved;
+    CHECK(drainRegionJobsUntilSettled(loader, resolved));
+    CHECK_EQ(resolved.size(), static_cast<size_t>(2));
+    {
+        std::lock_guard<std::mutex> lock(startsMutex);
+        CHECK_EQ(std::count(starts.begin(), starts.end(), promotedKey),
+                 static_cast<std::ptrdiff_t>(1));
+    }
+
+    const auto settled = loader.metrics();
+    CHECK_EQ(settled.directOrigin.resultsPublished,
+             settled.directOrigin.logicalAdmissions);
+    CHECK_EQ(settled.directOrigin.resultsPublished,
+             settled.directOrigin.resultsDrained);
+    CHECK_EQ(
+        settled.speculativeOrigin.resultsPublished +
+            settled.speculativeOrigin.logicalPreStartCancellations,
+        settled.speculativeOrigin.logicalAdmissions);
+    CHECK_EQ(settled.speculativeOrigin.poolSubmissions,
+             settled.speculativeOrigin.poolWorkerStarts +
+                 settled.speculativeOrigin.successfulPoolYields);
+    CHECK_EQ(settled.speculativeOrigin.successfulPoolYields,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(settled.speculativeOrigin.resultsPublished,
+             settled.speculativeOrigin.resultsDrained);
+    CHECK_EQ(settled.demandOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(settled.speculativeOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(settled.demandOwnedDispatchedUndrained, static_cast<size_t>(0));
+    CHECK_EQ(settled.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
+    CHECK_EQ(settled.speculativePoolJobsPending, static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionOwnerCount(loader),
+             static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionAttemptOwnerCount(loader),
+             static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionCompletionCount(loader),
+             static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+}
+
 TEST_CASE(AsyncChunkLoader_CancelRemovesPoolPendingDirectRegionJob) {
     WorldResources resources;
     World world;

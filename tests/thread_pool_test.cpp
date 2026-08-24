@@ -15,23 +15,10 @@
 
 namespace Rigel::Voxel::detail {
 struct ConcurrentQueueTestAccess {
-    template <typename T, typename OnLockContended>
-    static bool tryPop(ConcurrentQueue<T>& queue,
-                       T& out,
-                       bool& lockContended,
-                       OnLockContended&& onLockContended) {
-        std::unique_lock<std::mutex> lock(queue.m_mutex, std::defer_lock);
-        lockContended = !lock.try_lock();
-        if (lockContended) {
-            std::invoke(onLockContended);
-            lock.lock();
-        }
-        if (queue.m_queue.empty()) {
-            return false;
-        }
-        out = std::move(queue.m_queue.front());
-        queue.m_queue.pop_front();
-        return true;
+    template <typename T>
+    static bool tryLockMutex(ConcurrentQueue<T>& queue) {
+        std::unique_lock<std::mutex> lock(queue.m_mutex, std::try_to_lock);
+        return lock.owns_lock();
     }
 };
 
@@ -78,6 +65,11 @@ public:
             lock,
             std::chrono::seconds(5),
             [this]() { return m_entered; });
+    }
+
+    void waitUntilEnteredWithoutTimeout() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_condition.wait(lock, [this]() { return m_entered; });
     }
 
     void release() {
@@ -137,52 +129,29 @@ TEST_CASE(ThreadPool_ConstructionFailureJoinsStartedWorker) {
 TEST_CASE(ConcurrentQueue_PublicationCallbackCompletesBeforeDrain) {
     Rigel::Voxel::detail::ConcurrentQueue<int> queue;
     ThreadPoolGate publicationGate;
-    ThreadPoolGate consumerContendedGate;
     ThreadPoolRelease releasePublicationOnExit(publicationGate);
-    ThreadPoolRelease releaseConsumerOnExit(consumerContendedGate);
-    std::atomic<uint64_t> published{0};
-    std::atomic<uint64_t> drained{0};
-    bool queueLockContended = false;
-    bool popped = false;
-    int value = 0;
+    uint64_t published = 0;
 
     std::thread producer([&]() {
         queue.push(
             42,
             [&]() noexcept {
-                published.fetch_add(1, std::memory_order_seq_cst);
+                ++published;
                 publicationGate.enterAndWait();
             });
     });
-    const bool publicationEntered = publicationGate.waitUntilEntered();
-
-    std::thread consumer([&]() {
-        popped = Rigel::Voxel::detail::ConcurrentQueueTestAccess::tryPop(
-            queue,
-            value,
-            queueLockContended,
-            [&]() { consumerContendedGate.enterAndWait(); });
-        if (popped) {
-            drained.fetch_add(1, std::memory_order_seq_cst);
-        }
-    });
-    const bool consumerReachedContendedQueueLock =
-        consumerContendedGate.waitUntilEntered();
-
-    consumerContendedGate.release();
+    publicationGate.waitUntilEnteredWithoutTimeout();
+    const bool queueMutexWasAvailable =
+        Rigel::Voxel::detail::ConcurrentQueueTestAccess::tryLockMutex(queue);
     publicationGate.release();
     producer.join();
-    consumer.join();
 
-    CHECK(publicationEntered);
-    CHECK(consumerReachedContendedQueueLock);
-    CHECK(queueLockContended);
+    int value = 0;
+    const bool popped = queue.tryPop(value);
+    CHECK(!queueMutexWasAvailable);
     CHECK(popped);
     CHECK_EQ(value, 42);
-    CHECK_EQ(published.load(std::memory_order_seq_cst),
-             static_cast<uint64_t>(1));
-    CHECK_EQ(drained.load(std::memory_order_seq_cst),
-             static_cast<uint64_t>(1));
+    CHECK_EQ(published, static_cast<uint64_t>(1));
 }
 
 TEST_CASE(ThreadPool_StopDrainsQueuedJobs) {

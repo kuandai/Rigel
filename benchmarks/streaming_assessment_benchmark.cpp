@@ -20,17 +20,19 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <set>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef RIGEL_BENCHMARK_BUILD_TYPE
@@ -41,6 +43,22 @@ namespace {
 
 using namespace Rigel;
 using Clock = std::chrono::steady_clock;
+constexpr size_t kMaxFramesPerMode = 10000;
+
+template <typename Callback>
+class ScopeExit {
+public:
+    explicit ScopeExit(Callback callback)
+        : m_callback(std::move(callback)) {}
+
+    ~ScopeExit() { m_callback(); }
+
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+
+private:
+    Callback m_callback;
+};
 
 struct Percentiles {
     double p50 = 0.0;
@@ -110,6 +128,7 @@ struct LifecycleResult {
     Voxel::ChunkStreamer::DebugInstalledGeometry targetGeometry =
         Voxel::ChunkStreamer::DebugInstalledGeometry::None;
     Voxel::ChunkStreamer::WorkMetrics work;
+    Voxel::StreamingDiagnosticSnapshot diagnostics;
     uint64_t updates = 0;
 };
 
@@ -147,6 +166,7 @@ LifecycleResult runOutOfBoundsLifecycle(
     }
 
     result.work = streamer.workMetrics();
+    result.diagnostics = streamer.diagnostics();
     if (const Voxel::Chunk* chunk = manager.getChunk(target)) {
         result.targetNonAirBlocks = chunk->nonAirCount();
     }
@@ -247,13 +267,60 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
                   << lifecycle.work.generationJobsStarted
                   << " generation_completed="
                   << lifecycle.work.generationJobsCompleted
+                  << " generation_cancelled="
+                  << lifecycle.work.generationJobsCancelled
+                  << " generation_failed="
+                  << lifecycle.work.generationJobsFailed
+                  << " generation_pending="
+                  << lifecycle.diagnostics.generation.pending
+                  << " generation_in_flight="
+                  << lifecycle.diagnostics.generation.inFlight
+                  << " generation_completion_pending="
+                  << lifecycle.diagnostics.generationCompletionsPending
+                  << " generation_terminal_failures="
+                  << lifecycle.diagnostics.generation.terminalErrors
+                  << " canonical_source_work="
+                  << lifecycle.diagnostics.sourceResolutionPending
+                  << " canonical_generation_work="
+                  << lifecycle.diagnostics.generationSchedulerPending
+                  << " canonical_retired_work="
+                  << lifecycle.diagnostics.retiredWorkPending
                   << " mesh_started=" << lifecycle.work.meshJobsStarted
+                  << " mesh_completed=" << lifecycle.work.meshJobsCompleted
                   << " mesh_accepted=" << lifecycle.work.meshJobsAccepted
+                  << " mesh_stale="
+                  << lifecycle.work.meshJobsRejectedStale
+                  << " mesh_failed=" << lifecycle.work.meshJobsFailed
+                  << " mesh_pending="
+                  << lifecycle.diagnostics.mesh.pending
+                  << " mesh_in_flight="
+                  << lifecycle.diagnostics.mesh.inFlight
+                  << " mesh_completion_pending="
+                  << lifecycle.diagnostics.meshCompletionsPending
+                  << " mesh_terminal_failures="
+                  << lifecycle.diagnostics.mesh.terminalErrors
+                  << " chunk_load_pending="
+                  << lifecycle.diagnostics.chunkLoad.pending
+                  << " chunk_load_in_flight="
+                  << lifecycle.diagnostics.chunkLoad.inFlight
+                  << " chunk_load_terminal_failures="
+                  << lifecycle.diagnostics.chunkLoad.terminalErrors
+                  << " eviction_pending="
+                  << lifecycle.diagnostics.eviction.pending
+                  << " eviction_in_flight="
+                  << lifecycle.diagnostics.eviction.inFlight
+                  << " eviction_terminal_failures="
+                  << lifecycle.diagnostics.eviction.terminalErrors
                   << " updates=" << lifecycle.updates
                   << " completion_state="
                   << (lifecycle.quiescent ? "quiescent" : "timeout")
                   << '\n';
-        if (!lifecycle.quiescent) {
+        if (!lifecycle.quiescent || !lifecycle.diagnostics.workEmpty() ||
+            lifecycle.diagnostics.sourceResolutionPending != 0 ||
+            lifecycle.diagnostics.generationSchedulerPending != 0 ||
+            lifecycle.diagnostics.generationCompletionsPending != 0 ||
+            lifecycle.diagnostics.meshCompletionsPending != 0 ||
+            lifecycle.diagnostics.retiredWorkPending != 0) {
             return false;
         }
     }
@@ -299,6 +366,14 @@ public:
             return;
         }
         glGetError();
+        const auto stringValue = [](GLenum name) {
+            const GLubyte* value = glGetString(name);
+            return value
+                ? std::string(reinterpret_cast<const char*>(value))
+                : std::string("unavailable");
+        };
+        m_renderer = stringValue(GL_RENDERER);
+        m_version = stringValue(GL_VERSION);
         m_ready = UI::init(m_window);
         if (!m_ready) {
             m_failure = "imgui_initialization";
@@ -318,76 +393,16 @@ public:
 
     bool ready() const { return m_ready; }
     const std::string& failure() const { return m_failure; }
+    const std::string& renderer() const { return m_renderer; }
+    const std::string& version() const { return m_version; }
 
 private:
     GLFWwindow* m_window = nullptr;
     bool m_glfwInitialized = false;
     bool m_ready = false;
     std::string m_failure;
-};
-
-void GLAPIENTRY ignoreUseProgram(GLuint) {}
-void GLAPIENTRY ignoreUniformMatrix4fv(
-    GLint, GLsizei, GLboolean, const GLfloat*) {}
-void GLAPIENTRY ignoreUniform3fv(GLint, GLsizei, const GLfloat*) {}
-void GLAPIENTRY ignoreUniform1f(GLint, GLfloat) {}
-void GLAPIENTRY ignoreUniform4fv(GLint, GLsizei, const GLfloat*) {}
-void GLAPIENTRY ignoreBindVertexArray(GLuint) {}
-void GLAPIENTRY ignoreBindBuffer(GLenum, GLuint) {}
-void GLAPIENTRY ignoreBufferData(GLenum, GLsizeiptr, const void*, GLenum) {}
-void GLAPIENTRY ignoreEnableVertexAttribArray(GLuint) {}
-void GLAPIENTRY ignoreVertexAttribPointer(
-    GLuint, GLint, GLenum, GLboolean, GLsizei, const void*) {}
-
-class ScopedOverlayGlCalls {
-public:
-    ScopedOverlayGlCalls()
-        : m_useProgram(__glewUseProgram)
-        , m_uniformMatrix4fv(__glewUniformMatrix4fv)
-        , m_uniform3fv(__glewUniform3fv)
-        , m_uniform1f(__glewUniform1f)
-        , m_uniform4fv(__glewUniform4fv)
-        , m_bindVertexArray(__glewBindVertexArray)
-        , m_bindBuffer(__glewBindBuffer)
-        , m_bufferData(__glewBufferData)
-        , m_enableVertexAttribArray(__glewEnableVertexAttribArray)
-        , m_vertexAttribPointer(__glewVertexAttribPointer) {
-        __glewUseProgram = &ignoreUseProgram;
-        __glewUniformMatrix4fv = &ignoreUniformMatrix4fv;
-        __glewUniform3fv = &ignoreUniform3fv;
-        __glewUniform1f = &ignoreUniform1f;
-        __glewUniform4fv = &ignoreUniform4fv;
-        __glewBindVertexArray = &ignoreBindVertexArray;
-        __glewBindBuffer = &ignoreBindBuffer;
-        __glewBufferData = &ignoreBufferData;
-        __glewEnableVertexAttribArray = &ignoreEnableVertexAttribArray;
-        __glewVertexAttribPointer = &ignoreVertexAttribPointer;
-    }
-
-    ~ScopedOverlayGlCalls() {
-        __glewUseProgram = m_useProgram;
-        __glewUniformMatrix4fv = m_uniformMatrix4fv;
-        __glewUniform3fv = m_uniform3fv;
-        __glewUniform1f = m_uniform1f;
-        __glewUniform4fv = m_uniform4fv;
-        __glewBindVertexArray = m_bindVertexArray;
-        __glewBindBuffer = m_bindBuffer;
-        __glewBufferData = m_bufferData;
-        __glewEnableVertexAttribArray = m_enableVertexAttribArray;
-        __glewVertexAttribPointer = m_vertexAttribPointer;
-    }
-
-private:
-    PFNGLUSEPROGRAMPROC m_useProgram;
-    PFNGLUNIFORMMATRIX4FVPROC m_uniformMatrix4fv;
-    PFNGLUNIFORM3FVPROC m_uniform3fv;
-    PFNGLUNIFORM1FPROC m_uniform1f;
-    PFNGLUNIFORM4FVPROC m_uniform4fv;
-    PFNGLBINDVERTEXARRAYPROC m_bindVertexArray;
-    PFNGLBINDBUFFERPROC m_bindBuffer;
-    PFNGLBUFFERDATAPROC m_bufferData;
-    PFNGLENABLEVERTEXATTRIBARRAYPROC m_enableVertexAttribArray;
-    PFNGLVERTEXATTRIBPOINTERPROC m_vertexAttribPointer;
+    std::string m_renderer = "unavailable";
+    std::string m_version = "unavailable";
 };
 
 bool prepareOverlayStreaming(Voxel::WorldView& view,
@@ -426,6 +441,29 @@ bool prepareOverlayStreaming(Voxel::WorldView& view,
     return false;
 }
 
+bool isStartupBacklog(
+    const Voxel::StreamingDiagnosticSnapshot& diagnostics) {
+    return diagnostics.state != Voxel::StreamingLifecycleState::Quiescent &&
+        !diagnostics.workEmpty();
+}
+
+void printStartupBacklog(
+    const Voxel::StreamingDiagnosticSnapshot& diagnostics) {
+    std::cout
+        << " workload=startup_backlog"
+        << " startup_state="
+        << Voxel::streamingLifecycleName(diagnostics.state)
+        << " startup_generation_pending=" << diagnostics.generation.pending
+        << " startup_generation_in_flight="
+        << diagnostics.generation.inFlight
+        << " startup_chunk_load_pending=" << diagnostics.chunkLoad.pending
+        << " startup_chunk_load_in_flight=" << diagnostics.chunkLoad.inFlight
+        << " startup_mesh_pending=" << diagnostics.mesh.pending
+        << " startup_mesh_in_flight=" << diagnostics.mesh.inFlight
+        << " startup_eviction_pending=" << diagnostics.eviction.pending
+        << " startup_eviction_in_flight=" << diagnostics.eviction.inFlight;
+}
+
 bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
     const auto configuration = loadShippedWorldConfiguration(assets);
     Voxel::WorldResources resources;
@@ -443,32 +481,29 @@ bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
                      "reason=nonempty_target_geometry_unavailable\n";
         return false;
     }
+    const auto startupDiagnostics = view.streamingDiagnostics();
+    if (!isStartupBacklog(startupDiagnostics)) {
+        std::cerr << "overlay_cpu_assessment_failed "
+                     "reason=startup_backlog_became_quiescent\n";
+        return false;
+    }
 
-    auto shader = std::make_shared<Asset::ShaderAsset>();
-    shader->program = 1;
     Render::DebugState debug;
     debug.field.initialized = true;
-    debug.field.vao = 1;
-    debug.field.vbos.fill(1);
-    debug.field.shader = Asset::Handle<Asset::ShaderAsset>(
-        shader, "benchmark/chunk_debug");
     const bool startupEnabled = debug.overlayEnabled;
     const auto renderFrame = [&](bool enabled) {
         debug.overlayEnabled = enabled;
         const auto start = Clock::now();
-        Render::renderDebugField(
-            debug,
-            &view,
-            cameraPosition,
-            glm::vec3(16.0f, 80.0f, 0.0f),
-            glm::vec3(0.0f, 0.0f, -1.0f),
-            800,
-            600);
+        const auto presentation = Render::buildDebugFieldPresentation(
+            debug, &view, cameraPosition);
+        if (enabled && !presentation) {
+            throw std::runtime_error(
+                "enabled CPU presentation produced no draw data");
+        }
         return std::chrono::duration<double, std::milli>(
             Clock::now() - start).count();
     };
 
-    ScopedOverlayGlCalls glCalls;
     renderFrame(false);
     renderFrame(true);
     const size_t trackedRecords = debug.debugStates.size();
@@ -483,8 +518,21 @@ bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
     disabled.reserve(frames);
     enabled.reserve(frames);
     for (size_t index = 0; index < frames; ++index) {
-        disabled.push_back(renderFrame(false));
-        enabled.push_back(renderFrame(true));
+        const bool disabledFirst = index % 2 == 0;
+        const double first = renderFrame(!disabledFirst);
+        const double second = renderFrame(disabledFirst);
+        const double disabledValue = disabledFirst ? first : second;
+        const double enabledValue = disabledFirst ? second : first;
+        disabled.push_back(disabledValue);
+        enabled.push_back(enabledValue);
+        std::cout << "overlay_frame_sample path=isolated_cpu"
+                  << " pair_index=" << index
+                  << " order="
+                  << (disabledFirst
+                          ? "disabled_then_enabled"
+                          : "enabled_then_disabled")
+                  << " disabled_ms=" << disabledValue
+                  << " enabled_ms=" << enabledValue << '\n';
     }
     const auto disabledSummary = summarize(std::move(disabled));
     const auto enabledSummary = summarize(std::move(enabled));
@@ -501,14 +549,13 @@ bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
               << (startupEnabled ? "true" : "false")
               << " world_view_draw_evidence_decoration=true"
               << " presentation_maps_and_meshes=true"
-              << " gl_calls=stubbed"
+              << " gl_calls=none"
               << " imgui_legend_rendering=false";
+    printStartupBacklog(startupDiagnostics);
     printPercentiles("disabled_frame", disabledSummary);
     printPercentiles("enabled_frame", enabledSummary);
     std::cout << " p95_delta_ms="
               << enabledSummary.p95 - disabledSummary.p95 << '\n';
-    debug.field.shader = {};
-    shader->program = 0;
     return true;
 }
 
@@ -516,15 +563,20 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
     OpenGLContext context;
     if (!context.ready()) {
         std::cerr << "overlay_assessment_failed reason=\""
-                  << context.failure() << "\"\n";
+                  << context.failure()
+                  << "\" gl_renderer=unavailable gl_version=unavailable\n";
         return false;
     }
+    ScopeExit assetCacheGuard([&assets]() { assets.clearCache(); });
 
     const auto configuration = loadShippedWorldConfiguration(assets);
     Voxel::WorldResources resources;
+    ScopeExit resourcesGuard(
+        [&resources]() { resources.releaseRenderResources(); });
     resources.initialize(assets);
     Voxel::World world(resources);
     Voxel::WorldView view(world, resources);
+    ScopeExit viewGuard([&view]() { view.releaseRenderResources(); });
     const auto generator = std::make_shared<const Voxel::WorldGenerator>(
         resources.registry(), configuration.generation);
     world.setGenerator(generator);
@@ -537,19 +589,17 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
                      "reason=nonempty_target_geometry_unavailable\n";
         return false;
     }
+    const auto startupDiagnostics = view.streamingDiagnostics();
+    if (!isStartupBacklog(startupDiagnostics)) {
+        std::cerr << "overlay_assessment_failed "
+                     "reason=startup_backlog_became_quiescent\n";
+        return false;
+    }
 
     Render::FrameRenderer renderer;
+    ScopeExit rendererGuard([&renderer]() { renderer.release(); });
     renderer.initialize(assets);
     const bool startupEnabled = renderer.debugOverlayEnabled();
-    std::vector<Voxel::ChunkStreamer::DebugChunkState> states;
-    view.getChunkDebugStates(states, {0, 2, 0},
-                             configuration.streaming.viewDistanceChunks);
-    const size_t drawEvidenceRecords = static_cast<size_t>(std::count_if(
-        states.begin(), states.end(),
-        [](const auto& state) {
-            return state.drawEvidence !=
-                Voxel::ChunkStreamer::DebugDrawEvidence::NotApplicable;
-        }));
     const Render::FrameRenderContext frame{
         world,
         view,
@@ -578,18 +628,46 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
 
     renderFrame(false);
     renderFrame(true);
+    std::vector<Voxel::ChunkStreamer::DebugChunkState> states;
+    view.getChunkDebugStates(states, {0, 2, 0},
+                             configuration.streaming.viewDistanceChunks);
+    const size_t drawEvidenceRecords = static_cast<size_t>(std::count_if(
+        states.begin(), states.end(),
+        [](const auto& state) {
+            return state.drawEvidence !=
+                Voxel::ChunkStreamer::DebugDrawEvidence::NotApplicable;
+        }));
+    const size_t drawnRecords = static_cast<size_t>(std::count_if(
+        states.begin(), states.end(),
+        [](const auto& state) {
+            return state.drawEvidence ==
+                Voxel::ChunkStreamer::DebugDrawEvidence::Drawn;
+        }));
+    if (drawnRecords == 0) {
+        std::cerr << "overlay_assessment_failed "
+                     "reason=positive_main_pass_draw_evidence_unavailable\n";
+        return false;
+    }
     std::vector<double> disabled;
     std::vector<double> enabled;
     disabled.reserve(frames);
     enabled.reserve(frames);
     for (size_t index = 0; index < frames; ++index) {
-        if (index % 2 == 0) {
-            disabled.push_back(renderFrame(false));
-            enabled.push_back(renderFrame(true));
-        } else {
-            enabled.push_back(renderFrame(true));
-            disabled.push_back(renderFrame(false));
-        }
+        const bool disabledFirst = index % 2 == 0;
+        const double first = renderFrame(!disabledFirst);
+        const double second = renderFrame(disabledFirst);
+        const double disabledValue = disabledFirst ? first : second;
+        const double enabledValue = disabledFirst ? second : first;
+        disabled.push_back(disabledValue);
+        enabled.push_back(enabledValue);
+        std::cout << "overlay_frame_sample path=real_gl_imgui"
+                  << " pair_index=" << index
+                  << " order="
+                  << (disabledFirst
+                          ? "disabled_then_enabled"
+                          : "enabled_then_disabled")
+                  << " disabled_ms=" << disabledValue
+                  << " enabled_ms=" << enabledValue << '\n';
     }
 
     const auto disabledSummary = summarize(std::move(disabled));
@@ -606,55 +684,90 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
                          configuration.streaming.viewDistanceChunks * 2 + 1)
               << " tracked_records=" << states.size()
               << " draw_evidence_records=" << drawEvidenceRecords
+              << " drawn_records=" << drawnRecords
               << " startup_overlay_enabled="
               << (startupEnabled ? "true" : "false")
               << " draw_evidence_decoration=true"
               << " gl_field_rendering=true"
-              << " imgui_legend_rendering=true";
+              << " imgui_legend_rendering=true"
+              << " gl_renderer=" << std::quoted(context.renderer())
+              << " gl_version=" << std::quoted(context.version());
+    printStartupBacklog(startupDiagnostics);
     printPercentiles("disabled_frame", disabledSummary);
     printPercentiles("enabled_frame", enabledSummary);
     std::cout << " p95_delta_ms="
               << enabledSummary.p95 - disabledSummary.p95 << '\n';
 
-    renderer.release();
-    view.releaseRenderResources();
     return true;
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
+    enum class Mode : uint8_t {
+        All,
+        Vertical,
+        Overlay,
+        OverlayCpu
+    };
     size_t frames = 120;
-    bool vertical = true;
-    bool overlay = true;
-    bool overlayCpu = false;
+    bool framesSpecified = false;
+    std::optional<Mode> selectedMode;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
+        const auto selectMode = [&](Mode mode) {
+            if (selectedMode) {
+                std::cerr << "Only one assessment mode may be selected\n";
+                return false;
+            }
+            selectedMode = mode;
+            return true;
+        };
         if (argument == "--vertical-only") {
-            vertical = true;
-            overlay = false;
+            if (!selectMode(Mode::Vertical)) {
+                return 2;
+            }
         } else if (argument == "--overlay-only") {
-            vertical = false;
-            overlay = true;
+            if (!selectMode(Mode::Overlay)) {
+                return 2;
+            }
         } else if (argument == "--overlay-cpu-only") {
-            vertical = false;
-            overlay = false;
-            overlayCpu = true;
+            if (!selectMode(Mode::OverlayCpu)) {
+                return 2;
+            }
         } else if (argument == "--frames" && index + 1 < argc) {
-            const long parsed = std::strtol(argv[++index], nullptr, 10);
-            if (parsed <= 0) {
-                std::cerr << "Invalid positive frame count\n";
+            if (framesSpecified) {
+                std::cerr << "Frame count may be specified only once\n";
+                return 2;
+            }
+            const std::string_view value(argv[++index]);
+            unsigned long long parsed = 0;
+            const auto [end, error] = std::from_chars(
+                value.data(), value.data() + value.size(), parsed);
+            if (error != std::errc{} ||
+                end != value.data() + value.size() || parsed == 0 ||
+                parsed > kMaxFramesPerMode) {
+                std::cerr << "Invalid bounded frame count: " << value << '\n';
                 return 2;
             }
             frames = static_cast<size_t>(parsed);
+            framesSpecified = true;
         } else {
             std::cerr << "Unknown or incomplete option: " << argument << '\n';
             return 2;
         }
     }
+    const Mode mode = selectedMode.value_or(Mode::All);
+    if (mode == Mode::Vertical && framesSpecified) {
+        std::cerr << "Frame count is unsupported for vertical-only mode\n";
+        return 2;
+    }
+    const bool vertical = mode == Mode::All || mode == Mode::Vertical;
+    const bool overlay = mode == Mode::All || mode == Mode::Overlay;
+    const bool overlayCpu = mode == Mode::OverlayCpu;
 
     std::cout << std::fixed << std::setprecision(3)
-              << "benchmark name=streaming_assessment version=1"
+              << "benchmark name=streaming_assessment version=2"
               << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
               << " hardware_threads=" << std::thread::hardware_concurrency()
               << " shipped_world_configuration=true\n";

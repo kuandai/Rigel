@@ -243,8 +243,14 @@ if (RIGEL_BUILD_TESTS)
             Rigel_streaming_assessment_cpu_contract
             PROPERTIES
                 PASS_REGULAR_EXPRESSION
-                    "view_radius=12.*draw_evidence_records=1.*presentation_maps_and_meshes=true.*gl_calls=stubbed.*imgui_legend_rendering=false"
+                    "view_radius=12.*draw_evidence_records=1.*presentation_maps_and_meshes=true.*gl_calls=none.*imgui_legend_rendering=false.*workload=startup_backlog.*startup_state=streaming"
                 TIMEOUT 60
+        )
+        add_test(
+            NAME Rigel_streaming_assessment_options
+            COMMAND ${CMAKE_COMMAND}
+                "-DBENCHMARK_EXECUTABLE=$<TARGET_FILE:Rigel_streaming_assessment_benchmark>"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/streaming_assessment_options.cmake
         )
     endif()
 

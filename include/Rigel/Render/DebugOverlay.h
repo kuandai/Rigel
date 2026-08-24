@@ -70,6 +70,16 @@ struct DebugState {
     bool imguiEnabled = false;
 };
 
+// CPU presentation produced by the production debug-field path before any GL
+// calls. Keeping this boundary explicit allows renderer-independent timing on
+// hosts without a graphics context.
+struct DebugFieldPresentation {
+    std::array<
+        std::vector<glm::vec3>,
+        kChunkDebugPresentationCount> meshVertices;
+    float cellSize = 0.0f;
+};
+
 void initDebugField(DebugState& debug, Asset::AssetManager& assets);
 
 void initFrameGraph(DebugState& debug, Asset::AssetManager& assets);
@@ -81,6 +91,11 @@ void releaseDebugResources(DebugState& debug);
 void recordFrameTime(DebugState& debug, float seconds);
 
 void renderFrameGraph(DebugState& debug);
+
+std::optional<DebugFieldPresentation> buildDebugFieldPresentation(
+    DebugState& debug,
+    const Voxel::WorldView* worldView,
+    const glm::vec3& cameraPos);
 
 void renderDebugField(DebugState& debug,
                       const Voxel::WorldView* worldView,

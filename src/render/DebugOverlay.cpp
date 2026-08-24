@@ -391,17 +391,14 @@ void renderFrameGraph(DebugState& debug) {
     glUseProgram(0);
 }
 
-void renderDebugField(DebugState& debug,
-                      const Voxel::WorldView* worldView,
-                      const glm::vec3& cameraPos,
-                      const glm::vec3& cameraTarget,
-                      const glm::vec3& viewForward,
-                      int viewportWidth,
-                      int viewportHeight) {
+std::optional<DebugFieldPresentation> buildDebugFieldPresentation(
+    DebugState& debug,
+    const Voxel::WorldView* worldView,
+    const glm::vec3& cameraPos) {
     debug.chunkDetail.reset();
     if (!debug.overlayEnabled || !debug.field.initialized || !worldView) {
         debug.debugStates.clear();
-        return;
+        return std::nullopt;
     }
 
     int radius = std::clamp(
@@ -410,10 +407,12 @@ void renderDebugField(DebugState& debug,
         Voxel::StreamingConfig::MaxViewDistanceChunks);
     int diameter = radius * 2 + 1;
     if (diameter <= 0) {
-        return;
+        return std::nullopt;
     }
 
-    float cellSize = kDebugTargetSpan / static_cast<float>(diameter);
+    DebugFieldPresentation presentation;
+    presentation.cellSize =
+        kDebugTargetSpan / static_cast<float>(diameter);
 
     auto centerCoord = Voxel::worldToChunk(
         static_cast<int>(std::floor(cameraPos.x)),
@@ -425,7 +424,7 @@ void renderDebugField(DebugState& debug,
         debug.debugStates, centerCoord, radius);
     debug.chunkDetail = selectChunkDebugDetail(debug.debugStates, centerCoord);
     if (debug.debugStates.empty()) {
-        return;
+        return std::nullopt;
     }
 
     std::unordered_map<Voxel::ChunkCoord,
@@ -456,12 +455,9 @@ void renderDebugField(DebugState& debug,
     }
 
     if (stateMap.empty()) {
-        return;
+        return std::nullopt;
     }
 
-    std::array<
-        std::vector<glm::vec3>,
-        kChunkDebugPresentationCount> meshVertices;
     std::array<std::array<int, 3>, 6> offsets = {{
         { 1, 0, 0},
         {-1, 0, 0},
@@ -493,10 +489,29 @@ void renderDebugField(DebugState& debug,
                 float x = kCubeVertices[base + v * 3 + 0] + static_cast<float>(coord.x);
                 float y = kCubeVertices[base + v * 3 + 1] + static_cast<float>(coord.y);
                 float z = kCubeVertices[base + v * 3 + 2] + static_cast<float>(coord.z);
-                meshVertices[stateIdx].push_back(glm::vec3(x, y, z));
+                presentation.meshVertices[stateIdx].push_back(
+                    glm::vec3(x, y, z));
             }
         }
     }
+
+    return presentation;
+}
+
+void renderDebugField(DebugState& debug,
+                      const Voxel::WorldView* worldView,
+                      const glm::vec3& cameraPos,
+                      const glm::vec3& cameraTarget,
+                      const glm::vec3& viewForward,
+                      int viewportWidth,
+                      int viewportHeight) {
+    auto presentation =
+        buildDebugFieldPresentation(debug, worldView, cameraPos);
+    if (!presentation) {
+        return;
+    }
+    const float cellSize = presentation->cellSize;
+    const auto& meshVertices = presentation->meshVertices;
 
     GLint previousViewport[4] = {};
     glGetIntegerv(GL_VIEWPORT, previousViewport);

@@ -80,6 +80,8 @@ std::string_view chunkVisibilityOriginName(ChunkVisibilityOrigin origin);
 
 enum class ChunkVisibilityBlockerState : uint8_t {
     SourceResolutionPending,
+    LoadRequestPending,
+    LoadTerminalFailed,
     LoadRegionSchedulerPending,
     LoadRegionPoolQueued,
     LoadRegionWorkerRunning,
@@ -90,6 +92,7 @@ enum class ChunkVisibilityBlockerState : uint8_t {
     LoadPayloadPoolQueued,
     LoadPayloadWorkerRunning,
     LoadPayloadResultPublished,
+    LoadPayloadRetryWaiting,
     LoadPayloadTerminalFailed,
     GenerationSchedulerPending,
     GenerationCapacityWaiting,

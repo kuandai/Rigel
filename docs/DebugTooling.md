@@ -296,9 +296,13 @@ The array stays fixed while active blockers can transition from two to one to
 zero; resident and no-longer-required faces therefore remain observable
 without losing the first snapshot. `source_resolution_pending` identifies a
 coordinate in the streamer's canonical load/generation queue before the
-scheduler has called a loader or chosen generation. Load states distinguish region and
-payload scheduler pending, physical pool queued, actual worker running,
-completion published but undrained, region retry waiting, and terminal failure.
+scheduler has called a loader or chosen generation. `load_request_pending`
+identifies an accepted opaque load request for which no explicit execution
+owner is available, and `load_terminal_failed` identifies its ownerless failure
+record after completion is drained. Explicit region and payload states
+distinguish scheduler pending, physical pool queued, actual worker running,
+completion published but undrained, retry waiting (including
+`load_payload_retry_waiting`), and owner-attributed terminal failure.
 Generation states distinguish scheduler pending, capacity waiting, executor
 queued, worker running, result published, and terminal failure. Ready resident,
 no longer required, and explicitly unowned are separate; the presence of a

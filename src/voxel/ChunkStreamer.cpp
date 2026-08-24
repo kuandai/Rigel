@@ -2951,7 +2951,7 @@ ChunkVisibilityBlockerState ChunkStreamer::classifyVisibilityBlocker(
             ? m_chunkLoadExecutionState(coord)
             : std::nullopt;
         if (!state) {
-            return ChunkVisibilityBlockerState::LoadRegionSchedulerPending;
+            return ChunkVisibilityBlockerState::LoadRequestPending;
         }
         if (state->owner == ChunkLoadExecutionOwner::Payload) {
             switch (state->phase) {
@@ -2968,7 +2968,7 @@ ChunkVisibilityBlockerState ChunkStreamer::classifyVisibilityBlocker(
                         LoadPayloadResultPublished;
                 case ChunkLoadExecutionPhase::RetryWaiting:
                     return ChunkVisibilityBlockerState::
-                        LoadPayloadSchedulerPending;
+                        LoadPayloadRetryWaiting;
                 case ChunkLoadExecutionPhase::TerminalFailed:
                     return ChunkVisibilityBlockerState::
                         LoadPayloadTerminalFailed;
@@ -2992,7 +2992,7 @@ ChunkVisibilityBlockerState ChunkStreamer::classifyVisibilityBlocker(
         }
     }
     if (m_loadErrors.find(coord) != m_loadErrors.end()) {
-        return ChunkVisibilityBlockerState::LoadRegionTerminalFailed;
+        return ChunkVisibilityBlockerState::LoadTerminalFailed;
     }
     if (m_generationCapacityWaiting.find(coord) !=
         m_generationCapacityWaiting.end()) {

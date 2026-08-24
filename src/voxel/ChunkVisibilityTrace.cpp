@@ -192,6 +192,10 @@ std::string_view chunkVisibilityBlockerStateName(
     switch (state) {
         case ChunkVisibilityBlockerState::SourceResolutionPending:
             return "source_resolution_pending";
+        case ChunkVisibilityBlockerState::LoadRequestPending:
+            return "load_request_pending";
+        case ChunkVisibilityBlockerState::LoadTerminalFailed:
+            return "load_terminal_failed";
         case ChunkVisibilityBlockerState::LoadRegionSchedulerPending:
             return "load_region_scheduler_pending";
         case ChunkVisibilityBlockerState::LoadRegionPoolQueued:
@@ -212,6 +216,8 @@ std::string_view chunkVisibilityBlockerStateName(
             return "load_payload_worker_running";
         case ChunkVisibilityBlockerState::LoadPayloadResultPublished:
             return "load_payload_result_published";
+        case ChunkVisibilityBlockerState::LoadPayloadRetryWaiting:
+            return "load_payload_retry_waiting";
         case ChunkVisibilityBlockerState::LoadPayloadTerminalFailed:
             return "load_payload_terminal_failed";
         case ChunkVisibilityBlockerState::GenerationSchedulerPending:

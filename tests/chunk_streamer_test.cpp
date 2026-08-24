@@ -8795,6 +8795,19 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
 
     blockerExecution = {
         ChunkLoadExecutionOwner::Payload,
+        ChunkLoadExecutionPhase::RetryWaiting};
+    streamer.update(traced.toWorldCenter());
+    CHECK_EQ(
+        tracer->latestRecord()
+            ->blockingDesiredCardinalNeighbors->neighbors[0].state,
+        ChunkVisibilityBlockerState::LoadPayloadRetryWaiting);
+    CHECK_EQ(
+        chunkVisibilityBlockerStateName(
+            ChunkVisibilityBlockerState::LoadPayloadRetryWaiting),
+        std::string_view("load_payload_retry_waiting"));
+
+    blockerExecution = {
+        ChunkLoadExecutionOwner::Payload,
         ChunkLoadExecutionPhase::ResultPublished};
     streamer.update(traced.toWorldCenter());
     CHECK_EQ(
@@ -8810,6 +8823,99 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
         tracer->latestRecord()
             ->blockingDesiredCardinalNeighbors->neighbors[0].state,
         ChunkVisibilityBlockerState::LoadPayloadTerminalFailed);
+}
+
+TEST_CASE(ChunkStreamer_VisibilityTraceDoesNotInventOpaqueLoadOwner) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const BlockID solid =
+        registerTestBlock(registry, "rigel:trace_opaque_load_blocker");
+    const ChunkCoord traced{0, 0, 0};
+    const ChunkCoord blocker{1, 0, 0};
+
+    Chunk& tracedChunk = manager.getOrCreateChunk(traced);
+    tracedChunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+    tracedChunk.setWorldGenVersion(generator->config().world.version);
+    tracedChunk.setLoadedFromDisk(true);
+    for (int direction = 1; direction < DirectionCount; ++direction) {
+        int dx = 0;
+        int dy = 0;
+        int dz = 0;
+        directionOffset(
+            static_cast<Direction>(direction), dx, dy, dz);
+        Chunk& neighbor = manager.getOrCreateChunk(
+            traced.offset(dx, dy, dz));
+        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setLoadedFromDisk(true);
+        neighbor.clearDirty();
+    }
+
+    auto tracer = std::make_shared<ChunkVisibilityTracer>(
+        ChunkVisibilityTracer::Config{traced, 2});
+    ChunkLoadRequest blockerRequest;
+    std::vector<ChunkLoadCompletion> completions;
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.setVisibilityTracer(tracer);
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        CHECK_EQ(request.coord, blocker);
+        blockerRequest = request;
+        return ChunkLoadRequestResult::Queued;
+    });
+    streamer.setChunkLoadDrain([&](size_t) {
+        auto drained = std::move(completions);
+        completions.clear();
+        return drained;
+    });
+
+    streamer.update(traced.toWorldCenter());
+
+    CHECK(blockerRequest.requestId != 0);
+    auto record = tracer->latestRecord();
+    CHECK(record.has_value());
+    CHECK(record->blockingDesiredCardinalNeighbors.has_value());
+    const size_t blockerIndex = static_cast<size_t>(Direction::PosX);
+    const auto& pending = record->blockingDesiredCardinalNeighbors
+        ->neighbors[blockerIndex];
+    CHECK_EQ(pending.direction, Direction::PosX);
+    CHECK_EQ(pending.coord, blocker);
+    CHECK(pending.required);
+    CHECK_EQ(
+        pending.state,
+        ChunkVisibilityBlockerState::LoadRequestPending);
+    CHECK_EQ(
+        chunkVisibilityBlockerStateName(pending.state),
+        std::string_view("load_request_pending"));
+
+    completions.push_back({
+        blocker,
+        blockerRequest.requestId,
+        ChunkLoadOutcome::Failed,
+        "injected opaque load failure"});
+    streamer.processCompletions();
+    streamer.update(traced.toWorldCenter());
+
+    record = tracer->latestRecord();
+    CHECK(record.has_value());
+    CHECK(record->blockingDesiredCardinalNeighbors.has_value());
+    const auto& failed = record->blockingDesiredCardinalNeighbors
+        ->neighbors[blockerIndex];
+    CHECK_EQ(failed.direction, Direction::PosX);
+    CHECK_EQ(failed.coord, blocker);
+    CHECK(failed.required);
+    CHECK_EQ(
+        failed.state,
+        ChunkVisibilityBlockerState::LoadTerminalFailed);
+    CHECK_EQ(
+        chunkVisibilityBlockerStateName(failed.state),
+        std::string_view("load_terminal_failed"));
 }
 
 TEST_CASE(ChunkStreamer_VisibilityTraceSnapshotsEveryBlockingFace) {

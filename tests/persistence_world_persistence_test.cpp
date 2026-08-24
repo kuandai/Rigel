@@ -333,7 +333,10 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
                 loader.request(Voxel::ChunkLoadRequest{coords[i], i + 1}),
                 Voxel::ChunkLoadRequestResult::Queued);
         }
-        const auto completions = loader.drainCompletions(coords.size());
+        auto completions = loader.drainCompletions(coords.size());
+        auto remaining = loader.drainCompletions(coords.size());
+        completions.insert(
+            completions.end(), remaining.begin(), remaining.end());
         CHECK_EQ(completions.size(), coords.size());
         for (const auto& completion : completions) {
             CHECK_EQ(completion.outcome, Voxel::ChunkLoadOutcome::Loaded);

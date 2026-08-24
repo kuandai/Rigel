@@ -961,9 +961,10 @@ Generation-priority runtime readiness is unaffected by these P2 maintainability
 items. The matched motion evidence, deterministic regressions, exact lifecycle
 accounting, and quiescence checks cover that behavioral change. Overall
 streaming-program merge readiness is nevertheless withheld for the finite-world
-clipping P1 measured above. Interactive shipped-backend first-draw timing and
-the opt-in full GL/ImGui overlay comparison remain explicit external
-performance gates; neither changes the default-off runtime path.
+clipping P1 measured above. The opt-in full GL/ImGui overlay comparison was
+completed above; interactive shipped-backend first-draw timing remains an
+explicit external performance gate and does not change the default-off runtime
+path.
 
 ---
 

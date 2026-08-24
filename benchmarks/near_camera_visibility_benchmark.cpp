@@ -104,7 +104,12 @@ std::optional<BenchmarkClock::duration> toUpdateInterval(
     using Milliseconds = std::chrono::duration<long double, std::milli>;
     const Milliseconds requested{milliseconds};
     const Milliseconds minimum{BenchmarkClock::duration{1}};
-    const Milliseconds maximum{BenchmarkClock::duration::max()};
+    auto maximumDuration = BenchmarkClock::duration::max();
+    const auto elapsed = BenchmarkClock::now().time_since_epoch();
+    if (elapsed > BenchmarkClock::duration::zero()) {
+        maximumDuration -= elapsed;
+    }
+    const Milliseconds maximum{maximumDuration};
     if (!std::isfinite(milliseconds) || requested < minimum ||
         requested >= maximum) {
         return std::nullopt;
@@ -166,7 +171,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
                     << "Invalid application-like update interval: "
                     << value
                     << " (must be at least one steady-clock tick and below "
-                       "the maximum representable duration)\n";
+                       "the maximum schedulable steady-clock interval)\n";
                 return false;
             }
             if (options.schedulerLowerBoundStress) {
@@ -301,7 +306,12 @@ RunResult runSample(const Options& options,
         if (options.schedulerLowerBoundStress) {
             std::this_thread::yield();
         } else {
-            nextUpdate += options.updateInterval;
+            const auto timeUntilDeadline = deadline - nextUpdate;
+            if (options.updateInterval >= timeUntilDeadline) {
+                nextUpdate = deadline;
+            } else {
+                nextUpdate += options.updateInterval;
+            }
             const auto now = Clock::now();
             if (nextUpdate < now) {
                 nextUpdate = now;

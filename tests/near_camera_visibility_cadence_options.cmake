@@ -215,7 +215,10 @@ if (NOT EXPLICIT_QUIESCENT_COUNT EQUAL 2)
     message(FATAL_ERROR
         "Explicit application-like cadence did not produce two Quiescent samples")
 endif()
-foreach(INVALID_INTERVAL IN ITEMS 0.0000001 1e300)
+foreach(INVALID_INTERVAL IN ITEMS
+        0.0000001
+        9223372036854.775
+        1e300)
     execute_process(
         COMMAND "${BENCHMARK_EXECUTABLE}"
             --samples 1

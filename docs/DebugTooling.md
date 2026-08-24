@@ -258,6 +258,11 @@ The final-neighbor event can precede the next scheduler visit. In that case
 dependency wait ends at the neighbor event and the intervening backlog is part
 of `scheduler_wait`, not dependency wait. `ChunkVisibilityTraceRecord::durations()`
 returns an interval only when both of its endpoint stages exist.
+`eligibleToWorkerStart` spans `mesh_eligible` through `worker_start`, including
+both scheduler and pool delay. Each dispatched camera or remesh lifecycle also
+records the number of desired face neighbors still absent at its first observed
+eligibility check. A value of zero is retained rather than treated as a missing
+observation, and later neighbor arrivals do not rewrite the cohort.
 
 Stage absence is intentional and follows the lifecycle:
 
@@ -307,6 +312,65 @@ include a duration only when both endpoint stages are present. These rules also
 apply when a measurement sequence is internally consistent: atomic capture
 prevents mixed accounting, but it cannot make an incomplete or censored sample
 complete.
+
+### 8.2 Near-camera visibility benchmark
+
+`Rigel_near_camera_visibility_benchmark` runs repeatable cold, fresh-world
+streaming samples for the camera-containing chunk and one face-adjacent chunk.
+It uses the production generator, streamer, worker pools, mesh builder, and
+visibility trace. Persistence responds with a real missing-probe outcome, so the
+sample measures the generation path without changing scheduler settings. Every
+sample continues until `StreamingLifecycleState::Quiescent`; there is no fixed
+startup sleep. A deadline only turns a failure to reach quiescence into a failed
+sample.
+
+Build and run it from an out-of-tree build directory:
+
+```text
+cmake --build <build-directory> --target Rigel_near_camera_visibility_benchmark
+<build-directory>/Rigel_near_camera_visibility_benchmark --samples 20
+```
+
+The runner emits each raw sample followed by nearest-rank P50/P95 summaries for
+distance and distance/dependency-count cohorts. `desired_to_visible` uses
+`first_draw` when a renderer supplied it and otherwise uses `result_accepted`.
+The current runner is headless, so its header explicitly reports `accepted` as
+the endpoint. Dependency wait, eligible-to-worker-start, scheduler wait, pool
+wait, and worker execution are reported separately. A 50 ms dependency P95
+budget, approximately three 60 Hz frame intervals, is used only to classify the
+headless residual and does not change production behavior.
+
+A matched capture used 10 samples per distance, view distance 2, two configured
+workers, the Debug build, and a 20-hardware-thread host. The comparison applied
+the same trace and benchmark instrumentation to the last implementation before
+bounded priority mesh dispatch. All 40 samples reached the real quiescent state,
+had no stale mesh results, and used accepted geometry as the visibility
+endpoint.
+
+| Distance squared / dependencies | Scheduler | Desired to visible P50/P95 | Dependency wait P50/P95 | Eligible to worker P50/P95 | Worker execution P50/P95 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 0 / 6 | unbounded FIFO submission | 556.032 / 561.077 ms | 470.120 / 471.896 ms | 1.683 / 1.862 ms | 1.762 / 1.919 ms |
+| 0 / 6 | bounded priority dispatch | 556.999 / 560.630 ms | 470.606 / 473.241 ms | 1.668 / 1.812 ms | 1.777 / 1.887 ms |
+| 1 / 5 | unbounded FIFO submission | 2280.755 / 2286.205 ms | 1958.780 / 1964.505 ms | 3.502 / 3.602 ms | 1.442 / 1.519 ms |
+| 1 / 5 | bounded priority dispatch | 2278.755 / 2289.382 ms | 1958.609 / 1967.266 ms | 1.630 / 1.685 ms | 1.463 / 1.487 ms |
+
+For the adjacent cohort, bounded priority dispatch reduced
+eligible-to-worker-start P95 by 53%, scheduler-wait P95 from 3.097 ms to
+1.629 ms, and pool-wait P95 from 0.519 ms to 0.084 ms. Worker execution and
+desired-to-visible were effectively unchanged. The scheduler repair therefore
+survives to physical worker start, but the neighbor barrier remains the dominant
+headless first-acceptance delay and exceeds the 50 ms budget for both near
+cohorts.
+
+This capture is not sufficient evidence for provisional-neighbor meshes. It has
+no GPU context or main-pass draw, uses a fresh-world missing probe instead of a
+shipped persistence backend, is a Debug build, and does not control competing
+host load. The required external validation is a Release interactive capture on
+identified hardware using the shipped persistence backend, the renderer's
+actual `first_draw` event, the same camera-containing and adjacent cohorts, and
+quiescence as the terminal signal. If that capture confirms unacceptable
+dependency P95, provisional-neighbor behavior belongs in a separate change with
+explicit duplicate-remesh and coalescing bounds.
 
 ---
 

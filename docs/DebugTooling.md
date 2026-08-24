@@ -243,36 +243,65 @@ rather than silent.
 
 The trace timestamps these stages:
 
-- `desired`, `data_request`, and `data_ready` cover actual camera-demand and
-  chunk-data transitions.
+- `desired` and `data_request` cover actual camera-demand and chunk-data
+  request transitions.
+- `generation_scheduler_pending`, `generation_capacity_wait`, and
+  `generation_pool_submit` distinguish logical admission, configured-capacity
+  delay, and physical executor submission.
+- `generation_worker_start`, `generation_worker_finish`, and
+  `generation_ready` distinguish executor queueing, generation execution, and
+  a result ready for main-thread application. `data_ready` is the successful
+  application transition and records a generated or persisted origin.
 - `neighbor_ready` records the event that supplies the final required neighbor;
   `mesh_eligible` records the transition to dispatchable mesh work.
-- `scheduler_wait`, `pool_submit`, and `worker_start` isolate scheduler and pool
-  delay from worker execution.
-- `worker_finish` and `result_accepted` cover build completion and main-thread
-  validation.
+- `mesh_scheduler_pending`, `mesh_pool_submit`, and `mesh_worker_start`
+  isolate mesh scheduler and pool delay from worker execution. These names are
+  returned for the existing `SchedulerWait`, `PoolSubmit`, and `WorkerStart`
+  stage values.
+- `mesh_worker_finish` and `result_accepted` cover build completion and
+  main-thread validation.
 - `first_draw` is recorded only after the renderer issues a nonempty main-pass
   draw. Mesh-store insertion and the streamer's `ReadyMesh` state do not set it.
 
 The final-neighbor event can precede the next scheduler visit. In that case
 dependency wait ends at the neighbor event and the intervening backlog is part
-of `scheduler_wait`, not dependency wait. `ChunkVisibilityTraceRecord::durations()`
+of mesh scheduler wait, not dependency wait.
+`ChunkVisibilityTraceRecord::durations()`
 returns an interval only when both of its endpoint stages exist.
-`eligibleToWorkerStart` spans `mesh_eligible` through `worker_start`, including
-both scheduler and pool delay. Each dispatched camera or remesh lifecycle also
-records `firstObservedMissingDesiredCardinalNeighborCount`: the number of
-desired face neighbors absent at its first observed eligibility check. This is
-a retained first observation, not a live count. A value of zero is retained
-rather than treated as a missing observation, and partial or final neighbor
-arrivals do not rewrite the cohort.
+`eligibleToWorkerStart` spans `mesh_eligible` through the mesh worker start,
+including both scheduler and pool delay. Each dispatched camera or remesh
+lifecycle also records `firstObservedMissingDesiredCardinalNeighborCount`: the
+number of desired face neighbors absent at its first observed eligibility
+check. This is a retained first observation, not a live count. A value of zero
+is retained rather than treated as a missing observation, and partial or final
+neighbor arrivals do not rewrite the cohort.
+
+For a missing desired face neighbor, a record retains the first observed
+coordinate and value-only state, plus the latest observed blocking coordinate
+and state. The current blocker can change as neighbors become ready. States are
+load pending/running or failed-retrying; generation scheduler pending, capacity
+waiting, pool queued, running, result ready, or failed-retrying; data ready; or
+no longer desired. The streamer resolves this only for the six face neighbors
+of the traced chunk. The asynchronous loader contributes its state through
+direct coordinate and region-owner lookups. With tracing absent or capacity
+zero, the classifier is not called, no debug-volume scan is added, and no
+scheduling state is mutated.
+
+Derived generation intervals are `generationQueueWait` (logical generation
+pending to pool submission), `generationCapacityWait`, `generationPoolWait`,
+`generationExecution`, and `generationResultWait` (result ready to successful
+application). Existing dependency, mesh scheduler, mesh pool, mesh execution,
+acceptance, and first-draw intervals remain separate. `dataWait` continues to
+span the complete data request through apply path and can therefore include
+load or generation sub-intervals.
 
 Stage absence is intentional and follows the lifecycle:
 
 | Lifecycle or outcome | Legitimately absent stages |
 | --- | --- |
-| Camera demand for already-resident data | `data_request` and `data_ready`; `neighbor_ready` is also absent when required neighbors were already resident. |
+| Camera demand for already-resident data | `data_request`, all generation stages, and `data_ready`; `neighbor_ready` is also absent when required neighbors were already resident. |
 | Remesh, including retained fringe work | `desired`, `data_request`, and `data_ready`; `neighbor_ready` is absent unless the remesh actually waits for a missing required neighbor. |
-| Cached mesh | No MeshTask identity and no data, dependency, scheduler, pool, worker, or `result_accepted` stages. Cached empty geometry also has no `first_draw`. |
+| Cached mesh | No MeshTask identity and no data, generation, dependency, mesh scheduler/pool/worker, or `result_accepted` stages. Cached empty geometry also has no `first_draw`. |
 | Voxel-empty chunk | No MeshTask identity, pool/worker, `result_accepted`, or `first_draw` stages. Earlier demand or data stages remain only if those transitions occurred. |
 | Dispatched stale or failed task | `result_accepted` and `first_draw`; pre-dispatch stages remain absent when tracing began after those transitions. |
 | Accepted empty geometry | `first_draw`; resident or remesh rules still determine which earlier stages are absent. |

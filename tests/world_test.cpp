@@ -107,6 +107,9 @@ TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
     view.setChunkLoadDiagnosticsCallback([loader]() {
         return loader->diagnostics();
     });
+    view.setChunkLoadExecutionStateCallback([loader](ChunkCoord coord) {
+        return loader->executionState(coord);
+    });
     view.markSpawnDiscoveryComplete();
 
     view.updateStreaming(glm::vec3(0.0f));

@@ -61,6 +61,18 @@ std::string_view chunkVisibilityStageName(ChunkVisibilityStage stage) {
             return "desired";
         case ChunkVisibilityStage::DataRequest:
             return "data_request";
+        case ChunkVisibilityStage::GenerationSchedulerPending:
+            return "generation_scheduler_pending";
+        case ChunkVisibilityStage::GenerationCapacityWait:
+            return "generation_capacity_wait";
+        case ChunkVisibilityStage::GenerationPoolSubmit:
+            return "generation_pool_submit";
+        case ChunkVisibilityStage::GenerationWorkerStart:
+            return "generation_worker_start";
+        case ChunkVisibilityStage::GenerationWorkerFinish:
+            return "generation_worker_finish";
+        case ChunkVisibilityStage::GenerationReady:
+            return "generation_ready";
         case ChunkVisibilityStage::DataReady:
             return "data_ready";
         case ChunkVisibilityStage::NeighborReady:
@@ -68,13 +80,13 @@ std::string_view chunkVisibilityStageName(ChunkVisibilityStage stage) {
         case ChunkVisibilityStage::MeshEligible:
             return "mesh_eligible";
         case ChunkVisibilityStage::SchedulerWait:
-            return "scheduler_wait";
+            return "mesh_scheduler_pending";
         case ChunkVisibilityStage::PoolSubmit:
-            return "pool_submit";
+            return "mesh_pool_submit";
         case ChunkVisibilityStage::WorkerStart:
-            return "worker_start";
+            return "mesh_worker_start";
         case ChunkVisibilityStage::WorkerFinish:
-            return "worker_finish";
+            return "mesh_worker_finish";
         case ChunkVisibilityStage::ResultAccepted:
             return "result_accepted";
         case ChunkVisibilityStage::FirstDraw:
@@ -144,6 +156,35 @@ std::string_view chunkVisibilityOriginName(ChunkVisibilityOrigin origin) {
     return "unknown";
 }
 
+std::string_view chunkVisibilityBlockerStateName(
+    ChunkVisibilityBlockerState state) {
+    switch (state) {
+        case ChunkVisibilityBlockerState::LoadPending:
+            return "load_pending";
+        case ChunkVisibilityBlockerState::LoadRunning:
+            return "load_running";
+        case ChunkVisibilityBlockerState::LoadFailedRetrying:
+            return "load_failed_retrying";
+        case ChunkVisibilityBlockerState::GenerationSchedulerPending:
+            return "generation_scheduler_pending";
+        case ChunkVisibilityBlockerState::GenerationCapacityWaiting:
+            return "generation_capacity_waiting";
+        case ChunkVisibilityBlockerState::GenerationPoolQueued:
+            return "generation_pool_queued";
+        case ChunkVisibilityBlockerState::GenerationRunning:
+            return "generation_running";
+        case ChunkVisibilityBlockerState::GenerationResultReady:
+            return "generation_result_ready";
+        case ChunkVisibilityBlockerState::GenerationFailedRetrying:
+            return "generation_failed_retrying";
+        case ChunkVisibilityBlockerState::Ready:
+            return "ready";
+        case ChunkVisibilityBlockerState::NoLongerDesired:
+            return "no_longer_desired";
+    }
+    return "unknown";
+}
+
 std::string_view chunkVisibilityDrawOutcomeName(
     ChunkVisibilityDrawOutcome outcome) {
     switch (outcome) {
@@ -184,6 +225,26 @@ ChunkVisibilityDurations ChunkVisibilityTraceRecord::durations() const {
         .dataWait = between(
             stages,
             ChunkVisibilityStage::DataRequest,
+            ChunkVisibilityStage::DataReady),
+        .generationQueueWait = between(
+            stages,
+            ChunkVisibilityStage::GenerationSchedulerPending,
+            ChunkVisibilityStage::GenerationPoolSubmit),
+        .generationCapacityWait = between(
+            stages,
+            ChunkVisibilityStage::GenerationCapacityWait,
+            ChunkVisibilityStage::GenerationPoolSubmit),
+        .generationPoolWait = between(
+            stages,
+            ChunkVisibilityStage::GenerationPoolSubmit,
+            ChunkVisibilityStage::GenerationWorkerStart),
+        .generationExecution = between(
+            stages,
+            ChunkVisibilityStage::GenerationWorkerStart,
+            ChunkVisibilityStage::GenerationWorkerFinish),
+        .generationResultWait = between(
+            stages,
+            ChunkVisibilityStage::GenerationReady,
             ChunkVisibilityStage::DataReady),
         .dependencyWait = between(
             stages,
@@ -350,6 +411,47 @@ void ChunkVisibilityTracer::observeMissingDesiredCardinalNeighborCount(
         record->firstObservedMissingDesiredCardinalNeighborCount = count;
         advanceSequence(m_sequence);
     }
+}
+
+void ChunkVisibilityTracer::observeBlockingDesiredCardinalNeighbor(
+    const ChunkVisibilityLifecycleKey& key,
+    ChunkVisibilityBlockingNeighbor neighbor) {
+    if (!traces(key.coord)) {
+        return;
+    }
+
+    std::lock_guard lock(m_mutex);
+    auto record = findRecord(key);
+    if (record == m_records.end()) {
+        ++m_unmatchedEvents;
+        advanceSequence(m_sequence);
+        return;
+    }
+    bool changed = false;
+    if (!record->firstObservedBlockingDesiredCardinalNeighbor) {
+        record->firstObservedBlockingDesiredCardinalNeighbor = neighbor;
+        changed = true;
+    }
+    if (record->blockingDesiredCardinalNeighbor != neighbor) {
+        record->blockingDesiredCardinalNeighbor = neighbor;
+        changed = true;
+    }
+    if (changed) {
+        advanceSequence(m_sequence);
+    }
+}
+
+std::optional<ChunkVisibilityBlockingNeighbor>
+ChunkVisibilityTracer::blockingDesiredCardinalNeighbor(
+    const ChunkVisibilityLifecycleKey& key) const {
+    if (!traces(key.coord)) {
+        return std::nullopt;
+    }
+    std::lock_guard lock(m_mutex);
+    const auto record = findRecord(key);
+    return record == m_records.end()
+        ? std::nullopt
+        : record->blockingDesiredCardinalNeighbor;
 }
 
 void ChunkVisibilityTracer::mark(
@@ -578,6 +680,16 @@ ChunkVisibilityTracer::latestRecord() const {
 
 ChunkVisibilityTracer::RecordIterator ChunkVisibilityTracer::findRecord(
     const ChunkVisibilityLifecycleKey& key) {
+    return std::find_if(
+        m_records.begin(),
+        m_records.end(),
+        [&](const ChunkVisibilityTraceRecord& record) {
+            return record.key == key;
+        });
+}
+
+ChunkVisibilityTracer::ConstRecordIterator ChunkVisibilityTracer::findRecord(
+    const ChunkVisibilityLifecycleKey& key) const {
     return std::find_if(
         m_records.begin(),
         m_records.end(),

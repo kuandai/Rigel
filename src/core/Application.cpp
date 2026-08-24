@@ -366,6 +366,12 @@ void Application::initialize() {
                     ? loader->diagnostics()
                     : Voxel::ChunkLoadDiagnosticSnapshot{};
             });
+        m_impl->world.worldView->setChunkLoadExecutionStateCallback(
+            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
+                return loader
+                    ? loader->executionState(coord)
+                    : std::optional<Voxel::ChunkLoadExecutionState>{};
+            });
         m_impl->world.worldView->setChunkEvictionCallback(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
                 return loader ? loader->persistChunk(coord) : false;
@@ -481,6 +487,7 @@ void Application::Impl::shutdown() noexcept {
         activeView->setChunkLoadDrain({});
         activeView->setChunkLoadCancel({});
         activeView->setChunkLoadDiagnosticsCallback({});
+        activeView->setChunkLoadExecutionStateCallback({});
         activeView->setChunkEvictionCallback({});
     }
     world.chunkLoader.reset();

@@ -138,6 +138,9 @@ explicit failed state until a later streaming requeue retries them.
 - The desired set is a sphere around the camera chunk with radius
   `streaming.view_distance_chunks`.
 - Entries are sorted by distance, nearest first.
+- Equal-distance entries have no secondary comparator. The current radius-one
+  input order is center, -Z, -Y, -X, +X, +Y, +Z, but `std::sort` does not make
+  that an ordering guarantee for larger equal-distance cohorts.
 - Unload uses `streaming.unload_distance_chunks` for hysteresis.
 - Render distance is configured separately by `render.render_distance` in world
   units and does not change the streaming desired set.
@@ -153,6 +156,14 @@ explicit failed state until a later streaming requeue retries them.
   worker, the inline executor owns at most one completed-but-unapplied mesh
   result regardless of `streaming.apply_budget_per_frame`; this effective
   bound is observable as the `meshSubmissionLimit` streaming diagnostic.
+- Generation admission has three FIFO boundaries. `m_loadGenQueue` holds
+  logical load/generation scheduler visits, `m_generationCapacityWait` holds
+  requests blocked by `gen_queue_limit`, and the generation `ThreadPool`
+  appends submitted normal-priority jobs to its `m_jobs` deque. Camera movement
+  rebuilds the first queue in new distance order, but does not reorder jobs
+  already submitted to the pool. Cancellation tokens suppress departed work;
+  they do not remove its physical pool entry or release its in-flight count
+  before the completion drain observes the cancelled result.
 - Eligible initial meshes and dirty remeshes share a distance-prioritized
   scheduler. Asynchronous submission is additionally capped at the actual
   mesh worker count so work that has not started remains reprioritizable.
@@ -170,6 +181,35 @@ explicit failed state until a later streaming requeue retries them.
   fill) concurrency.
 - `streaming.load_queue_limit` caps pending disk load requests (`0` means
   unlimited).
+
+The shipped world configuration uses `view_distance_chunks=12`,
+`gen_queue_limit=128`, `update_budget_per_frame=4096`, and
+`worker_threads=12`. The pool split assigns six threads to generation and six
+to meshing. Generation can therefore own 128 submitted-but-undrained jobs, up
+to 122 more than the generation workers can start concurrently. The radius-12
+desired sphere contains 7,153 coordinates, so in a cold all-missing window up
+to 7,025 additional chunks wait in the generation-capacity FIFO after the
+first 128 submissions.
+
+### 5.3.1 Cardinal-motion baseline
+
+The constrained-worker regression
+`ChunkStreamer_CardinalMotionLeavesNearGenerationBehindOlderWork` runs the
+production queues with one generation worker, holds the first job, and moves
+the center twice in +X and +Z. In each direction, a leading chunk absent from
+the initial desired sphere becomes squared distance 1 from the final center.
+It remains behind a retained initial-sphere job at squared distance 2 that was
+unstarted when movement occurred. This confirms executor FIFO preservation
+across movement and rejects the hypothesis that a desired-set rebuild
+reprioritizes already submitted generation.
+
+The same evidence confirms that departure cancellation is validity-only at
+the generation executor boundary: departed unstarted jobs publish cancelled
+results when popped, and capacity is released when those results are drained.
+It rejects cancellation of a running generation solely because its distance
+priority changed; retained desired work continues. Capacity wakeup itself is
+event-driven and advances one valid FIFO waiter per observed completion rather
+than scanning the desired volume.
 
 ### 5.4 Meshing Constraints
 

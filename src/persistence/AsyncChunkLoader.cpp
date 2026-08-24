@@ -269,6 +269,33 @@ bool AsyncChunkLoader::isPending(Voxel::ChunkCoord coord) const {
         m_terminalChunks.find(coord) != m_terminalChunks.end();
 }
 
+std::optional<Voxel::ChunkLoadExecutionState>
+AsyncChunkLoader::executionState(Voxel::ChunkCoord coord) const {
+    if (m_retryChunks.find(coord) != m_retryChunks.end() ||
+        m_terminalChunks.find(coord) != m_terminalChunks.end()) {
+        return Voxel::ChunkLoadExecutionState::FailedRetrying;
+    }
+    if (m_deferredChunkRequests.find(coord) !=
+        m_deferredChunkRequests.end()) {
+        return Voxel::ChunkLoadExecutionState::Pending;
+    }
+    if (m_pendingChunks.find(coord) == m_pendingChunks.end()) {
+        return std::nullopt;
+    }
+    if (m_payloadInFlight.find(coord) != m_payloadInFlight.end()) {
+        return Voxel::ChunkLoadExecutionState::Running;
+    }
+    if (!m_format) {
+        return Voxel::ChunkLoadExecutionState::Pending;
+    }
+    const RegionKey key =
+        m_format->regionLayout().regionForChunk(m_zoneId, coord);
+    const auto regionJob = m_regionJobs.find(key);
+    return regionJob != m_regionJobs.end() && regionJob->second->started
+        ? Voxel::ChunkLoadExecutionState::Running
+        : Voxel::ChunkLoadExecutionState::Pending;
+}
+
 Voxel::StreamingWorkCount AsyncChunkLoader::workCount() const {
     return Voxel::StreamingWorkCount{
         .pending = m_pendingChunks.size() + m_deferredChunkRequests.size() +

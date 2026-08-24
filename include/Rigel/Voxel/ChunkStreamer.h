@@ -153,6 +153,8 @@ public:
     using ChunkLoadCancelCallback = std::function<void(ChunkCoord)>;
     using ChunkLoadDiagnosticsCallback =
         std::function<ChunkLoadDiagnosticSnapshot()>;
+    using ChunkLoadExecutionStateCallback =
+        std::function<std::optional<ChunkLoadExecutionState>(ChunkCoord)>;
     using ChunkEvictionCallback = std::function<bool(ChunkCoord)>;
 
     ChunkStreamer(ChunkManager& manager,
@@ -171,6 +173,8 @@ public:
     void setChunkLoadDrain(ChunkLoadDrainCallback drain);
     void setChunkLoadCancel(ChunkLoadCancelCallback cancel);
     void setChunkLoadDiagnosticsCallback(ChunkLoadDiagnosticsCallback diagnostics);
+    void setChunkLoadExecutionStateCallback(
+        ChunkLoadExecutionStateCallback executionState);
     void setChunkEvictionCallback(ChunkEvictionCallback evict);
     void markSpawnDiscoveryComplete();
     void prioritizeMesh(ChunkCoord coord);
@@ -203,6 +207,12 @@ private:
         MeshFailed
     };
 
+    enum class GenerationExecutorPhase : uint8_t {
+        PoolQueued,
+        Running,
+        ResultReady
+    };
+
     struct GenResult {
         ChunkCoord coord;
         uint64_t workEpoch = 0;
@@ -213,6 +223,9 @@ private:
         bool cancelled = false;
         bool failed = false;
         std::shared_ptr<std::atomic_bool> cancelToken;
+        std::shared_ptr<std::atomic<GenerationExecutorPhase>> executorPhase;
+        std::optional<ChunkVisibilityLifecycleKey> visibilityTrace;
+        std::shared_ptr<ChunkVisibilityTracer> visibilityTracer;
     };
 
     struct MeshTask {
@@ -324,6 +337,7 @@ private:
     ChunkLoadDrainCallback m_chunkLoadDrain;
     ChunkLoadCancelCallback m_chunkLoadCancel;
     ChunkLoadDiagnosticsCallback m_chunkLoadDiagnostics;
+    ChunkLoadExecutionStateCallback m_chunkLoadExecutionState;
     ChunkEvictionCallback m_chunkEviction;
 
     std::unique_ptr<detail::ThreadPool> m_genPool;
@@ -333,6 +347,10 @@ private:
     std::unordered_map<ChunkCoord, ChunkState, ChunkCoordHash> m_states;
     std::unordered_map<ChunkCoord, ChunkLoadRequestId, ChunkCoordHash> m_loadPending;
     std::unordered_map<ChunkCoord, std::shared_ptr<std::atomic_bool>, ChunkCoordHash> m_genCancel;
+    std::unordered_map<
+        ChunkCoord,
+        std::shared_ptr<std::atomic<GenerationExecutorPhase>>,
+        ChunkCoordHash> m_generationExecutorPhases;
     std::unordered_map<ChunkCoord, MeshInFlight, ChunkCoordHash> m_meshInFlight;
     std::unordered_map<ChunkCoord, uint32_t, ChunkCoordHash> m_countedMeshRetryRevisions;
     std::deque<ChunkCoord> m_loadGenQueue;
@@ -390,6 +408,7 @@ private:
     uint64_t m_lifecycleUpdateSequence = 0;
     uint64_t m_nextEvictionRetrySequence = 0;
     std::function<void()> m_generationStartCallback;
+    std::function<void(ChunkCoord)> m_generationStartObserver;
     std::function<void()> m_meshBuildStartCallback;
     WorkMetrics m_workMetrics;
     StreamingDiagnosticSnapshot m_diagnostics;
@@ -442,6 +461,11 @@ private:
     void markVisibilityMeshEligible(ChunkCoord coord,
                                     bool neighborBecameReady);
     void markVisibilityStage(ChunkCoord coord, ChunkVisibilityStage stage);
+    std::optional<ChunkVisibilityTraceLink> currentVisibilityTrace(
+        ChunkCoord coord,
+        ChunkVisibilityLifecycleKind kind) const;
+    ChunkVisibilityBlockerState classifyVisibilityBlocker(
+        ChunkCoord coord) const;
     std::optional<ChunkVisibilityTraceLink> bindVisibilityTrace(
         ChunkCoord coord,
         const ChunkVisibilityMeshTaskIdentity& meshTask,

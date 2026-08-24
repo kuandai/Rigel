@@ -20,6 +20,12 @@ namespace Rigel::Voxel {
 enum class ChunkVisibilityStage : uint8_t {
     Desired,
     DataRequest,
+    GenerationSchedulerPending,
+    GenerationCapacityWait,
+    GenerationPoolSubmit,
+    GenerationWorkerStart,
+    GenerationWorkerFinish,
+    GenerationReady,
     DataReady,
     NeighborReady,
     MeshEligible,
@@ -70,6 +76,23 @@ enum class ChunkVisibilityOrigin : uint8_t {
 
 std::string_view chunkVisibilityOriginName(ChunkVisibilityOrigin origin);
 
+enum class ChunkVisibilityBlockerState : uint8_t {
+    LoadPending,
+    LoadRunning,
+    LoadFailedRetrying,
+    GenerationSchedulerPending,
+    GenerationCapacityWaiting,
+    GenerationPoolQueued,
+    GenerationRunning,
+    GenerationResultReady,
+    GenerationFailedRetrying,
+    Ready,
+    NoLongerDesired
+};
+
+std::string_view chunkVisibilityBlockerStateName(
+    ChunkVisibilityBlockerState state);
+
 enum class ChunkVisibilityDrawOutcome : uint8_t {
     Drawn,
     CameraLeftBeforeDraw,
@@ -110,6 +133,11 @@ using ChunkVisibilityStageObservations = std::array<
 struct ChunkVisibilityDurations {
     std::optional<ChunkVisibilityDuration> desiredToDataRequest;
     std::optional<ChunkVisibilityDuration> dataWait;
+    std::optional<ChunkVisibilityDuration> generationQueueWait;
+    std::optional<ChunkVisibilityDuration> generationCapacityWait;
+    std::optional<ChunkVisibilityDuration> generationPoolWait;
+    std::optional<ChunkVisibilityDuration> generationExecution;
+    std::optional<ChunkVisibilityDuration> generationResultWait;
     std::optional<ChunkVisibilityDuration> dependencyWait;
     std::optional<ChunkVisibilityDuration> eligibilityWait;
     std::optional<ChunkVisibilityDuration> eligibleToWorkerStart;
@@ -121,6 +149,14 @@ struct ChunkVisibilityDurations {
     std::optional<ChunkVisibilityDuration> desiredToFirstDraw;
 };
 
+struct ChunkVisibilityBlockingNeighbor {
+    ChunkCoord coord{};
+    ChunkVisibilityBlockerState state =
+        ChunkVisibilityBlockerState::GenerationSchedulerPending;
+
+    bool operator==(const ChunkVisibilityBlockingNeighbor&) const = default;
+};
+
 struct ChunkVisibilityTraceRecord {
     ChunkVisibilityLifecycleKey key{};
     ChunkVisibilityLifecycleKind kind =
@@ -128,6 +164,10 @@ struct ChunkVisibilityTraceRecord {
     ChunkVisibilityOrigin origin = ChunkVisibilityOrigin::Unresolved;
     std::optional<ChunkVisibilityMeshTaskIdentity> meshTask;
     std::optional<uint8_t> firstObservedMissingDesiredCardinalNeighborCount;
+    std::optional<ChunkVisibilityBlockingNeighbor>
+        firstObservedBlockingDesiredCardinalNeighbor;
+    std::optional<ChunkVisibilityBlockingNeighbor>
+        blockingDesiredCardinalNeighbor;
     ChunkVisibilityStageTimes stages{};
     ChunkVisibilityStageObservations observedStages{};
     ChunkVisibilityOutcome outcome = ChunkVisibilityOutcome::Pending;
@@ -187,6 +227,12 @@ public:
     void observeMissingDesiredCardinalNeighborCount(
         const ChunkVisibilityLifecycleKey& key,
         uint8_t count);
+    void observeBlockingDesiredCardinalNeighbor(
+        const ChunkVisibilityLifecycleKey& key,
+        ChunkVisibilityBlockingNeighbor neighbor);
+    std::optional<ChunkVisibilityBlockingNeighbor>
+        blockingDesiredCardinalNeighbor(
+            const ChunkVisibilityLifecycleKey& key) const;
     void mark(const ChunkVisibilityLifecycleKey& key,
               ChunkVisibilityStage stage);
     void mark(const ChunkVisibilityLifecycleKey& key,
@@ -204,8 +250,12 @@ public:
 
 private:
     using RecordIterator = std::deque<ChunkVisibilityTraceRecord>::iterator;
+    using ConstRecordIterator =
+        std::deque<ChunkVisibilityTraceRecord>::const_iterator;
 
     RecordIterator findRecord(const ChunkVisibilityLifecycleKey& key);
+    ConstRecordIterator findRecord(
+        const ChunkVisibilityLifecycleKey& key) const;
     std::optional<ChunkVisibilityTimePoint> now() const noexcept;
 
     Config m_config;

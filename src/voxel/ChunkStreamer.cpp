@@ -158,6 +158,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                     coord, ConfigRetiredWorkKind::LoadGen);
                 it->second->store(true, std::memory_order_relaxed);
                 it = m_genCancel.erase(it);
+                m_generationExecutorPhases.erase(coord);
                 auto stateIt = m_states.find(coord);
                 if (stateIt != m_states.end() &&
                     stateIt->second == ChunkState::QueuedGen) {
@@ -319,6 +320,7 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
         }
     }
     m_genCancel.clear();
+    m_generationExecutorPhases.clear();
 
     std::vector<std::pair<ChunkCoord, bool>> retiredMeshRequests;
     retiredMeshRequests.reserve(
@@ -459,6 +461,11 @@ void ChunkStreamer::setChunkLoadDiagnosticsCallback(
     ChunkLoadDiagnosticsCallback diagnostics) {
     m_chunkLoadDiagnostics = std::move(diagnostics);
     refreshDiagnostics(false);
+}
+
+void ChunkStreamer::setChunkLoadExecutionStateCallback(
+    ChunkLoadExecutionStateCallback executionState) {
+    m_chunkLoadExecutionState = std::move(executionState);
 }
 
 void ChunkStreamer::setChunkEvictionCallback(ChunkEvictionCallback evict) {
@@ -662,6 +669,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     if (cancelIt != m_genCancel.end()) {
                         cancelIt->second->store(true, std::memory_order_relaxed);
                         m_genCancel.erase(cancelIt);
+                        m_generationExecutorPhases.erase(it->first);
                     }
                 }
                 it = m_states.erase(it);
@@ -1330,6 +1338,7 @@ void ChunkStreamer::reset() {
     m_streamingUpdateSequence = 0;
     m_lifecycleUpdateSequence = 0;
     m_genCancel.clear();
+    m_generationExecutorPhases.clear();
     m_replacementPendingMeshCount = 0;
 
     applyGenCompletions(std::numeric_limits<size_t>::max());
@@ -1680,6 +1689,13 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
                 m_genCancel.erase(cancelIt);
             }
         }
+        if (genResult.executorPhase) {
+            auto phaseIt = m_generationExecutorPhases.find(genResult.coord);
+            if (phaseIt != m_generationExecutorPhases.end() &&
+                phaseIt->second == genResult.executorPhase) {
+                m_generationExecutorPhases.erase(phaseIt);
+            }
+        }
 
         if (genResult.cancelled || (genResult.cancelToken &&
             genResult.cancelToken->load(std::memory_order_relaxed))) {
@@ -1731,8 +1747,14 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         chunk.clearPersistDirty();
         chunk.setLoadedFromDisk(false);
         chunk.setWorldGenVersion(genResult.worldGenVersion);
-        observeVisibilityDataReady(
-            genResult.coord, ChunkVisibilityOrigin::Generated);
+        if (genResult.visibilityTracer && genResult.visibilityTrace) {
+            genResult.visibilityTracer->markDataReady(
+                *genResult.visibilityTrace,
+                ChunkVisibilityOrigin::Generated);
+        } else {
+            observeVisibilityDataReady(
+                genResult.coord, ChunkVisibilityOrigin::Generated);
+        }
         observeVisibilityNeighborReadiness(genResult.coord);
 
         if (m_benchmark) {
@@ -1977,6 +1999,11 @@ void ChunkStreamer::waitForGenerationCapacity(ChunkCoord coord) {
     if (!hasDirectStreamingDemand(coord)) {
         return;
     }
+    markVisibilityStage(coord, ChunkVisibilityStage::DataRequest);
+    markVisibilityStage(
+        coord, ChunkVisibilityStage::GenerationSchedulerPending);
+    markVisibilityStage(
+        coord, ChunkVisibilityStage::GenerationCapacityWait);
     if (m_generationCapacityWaiting.insert(coord).second) {
         m_generationCapacityWait.push_back(coord);
     }
@@ -2774,7 +2801,29 @@ void ChunkStreamer::markVisibilityMeshEligible(
     pending->tracer->observeMissingDesiredCardinalNeighborCount(
         pending->key, missingNeighbors);
     if (missingNeighbors != 0) {
+        for (int index = 0; index < DirectionCount; ++index) {
+            int dx = 0;
+            int dy = 0;
+            int dz = 0;
+            directionOffset(
+                static_cast<Direction>(index), dx, dy, dz);
+            const ChunkCoord neighbor = coord.offset(dx, dy, dz);
+            if (m_chunkManager->getChunk(neighbor) ||
+                m_desiredSet.find(neighbor) == m_desiredSet.end()) {
+                continue;
+            }
+            pending->tracer->observeBlockingDesiredCardinalNeighbor(
+                pending->key,
+                {neighbor, classifyVisibilityBlocker(neighbor)});
+            break;
+        }
         return;
+    }
+    if (const auto blocker =
+            pending->tracer->blockingDesiredCardinalNeighbor(pending->key)) {
+        pending->tracer->observeBlockingDesiredCardinalNeighbor(
+            pending->key,
+            {blocker->coord, classifyVisibilityBlocker(blocker->coord)});
     }
 
     if (neighborBecameReady && meshInFlight) {
@@ -2812,6 +2861,69 @@ void ChunkStreamer::markVisibilityStage(ChunkCoord coord,
         return;
     }
     pending->tracer->mark(pending->key, stage);
+}
+
+std::optional<ChunkVisibilityTraceLink>
+ChunkStreamer::currentVisibilityTrace(
+    ChunkCoord coord,
+    ChunkVisibilityLifecycleKind kind) const {
+    const auto& pending =
+        m_pendingVisibilityTraces[visibilityKindIndex(kind)];
+    if (!pending || pending->key.coord != coord) {
+        return std::nullopt;
+    }
+    return ChunkVisibilityTraceLink{
+        pending->key,
+        pending->kind,
+        pending->tracer
+    };
+}
+
+ChunkVisibilityBlockerState ChunkStreamer::classifyVisibilityBlocker(
+    ChunkCoord coord) const {
+    if (m_desiredSet.find(coord) == m_desiredSet.end()) {
+        return ChunkVisibilityBlockerState::NoLongerDesired;
+    }
+    if (m_chunkManager && m_chunkManager->getChunk(coord)) {
+        return ChunkVisibilityBlockerState::Ready;
+    }
+    if (m_loadErrors.find(coord) != m_loadErrors.end()) {
+        return ChunkVisibilityBlockerState::LoadFailedRetrying;
+    }
+    if (m_loadPending.find(coord) != m_loadPending.end()) {
+        const auto state = m_chunkLoadExecutionState
+            ? m_chunkLoadExecutionState(coord)
+            : std::nullopt;
+        if (state == ChunkLoadExecutionState::Running) {
+            return ChunkVisibilityBlockerState::LoadRunning;
+        }
+        if (state == ChunkLoadExecutionState::FailedRetrying) {
+            return ChunkVisibilityBlockerState::LoadFailedRetrying;
+        }
+        return ChunkVisibilityBlockerState::LoadPending;
+    }
+    if (m_generationCapacityWaiting.find(coord) !=
+        m_generationCapacityWaiting.end()) {
+        return ChunkVisibilityBlockerState::GenerationCapacityWaiting;
+    }
+    const auto executor = m_generationExecutorPhases.find(coord);
+    if (executor != m_generationExecutorPhases.end()) {
+        switch (executor->second->load(std::memory_order_relaxed)) {
+            case GenerationExecutorPhase::PoolQueued:
+                return ChunkVisibilityBlockerState::GenerationPoolQueued;
+            case GenerationExecutorPhase::Running:
+                return ChunkVisibilityBlockerState::GenerationRunning;
+            case GenerationExecutorPhase::ResultReady:
+                return ChunkVisibilityBlockerState::GenerationResultReady;
+        }
+    }
+    if (m_generationErrors.find(coord) != m_generationErrors.end()) {
+        return ChunkVisibilityBlockerState::GenerationFailedRetrying;
+    }
+    if (m_chunkLoader) {
+        return ChunkVisibilityBlockerState::LoadPending;
+    }
+    return ChunkVisibilityBlockerState::GenerationSchedulerPending;
 }
 
 std::optional<ChunkVisibilityTraceLink>
@@ -3139,6 +3251,10 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
         coord,
         ChunkVisibilityLifecycleKind::CameraDemand);
     markVisibilityStage(coord, ChunkVisibilityStage::DataRequest);
+    markVisibilityStage(
+        coord, ChunkVisibilityStage::GenerationSchedulerPending);
+    const auto visibilityLink = currentVisibilityTrace(
+        coord, ChunkVisibilityLifecycleKind::CameraDemand);
 
     m_states[coord] = ChunkState::QueuedGen;
     ++m_inFlightGen;
@@ -3146,38 +3262,86 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
 
     auto cancelToken = std::make_shared<std::atomic_bool>(false);
     m_genCancel[coord] = cancelToken;
+    std::shared_ptr<std::atomic<GenerationExecutorPhase>> executorPhase;
+    if (m_visibilityTracer && m_visibilityTracer->enabled()) {
+        executorPhase = std::make_shared<
+            std::atomic<GenerationExecutorPhase>>(
+                GenerationExecutorPhase::PoolQueued);
+        m_generationExecutorPhases[coord] = executorPhase;
+    }
     auto generator = m_generator;
     const uint32_t worldGenVersion = generator
         ? generator->config().world.version
         : 0;
     uint64_t workEpoch = m_workEpoch.load(std::memory_order_relaxed);
     auto generationStartCallback = m_generationStartCallback;
+    auto generationStartObserver = m_generationStartObserver;
     auto job = [this,
                 generator,
                 coord,
                 cancelToken,
+                executorPhase,
+                visibilityLink,
                 worldGenVersion,
                 workEpoch,
-                generationStartCallback = std::move(generationStartCallback)]() {
+                generationStartCallback = std::move(generationStartCallback),
+                generationStartObserver = std::move(generationStartObserver)]() {
         GenResult result;
         result.coord = coord;
         result.workEpoch = workEpoch;
         result.worldGenVersion = worldGenVersion;
         result.cancelToken = cancelToken;
+        result.executorPhase = executorPhase;
+        if (visibilityLink) {
+            result.visibilityTrace = visibilityLink->key;
+            result.visibilityTracer = visibilityLink->tracer;
+        }
+        if (executorPhase) {
+            executorPhase->store(
+                GenerationExecutorPhase::Running,
+                std::memory_order_relaxed);
+        }
+        if (result.visibilityTracer && result.visibilityTrace) {
+            result.visibilityTracer->mark(
+                *result.visibilityTrace,
+                ChunkVisibilityStage::GenerationWorkerStart);
+        }
+        auto publish = [&]() {
+            if (result.visibilityTracer && result.visibilityTrace) {
+                result.visibilityTracer->mark(
+                    *result.visibilityTrace,
+                    {
+                        ChunkVisibilityStage::GenerationWorkerFinish,
+                        ChunkVisibilityStage::GenerationReady
+                    });
+            }
+            m_genComplete.push(
+                std::move(result),
+                [executorPhase]() noexcept {
+                    if (executorPhase) {
+                        executorPhase->store(
+                            GenerationExecutorPhase::ResultReady,
+                            std::memory_order_relaxed);
+                    }
+                });
+        };
         if (cancelToken->load(std::memory_order_relaxed)) {
             result.cancelled = true;
-            m_genComplete.push(std::move(result));
+            publish();
             return;
         }
 
         try {
+            if (generationStartObserver) {
+                generationStartObserver(coord);
+            }
             if (generationStartCallback) {
                 generationStartCallback();
             }
             if (workEpoch != m_workEpoch.load(std::memory_order_relaxed) ||
                 cancelToken->load(std::memory_order_relaxed)) {
                 result.cancelled = true;
-                m_genComplete.push(std::move(result));
+                publish();
                 return;
             }
             ChunkBuffer buffer;
@@ -3195,9 +3359,14 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
             result.error = "unknown error";
         }
         result.cancelled = cancelToken->load(std::memory_order_relaxed);
-        m_genComplete.push(std::move(result));
+        publish();
     };
 
+    if (visibilityLink) {
+        visibilityLink->tracer->mark(
+            visibilityLink->key,
+            ChunkVisibilityStage::GenerationPoolSubmit);
+    }
     if (m_genPool && m_genPool->threadCount() > 0) {
         m_genPool->enqueue(std::move(job));
     } else {

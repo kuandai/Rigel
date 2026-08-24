@@ -14,6 +14,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -44,6 +45,8 @@ public:
 
     Voxel::ChunkLoadRequestResult request(Voxel::ChunkLoadRequest request);
     bool isPending(Voxel::ChunkCoord coord) const;
+    std::optional<Voxel::ChunkLoadExecutionState> executionState(
+        Voxel::ChunkCoord coord) const;
     void cancel(Voxel::ChunkCoord coord);
     bool persistChunk(Voxel::ChunkCoord coord);
 

@@ -84,6 +84,11 @@ void WorldView::setChunkLoadDiagnosticsCallback(
     m_streamer.setChunkLoadDiagnosticsCallback(std::move(diagnostics));
 }
 
+void WorldView::setChunkLoadExecutionStateCallback(
+    ChunkStreamer::ChunkLoadExecutionStateCallback executionState) {
+    m_streamer.setChunkLoadExecutionStateCallback(std::move(executionState));
+}
+
 void WorldView::setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback evict) {
     m_streamer.setChunkEvictionCallback(std::move(evict));
 }

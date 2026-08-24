@@ -63,9 +63,29 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     clock.advance(std::chrono::milliseconds(1));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::DataRequest);
     clock.advance(std::chrono::milliseconds(2));
+    tracer.mark(
+        lifecycleKey,
+        ChunkVisibilityStage::GenerationSchedulerPending);
+    clock.advance(std::chrono::milliseconds(3));
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::GenerationCapacityWait);
+    clock.advance(std::chrono::milliseconds(4));
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::GenerationPoolSubmit);
+    clock.advance(std::chrono::milliseconds(5));
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::GenerationWorkerStart);
+    clock.advance(std::chrono::milliseconds(6));
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::GenerationWorkerFinish);
+    clock.advance(std::chrono::milliseconds(1));
+    tracer.mark(lifecycleKey, ChunkVisibilityStage::GenerationReady);
+    clock.advance(std::chrono::milliseconds(2));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::DataReady);
     tracer.observeMissingDesiredCardinalNeighborCount(lifecycleKey, 6);
     tracer.observeMissingDesiredCardinalNeighborCount(lifecycleKey, 0);
+    tracer.observeBlockingDesiredCardinalNeighbor(
+        lifecycleKey,
+        {{2, 2, 3}, ChunkVisibilityBlockerState::GenerationPoolQueued});
+    tracer.observeBlockingDesiredCardinalNeighbor(
+        lifecycleKey,
+        {{0, 2, 3}, ChunkVisibilityBlockerState::Ready});
     clock.advance(std::chrono::milliseconds(3));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::NeighborReady);
     clock.advance(std::chrono::milliseconds(4));
@@ -100,6 +120,19 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     CHECK_EQ(
         record.firstObservedMissingDesiredCardinalNeighborCount,
         std::optional<uint8_t>{6});
+    const ChunkVisibilityBlockingNeighbor expectedBlocker{
+        {2, 2, 3},
+        ChunkVisibilityBlockerState::GenerationPoolQueued};
+    CHECK_EQ(
+        record.firstObservedBlockingDesiredCardinalNeighbor,
+        expectedBlocker);
+    const ChunkVisibilityBlockingNeighbor currentBlocker{
+        {0, 2, 3},
+        ChunkVisibilityBlockerState::Ready};
+    CHECK_EQ(record.blockingDesiredCardinalNeighbor, currentBlocker);
+    CHECK_EQ(
+        tracer.blockingDesiredCardinalNeighbor(lifecycleKey),
+        currentBlocker);
     CHECK_EQ(
         record.outcome,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
@@ -115,7 +148,12 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
 
     const auto durations = record.durations();
     CHECK_EQ(milliseconds(durations.desiredToDataRequest), 1);
-    CHECK_EQ(milliseconds(durations.dataWait), 2);
+    CHECK_EQ(milliseconds(durations.dataWait), 23);
+    CHECK_EQ(milliseconds(durations.generationQueueWait), 7);
+    CHECK_EQ(milliseconds(durations.generationCapacityWait), 4);
+    CHECK_EQ(milliseconds(durations.generationPoolWait), 5);
+    CHECK_EQ(milliseconds(durations.generationExecution), 6);
+    CHECK_EQ(milliseconds(durations.generationResultWait), 2);
     CHECK_EQ(milliseconds(durations.dependencyWait), 3);
     CHECK_EQ(milliseconds(durations.eligibilityWait), 4);
     CHECK_EQ(milliseconds(durations.eligibleToWorkerStart), 11);
@@ -123,8 +161,8 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     CHECK_EQ(milliseconds(durations.poolWait), 6);
     CHECK_EQ(milliseconds(durations.workerExecution), 7);
     CHECK_EQ(milliseconds(durations.resultWait), 8);
-    CHECK_EQ(milliseconds(durations.desiredToAccepted), 36);
-    CHECK_EQ(milliseconds(durations.desiredToFirstDraw), 45);
+    CHECK_EQ(milliseconds(durations.desiredToAccepted), 57);
+    CHECK_EQ(milliseconds(durations.desiredToFirstDraw), 66);
 }
 
 TEST_CASE(ChunkVisibilityTrace_DistinguishesBuildAndDrawOutcomes) {

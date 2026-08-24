@@ -902,6 +902,9 @@ void configureStreamerLoader(ChunkStreamer& streamer,
     streamer.setChunkLoadDiagnosticsCallback([loader]() {
         return loader->diagnostics();
     });
+    streamer.setChunkLoadExecutionStateCallback([loader](ChunkCoord coord) {
+        return loader->executionState(coord);
+    });
     streamer.setChunkEvictionCallback([loader](ChunkCoord coord) {
         return loader->persistChunk(coord);
     });
@@ -970,8 +973,12 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
         generator);
 
     const ChunkLoadRequest request = makeLoadRequest(coord);
+    CHECK(!loader.executionState(coord).has_value());
     CHECK_EQ(loader.request(request), ChunkLoadRequestResult::Queued);
     CHECK(loader.isPending(coord));
+    CHECK_EQ(
+        loader.executionState(coord),
+        ChunkLoadExecutionState::Running);
 
     auto resolved = loader.drainCompletions(1);
 
@@ -981,6 +988,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
         verifyPayloadMatches(*loaded, payload);
     }
     CHECK(!loader.isPending(coord));
+    CHECK(!loader.executionState(coord).has_value());
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));
     CHECK_EQ(resolved.front().coord, coord);
     CHECK_EQ(resolved.front().requestId, request.requestId);

@@ -19,6 +19,12 @@ enum class ChunkLoadOutcome : uint8_t {
     Failed
 };
 
+enum class ChunkLoadExecutionState : uint8_t {
+    Pending,
+    Running,
+    FailedRetrying
+};
+
 using ChunkLoadRequestId = uint64_t;
 
 struct ChunkLoadRequest {

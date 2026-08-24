@@ -1558,7 +1558,7 @@ void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq
 
 StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
     StreamingDiagnosticSnapshot snapshot;
-    size_t generationPending = 0;
+    size_t generationPending = m_pendingGenerations.size();
     size_t meshPending =
         m_pendingMeshes.size() + m_meshDependencyWaiting.size() +
         m_replacementPendingMeshCount;
@@ -1575,10 +1575,6 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
         }
     };
 
-    for (const auto& [coord, importance] : m_pendingGenerations) {
-        (void)importance;
-        countPending(coord);
-    }
     for (const ChunkCoord& coord : m_loadGenQueued) {
         if (hasCanonicalWorkOwner(coord, false)) {
             continue;

@@ -779,14 +779,14 @@ including the exterior rows of partially intersecting chunks. Persisted voxels
 are retained, but mesh snapshots mask excluded rows to air.
 
 The final Release schema-version 6 `--vertical-only` capture was built from
-source `f5b704f7508b0628c4dfde71348f95aaa8e301ef`. Its retained raw log
-`finite-world-vertical-v6.log` has SHA-256
-`4051e6cdc201af8ac3bef543e0a2e9ba701ea86e914d95b09cfbb02f752f31c9`.
+source `47098706856f2fe69213c27e5ca7d25ceccfa7e8`. Its retained raw log
+`finite-world-vertical-v6-final.log` has SHA-256
+`88183918bcc0088e1b0de725fb011ef4530a1cdd7393cf789b29424d2427c56f`.
 The log contains 23 structured benchmark records (plus two asset-loader log
 records): one header, all 18 per-coordinate samples, two aggregates, and two
 production-lifecycle records. All 18 samples contain zero non-air blocks.
-Below-bound generation measured 0.020/0.020/0.020 ms P50/P95/P99; above-bound
-generation measured 0.009/0.045/0.045 ms. With nine nearest-rank samples, P95
+Below-bound generation measured 0.010/0.010/0.010 ms P50/P95/P99; above-bound
+generation measured 0.009/0.009/0.009 ms. With nine nearest-rank samples, P95
 and P99 are both the observed cohort maximum and do not represent independent
 tail estimates.
 
@@ -798,10 +798,10 @@ and accepted 335. Both exterior targets were explicitly untracked, contained
 zero non-air blocks, and had no installed geometry. Cancellation, generation
 failure, mesh stale/failure, planner, source, logical generation, completion,
 retired, load, mesh, and eviction owners were all zero at quiescence. The runs
-required 4,022,900 and 4,101,096 updates. Together they took 19.38 seconds and
-peaked at 5,022,236 KiB RSS on this 20-hardware-thread host; the companion
+required 3,985,185 and 4,073,371 updates. Together they took 19.38 seconds and
+peaked at 4,959,932 KiB RSS on this 20-hardware-thread host; the companion
 `/usr/bin/time -v` record has SHA-256
-`94d532ae058963c07672b88132e8d2278615aecbc236b61455be04a85127cb19`.
+`6db6190f9b6219b15a31a0dee7f1da47503f8befea5cc7626fb4ba525b2e47cb`.
 These are headless accepted-geometry
 measurements for the surrounding in-bounds cohort; interactive shipped-backend
 first-draw timing remains an explicit external validation gate. No worker-pool
@@ -841,10 +841,11 @@ assessment at `ce1dd039bf0e37db89aec45efc0cb3acfffc4139` and the isolated CPU
 presentation boundary at `89afbefc2ba4f5b90f66cba396ae23f6b8223f3a`.
 The historical version 5 runner at
 `16e241f1027153e182c3f5ec07bc59f503ba3e55` added raw vertical sample lines.
-The current version 6 runner at
+The version 6 runner introduced at
 `f5b704f7508b0628c4dfde71348f95aaa8e301ef` adds explicit target tracking,
-spherical desired cardinality, planner ownership, and hard success gates for
-the finite-world capture described above.
+spherical desired cardinality, planner ownership, and hard success gates. The
+final capture above uses `47098706856f2fe69213c27e5ca7d25ceccfa7e8`, which
+retains that schema after the final bounded-reconciliation fixes.
 
 For a new capture, build once in Release and run the modes from that binary:
 

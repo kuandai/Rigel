@@ -286,7 +286,6 @@ private:
     };
 
     struct PendingWorldBoundsReconciliation {
-        std::optional<WorldGenConfig::WorldConfig> previous;
         WorldGenConfig::WorldConfig replacement;
         std::optional<ChunkCoord> deferredCursor;
     };

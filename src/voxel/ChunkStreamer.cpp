@@ -355,10 +355,6 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
     if (m_chunkManager && generator && (boundsChanged || !m_generator)) {
         const auto& replacementWorld = generator->config().world;
         m_worldBoundsReconciliation = PendingWorldBoundsReconciliation{
-            .previous = boundsChanged
-                ? std::optional<WorldGenConfig::WorldConfig>{
-                      m_generator->config().world}
-                : std::nullopt,
             .replacement = replacementWorld
         };
         std::vector<ChunkCoord> reconciliationCoordinates = m_desired;
@@ -464,6 +460,12 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
                 reconcileEnteringChunk(coord, *chunk);
             }
         }
+    } else if (generator && m_worldBoundsReconciliation) {
+        // A same-bounds generator replacement can supersede an unfinished
+        // transition. Restart against the current generator so deferred work
+        // always converges from installed physical state to the final bounds.
+        m_worldBoundsReconciliation->replacement = generator->config().world;
+        m_worldBoundsReconciliation->deferredCursor.reset();
     } else if (!generator) {
         m_worldBoundsReconciliation.reset();
     }
@@ -596,25 +598,17 @@ void ChunkStreamer::reconcileDeferredWorldBounds() {
         }
         const bool replacementInside = intersectsWorldBounds(
             coord, reconciliation.replacement);
-        if (!reconciliation.previous &&
-            (!replacementInside ||
-             m_worldBoundsSuppressedMeshes.find(coord) ==
-                 m_worldBoundsSuppressedMeshes.end())) {
-            continue;
-        }
-        const bool previouslyInside = reconciliation.previous
-            ? intersectsWorldBounds(coord, *reconciliation.previous)
-            : !replacementInside;
-        if (reconciliation.previous &&
-            previouslyInside == replacementInside) {
+        const bool suppressed =
+            m_worldBoundsSuppressedMeshes.find(coord) !=
+            m_worldBoundsSuppressedMeshes.end();
+        const bool evictionDeferred =
+            m_evictionRetryAfter.find(coord) != m_evictionRetryAfter.end();
+        if (replacementInside && !suppressed && !evictionDeferred) {
             continue;
         }
 
         if (!replacementInside) {
-            const bool alreadySuppressed =
-                m_worldBoundsSuppressedMeshes.find(coord) !=
-                    m_worldBoundsSuppressedMeshes.end();
-            if (!chunk->isEmpty() && !alreadySuppressed) {
+            if (!chunk->isEmpty() && !suppressed) {
                 m_chunkManager->invalidateFaceNeighbors(coord);
             }
             if (m_meshStore && m_meshStore->contains(coord)) {

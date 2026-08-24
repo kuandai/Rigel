@@ -139,8 +139,8 @@ explicit failed state until a later streaming requeue retries them.
   `streaming.view_distance_chunks`.
 - Entries are sorted by distance, nearest first.
 - Equal-distance entries have no secondary comparator. The current radius-one
-  input order is center, -Z, -Y, -X, +X, +Y, +Z, but `std::sort` does not make
-  that an ordering guarantee for larger equal-distance cohorts.
+  traversal order is not a scheduling guarantee: tests require exact cohort
+  membership and ordering only between strictly different distances.
 - Unload uses `streaming.unload_distance_chunks` for hysteresis.
 - Render distance is configured separately by `render.render_distance` in world
   units and does not change the streaming desired set.
@@ -196,12 +196,13 @@ first 128 submissions.
 The constrained-worker regression
 `ChunkStreamer_CardinalMotionLeavesNearGenerationBehindOlderWork` runs the
 production queues with one generation worker, holds the first job, and moves
-the center twice in +X and +Z. In each direction, a leading chunk absent from
-the initial desired sphere becomes squared distance 1 from the final center.
-It remains behind a retained initial-sphere job at squared distance 2 that was
-unstarted when movement occurred. This confirms executor FIFO preservation
-across movement and rejects the hypothesis that a desired-set rebuild
-reprioritizes already submitted generation.
+the center twice in +X and +Z. Each axial radius-two step has exactly 13 leading
+and 13 trailing coordinates. The test compares those complete set differences,
+validates each strict-distance cohort without relying on equal-distance order,
+and then observes a newly leading chunk at squared distance 1 start after a
+retained, previously submitted chunk at squared distance 2. This confirms
+executor FIFO preservation across movement and rejects the hypothesis that a
+desired-set rebuild reprioritizes already submitted generation.
 
 The same evidence confirms that departure cancellation is validity-only at
 the generation executor boundary: departed unstarted jobs publish cancelled

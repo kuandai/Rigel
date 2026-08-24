@@ -246,12 +246,14 @@ The trace timestamps these stages:
 - `desired` and `data_request` cover actual camera-demand and chunk-data
   request transitions.
 - `generation_scheduler_pending`, `generation_capacity_wait`, and
-  `generation_pool_submit` distinguish logical admission, configured-capacity
-  delay, and physical executor submission.
+  `generation_executor_submitted` distinguish logical admission,
+  configured-capacity delay, and successful physical executor admission.
 - `generation_worker_start`, `generation_worker_finish`, and
   `generation_ready` distinguish executor queueing, generation execution, and
-  a result ready for main-thread application. `data_ready` is the successful
-  application transition and records a generated or persisted origin.
+  a result published for main-thread application. `generation_ready` is
+  committed after completion-queue insertion while the queue still excludes
+  consumers. `data_ready` is the successful application transition and records
+  a generated or persisted origin.
 - `neighbor_ready` records the event that supplies the final required neighbor;
   `mesh_eligible` records the transition to dispatchable mesh work.
 - `mesh_scheduler_pending`, `mesh_pool_submit`, and `mesh_worker_start`
@@ -276,24 +278,30 @@ check. This is a retained first observation, not a live count. A value of zero
 is retained rather than treated as a missing observation, and partial or final
 neighbor arrivals do not rewrite the cohort.
 
-For a missing desired face neighbor, a record retains the first observed
-coordinate and value-only state, plus the latest observed blocking coordinate
-and state. The current blocker can change as neighbors become ready. States are
-load pending/running or failed-retrying; generation scheduler pending, capacity
-waiting, pool queued, running, result ready, or failed-retrying; data ready; or
-no longer desired. The streamer resolves this only for the six face neighbors
-of the traced chunk. The asynchronous loader contributes its state through
-direct coordinate and region-owner lookups. With tracing absent or capacity
-zero, the classifier is not called, no debug-volume scan is added, and no
-scheduling state is mutated.
+For missing desired face neighbors, a record retains fixed-capacity first and
+current snapshots containing every blocking face, up to six. Each value names
+the direction and coordinate, whether that face is currently required, and its
+owner state. A later snapshot can shrink from two blockers to one and then
+zero without losing the first snapshot. Load states distinguish region and
+payload scheduler pending, physical pool queued, actual worker running,
+completion published but undrained, region retry waiting, and terminal failure.
+Generation states distinguish scheduler pending, capacity waiting, executor
+queued, worker running, result published, and terminal failure. Ready resident,
+no longer required, and explicitly unowned are separate; the presence of a
+loader callback alone never creates a load owner. The streamer resolves this
+only for the six face neighbors of the traced chunk. With tracing absent or
+capacity zero, the classifier is not called, no debug-volume scan is added,
+and no scheduling state is mutated.
 
 Derived generation intervals are `generationQueueWait` (logical generation
-pending to pool submission), `generationCapacityWait`, `generationPoolWait`,
-`generationExecution`, and `generationResultWait` (result ready to successful
-application). Existing dependency, mesh scheduler, mesh pool, mesh execution,
-acceptance, and first-draw intervals remain separate. `dataWait` continues to
-span the complete data request through apply path and can therefore include
-load or generation sub-intervals.
+pending to the start of capacity wait when capacity blocks, otherwise to
+executor admission), `generationCapacityWait` (capacity wait to executor
+admission), `generationPoolWait`, `generationExecution`, and
+`generationResultWait` (published result to successful application). Scheduler
+and capacity waits therefore never overlap. Existing dependency, mesh
+scheduler, mesh pool, mesh execution, acceptance, and first-draw intervals
+remain separate. `dataWait` continues to span the complete data request through
+apply path and can therefore include load or generation sub-intervals.
 
 Stage absence is intentional and follows the lifecycle:
 
@@ -315,6 +323,13 @@ without publishing a mesh or terminal error. Re-entry starts a new camera
 lifecycle; after the stale result is drained, the replacement dispatch receives
 a distinct MeshTask identity.
 
+Camera departure, reset, generator replacement, and tracer replacement freeze
+the captured pre-draw lifecycle. Late worker and completion callbacks cannot
+change its origin, task identity, blocker snapshots, stages, timestamps,
+sequence, or terminal outcome. An accepted nonempty geometry record remains
+eligible for the separate real `first_draw` observation until its draw outcome
+terminates.
+
 Build outcomes distinguish cached empty/nonempty geometry, voxel-empty chunks,
 accepted empty/nonempty geometry, stale results, failures, and each lifecycle
 exit listed above. A nonempty cached or accepted record separately ends its draw
@@ -328,9 +343,11 @@ record mutex held, and cannot propagate exceptions into streaming or rendering
 work. A callback failure leaves that event timestamp absent while terminal and
 draw outcomes still close normally. `observed(stage)` remains true for such a
 transition, and a later idempotent notification does not retimestamp it.
-Installing or disabling a tracer does not
-synthesize stages, requeue scheduler work, or add stationary desired-set scans;
-only subsequent production lifecycle events create or advance records.
+Installing or disabling a tracer does not synthesize stages, requeue scheduler
+work, or add stationary desired-set scans. When installation targets a resident
+chunk already blocked by a desired neighbor's canonical generation flight, it
+takes one bounded six-face value snapshot so the existing queued, running, or
+published phase is observable without a second ownership map.
 
 Do not treat an absent timestamp or duration as zero. Reject a measurement
 window used for latency claims when it contains pending build outcomes,

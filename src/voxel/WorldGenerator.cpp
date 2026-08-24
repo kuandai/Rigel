@@ -21,6 +21,51 @@ constexpr int kDefaultNoiseSampleStep = 4;
 static_assert(Chunk::SIZE % kDefaultNoiseSampleStep == 0,
               "Chunk size must be divisible by default noise sample step.");
 
+struct LocalWorldYRange {
+    int first = 0;
+    int onePastLast = 0;
+
+    bool empty() const {
+        return first >= onePastLast;
+    }
+};
+
+LocalWorldYRange localWorldYRange(
+    ChunkCoord coord,
+    const WorldGenConfig::WorldConfig& world) {
+    const int64_t chunkMinY =
+        static_cast<int64_t>(coord.y) * Chunk::SIZE;
+    const int64_t first = std::clamp<int64_t>(
+        static_cast<int64_t>(world.minY) - chunkMinY,
+        0,
+        Chunk::SIZE);
+    const int64_t onePastLast = std::clamp<int64_t>(
+        static_cast<int64_t>(world.maxY) - chunkMinY + 1,
+        0,
+        Chunk::SIZE);
+    return {
+        static_cast<int>(first),
+        static_cast<int>(onePastLast)
+    };
+}
+
+void clearOutsideWorldYRange(
+    ChunkBuffer& buffer,
+    LocalWorldYRange range) {
+    for (int z = 0; z < Chunk::SIZE; ++z) {
+        for (int y = 0; y < range.first; ++y) {
+            for (int x = 0; x < Chunk::SIZE; ++x) {
+                buffer.at(x, y, z) = BlockState{};
+            }
+        }
+        for (int y = range.onePastLast; y < Chunk::SIZE; ++y) {
+            for (int x = 0; x < Chunk::SIZE; ++x) {
+                buffer.at(x, y, z) = BlockState{};
+            }
+        }
+    }
+}
+
 int columnIndex(int x, int z) {
     return x + z * Chunk::SIZE;
 }
@@ -973,6 +1018,14 @@ WorldGenerator::WorldGenerator(const BlockRegistry& registry, WorldGenConfig con
 
 void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
                               const std::atomic_bool* cancel) const {
+    const LocalWorldYRange worldYRange =
+        localWorldYRange(coord, m_config.world);
+    if (worldYRange.empty()) {
+        out.blocks.fill(BlockState{});
+        return;
+    }
+    clearOutsideWorldYRange(out, worldYRange);
+
     WorldGenContext ctx;
     ctx.coord = coord;
     ctx.config = &m_config;
@@ -1012,13 +1065,14 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
 
     for (const auto& stage : m_stages) {
         if (ctx.shouldCancel()) {
-            return;
+            break;
         }
         stage->apply(ctx, out);
         if (ctx.shouldCancel()) {
-            return;
+            break;
         }
     }
+    clearOutsideWorldYRange(out, worldYRange);
 }
 
 } // namespace Rigel::Voxel

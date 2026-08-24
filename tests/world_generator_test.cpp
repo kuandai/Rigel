@@ -2,6 +2,7 @@
 
 #include "Rigel/Voxel/WorldGenerator.h"
 
+#include <algorithm>
 #include <limits>
 
 using namespace Rigel::Voxel;
@@ -30,6 +31,30 @@ WorldGenConfig makeFlatConfig() {
     config.terrain.heightVariation = 0.0f;
     config.terrain.surfaceDepth = 1;
     return config;
+}
+
+WorldGenConfig makeSolidConfig(int minY, int maxY) {
+    WorldGenConfig config = makeFlatConfig();
+    config.world.minY = minY;
+    config.world.maxY = maxY;
+    config.densityGraph.outputs["base_density"] = "solid";
+    config.densityGraph.nodes = {{
+        .id = "solid",
+        .type = "constant",
+        .value = 1.0f
+    }};
+    config.stageEnabled["caves"] = false;
+    config.stageEnabled["surface_rules"] = false;
+    config.stageEnabled["structures"] = false;
+    return config;
+}
+
+void checkLayerAir(const ChunkBuffer& buffer, int y, bool expectedAir) {
+    for (int z = 0; z < Chunk::SIZE; ++z) {
+        for (int x = 0; x < Chunk::SIZE; ++x) {
+            CHECK_EQ(buffer.at(x, y, z).isAir(), expectedAir);
+        }
+    }
 }
 }
 
@@ -109,9 +134,79 @@ TEST_CASE(WorldGenerator_Deterministic) {
     CHECK_EQ(a.blocks, b.blocks);
 }
 
+TEST_CASE(WorldGenerator_AlignedWorldBoundsExcludeWholeChunks) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenerator generator(registry, makeSolidConfig(-32, 31));
+    const BlockState nonAir{
+        *registry.findByIdentifier("rigel:stone")};
+
+    for (int chunkY : {-2, 1}) {
+        ChunkBuffer outside;
+        outside.blocks.fill(nonAir);
+        generator.generate({0, chunkY, 0}, outside);
+        CHECK(std::all_of(
+            outside.blocks.begin(), outside.blocks.end(),
+            [](BlockState state) { return state.isAir(); }));
+    }
+
+    for (int chunkY : {-1, 0}) {
+        ChunkBuffer inside;
+        generator.generate({0, chunkY, 0}, inside);
+        CHECK(std::none_of(
+            inside.blocks.begin(), inside.blocks.end(),
+            [](BlockState state) { return state.isAir(); }));
+    }
+}
+
+TEST_CASE(WorldGenerator_UnalignedWorldBoundsClipBoundaryVoxels) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenerator generator(registry, makeSolidConfig(-31, 30));
+
+    ChunkBuffer bottom;
+    generator.generate({0, -1, 0}, bottom);
+    checkLayerAir(bottom, 0, true);
+    for (int y = 1; y < Chunk::SIZE; ++y) {
+        checkLayerAir(bottom, y, false);
+    }
+
+    ChunkBuffer top;
+    generator.generate({0, 0, 0}, top);
+    for (int y = 0; y < Chunk::SIZE - 1; ++y) {
+        checkLayerAir(top, y, false);
+    }
+    checkLayerAir(top, Chunk::SIZE - 1, true);
+}
+
+TEST_CASE(WorldGenerator_ConfiguredCoordinateLimitsRemainInclusive) {
+    BlockRegistry registry = makeRegistry();
+
+    for (const int boundary :
+         {WorldGenConfig::MinWorldY, WorldGenConfig::MaxWorldY}) {
+        WorldGenerator generator(
+            registry, makeSolidConfig(boundary, boundary));
+        const int chunkY = worldToChunk(0, boundary, 0).y;
+        const int localY = boundary - chunkY * Chunk::SIZE;
+
+        ChunkBuffer boundaryChunk;
+        generator.generate({0, chunkY, 0}, boundaryChunk);
+        for (int y = 0; y < Chunk::SIZE; ++y) {
+            checkLayerAir(boundaryChunk, y, y != localY);
+        }
+
+        ChunkBuffer exterior;
+        generator.generate(
+            {0, chunkY + (localY == 0 ? -1 : 1), 0}, exterior);
+        CHECK(std::all_of(
+            exterior.blocks.begin(), exterior.blocks.end(),
+            [](BlockState state) { return state.isAir(); }));
+    }
+}
+
 TEST_CASE(WorldGenerator_GeneratesAtLoopConfigurationBoundaries) {
     BlockRegistry registry = makeRegistry();
     WorldGenConfig config = makeFlatConfig();
+    config.world.minY = 0;
+    config.world.maxY = WorldGenConfig::MaxWorldHeight - 1;
     config.terrain.surfaceDepth = WorldGenConfig::MaxSurfaceDepth;
     config.structures.features.push_back({
         .name = "bounded",

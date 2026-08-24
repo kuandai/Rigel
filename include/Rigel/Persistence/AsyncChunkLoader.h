@@ -226,7 +226,9 @@ private:
     const RegionMetricCounters& regionMetricCounters(
         RegionJobOrigin origin) const;
     static Voxel::RegionSchedulerOriginDiagnostics regionJobMetrics(
-        const RegionMetricCounters& counters);
+        const RegionMetricCounters& counters,
+        std::atomic<bool>* subsetReadEntered = nullptr,
+        std::atomic<bool>* subsetReadReleased = nullptr);
 
     PersistenceService* m_service = nullptr;
     PersistenceContext m_context;

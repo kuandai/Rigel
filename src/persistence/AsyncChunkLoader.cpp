@@ -1479,7 +1479,9 @@ AsyncChunkLoader::regionMetricCounters(RegionJobOrigin origin) const {
 }
 
 Voxel::RegionSchedulerOriginDiagnostics AsyncChunkLoader::regionJobMetrics(
-    const RegionMetricCounters& counters) {
+    const RegionMetricCounters& counters,
+    std::atomic<bool>* subsetReadEntered,
+    std::atomic<bool>* subsetReadReleased) {
     const uint64_t resultsDrained =
         counters.resultsDrained.load(std::memory_order_seq_cst);
     const uint64_t resultsPublished =
@@ -1490,6 +1492,13 @@ Voxel::RegionSchedulerOriginDiagnostics AsyncChunkLoader::regionJobMetrics(
         counters.poolWorkerStarts.load(std::memory_order_seq_cst);
     const uint64_t poolResubmissions =
         counters.poolResubmissions.load(std::memory_order_seq_cst);
+    if (subsetReadEntered && subsetReadReleased) {
+        subsetReadEntered->store(true, std::memory_order_release);
+        subsetReadEntered->notify_all();
+        while (!subsetReadReleased->load(std::memory_order_acquire)) {
+            subsetReadReleased->wait(false, std::memory_order_acquire);
+        }
+    }
     const uint64_t poolSubmissions =
         counters.poolSubmissions.load(std::memory_order_seq_cst);
     return Voxel::RegionSchedulerOriginDiagnostics{

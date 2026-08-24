@@ -29,13 +29,6 @@ using namespace Rigel::Persistence;
 
 namespace Rigel::Persistence::detail {
 struct AsyncChunkLoaderTestAccess {
-    struct RegionBoundaryMetricSnapshot {
-        uint64_t poolResubmissions = 0;
-        uint64_t poolSubmissions = 0;
-        uint64_t poolWorkerStarts = 0;
-        uint64_t resultsPublished = 0;
-    };
-
     static void setRegionLoadStartCallback(AsyncChunkLoader& loader,
                                            std::function<void()> callback) {
         loader.m_regionLoadStartCallback = std::move(callback);
@@ -101,14 +94,20 @@ struct AsyncChunkLoaderTestAccess {
         loader.m_ioPool.stop();
     }
 
-    static RegionBoundaryMetricSnapshot directRegionBoundaryMetrics(
+    static Voxel::RegionSchedulerOriginDiagnostics directRegionBoundaryMetrics(
         const AsyncChunkLoader& loader) {
-        return regionBoundaryMetrics(loader.m_directRegionMetrics);
+        return loader.regionJobMetrics(loader.m_directRegionMetrics);
     }
 
-    static RegionBoundaryMetricSnapshot speculativeRegionBoundaryMetrics(
-        const AsyncChunkLoader& loader) {
-        return regionBoundaryMetrics(loader.m_speculativeRegionMetrics);
+    static Voxel::RegionSchedulerOriginDiagnostics
+    speculativeRegionBoundaryMetrics(
+        const AsyncChunkLoader& loader,
+        std::atomic<bool>* subsetReadEntered = nullptr,
+        std::atomic<bool>* subsetReadReleased = nullptr) {
+        return loader.regionJobMetrics(
+            loader.m_speculativeRegionMetrics,
+            subsetReadEntered,
+            subsetReadReleased);
     }
 
     static std::shared_ptr<const void> regionJobIdentity(
@@ -239,22 +238,6 @@ struct AsyncChunkLoaderTestAccess {
         AsyncChunkLoader::RegionResult result;
         result.entry.region = std::move(lifetimeProbe);
         loader.m_regionComplete.push(std::move(result));
-    }
-
-private:
-    static RegionBoundaryMetricSnapshot regionBoundaryMetrics(
-        const AsyncChunkLoader::RegionMetricCounters& counters) {
-        const uint64_t poolResubmissions =
-            counters.poolResubmissions.load(std::memory_order_seq_cst);
-        const uint64_t poolSubmissions =
-            counters.poolSubmissions.load(std::memory_order_seq_cst);
-        return RegionBoundaryMetricSnapshot{
-            .poolResubmissions = poolResubmissions,
-            .poolSubmissions = poolSubmissions,
-            .poolWorkerStarts =
-                counters.poolWorkerStarts.load(std::memory_order_seq_cst),
-            .resultsPublished =
-                counters.resultsPublished.load(std::memory_order_seq_cst)};
     }
 };
 }
@@ -3197,6 +3180,9 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
     std::atomic<bool> submissionCommitReleased{false};
     std::atomic<bool> enqueueReturnEntered{false};
     std::atomic<bool> enqueueReturnReleased{false};
+    std::atomic<bool> diagnosticReadEntered{false};
+    std::atomic<bool> diagnosticReadReleased{false};
+    Rigel::Voxel::RegionSchedulerOriginDiagnostics readBoundary;
     std::vector<ChunkLoadCompletion> resolved;
     AsyncChunkLoader loader(
         ctx.service,
@@ -3207,6 +3193,7 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
         0,
         0,
         generator);
+    std::jthread diagnosticReader;
     std::jthread drainer;
     LoaderWorkRelease releasePoolOnExit(poolBlocker, barrierGate);
     LoaderWorkRelease releaseResubmissionOnExit(
@@ -3214,6 +3201,7 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
     AtomicFlagRelease releaseEnqueueOnExit(enqueueReturnReleased);
     AtomicFlagRelease releaseSubmissionCommitOnExit(
         submissionCommitReleased);
+    AtomicFlagRelease releaseDiagnosticReadOnExit(diagnosticReadReleased);
     loader.setMaxInFlightRegions(1);
     loader.setPrefetchRadius(0);
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
@@ -3247,6 +3235,14 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
 
     poolBlocker->release();
     CHECK(barrierGate->waitUntilEntered());
+    diagnosticReader = std::jthread([&]() {
+        readBoundary = Rigel::Persistence::detail::
+            AsyncChunkLoaderTestAccess::speculativeRegionBoundaryMetrics(
+                loader,
+                &diagnosticReadEntered,
+                &diagnosticReadReleased);
+    });
+    CHECK(waitUntilTrue(diagnosticReadEntered));
     barrierGate->release();
     drainer = std::jthread([&]() {
         resolved = loader.drainCompletions(1);
@@ -3263,6 +3259,8 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
     releaseSubmissionCommitOnExit.release();
     CHECK(waitUntilTrue(enqueueReturnEntered));
     CHECK(resubmissionStartGate->waitUntilEntered());
+    releaseDiagnosticReadOnExit.release();
+    diagnosticReader.join();
     const auto boundary = Rigel::Persistence::detail::
         AsyncChunkLoaderTestAccess::speculativeRegionBoundaryMetrics(loader);
 
@@ -3283,6 +3281,8 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
              static_cast<uint64_t>(1));
     CHECK_EQ(yielded.speculativeOrigin.poolResubmissions,
              static_cast<uint64_t>(0));
+    CHECK_EQ(readBoundary.poolSubmissions, static_cast<uint64_t>(2));
+    CHECK_EQ(readBoundary.poolResubmissions, static_cast<uint64_t>(0));
     CHECK_EQ(boundary.poolSubmissions, static_cast<uint64_t>(2));
     CHECK_EQ(boundary.poolResubmissions, static_cast<uint64_t>(1));
     CHECK_EQ(boundary.poolWorkerStarts, static_cast<uint64_t>(1));

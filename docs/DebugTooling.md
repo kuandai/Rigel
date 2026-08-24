@@ -20,7 +20,8 @@ window from the same state. When enabled the tooling draws:
 
 The GL overlays are toggled by the `debug_overlay` action (F1 by default). The
 ImGui profiler window is toggled independently by the `imgui_overlay` action
-(F3 by default).
+(F3 by default). Both start disabled; releasing the corresponding action opts
+in to that instrumentation.
 
 ---
 
@@ -446,7 +447,11 @@ coerced to zero.
 `--collect-debug-detail` is a separate opt-in measurement mode. It calls the
 same bounded streamer snapshot used by the chunk field after each streaming
 update, but it does not create a GPU context or render the overlay. Normal
-benchmark runs leave this collection disabled.
+benchmark runs leave this collection disabled. This switch controls only the
+headless benchmark snapshot; it is not the production overlay toggle or a
+measurement of `WorldView` draw-cache decoration, presentation construction,
+GL drawing, or ImGui.
+
 The configured mesh queue setting and effective submission limit are distinct.
 Version 3 reads an effective limit from the streamer's runtime diagnostic
 snapshot, the same source used by production diagnostics, rather than
@@ -665,13 +670,37 @@ The shipped view radius is 12 and the shipped vertical bounds are -64 through
 contains 7,153 coordinates. Of those, 2,482 chunks are wholly below the world,
 70 are wholly above it, and 2,552 total (35.7%) are wholly out of world. For
 surface camera chunk Y values 1, 2, and 3, the wholly out-of-world shares are
-31.7%, 28.7%, and 27.0%. The generator currently returns empty data for this
-demand through the normal lifecycle. The count is material capacity overhead,
-but this capture does not prove a remaining moving-camera P1 because repaired
-target ordering is bounded and neighbor readiness, not generation queue wait,
-is the largest stage. Vertical clipping remains a separate performance change.
+31.7%, 28.7%, and 27.0%.
 
-#### Debug-detail comparison
+The shipped-config assessment sampled nine X/Z columns at chunk Y=-3, wholly
+below `min_y`, and nine at chunk Y=11, wholly above `max_y`, in the same Release
+build and host as the CPU overlay assessment. The direct generator results
+were:
+
+| Position | Nonempty chunks | Total non-air blocks | Generation P50/P95/P99 (ms) |
+| --- | ---: | ---: | ---: |
+| Wholly below | 9 / 9 | 291,833 | 16.343 / 18.867 / 18.867 |
+| Wholly above | 0 / 9 | 0 | 15.607 / 18.155 / 18.155 |
+
+A radius-1 production-lifecycle run retained the shipped 12-worker six/six
+generation/mesh split while limiting only the representative coordinate set.
+Both runs generated seven chunks and reached quiescence. The below-bound target
+contained 32,768 non-air voxels; all seven generated chunks entered mesh work,
+and all seven mesh results were accepted. The fully occluded target therefore
+ended as accepted empty geometry, not as voxel-empty. The above-bound run also
+executed seven generation jobs, but all data was voxel-empty and no mesh job
+started. A regression loads the embedded shipped configuration and checks both
+the occupancy and downstream lifecycle distinctions.
+
+Thus vertical bounds do not clip generation: above-bound empty results still
+consume generation time, while below-bound results can consume both generation
+and mesh capacity. The cost is material follow-up evidence, but it does not
+re-establish a moving-camera P1 in this change: approached generation remains
+priority-dispatched, and measured neighbor readiness remains the dominant
+repaired moving-camera stage. No vertical clipping or provisional neighbor
+policy is introduced here.
+
+#### Overlay instrumentation comparison
 
 The repaired stationary workload was repeated on the same Release build and
 host with `--collect-debug-detail`. The disabled run's P95
@@ -683,11 +712,45 @@ P95 difference is 0.03%, so the bounded radius-2 snapshot was not a material
 end-to-end perturbation in this capture.
 
 This comparison excludes GL field drawing and ImGui presentation and is not an
-interactive overlay cost claim. Production detail collection remains opt-in
-behind the F1 debug-overlay action and walks only the requested, clamped view
-cube. At the shipped radius that walk can still be much larger than this
-fixture; it should remain opt-in unless a future interactive profile justifies
-sampling or a tighter bound.
+interactive overlay cost claim. It is retained only as the radius-2 streamer
+snapshot comparison.
+
+`Rigel_streaming_assessment_benchmark` adds two production-path comparisons at
+the shipped radius. Its renderer-independent mode invokes
+`Render::renderDebugField`, which calls `WorldView::getChunkDebugStates`,
+decorates installed geometry from the renderer draw cache, selects detail,
+builds the presentation maps and exposed-face meshes, and reaches the GL call
+sites with stubbed calls. It intentionally excludes driver/GPU work and ImGui,
+and labels both exclusions in its output. The full mode creates a real context,
+initializes shipped block and texture resources, runs `FrameRenderer`, executes
+the GL field and frame graph, builds the ImGui legend/detail window, submits the
+ImGui draw data, and synchronizes each timed frame with `glFinish`.
+
+Build and run the modes from the same Release build:
+
+```text
+./Rigel_streaming_assessment_benchmark --vertical-only
+./Rigel_streaming_assessment_benchmark --overlay-cpu-only --frames 120
+./Rigel_streaming_assessment_benchmark --overlay-only --frames 120
+```
+
+The CPU comparison used 7,153 tracked records in the 15,625-coordinate
+radius-12 cube, including one installed mesh that exercised `WorldView` draw-
+evidence decoration. Disabled P50/P95/P99 were all below the printed 0.001 ms
+precision. Enabled P50/P95/P99 were 2.082/2.112/2.123 ms, a 2.112 ms P95
+increase. This is a CPU-side lower bound because GL was stubbed and ImGui was
+excluded; it is already 12.7% of a 16.667 ms frame budget.
+
+The same runner reports `startup_overlay_enabled=false`. The focused toggle
+regression verifies that F1 release changes false to true and a second release
+changes it back. Production collection, presentation construction, GL work,
+and the ImGui legend are therefore opt-in rather than per-frame startup work.
+
+The full GL/ImGui comparison could not run on this validation host: GLFW
+reported `X11: Failed to open display localhost:10.0`, and a local virtual
+display could not bind a listening socket. No full-render timing is inferred
+from the CPU result. `--overlay-only` remains the explicit external gate on a
+host with a usable OpenGL display, alongside interactive first-draw validation.
 
 #### Scheduler boundary assessment
 
@@ -750,12 +813,14 @@ Remaining maintainability debt is bounded and non-blocking:
 - Instrumentation: mesh exposes its effective submission limit directly while
   generation does not; visibility tracing is intentionally one-coordinate,
   bounded, and opt-in; full overlay snapshots remain per-enabled-frame cube
-  walks rather than sampled telemetry.
+  walks rather than sampled telemetry, but the overlay now starts disabled.
 
 Runtime merge readiness is unaffected by these P2 maintainability items. The
 matched motion evidence, deterministic regressions, exact lifecycle accounting,
 and quiescence checks cover the current behavioral change. Interactive shipped-
-backend first-draw timing remains the only external performance gate.
+backend first-draw timing and the opt-in full GL/ImGui overlay comparison remain
+explicit external performance gates; neither changes the default-off runtime
+path.
 
 ---
 

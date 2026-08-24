@@ -58,17 +58,24 @@ struct NearCameraVisibilitySample {
     uint8_t firstObservedMissingDesiredCardinalNeighborCount = 0;
     VisibilityEndpoint endpoint = VisibilityEndpoint::Accepted;
     Voxel::ChunkVisibilityDuration desiredToVisible{};
-    Voxel::ChunkVisibilityDuration dependencyWait{};
-    Voxel::ChunkVisibilityDuration eligibleToWorkerStart{};
-    Voxel::ChunkVisibilityDuration schedulerWait{};
-    Voxel::ChunkVisibilityDuration poolWait{};
-    Voxel::ChunkVisibilityDuration workerExecution{};
+    Voxel::ChunkVisibilityDuration desiredToGenerationStart{};
+    Voxel::ChunkVisibilityDuration generationQueueWait{};
+    Voxel::ChunkVisibilityDuration generationSchedulerWait{};
+    Voxel::ChunkVisibilityDuration generationCapacityWait{};
+    Voxel::ChunkVisibilityDuration generationPoolWait{};
+    Voxel::ChunkVisibilityDuration generationExecution{};
+    Voxel::ChunkVisibilityDuration dataReadyToNeighborsReady{};
+    Voxel::ChunkVisibilityDuration neighborsReadyToMeshStart{};
+    Voxel::ChunkVisibilityDuration meshExecution{};
+    Voxel::ChunkVisibilityDuration desiredToAcceptedGeometry{};
+    std::optional<Voxel::ChunkVisibilityDuration> desiredToFirstDraw;
 };
 
 struct DurationPercentiles {
     size_t samples = 0;
     double p50Milliseconds = 0.0;
     double p95Milliseconds = 0.0;
+    double p99Milliseconds = 0.0;
 };
 
 struct NearCameraVisibilitySummary {
@@ -78,11 +85,17 @@ struct NearCameraVisibilitySummary {
     size_t acceptedEndpoints = 0;
     size_t firstDrawEndpoints = 0;
     DurationPercentiles desiredToVisible;
-    DurationPercentiles dependencyWait;
-    DurationPercentiles eligibleToWorkerStart;
-    DurationPercentiles schedulerWait;
-    DurationPercentiles poolWait;
-    DurationPercentiles workerExecution;
+    DurationPercentiles desiredToGenerationStart;
+    DurationPercentiles generationQueueWait;
+    DurationPercentiles generationSchedulerWait;
+    DurationPercentiles generationCapacityWait;
+    DurationPercentiles generationPoolWait;
+    DurationPercentiles generationExecution;
+    DurationPercentiles dataReadyToNeighborsReady;
+    DurationPercentiles neighborsReadyToMeshStart;
+    DurationPercentiles meshExecution;
+    DurationPercentiles desiredToAcceptedGeometry;
+    DurationPercentiles desiredToFirstDraw;
 };
 
 std::optional<NearCameraVisibilitySample> makeNearCameraVisibilitySample(

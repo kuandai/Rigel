@@ -60,10 +60,22 @@ assert_evidence_contract(
 string(REGEX MATCHALL "sample index=[^\n]*" APPLICATION_SAMPLE_LINES
     "${APPLICATION_OUTPUT}")
 list(LENGTH APPLICATION_SAMPLE_LINES APPLICATION_SAMPLE_COUNT)
-if (NOT APPLICATION_SAMPLE_COUNT EQUAL 2)
+if (NOT APPLICATION_SAMPLE_COUNT EQUAL 4)
     message(FATAL_ERROR
-        "Application-like benchmark emitted ${APPLICATION_SAMPLE_COUNT} samples instead of 2")
+        "Application-like benchmark emitted ${APPLICATION_SAMPLE_COUNT} samples instead of 4")
 endif()
+foreach(WORKLOAD IN ITEMS stationary positive_x positive_z diagonal_xz)
+    if (NOT APPLICATION_OUTPUT MATCHES
+        "sample index=0 workload=${WORKLOAD} [^\n]*desired_to_generation_start_ms=[0-9]+\\.[0-9]+ [^\n]*generation_queue_wait_ms=[0-9]+\\.[0-9]+ [^\n]*generation_execution_ms=[0-9]+\\.[0-9]+ [^\n]*data_ready_to_neighbors_ready_ms=[0-9]+\\.[0-9]+ [^\n]*neighbors_ready_to_mesh_start_ms=[0-9]+\\.[0-9]+ [^\n]*mesh_execution_ms=[0-9]+\\.[0-9]+ [^\n]*desired_to_accepted_geometry_ms=[0-9]+\\.[0-9]+ [^\n]*desired_to_first_draw_ms=unavailable")
+        message(FATAL_ERROR
+            "Application-like benchmark omitted required ${WORKLOAD} stages")
+    endif()
+    if (NOT APPLICATION_OUTPUT MATCHES
+        "cohort workload=${WORKLOAD} [^\n]*desired_to_generation_start_p99_ms=[0-9]+\\.[0-9]+ [^\n]*generation_queue_wait_p99_ms=[0-9]+\\.[0-9]+ [^\n]*desired_to_accepted_geometry_p99_ms=[0-9]+\\.[0-9]+ [^\n]*desired_to_first_draw_samples=0")
+        message(FATAL_ERROR
+            "Application-like benchmark omitted ${WORKLOAD} P99 or draw limitation")
+    endif()
+endforeach()
 string(REGEX MATCHALL "sample index=[^\n]*completion_state=quiescent"
     APPLICATION_QUIESCENT_SAMPLES "${APPLICATION_OUTPUT}")
 list(LENGTH APPLICATION_QUIESCENT_SAMPLES APPLICATION_QUIESCENT_COUNT)
@@ -119,9 +131,9 @@ assert_evidence_contract(
 string(REGEX MATCHALL "sample index=[^\n]*" STRESS_SAMPLE_LINES
     "${STRESS_OUTPUT}")
 list(LENGTH STRESS_SAMPLE_LINES STRESS_SAMPLE_COUNT)
-if (NOT STRESS_SAMPLE_COUNT EQUAL 2)
+if (NOT STRESS_SAMPLE_COUNT EQUAL 4)
     message(FATAL_ERROR
-        "Scheduler stress benchmark emitted ${STRESS_SAMPLE_COUNT} samples instead of 2")
+        "Scheduler stress benchmark emitted ${STRESS_SAMPLE_COUNT} samples instead of 4")
 endif()
 string(REGEX MATCHALL "sample index=[^\n]*completion_state=quiescent"
     STRESS_QUIESCENT_SAMPLES "${STRESS_OUTPUT}")
@@ -190,6 +202,7 @@ execute_process(
         --timeout-seconds 10
         --comparison-budget-ms 100000
         --update-interval-ms 5
+        --workload stationary
     RESULT_VARIABLE EXPLICIT_RESULT
     OUTPUT_VARIABLE EXPLICIT_OUTPUT
     ERROR_VARIABLE EXPLICIT_ERROR
@@ -211,9 +224,37 @@ assert_evidence_contract(
 string(REGEX MATCHALL "sample index=[^\n]*completion_state=quiescent"
     EXPLICIT_QUIESCENT_SAMPLES "${EXPLICIT_OUTPUT}")
 list(LENGTH EXPLICIT_QUIESCENT_SAMPLES EXPLICIT_QUIESCENT_COUNT)
-if (NOT EXPLICIT_QUIESCENT_COUNT EQUAL 2)
+if (NOT EXPLICIT_QUIESCENT_COUNT EQUAL 1)
     message(FATAL_ERROR
-        "Explicit application-like cadence did not produce two Quiescent samples")
+        "Explicit application-like cadence did not produce one Quiescent sample")
+endif()
+
+execute_process(
+    COMMAND "${BENCHMARK_EXECUTABLE}"
+        --samples 1
+        --view-distance 1
+        --worker-threads 2
+        --timeout-seconds 10
+        --comparison-budget-ms 100000
+        --workload stationary
+        --collect-debug-detail
+    RESULT_VARIABLE DETAIL_RESULT
+    OUTPUT_VARIABLE DETAIL_OUTPUT
+    ERROR_VARIABLE DETAIL_ERROR
+)
+if (NOT DETAIL_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "Opt-in debug-detail benchmark failed: ${DETAIL_ERROR}")
+endif()
+if (NOT DETAIL_OUTPUT MATCHES
+    "configuration [^\n]*debug_detail_collection=per_update_opt_in")
+    message(FATAL_ERROR
+        "Opt-in debug-detail benchmark omitted its instrumentation mode")
+endif()
+if (NOT DETAIL_OUTPUT MATCHES
+    "sample index=0 workload=stationary [^\n]*debug_detail_snapshots=[1-9][0-9]* debug_detail_records=[1-9][0-9]*")
+    message(FATAL_ERROR
+        "Opt-in debug-detail benchmark did not collect bounded snapshots")
 endif()
 foreach(INVALID_INTERVAL IN ITEMS
         0.0000001

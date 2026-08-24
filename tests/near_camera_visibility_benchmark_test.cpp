@@ -22,11 +22,16 @@ Benchmark::NearCameraVisibilitySample sample(
             firstObservedMissingDesiredCardinalNeighborCount,
         .endpoint = Benchmark::VisibilityEndpoint::Accepted,
         .desiredToVisible = milliseconds(value),
-        .dependencyWait = milliseconds(value + 1),
-        .eligibleToWorkerStart = milliseconds(value + 2),
-        .schedulerWait = milliseconds(value + 3),
-        .poolWait = milliseconds(value + 4),
-        .workerExecution = milliseconds(value + 5)
+        .desiredToGenerationStart = milliseconds(value + 1),
+        .generationQueueWait = milliseconds(value + 2),
+        .generationSchedulerWait = milliseconds(value + 3),
+        .generationCapacityWait = milliseconds(value + 4),
+        .generationPoolWait = milliseconds(value + 5),
+        .generationExecution = milliseconds(value + 6),
+        .dataReadyToNeighborsReady = milliseconds(value + 7),
+        .neighborsReadyToMeshStart = milliseconds(value + 8),
+        .meshExecution = milliseconds(value + 9),
+        .desiredToAcceptedGeometry = milliseconds(value + 10)
     };
 }
 
@@ -45,6 +50,7 @@ TEST_CASE(NearCameraVisibilityBenchmark_UsesNearestRankAndStableCohorts) {
     CHECK_EQ(overall.acceptedEndpoints, static_cast<size_t>(40));
     CHECK_NEAR(overall.desiredToVisible.p50Milliseconds, 20.0, 0.0001);
     CHECK_NEAR(overall.desiredToVisible.p95Milliseconds, 118.0, 0.0001);
+    CHECK_NEAR(overall.desiredToVisible.p99Milliseconds, 120.0, 0.0001);
 
     const auto cohorts =
         Benchmark::summarizeNearCameraVisibilityCohorts(samples);
@@ -62,9 +68,11 @@ TEST_CASE(NearCameraVisibilityBenchmark_UsesNearestRankAndStableCohorts) {
         cohorts[1].firstObservedMissingDesiredCardinalNeighborCount,
         std::optional<uint8_t>{2});
     CHECK_NEAR(
-        cohorts[1].workerExecution.p50Milliseconds, 115.0, 0.0001);
+        cohorts[1].meshExecution.p50Milliseconds, 119.0, 0.0001);
     CHECK_NEAR(
-        cohorts[1].workerExecution.p95Milliseconds, 124.0, 0.0001);
+        cohorts[1].meshExecution.p95Milliseconds, 128.0, 0.0001);
+    CHECK_NEAR(
+        cohorts[1].meshExecution.p99Milliseconds, 129.0, 0.0001);
 }
 
 TEST_CASE(NearCameraVisibilityBenchmark_DistinguishesSchedulerLimitMetadata) {
@@ -111,31 +119,45 @@ TEST_CASE(NearCameraVisibilityBenchmark_PrefersDrawAndRejectsCensoredWork) {
             origin + std::chrono::milliseconds(time);
     };
     setStage(Voxel::ChunkVisibilityStage::Desired, 0);
-    setStage(Voxel::ChunkVisibilityStage::DataReady, 1);
-    setStage(Voxel::ChunkVisibilityStage::NeighborReady, 4);
-    setStage(Voxel::ChunkVisibilityStage::MeshEligible, 5);
-    setStage(Voxel::ChunkVisibilityStage::SchedulerWait, 5);
-    setStage(Voxel::ChunkVisibilityStage::PoolSubmit, 7);
-    setStage(Voxel::ChunkVisibilityStage::WorkerStart, 9);
-    setStage(Voxel::ChunkVisibilityStage::WorkerFinish, 11);
-    setStage(Voxel::ChunkVisibilityStage::ResultAccepted, 12);
-    setStage(Voxel::ChunkVisibilityStage::FirstDraw, 15);
+    setStage(Voxel::ChunkVisibilityStage::GenerationSchedulerPending, 1);
+    setStage(Voxel::ChunkVisibilityStage::GenerationExecutorSubmit, 3);
+    setStage(Voxel::ChunkVisibilityStage::GenerationWorkerStart, 5);
+    setStage(Voxel::ChunkVisibilityStage::GenerationWorkerFinish, 7);
+    setStage(Voxel::ChunkVisibilityStage::GenerationReady, 7);
+    setStage(Voxel::ChunkVisibilityStage::DataReady, 8);
+    setStage(Voxel::ChunkVisibilityStage::NeighborReady, 11);
+    setStage(Voxel::ChunkVisibilityStage::MeshEligible, 12);
+    setStage(Voxel::ChunkVisibilityStage::SchedulerWait, 12);
+    setStage(Voxel::ChunkVisibilityStage::PoolSubmit, 14);
+    setStage(Voxel::ChunkVisibilityStage::WorkerStart, 16);
+    setStage(Voxel::ChunkVisibilityStage::WorkerFinish, 18);
+    setStage(Voxel::ChunkVisibilityStage::ResultAccepted, 19);
+    setStage(Voxel::ChunkVisibilityStage::FirstDraw, 22);
 
     auto converted =
         Benchmark::makeNearCameraVisibilitySample(record, 1);
     CHECK(converted.has_value());
     CHECK_EQ(converted->endpoint, Benchmark::VisibilityEndpoint::FirstDraw);
-    CHECK_EQ(converted->desiredToVisible, milliseconds(15));
-    CHECK_EQ(converted->dependencyWait, milliseconds(3));
-    CHECK_EQ(converted->eligibleToWorkerStart, milliseconds(4));
-    CHECK_EQ(converted->workerExecution, milliseconds(2));
+    CHECK_EQ(converted->desiredToVisible, milliseconds(22));
+    CHECK_EQ(converted->desiredToGenerationStart, milliseconds(5));
+    CHECK_EQ(converted->generationQueueWait, milliseconds(4));
+    CHECK_EQ(converted->generationSchedulerWait, milliseconds(2));
+    CHECK_EQ(converted->generationCapacityWait, milliseconds(0));
+    CHECK_EQ(converted->generationPoolWait, milliseconds(2));
+    CHECK_EQ(converted->generationExecution, milliseconds(2));
+    CHECK_EQ(converted->dataReadyToNeighborsReady, milliseconds(3));
+    CHECK_EQ(converted->neighborsReadyToMeshStart, milliseconds(5));
+    CHECK_EQ(converted->meshExecution, milliseconds(2));
+    CHECK_EQ(converted->desiredToAcceptedGeometry, milliseconds(19));
+    CHECK_EQ(converted->desiredToFirstDraw, milliseconds(22));
 
     record.stages[static_cast<size_t>(Voxel::ChunkVisibilityStage::FirstDraw)] =
         std::nullopt;
     converted = Benchmark::makeNearCameraVisibilitySample(record, 1);
     CHECK(converted.has_value());
     CHECK_EQ(converted->endpoint, Benchmark::VisibilityEndpoint::Accepted);
-    CHECK_EQ(converted->desiredToVisible, milliseconds(12));
+    CHECK_EQ(converted->desiredToVisible, milliseconds(19));
+    CHECK(!converted->desiredToFirstDraw.has_value());
 
     record.firstObservedMissingDesiredCardinalNeighborCount = std::nullopt;
     CHECK(!Benchmark::makeNearCameraVisibilitySample(record, 1).has_value());

@@ -393,8 +393,11 @@ The exact revisions used to define this comparison were:
 
 The evidence-scope, cadence-boundary, runtime-limit, and assessment-label
 hardening is revision `482e6dfc4ef4e0d3b128d1017e4611c819b619f9`.
-Version 3's cross-scheduler limit metadata and complete CLI evidence-contract
-regressions are revision `034eda5ef39539c1031171025fca06cf80a5e321`.
+Version 3's cross-scheduler limit metadata and initial CLI evidence-contract
+regressions are revision
+`034eda5ef39539c1031171025fca06cf80a5e321`. The scheduling-arithmetic
+upper-bound guard and its CLI mutation regression are revision
+`5d61aff033c0f331515c366a8481373904b40a59`.
 
 Both builds used byte-identical version 2 benchmark sources. The capture ran
 sequentially on the same 12th Gen Intel Core i7-12700 host with 20 logical CPUs,

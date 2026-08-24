@@ -2856,6 +2856,203 @@ TEST_CASE(ChunkStreamer_GeneratorRestorationReconcilesSuppressedBoundaryMesh) {
     checkGenerationAccounting(streamer);
 }
 
+TEST_CASE(ChunkStreamer_BoundsExpansionOwnsStationaryDemandRebuild) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto narrowGenerator = makeBoundedSolidGenerator(registry, 0, 31);
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, narrowGenerator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    const ChunkCoord camera{0, 3, 0};
+    for (int update = 0;
+         update < static_cast<int>(
+             StreamingDiagnosticSnapshot::QuiescenceUpdateWindow + 1);
+         ++update) {
+        streamer.update(camera.toWorldCenter());
+        streamer.processCompletions();
+    }
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::Quiescent);
+    CHECK(streamer.diagnostics().workEmpty());
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        desiredCoordinates(streamer).empty());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(0));
+
+    const size_t dispatchLimit = Rigel::Voxel::detail::
+        ChunkStreamerTestAccess::generationDispatchLimit(streamer);
+    auto wideGenerator = makeBoundedSolidGenerator(registry, 0, 127);
+    streamer.setGenerator(wideGenerator);
+
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(1));
+    CHECK(!streamer.diagnostics().workEmpty());
+    CHECK_EQ(streamer.diagnostics().state,
+             StreamingLifecycleState::Streaming);
+    CHECK_EQ(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                 generationDispatchLimit(streamer),
+             dispatchLimit);
+
+    bool restoredQuiescence = false;
+    for (int update = 0; update < 32; ++update) {
+        streamer.update(camera.toWorldCenter());
+        streamer.processCompletions();
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            restoredQuiescence = true;
+            break;
+        }
+    }
+
+    CHECK(restoredQuiescence);
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(0));
+    CHECK(streamer.diagnostics().workEmpty());
+    CHECK(manager.getChunk(camera) != nullptr);
+    CHECK(meshStore.contains(camera));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                 pendingGenerationCount(streamer),
+             static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                 generationOwnerCount(streamer),
+             static_cast<size_t>(0));
+    checkGenerationAccounting(streamer);
+}
+
+TEST_CASE(ChunkStreamer_BoundsReplacementReconcilesResidentsInFixedBatches) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto wideGenerator = makeBoundedSolidGenerator(registry, 0, 63);
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, wideGenerator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord) {
+        ++persistenceAttempts;
+        return false;
+    });
+    streamer.setChunkLoader([&](ChunkLoadRequest request) {
+        Chunk& chunk = manager.getOrCreateChunk(request.coord);
+        chunk.setWorldGenVersion(wideGenerator->config().world.version);
+        chunk.setLoadedFromDisk(true);
+        chunk.clearDirty();
+        chunk.markPersistDirty();
+        return ChunkLoadRequestResult::Queued;
+    });
+
+    constexpr int residentCount = 80;
+    for (int x = 0; x < residentCount; ++x) {
+        const ChunkCoord camera{x, 1, 0};
+        streamer.update(camera.toWorldCenter());
+        streamer.processCompletions();
+        Chunk* chunk = manager.getChunk(camera);
+        CHECK(chunk != nullptr);
+        if (chunk) {
+            chunk->markPersistDirty();
+        }
+    }
+
+    CHECK_EQ(manager.loadedChunkCount(),
+             static_cast<size_t>(residentCount));
+    CHECK_EQ(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                 evictionRetryCount(streamer),
+             static_cast<size_t>(residentCount - 1));
+    CHECK(persistenceAttempts >=
+          static_cast<size_t>(residentCount - 1));
+    const size_t attemptsBeforeShrink = persistenceAttempts;
+    const size_t dispatchLimit = Rigel::Voxel::detail::
+        ChunkStreamerTestAccess::generationDispatchLimit(streamer);
+
+    const uint64_t inspectedBeforeShrink =
+        streamer.workMetrics().schedulerCoordinatesInspected;
+    auto narrowGenerator = makeBoundedSolidGenerator(registry, 0, 31);
+    streamer.setGenerator(narrowGenerator);
+    const uint64_t shrinkInspections =
+        streamer.workMetrics().schedulerCoordinatesInspected -
+        inspectedBeforeShrink;
+
+    CHECK_EQ(shrinkInspections, static_cast<uint64_t>(65));
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(1));
+    CHECK_EQ(manager.loadedChunkCount(),
+             static_cast<size_t>(residentCount));
+    CHECK_EQ(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                 generationDispatchLimit(streamer),
+             dispatchLimit);
+
+    const ChunkCoord stationaryCamera{residentCount - 1, 1, 0};
+    streamer.update(stationaryCamera.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected <=
+          static_cast<uint64_t>(17));
+    CHECK_EQ(
+        streamer.workMetrics().lastUpdateResidentEvictionCoordinatesInspected,
+        static_cast<uint64_t>(1));
+    CHECK(streamer.workMetrics().
+              lastUpdateDeferredEvictionCoordinatesInspected <=
+          static_cast<uint64_t>(64));
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(0));
+    CHECK(persistenceAttempts > attemptsBeforeShrink);
+    CHECK(persistenceAttempts <=
+          attemptsBeforeShrink + static_cast<size_t>(65));
+
+    const uint64_t inspectedBeforeRestore =
+        streamer.workMetrics().schedulerCoordinatesInspected;
+    streamer.setGenerator(wideGenerator);
+    const uint64_t restoreInspections =
+        streamer.workMetrics().schedulerCoordinatesInspected -
+        inspectedBeforeRestore;
+    CHECK_EQ(restoreInspections, static_cast<uint64_t>(65));
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(1));
+
+    streamer.update(stationaryCamera.toWorldCenter());
+    streamer.processCompletions();
+    CHECK(streamer.workMetrics().lastUpdateSchedulerCoordinatesInspected <=
+          static_cast<uint64_t>(18));
+    CHECK_EQ(
+        streamer.workMetrics().lastUpdateResidentEvictionCoordinatesInspected,
+        static_cast<uint64_t>(0));
+    CHECK(streamer.workMetrics().
+              lastUpdateDeferredEvictionCoordinatesInspected <=
+          static_cast<uint64_t>(64));
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(0));
+    CHECK_EQ(manager.loadedChunkCount(),
+             static_cast<size_t>(residentCount));
+    CHECK_EQ(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                 generationDispatchLimit(streamer),
+             dispatchLimit);
+    checkGenerationAccounting(streamer);
+}
+
 TEST_CASE(ChunkStreamer_DepartingFiniteWorldDoesNotReportFalseQuiescence) {
     ChunkManager manager;
     BlockRegistry registry;

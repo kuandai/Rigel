@@ -344,9 +344,13 @@ ceilings for Rigel's fixed 32-cubed chunks rather than integer or address-space
 maxima.
 
 Negative queue, budget, thread, cache, and prefetch values are clamped to zero.
-The desired set is rebuilt only when the camera enters a different chunk or a
-distance changes; `update_budget_per_frame` does not turn that rebuild into a
-partial desired-set scan.
+The desired set is rebuilt only when the camera enters a different chunk, a
+distance changes, or generator replacement changes its vertical clip.
+Generator replacement synchronously reconciles only the bounded current and
+prospective desired coordinates. Retained residents are reconciled in
+deterministic batches of at most 64 during replacement and each subsequent
+update. `update_budget_per_frame` does not turn the desired-set rebuild into a
+partial scan.
 
 ---
 

@@ -98,6 +98,9 @@ struct StreamingDiagnosticSnapshot {
     static constexpr uint32_t QuiescenceUpdateWindow = 3;
 
     StreamingLifecycleState state = StreamingLifecycleState::DiscoveringSpawn;
+    // One scheduler-owned planning reconciliation can remain after generator
+    // replacement even when the previously clipped desired set was empty.
+    size_t plannerReconciliationPending = 0;
     StreamingWorkCount generation;
     // Exact current owners used to validate completion-drain and canonical
     // scheduler quiescence without exposing scheduler containers.
@@ -117,8 +120,8 @@ struct StreamingDiagnosticSnapshot {
     uint32_t stableUpdates = 0;
 
     bool workEmpty() const {
-        return generation.empty() && chunkLoad.empty() && mesh.empty() &&
-            eviction.empty();
+        return plannerReconciliationPending == 0 && generation.empty() &&
+            chunkLoad.empty() && mesh.empty() && eviction.empty();
     }
 };
 

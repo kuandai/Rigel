@@ -236,7 +236,9 @@ and final quiescence.
   the desired set alone exceeds it.
 - Chunks outside `unload_distance_chunks` are unloaded after modified data is
   persisted. Failed persistence defers removal to a bounded retry update and
-  remains explicit pending lifecycle work between attempts.
+  remains explicit pending lifecycle work between attempts. Due retry and
+  generator-bounds reconciliation scans advance in deterministic batches of
+  at most 64 coordinates per scheduler call.
 - If a loaded chunk’s `worldGenVersion` does not match the generator, modified
   data is persisted through the same removal gate before the chunk is discarded
   and regenerated. A deferred replacement remains unresolved until replacement

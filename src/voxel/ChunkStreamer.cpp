@@ -16,6 +16,7 @@ namespace Rigel::Voxel {
 
 namespace {
 constexpr uint64_t kEvictionRetryDelayUpdates = 60;
+constexpr size_t kWorldBoundsReconciliationBudget = 64;
 using FailureMap = std::map<ChunkCoord, std::string>;
 
 void advanceFailureVersion(uint64_t& version) {
@@ -288,6 +289,7 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                 *m_lastCenter,
                 viewDistance * viewDistance,
                 unloadDistance * unloadDistance);
+        m_desiredSetRebuildPending = true;
         m_lastViewDistance = -1;
         m_lastUnloadDistance = -1;
         ensureThreadPool();
@@ -313,11 +315,14 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_evictionRetryAfter.clear();
     m_versionReplacementRetries.clear();
     m_versionReplacementWaiting.clear();
+    m_streamedResidents.clear();
     clearFailures(m_generationErrors, m_generationFailureVersion);
     clearFailures(m_loadErrors, m_loadFailureVersion);
     clearFailures(m_meshErrors, m_meshFailureVersion);
     clearFailures(m_evictionErrors, m_evictionFailureVersion);
     m_nextEvictionRetrySequence = 0;
+    m_evictionRetryScanCursor.reset();
+    m_evictionRetryScanActive = false;
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
     m_pendingGenerationQueue.clear();
@@ -327,6 +332,8 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
+    m_desiredSetRebuildPending = false;
+    m_worldBoundsReconciliation.reset();
     m_initialStreamingBegun = false;
     m_workObservedThisUpdate = false;
     m_workStartedThisUpdate = false;
@@ -347,6 +354,54 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
          m_generator->config().world.maxY != generator->config().world.maxY);
     if (m_chunkManager && generator && (boundsChanged || !m_generator)) {
         const auto& replacementWorld = generator->config().world;
+        m_worldBoundsReconciliation = PendingWorldBoundsReconciliation{
+            .previous = boundsChanged
+                ? std::optional<WorldGenConfig::WorldConfig>{
+                      m_generator->config().world}
+                : std::nullopt,
+            .replacement = replacementWorld
+        };
+        std::vector<ChunkCoord> reconciliationCoordinates = m_desired;
+        if (m_lastCenter) {
+            const int viewDistance = std::max(
+                0, m_config.viewDistanceChunks);
+            const int viewRadiusSq = viewDistance * viewDistance;
+            const int minWorldChunkY = worldToChunk(
+                0, replacementWorld.minY, 0).y;
+            const int maxWorldChunkY = worldToChunk(
+                0, replacementWorld.maxY, 0).y;
+            const int64_t firstChunkY = std::max<int64_t>(
+                static_cast<int64_t>(m_lastCenter->y) - viewDistance,
+                minWorldChunkY);
+            const int64_t lastChunkY = std::min<int64_t>(
+                static_cast<int64_t>(m_lastCenter->y) + viewDistance,
+                maxWorldChunkY);
+            for (int dz = -viewDistance; dz <= viewDistance; ++dz) {
+                for (int64_t chunkY = firstChunkY;
+                     chunkY <= lastChunkY; ++chunkY) {
+                    for (int dx = -viewDistance;
+                         dx <= viewDistance; ++dx) {
+                        ChunkCoord coord{
+                            m_lastCenter->x + dx,
+                            static_cast<int32_t>(chunkY),
+                            m_lastCenter->z + dz};
+                        if (distanceSquared(*m_lastCenter, coord) <=
+                            viewRadiusSq) {
+                            reconciliationCoordinates.push_back(coord);
+                        }
+                    }
+                }
+            }
+        }
+        std::sort(
+            reconciliationCoordinates.begin(),
+            reconciliationCoordinates.end());
+        reconciliationCoordinates.erase(
+            std::unique(
+                reconciliationCoordinates.begin(),
+                reconciliationCoordinates.end()),
+            reconciliationCoordinates.end());
+
         auto reconcileEnteringChunk = [&](ChunkCoord coord, Chunk& chunk) {
             const bool replacementVersion =
                 chunk.worldGenVersion() == replacementWorld.version;
@@ -365,53 +420,52 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
             }
         };
 
-        if (boundsChanged) {
-            const auto& previousWorld = m_generator->config().world;
-            m_chunkManager->forEachChunk([&](ChunkCoord coord, Chunk& chunk) {
-                ++m_workMetrics.schedulerCoordinatesInspected;
+        const WorldGenConfig::WorldConfig* previousWorld = boundsChanged
+            ? &m_generator->config().world
+            : nullptr;
+        for (const ChunkCoord& coord : reconciliationCoordinates) {
+            ++m_workMetrics.schedulerCoordinatesInspected;
+            Chunk* chunk = m_chunkManager->getChunk(coord);
+            if (!chunk) {
+                continue;
+            }
+            if (previousWorld) {
                 const bool previouslyInside =
-                    intersectsWorldBounds(coord, previousWorld);
+                    intersectsWorldBounds(coord, *previousWorld);
                 const bool replacementInside =
                     intersectsWorldBounds(coord, replacementWorld);
                 if (previouslyInside == replacementInside) {
-                    return;
+                    continue;
                 }
                 if (!replacementInside) {
-                    if (!chunk.isEmpty()) {
+                    const bool alreadySuppressed =
+                        m_worldBoundsSuppressedMeshes.find(coord) !=
+                            m_worldBoundsSuppressedMeshes.end();
+                    if (!chunk->isEmpty() && !alreadySuppressed) {
                         m_chunkManager->invalidateFaceNeighbors(coord);
                     }
                     if (m_meshStore && m_meshStore->contains(coord)) {
                         m_meshStore->remove(coord);
-                        if (!chunk.isEmpty()) {
+                        if (!chunk->isEmpty()) {
                             m_states[coord] = ChunkState::ReadyMesh;
                             m_worldBoundsSuppressedMeshes.insert(coord);
                         }
                     }
-                    if (chunk.isEmpty()) {
+                    if (chunk->isEmpty()) {
                         m_worldBoundsSuppressedMeshes.erase(coord);
                     }
-                    return;
-                }
-
-                reconcileEnteringChunk(coord, chunk);
-            });
-        } else {
-            std::vector<ChunkCoord> suppressed(
-                m_worldBoundsSuppressedMeshes.begin(),
-                m_worldBoundsSuppressedMeshes.end());
-            std::sort(suppressed.begin(), suppressed.end());
-            for (const ChunkCoord& coord : suppressed) {
-                ++m_workMetrics.schedulerCoordinatesInspected;
-                Chunk* chunk = m_chunkManager->getChunk(coord);
-                if (!chunk) {
-                    m_worldBoundsSuppressedMeshes.erase(coord);
                     continue;
                 }
-                if (intersectsWorldBounds(coord, replacementWorld)) {
-                    reconcileEnteringChunk(coord, *chunk);
-                }
+                reconcileEnteringChunk(coord, *chunk);
+            } else if (
+                m_worldBoundsSuppressedMeshes.find(coord) !=
+                    m_worldBoundsSuppressedMeshes.end() &&
+                intersectsWorldBounds(coord, replacementWorld)) {
+                reconcileEnteringChunk(coord, *chunk);
             }
         }
+    } else if (!generator) {
+        m_worldBoundsReconciliation.reset();
     }
 
     for (const auto& pending : m_pendingVisibilityTraces) {
@@ -456,7 +510,9 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
     }
     m_generator = std::move(generator);
     // The cached desired set is shaped by the generator's vertical bounds.
-    m_lastViewDistance = -1;
+    // Keep this explicit owner until update performs the bounded rebuild.
+    m_desiredSetRebuildPending =
+        m_generator != nullptr && m_lastCenter.has_value();
     for (const ChunkCoord& coord : enteringWorldBounds) {
         if (Chunk* chunk = m_chunkManager->getChunk(coord)) {
             chunk->invalidateMesh();
@@ -511,7 +567,115 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
             m_priorityMeshRequests.erase(coord);
         }
     }
+    reconcileDeferredWorldBounds();
     refreshDiagnostics(false);
+}
+
+void ChunkStreamer::reconcileDeferredWorldBounds() {
+    if (!m_worldBoundsReconciliation || !m_chunkManager || !m_generator) {
+        return;
+    }
+
+    auto& reconciliation = *m_worldBoundsReconciliation;
+    auto residentIt = reconciliation.deferredCursor
+        ? m_streamedResidents.upper_bound(*reconciliation.deferredCursor)
+        : m_streamedResidents.begin();
+    size_t inspected = 0;
+    while (residentIt != m_streamedResidents.end() &&
+           inspected < kWorldBoundsReconciliationBudget) {
+        const ChunkCoord coord = *residentIt;
+        reconciliation.deferredCursor = coord;
+        ++residentIt;
+        ++inspected;
+        ++m_workMetrics.schedulerCoordinatesInspected;
+
+        Chunk* chunk = m_chunkManager->getChunk(coord);
+        if (!chunk) {
+            m_streamedResidents.erase(coord);
+            continue;
+        }
+        const bool replacementInside = intersectsWorldBounds(
+            coord, reconciliation.replacement);
+        if (!reconciliation.previous &&
+            (!replacementInside ||
+             m_worldBoundsSuppressedMeshes.find(coord) ==
+                 m_worldBoundsSuppressedMeshes.end())) {
+            continue;
+        }
+        const bool previouslyInside = reconciliation.previous
+            ? intersectsWorldBounds(coord, *reconciliation.previous)
+            : !replacementInside;
+        if (reconciliation.previous &&
+            previouslyInside == replacementInside) {
+            continue;
+        }
+
+        if (!replacementInside) {
+            const bool alreadySuppressed =
+                m_worldBoundsSuppressedMeshes.find(coord) !=
+                    m_worldBoundsSuppressedMeshes.end();
+            if (!chunk->isEmpty() && !alreadySuppressed) {
+                m_chunkManager->invalidateFaceNeighbors(coord);
+            }
+            if (m_meshStore && m_meshStore->contains(coord)) {
+                m_meshStore->remove(coord);
+                if (!chunk->isEmpty()) {
+                    m_states[coord] = ChunkState::ReadyMesh;
+                    m_worldBoundsSuppressedMeshes.insert(coord);
+                }
+            }
+            if (chunk->isEmpty()) {
+                m_worldBoundsSuppressedMeshes.erase(coord);
+            }
+            if (m_desiredSet.find(coord) == m_desiredSet.end() &&
+                evictChunk(coord)) {
+                m_cache.erase(coord);
+            }
+            continue;
+        }
+
+        const int unloadDistance = std::max(
+            std::max(0, m_config.viewDistanceChunks),
+            m_config.unloadDistanceChunks);
+        const bool withinRetention = m_lastCenter &&
+            distanceSquared(*m_lastCenter, coord) <=
+                unloadDistance * unloadDistance;
+        const bool cachePressure = m_cache.maxChunks() > 0 &&
+            m_cache.size() > m_cache.maxChunks() &&
+            m_desiredSet.find(coord) == m_desiredSet.end();
+        if (withinRetention && !cachePressure &&
+            m_versionReplacementRetries.find(coord) ==
+                m_versionReplacementRetries.end()) {
+            m_evictionRetryAfter.erase(coord);
+            eraseFailure(
+                m_evictionErrors, m_evictionFailureVersion, coord);
+            if (m_evictionRetryAfter.empty()) {
+                m_nextEvictionRetrySequence = 0;
+            }
+        }
+
+        const bool replacementVersion =
+            chunk->worldGenVersion() == reconciliation.replacement.version;
+        if (chunk->isEmpty() || !replacementVersion) {
+            m_worldBoundsSuppressedMeshes.erase(coord);
+            if (!chunk->isEmpty()) {
+                m_states[coord] = ChunkState::ReadyData;
+            }
+            continue;
+        }
+
+        m_chunkManager->invalidateFaceNeighbors(coord);
+        if (m_worldBoundsSuppressedMeshes.find(coord) ==
+            m_worldBoundsSuppressedMeshes.end()) {
+            continue;
+        }
+        chunk->invalidateMesh();
+        queueDirtyMesh(coord);
+    }
+
+    if (residentIt == m_streamedResidents.end()) {
+        m_worldBoundsReconciliation.reset();
+    }
 }
 
 void ChunkStreamer::setBenchmark(ChunkBenchmarkStats* stats) {
@@ -637,6 +801,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     StreamingDiagnosticSnapshot beforeUpdate = collectDiagnostics();
     m_workObservedThisUpdate = !beforeUpdate.workEmpty();
     m_workStartedThisUpdate = false;
+    reconcileDeferredWorldBounds();
 
     uint64_t desiredBuildCoordinatesInspected = 0;
     uint64_t desiredBuildCoordinatesSkippedByWorldBounds = 0;
@@ -651,11 +816,17 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     int viewRadiusSq = viewDistance * viewDistance;
     int unloadRadiusSq = unloadDistance * unloadDistance;
 
-    bool rebuildDesired = !m_lastCenter ||
+    const bool demandShapeChanged = !m_lastCenter ||
         *m_lastCenter != center ||
         m_lastViewDistance != viewDistance ||
         m_lastUnloadDistance != unloadDistance;
-    bool cacheEvictionNeeded = rebuildDesired;
+    const bool generatorRequestedRebuild = m_desiredSetRebuildPending;
+    bool rebuildDesired = demandShapeChanged || generatorRequestedRebuild;
+    bool cacheEvictionNeeded = demandShapeChanged;
+    std::vector<ChunkCoord> generatorResidentCandidates;
+    if (generatorRequestedRebuild && !demandShapeChanged) {
+        generatorResidentCandidates = m_desired;
+    }
 
     if (rebuildDesired) {
         PROFILE_SCOPE("Streaming/Update/DesiredBuild");
@@ -726,8 +897,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_lastViewDistance = viewDistance;
         m_lastUnloadDistance = unloadDistance;
         reprioritizePendingGenerations(schedulerCoordinatesInspected);
-        deferredEvictionCoordinatesInspected = retireIneligibleEvictions(
-            center, viewRadiusSq, unloadRadiusSq);
+        if (demandShapeChanged) {
+            deferredEvictionCoordinatesInspected = retireIneligibleEvictions(
+                center, viewRadiusSq, unloadRadiusSq);
+        }
         std::vector<ChunkCoord> outsideMeshRetention;
         outsideMeshRetention.reserve(
             m_pendingMeshes.size() + m_meshDependencyWaiting.size());
@@ -819,6 +992,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 queueLoadedNeighbors(coord);
             }
         }
+        m_desiredSetRebuildPending = false;
         for (auto it = m_states.begin(); it != m_states.end(); ) {
             bool retainedMeshRequest =
                 it->second == ChunkState::QueuedMesh &&
@@ -853,7 +1027,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         }
     }
 
-    retryDeferredEvictions(center, unloadRadiusSq);
+    deferredEvictionCoordinatesInspected +=
+        retryDeferredEvictions(center, unloadRadiusSq);
 
     if (!m_chunkLoadDrain && !m_loadPending.empty()) {
         for (auto it = m_loadPending.begin(); it != m_loadPending.end(); ) {
@@ -963,6 +1138,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     m_evictionErrors, m_evictionFailureVersion, coord);
 
                 m_cache.touch(coord);
+                m_streamedResidents.insert(coord);
                 cacheEvictionNeeded = true;
                 bool hasMesh = m_meshStore && m_meshStore->contains(coord);
                 bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
@@ -1051,14 +1227,24 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     if (rebuildDesired) {
         PROFILE_SCOPE("Streaming/Update/Evict");
         std::vector<ChunkCoord> toEvict;
-        m_chunkManager->forEachChunk([&](ChunkCoord coord, const Chunk&) {
-            ++residentEvictionCoordinatesInspected;
-            int distSq = distanceSquared(center, coord);
-            if (!chunkIntersectsWorldBounds(coord) ||
-                distSq > unloadRadiusSq) {
-                toEvict.push_back(coord);
+        if (demandShapeChanged) {
+            m_chunkManager->forEachChunk([&](ChunkCoord coord, const Chunk&) {
+                ++residentEvictionCoordinatesInspected;
+                int distSq = distanceSquared(center, coord);
+                if (!chunkIntersectsWorldBounds(coord) ||
+                    distSq > unloadRadiusSq) {
+                    toEvict.push_back(coord);
+                }
+            });
+        } else if (generatorRequestedRebuild) {
+            for (const ChunkCoord& coord : generatorResidentCandidates) {
+                ++residentEvictionCoordinatesInspected;
+                if (!chunkIntersectsWorldBounds(coord) &&
+                    m_chunkManager->getChunk(coord)) {
+                    toEvict.push_back(coord);
+                }
             }
-        });
+        }
 
         for (const ChunkCoord& coord : toEvict) {
             if (!chunkIntersectsWorldBounds(coord)) {
@@ -1491,11 +1677,14 @@ void ChunkStreamer::reset() {
     m_evictionRetryAfter.clear();
     m_versionReplacementRetries.clear();
     m_versionReplacementWaiting.clear();
+    m_streamedResidents.clear();
     clearFailures(m_generationErrors, m_generationFailureVersion);
     clearFailures(m_loadErrors, m_loadFailureVersion);
     clearFailures(m_meshErrors, m_meshFailureVersion);
     clearFailures(m_evictionErrors, m_evictionFailureVersion);
     m_nextEvictionRetrySequence = 0;
+    m_evictionRetryScanCursor.reset();
+    m_evictionRetryScanActive = false;
     m_loadGenQueue.clear();
     m_loadGenQueued.clear();
     m_pendingGenerationQueue.clear();
@@ -1511,6 +1700,8 @@ void ChunkStreamer::reset() {
     m_lastCenter.reset();
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
+    m_desiredSetRebuildPending = false;
+    m_worldBoundsReconciliation.reset();
     m_initialStreamingBegun = false;
     m_workObservedThisUpdate = false;
     m_workStartedThisUpdate = false;
@@ -1587,6 +1778,7 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
         }
     }
     m_states.erase(coord);
+    m_streamedResidents.erase(coord);
     m_worldBoundsSuppressedMeshes.erase(coord);
     m_configRetiredWork.erase(coord);
     retirePendingMesh(coord);
@@ -1626,6 +1818,8 @@ uint64_t ChunkStreamer::retireIneligibleEvictions(ChunkCoord center,
                                                   int unloadRadiusSq) {
     uint64_t inspected = 0;
     m_nextEvictionRetrySequence = 0;
+    m_evictionRetryScanCursor.reset();
+    m_evictionRetryScanActive = false;
     for (auto it = m_evictionRetryAfter.begin();
          it != m_evictionRetryAfter.end();) {
         ++inspected;
@@ -1669,20 +1863,33 @@ uint64_t ChunkStreamer::retireIneligibleEvictions(ChunkCoord center,
     return inspected;
 }
 
-void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq) {
-    if (m_nextEvictionRetrySequence == 0 ||
-        m_streamingUpdateSequence < m_nextEvictionRetrySequence) {
-        return;
+uint64_t ChunkStreamer::retryDeferredEvictions(ChunkCoord center,
+                                               int unloadRadiusSq) {
+    if (!m_evictionRetryScanActive &&
+        (m_nextEvictionRetrySequence == 0 ||
+         m_streamingUpdateSequence < m_nextEvictionRetrySequence)) {
+        return 0;
     }
 
     std::vector<std::pair<ChunkCoord, bool>> due;
-    m_nextEvictionRetrySequence = 0;
-    for (auto it = m_evictionRetryAfter.begin();
-         it != m_evictionRetryAfter.end();) {
+    if (!m_evictionRetryScanActive) {
+        m_evictionRetryScanActive = true;
+        m_evictionRetryScanCursor.reset();
+        m_nextEvictionRetrySequence = 0;
+    }
+    auto it = m_evictionRetryScanCursor
+        ? m_evictionRetryAfter.upper_bound(*m_evictionRetryScanCursor)
+        : m_evictionRetryAfter.begin();
+    uint64_t inspected = 0;
+    while (it != m_evictionRetryAfter.end() &&
+           inspected < kWorldBoundsReconciliationBudget) {
+        const ChunkCoord coord = it->first;
+        m_evictionRetryScanCursor = coord;
+        ++inspected;
         if (it->second <= m_streamingUpdateSequence) {
             bool versionReplacement =
-                m_versionReplacementRetries.erase(it->first) > 0;
-            due.emplace_back(it->first, versionReplacement);
+                m_versionReplacementRetries.erase(coord) > 0;
+            due.emplace_back(coord, versionReplacement);
             it = m_evictionRetryAfter.erase(it);
             continue;
         }
@@ -1691,6 +1898,10 @@ void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq
             m_nextEvictionRetrySequence = it->second;
         }
         ++it;
+    }
+    if (it == m_evictionRetryAfter.end()) {
+        m_evictionRetryScanCursor.reset();
+        m_evictionRetryScanActive = false;
     }
 
     for (const auto& [coord, versionReplacement] : due) {
@@ -1720,6 +1931,7 @@ void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq
                 m_evictionErrors, m_evictionFailureVersion, coord);
         }
     }
+    return inspected;
 }
 
 StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
@@ -1777,6 +1989,8 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
         .lastError = diagnosticForLowestCoordinate(m_generationErrors),
         .failureVersion = m_generationFailureVersion
     };
+    snapshot.plannerReconciliationPending =
+        (m_desiredSetRebuildPending || m_worldBoundsReconciliation) ? 1 : 0;
     snapshot.sourceResolutionPending = m_loadGenQueued.size();
     snapshot.generationSchedulerPending = m_pendingGenerations.size();
     snapshot.generationCompletionsPending = m_genComplete.size();
@@ -1923,6 +2137,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         eraseFailure(m_loadErrors, m_loadFailureVersion, genResult.coord);
         m_versionReplacementWaiting.erase(genResult.coord);
         Chunk& chunk = m_chunkManager->getOrCreateChunk(genResult.coord);
+        m_streamedResidents.insert(genResult.coord);
         if (m_registry) {
             chunk.copyFrom(genResult.blocks, *m_registry);
         } else {

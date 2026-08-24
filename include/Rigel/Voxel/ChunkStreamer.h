@@ -285,6 +285,12 @@ private:
         DirtyMesh
     };
 
+    struct PendingWorldBoundsReconciliation {
+        std::optional<WorldGenConfig::WorldConfig> previous;
+        WorldGenConfig::WorldConfig replacement;
+        std::optional<ChunkCoord> deferredCursor;
+    };
+
     enum class PendingWorkKind : uint8_t {
         None,
         Generation,
@@ -416,9 +422,12 @@ private:
                        PendingMeshRequest,
                        ChunkCoordHash> m_pendingMeshes;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_priorityMeshRequests;
-    std::unordered_map<ChunkCoord, uint64_t, ChunkCoordHash> m_evictionRetryAfter;
+    std::map<ChunkCoord, uint64_t> m_evictionRetryAfter;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_versionReplacementRetries;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_versionReplacementWaiting;
+    // Deterministic index of residents observed by the streaming pipeline.
+    // ChunkManager remains the lifecycle owner.
+    std::set<ChunkCoord> m_streamedResidents;
     std::map<ChunkCoord, std::string> m_generationErrors;
     std::map<ChunkCoord, std::string> m_loadErrors;
     std::map<ChunkCoord, std::string> m_meshErrors;
@@ -445,6 +454,9 @@ private:
     std::optional<ChunkCoord> m_lastCenter;
     int m_lastViewDistance = -1;
     int m_lastUnloadDistance = -1;
+    bool m_desiredSetRebuildPending = false;
+    std::optional<PendingWorldBoundsReconciliation>
+        m_worldBoundsReconciliation;
     bool m_spawnDiscoveryComplete = false;
     bool m_initialStreamingBegun = false;
     bool m_workObservedThisUpdate = false;
@@ -452,6 +464,8 @@ private:
     uint64_t m_streamingUpdateSequence = 0;
     uint64_t m_lifecycleUpdateSequence = 0;
     uint64_t m_nextEvictionRetrySequence = 0;
+    std::optional<ChunkCoord> m_evictionRetryScanCursor;
+    bool m_evictionRetryScanActive = false;
     std::function<void()> m_generationStartCallback;
     std::function<void(ChunkCoord)> m_generationStartObserver;
     std::function<void()> m_generationResultReadyToPublishCallback;
@@ -462,6 +476,7 @@ private:
 
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);
+    void reconcileDeferredWorldBounds();
     ChunkLoadRequestId nextLoadRequestId();
     void cancelPendingLoad(ChunkCoord coord);
     void queueLoadGen(ChunkCoord coord);
@@ -566,7 +581,7 @@ private:
     uint64_t retireIneligibleEvictions(ChunkCoord center,
                                        int viewRadiusSq,
                                        int unloadRadiusSq);
-    void retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq);
+    uint64_t retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq);
 
     ChunkCoord cameraToChunk(const glm::vec3& cameraPos) const;
 };

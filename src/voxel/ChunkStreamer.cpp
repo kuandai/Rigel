@@ -2769,10 +2769,11 @@ void ChunkStreamer::markVisibilityMeshEligible(
         return;
     }
 
-    const uint8_t dependencyCount = missingMeshDependencyCount(coord);
-    pending->tracer->observeDependencyCount(
-        pending->key, dependencyCount);
-    if (dependencyCount != 0) {
+    const uint8_t missingNeighbors =
+        countMissingDesiredCardinalNeighbors(coord);
+    pending->tracer->observeMissingDesiredCardinalNeighborCount(
+        pending->key, missingNeighbors);
+    if (missingNeighbors != 0) {
         return;
     }
 
@@ -3453,9 +3454,15 @@ void ChunkStreamer::ensureThreadPool() {
     }
 }
 
-uint8_t ChunkStreamer::missingMeshDependencyCount(ChunkCoord coord) const {
+uint8_t ChunkStreamer::countMissingDesiredCardinalNeighbors(
+    ChunkCoord coord,
+    uint8_t limit) const {
+    limit = std::min(limit, static_cast<uint8_t>(DirectionCount));
+    if (limit == 0) {
+        return 0;
+    }
     if (!m_chunkManager) {
-        return static_cast<uint8_t>(DirectionCount);
+        return limit;
     }
     uint8_t missing = 0;
     for (int i = 0; i < DirectionCount; ++i) {
@@ -3471,31 +3478,15 @@ uint8_t ChunkStreamer::missingMeshDependencyCount(ChunkCoord coord) const {
         if (m_desiredSet.find(neighbor) == m_desiredSet.end()) {
             continue;
         }
-        ++missing;
+        if (++missing == limit) {
+            break;
+        }
     }
     return missing;
 }
 
 bool ChunkStreamer::hasAllNeighborsLoaded(ChunkCoord coord) const {
-    if (!m_chunkManager) {
-        return false;
-    }
-    for (int i = 0; i < DirectionCount; ++i) {
-        Direction dir = static_cast<Direction>(i);
-        int dx = 0;
-        int dy = 0;
-        int dz = 0;
-        directionOffset(dir, dx, dy, dz);
-        ChunkCoord neighbor = coord.offset(dx, dy, dz);
-        if (m_chunkManager->getChunk(neighbor)) {
-            continue;
-        }
-        if (m_desiredSet.find(neighbor) == m_desiredSet.end()) {
-            continue;
-        }
-        return false;
-    }
-    return true;
+    return countMissingDesiredCardinalNeighbors(coord, 1) == 0;
 }
 
 } // namespace Rigel::Voxel

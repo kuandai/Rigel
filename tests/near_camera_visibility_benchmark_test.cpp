@@ -14,11 +14,12 @@ Voxel::ChunkVisibilityDuration milliseconds(int value) {
 
 Benchmark::NearCameraVisibilitySample sample(
     int distanceSquared,
-    uint8_t dependencyCount,
+    uint8_t firstObservedMissingDesiredCardinalNeighborCount,
     int value) {
     return {
         .distanceSquared = distanceSquared,
-        .dependencyCount = dependencyCount,
+        .firstObservedMissingDesiredCardinalNeighborCount =
+            firstObservedMissingDesiredCardinalNeighborCount,
         .endpoint = Benchmark::VisibilityEndpoint::Accepted,
         .desiredToVisible = milliseconds(value),
         .dependencyWait = milliseconds(value + 1),
@@ -49,13 +50,17 @@ TEST_CASE(NearCameraVisibilityBenchmark_UsesNearestRankAndStableCohorts) {
         Benchmark::summarizeNearCameraVisibilityCohorts(samples);
     CHECK_EQ(cohorts.size(), static_cast<size_t>(2));
     CHECK_EQ(cohorts[0].distanceSquared, 0);
-    CHECK_EQ(cohorts[0].dependencyCount, std::optional<uint8_t>{6});
+    CHECK_EQ(
+        cohorts[0].firstObservedMissingDesiredCardinalNeighborCount,
+        std::optional<uint8_t>{6});
     CHECK_NEAR(
         cohorts[0].desiredToVisible.p50Milliseconds, 10.0, 0.0001);
     CHECK_NEAR(
         cohorts[0].desiredToVisible.p95Milliseconds, 19.0, 0.0001);
     CHECK_EQ(cohorts[1].distanceSquared, 1);
-    CHECK_EQ(cohorts[1].dependencyCount, std::optional<uint8_t>{2});
+    CHECK_EQ(
+        cohorts[1].firstObservedMissingDesiredCardinalNeighborCount,
+        std::optional<uint8_t>{2});
     CHECK_NEAR(
         cohorts[1].workerExecution.p50Milliseconds, 115.0, 0.0001);
     CHECK_NEAR(
@@ -65,7 +70,7 @@ TEST_CASE(NearCameraVisibilityBenchmark_UsesNearestRankAndStableCohorts) {
 TEST_CASE(NearCameraVisibilityBenchmark_PrefersDrawAndRejectsCensoredWork) {
     Voxel::ChunkVisibilityTraceRecord record;
     record.kind = Voxel::ChunkVisibilityLifecycleKind::CameraDemand;
-    record.dependencyCount = 3;
+    record.firstObservedMissingDesiredCardinalNeighborCount = 3;
     const auto origin = Voxel::ChunkVisibilityTimePoint{};
     const auto setStage = [&](Voxel::ChunkVisibilityStage stage, int time) {
         record.stages[static_cast<size_t>(stage)] =
@@ -98,9 +103,9 @@ TEST_CASE(NearCameraVisibilityBenchmark_PrefersDrawAndRejectsCensoredWork) {
     CHECK_EQ(converted->endpoint, Benchmark::VisibilityEndpoint::Accepted);
     CHECK_EQ(converted->desiredToVisible, milliseconds(12));
 
-    record.dependencyCount = std::nullopt;
+    record.firstObservedMissingDesiredCardinalNeighborCount = std::nullopt;
     CHECK(!Benchmark::makeNearCameraVisibilitySample(record, 1).has_value());
-    record.dependencyCount = 3;
+    record.firstObservedMissingDesiredCardinalNeighborCount = 3;
     record.stages[static_cast<size_t>(Voxel::ChunkVisibilityStage::WorkerStart)] =
         std::nullopt;
     CHECK(!Benchmark::makeNearCameraVisibilitySample(record, 1).has_value());

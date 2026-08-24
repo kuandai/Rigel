@@ -332,7 +332,7 @@ void ChunkVisibilityTracer::markDataReady(
     }
 }
 
-void ChunkVisibilityTracer::observeDependencyCount(
+void ChunkVisibilityTracer::observeMissingDesiredCardinalNeighborCount(
     const ChunkVisibilityLifecycleKey& key,
     uint8_t count) {
     if (!traces(key.coord)) {
@@ -346,8 +346,8 @@ void ChunkVisibilityTracer::observeDependencyCount(
         advanceSequence(m_sequence);
         return;
     }
-    if (!record->dependencyCount) {
-        record->dependencyCount = count;
+    if (!record->firstObservedMissingDesiredCardinalNeighborCount) {
+        record->firstObservedMissingDesiredCardinalNeighborCount = count;
         advanceSequence(m_sequence);
     }
 }

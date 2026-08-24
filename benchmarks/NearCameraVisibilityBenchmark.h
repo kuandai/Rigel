@@ -17,7 +17,7 @@ enum class VisibilityEndpoint : uint8_t {
 
 struct NearCameraVisibilitySample {
     int distanceSquared = 0;
-    uint8_t dependencyCount = 0;
+    uint8_t firstObservedMissingDesiredCardinalNeighborCount = 0;
     VisibilityEndpoint endpoint = VisibilityEndpoint::Accepted;
     Voxel::ChunkVisibilityDuration desiredToVisible{};
     Voxel::ChunkVisibilityDuration dependencyWait{};
@@ -35,7 +35,7 @@ struct DurationPercentiles {
 
 struct NearCameraVisibilitySummary {
     int distanceSquared = 0;
-    std::optional<uint8_t> dependencyCount;
+    std::optional<uint8_t> firstObservedMissingDesiredCardinalNeighborCount;
     size_t samples = 0;
     size_t acceptedEndpoints = 0;
     size_t firstDrawEndpoints = 0;

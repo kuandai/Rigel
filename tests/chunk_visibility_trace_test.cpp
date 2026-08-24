@@ -64,8 +64,8 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     tracer.mark(lifecycleKey, ChunkVisibilityStage::DataRequest);
     clock.advance(std::chrono::milliseconds(2));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::DataReady);
-    tracer.observeDependencyCount(lifecycleKey, 6);
-    tracer.observeDependencyCount(lifecycleKey, 0);
+    tracer.observeMissingDesiredCardinalNeighborCount(lifecycleKey, 6);
+    tracer.observeMissingDesiredCardinalNeighborCount(lifecycleKey, 0);
     clock.advance(std::chrono::milliseconds(3));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::NeighborReady);
     clock.advance(std::chrono::milliseconds(4));
@@ -97,7 +97,9 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     CHECK_EQ(record.kind, ChunkVisibilityLifecycleKind::CameraDemand);
     CHECK(record.meshTask.has_value());
     CHECK_EQ(*record.meshTask, meshTask(99));
-    CHECK_EQ(record.dependencyCount, std::optional<uint8_t>{6});
+    CHECK_EQ(
+        record.firstObservedMissingDesiredCardinalNeighborCount,
+        std::optional<uint8_t>{6});
     CHECK_EQ(
         record.outcome,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);

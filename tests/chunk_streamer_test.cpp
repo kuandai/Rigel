@@ -7783,7 +7783,9 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIncludesDirtyMeshCapacityWait) {
     CHECK(*meshEligible <= *schedulerWait);
     CHECK(*schedulerWait <= *poolSubmit);
     const auto durations = record.durations();
-    CHECK_EQ(record.dependencyCount, std::optional<uint8_t>{0});
+    CHECK_EQ(
+        record.firstObservedMissingDesiredCardinalNeighborCount,
+        std::optional<uint8_t>{0});
     CHECK(durations.schedulerWait.has_value());
     CHECK_EQ(*durations.schedulerWait, std::chrono::milliseconds(25));
 }
@@ -7796,17 +7798,26 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) 
     BlockID solid = registerTestBlock(
         registry, "rigel:trace_neighbor_event_solid");
     const ChunkCoord coord{0, 0, 0};
+    const ChunkCoord partialNeighbor{0, 1, 0};
     const ChunkCoord finalNeighbor{1, 0, 0};
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
     chunk.setWorldGenVersion(generator->config().world.version);
     chunk.setLoadedFromDisk(true);
-    addLoadedNeighborShell(
-        manager,
-        coord,
-        finalNeighbor,
-        generator->config().world.version);
+    const std::array loadedNeighbors{
+        ChunkCoord{-1, 0, 0},
+        ChunkCoord{0, -1, 0},
+        ChunkCoord{0, 0, 1},
+        ChunkCoord{0, 0, -1}
+    };
+    for (const ChunkCoord loadedNeighbor : loadedNeighbors) {
+        Chunk& neighbor = manager.getOrCreateChunk(loadedNeighbor);
+        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setLoadedFromDisk(true);
+        neighbor.clearPersistDirty();
+        neighbor.clearDirty();
+    }
 
     auto clock = std::make_shared<ManualTraceClock>();
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
@@ -7835,13 +7846,40 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) 
 
     streamer.update(coord.toWorldCenter());
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(0));
+    CHECK(requests.find(partialNeighbor) != requests.end());
     CHECK(requests.find(finalNeighbor) != requests.end());
 
-    clock->advance(std::chrono::milliseconds(10));
-    Chunk& neighbor = manager.getOrCreateChunk(finalNeighbor);
-    neighbor.setWorldGenVersion(generator->config().world.version);
-    neighbor.setLoadedFromDisk(true);
-    neighbor.clearDirty();
+    auto records = tracer->snapshot();
+    CHECK_EQ(records.size(), static_cast<size_t>(1));
+    CHECK_EQ(
+        records.front().firstObservedMissingDesiredCardinalNeighborCount,
+        std::optional<uint8_t>{2});
+
+    clock->advance(std::chrono::milliseconds(5));
+    Chunk& partial = manager.getOrCreateChunk(partialNeighbor);
+    partial.setWorldGenVersion(generator->config().world.version);
+    partial.setLoadedFromDisk(true);
+    partial.clearDirty();
+    completions.push_back({
+        partialNeighbor,
+        requests.at(partialNeighbor),
+        ChunkLoadOutcome::Loaded,
+        {}});
+    streamer.processCompletions();
+
+    records = tracer->snapshot();
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasDependencyPendingMesh(streamer, coord));
+    CHECK_EQ(
+        records.front().firstObservedMissingDesiredCardinalNeighborCount,
+        std::optional<uint8_t>{2});
+    CHECK(!records.front().stage(ChunkVisibilityStage::NeighborReady).has_value());
+
+    clock->advance(std::chrono::milliseconds(5));
+    Chunk& final = manager.getOrCreateChunk(finalNeighbor);
+    final.setWorldGenVersion(generator->config().world.version);
+    final.setLoadedFromDisk(true);
+    final.clearDirty();
     completions.push_back({
         finalNeighbor,
         requests.at(finalNeighbor),
@@ -7849,11 +7887,12 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) 
         {}});
     streamer.processCompletions();
 
-    auto records = tracer->snapshot();
+    records = tracer->snapshot();
     CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
         hasDependencyPendingMesh(streamer, coord));
-    CHECK_EQ(records.size(), static_cast<size_t>(1));
-    CHECK_EQ(records.front().dependencyCount, std::optional<uint8_t>{1});
+    CHECK_EQ(
+        records.front().firstObservedMissingDesiredCardinalNeighborCount,
+        std::optional<uint8_t>{2});
     const auto neighborReady =
         records.front().stage(ChunkVisibilityStage::NeighborReady);
     const auto schedulerWait =
@@ -7879,6 +7918,9 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) 
     CHECK_EQ(
         records.front().meshTask->requestId,
         static_cast<uint64_t>(1));
+    CHECK_EQ(
+        records.front().firstObservedMissingDesiredCardinalNeighborCount,
+        std::optional<uint8_t>{2});
     CHECK_EQ(
         records.front().durations().schedulerWait,
         std::chrono::milliseconds(25));
@@ -7947,7 +7989,9 @@ TEST_CASE(ChunkStreamer_VisibilityTraceOwnDataReadyIsNotNeighborReady) {
 
     records = tracer->snapshot();
     CHECK_EQ(records.front().origin, ChunkVisibilityOrigin::Persisted);
-    CHECK_EQ(records.front().dependencyCount, std::optional<uint8_t>{0});
+    CHECK_EQ(
+        records.front().firstObservedMissingDesiredCardinalNeighborCount,
+        std::optional<uint8_t>{0});
     CHECK(records.front().stage(ChunkVisibilityStage::DataReady).has_value());
     CHECK(!records.front().stage(ChunkVisibilityStage::NeighborReady).has_value());
     CHECK(records.front().stage(ChunkVisibilityStage::MeshEligible).has_value());

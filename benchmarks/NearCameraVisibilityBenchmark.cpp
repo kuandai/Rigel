@@ -36,7 +36,7 @@ std::optional<NearCameraVisibilitySample> makeNearCameraVisibilitySample(
     const Voxel::ChunkVisibilityTraceRecord& record,
     int distanceSquared) {
     if (record.kind != Voxel::ChunkVisibilityLifecycleKind::CameraDemand ||
-        !record.dependencyCount) {
+        !record.firstObservedMissingDesiredCardinalNeighborCount) {
         return std::nullopt;
     }
 
@@ -52,7 +52,7 @@ std::optional<NearCameraVisibilitySample> makeNearCameraVisibilitySample(
     }
 
     Duration dependencyWait{};
-    if (*record.dependencyCount > 0) {
+    if (*record.firstObservedMissingDesiredCardinalNeighborCount > 0) {
         if (!durations.dependencyWait) {
             return std::nullopt;
         }
@@ -61,7 +61,8 @@ std::optional<NearCameraVisibilitySample> makeNearCameraVisibilitySample(
 
     return NearCameraVisibilitySample{
         .distanceSquared = distanceSquared,
-        .dependencyCount = *record.dependencyCount,
+        .firstObservedMissingDesiredCardinalNeighborCount =
+            *record.firstObservedMissingDesiredCardinalNeighborCount,
         .endpoint = firstDraw
             ? VisibilityEndpoint::FirstDraw
             : VisibilityEndpoint::Accepted,
@@ -120,8 +121,10 @@ std::vector<NearCameraVisibilitySummary> summarizeNearCameraVisibilityCohorts(
     using CohortKey = std::pair<int, uint8_t>;
     std::map<CohortKey, std::vector<NearCameraVisibilitySample>> cohorts;
     for (const auto& sample : samples) {
-        cohorts[{sample.distanceSquared, sample.dependencyCount}].push_back(
-            sample);
+        cohorts[{
+            sample.distanceSquared,
+            sample.firstObservedMissingDesiredCardinalNeighborCount
+        }].push_back(sample);
     }
 
     std::vector<NearCameraVisibilitySummary> summaries;
@@ -129,7 +132,7 @@ std::vector<NearCameraVisibilitySummary> summarizeNearCameraVisibilityCohorts(
     for (auto& [key, cohort] : cohorts) {
         auto summary = summarizeNearCameraVisibility(cohort);
         summary.distanceSquared = key.first;
-        summary.dependencyCount = key.second;
+        summary.firstObservedMissingDesiredCardinalNeighborCount = key.second;
         summaries.push_back(std::move(summary));
     }
     return summaries;

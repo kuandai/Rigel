@@ -127,7 +127,7 @@ struct ChunkVisibilityTraceRecord {
         ChunkVisibilityLifecycleKind::CameraDemand;
     ChunkVisibilityOrigin origin = ChunkVisibilityOrigin::Unresolved;
     std::optional<ChunkVisibilityMeshTaskIdentity> meshTask;
-    std::optional<uint8_t> dependencyCount;
+    std::optional<uint8_t> firstObservedMissingDesiredCardinalNeighborCount;
     ChunkVisibilityStageTimes stages{};
     ChunkVisibilityStageObservations observedStages{};
     ChunkVisibilityOutcome outcome = ChunkVisibilityOutcome::Pending;
@@ -184,7 +184,7 @@ public:
     void markDataReady(
         const ChunkVisibilityLifecycleKey& key,
         ChunkVisibilityOrigin origin);
-    void observeDependencyCount(
+    void observeMissingDesiredCardinalNeighborCount(
         const ChunkVisibilityLifecycleKey& key,
         uint8_t count);
     void mark(const ChunkVisibilityLifecycleKey& key,

@@ -238,11 +238,14 @@ void printSummary(std::string_view kind,
     } else {
         std::cout << summary.distanceSquared;
     }
-    if (summary.dependencyCount) {
-        std::cout << " dependency_count="
-                  << static_cast<unsigned>(*summary.dependencyCount);
+    if (summary.firstObservedMissingDesiredCardinalNeighborCount) {
+        std::cout << " first_observed_missing_desired_cardinal_neighbors="
+                  << static_cast<unsigned>(
+                         *summary
+                              .firstObservedMissingDesiredCardinalNeighborCount);
     } else {
-        std::cout << " dependency_count=all";
+        std::cout
+            << " first_observed_missing_desired_cardinal_neighbors=all";
     }
     std::cout
         << " samples=" << summary.samples
@@ -331,8 +334,9 @@ int main(int argc, char** argv) {
             std::cout
                 << "sample index=" << index
                 << " distance_squared=" << distanceSquared
-                << " dependency_count="
-                << static_cast<unsigned>(sample.dependencyCount)
+                << " first_observed_missing_desired_cardinal_neighbors="
+                << static_cast<unsigned>(
+                       sample.firstObservedMissingDesiredCardinalNeighborCount)
                 << " endpoint="
                 << (sample.endpoint == Benchmark::VisibilityEndpoint::FirstDraw
                         ? "first_draw"
@@ -378,7 +382,8 @@ int main(int argc, char** argv) {
     double maximumDependencyP95 = 0.0;
     for (const auto& summary : cohortSummaries) {
         printSummary("distance_dependency", summary);
-        if (summary.dependencyCount && *summary.dependencyCount > 0) {
+        if (summary.firstObservedMissingDesiredCardinalNeighborCount &&
+            *summary.firstObservedMissingDesiredCardinalNeighborCount > 0) {
             maximumDependencyP95 = std::max(
                 maximumDependencyP95,
                 summary.dependencyWait.p95Milliseconds);

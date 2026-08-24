@@ -92,7 +92,6 @@ enum class ChunkVisibilityBlockerState : uint8_t {
     LoadPayloadPoolQueued,
     LoadPayloadWorkerRunning,
     LoadPayloadResultPublished,
-    LoadPayloadRetryWaiting,
     LoadPayloadTerminalFailed,
     GenerationSchedulerPending,
     GenerationCapacityWaiting,

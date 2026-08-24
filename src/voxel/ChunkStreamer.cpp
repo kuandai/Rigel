@@ -2967,8 +2967,7 @@ ChunkVisibilityBlockerState ChunkStreamer::classifyVisibilityBlocker(
                     return ChunkVisibilityBlockerState::
                         LoadPayloadResultPublished;
                 case ChunkLoadExecutionPhase::RetryWaiting:
-                    return ChunkVisibilityBlockerState::
-                        LoadPayloadRetryWaiting;
+                    return ChunkVisibilityBlockerState::Unowned;
                 case ChunkLoadExecutionPhase::TerminalFailed:
                     return ChunkVisibilityBlockerState::
                         LoadPayloadTerminalFailed;

@@ -8795,19 +8795,6 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
 
     blockerExecution = {
         ChunkLoadExecutionOwner::Payload,
-        ChunkLoadExecutionPhase::RetryWaiting};
-    streamer.update(traced.toWorldCenter());
-    CHECK_EQ(
-        tracer->latestRecord()
-            ->blockingDesiredCardinalNeighbors->neighbors[0].state,
-        ChunkVisibilityBlockerState::LoadPayloadRetryWaiting);
-    CHECK_EQ(
-        chunkVisibilityBlockerStateName(
-            ChunkVisibilityBlockerState::LoadPayloadRetryWaiting),
-        std::string_view("load_payload_retry_waiting"));
-
-    blockerExecution = {
-        ChunkLoadExecutionOwner::Payload,
         ChunkLoadExecutionPhase::ResultPublished};
     streamer.update(traced.toWorldCenter());
     CHECK_EQ(

@@ -301,8 +301,9 @@ identifies an accepted opaque load request for which no explicit execution
 owner is available, and `load_terminal_failed` identifies its ownerless failure
 record after completion is drained. Explicit region and payload states
 distinguish scheduler pending, physical pool queued, actual worker running,
-completion published but undrained, retry waiting (including
-`load_payload_retry_waiting`), and owner-attributed terminal failure.
+completion published but undrained, and owner-attributed terminal failure.
+Region failures additionally distinguish retry waiting; payload failures
+transition directly to terminal failure.
 Generation states distinguish scheduler pending, capacity waiting, executor
 queued, worker running, result published, and terminal failure. Ready resident,
 no longer required, and explicitly unowned are separate; the presence of a

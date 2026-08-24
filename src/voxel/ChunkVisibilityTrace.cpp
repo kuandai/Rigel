@@ -216,8 +216,6 @@ std::string_view chunkVisibilityBlockerStateName(
             return "load_payload_worker_running";
         case ChunkVisibilityBlockerState::LoadPayloadResultPublished:
             return "load_payload_result_published";
-        case ChunkVisibilityBlockerState::LoadPayloadRetryWaiting:
-            return "load_payload_retry_waiting";
         case ChunkVisibilityBlockerState::LoadPayloadTerminalFailed:
             return "load_payload_terminal_failed";
         case ChunkVisibilityBlockerState::GenerationSchedulerPending:

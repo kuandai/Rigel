@@ -115,6 +115,14 @@ if (RIGEL_BUILD_BENCHMARKS)
         RIGEL_BENCHMARK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
     )
     target_link_libraries(Rigel_near_camera_visibility_benchmark PRIVATE RigelLib)
+
+    add_executable(Rigel_streaming_assessment_benchmark
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/streaming_assessment_benchmark.cpp
+    )
+    target_compile_definitions(Rigel_streaming_assessment_benchmark PRIVATE
+        RIGEL_BENCHMARK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+    )
+    target_link_libraries(Rigel_streaming_assessment_benchmark PRIVATE RigelLib)
 endif()
 
 get_target_property(RIGEL_LIBRARY_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
@@ -225,6 +233,18 @@ if (RIGEL_BUILD_TESTS)
             COMMAND ${CMAKE_COMMAND}
                 "-DBENCHMARK_EXECUTABLE=$<TARGET_FILE:Rigel_near_camera_visibility_benchmark>"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/near_camera_visibility_cadence_options.cmake
+        )
+        add_test(
+            NAME Rigel_streaming_assessment_cpu_contract
+            COMMAND Rigel_streaming_assessment_benchmark
+                --overlay-cpu-only --frames 3
+        )
+        set_tests_properties(
+            Rigel_streaming_assessment_cpu_contract
+            PROPERTIES
+                PASS_REGULAR_EXPRESSION
+                    "view_radius=12.*draw_evidence_records=1.*presentation_maps_and_meshes=true.*gl_calls=stubbed.*imgui_legend_rendering=false"
+                TIMEOUT 60
         )
     endif()
 

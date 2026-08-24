@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/input/GameplayInput.h"
 #include "Rigel/Render/ChunkDebugPresentation.h"
 #include "Rigel/Render/FrameRenderer.h"
 
@@ -107,6 +108,18 @@ private:
 };
 
 } // namespace
+
+TEST_CASE(DebugOverlay_StartsDisabledAndReleaseActionOptsIn) {
+    Rigel::Render::FrameRenderer renderer;
+    CHECK(!renderer.debugOverlayEnabled());
+
+    Rigel::Input::DebugOverlayListener listener;
+    listener.enabled = &renderer.debugOverlayEnabled();
+    listener.onActionReleased("debug_overlay");
+    CHECK(renderer.debugOverlayEnabled());
+    listener.onActionReleased("debug_overlay");
+    CHECK(!renderer.debugOverlayEnabled());
+}
 
 TEST_CASE(DebugOverlay_EveryStateMapsToCheckedPresentationStorage) {
     using Rigel::Render::chunkDebugPresentationIndex;

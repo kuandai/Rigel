@@ -1,8 +1,16 @@
 #include "TestFramework.h"
 
+#include "Rigel/Config/ConfigSource.h"
+#include "Rigel/Voxel/ChunkManager.h"
+#include "Rigel/Voxel/ChunkStreamer.h"
+#include "Rigel/Voxel/WorldConfigProvider.h"
 #include "Rigel/Voxel/WorldGenerator.h"
+#include "Rigel/Voxel/WorldMeshStore.h"
 
+#include <algorithm>
 #include <limits>
+#include <memory>
+#include <set>
 
 using namespace Rigel::Voxel;
 
@@ -31,6 +39,123 @@ WorldGenConfig makeFlatConfig() {
     config.terrain.surfaceDepth = 1;
     return config;
 }
+
+WorldConfiguration loadShippedConfiguration() {
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    WorldConfigProvider provider;
+    provider.addSource(
+        std::make_unique<Rigel::Config::EmbeddedConfigSource>(
+            assets, "raw/world_config"));
+    return provider.loadConfig();
+}
+
+void registerShippedGenerationBlocks(BlockRegistry& registry,
+                                     const WorldGenConfig& config) {
+    std::set<std::string> identifiers{
+        config.solidBlock,
+        config.surfaceBlock,
+        "base:water[type=source]",
+        "base:sand"};
+    for (const auto& biome : config.biomes.entries) {
+        for (const auto& layer : biome.surface) {
+            identifiers.insert(layer.block);
+        }
+    }
+    for (const auto& feature : config.structures.features) {
+        identifiers.insert(feature.block);
+    }
+    for (const std::string& identifier : identifiers) {
+        BlockType block;
+        block.identifier = identifier;
+        registry.registerBlock(identifier, std::move(block));
+    }
+}
+
+struct OutOfBoundsLifecycle {
+    ChunkStreamer::DebugChunkState target;
+    ChunkStreamer::WorkMetrics work;
+    bool quiescent = false;
+};
+
+OutOfBoundsLifecycle runOutOfBoundsLifecycle(
+    ChunkCoord target,
+    StreamingConfig streaming,
+    BlockRegistry& registry,
+    const std::shared_ptr<const WorldGenerator>& generator) {
+    ChunkManager manager;
+    manager.setRegistry(&registry);
+    WorldMeshStore meshStore;
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, generator);
+    streaming.viewDistanceChunks = 1;
+    streaming.unloadDistanceChunks = 1;
+    streaming.workerThreads = 0;
+    streamer.setConfig(streaming);
+    streamer.setChunkLoader([](ChunkLoadRequest) {
+        return ChunkLoadRequestResult::Missing;
+    });
+    streamer.markSpawnDiscoveryComplete();
+
+    OutOfBoundsLifecycle result;
+    for (int update = 0; update < 16; ++update) {
+        streamer.update(target.toWorldCenter());
+        streamer.processCompletions();
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            result.quiescent = true;
+            break;
+        }
+    }
+    result.work = streamer.workMetrics();
+    std::vector<ChunkStreamer::DebugChunkState> states;
+    streamer.getDebugStates(states, target, 0);
+    if (!states.empty()) {
+        result.target = states.front();
+    }
+    return result;
+}
+}
+
+TEST_CASE(WorldGenerator_ShippedBoundsDoNotImplyEmptyGeneratedChunks) {
+    const WorldConfiguration shipped = loadShippedConfiguration();
+    BlockRegistry registry;
+    registerShippedGenerationBlocks(registry, shipped.generation);
+    auto generator = std::make_shared<const WorldGenerator>(
+        registry, shipped.generation);
+    const int belowY = worldToChunk(
+        0, shipped.generation.world.minY, 0).y - 1;
+    const int aboveY = worldToChunk(
+        0, shipped.generation.world.maxY, 0).y + 1;
+
+    ChunkBuffer below;
+    ChunkBuffer above;
+    generator->generate({0, belowY, 0}, below);
+    generator->generate({0, aboveY, 0}, above);
+    const auto occupied = [](const ChunkBuffer& buffer) {
+        return std::count_if(
+            buffer.blocks.begin(), buffer.blocks.end(),
+            [](const BlockState& block) { return !block.isAir(); });
+    };
+
+    CHECK(occupied(below) > 0);
+    CHECK_EQ(occupied(above), static_cast<std::ptrdiff_t>(0));
+
+    const auto belowLifecycle = runOutOfBoundsLifecycle(
+        {0, belowY, 0}, shipped.streaming, registry, generator);
+    CHECK(belowLifecycle.quiescent);
+    CHECK_EQ(belowLifecycle.target.voxelOccupancy,
+             ChunkStreamer::DebugVoxelOccupancy::Nonempty);
+    CHECK(belowLifecycle.work.meshJobsStarted > 0);
+    CHECK_EQ(belowLifecycle.work.meshJobsStarted,
+             belowLifecycle.work.meshJobsAccepted);
+
+    const auto aboveLifecycle = runOutOfBoundsLifecycle(
+        {0, aboveY, 0}, shipped.streaming, registry, generator);
+    CHECK(aboveLifecycle.quiescent);
+    CHECK_EQ(aboveLifecycle.target.voxelOccupancy,
+             ChunkStreamer::DebugVoxelOccupancy::Empty);
+    CHECK_EQ(aboveLifecycle.work.meshJobsStarted, static_cast<uint64_t>(0));
 }
 
 TEST_CASE(WorldGenerator_FlatSurface) {

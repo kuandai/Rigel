@@ -66,7 +66,7 @@ struct DebugState {
     std::vector<Voxel::ChunkStreamer::DebugChunkState> debugStates;
     std::optional<ChunkDebugDetailPresentation> chunkDetail;
     float debugDistance = kDefaultDebugDistance;
-    bool overlayEnabled = true;
+    bool overlayEnabled = false;
     bool imguiEnabled = false;
 };
 

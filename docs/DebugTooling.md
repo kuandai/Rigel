@@ -527,6 +527,57 @@ interactive capture on identified hardware using the shipped persistence
 backend, the renderer's actual `first_draw` event, the same camera-containing
 and adjacent cohorts, and quiescence as the terminal signal.
 
+#### Generation dispatch Release capture
+
+A second matched capture isolates generation dispatch cadence at these engine
+revisions:
+
+- FIFO generation baseline: `217b54448b94464836b9dcc7f52ef03d862f987a`;
+- one-worker-width submission bound:
+  `c56ef994f6312e6de9b1c137a24126981c809d6c`;
+- one running plus one standby worker-width bound:
+  `8382751353e0680717c4451ed42acc9e275f46b2`.
+
+The benchmark and build-system sources are byte-identical across the three
+revisions. All builds used `Release`, GCC 16.1.1, and the same 12th Gen Intel
+Core i7-12700 host with 20 logical CPUs running Linux
+7.0.12-201.fc44.x86_64. The executables ran sequentially with otherwise
+uncontrolled host load. Each build used 20 samples per distance, view distance
+2, two total workers (one generation and one mesh worker), unbounded
+generation, mesh, update, and apply limits, a 16.667 ms cadence, and the
+accepted-geometry endpoint:
+
+```text
+./Rigel_near_camera_visibility_benchmark --samples 20 --view-distance 2 --worker-threads 2 --timeout-seconds 30 --update-interval-ms 16.667 --comparison-budget-ms 50
+```
+
+All 120 samples reached quiescence, used accepted geometry, and reported no
+stale mesh results. Times below are nearest-rank P50/P95 in milliseconds.
+Stage columns are P95 and are reported separately rather than added.
+
+| Distance | Generation dispatch | Desired to accepted P50/P95 | P95 residual from FIFO | Dependency P95 | Eligible to worker P95 | Scheduler P95 | Pool P95 | Worker P95 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Camera | FIFO baseline | 216.843 / 233.438 | reference | 166.737 | 16.928 | 16.832 | 0.091 | 0.280 |
+| Camera | One worker width | 266.827 / 266.934 | +14.3% | 200.135 | 16.963 | 16.869 | 0.094 | 0.295 |
+| Camera | Running plus standby | 216.839 / 216.943 | -7.1% | 150.102 | 16.908 | 16.827 | 0.122 | 0.278 |
+| Adjacent | FIFO baseline | 800.132 / 800.196 | reference | 633.544 | 33.380 | 33.328 | 0.065 | 0.176 |
+| Adjacent | One worker width | 1133.408 / 1133.538 | +41.7% | 866.818 | 16.861 | 16.795 | 0.075 | 0.197 |
+| Adjacent | Running plus standby | 883.424 / 916.785 | +14.6% | 666.815 | 50.147 | 50.094 | 0.074 | 0.197 |
+
+The standby wave removes the worker bubble visible with the exact one-worker
+submission bound: the camera P95 is 18.7% lower than that bound and the
+adjacent P95 is 19.1% lower. Relative to the FIFO baseline, the final residual
+is -7.1% for the camera cohort and +14.6%, or 116.589 ms, for the adjacent
+cohort. This is not a claim of parity. The remaining adjacent residual is
+not fully decomposed by independently ranked stage percentiles;
+dependency-wait P95 is 33.271 ms above the FIFO capture, while scheduler-wait
+P95 is 16.766 ms above it.
+
+No interactive first-draw capture was possible in this headless environment;
+this Release evidence stops at accepted geometry. Interactive first-draw
+validation with the shipped persistence backend remains an explicit external
+gate.
+
 ---
 
 ## 9. Reproducible Streaming Validation

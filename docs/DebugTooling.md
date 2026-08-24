@@ -456,8 +456,11 @@ record's real `drawn` outcome; persisted, resident-left-censored, remesh,
 voxel-empty, accepted-empty, stale, failed, and replaced-before-draw records
 are rejected. When the first missing desired-cardinal-neighbor count is zero,
 there is no final-neighbor event to observe: the runner uses `data_ready` as
-the zero-duration boundary and labels it `inferred_data_ready`. Nonzero cohorts
-label the boundary `observed_final_neighbor`.
+the zero-duration boundary and labels it `inferred_data_ready`, even if a
+conflicting `neighbor_ready` timestamp is present. A focused conversion
+fixture supplies both timestamps and requires the data-ready-to-worker-start
+interval and inferred boundary source. Nonzero cohorts label the boundary
+`observed_final_neighbor`.
 
 Nearest-rank P99 for a 20-sample cohort is the observed cohort maximum. It is
 a noisy tail observation, not an interpolated or stable population estimate;
@@ -640,8 +643,16 @@ The moving-camera comparison used the FIFO generation engine at
 priority generation engine at
 `e17b6899cedc0f3200d2a3a4b62c41160dfea0a0` as the repaired engine. Both were
 built with the byte-identical version 4 benchmark sources committed at
-`8bec158`. SHA-256 checks matched for all three benchmark source files in the
-two source trees.
+`8bec1583f0371e8c0df46fc7819091c61a1873e5`. SHA-256 checks matched for all
+three benchmark source files in the two source trees.
+
+The retained assessment source was subsequently hardened at
+`9f08f0bf6344b36c2a8d2becd1bb04baf94fe8d7`. That revision makes the
+zero-neighbor boundary source explicit, adds the conflicting-timestamp
+fixture, validates the controlled overlay backlog before timing, and adds
+exception-safe assessment teardown. The motion numbers below remain
+provenanced to the byte-identical capture source above rather than being
+relabelled as a new timing run.
 
 Both builds used Release, GCC 16.1.1, Linux 7.0.12, and the same 12th Gen Intel
 Core i7-12700 host with 20 logical CPUs. Runs were sequential with otherwise
@@ -715,8 +726,13 @@ were:
 
 | Position | Nonempty chunks | Total non-air blocks | Generation P50/P95/P99 (ms) |
 | --- | ---: | ---: | ---: |
-| Wholly below | 9 / 9 | 291,833 | 16.691 / 19.090 / 19.090 |
-| Wholly above | 0 / 9 | 0 | 15.524 / 17.902 / 17.902 |
+| Wholly below | 9 / 9 | 291,833 | 16.985 / 19.110 / 19.110 |
+| Wholly above | 0 / 9 | 0 | 16.109 / 18.002 / 18.002 |
+
+This rerun used the retained assessment source at
+`9f08f0bf6344b36c2a8d2becd1bb04baf94fe8d7`. With nine nearest-rank samples,
+both P95 and P99 select the observed cohort maximum; they are the same noisy
+tail observation, not independent population-tail estimates.
 
 A radius-1 production-lifecycle run retained the shipped 12-worker six/six
 generation/mesh split while limiting only the representative coordinate set.
@@ -772,6 +788,11 @@ initializes shipped block and texture resources, runs `FrameRenderer`, executes
 the GL field and frame graph, builds the ImGui legend/detail window, submits the
 ImGui draw data, and synchronizes each timed frame with `glFinish`.
 
+The retained runner source is
+`9f08f0bf6344b36c2a8d2becd1bb04baf94fe8d7`, descended from the initial
+assessment at `ce1dd039bf0e37db89aec45efc0cb3acfffc4139` and the isolated CPU
+presentation boundary at `89afbefc2ba4f5b90f66cba396ae23f6b8223f3a`.
+
 Build and run the modes from the same Release build:
 
 ```text
@@ -783,14 +804,25 @@ Build and run the modes from the same Release build:
 The Release CPU comparison used 7,153 tracked records in the 15,625-coordinate
 radius-12 cube, including one installed mesh that exercised `WorldView` draw-
 evidence decoration. It retained a non-quiescent startup backlog of 7,146 load
-owners and five mesh owners while alternating disabled-first and enabled-first
-pairs. Disabled P50/P95/P99 were all below the printed 0.001 ms precision.
-Enabled P50/P95/P99 were 2.040/2.089/2.103 ms, a 2.088 ms P95 increase. This is
-a CPU-side lower bound because GL and ImGui were excluded; it is 12.5% of a
-16.667 ms frame budget. Each of the 120 pairs is emitted as a raw sample with
-its index, execution order, and exact disabled/enabled durations; the summary
-records the Release build, 20 hardware threads, shipped configuration, radius,
-scanned and tracked counts, draw-evidence count, and startup ownership gauges.
+owners, 3,050 canonical source-resolution entries, and five chunks waiting for
+neighbors while alternating disabled-first and enabled-first pairs. All seven
+generation jobs were completed, and the one physical mesh job was completed
+and accepted before timing. Generation pending, in-flight, completion,
+terminal, and canonical-generation gauges were zero; physical mesh in-flight,
+completion, and terminal gauges were zero. The classified field contained
+7,146 waiting-for-data, five waiting-for-neighbor, one voxel-empty, and one
+accepted-nonempty record, with no scheduler-wait, mesh-work, dirty-remesh, or
+terminal record.
+
+Disabled P50/P95/P99 were all below the printed 0.001 ms precision. Enabled
+P50/P95/P99 were 2.045/2.859/2.902 ms, a 2.859 ms P95 increase. This is a
+CPU-side lower bound because GL and ImGui were excluded; the P95 increase is
+17.2% of a 16.667 ms frame budget. Each of the 120 pairs is emitted as a raw
+sample with its index, execution order, and exact disabled/enabled durations;
+the summary records the Release build, 20 hardware threads, shipped
+configuration, radius, scanned and tracked counts, draw-evidence count, exact
+logical backlog, cumulative accounting partitions, and hard-zero physical
+execution gauges.
 
 The same runner reports `startup_overlay_enabled=false`. The focused toggle
 regression verifies that F1 release changes false to true and a second release
@@ -812,6 +844,9 @@ suffixes, overflow, repeated frame options, conflicting modes, and frame counts
 for vertical-only mode are rejected before assets load. Graphics and ImGui
 shutdown, renderer/view release, atlas release, and cached shader destruction
 all occur while the real context remains current, including failure paths.
+The context constructor rolls back GLFW and UI state locally if initialization
+throws, and both assessment executables catch exceptions only outside their
+work-owning scopes so automatic objects unwind before the failure is reported.
 
 #### Scheduler boundary assessment
 

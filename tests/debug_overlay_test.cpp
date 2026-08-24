@@ -123,14 +123,14 @@ TEST_CASE(DebugOverlay_ProductionF1ReleaseTogglesStartupDefault) {
     CHECK(shippedBindings->hasAction("debug_overlay"));
     CHECK_EQ(shippedBindings->keyFor("debug_overlay"), GLFW_KEY_F1);
 
-    Rigel::Input::InputState input;
-    Rigel::Input::loadInputBindings(assets, input);
-
     Rigel::Render::FrameRenderer renderer;
     CHECK(!renderer.debugOverlayEnabled());
 
     Rigel::Input::DebugOverlayListener listener;
     listener.enabled = &renderer.debugOverlayEnabled();
+
+    Rigel::Input::InputState input;
+    Rigel::Input::loadInputBindings(assets, input);
     input.addListener(&listener);
 
     input.handleKeyEvent(GLFW_KEY_F1, GLFW_PRESS);

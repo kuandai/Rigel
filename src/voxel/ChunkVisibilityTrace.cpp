@@ -193,6 +193,10 @@ ChunkVisibilityDurations ChunkVisibilityTraceRecord::durations() const {
             stages,
             ChunkVisibilityStage::NeighborReady,
             ChunkVisibilityStage::MeshEligible),
+        .eligibleToWorkerStart = between(
+            stages,
+            ChunkVisibilityStage::MeshEligible,
+            ChunkVisibilityStage::WorkerStart),
         .schedulerWait = between(
             stages,
             ChunkVisibilityStage::SchedulerWait,
@@ -324,6 +328,26 @@ void ChunkVisibilityTracer::markDataReady(
         changed = true;
     }
     if (changed) {
+        advanceSequence(m_sequence);
+    }
+}
+
+void ChunkVisibilityTracer::observeDependencyCount(
+    const ChunkVisibilityLifecycleKey& key,
+    uint8_t count) {
+    if (!traces(key.coord)) {
+        return;
+    }
+
+    std::lock_guard lock(m_mutex);
+    auto record = findRecord(key);
+    if (record == m_records.end()) {
+        ++m_unmatchedEvents;
+        advanceSequence(m_sequence);
+        return;
+    }
+    if (!record->dependencyCount) {
+        record->dependencyCount = count;
         advanceSequence(m_sequence);
     }
 }

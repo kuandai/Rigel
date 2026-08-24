@@ -64,6 +64,8 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     tracer.mark(lifecycleKey, ChunkVisibilityStage::DataRequest);
     clock.advance(std::chrono::milliseconds(2));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::DataReady);
+    tracer.observeDependencyCount(lifecycleKey, 6);
+    tracer.observeDependencyCount(lifecycleKey, 0);
     clock.advance(std::chrono::milliseconds(3));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::NeighborReady);
     clock.advance(std::chrono::milliseconds(4));
@@ -95,6 +97,7 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     CHECK_EQ(record.kind, ChunkVisibilityLifecycleKind::CameraDemand);
     CHECK(record.meshTask.has_value());
     CHECK_EQ(*record.meshTask, meshTask(99));
+    CHECK_EQ(record.dependencyCount, std::optional<uint8_t>{6});
     CHECK_EQ(
         record.outcome,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
@@ -113,6 +116,7 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     CHECK_EQ(milliseconds(durations.dataWait), 2);
     CHECK_EQ(milliseconds(durations.dependencyWait), 3);
     CHECK_EQ(milliseconds(durations.eligibilityWait), 4);
+    CHECK_EQ(milliseconds(durations.eligibleToWorkerStart), 11);
     CHECK_EQ(milliseconds(durations.schedulerWait), 5);
     CHECK_EQ(milliseconds(durations.poolWait), 6);
     CHECK_EQ(milliseconds(durations.workerExecution), 7);

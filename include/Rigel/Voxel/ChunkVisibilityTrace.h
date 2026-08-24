@@ -112,6 +112,7 @@ struct ChunkVisibilityDurations {
     std::optional<ChunkVisibilityDuration> dataWait;
     std::optional<ChunkVisibilityDuration> dependencyWait;
     std::optional<ChunkVisibilityDuration> eligibilityWait;
+    std::optional<ChunkVisibilityDuration> eligibleToWorkerStart;
     std::optional<ChunkVisibilityDuration> schedulerWait;
     std::optional<ChunkVisibilityDuration> poolWait;
     std::optional<ChunkVisibilityDuration> workerExecution;
@@ -126,6 +127,7 @@ struct ChunkVisibilityTraceRecord {
         ChunkVisibilityLifecycleKind::CameraDemand;
     ChunkVisibilityOrigin origin = ChunkVisibilityOrigin::Unresolved;
     std::optional<ChunkVisibilityMeshTaskIdentity> meshTask;
+    std::optional<uint8_t> dependencyCount;
     ChunkVisibilityStageTimes stages{};
     ChunkVisibilityStageObservations observedStages{};
     ChunkVisibilityOutcome outcome = ChunkVisibilityOutcome::Pending;
@@ -182,6 +184,9 @@ public:
     void markDataReady(
         const ChunkVisibilityLifecycleKey& key,
         ChunkVisibilityOrigin origin);
+    void observeDependencyCount(
+        const ChunkVisibilityLifecycleKey& key,
+        uint8_t count);
     void mark(const ChunkVisibilityLifecycleKey& key,
               ChunkVisibilityStage stage);
     void mark(const ChunkVisibilityLifecycleKey& key,

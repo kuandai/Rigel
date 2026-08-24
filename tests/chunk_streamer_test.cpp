@@ -7783,6 +7783,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIncludesDirtyMeshCapacityWait) {
     CHECK(*meshEligible <= *schedulerWait);
     CHECK(*schedulerWait <= *poolSubmit);
     const auto durations = record.durations();
+    CHECK_EQ(record.dependencyCount, std::optional<uint8_t>{0});
     CHECK(durations.schedulerWait.has_value());
     CHECK_EQ(*durations.schedulerWait, std::chrono::milliseconds(25));
 }
@@ -7852,6 +7853,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) 
     CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
         hasDependencyPendingMesh(streamer, coord));
     CHECK_EQ(records.size(), static_cast<size_t>(1));
+    CHECK_EQ(records.front().dependencyCount, std::optional<uint8_t>{1});
     const auto neighborReady =
         records.front().stage(ChunkVisibilityStage::NeighborReady);
     const auto schedulerWait =
@@ -7945,6 +7947,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceOwnDataReadyIsNotNeighborReady) {
 
     records = tracer->snapshot();
     CHECK_EQ(records.front().origin, ChunkVisibilityOrigin::Persisted);
+    CHECK_EQ(records.front().dependencyCount, std::optional<uint8_t>{0});
     CHECK(records.front().stage(ChunkVisibilityStage::DataReady).has_value());
     CHECK(!records.front().stage(ChunkVisibilityStage::NeighborReady).has_value());
     CHECK(records.front().stage(ChunkVisibilityStage::MeshEligible).has_value());

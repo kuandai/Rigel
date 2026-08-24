@@ -2742,8 +2742,7 @@ void ChunkStreamer::markVisibilityMeshEligible(
         m_meshInFlight.find(coord) != m_meshInFlight.end();
     const bool remeshRequested = chunk->isDirty() &&
         (isMeshed || meshInFlight);
-    if ((!initialMeshRequested && !remeshRequested) || chunk->isEmpty() ||
-        !hasAllNeighborsLoaded(coord)) {
+    if ((!initialMeshRequested && !remeshRequested) || chunk->isEmpty()) {
         return;
     }
     if (initialMeshRequested &&
@@ -2767,6 +2766,13 @@ void ChunkStreamer::markVisibilityMeshEligible(
     }
     auto& pending = m_pendingVisibilityTraces[visibilityKindIndex(kind)];
     if (!pending || pending->key.coord != coord) {
+        return;
+    }
+
+    const uint8_t dependencyCount = missingMeshDependencyCount(coord);
+    pending->tracer->observeDependencyCount(
+        pending->key, dependencyCount);
+    if (dependencyCount != 0) {
         return;
     }
 
@@ -3447,10 +3453,11 @@ void ChunkStreamer::ensureThreadPool() {
     }
 }
 
-bool ChunkStreamer::hasAllNeighborsLoaded(ChunkCoord coord) const {
+uint8_t ChunkStreamer::missingMeshDependencyCount(ChunkCoord coord) const {
     if (!m_chunkManager) {
-        return false;
+        return DirectionCount;
     }
+    uint8_t missing = 0;
     for (int i = 0; i < DirectionCount; ++i) {
         Direction dir = static_cast<Direction>(i);
         int dx = 0;
@@ -3464,9 +3471,13 @@ bool ChunkStreamer::hasAllNeighborsLoaded(ChunkCoord coord) const {
         if (m_desiredSet.find(neighbor) == m_desiredSet.end()) {
             continue;
         }
-        return false;
+        ++missing;
     }
-    return true;
+    return missing;
+}
+
+bool ChunkStreamer::hasAllNeighborsLoaded(ChunkCoord coord) const {
+    return missingMeshDependencyCount(coord) == 0;
 }
 
 } // namespace Rigel::Voxel

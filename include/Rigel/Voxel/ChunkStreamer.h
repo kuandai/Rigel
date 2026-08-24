@@ -466,6 +466,7 @@ private:
                      MeshRequestKind kind,
                      bool prioritized = false);
     void ensureThreadPool();
+    uint8_t missingMeshDependencyCount(ChunkCoord coord) const;
     bool hasAllNeighborsLoaded(ChunkCoord coord) const;
     StreamingDiagnosticSnapshot collectDiagnostics();
     void refreshDiagnostics(bool advanceWindow);

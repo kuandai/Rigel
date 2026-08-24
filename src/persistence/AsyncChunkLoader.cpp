@@ -33,7 +33,7 @@ void advanceFailureVersion(uint64_t& version) {
 }
 constexpr auto kInitialRegionRetryDelay = std::chrono::milliseconds(100);
 constexpr auto kMaxRegionRetryDelay = std::chrono::seconds(2);
-constexpr size_t kUnboundedSpeculativeRegionJobLimit = 64;
+constexpr size_t kZeroCapSpeculativeRegionQueueLimit = 64;
 
 uint64_t nanosecondsBetween(std::chrono::steady_clock::time_point start,
                             std::chrono::steady_clock::time_point end) {
@@ -814,7 +814,7 @@ bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key,
     if (origin == RegionJobOrigin::Speculative) {
         const size_t speculativeLimit = m_maxInFlightRegions > 0
             ? m_maxInFlightRegions
-            : kUnboundedSpeculativeRegionJobLimit;
+            : kZeroCapSpeculativeRegionQueueLimit;
         if (m_queuedSpeculativeRegionJobCount >= speculativeLimit ||
             (m_maxInFlightRegions > 0 &&
              m_regionJobs.size() >= m_maxInFlightRegions)) {
@@ -914,6 +914,15 @@ bool AsyncChunkLoader::cancelQueuedSpeculativeRegionLoad() {
     return false;
 }
 
+bool AsyncChunkLoader::reserveQueuedSpeculativeRegionSlot() {
+    if (m_maxInFlightRegions != 0 ||
+        m_queuedSpeculativeRegionJobCount <
+            kZeroCapSpeculativeRegionQueueLimit) {
+        return true;
+    }
+    return cancelQueuedSpeculativeRegionLoad();
+}
+
 bool AsyncChunkLoader::yieldSubmittedSpeculativeRegionLoad() {
     ++m_speculativeYieldCalls;
     size_t visits = 0;
@@ -941,8 +950,14 @@ bool AsyncChunkLoader::yieldSubmittedSpeculativeRegionLoad() {
         --m_speculativeOwnedDispatchedRegionJobCount;
         job->poolJobId = 0;
         job->started = false;
-        ++m_queuedSpeculativeRegionJobCount;
-        m_speculativeRegionLoads.push_front(job->key);
+        if (reserveQueuedSpeculativeRegionSlot()) {
+            ++m_queuedSpeculativeRegionJobCount;
+            m_speculativeRegionLoads.push_front(job->key);
+        } else {
+            m_regionJobs.erase(job->key);
+            m_speculativeRegionMetrics.logicalPreStartCancellations.fetch_add(
+                1, std::memory_order_relaxed);
+        }
         regionMetricCounters(job->origin).successfulPoolYields.fetch_add(
             1, std::memory_order_relaxed);
         m_speculativeYieldCandidateVisits += visits;
@@ -1031,8 +1046,14 @@ void AsyncChunkLoader::cancelQueuedDirectRegionLoad(const RegionKey& key) {
         }
         if (!jobIt->second->started) {
             eraseQueuedRegion(m_directRegionLoads, key);
-            ++m_queuedSpeculativeRegionJobCount;
-            m_speculativeRegionLoads.push_back(key);
+            if (reserveQueuedSpeculativeRegionSlot()) {
+                ++m_queuedSpeculativeRegionJobCount;
+                m_speculativeRegionLoads.push_back(key);
+            } else {
+                m_regionJobs.erase(jobIt);
+                m_speculativeRegionMetrics.logicalPreStartCancellations.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
         }
         return;
     }

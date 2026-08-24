@@ -168,6 +168,7 @@ private:
     void startRegionLoad(const RegionKey& key,
                          const std::shared_ptr<RegionJobState>& jobState);
     bool cancelQueuedSpeculativeRegionLoad();
+    bool reserveQueuedSpeculativeRegionSlot();
     bool yieldSubmittedSpeculativeRegionLoad();
     void trackSubmittedSpeculativeRegionJob(
         const std::shared_ptr<RegionJobState>& job);

@@ -208,9 +208,17 @@ private:
     };
 
     enum class GenerationExecutorPhase : uint8_t {
-        PoolQueued,
-        Running,
-        ResultReady
+        Submitting,
+        ExecutorQueued,
+        WorkerRunning,
+        ResultPublished
+    };
+
+    struct GenerationFlight {
+        std::atomic_bool cancelled{false};
+        std::atomic<GenerationExecutorPhase> phase{
+            GenerationExecutorPhase::Submitting};
+        std::atomic_bool traceSubmissionRecorded{false};
     };
 
     struct GenResult {
@@ -222,8 +230,7 @@ private:
         std::string error;
         bool cancelled = false;
         bool failed = false;
-        std::shared_ptr<std::atomic_bool> cancelToken;
-        std::shared_ptr<std::atomic<GenerationExecutorPhase>> executorPhase;
+        std::shared_ptr<GenerationFlight> flight;
         std::optional<ChunkVisibilityLifecycleKey> visibilityTrace;
         std::shared_ptr<ChunkVisibilityTracer> visibilityTracer;
     };
@@ -346,11 +353,10 @@ private:
     detail::ConcurrentQueue<MeshResult> m_meshComplete;
     std::unordered_map<ChunkCoord, ChunkState, ChunkCoordHash> m_states;
     std::unordered_map<ChunkCoord, ChunkLoadRequestId, ChunkCoordHash> m_loadPending;
-    std::unordered_map<ChunkCoord, std::shared_ptr<std::atomic_bool>, ChunkCoordHash> m_genCancel;
     std::unordered_map<
         ChunkCoord,
-        std::shared_ptr<std::atomic<GenerationExecutorPhase>>,
-        ChunkCoordHash> m_generationExecutorPhases;
+        std::shared_ptr<GenerationFlight>,
+        ChunkCoordHash> m_generationFlights;
     std::unordered_map<ChunkCoord, MeshInFlight, ChunkCoordHash> m_meshInFlight;
     std::unordered_map<ChunkCoord, uint32_t, ChunkCoordHash> m_countedMeshRetryRevisions;
     std::deque<ChunkCoord> m_loadGenQueue;
@@ -409,6 +415,8 @@ private:
     uint64_t m_nextEvictionRetrySequence = 0;
     std::function<void()> m_generationStartCallback;
     std::function<void(ChunkCoord)> m_generationStartObserver;
+    std::function<void()> m_generationResultReadyToPublishCallback;
+    std::function<void(ChunkCoord)> m_generationResultPublishedObserver;
     std::function<void()> m_meshBuildStartCallback;
     WorkMetrics m_workMetrics;
     StreamingDiagnosticSnapshot m_diagnostics;

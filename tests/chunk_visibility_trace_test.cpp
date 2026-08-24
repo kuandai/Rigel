@@ -69,7 +69,8 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     clock.advance(std::chrono::milliseconds(3));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::GenerationCapacityWait);
     clock.advance(std::chrono::milliseconds(4));
-    tracer.mark(lifecycleKey, ChunkVisibilityStage::GenerationPoolSubmit);
+    tracer.mark(
+        lifecycleKey, ChunkVisibilityStage::GenerationExecutorSubmit);
     clock.advance(std::chrono::milliseconds(5));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::GenerationWorkerStart);
     clock.advance(std::chrono::milliseconds(6));
@@ -80,12 +81,24 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     tracer.mark(lifecycleKey, ChunkVisibilityStage::DataReady);
     tracer.observeMissingDesiredCardinalNeighborCount(lifecycleKey, 6);
     tracer.observeMissingDesiredCardinalNeighborCount(lifecycleKey, 0);
-    tracer.observeBlockingDesiredCardinalNeighbor(
-        lifecycleKey,
-        {{2, 2, 3}, ChunkVisibilityBlockerState::GenerationPoolQueued});
-    tracer.observeBlockingDesiredCardinalNeighbor(
-        lifecycleKey,
-        {{0, 2, 3}, ChunkVisibilityBlockerState::Ready});
+    ChunkVisibilityBlockingNeighborSnapshot firstBlockers;
+    firstBlockers.count = 1;
+    firstBlockers.neighbors[0] = {
+        Direction::PosX,
+        {2, 2, 3},
+        true,
+        ChunkVisibilityBlockerState::GenerationExecutorQueued};
+    tracer.observeBlockingDesiredCardinalNeighbors(
+        lifecycleKey, firstBlockers);
+    ChunkVisibilityBlockingNeighborSnapshot currentBlockers;
+    currentBlockers.count = 1;
+    currentBlockers.neighbors[0] = {
+        Direction::NegX,
+        {0, 2, 3},
+        true,
+        ChunkVisibilityBlockerState::ReadyResident};
+    tracer.observeBlockingDesiredCardinalNeighbors(
+        lifecycleKey, currentBlockers);
     clock.advance(std::chrono::milliseconds(3));
     tracer.mark(lifecycleKey, ChunkVisibilityStage::NeighborReady);
     clock.advance(std::chrono::milliseconds(4));
@@ -120,19 +133,13 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     CHECK_EQ(
         record.firstObservedMissingDesiredCardinalNeighborCount,
         std::optional<uint8_t>{6});
-    const ChunkVisibilityBlockingNeighbor expectedBlocker{
-        {2, 2, 3},
-        ChunkVisibilityBlockerState::GenerationPoolQueued};
     CHECK_EQ(
-        record.firstObservedBlockingDesiredCardinalNeighbor,
-        expectedBlocker);
-    const ChunkVisibilityBlockingNeighbor currentBlocker{
-        {0, 2, 3},
-        ChunkVisibilityBlockerState::Ready};
-    CHECK_EQ(record.blockingDesiredCardinalNeighbor, currentBlocker);
+        record.firstObservedBlockingDesiredCardinalNeighbors,
+        firstBlockers);
+    CHECK_EQ(record.blockingDesiredCardinalNeighbors, currentBlockers);
     CHECK_EQ(
-        tracer.blockingDesiredCardinalNeighbor(lifecycleKey),
-        currentBlocker);
+        tracer.blockingDesiredCardinalNeighbors(lifecycleKey),
+        currentBlockers);
     CHECK_EQ(
         record.outcome,
         ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
@@ -149,7 +156,7 @@ TEST_CASE(ChunkVisibilityTrace_CapturesOrderedStagesAndDerivedDurations) {
     const auto durations = record.durations();
     CHECK_EQ(milliseconds(durations.desiredToDataRequest), 1);
     CHECK_EQ(milliseconds(durations.dataWait), 23);
-    CHECK_EQ(milliseconds(durations.generationQueueWait), 7);
+    CHECK_EQ(milliseconds(durations.generationQueueWait), 3);
     CHECK_EQ(milliseconds(durations.generationCapacityWait), 4);
     CHECK_EQ(milliseconds(durations.generationPoolWait), 5);
     CHECK_EQ(milliseconds(durations.generationExecution), 6);
@@ -218,6 +225,99 @@ TEST_CASE(ChunkVisibilityTrace_DistinguishesBuildAndDrawOutcomes) {
         records[4].drawOutcome,
         ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
     CHECK(!records[4].stage(ChunkVisibilityStage::FirstDraw).has_value());
+}
+
+TEST_CASE(ChunkVisibilityTrace_GenerationQueueWaitEndsAtExecutorWithoutCapacityWait) {
+    ManualClock clock;
+    ChunkVisibilityTracer tracer(
+        {{1, 2, 3}, 1},
+        [&]() { return clock.now(); });
+    const auto lifecycleKey = *tracer.begin(
+        ChunkVisibilityLifecycleKind::CameraDemand);
+
+    tracer.mark(
+        lifecycleKey, ChunkVisibilityStage::GenerationSchedulerPending);
+    clock.advance(std::chrono::milliseconds(7));
+    tracer.mark(
+        lifecycleKey, ChunkVisibilityStage::GenerationExecutorSubmit);
+
+    const auto record = tracer.latestRecord();
+    CHECK(record.has_value());
+    const auto durations = record->durations();
+    CHECK_EQ(milliseconds(durations.generationQueueWait), 7);
+    CHECK(!durations.generationCapacityWait.has_value());
+}
+
+TEST_CASE(ChunkVisibilityTrace_TerminalLifecycleRejectsLateMutations) {
+    ManualClock clock;
+    ChunkVisibilityTracer tracer(
+        {{1, 2, 3}, 4},
+        [&]() { return clock.now(); });
+    const std::array terminalOutcomes{
+        ChunkVisibilityOutcome::CameraLeft,
+        ChunkVisibilityOutcome::Reset,
+        ChunkVisibilityOutcome::GeneratorReplaced,
+        ChunkVisibilityOutcome::TracerReplaced};
+
+    for (const auto outcome : terminalOutcomes) {
+        const auto lifecycleKey = *tracer.begin(
+            ChunkVisibilityLifecycleKind::CameraDemand);
+        tracer.mark(lifecycleKey, ChunkVisibilityStage::Desired);
+        tracer.complete(lifecycleKey, outcome);
+        const auto terminalMeasurement = tracer.measurement();
+        const auto terminal = terminalMeasurement.records.back();
+        const size_t terminalClockReads = clock.reads();
+
+        ChunkVisibilityBlockingNeighborSnapshot blockers;
+        blockers.count = 1;
+        blockers.neighbors[0] = {
+            Direction::PosX,
+            {2, 2, 3},
+            true,
+            ChunkVisibilityBlockerState::GenerationWorkerRunning};
+        tracer.bindMeshTask(lifecycleKey, meshTask(400));
+        tracer.markDataReady(
+            lifecycleKey, ChunkVisibilityOrigin::Generated);
+        tracer.observeMissingDesiredCardinalNeighborCount(lifecycleKey, 1);
+        tracer.observeBlockingDesiredCardinalNeighbors(
+            lifecycleKey, blockers);
+        tracer.mark(
+            lifecycleKey,
+            {
+                ChunkVisibilityStage::GenerationWorkerStart,
+                ChunkVisibilityStage::GenerationWorkerFinish,
+                ChunkVisibilityStage::GenerationReady
+            });
+        tracer.complete(
+            lifecycleKey,
+            ChunkVisibilityOutcome::AcceptedNonemptyGeometry);
+        tracer.observeDraw(lifecycleKey);
+        tracer.observeMeshUnavailable(
+            lifecycleKey,
+            ChunkVisibilityDrawOutcome::MeshRemovedBeforeDraw);
+
+        const auto after = tracer.measurement();
+        const auto& retained = after.records.back();
+        CHECK_EQ(after.sequence, terminalMeasurement.sequence);
+        CHECK_EQ(clock.reads(), terminalClockReads);
+        CHECK_EQ(retained.outcome, outcome);
+        CHECK_EQ(retained.origin, terminal.origin);
+        CHECK_EQ(retained.meshTask, terminal.meshTask);
+        CHECK_EQ(retained.stages, terminal.stages);
+        CHECK_EQ(retained.observedStages, terminal.observedStages);
+        CHECK_EQ(
+            retained.firstObservedMissingDesiredCardinalNeighborCount,
+            terminal.firstObservedMissingDesiredCardinalNeighborCount);
+        CHECK_EQ(
+            retained.firstObservedBlockingDesiredCardinalNeighbors,
+            terminal.firstObservedBlockingDesiredCardinalNeighbors);
+        CHECK_EQ(
+            retained.blockingDesiredCardinalNeighbors,
+            terminal.blockingDesiredCardinalNeighbors);
+        CHECK_EQ(retained.terminalTime, terminal.terminalTime);
+        CHECK_EQ(retained.drawOutcome, terminal.drawOutcome);
+        CHECK_EQ(retained.drawTerminalTime, terminal.drawTerminalTime);
+    }
 }
 
 TEST_CASE(ChunkVisibilityTrace_LifecycleKeyIsolatesReplacementTask) {

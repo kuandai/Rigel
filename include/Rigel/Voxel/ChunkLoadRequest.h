@@ -19,10 +19,26 @@ enum class ChunkLoadOutcome : uint8_t {
     Failed
 };
 
-enum class ChunkLoadExecutionState : uint8_t {
-    Pending,
-    Running,
-    FailedRetrying
+enum class ChunkLoadExecutionOwner : uint8_t {
+    Region,
+    Payload
+};
+
+enum class ChunkLoadExecutionPhase : uint8_t {
+    SchedulerPending,
+    PoolQueued,
+    WorkerRunning,
+    ResultPublished,
+    RetryWaiting,
+    TerminalFailed
+};
+
+struct ChunkLoadExecutionState {
+    ChunkLoadExecutionOwner owner = ChunkLoadExecutionOwner::Region;
+    ChunkLoadExecutionPhase phase =
+        ChunkLoadExecutionPhase::SchedulerPending;
+
+    bool operator==(const ChunkLoadExecutionState&) const = default;
 };
 
 using ChunkLoadRequestId = uint64_t;

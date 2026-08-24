@@ -21,6 +21,7 @@
 #include <mutex>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -58,6 +59,12 @@ struct AsyncChunkLoaderTestAccess {
         loader.m_payloadBuildStartCallback = std::move(callback);
     }
 
+    static void setPayloadResultPublishedObserver(
+        AsyncChunkLoader& loader,
+        std::function<void(Voxel::ChunkCoord)> observer) {
+        loader.m_payloadResultPublishedObserver = std::move(observer);
+    }
+
     static void setIoPoolStopStartCallback(AsyncChunkLoader& loader,
                                            std::function<void()> callback) {
         loader.m_ioPoolStopStartCallback = std::move(callback);
@@ -72,6 +79,12 @@ struct AsyncChunkLoaderTestAccess {
         AsyncChunkLoader& loader,
         std::function<void()> job) {
         return loader.m_ioPool.enqueue(std::move(job));
+    }
+
+    static Voxel::detail::ThreadPool::JobId enqueueWorkerPoolJob(
+        AsyncChunkLoader& loader,
+        std::function<void()> job) {
+        return loader.m_workerPool.enqueue(std::move(job));
     }
 
     static void gateNextIoPoolEnqueueReturn(
@@ -223,7 +236,7 @@ struct AsyncChunkLoaderTestAccess {
                                        Voxel::ChunkLoadRequestId requestId) {
         auto it = loader.m_payloadInFlight.find(coord);
         return it != loader.m_payloadInFlight.end() &&
-            it->second.requestId == requestId;
+            it->second->request.requestId == requestId;
     }
 
     static void setRetryClock(
@@ -962,6 +975,8 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     MemoryContext ctx;
     saveRegionForPayload(ctx.service, ctx.context, "rigel:default", coord, payload);
 
+    std::optional<ChunkCoord> publishedPayloadCoord;
+    std::optional<ChunkLoadExecutionState> publishedPayloadState;
     AsyncChunkLoader loader(
         ctx.service,
         ctx.context,
@@ -971,6 +986,14 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
         0,
         1,
         generator);
+    loader.setPrefetchRadius(0);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setPayloadResultPublishedObserver(
+            loader,
+            [&](ChunkCoord publishedCoord) {
+                publishedPayloadCoord = publishedCoord;
+                publishedPayloadState = loader.executionState(coord);
+            });
 
     const ChunkLoadRequest request = makeLoadRequest(coord);
     CHECK(!loader.executionState(coord).has_value());
@@ -978,9 +1001,17 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK(loader.isPending(coord));
     CHECK_EQ(
         loader.executionState(coord),
-        ChunkLoadExecutionState::Running);
+        ChunkLoadExecutionState({
+            ChunkLoadExecutionOwner::Region,
+            ChunkLoadExecutionPhase::ResultPublished}));
 
     auto resolved = loader.drainCompletions(1);
+
+    const auto inlinePayloadPublished = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Payload,
+        ChunkLoadExecutionPhase::ResultPublished};
+    CHECK_EQ(publishedPayloadCoord, coord);
+    CHECK_EQ(publishedPayloadState, inlinePayloadPublished);
 
     Chunk* loaded = world.chunkManager().getChunk(coord);
     CHECK(loaded != nullptr);
@@ -993,6 +1024,130 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK_EQ(resolved.front().coord, coord);
     CHECK_EQ(resolved.front().requestId, request.requestId);
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
+}
+
+TEST_CASE(AsyncChunkLoader_ExecutionStateTracksPhysicalRegionAndPayloadOwners) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    const BlockID persisted =
+        registerTestBlock(registry, "rigel:execution_state_payload");
+    const ChunkCoord active{0, 0, 0};
+    const ChunkCoord deferred{64, 0, 0};
+    MemoryContext ctx;
+    saveRegionForPayload(
+        ctx.service,
+        ctx.context,
+        "rigel:default",
+        active,
+        buildPayload(
+            active, registry, {persisted}, false, std::nullopt, false));
+    saveRegionForPayload(
+        ctx.service,
+        ctx.context,
+        "rigel:default",
+        deferred,
+        buildPayload(
+            deferred, registry, {persisted}, false, std::nullopt, false));
+
+    auto ioGate = std::make_shared<LoaderWorkGate>();
+    auto workerGate = std::make_shared<LoaderWorkGate>();
+    auto regionGate = std::make_shared<LoaderWorkGate>();
+    auto payloadGate = std::make_shared<LoaderWorkGate>();
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        1,
+        1,
+        1,
+        generator);
+    LoaderWorkRelease releaseIoAndRegion(ioGate, regionGate);
+    LoaderWorkRelease releaseWorkerAndPayload(workerGate, payloadGate);
+    loader.setPrefetchRadius(0);
+    loader.setLoadQueueLimit(1);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setRegionLoadStartCallback(
+            loader, [regionGate]() { regionGate->enterAndWait(); });
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setPayloadBuildStartCallback(
+            loader, [payloadGate]() { payloadGate->enterAndWait(); });
+    CHECK_NE(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            enqueueIoPoolJob(
+                loader, [ioGate]() { ioGate->enterAndWait(); }),
+        static_cast<Rigel::Voxel::detail::ThreadPool::JobId>(0));
+    CHECK(ioGate->waitUntilEntered());
+    CHECK_NE(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            enqueueWorkerPoolJob(
+                loader, [workerGate]() { workerGate->enterAndWait(); }),
+        static_cast<Rigel::Voxel::detail::ThreadPool::JobId>(0));
+    CHECK(workerGate->waitUntilEntered());
+
+    CHECK_EQ(
+        loader.request(makeLoadRequest(active)),
+        ChunkLoadRequestResult::Queued);
+    const auto regionQueued = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Region,
+        ChunkLoadExecutionPhase::PoolQueued};
+    CHECK_EQ(loader.executionState(active), regionQueued);
+
+    CHECK_EQ(
+        loader.request(makeLoadRequest(deferred)),
+        ChunkLoadRequestResult::Deferred);
+    const auto schedulerPending = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Region,
+        ChunkLoadExecutionPhase::SchedulerPending};
+    CHECK_EQ(loader.executionState(deferred), schedulerPending);
+    loader.cancel(deferred);
+    CHECK(!loader.executionState(deferred).has_value());
+
+    ioGate->release();
+    CHECK(regionGate->waitUntilEntered());
+    const auto regionRunning = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Region,
+        ChunkLoadExecutionPhase::WorkerRunning};
+    CHECK_EQ(loader.executionState(active), regionRunning);
+
+    regionGate->release();
+    CHECK(waitForRegionCompletion(loader));
+    const auto regionPublished = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Region,
+        ChunkLoadExecutionPhase::ResultPublished};
+    CHECK_EQ(loader.executionState(active), regionPublished);
+
+    CHECK(loader.drainCompletions(1).empty());
+    const auto payloadQueued = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Payload,
+        ChunkLoadExecutionPhase::PoolQueued};
+    CHECK_EQ(loader.executionState(active), payloadQueued);
+    workerGate->release();
+    CHECK(payloadGate->waitUntilEntered());
+    const auto payloadRunning = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Payload,
+        ChunkLoadExecutionPhase::WorkerRunning};
+    CHECK_EQ(loader.executionState(active), payloadRunning);
+
+    payloadGate->release();
+    CHECK(waitForPayloadCompletions(loader, 1));
+    const auto payloadPublished = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Payload,
+        ChunkLoadExecutionPhase::ResultPublished};
+    CHECK_EQ(loader.executionState(active), payloadPublished);
+
+    const auto completions = loader.drainCompletions(1);
+    CHECK_EQ(completions.size(), static_cast<size_t>(1));
+    CHECK_EQ(completions.front().coord, active);
+    CHECK_EQ(completions.front().outcome, ChunkLoadOutcome::Loaded);
+    CHECK(!loader.executionState(active).has_value());
+    CHECK(world.chunkManager().getChunk(active) != nullptr);
+    CHECK(loader.workCount().empty());
 }
 
 TEST_CASE(AsyncChunkLoader_Request_Completes_Random) {
@@ -1403,6 +1558,10 @@ void checkCancelledPayloadCannotCompleteReplacement(
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
     CHECK_EQ(loader.workCount().started, static_cast<uint64_t>(2));
+    const auto replacementWaiting = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Payload,
+        ChunkLoadExecutionPhase::SchedulerPending};
+    CHECK_EQ(loader.executionState(coord), replacementWaiting);
 
     stalePayloadGate->release();
     CHECK(waitForPayloadCompletions(loader, 1));
@@ -1413,6 +1572,10 @@ void checkCancelledPayloadCannotCompleteReplacement(
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
     CHECK(!world.chunkManager().hasChunk(coord));
+    const auto replacementRunning = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Payload,
+        ChunkLoadExecutionPhase::WorkerRunning};
+    CHECK_EQ(loader.executionState(coord), replacementRunning);
 
     replacementPayloadGate->release();
     CHECK(waitForPayloadCompletions(loader, 1));
@@ -2398,6 +2561,10 @@ TEST_CASE(AsyncChunkLoader_RegionRetryWaitUsesLoadCapacity) {
     CHECK_EQ(failingStorage->readAttempts(), static_cast<size_t>(4));
     CHECK(loader.isPending(retryCoord));
     CHECK(loader.isPending(activeCoord));
+    const auto retryWaiting = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Region,
+        ChunkLoadExecutionPhase::RetryWaiting};
+    CHECK_EQ(loader.executionState(retryCoord), retryWaiting);
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(2));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(1));
 
@@ -2425,6 +2592,63 @@ TEST_CASE(AsyncChunkLoader_RegionRetryWaitUsesLoadCapacity) {
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
     verifyPayloadMatches(*world.chunkManager().getChunk(retryCoord), retryPayload);
+}
+
+TEST_CASE(AsyncChunkLoader_PayloadFailureReportsPayloadTerminalOwner) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto& registry = resources.registry();
+    auto generator = makeGenerator(registry);
+    world.setGenerator(generator);
+
+    const BlockID persisted =
+        registerTestBlock(registry, "rigel:payload_terminal_owner");
+    const ChunkCoord coord{0, 0, 0};
+    MemoryContext ctx;
+    saveRegionForPayload(
+        ctx.service,
+        ctx.context,
+        "rigel:default",
+        coord,
+        buildPayload(
+            coord, registry, {persisted}, false, std::nullopt, false));
+
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        1,
+        generator);
+    loader.setPrefetchRadius(0);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setPayloadBuildStartCallback(loader, []() {
+            throw std::runtime_error("injected payload construction failure");
+        });
+
+    CHECK_EQ(
+        loader.request(makeLoadRequest(coord)),
+        ChunkLoadRequestResult::Queued);
+    CHECK(loader.drainCompletions(1).empty());
+
+    const auto payloadTerminal = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Payload,
+        ChunkLoadExecutionPhase::TerminalFailed};
+    CHECK_EQ(loader.executionState(coord), payloadTerminal);
+    CHECK(loader.isPending(coord));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(1));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().terminalErrors, static_cast<size_t>(1));
+    CHECK(loader.workCount().lastError.find("injected payload construction failure") !=
+          std::string::npos);
+
+    loader.cancel(coord);
+    CHECK(!loader.executionState(coord).has_value());
+    CHECK(!loader.isPending(coord));
+    CHECK(loader.workCount().empty());
 }
 
 TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
@@ -2488,6 +2712,10 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
     CHECK(resolved.empty());
     CHECK(loader.isPending(coord));
     CHECK_EQ(loader.workCount().terminalErrors, static_cast<size_t>(1));
+    const auto regionTerminal = ChunkLoadExecutionState{
+        ChunkLoadExecutionOwner::Region,
+        ChunkLoadExecutionPhase::TerminalFailed};
+    CHECK_EQ(loader.executionState(coord), regionTerminal);
     CHECK(loader.workCount().lastError.find("(0, 0, 0)") != std::string::npos);
     CHECK(loader.workCount().lastError.find("repair") != std::string::npos);
 

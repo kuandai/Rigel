@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Block.h"
 #include "ChunkCoord.h"
 
 #include <array>
@@ -22,7 +23,7 @@ enum class ChunkVisibilityStage : uint8_t {
     DataRequest,
     GenerationSchedulerPending,
     GenerationCapacityWait,
-    GenerationPoolSubmit,
+    GenerationExecutorSubmit,
     GenerationWorkerStart,
     GenerationWorkerFinish,
     GenerationReady,
@@ -77,17 +78,26 @@ enum class ChunkVisibilityOrigin : uint8_t {
 std::string_view chunkVisibilityOriginName(ChunkVisibilityOrigin origin);
 
 enum class ChunkVisibilityBlockerState : uint8_t {
-    LoadPending,
-    LoadRunning,
-    LoadFailedRetrying,
+    LoadRegionSchedulerPending,
+    LoadRegionPoolQueued,
+    LoadRegionWorkerRunning,
+    LoadRegionResultPublished,
+    LoadRegionRetryWaiting,
+    LoadRegionTerminalFailed,
+    LoadPayloadSchedulerPending,
+    LoadPayloadPoolQueued,
+    LoadPayloadWorkerRunning,
+    LoadPayloadResultPublished,
+    LoadPayloadTerminalFailed,
     GenerationSchedulerPending,
     GenerationCapacityWaiting,
-    GenerationPoolQueued,
-    GenerationRunning,
-    GenerationResultReady,
-    GenerationFailedRetrying,
-    Ready,
-    NoLongerDesired
+    GenerationExecutorQueued,
+    GenerationWorkerRunning,
+    GenerationResultPublished,
+    GenerationTerminalFailed,
+    ReadyResident,
+    NoLongerRequired,
+    Unowned
 };
 
 std::string_view chunkVisibilityBlockerStateName(
@@ -150,11 +160,21 @@ struct ChunkVisibilityDurations {
 };
 
 struct ChunkVisibilityBlockingNeighbor {
+    Direction direction = Direction::PosX;
     ChunkCoord coord{};
+    bool required = false;
     ChunkVisibilityBlockerState state =
         ChunkVisibilityBlockerState::GenerationSchedulerPending;
 
     bool operator==(const ChunkVisibilityBlockingNeighbor&) const = default;
+};
+
+struct ChunkVisibilityBlockingNeighborSnapshot {
+    std::array<ChunkVisibilityBlockingNeighbor, DirectionCount> neighbors{};
+    uint8_t count = 0;
+
+    bool operator==(const ChunkVisibilityBlockingNeighborSnapshot&) const =
+        default;
 };
 
 struct ChunkVisibilityTraceRecord {
@@ -164,10 +184,10 @@ struct ChunkVisibilityTraceRecord {
     ChunkVisibilityOrigin origin = ChunkVisibilityOrigin::Unresolved;
     std::optional<ChunkVisibilityMeshTaskIdentity> meshTask;
     std::optional<uint8_t> firstObservedMissingDesiredCardinalNeighborCount;
-    std::optional<ChunkVisibilityBlockingNeighbor>
-        firstObservedBlockingDesiredCardinalNeighbor;
-    std::optional<ChunkVisibilityBlockingNeighbor>
-        blockingDesiredCardinalNeighbor;
+    std::optional<ChunkVisibilityBlockingNeighborSnapshot>
+        firstObservedBlockingDesiredCardinalNeighbors;
+    std::optional<ChunkVisibilityBlockingNeighborSnapshot>
+        blockingDesiredCardinalNeighbors;
     ChunkVisibilityStageTimes stages{};
     ChunkVisibilityStageObservations observedStages{};
     ChunkVisibilityOutcome outcome = ChunkVisibilityOutcome::Pending;
@@ -227,11 +247,11 @@ public:
     void observeMissingDesiredCardinalNeighborCount(
         const ChunkVisibilityLifecycleKey& key,
         uint8_t count);
-    void observeBlockingDesiredCardinalNeighbor(
+    void observeBlockingDesiredCardinalNeighbors(
         const ChunkVisibilityLifecycleKey& key,
-        ChunkVisibilityBlockingNeighbor neighbor);
-    std::optional<ChunkVisibilityBlockingNeighbor>
-        blockingDesiredCardinalNeighbor(
+        ChunkVisibilityBlockingNeighborSnapshot neighbors);
+    std::optional<ChunkVisibilityBlockingNeighborSnapshot>
+        blockingDesiredCardinalNeighbors(
             const ChunkVisibilityLifecycleKey& key) const;
     void mark(const ChunkVisibilityLifecycleKey& key,
               ChunkVisibilityStage stage);

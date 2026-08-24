@@ -99,6 +99,8 @@ private:
         Voxel::detail::ThreadPool::JobId poolJobId = 0;
         uint64_t poolSubmissionCount = 0;
         std::atomic<bool> speculativePoolPending{false};
+        std::atomic<Voxel::ChunkLoadExecutionPhase> phase{
+            Voxel::ChunkLoadExecutionPhase::SchedulerPending};
         bool demanded = false;
         bool started = false;
     };
@@ -123,6 +125,12 @@ private:
         bool retryable = false;
     };
 
+    struct PayloadJobState {
+        ChunkRequestIdentity request;
+        std::atomic<Voxel::ChunkLoadExecutionPhase> phase{
+            Voxel::ChunkLoadExecutionPhase::SchedulerPending};
+    };
+
     struct ChunkPayload {
         Voxel::ChunkCoord coord;
         ChunkRequestIdentity request;
@@ -135,6 +143,7 @@ private:
         bool cancelled = false;
         bool failed = false;
         bool loadedFromDisk = false;
+        std::shared_ptr<PayloadJobState> job;
     };
 
     void drainRegionCompletions(size_t budget,
@@ -163,7 +172,8 @@ private:
                              const std::string& error);
     void markTerminalChunkLoad(Voxel::ChunkCoord coord,
                                ChunkRequestIdentity request,
-                               std::string diagnostic);
+                               std::string diagnostic,
+                               Voxel::ChunkLoadExecutionOwner owner);
     void clearTerminalChunkLoad(Voxel::ChunkCoord coord);
     void refreshLastTerminalError();
     void startQueuedRegionLoads();
@@ -253,6 +263,8 @@ private:
         m_regionLoadStartObserver;
     std::function<void()> m_regionResultReadyToPublishCallback;
     std::function<void()> m_payloadBuildStartCallback;
+    std::function<void(Voxel::ChunkCoord)>
+        m_payloadResultPublishedObserver;
     std::function<void()> m_ioPoolStopStartCallback;
     std::function<void()> m_workerPoolStopStartCallback;
 
@@ -289,6 +301,12 @@ private:
         RetryClock::time_point retryAfter{};
     };
 
+    struct TerminalChunkState {
+        std::string diagnostic;
+        Voxel::ChunkLoadExecutionOwner owner =
+            Voxel::ChunkLoadExecutionOwner::Region;
+    };
+
     struct ChunkRetrySchedule {
         Voxel::ChunkCoord coord;
         ChunkRequestIdentity request;
@@ -308,14 +326,17 @@ private:
     std::priority_queue<ChunkRetrySchedule,
                         std::vector<ChunkRetrySchedule>,
                         ChunkRetryScheduleGreater> m_retrySchedule;
-    std::map<Voxel::ChunkCoord, std::string> m_terminalChunks;
+    std::map<Voxel::ChunkCoord, TerminalChunkState> m_terminalChunks;
     std::unordered_map<Voxel::ChunkCoord,
                        size_t,
                        Voxel::ChunkCoordHash> m_chunkRetryRounds;
     std::string m_lastTerminalError;
     uint64_t m_terminalFailureVersion = 0;
     std::deque<Voxel::ChunkLoadCompletion> m_resolvedChunks;
-    ChunkRequestMap m_payloadInFlight;
+    std::unordered_map<
+        Voxel::ChunkCoord,
+        std::shared_ptr<PayloadJobState>,
+        Voxel::ChunkCoordHash> m_payloadInFlight;
     uint64_t m_nextRequestIncarnation = 1;
     uint64_t m_requestsStarted = 0;
     std::deque<RegionKey> m_lru;

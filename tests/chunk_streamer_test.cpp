@@ -183,7 +183,18 @@ struct ChunkStreamerTestAccess {
 
     static bool hasSubmittedGeneration(const ChunkStreamer& streamer,
                                        ChunkCoord coord) {
-        return streamer.m_genCancel.find(coord) != streamer.m_genCancel.end();
+        return streamer.m_generationFlights.find(coord) !=
+            streamer.m_generationFlights.end();
+    }
+
+    static ChunkVisibilityBlockerState classifyVisibilityBlocker(
+        const ChunkStreamer& streamer,
+        ChunkCoord coord) {
+        return streamer.classifyVisibilityBlocker(coord);
+    }
+
+    static size_t generationFlightCount(const ChunkStreamer& streamer) {
+        return streamer.m_generationFlights.size();
     }
 
     static bool hasVersionReplacementWait(const ChunkStreamer& streamer,
@@ -2128,7 +2139,12 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesGenerationLifecycleDelay) {
     CHECK(record->observed(
         ChunkVisibilityStage::GenerationSchedulerPending));
     CHECK(record->observed(ChunkVisibilityStage::GenerationCapacityWait));
-    CHECK(!record->observed(ChunkVisibilityStage::GenerationPoolSubmit));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            classifyVisibilityBlocker(streamer, traced),
+        ChunkVisibilityBlockerState::GenerationCapacityWaiting);
+    CHECK(!record->observed(
+        ChunkVisibilityStage::GenerationExecutorSubmit));
 
     gate->release();
     CHECK(waitForGenerationCompletion(streamer));
@@ -2138,7 +2154,8 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesGenerationLifecycleDelay) {
 
     record = tracer->latestRecord();
     CHECK(record.has_value());
-    CHECK(record->observed(ChunkVisibilityStage::GenerationPoolSubmit));
+    CHECK(record->observed(
+        ChunkVisibilityStage::GenerationExecutorSubmit));
     CHECK(record->observed(ChunkVisibilityStage::GenerationWorkerStart));
     CHECK(record->observed(ChunkVisibilityStage::GenerationWorkerFinish));
     CHECK(record->observed(ChunkVisibilityStage::GenerationReady));
@@ -2206,6 +2223,10 @@ TEST_CASE(ChunkStreamer_GenerationFailureCompletesJob) {
         CHECK(streamer.diagnostics().generation.lastError.find("(0, 0, 0)") !=
               std::string::npos);
         CHECK(!manager.hasChunk(coord));
+        CHECK_EQ(
+            Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                classifyVisibilityBlocker(streamer, coord),
+            ChunkVisibilityBlockerState::GenerationTerminalFailed);
 
         std::vector<ChunkStreamer::DebugChunkState> states;
         streamer.getDebugStates(states, coord, 0);
@@ -7688,17 +7709,23 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIdentifiesRunningGenerationBlocker) {
     CHECK_EQ(
         record->firstObservedMissingDesiredCardinalNeighborCount,
         std::optional<uint8_t>{1});
-    CHECK(record->firstObservedBlockingDesiredCardinalNeighbor.has_value());
+    CHECK(record->firstObservedBlockingDesiredCardinalNeighbors.has_value());
     CHECK_EQ(
-        record->firstObservedBlockingDesiredCardinalNeighbor->coord,
+        record->firstObservedBlockingDesiredCardinalNeighbors->count,
+        static_cast<uint8_t>(1));
+    CHECK_EQ(
+        record->firstObservedBlockingDesiredCardinalNeighbors
+            ->neighbors[0].coord,
         blocker);
     CHECK_EQ(
-        record->firstObservedBlockingDesiredCardinalNeighbor->state,
-        ChunkVisibilityBlockerState::GenerationRunning);
+        record->firstObservedBlockingDesiredCardinalNeighbors
+            ->neighbors[0].state,
+        ChunkVisibilityBlockerState::GenerationWorkerRunning);
     CHECK_EQ(
         chunkVisibilityBlockerStateName(
-            record->firstObservedBlockingDesiredCardinalNeighbor->state),
-        std::string_view("generation_running"));
+            record->firstObservedBlockingDesiredCardinalNeighbors
+                ->neighbors[0].state),
+        std::string_view("generation_worker_running"));
 
     stream.viewDistanceChunks = 0;
     stream.unloadDistanceChunks = 0;
@@ -7712,13 +7739,10 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIdentifiesRunningGenerationBlocker) {
             return candidate.key == lifecycleKey;
         });
     CHECK(resolvedRecord != records.end());
-    CHECK(resolvedRecord->blockingDesiredCardinalNeighbor.has_value());
+    CHECK(resolvedRecord->blockingDesiredCardinalNeighbors.has_value());
     CHECK_EQ(
-        resolvedRecord->blockingDesiredCardinalNeighbor->coord,
-        blocker);
-    CHECK_EQ(
-        resolvedRecord->blockingDesiredCardinalNeighbor->state,
-        ChunkVisibilityBlockerState::NoLongerDesired);
+        resolvedRecord->blockingDesiredCardinalNeighbors->count,
+        static_cast<uint8_t>(0));
 }
 
 TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
@@ -7750,6 +7774,9 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
 
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{traced, 2});
+    ChunkLoadExecutionState blockerExecution{
+        ChunkLoadExecutionOwner::Region,
+        ChunkLoadExecutionPhase::WorkerRunning};
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
     stream.viewDistanceChunks = 1;
@@ -7766,7 +7793,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
     streamer.setChunkLoadExecutionStateCallback([&](ChunkCoord coord) {
         CHECK_EQ(coord, blocker);
         return std::optional<ChunkLoadExecutionState>{
-            ChunkLoadExecutionState::Running};
+            blockerExecution};
     });
 
     streamer.update(traced.toWorldCenter());
@@ -7775,18 +7802,22 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
 
     const auto record = tracer->latestRecord();
     CHECK(record.has_value());
-    CHECK(record->firstObservedBlockingDesiredCardinalNeighbor.has_value());
+    CHECK(record->firstObservedBlockingDesiredCardinalNeighbors.has_value());
     CHECK_EQ(
-        record->firstObservedBlockingDesiredCardinalNeighbor->coord,
+        record->firstObservedBlockingDesiredCardinalNeighbors
+            ->neighbors[0].coord,
         blocker);
     CHECK_EQ(
-        record->firstObservedBlockingDesiredCardinalNeighbor->state,
-        ChunkVisibilityBlockerState::LoadPending);
-    CHECK(record->blockingDesiredCardinalNeighbor.has_value());
-    CHECK_EQ(record->blockingDesiredCardinalNeighbor->coord, blocker);
+        record->firstObservedBlockingDesiredCardinalNeighbors
+            ->neighbors[0].state,
+        ChunkVisibilityBlockerState::Unowned);
+    CHECK(record->blockingDesiredCardinalNeighbors.has_value());
     CHECK_EQ(
-        record->blockingDesiredCardinalNeighbor->state,
-        ChunkVisibilityBlockerState::LoadRunning);
+        record->blockingDesiredCardinalNeighbors->neighbors[0].coord,
+        blocker);
+    CHECK_EQ(
+        record->blockingDesiredCardinalNeighbors->neighbors[0].state,
+        ChunkVisibilityBlockerState::LoadRegionWorkerRunning);
 }
 
 TEST_CASE(ChunkStreamer_VisibilityTraceRecordsSynchronousLoadReadiness) {
@@ -8887,20 +8918,26 @@ TEST_CASE(ChunkStreamer_LateVisibilityResultPreservesStayAwaySchedulerState) {
         }
         CHECK(workerEntered);
         streamer.update(away.toWorldCenter());
+        const auto terminalMeasurement = tracer->measurement();
         CHECK_EQ(
-            tracer->snapshot().front().outcome,
+            terminalMeasurement.records.front().outcome,
             ChunkVisibilityOutcome::CameraLeft);
 
         gate->release();
         CHECK(waitForMeshCompletions(streamer, 1));
 
-        const auto records = tracer->snapshot();
+        const auto afterCompletion = tracer->measurement();
+        const auto& records = afterCompletion.records;
         CHECK_EQ(records.size(), static_cast<size_t>(1));
+        CHECK_EQ(afterCompletion.sequence, terminalMeasurement.sequence);
         CHECK_EQ(records.front().outcome, ChunkVisibilityOutcome::CameraLeft);
         CHECK(records.front().meshTask.has_value());
-        CHECK(records.front()
-                  .stage(ChunkVisibilityStage::WorkerFinish)
-                  .has_value());
+        CHECK_EQ(
+            records.front().stages,
+            terminalMeasurement.records.front().stages);
+        CHECK(!records.front()
+                   .stage(ChunkVisibilityStage::WorkerFinish)
+                   .has_value());
         bool tracePublished = false;
         meshStore.forEach([&](const WorldMeshEntry& entry) {
             tracePublished = tracePublished ||
@@ -9861,6 +9898,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceTeardownStalesPendingAndLateResults) {
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{coord, 4});
     auto gate = std::make_shared<WorkerGate>();
+    uint64_t terminalSequence = 0;
 
     {
         ChunkStreamer streamer(
@@ -9898,6 +9936,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceTeardownStalesPendingAndLateResults) {
         CHECK_NE(
             records[0].key,
             records[1].key);
+        terminalSequence = tracer->measurement().sequence;
 
         gate->release();
         CHECK(waitForPendingMeshCompletion(streamer));
@@ -9905,9 +9944,10 @@ TEST_CASE(ChunkStreamer_VisibilityTraceTeardownStalesPendingAndLateResults) {
 
     const auto records = tracer->snapshot();
     CHECK_EQ(records.size(), static_cast<size_t>(2));
+    CHECK_EQ(tracer->measurement().sequence, terminalSequence);
     CHECK_EQ(records[0].outcome, ChunkVisibilityOutcome::Reset);
     CHECK_EQ(records[1].outcome, ChunkVisibilityOutcome::Reset);
-    CHECK(records[0].stage(ChunkVisibilityStage::WorkerFinish).has_value());
+    CHECK(!records[0].stage(ChunkVisibilityStage::WorkerFinish).has_value());
     CHECK(!records[0]
                .stage(ChunkVisibilityStage::ResultAccepted)
                .has_value());

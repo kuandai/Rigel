@@ -271,29 +271,48 @@ bool AsyncChunkLoader::isPending(Voxel::ChunkCoord coord) const {
 
 std::optional<Voxel::ChunkLoadExecutionState>
 AsyncChunkLoader::executionState(Voxel::ChunkCoord coord) const {
-    if (m_retryChunks.find(coord) != m_retryChunks.end() ||
-        m_terminalChunks.find(coord) != m_terminalChunks.end()) {
-        return Voxel::ChunkLoadExecutionState::FailedRetrying;
+    if (m_retryChunks.find(coord) != m_retryChunks.end()) {
+        return Voxel::ChunkLoadExecutionState{
+            Voxel::ChunkLoadExecutionOwner::Region,
+            Voxel::ChunkLoadExecutionPhase::RetryWaiting};
+    }
+    const auto terminal = m_terminalChunks.find(coord);
+    if (terminal != m_terminalChunks.end()) {
+        return Voxel::ChunkLoadExecutionState{
+            terminal->second.owner,
+            Voxel::ChunkLoadExecutionPhase::TerminalFailed};
     }
     if (m_deferredChunkRequests.find(coord) !=
         m_deferredChunkRequests.end()) {
-        return Voxel::ChunkLoadExecutionState::Pending;
+        return Voxel::ChunkLoadExecutionState{
+            Voxel::ChunkLoadExecutionOwner::Region,
+            Voxel::ChunkLoadExecutionPhase::SchedulerPending};
     }
-    if (m_pendingChunks.find(coord) == m_pendingChunks.end()) {
+    const auto pending = m_pendingChunks.find(coord);
+    if (pending == m_pendingChunks.end()) {
         return std::nullopt;
     }
-    if (m_payloadInFlight.find(coord) != m_payloadInFlight.end()) {
-        return Voxel::ChunkLoadExecutionState::Running;
+    const auto payload = m_payloadInFlight.find(coord);
+    if (payload != m_payloadInFlight.end()) {
+        return Voxel::ChunkLoadExecutionState{
+            Voxel::ChunkLoadExecutionOwner::Payload,
+            payload->second->request == pending->second
+                ? payload->second->phase.load(std::memory_order_acquire)
+                : Voxel::ChunkLoadExecutionPhase::SchedulerPending};
     }
     if (!m_format) {
-        return Voxel::ChunkLoadExecutionState::Pending;
+        return Voxel::ChunkLoadExecutionState{
+            Voxel::ChunkLoadExecutionOwner::Region,
+            Voxel::ChunkLoadExecutionPhase::SchedulerPending};
     }
     const RegionKey key =
         m_format->regionLayout().regionForChunk(m_zoneId, coord);
     const auto regionJob = m_regionJobs.find(key);
-    return regionJob != m_regionJobs.end() && regionJob->second->started
-        ? Voxel::ChunkLoadExecutionState::Running
-        : Voxel::ChunkLoadExecutionState::Pending;
+    return Voxel::ChunkLoadExecutionState{
+        Voxel::ChunkLoadExecutionOwner::Region,
+        regionJob == m_regionJobs.end()
+            ? Voxel::ChunkLoadExecutionPhase::SchedulerPending
+            : regionJob->second->phase.load(std::memory_order_acquire)};
 }
 
 Voxel::StreamingWorkCount AsyncChunkLoader::workCount() const {
@@ -508,7 +527,8 @@ void AsyncChunkLoader::drainRegionCompletions(
                 markTerminalChunkLoad(
                     coord,
                     request,
-                    std::move(diagnostic));
+                    std::move(diagnostic),
+                    Voxel::ChunkLoadExecutionOwner::Region);
             }
             startDeferredChunkLoads(&resolved);
             continue;
@@ -560,7 +580,7 @@ void AsyncChunkLoader::drainPayloadCompletions(
     while (applied < budget && m_chunkComplete.tryPop(payload)) {
         auto flightIt = m_payloadInFlight.find(payload.coord);
         if (flightIt != m_payloadInFlight.end() &&
-            flightIt->second == payload.request) {
+            flightIt->second == payload.job) {
             m_payloadInFlight.erase(flightIt);
         }
 
@@ -585,7 +605,8 @@ void AsyncChunkLoader::drainPayloadCompletions(
             markTerminalChunkLoad(
                 payload.coord,
                 payload.request,
-                std::move(diagnostic));
+                std::move(diagnostic),
+                Voxel::ChunkLoadExecutionOwner::Payload);
             startDeferredChunkLoads(&resolved);
             ++applied;
             continue;
@@ -734,7 +755,8 @@ void AsyncChunkLoader::scheduleRegionRetry(
 void AsyncChunkLoader::markTerminalChunkLoad(
     Voxel::ChunkCoord coord,
     ChunkRequestIdentity request,
-    std::string diagnostic) {
+    std::string diagnostic,
+    Voxel::ChunkLoadExecutionOwner owner) {
     auto pendingIt = m_pendingChunks.find(coord);
     if (pendingIt == m_pendingChunks.end() ||
         pendingIt->second != request) {
@@ -746,10 +768,14 @@ void AsyncChunkLoader::markTerminalChunkLoad(
     m_chunkRetryRounds.erase(coord);
     auto terminalIt = m_terminalChunks.find(coord);
     if (terminalIt == m_terminalChunks.end()) {
-        m_terminalChunks.emplace(coord, std::move(diagnostic));
+        m_terminalChunks.emplace(
+            coord,
+            TerminalChunkState{std::move(diagnostic), owner});
         advanceFailureVersion(m_terminalFailureVersion);
-    } else if (terminalIt->second != diagnostic) {
-        terminalIt->second = std::move(diagnostic);
+    } else if (terminalIt->second.diagnostic != diagnostic ||
+               terminalIt->second.owner != owner) {
+        terminalIt->second = TerminalChunkState{
+            std::move(diagnostic), owner};
         advanceFailureVersion(m_terminalFailureVersion);
     }
     refreshLastTerminalError();
@@ -768,7 +794,7 @@ void AsyncChunkLoader::refreshLastTerminalError() {
         m_lastTerminalError.clear();
         return;
     }
-    m_lastTerminalError = m_terminalChunks.begin()->second;
+    m_lastTerminalError = m_terminalChunks.begin()->second.diagnostic;
 }
 
 void AsyncChunkLoader::restartChunkLoad(
@@ -1157,6 +1183,9 @@ void AsyncChunkLoader::startRegionLoad(
                 regionLoadStartObserver = std::move(regionLoadStartObserver),
                 regionResultReadyToPublishCallback =
                     std::move(regionResultReadyToPublishCallback)]() mutable {
+        jobState->phase.store(
+            Voxel::ChunkLoadExecutionPhase::WorkerRunning,
+            std::memory_order_release);
         if (poolExecution) {
             retireSpeculativeRegionPoolPending(jobState);
         }
@@ -1245,7 +1274,10 @@ void AsyncChunkLoader::startRegionLoad(
         }
         m_regionComplete.push(
             std::move(result),
-            [&counters]() noexcept {
+            [&counters, jobState]() noexcept {
+                jobState->phase.store(
+                    Voxel::ChunkLoadExecutionPhase::ResultPublished,
+                    std::memory_order_release);
                 counters.resultsPublished.fetch_add(
                     1, std::memory_order_seq_cst);
             });
@@ -1271,6 +1303,13 @@ void AsyncChunkLoader::startRegionLoad(
                 resubmission ? &counters.poolResubmissions : nullptr});
         if (jobState->poolJobId != 0) {
             ++jobState->poolSubmissionCount;
+            auto expected =
+                Voxel::ChunkLoadExecutionPhase::SchedulerPending;
+            jobState->phase.compare_exchange_strong(
+                expected,
+                Voxel::ChunkLoadExecutionPhase::PoolQueued,
+                std::memory_order_release,
+                std::memory_order_relaxed);
         } else if (speculativePoolPending) {
             retireSpeculativeRegionPoolPending(jobState);
         }
@@ -1305,7 +1344,9 @@ void AsyncChunkLoader::queuePayloadBuild(
         return;
     }
 
-    m_payloadInFlight[coord] = request;
+    auto payloadJob = std::make_shared<PayloadJobState>();
+    payloadJob->request = request;
+    m_payloadInFlight[coord] = payloadJob;
     auto generator = m_generator;
     auto registry = &m_world->blockRegistry();
     std::vector<const ChunkSnapshot*> spans = spanIt->second;
@@ -1313,6 +1354,8 @@ void AsyncChunkLoader::queuePayloadBuild(
     RegionKey regionKey = region->key;
     uint64_t regionRevision = m_regionRevisions[regionKey];
     auto payloadBuildStartCallback = m_payloadBuildStartCallback;
+    auto payloadResultPublishedObserver =
+        m_payloadResultPublishedObserver;
 
     auto job = [this,
                 coord,
@@ -1323,12 +1366,19 @@ void AsyncChunkLoader::queuePayloadBuild(
                 region,
                 regionKey,
                 regionRevision,
-                payloadBuildStartCallback = std::move(payloadBuildStartCallback)]() mutable {
+                payloadJob,
+                payloadBuildStartCallback = std::move(payloadBuildStartCallback),
+                payloadResultPublishedObserver =
+                    std::move(payloadResultPublishedObserver)]() mutable {
+        payloadJob->phase.store(
+            Voxel::ChunkLoadExecutionPhase::WorkerRunning,
+            std::memory_order_release);
         ChunkPayload payload;
         payload.coord = coord;
         payload.request = request;
         payload.regionKey = regionKey;
         payload.regionRevision = regionRevision;
+        payload.job = payloadJob;
         payload.worldGenVersion = generator ? generator->config().world.version : 0;
         payload.loadedFromDisk = true;
         try {
@@ -1337,7 +1387,21 @@ void AsyncChunkLoader::queuePayloadBuild(
             }
             if (!region) {
                 payload.cancelled = true;
-                m_chunkComplete.push(std::move(payload));
+                m_chunkComplete.push(
+                    std::move(payload),
+                    [payloadJob,
+                     coord,
+                     payloadResultPublishedObserver]() noexcept {
+                        payloadJob->phase.store(
+                            Voxel::ChunkLoadExecutionPhase::ResultPublished,
+                            std::memory_order_release);
+                        if (payloadResultPublishedObserver) {
+                            try {
+                                payloadResultPublishedObserver(coord);
+                            } catch (...) {
+                            }
+                        }
+                    });
                 return;
             }
 
@@ -1370,11 +1434,34 @@ void AsyncChunkLoader::queuePayloadBuild(
             payload.failed = true;
             payload.error = "unknown error";
         }
-        m_chunkComplete.push(std::move(payload));
+        m_chunkComplete.push(
+            std::move(payload),
+            [payloadJob,
+             coord,
+             payloadResultPublishedObserver]() noexcept {
+                payloadJob->phase.store(
+                    Voxel::ChunkLoadExecutionPhase::ResultPublished,
+                    std::memory_order_release);
+                if (payloadResultPublishedObserver) {
+                    try {
+                        payloadResultPublishedObserver(coord);
+                    } catch (...) {
+                    }
+                }
+            });
     };
 
     if (m_workerPool.threadCount() > 0) {
-        m_workerPool.enqueue(std::move(job));
+        const auto jobId = m_workerPool.enqueue(std::move(job));
+        if (jobId != 0) {
+            auto expected =
+                Voxel::ChunkLoadExecutionPhase::SchedulerPending;
+            payloadJob->phase.compare_exchange_strong(
+                expected,
+                Voxel::ChunkLoadExecutionPhase::PoolQueued,
+                std::memory_order_release,
+                std::memory_order_relaxed);
+        }
     } else {
         job();
     }

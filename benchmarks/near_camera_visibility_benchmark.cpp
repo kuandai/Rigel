@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -35,6 +36,10 @@ using namespace Rigel;
 using BenchmarkClock = std::chrono::steady_clock;
 
 constexpr long double kDefaultUpdateIntervalMilliseconds = 1000.0L / 60.0L;
+constexpr size_t kMaxSamplesPerWorkload = 1000;
+constexpr int kMaxMotionSteps = 100000;
+constexpr int kMaxTimeoutSeconds = 3600;
+constexpr double kMaxComparisonBudgetMilliseconds = 3600000.0;
 
 struct Options {
     enum class WorkloadFilter : uint8_t {
@@ -89,10 +94,10 @@ std::optional<long long> parseInteger(std::string_view value) {
     if (value.empty()) {
         return std::nullopt;
     }
-    char* end = nullptr;
-    const std::string owned(value);
-    const long long parsed = std::strtoll(owned.c_str(), &end, 10);
-    if (!end || *end != '\0') {
+    long long parsed = 0;
+    const auto [end, error] = std::from_chars(
+        value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || end != value.data() + value.size()) {
         return std::nullopt;
     }
     return parsed;
@@ -238,7 +243,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
         }
         if (argument == "--comparison-budget-ms") {
             const auto parsed = parseDouble(value);
-            if (!parsed || !std::isfinite(*parsed) || *parsed <= 0.0) {
+            if (!parsed || !std::isfinite(*parsed) || *parsed <= 0.0 ||
+                *parsed > kMaxComparisonBudgetMilliseconds) {
                 std::cerr << "Invalid positive duration: " << value << '\n';
                 return false;
             }
@@ -246,22 +252,50 @@ bool parseOptions(int argc, char** argv, Options& options) {
             continue;
         }
         const auto parsed = parseInteger(value);
-        if (!parsed || *parsed <= 0 ||
-            *parsed > std::numeric_limits<int>::max()) {
-            std::cerr << "Invalid positive integer: " << value << '\n';
+        if (!parsed) {
+            std::cerr << "Invalid integer: " << value << '\n';
             return false;
         }
         if (argument == "--samples") {
+            if (*parsed <= 0 ||
+                static_cast<unsigned long long>(*parsed) >
+                    kMaxSamplesPerWorkload) {
+                std::cerr << "Invalid sample count: " << value << '\n';
+                return false;
+            }
             options.samplesPerWorkload = static_cast<size_t>(*parsed);
         } else if (argument == "--view-distance") {
+            if (*parsed <= 0 ||
+                *parsed > Voxel::StreamingConfig::MaxViewDistanceChunks) {
+                std::cerr << "Unsupported view distance: " << value << '\n';
+                return false;
+            }
             options.viewDistance = static_cast<int>(*parsed);
         } else if (argument == "--motion-steps") {
+            if (*parsed <= 0 || *parsed > kMaxMotionSteps) {
+                std::cerr << "Unsafe motion step count: " << value << '\n';
+                return false;
+            }
             options.motionSteps = static_cast<int>(*parsed);
         } else if (argument == "--worker-threads") {
+            if (*parsed <= 0 ||
+                *parsed > Voxel::StreamingConfig::MaxTotalWorkerThreads) {
+                std::cerr << "Unsupported worker count: " << value << '\n';
+                return false;
+            }
             options.workerThreads = static_cast<int>(*parsed);
         } else if (argument == "--mesh-queue-limit") {
+            if (*parsed < 0 ||
+                *parsed > Voxel::StreamingConfig::MaxQueueLimit) {
+                std::cerr << "Unsupported mesh queue limit: " << value << '\n';
+                return false;
+            }
             options.meshQueueLimit = static_cast<int>(*parsed);
         } else if (argument == "--timeout-seconds") {
+            if (*parsed <= 0 || *parsed > kMaxTimeoutSeconds) {
+                std::cerr << "Invalid timeout: " << value << '\n';
+                return false;
+            }
             options.timeoutSeconds = static_cast<int>(*parsed);
         } else {
             std::cerr << "Unknown option: " << argument << '\n';
@@ -416,6 +450,19 @@ RunResult runSample(const Options& options, const Workload& workload) {
         result.error = "streaming did not reach quiescence before deadline";
         return result;
     }
+    const auto& diagnostics = result.diagnostics;
+    if (!diagnostics.workEmpty() ||
+        diagnostics.sourceResolutionPending != 0 ||
+        diagnostics.generationSchedulerPending != 0 ||
+        diagnostics.generationCompletionsPending != 0 ||
+        diagnostics.meshCompletionsPending != 0 ||
+        diagnostics.retiredWorkPending != 0 ||
+        result.work.generationJobsStarted !=
+            result.work.generationJobsCompleted +
+                result.work.generationJobsCancelled) {
+        result.error = "quiescence retained streaming work ownership";
+        return result;
+    }
 
     const auto measurement = tracer->measurement();
     if (measurement.stats.droppedRecords != 0 ||
@@ -477,6 +524,15 @@ void printSummary(
         std::cout
             << " first_observed_missing_desired_cardinal_neighbors=all";
     }
+    std::cout << " data_ready_to_neighbors_ready_boundary=";
+    if (!summary.firstObservedMissingDesiredCardinalNeighborCount) {
+        std::cout << "mixed";
+    } else if (
+        *summary.firstObservedMissingDesiredCardinalNeighborCount == 0) {
+        std::cout << "inferred_data_ready";
+    } else {
+        std::cout << "observed_final_neighbor";
+    }
     std::cout
         << " samples=" << summary.samples
         << " accepted_endpoints=" << summary.acceptedEndpoints
@@ -532,6 +588,8 @@ int main(int argc, char** argv) {
         << " persistence=controlled_missing_probe"
         << " scheduling_context=not_shipped_or_interactive"
         << " wait_signal=streaming_quiescent"
+        << " percentile_method=nearest_rank"
+        << " p99_20_sample_interpretation=observed_cohort_maximum_noisy_tail"
         << " fixed_startup_sleep=false\n";
     std::cout
         << "configuration samples_per_workload="
@@ -655,6 +713,10 @@ int main(int argc, char** argv) {
                 << " first_observed_missing_desired_cardinal_neighbors="
                 << static_cast<unsigned>(
                        sample.firstObservedMissingDesiredCardinalNeighborCount)
+                << " data_ready_to_neighbors_ready_boundary="
+                << (sample.firstObservedMissingDesiredCardinalNeighborCount == 0
+                        ? "inferred_data_ready"
+                        : "observed_final_neighbor")
                 << " endpoint="
                 << (sample.endpoint == Benchmark::VisibilityEndpoint::FirstDraw
                         ? "first_draw"
@@ -694,8 +756,45 @@ int main(int argc, char** argv) {
                 << " debug_detail_records=" << result.debugDetailRecords
                 << " generation_started="
                 << result.work.generationJobsStarted
+                << " generation_completed="
+                << result.work.generationJobsCompleted
+                << " generation_cancelled="
+                << result.work.generationJobsCancelled
+                << " generation_pending="
+                << result.diagnostics.generation.pending
+                << " generation_in_flight="
+                << result.diagnostics.generation.inFlight
+                << " generation_completion_pending="
+                << result.diagnostics.generationCompletionsPending
+                << " generation_terminal_failures="
+                << result.diagnostics.generation.terminalErrors
+                << " canonical_source_work="
+                << result.diagnostics.sourceResolutionPending
+                << " canonical_generation_work="
+                << result.diagnostics.generationSchedulerPending
+                << " canonical_retired_work="
+                << result.diagnostics.retiredWorkPending
                 << " mesh_started=" << result.work.meshJobsStarted
+                << " mesh_completed=" << result.work.meshJobsCompleted
                 << " mesh_stale=" << result.work.meshJobsRejectedStale
+                << " mesh_pending=" << result.diagnostics.mesh.pending
+                << " mesh_in_flight=" << result.diagnostics.mesh.inFlight
+                << " mesh_completion_pending="
+                << result.diagnostics.meshCompletionsPending
+                << " mesh_terminal_failures="
+                << result.diagnostics.mesh.terminalErrors
+                << " chunk_load_pending="
+                << result.diagnostics.chunkLoad.pending
+                << " chunk_load_in_flight="
+                << result.diagnostics.chunkLoad.inFlight
+                << " chunk_load_terminal_failures="
+                << result.diagnostics.chunkLoad.terminalErrors
+                << " eviction_pending="
+                << result.diagnostics.eviction.pending
+                << " eviction_in_flight="
+                << result.diagnostics.eviction.inFlight
+                << " eviction_terminal_failures="
+                << result.diagnostics.eviction.terminalErrors
                 << " stable_updates=" << result.diagnostics.stableUpdates
                 << " completion_state="
                 << (result.diagnostics.state ==

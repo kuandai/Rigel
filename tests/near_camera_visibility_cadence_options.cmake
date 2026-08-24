@@ -83,6 +83,19 @@ if (NOT APPLICATION_QUIESCENT_COUNT EQUAL APPLICATION_SAMPLE_COUNT)
     message(FATAL_ERROR
         "Application-like benchmark accepted a sample before Quiescent")
 endif()
+string(REGEX MATCHALL
+    "sample index=[^\n]*generation_pending=0 generation_in_flight=0 generation_completion_pending=0 generation_terminal_failures=0 canonical_source_work=0 canonical_generation_work=0 canonical_retired_work=0[^\n]*mesh_pending=0 mesh_in_flight=0 mesh_completion_pending=0 mesh_terminal_failures=0 chunk_load_pending=0 chunk_load_in_flight=0 chunk_load_terminal_failures=0 eviction_pending=0 eviction_in_flight=0 eviction_terminal_failures=0[^\n]*completion_state=quiescent"
+    APPLICATION_ZERO_OWNER_SAMPLES "${APPLICATION_OUTPUT}")
+list(LENGTH APPLICATION_ZERO_OWNER_SAMPLES APPLICATION_ZERO_OWNER_COUNT)
+if (NOT APPLICATION_ZERO_OWNER_COUNT EQUAL APPLICATION_SAMPLE_COUNT)
+    message(FATAL_ERROR
+        "Application-like benchmark omitted exact zero owner gauges")
+endif()
+if (NOT APPLICATION_OUTPUT MATCHES
+    "data_ready_to_neighbors_ready_boundary=(inferred_data_ready|observed_final_neighbor)")
+    message(FATAL_ERROR
+        "Application-like benchmark omitted neighbor-boundary provenance")
+endif()
 string(REGEX MATCHALL "lifecycle_updates=[0-9]+" APPLICATION_UPDATE_FIELDS
     "${APPLICATION_OUTPUT}")
 list(LENGTH APPLICATION_UPDATE_FIELDS APPLICATION_UPDATE_FIELD_COUNT)
@@ -101,6 +114,37 @@ foreach(UPDATE_FIELD IN LISTS APPLICATION_UPDATE_FIELDS)
     math(EXPR APPLICATION_UPDATE_TOTAL
         "${APPLICATION_UPDATE_TOTAL} + ${UPDATE_COUNT}")
 endforeach()
+
+function(assert_rejected OPTION VALUE EXPECTED_ERROR)
+    execute_process(
+        COMMAND "${BENCHMARK_EXECUTABLE}" "${OPTION}" "${VALUE}"
+        RESULT_VARIABLE REJECTED_RESULT
+        OUTPUT_VARIABLE REJECTED_OUTPUT
+        ERROR_VARIABLE REJECTED_ERROR
+    )
+    if (REJECTED_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Benchmark accepted ${OPTION} ${VALUE}")
+    endif()
+    if (NOT REJECTED_ERROR MATCHES "${EXPECTED_ERROR}")
+        message(FATAL_ERROR
+            "Benchmark misdiagnosed ${OPTION} ${VALUE}: ${REJECTED_ERROR}")
+    endif()
+    if (REJECTED_OUTPUT MATCHES "benchmark name=|configuration ")
+        message(FATAL_ERROR
+            "Rejected ${OPTION} ${VALUE} emitted benchmark evidence")
+    endif()
+endfunction()
+
+assert_rejected(--samples 1001 "Invalid sample count")
+assert_rejected(--samples 1x "Invalid integer")
+assert_rejected(--samples 9223372036854775808 "Invalid integer")
+assert_rejected(--view-distance 17 "Unsupported view distance")
+assert_rejected(--worker-threads 65 "Unsupported worker count")
+assert_rejected(--mesh-queue-limit 32769 "Unsupported mesh queue limit")
+assert_rejected(--motion-steps 100001 "Unsafe motion step count")
+assert_rejected(--timeout-seconds 3601 "Invalid timeout")
+assert_rejected(--comparison-budget-ms 3600001 "Invalid positive duration")
 
 execute_process(
     COMMAND "${BENCHMARK_EXECUTABLE}" ${SAMPLE_ARGUMENTS}

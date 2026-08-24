@@ -99,14 +99,21 @@ struct StreamingDiagnosticSnapshot {
 
     StreamingLifecycleState state = StreamingLifecycleState::DiscoveringSpawn;
     StreamingWorkCount generation;
+    // Exact current owners used to validate completion-drain and canonical
+    // scheduler quiescence without exposing scheduler containers.
+    size_t sourceResolutionPending = 0;
+    size_t generationSchedulerPending = 0;
+    size_t generationCompletionsPending = 0;
     StreamingWorkCount chunkLoad;
     RegionSchedulerDiagnosticSnapshot regionScheduler;
     StreamingWorkCount mesh;
+    size_t meshCompletionsPending = 0;
     size_t meshWorkerCount = 0;
     // Maximum mesh jobs submitted but not yet observed by the completion
     // drain, including the bounded inline executor path.
     size_t meshSubmissionLimit = 0;
     StreamingWorkCount eviction;
+    size_t retiredWorkPending = 0;
     uint32_t stableUpdates = 0;
 
     bool workEmpty() const {

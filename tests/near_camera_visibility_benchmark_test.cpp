@@ -112,6 +112,10 @@ TEST_CASE(NearCameraVisibilityBenchmark_DistinguishesSchedulerLimitMetadata) {
 TEST_CASE(NearCameraVisibilityBenchmark_PrefersDrawAndRejectsCensoredWork) {
     Voxel::ChunkVisibilityTraceRecord record;
     record.kind = Voxel::ChunkVisibilityLifecycleKind::CameraDemand;
+    record.origin = Voxel::ChunkVisibilityOrigin::Generated;
+    record.outcome =
+        Voxel::ChunkVisibilityOutcome::AcceptedNonemptyGeometry;
+    record.drawOutcome = Voxel::ChunkVisibilityDrawOutcome::Drawn;
     record.firstObservedMissingDesiredCardinalNeighborCount = 3;
     const auto origin = Voxel::ChunkVisibilityTimePoint{};
     const auto setStage = [&](Voxel::ChunkVisibilityStage stage, int time) {
@@ -165,4 +169,55 @@ TEST_CASE(NearCameraVisibilityBenchmark_PrefersDrawAndRejectsCensoredWork) {
     record.stages[static_cast<size_t>(Voxel::ChunkVisibilityStage::WorkerStart)] =
         std::nullopt;
     CHECK(!Benchmark::makeNearCameraVisibilitySample(record, 1).has_value());
+}
+
+TEST_CASE(NearCameraVisibilityBenchmark_RequiresGeneratedNonemptyAcceptance) {
+    Voxel::ChunkVisibilityTraceRecord record;
+    record.kind = Voxel::ChunkVisibilityLifecycleKind::CameraDemand;
+    record.origin = Voxel::ChunkVisibilityOrigin::Generated;
+    record.outcome =
+        Voxel::ChunkVisibilityOutcome::AcceptedNonemptyGeometry;
+    record.firstObservedMissingDesiredCardinalNeighborCount = 0;
+    const auto origin = Voxel::ChunkVisibilityClock::now();
+    const auto setStage = [&](Voxel::ChunkVisibilityStage stage, int time) {
+        record.stages[static_cast<size_t>(stage)] =
+            origin + std::chrono::milliseconds(time);
+    };
+    setStage(Voxel::ChunkVisibilityStage::Desired, 0);
+    setStage(Voxel::ChunkVisibilityStage::GenerationSchedulerPending, 1);
+    setStage(Voxel::ChunkVisibilityStage::GenerationCapacityWait, 3);
+    record.observedStages[static_cast<size_t>(
+        Voxel::ChunkVisibilityStage::GenerationCapacityWait)] = true;
+    setStage(Voxel::ChunkVisibilityStage::GenerationExecutorSubmit, 5);
+    setStage(Voxel::ChunkVisibilityStage::GenerationWorkerStart, 7);
+    setStage(Voxel::ChunkVisibilityStage::GenerationWorkerFinish, 11);
+    setStage(Voxel::ChunkVisibilityStage::GenerationReady, 12);
+    setStage(Voxel::ChunkVisibilityStage::DataReady, 13);
+    setStage(Voxel::ChunkVisibilityStage::MeshEligible, 14);
+    setStage(Voxel::ChunkVisibilityStage::SchedulerWait, 14);
+    setStage(Voxel::ChunkVisibilityStage::PoolSubmit, 15);
+    setStage(Voxel::ChunkVisibilityStage::WorkerStart, 16);
+    setStage(Voxel::ChunkVisibilityStage::WorkerFinish, 18);
+    setStage(Voxel::ChunkVisibilityStage::ResultAccepted, 19);
+
+    auto converted = Benchmark::makeNearCameraVisibilitySample(record, 1);
+    CHECK(converted.has_value());
+    CHECK_EQ(converted->generationQueueWait, milliseconds(6));
+    CHECK_EQ(converted->generationSchedulerWait, milliseconds(2));
+    CHECK_EQ(converted->generationCapacityWait, milliseconds(2));
+    CHECK_EQ(converted->generationPoolWait, milliseconds(2));
+    CHECK_EQ(converted->dataReadyToNeighborsReady, milliseconds(0));
+
+    record.origin = Voxel::ChunkVisibilityOrigin::Persisted;
+    CHECK(!Benchmark::makeNearCameraVisibilitySample(record, 1).has_value());
+    record.origin = Voxel::ChunkVisibilityOrigin::Generated;
+    record.outcome = Voxel::ChunkVisibilityOutcome::AcceptedEmptyGeometry;
+    CHECK(!Benchmark::makeNearCameraVisibilitySample(record, 1).has_value());
+    record.outcome = Voxel::ChunkVisibilityOutcome::AcceptedNonemptyGeometry;
+    setStage(Voxel::ChunkVisibilityStage::FirstDraw, 20);
+    record.drawOutcome =
+        Voxel::ChunkVisibilityDrawOutcome::MeshReplacedBeforeDraw;
+    CHECK(!Benchmark::makeNearCameraVisibilitySample(record, 1).has_value());
+    record.drawOutcome = Voxel::ChunkVisibilityDrawOutcome::Drawn;
+    CHECK(Benchmark::makeNearCameraVisibilitySample(record, 1).has_value());
 }

@@ -1621,6 +1621,9 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
         .lastError = diagnosticForLowestCoordinate(m_generationErrors),
         .failureVersion = m_generationFailureVersion
     };
+    snapshot.sourceResolutionPending = m_loadGenQueued.size();
+    snapshot.generationSchedulerPending = m_pendingGenerations.size();
+    snapshot.generationCompletionsPending = m_genComplete.size();
     snapshot.mesh = StreamingWorkCount{
         .pending = meshPending,
         .inFlight = m_inFlightMesh,
@@ -1629,6 +1632,7 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
         .lastError = diagnosticForLowestCoordinate(m_meshErrors),
         .failureVersion = m_meshFailureVersion
     };
+    snapshot.meshCompletionsPending = m_meshComplete.size();
     snapshot.meshWorkerCount = m_meshPool
         ? m_meshPool->threadCount()
         : 0;
@@ -1663,6 +1667,7 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
         .lastError = diagnosticForLowestCoordinate(m_evictionErrors),
         .failureVersion = m_evictionFailureVersion
     };
+    snapshot.retiredWorkPending = m_configRetiredWork.size();
     return snapshot;
 }
 

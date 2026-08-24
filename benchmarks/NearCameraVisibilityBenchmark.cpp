@@ -49,12 +49,19 @@ std::optional<NearCameraVisibilitySample> makeNearCameraVisibilitySample(
     const Voxel::ChunkVisibilityTraceRecord& record,
     int distanceSquared) {
     if (record.kind != Voxel::ChunkVisibilityLifecycleKind::CameraDemand ||
+        record.origin != Voxel::ChunkVisibilityOrigin::Generated ||
+        record.outcome !=
+            Voxel::ChunkVisibilityOutcome::AcceptedNonemptyGeometry ||
         !record.firstObservedMissingDesiredCardinalNeighborCount) {
         return std::nullopt;
     }
 
     const auto durations = record.durations();
     const bool firstDraw = durations.desiredToFirstDraw.has_value();
+    if (firstDraw &&
+        record.drawOutcome != Voxel::ChunkVisibilityDrawOutcome::Drawn) {
+        return std::nullopt;
+    }
     const auto desiredToVisible = firstDraw
         ? durations.desiredToFirstDraw
         : durations.desiredToAccepted;

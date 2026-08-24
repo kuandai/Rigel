@@ -307,7 +307,9 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
         std::vector<double> generationTimes;
         size_t nonemptyChunks = 0;
         size_t nonAirTotal = 0;
-        for (const auto& [x, z] : columns) {
+        for (size_t sampleIndex = 0; sampleIndex < columns.size();
+             ++sampleIndex) {
+            const auto [x, z] = columns[sampleIndex];
             Voxel::ChunkBuffer buffer;
             const auto start = Clock::now();
             generator->generate({x, chunkY, z}, buffer);
@@ -317,6 +319,13 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
             const size_t occupancy = nonAirBlocks(buffer);
             nonAirTotal += occupancy;
             nonemptyChunks += occupancy != 0 ? 1 : 0;
+            std::cout << "vertical_generation_sample position=" << label
+                      << " sample_index=" << sampleIndex
+                      << " chunk_x=" << x
+                      << " chunk_y=" << chunkY
+                      << " chunk_z=" << z
+                      << " non_air_blocks=" << occupancy
+                      << " execution_ms=" << elapsed << '\n';
         }
         std::cout << "vertical_generation position=" << label
                   << " chunk_y=" << chunkY
@@ -1030,7 +1039,7 @@ int runBenchmark(int argc, char** argv) {
     const bool overlayCpu = mode == Mode::OverlayCpu;
 
     std::cout << std::fixed << std::setprecision(3)
-              << "benchmark name=streaming_assessment version=4"
+              << "benchmark name=streaming_assessment version=5"
               << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
               << " hardware_threads=" << std::thread::hardware_concurrency()
               << " shipped_world_configuration=true"

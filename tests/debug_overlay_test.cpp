@@ -2,8 +2,11 @@
 
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/input/GameplayInput.h"
+#include "Rigel/input/InputBindingsLoader.h"
 #include "Rigel/Render/ChunkDebugPresentation.h"
 #include "Rigel/Render/FrameRenderer.h"
+
+#include <GLFW/glfw3.h>
 
 #include <algorithm>
 #include <array>
@@ -109,15 +112,39 @@ private:
 
 } // namespace
 
-TEST_CASE(DebugOverlay_StartsDisabledAndReleaseActionOptsIn) {
+TEST_CASE(DebugOverlay_ProductionF1ReleaseTogglesStartupDefault) {
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    assets.registerLoader(
+        "input", std::make_unique<Rigel::Input::InputBindingsLoader>());
+
+    const auto shippedBindings =
+        assets.get<Rigel::Input::InputBindings>("input/default");
+    CHECK(shippedBindings->hasAction("debug_overlay"));
+    CHECK_EQ(shippedBindings->keyFor("debug_overlay"), GLFW_KEY_F1);
+
+    Rigel::Input::InputState input;
+    Rigel::Input::loadInputBindings(assets, input);
+
     Rigel::Render::FrameRenderer renderer;
     CHECK(!renderer.debugOverlayEnabled());
 
     Rigel::Input::DebugOverlayListener listener;
     listener.enabled = &renderer.debugOverlayEnabled();
-    listener.onActionReleased("debug_overlay");
+    input.addListener(&listener);
+
+    input.handleKeyEvent(GLFW_KEY_F1, GLFW_PRESS);
+    input.beginFrame();
+    CHECK(!renderer.debugOverlayEnabled());
+    input.handleKeyEvent(GLFW_KEY_F1, GLFW_RELEASE);
+    input.beginFrame();
     CHECK(renderer.debugOverlayEnabled());
-    listener.onActionReleased("debug_overlay");
+
+    input.handleKeyEvent(GLFW_KEY_F1, GLFW_PRESS);
+    input.beginFrame();
+    CHECK(renderer.debugOverlayEnabled());
+    input.handleKeyEvent(GLFW_KEY_F1, GLFW_RELEASE);
+    input.beginFrame();
     CHECK(!renderer.debugOverlayEnabled());
 }
 

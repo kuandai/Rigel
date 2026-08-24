@@ -695,11 +695,13 @@ headless.
 
 The target's generation-queue P95 fell 88.5% in +X, 88.5% in +Z, and
 87.1% diagonally. Desired-to-accepted P95 fell 58.3%, 58.3%, and 51.6%,
-respectively, while stationary P95 remained within 0.1 ms. The FIFO target
-spent nearly all of its pre-generation latency in the physical pool queue;
-the priority target instead started within 36 ms at P99. This, together with
-the constrained-worker ordering regressions, demonstrates that an approached
-chunk is no longer buried behind the older unstarted generation backlog.
+respectively, while stationary P95 remained within 0.1 ms. The diagonal value
+is `(516.786 - 250.134) / 516.786 = 51.598%`; 266.686 ms is the separately
+reported P99 cohort maximum and is not used as the P95 operand. The FIFO target
+spent nearly all of its pre-generation latency in the physical pool queue; the
+priority target instead started within 36 ms at P99. This, together with the
+constrained-worker ordering regressions, demonstrates that an approached chunk
+is no longer buried behind the older unstarted generation backlog.
 
 The independent diagonal regression uses one generation worker with a bounded
 standby wave. It holds the first demanded job running, moves the camera one
@@ -852,9 +854,12 @@ logical backlog, cumulative accounting partitions, and hard-zero physical
 execution gauges.
 
 The same runner reports `startup_overlay_enabled=false`. The focused toggle
-regression verifies that F1 release changes false to true and a second release
-changes it back. Production collection, presentation construction, GL work,
-and the ImGui legend are therefore opt-in rather than per-frame startup work.
+regression loads the shipped `debug_overlay` binding, asserts that it resolves
+to F1, and delivers F1 press/release events through `InputState` to the
+application's `DebugOverlayListener` and `FrameRenderer`. The first release
+changes false to true and the second changes it back. Production collection,
+presentation construction, GL work, and the ImGui legend are therefore opt-in
+rather than per-frame startup work.
 
 The same Release binary subsequently completed the existing production
 GLFW/OpenGL/ImGui path under Xvfb with Mesa software rendering:

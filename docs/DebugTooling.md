@@ -215,9 +215,12 @@ two counters plus the current physical generation-owner count.
 The diagnostic snapshot also exposes exact source-resolution, logical
 generation, retired-work, generation-completion, and mesh-completion owner
 gauges. These are observation-only views of the canonical containers, not
-parallel lifecycle owners. A successful benchmark sample requires every gauge,
-all pending/in-flight/terminal counts, and both completion queues to be zero in
-addition to the `quiescent` state.
+parallel lifecycle owners. Quiescent motion and vertical benchmark samples
+require every gauge, all pending/in-flight/terminal counts, and both completion
+queues to be zero in addition to the `quiescent` state. The overlay assessment
+is deliberately non-quiescent: it instead requires a precisely classified
+logical load/dependency backlog while all physical execution, completion,
+terminal, and canonical-source gauges are zero.
 Quiescence bookkeeping examines active requests and explicitly retained
 unresolved state; it does not rescan the desired chunk set or poll persistence
 for discovery.
@@ -638,21 +641,26 @@ gate.
 
 #### Moving-camera Release capture
 
-The moving-camera comparison used the FIFO generation engine at
+The hardened moving-camera comparison used the FIFO generation engine at
 `217b54448b94464836b9dcc7f52ef03d862f987a` as the baseline and the bounded
-priority generation engine at
+priority behavior completed at
 `e17b6899cedc0f3200d2a3a4b62c41160dfea0a0` as the repaired engine. Both were
-built with the byte-identical version 4 benchmark sources committed at
-`8bec1583f0371e8c0df46fc7819091c61a1873e5`. SHA-256 checks matched for all
-three benchmark source files in the two source trees.
+rebuilt and rerun with the byte-identical version 5 benchmark sources at
+`acabd94f52c30f57e57f5cd13c7533f3059af6ad`. SHA-256 was
+`7ac6ee044490a0b8c94d2bb83fe8833cf6493f15c6c0807846118b8b602a23c6`
+for the converter, `68018e4585dcf0c4fd8386b300afc2347db200cbb80afa87350d50011daa6eda`
+for its header, and
+`0b3b83b87ff38410aed845ffceb251f3078c481a6591f521372bf55a30f55f26`
+for the runner in both source trees.
 
-The retained assessment source was subsequently hardened through
-`499292343d871e5a65df4da55301cbc5a0aeb024`. Those revisions make the
-zero-neighbor boundary source explicit, add the conflicting-timestamp fixture,
-validate exact controlled overlay ownership and pair cardinality before
-reporting timing, and add exception-safe assessment teardown. The motion
-numbers below remain provenanced to the byte-identical capture source above
-rather than being relabelled as a new timing run.
+The detached FIFO tree added only 14 lines of observation support: completion
+counters and canonical/completion queue-size diagnostics. That baseline-only
+patch has SHA-256
+`f6f64bd34187d56829b6f9fcb56386690090accd2f0918de6da99adf83b2b865`;
+it does not add priority, capacity, cancellation, or wake behavior. The raw
+FIFO and priority logs have SHA-256
+`b253d04c97f2413cc137e4b78b7130a979d87030d5c20a44494adba261bdc637`
+and `6d46bb563d8f376917ec53b2167d2f53159623008fcf58734b20bac2f3f44c67`.
 
 Both builds used Release, GCC 16.1.1, Linux 7.0.12, and the same 12th Gen Intel
 Core i7-12700 host with 20 logical CPUs. Runs were sequential with otherwise
@@ -676,20 +684,20 @@ headless.
 
 | Workload | Engine | Desired-gen start | Gen queue | Gen execution | Data-neighbors | Neighbors-mesh | Mesh execution | Desired-accepted | Desired-first draw |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Stationary | FIFO | 0.069/0.102/0.110 | 0.063/0.094/0.104 | 26.254/32.639/32.716 | 150.096/166.739/166.750 | 16.792/16.859/16.977 | 0.265/0.322/0.360 | 216.839/233.424/233.447 | unavailable (0) |
-| Stationary | Priority | 0.085/0.103/0.113 | 0.066/0.098/0.108 | 26.084/29.862/33.156 | 150.004/166.674/166.719 | 16.846/16.920/17.136 | 0.262/0.374/0.388 | 216.801/233.371/233.498 | unavailable (0) |
-| Continuous +X | FIFO | 286.795/290.399/291.470 | 286.787/290.391/291.462 | 25.156/26.279/26.462 | 233.331/233.510/233.522 | 16.826/33.328/33.328 | 0.147/0.168/0.253 | 583.384/600.087/600.162 | unavailable (0) |
-| Continuous +X | Priority | 33.388/33.465/33.501 | 33.382/33.458/33.495 | 25.388/26.933/31.053 | 150.009/150.057/166.675 | 16.835/16.883/16.899 | 0.251/0.266/0.287 | 250.072/250.120/266.731 | unavailable (0) |
-| Continuous +Z | FIFO | 288.545/290.870/291.740 | 288.537/290.862/291.731 | 25.482/26.507/26.918 | 233.489/233.593/249.941 | 33.251/33.328/33.332 | 0.149/0.250/0.253 | 600.028/600.080/600.097 | unavailable (0) |
-| Continuous +Z | Priority | 33.431/33.491/33.497 | 33.425/33.485/33.491 | 25.247/25.875/25.977 | 150.004/150.051/150.053 | 16.840/16.918/17.008 | 0.252/0.278/0.305 | 250.072/250.111/250.129 | unavailable (0) |
-| Diagonal XZ | FIFO | 270.369/276.057/276.319 | 270.360/276.048/276.310 | 25.193/25.893/26.763 | 183.142/183.227/183.250 | 16.833/16.889/16.940 | 0.152/0.269/0.311 | 516.707/516.798/516.808 | unavailable (0) |
-| Diagonal XZ | Priority | 34.274/35.709/36.919 | 34.268/35.702/36.912 | 25.402/26.022/26.149 | 150.008/166.715/183.300 | 16.850/16.896/16.931 | 0.260/0.288/0.305 | 250.086/266.733/283.290 | unavailable (0) |
+| Stationary | FIFO | 0.098/0.115/0.160 | 0.069/0.109/0.154 | 27.413/29.902/32.782 | 150.062/166.725/166.902 | 16.812/16.851/16.902 | 0.266/0.317/0.413 | 216.839/233.431/233.448 | unavailable (0) |
+| Stationary | Priority | 0.074/0.106/0.121 | 0.065/0.078/0.116 | 25.995/34.076/34.195 | 150.005/150.084/166.677 | 16.858/16.940/17.121 | 0.260/0.330/0.461 | 216.819/233.442/233.453 | unavailable (0) |
+| Continuous +X | FIFO | 285.641/291.033/292.559 | 285.633/291.026/292.550 | 25.204/25.586/25.722 | 233.340/233.528/233.551 | 16.875/33.328/33.363 | 0.151/0.164/0.251 | 583.387/600.134/600.214 | unavailable (0) |
+| Continuous +X | Priority | 33.392/33.464/33.464 | 33.386/33.457/33.458 | 25.205/25.416/25.453 | 150.004/150.019/150.070 | 16.845/16.902/16.917 | 0.251/0.266/0.280 | 250.068/250.086/250.120 | unavailable (0) |
+| Continuous +Z | FIFO | 287.930/291.245/292.910 | 287.922/291.236/292.903 | 25.386/25.880/26.110 | 233.445/233.513/233.523 | 33.279/33.340/33.340 | 0.147/0.252/0.261 | 599.979/600.079/600.109 | unavailable (0) |
+| Continuous +Z | Priority | 33.433/33.502/33.528 | 33.427/33.496/33.523 | 25.280/25.643/26.118 | 150.007/150.087/150.101 | 16.842/16.902/16.920 | 0.250/0.258/0.292 | 250.071/250.131/250.147 | unavailable (0) |
+| Diagonal XZ | FIFO | 269.621/274.022/276.022 | 269.613/274.013/276.014 | 25.272/25.851/26.096 | 183.176/183.251/183.382 | 16.836/16.898/16.931 | 0.154/0.255/0.260 | 516.721/516.786/516.807 | unavailable (0) |
+| Diagonal XZ | Priority | 33.733/35.424/35.811 | 33.727/35.418/35.804 | 25.228/26.154/26.194 | 150.006/150.055/166.678 | 16.846/16.910/16.919 | 0.260/0.272/0.280 | 250.079/250.134/266.686 | unavailable (0) |
 
 The target's generation-queue P95 fell 88.5% in +X, 88.5% in +Z, and
-87.1% diagonally. Desired-to-accepted P95 fell 58.3%, 58.3%, and 48.4%,
+87.1% diagonally. Desired-to-accepted P95 fell 58.3%, 58.3%, and 51.6%,
 respectively, while stationary P95 remained within 0.1 ms. The FIFO target
 spent nearly all of its pre-generation latency in the physical pool queue;
-the priority target instead started within 37 ms at P99. This, together with
+the priority target instead started within 36 ms at P99. This, together with
 the constrained-worker ordering regressions, demonstrates that an approached
 chunk is no longer buried behind the older unstarted generation backlog.
 
@@ -700,9 +708,9 @@ starts before retained older farther work. The running job remains demanded
 and is not cancelled; after release, all logical, physical, completion, and
 retired owners drain to stable quiescence.
 
-Neighbor dependency remains the largest repaired P95 stage: 150.1 ms in both
-cardinal workloads and 166.7 ms diagonally, versus at most 35.7 ms for
-generation queue wait and 26.9 ms for generation execution. This controlled
+Neighbor dependency remains the largest repaired P95 stage: about 150.1 ms in
+all three moving workloads, versus at most 35.4 ms for generation queue wait
+and 26.2 ms for generation execution. This controlled
 result identifies the residual without establishing interactive impact. It
 does not justify adding a provisional neighbor policy; a separately bounded
 interactive first-draw study would be required before such a change.

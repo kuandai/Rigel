@@ -734,15 +734,17 @@ were:
 
 | Position | Nonempty chunks | Total non-air blocks | Generation P50/P95/P99 (ms) |
 | --- | ---: | ---: | ---: |
-| Wholly below | 9 / 9 | 291,833 | 16.733 / 18.945 / 18.945 |
-| Wholly above | 0 / 9 | 0 | 16.015 / 17.544 / 17.544 |
+| Wholly below | 9 / 9 | 291,833 | 17.084 / 19.281 / 19.281 |
+| Wholly above | 0 / 9 | 0 | 16.235 / 18.178 / 18.178 |
 
 This hardened rerun used assessment source
-`acabd94f52c30f57e57f5cd13c7533f3059af6ad`; its raw log has SHA-256
-`64bb3ee0accf69ea9354d196c314f15dfe2bfdc36f024c9c5b60ea449ee285f3`.
-With nine nearest-rank samples, both P95 and P99 select the observed cohort
-maximum; they are the same noisy tail observation, not independent
-population-tail estimates.
+`16e241f1027153e182c3f5ec07bc59f503ba3e55`; its raw log has SHA-256
+`f54128df9b6eb64b1f7e48cf6404d00ac3504115e029672d66d48f11b398bbd5`.
+It emits all 18 coordinate, occupancy, and execution-time samples before the
+two aggregate lines, so the percentiles and occupancy totals are independently
+recomputable. With nine nearest-rank samples, both P95 and P99 select the
+observed cohort maximum; they are the same noisy tail observation, not
+independent population-tail estimates.
 
 The production-lifecycle cohorts used the shipped view radius 12, unload
 radius 13, and 12-worker six/six generation/mesh split. Each generated the
@@ -754,9 +756,9 @@ than voxel-empty. The above-bound run likewise completed 7,153 generation jobs;
 voxel-empty. Generation cancellation/failure and mesh stale/failure counters
 were zero in both cohorts. Pending, in-flight, completion, terminal-failure,
 source-resolution, logical-generation, retired-work, load, and eviction owners
-were all zero at quiescence. The below and above runs required 8,434,078 and
-8,665,521 updates respectively; the combined process took 41.49 seconds and
-peaked at 6,316,112 KiB RSS on this host. This is measurement evidence only;
+were all zero at quiescence. The below and above runs required 7,184,743 and
+8,211,817 updates respectively; the combined process took 42.24 seconds and
+peaked at 6,318,664 KiB RSS on this host. This is measurement evidence only;
 no regression asserts that out-of-bounds chunks must remain nonempty or
 continue consuming mesh work.
 
@@ -801,10 +803,13 @@ initializes shipped block and texture resources, runs `FrameRenderer`, executes
 the GL field and frame graph, builds the ImGui legend/detail window, submits the
 ImGui draw data, and synchronizes each timed frame with `glFinish`.
 
-The retained runner source is
+The overlay captures used runner source
 `499292343d871e5a65df4da55301cbc5a0aeb024`, descended from the initial
 assessment at `ce1dd039bf0e37db89aec45efc0cb3acfffc4139` and the isolated CPU
 presentation boundary at `89afbefc2ba4f5b90f66cba396ae23f6b8223f3a`.
+The retained version 5 runner at
+`16e241f1027153e182c3f5ec07bc59f503ba3e55` adds only the raw vertical sample
+lines described above.
 
 Build and run the modes from the same Release build:
 
@@ -836,7 +841,9 @@ zero failed.
 Disabled P50/P95/P99 were all below the printed 0.001 ms precision. Enabled
 P50/P95/P99 were 2.003/2.026/2.035 ms, a 2.026 ms P95 increase. This is a
 CPU-side lower bound because GL and ImGui were excluded; the P95 increase is
-12.2% of a 16.667 ms frame budget. All 120 raw pairs are emitted with their
+12.2% of a 16.667 ms frame budget. The raw log has SHA-256
+`4c1fc95999eae6ebd574e15372e792883146f7627c444102cd1550acbaef781b`.
+All 120 raw pairs are emitted with their
 index, execution order, and exact disabled/enabled durations. The independently
 asserted disabled and enabled sample counts are both 120, equal to the requested
 pair count. The summary records the Release build, 20 hardware threads, shipped

@@ -136,10 +136,12 @@ void ChunkManager::setBlock(int wx, int wy, int wz, BlockState state) {
     }
 }
 
-void ChunkManager::unloadChunk(ChunkCoord coord) {
+void ChunkManager::unloadChunk(ChunkCoord coord, bool invalidateNeighbors) {
     auto it = m_chunks.find(coord);
     if (it != m_chunks.end()) {
-        invalidateFaceNeighbors(coord);
+        if (invalidateNeighbors) {
+            invalidateFaceNeighbors(coord);
+        }
         m_chunks.erase(it);
         m_dirtyMeshQueued.erase(coord);
         spdlog::debug("Unloaded chunk at ({}, {}, {})", coord.x, coord.y, coord.z);

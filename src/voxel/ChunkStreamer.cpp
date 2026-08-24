@@ -81,6 +81,15 @@ std::string diagnosticForLowestCoordinate(
 size_t visibilityKindIndex(ChunkVisibilityLifecycleKind kind) {
     return kind == ChunkVisibilityLifecycleKind::CameraDemand ? 0 : 1;
 }
+
+bool intersectsWorldBounds(
+    ChunkCoord coord,
+    const WorldGenConfig::WorldConfig& world) {
+    const int64_t chunkMinY =
+        static_cast<int64_t>(coord.y) * Chunk::SIZE;
+    const int64_t chunkMaxY = chunkMinY + Chunk::SIZE - 1;
+    return chunkMaxY >= world.minY && chunkMinY <= world.maxY;
+}
 } // namespace
 
 ChunkStreamer::ChunkImportance ChunkStreamer::chunkImportance(
@@ -154,6 +163,9 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                 return hasDirectStreamingDemand(coord);
             };
             auto remainsMeshEligible = [&](ChunkCoord coord) {
+                if (!chunkIntersectsWorldBounds(coord)) {
+                    return false;
+                }
                 const int distSq = distanceSquared(*m_lastCenter, coord);
                 if (distSq <= viewRadiusSq) {
                     return true;
@@ -329,6 +341,54 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
         return;
     }
 
+    std::vector<ChunkCoord> enteringWorldBounds;
+    if (m_chunkManager && m_generator && generator &&
+        (m_generator->config().world.minY != generator->config().world.minY ||
+         m_generator->config().world.maxY != generator->config().world.maxY)) {
+        const auto& previousWorld = m_generator->config().world;
+        const auto& replacementWorld = generator->config().world;
+        m_chunkManager->forEachChunk(
+            [&](ChunkCoord coord, Chunk& chunk) {
+                ++m_workMetrics.schedulerCoordinatesInspected;
+                const bool previouslyInside =
+                    intersectsWorldBounds(coord, previousWorld);
+                const bool replacementInside =
+                    intersectsWorldBounds(coord, replacementWorld);
+                if (previouslyInside == replacementInside) {
+                    return;
+                }
+                if (!replacementInside) {
+                    if (m_meshStore && m_meshStore->contains(coord)) {
+                        m_meshStore->remove(coord);
+                        if (!chunk.isEmpty()) {
+                            m_states[coord] = ChunkState::ReadyMesh;
+                            m_worldBoundsSuppressedMeshes.insert(coord);
+                        }
+                    }
+                    if (chunk.isEmpty()) {
+                        m_worldBoundsSuppressedMeshes.erase(coord);
+                    }
+                    return;
+                }
+
+                const bool replacementVersion =
+                    chunk.worldGenVersion() == replacementWorld.version;
+                if (chunk.isEmpty() || !replacementVersion) {
+                    m_worldBoundsSuppressedMeshes.erase(coord);
+                    if (!chunk.isEmpty()) {
+                        m_states[coord] = ChunkState::ReadyData;
+                    }
+                    return;
+                }
+
+                m_chunkManager->invalidateFaceNeighbors(coord);
+                if (m_worldBoundsSuppressedMeshes.find(coord) !=
+                    m_worldBoundsSuppressedMeshes.end()) {
+                    enteringWorldBounds.push_back(coord);
+                }
+            });
+    }
+
     for (const auto& pending : m_pendingVisibilityTraces) {
         if (pending) {
             completePendingVisibilityTrace(
@@ -370,6 +430,14 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
         m_workEpoch.store(1, std::memory_order_relaxed);
     }
     m_generator = std::move(generator);
+    // The cached desired set is shaped by the generator's vertical bounds.
+    m_lastViewDistance = -1;
+    for (const ChunkCoord& coord : enteringWorldBounds) {
+        if (Chunk* chunk = m_chunkManager->getChunk(coord)) {
+            chunk->invalidateMesh();
+        }
+        queueDirtyMesh(coord);
+    }
     for (auto& [coord, flight] : m_meshInFlight) {
         const bool prioritized = flight.prioritized;
         flight.obsolete = true;
@@ -528,6 +596,7 @@ void ChunkStreamer::prioritizeMesh(ChunkCoord coord) {
 
 void ChunkStreamer::update(const glm::vec3& cameraPos) {
     m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected = 0;
+    m_workMetrics.lastUpdateDesiredBuildCoordinatesSkippedByWorldBounds = 0;
     m_workMetrics.lastUpdateSchedulerCoordinatesInspected = 0;
     m_workMetrics.lastUpdateCacheEvictionCoordinatesInspected = 0;
     m_workMetrics.lastUpdateResidentEvictionCoordinatesInspected = 0;
@@ -545,6 +614,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     m_workStartedThisUpdate = false;
 
     uint64_t desiredBuildCoordinatesInspected = 0;
+    uint64_t desiredBuildCoordinatesSkippedByWorldBounds = 0;
     uint64_t schedulerCoordinatesInspected = 0;
     uint64_t cacheEvictionCoordinatesInspected = 0;
     uint64_t residentEvictionCoordinatesInspected = 0;
@@ -569,16 +639,38 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_loadGenQueue.clear();
         m_loadGenQueued.clear();
 
+        const int minWorldChunkY = worldToChunk(
+            0, m_generator->config().world.minY, 0).y;
+        const int maxWorldChunkY = worldToChunk(
+            0, m_generator->config().world.maxY, 0).y;
+        const int64_t requestedMinChunkY =
+            static_cast<int64_t>(center.y) - viewDistance;
+        const int64_t requestedMaxChunkY =
+            static_cast<int64_t>(center.y) + viewDistance;
+        const int64_t firstChunkY = std::max<int64_t>(
+            requestedMinChunkY, minWorldChunkY);
+        const int64_t lastChunkY = std::min<int64_t>(
+            requestedMaxChunkY, maxWorldChunkY);
+        const size_t diameter = static_cast<size_t>(viewDistance * 2 + 1);
+        const size_t clippedLayerCount = firstChunkY <= lastChunkY
+            ? static_cast<size_t>(lastChunkY - firstChunkY + 1)
+            : 0;
+        desiredBuildCoordinatesSkippedByWorldBounds =
+            static_cast<uint64_t>(
+                diameter * diameter * (diameter - clippedLayerCount));
+
         std::vector<ChunkImportance> desired;
-        desired.reserve(static_cast<size_t>(viewDistance * 2 + 1) *
-                        static_cast<size_t>(viewDistance * 2 + 1) *
-                        static_cast<size_t>(viewDistance * 2 + 1));
+        desired.reserve(diameter * diameter * clippedLayerCount);
 
         for (int dz = -viewDistance; dz <= viewDistance; ++dz) {
-            for (int dy = -viewDistance; dy <= viewDistance; ++dy) {
+            for (int64_t chunkY = firstChunkY;
+                 chunkY <= lastChunkY; ++chunkY) {
                 for (int dx = -viewDistance; dx <= viewDistance; ++dx) {
                     ++desiredBuildCoordinatesInspected;
-                    ChunkCoord coord{center.x + dx, center.y + dy, center.z + dz};
+                    ChunkCoord coord{
+                        center.x + dx,
+                        static_cast<int32_t>(chunkY),
+                        center.z + dz};
                     const ChunkImportance importance =
                         chunkImportance(center, coord);
                     if (importance.distanceSquared >
@@ -859,6 +951,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     if (m_meshStore) {
                         m_meshStore->remove(coord);
                     }
+                    m_worldBoundsSuppressedMeshes.erase(coord);
                     chunk->clearDirty();
                     m_priorityMeshRequests.erase(coord);
                     retirePendingMesh(coord);
@@ -936,12 +1029,29 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_chunkManager->forEachChunk([&](ChunkCoord coord, const Chunk&) {
             ++residentEvictionCoordinatesInspected;
             int distSq = distanceSquared(center, coord);
-            if (distSq > unloadRadiusSq) {
+            if (!chunkIntersectsWorldBounds(coord) ||
+                distSq > unloadRadiusSq) {
                 toEvict.push_back(coord);
             }
         });
 
         for (const ChunkCoord& coord : toEvict) {
+            if (!chunkIntersectsWorldBounds(coord)) {
+                const bool alreadyDeferred =
+                    m_evictionRetryAfter.find(coord) !=
+                        m_evictionRetryAfter.end();
+                Chunk* exteriorChunk = m_chunkManager->getChunk(coord);
+                if (m_meshStore && m_meshStore->contains(coord)) {
+                    m_meshStore->remove(coord);
+                    if (exteriorChunk && !exteriorChunk->isEmpty()) {
+                        m_states[coord] = ChunkState::ReadyMesh;
+                        m_worldBoundsSuppressedMeshes.insert(coord);
+                    }
+                }
+                if (!alreadyDeferred) {
+                    m_chunkManager->invalidateFaceNeighbors(coord);
+                }
+            }
             if (evictChunk(coord)) {
                 m_cache.erase(coord);
             }
@@ -961,6 +1071,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
 
     m_workMetrics.lastUpdateDesiredBuildCoordinatesInspected =
         desiredBuildCoordinatesInspected;
+    m_workMetrics.lastUpdateDesiredBuildCoordinatesSkippedByWorldBounds =
+        desiredBuildCoordinatesSkippedByWorldBounds;
     m_workMetrics.lastUpdateCacheEvictionCoordinatesInspected =
         cacheEvictionCoordinatesInspected;
     m_workMetrics.lastUpdateResidentEvictionCoordinatesInspected =
@@ -969,6 +1081,8 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         deferredEvictionCoordinatesInspected;
     m_workMetrics.desiredBuildCoordinatesInspected +=
         desiredBuildCoordinatesInspected;
+    m_workMetrics.desiredBuildCoordinatesSkippedByWorldBounds +=
+        desiredBuildCoordinatesSkippedByWorldBounds;
     m_workMetrics.schedulerCoordinatesInspected += schedulerCoordinatesInspected;
     m_workMetrics.lastUpdateSchedulerCoordinatesInspected =
         m_workMetrics.schedulerCoordinatesInspected -
@@ -1196,6 +1310,11 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                 remeshPending = remeshPending ||
                     (retiredIt != m_configRetiredWork.end() &&
                      retiredIt->second == ConfigRetiredWorkKind::DirtyMesh);
+                if (!chunkIntersectsWorldBounds(coord) &&
+                    m_worldBoundsSuppressedMeshes.find(coord) !=
+                        m_worldBoundsSuppressedMeshes.end()) {
+                    remeshPending = false;
+                }
                 if (remeshPending) {
                     debug.remeshIntent = DebugRemeshIntent::Pending;
                 }
@@ -1323,6 +1442,7 @@ void ChunkStreamer::reset() {
         m_workEpoch.store(1, std::memory_order_relaxed);
     }
     m_states.clear();
+    m_worldBoundsSuppressedMeshes.clear();
     for (auto& entry : m_meshInFlight) {
         entry.second.obsolete = true;
         setReplacementPending(entry.first, entry.second, false);
@@ -1423,7 +1543,9 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
     }
     if (chunk) {
         chunk->setLoadedFromDisk(false);
-        m_chunkManager->unloadChunk(coord);
+        const bool invalidateNeighbors =
+            !m_generator || chunkIntersectsWorldBounds(coord);
+        m_chunkManager->unloadChunk(coord, invalidateNeighbors);
         for (int i = 0; i < DirectionCount; ++i) {
             int dx = 0;
             int dy = 0;
@@ -1437,6 +1559,7 @@ bool ChunkStreamer::evictChunk(ChunkCoord coord, bool versionReplacement) {
         }
     }
     m_states.erase(coord);
+    m_worldBoundsSuppressedMeshes.erase(coord);
     m_configRetiredWork.erase(coord);
     retirePendingMesh(coord);
     retireReplacementPending(coord);
@@ -1490,8 +1613,11 @@ uint64_t ChunkStreamer::retireIneligibleEvictions(ChunkCoord center,
         }
 
         int distSq = distanceSquared(center, coord);
-        bool desired = distSq <= viewRadiusSq;
-        bool outsideUnloadRadius = distSq > unloadRadiusSq;
+        bool desired = distSq <= viewRadiusSq &&
+            m_desiredSet.find(coord) != m_desiredSet.end();
+        bool outsideUnloadRadius =
+            !chunkIntersectsWorldBounds(coord) ||
+            distSq > unloadRadiusSq;
         bool cachePressure = m_cache.maxChunks() > 0 &&
             m_cache.size() > m_cache.maxChunks() && !desired;
         if (!outsideUnloadRadius && !cachePressure) {
@@ -1552,7 +1678,9 @@ void ChunkStreamer::retryDeferredEvictions(ChunkCoord center, int unloadRadiusSq
             continue;
         }
 
-        bool outsideUnloadRadius = distanceSquared(center, coord) > unloadRadiusSq;
+        bool outsideUnloadRadius =
+            !chunkIntersectsWorldBounds(coord) ||
+            distanceSquared(center, coord) > unloadRadiusSq;
         bool cachePressure =
             m_cache.maxChunks() > 0 &&
             m_cache.size() > m_cache.maxChunks() &&
@@ -1959,6 +2087,7 @@ void ChunkStreamer::applyMeshCompletions(size_t budget) {
                 visibilityTrace);
         }
         chunk->clearDirty();
+        m_worldBoundsSuppressedMeshes.erase(meshResult.coord);
         eraseFailure(m_meshErrors, m_meshFailureVersion, meshResult.coord);
         stateIt->second = ChunkState::ReadyMesh;
         completeVisibility(meshResult.empty
@@ -2199,7 +2328,17 @@ bool ChunkStreamer::hasDirectStreamingDemand(ChunkCoord coord) const {
         viewDistance * viewDistance;
 }
 
+bool ChunkStreamer::chunkIntersectsWorldBounds(ChunkCoord coord) const {
+    if (!m_generator) {
+        return false;
+    }
+    return intersectsWorldBounds(coord, m_generator->config().world);
+}
+
 std::optional<size_t> ChunkStreamer::dirtyMeshPriority(ChunkCoord coord) const {
+    if (!chunkIntersectsWorldBounds(coord)) {
+        return std::nullopt;
+    }
     int distanceSq = 0;
     if (m_lastCenter) {
         distanceSq = distanceSquared(*m_lastCenter, coord);
@@ -2212,10 +2351,15 @@ std::optional<size_t> ChunkStreamer::dirtyMeshPriority(ChunkCoord coord) const {
     }
     const int unloadDistance = std::max(
         viewDistance, m_config.unloadDistanceChunks);
-    if (m_chunkManager && m_chunkManager->getChunk(coord) &&
-        m_meshStore && m_meshStore->contains(coord) &&
+    if (m_chunkManager && m_meshStore &&
         (!m_lastCenter || distanceSq <= unloadDistance * unloadDistance)) {
-        return m_desired.size();
+        Chunk* chunk = m_chunkManager->getChunk(coord);
+        if (chunk &&
+            (m_meshStore->contains(coord) ||
+             m_worldBoundsSuppressedMeshes.find(coord) !=
+                 m_worldBoundsSuppressedMeshes.end())) {
+            return m_desired.size();
+        }
     }
     return std::nullopt;
 }
@@ -2400,7 +2544,9 @@ ChunkStreamer::PendingWorkKind ChunkStreamer::classifyPendingWork(
         state = stateIt->second;
     }
     const bool hasMesh = m_meshStore && m_meshStore->contains(coord);
-    const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+    const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh ||
+        m_worldBoundsSuppressedMeshes.find(coord) !=
+            m_worldBoundsSuppressedMeshes.end();
     return !isMeshed || chunk->isDirty()
         ? PendingWorkKind::Mesh
         : PendingWorkKind::None;
@@ -2565,7 +2711,9 @@ bool ChunkStreamer::hasEligibleMeshWork(ChunkCoord coord) const {
         state = stateIt->second;
     }
     const bool hasMesh = m_meshStore && m_meshStore->contains(coord);
-    const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+    const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh ||
+        m_worldBoundsSuppressedMeshes.find(coord) !=
+            m_worldBoundsSuppressedMeshes.end();
     return !isMeshed || chunk->isDirty();
 }
 
@@ -2601,6 +2749,16 @@ void ChunkStreamer::retireReplacementPending(ChunkCoord coord) {
 void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
     const auto priority = dirtyMeshPriority(coord);
     if (!priority) {
+        Chunk* chunk = m_chunkManager
+            ? m_chunkManager->getChunk(coord)
+            : nullptr;
+        const bool currentVersion = chunk &&
+            (!m_generator ||
+             chunk->worldGenVersion() ==
+                 m_generator->config().world.version);
+        if (currentVersion && chunk->isEmpty()) {
+            m_worldBoundsSuppressedMeshes.erase(coord);
+        }
         if (m_configRetiredWork.find(coord) !=
                 m_configRetiredWork.end() ||
             m_evictionRetryAfter.find(coord) !=
@@ -2610,13 +2768,6 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
             m_priorityMeshRequests.erase(coord);
             return;
         }
-        Chunk* chunk = m_chunkManager
-            ? m_chunkManager->getChunk(coord)
-            : nullptr;
-        const bool currentVersion = chunk &&
-            (!m_generator ||
-             chunk->worldGenVersion() ==
-                 m_generator->config().world.version);
         if (currentVersion && chunk->isEmpty()) {
             if (m_meshStore) {
                 m_meshStore->remove(coord);
@@ -2651,7 +2802,9 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
         if (stateIt != m_states.end()) {
             state = stateIt->second;
         }
-        const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+        const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh ||
+            m_worldBoundsSuppressedMeshes.find(coord) !=
+                m_worldBoundsSuppressedMeshes.end();
         const bool meshInFlight =
             m_meshInFlight.find(coord) != m_meshInFlight.end();
         const bool dirty = chunk && chunk->isDirty();
@@ -2700,6 +2853,7 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
         if (m_meshStore) {
             m_meshStore->remove(coord);
         }
+        m_worldBoundsSuppressedMeshes.erase(coord);
         chunk->clearDirty();
         retirePendingMesh(coord);
         retireReplacementPending(coord);
@@ -2737,7 +2891,9 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
         state = stateIt->second;
     }
     const bool hasMesh = m_meshStore && m_meshStore->contains(coord);
-    const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+    const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh ||
+        m_worldBoundsSuppressedMeshes.find(coord) !=
+            m_worldBoundsSuppressedMeshes.end();
     if (isMeshed && !chunk->isDirty()) {
         m_priorityMeshRequests.erase(coord);
         retirePendingMesh(coord);
@@ -3479,7 +3635,9 @@ void ChunkStreamer::dispatchPendingMeshes(
         }
         const bool hasMesh =
             m_meshStore && m_meshStore->contains(request.coord);
-        const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh;
+        const bool isMeshed = hasMesh || state == ChunkState::ReadyMesh ||
+            m_worldBoundsSuppressedMeshes.find(request.coord) !=
+                m_worldBoundsSuppressedMeshes.end();
         if (isMeshed && !chunk->isDirty()) {
             m_priorityMeshRequests.erase(request.coord);
             erasePendingMesh(request.coord);
@@ -3729,7 +3887,10 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord,
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {
                 ChunkCoord neighborCoord = coord.offset(dx, dy, dz);
-                neighborChunks[neighborIndex(dx, dy, dz)] = m_chunkManager->getChunk(neighborCoord);
+                neighborChunks[neighborIndex(dx, dy, dz)] =
+                    chunkIntersectsWorldBounds(neighborCoord)
+                    ? m_chunkManager->getChunk(neighborCoord)
+                    : nullptr;
             }
         }
     }

@@ -157,7 +157,7 @@ private:
     friend class ChunkStreamer;
     friend class Rigel::Persistence::AsyncChunkLoader;
 
-    void unloadChunk(ChunkCoord coord);
+    void unloadChunk(ChunkCoord coord, bool invalidateNeighbors);
     void invalidateFaceNeighbors(ChunkCoord coord);
     void notifyMeshChange(ChunkCoord coord);
     std::vector<ChunkCoord> consumeDirtyMeshNotifications();

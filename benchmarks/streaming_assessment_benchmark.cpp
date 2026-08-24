@@ -364,6 +364,11 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
                                     Voxel::ChunkStreamer::DebugInstalledGeometry::Empty
                               ? "empty"
                               : "none")
+                  << " desired_build_coordinates_inspected="
+                  << lifecycle.work.desiredBuildCoordinatesInspected
+                  << " desired_build_coordinates_skipped_by_world_bounds="
+                  << lifecycle.work
+                         .desiredBuildCoordinatesSkippedByWorldBounds
                   << " generation_started="
                   << lifecycle.work.generationJobsStarted
                   << " generation_completed="

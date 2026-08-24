@@ -61,15 +61,20 @@ public:
         uint64_t meshRequestsCoalesced = 0;
         // Candidate coordinates tested while rebuilding the desired set.
         uint64_t desiredBuildCoordinatesInspected = 0;
-        // Pending load/generation and mesh candidates visited by the scheduler.
+        // Candidate coordinates not visited because their chunk Y cannot
+        // intersect the generator's inclusive finite-world bounds.
+        uint64_t desiredBuildCoordinatesSkippedByWorldBounds = 0;
+        // Pending work and event-driven reconciliation candidates visited by
+        // the scheduler.
         uint64_t schedulerCoordinatesInspected = 0;
         // Resident cache entries considered for capacity eviction.
         uint64_t cacheEvictionCoordinatesInspected = 0;
-        // Resident chunks considered for distance eviction.
+        // Resident chunks considered for world-bounds or distance eviction.
         uint64_t residentEvictionCoordinatesInspected = 0;
         // Deferred evictions reconsidered after camera or configuration changes.
         uint64_t deferredEvictionCoordinatesInspected = 0;
         uint64_t lastUpdateDesiredBuildCoordinatesInspected = 0;
+        uint64_t lastUpdateDesiredBuildCoordinatesSkippedByWorldBounds = 0;
         uint64_t lastUpdateSchedulerCoordinatesInspected = 0;
         uint64_t lastUpdateCacheEvictionCoordinatesInspected = 0;
         uint64_t lastUpdateResidentEvictionCoordinatesInspected = 0;
@@ -378,6 +383,10 @@ private:
     detail::ConcurrentQueue<GenResult> m_genComplete;
     detail::ConcurrentQueue<MeshResult> m_meshComplete;
     std::unordered_map<ChunkCoord, ChunkState, ChunkCoordHash> m_states;
+    // Resident nonempty chunks whose installed meshes were removed when the
+    // chunks left the generator bounds and can be rebuilt if they re-enter.
+    std::unordered_set<ChunkCoord, ChunkCoordHash>
+        m_worldBoundsSuppressedMeshes;
     std::unordered_map<ChunkCoord, ChunkLoadRequestId, ChunkCoordHash> m_loadPending;
     std::unordered_map<
         ChunkCoord,
@@ -468,6 +477,7 @@ private:
     void waitForMeshDependencies(ChunkCoord coord);
     void queueLoadedNeighbors(ChunkCoord coord);
     bool hasDirectStreamingDemand(ChunkCoord coord) const;
+    bool chunkIntersectsWorldBounds(ChunkCoord coord) const;
     std::optional<size_t> dirtyMeshPriority(ChunkCoord coord) const;
     bool queuePendingMesh(ChunkCoord coord,
                           MeshRequestKind kind,

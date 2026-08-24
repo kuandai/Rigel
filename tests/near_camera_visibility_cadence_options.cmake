@@ -26,9 +26,23 @@ if (NOT APPLICATION_OUTPUT MATCHES
         "Application-like benchmark did not declare its lifecycle wait signal")
 endif()
 if (NOT APPLICATION_OUTPUT MATCHES
-    "configuration [^\n]*cadence_mode=application_like update_interval_ms=16\\.667 representative_time_to_visible=true")
+    "configuration [^\n]*mesh_submission_limit_source=runtime_diagnostics effective_mesh_submission_limit=1[^\n]*cadence_mode=application_like update_interval_ms=16\\.667 evidence_scope=controlled_fixture_application_like_cadence shipped_time_to_visible_evidence=false interactive_time_to_visible_evidence=false")
     message(FATAL_ERROR
         "Default application-like cadence metadata was absent or incorrect")
+endif()
+if (APPLICATION_OUTPUT MATCHES
+    "evidence_scope=nonrepresentative_scheduler_lower_bound")
+    message(FATAL_ERROR
+        "Default application-like result also claimed scheduler stress scope")
+endif()
+if (NOT APPLICATION_OUTPUT MATCHES
+    "assessment comparison_budget_status=within[^\n]*assessment_scope=numeric_result_only")
+    message(FATAL_ERROR
+        "Application-like budget assessment did not classify only the numeric result")
+endif()
+if (APPLICATION_OUTPUT MATCHES "provisional_neighbor_policy=")
+    message(FATAL_ERROR
+        "Application-like budget assessment emitted a neighbor-policy conclusion")
 endif()
 string(REGEX MATCHALL "sample index=[^\n]*" APPLICATION_SAMPLE_LINES
     "${APPLICATION_OUTPUT}")
@@ -80,9 +94,18 @@ if (NOT STRESS_OUTPUT MATCHES
         "Scheduler stress benchmark did not declare its lifecycle wait signal")
 endif()
 if (NOT STRESS_OUTPUT MATCHES
-    "configuration [^\n]*cadence_mode=scheduler_lower_bound_stress update_interval_ms=unpaced representative_time_to_visible=false")
+    "configuration [^\n]*cadence_mode=scheduler_lower_bound_stress update_interval_ms=unpaced evidence_scope=nonrepresentative_scheduler_lower_bound shipped_time_to_visible_evidence=false interactive_time_to_visible_evidence=false")
     message(FATAL_ERROR
         "Scheduler lower-bound stress metadata was absent or incorrect")
+endif()
+if (STRESS_OUTPUT MATCHES
+    "evidence_scope=controlled_fixture_application_like_cadence")
+    message(FATAL_ERROR
+        "Scheduler stress result also claimed application-like evidence scope")
+endif()
+if (STRESS_OUTPUT MATCHES "provisional_neighbor_policy=")
+    message(FATAL_ERROR
+        "Scheduler stress budget assessment emitted a neighbor-policy conclusion")
 endif()
 string(REGEX MATCHALL "sample index=[^\n]*" STRESS_SAMPLE_LINES
     "${STRESS_OUTPUT}")
@@ -126,7 +149,10 @@ foreach(STRESS_FIRST IN ITEMS FALSE TRUE)
             --update-interval-ms 5 --scheduler-lower-bound-stress)
     endif()
     execute_process(
-        COMMAND "${BENCHMARK_EXECUTABLE}" ${MIXED_CADENCE_ARGUMENTS}
+        COMMAND "${BENCHMARK_EXECUTABLE}"
+            --samples 1
+            --timeout-seconds 1
+            ${MIXED_CADENCE_ARGUMENTS}
         RESULT_VARIABLE MIXED_CADENCE_RESULT
         OUTPUT_VARIABLE MIXED_CADENCE_OUTPUT
         ERROR_VARIABLE MIXED_CADENCE_ERROR
@@ -140,15 +166,51 @@ foreach(STRESS_FIRST IN ITEMS FALSE TRUE)
             "Benchmark did not identify mutually exclusive cadence modes: ${MIXED_CADENCE_ERROR}")
     endif()
     if (MIXED_CADENCE_OUTPUT MATCHES
-        "cadence_mode=|representative_time_to_visible=")
+        "cadence_mode=|evidence_scope=")
         message(FATAL_ERROR
             "Rejected mixed cadence modes emitted evidence metadata")
     endif()
 endforeach()
 
+execute_process(
+    COMMAND "${BENCHMARK_EXECUTABLE}"
+        --samples 1
+        --view-distance 1
+        --worker-threads 4
+        --timeout-seconds 10
+        --comparison-budget-ms 100000
+        --update-interval-ms 5
+    RESULT_VARIABLE EXPLICIT_RESULT
+    OUTPUT_VARIABLE EXPLICIT_OUTPUT
+    ERROR_VARIABLE EXPLICIT_ERROR
+)
+if (NOT EXPLICIT_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "Explicit application-like benchmark failed: ${EXPLICIT_ERROR}")
+endif()
+if (NOT EXPLICIT_OUTPUT MATCHES
+    "configuration [^\n]*worker_threads=4[^\n]*mesh_submission_limit_source=runtime_diagnostics effective_mesh_submission_limit=2[^\n]*cadence_mode=application_like update_interval_ms=5\\.000 evidence_scope=controlled_fixture_application_like_cadence")
+    message(FATAL_ERROR
+        "Explicit application-like cadence or scheduler metadata was absent or incorrect")
+endif()
+string(REGEX MATCHALL "sample index=[^\n]*completion_state=quiescent"
+    EXPLICIT_QUIESCENT_SAMPLES "${EXPLICIT_OUTPUT}")
+list(LENGTH EXPLICIT_QUIESCENT_SAMPLES EXPLICIT_QUIESCENT_COUNT)
+if (NOT EXPLICIT_QUIESCENT_COUNT EQUAL 2)
+    message(FATAL_ERROR
+        "Explicit application-like cadence did not produce two Quiescent samples")
+endif()
+if (EXPLICIT_OUTPUT MATCHES
+    "evidence_scope=nonrepresentative_scheduler_lower_bound|provisional_neighbor_policy=")
+    message(FATAL_ERROR
+        "Explicit application-like output mixed evidence scopes or policy conclusions")
+endif()
+
 foreach(INVALID_INTERVAL IN ITEMS 0.0000001 1e300)
     execute_process(
         COMMAND "${BENCHMARK_EXECUTABLE}"
+            --samples 1
+            --timeout-seconds 1
             --update-interval-ms "${INVALID_INTERVAL}"
         RESULT_VARIABLE RESULT
         OUTPUT_VARIABLE OUTPUT
@@ -164,7 +226,7 @@ foreach(INVALID_INTERVAL IN ITEMS 0.0000001 1e300)
             "Benchmark did not identify invalid cadence ${INVALID_INTERVAL}: ${ERROR}")
     endif()
     if (OUTPUT MATCHES
-        "cadence_mode=application_like|representative_time_to_visible=true")
+        "cadence_mode=application_like|evidence_scope=")
         message(FATAL_ERROR
             "Invalid cadence ${INVALID_INTERVAL} emitted representative metadata")
     endif()

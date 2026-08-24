@@ -34,17 +34,17 @@ namespace {
 using namespace Rigel;
 using BenchmarkClock = std::chrono::steady_clock;
 
-constexpr double kDefaultUpdateIntervalMilliseconds = 1000.0 / 60.0;
+constexpr long double kDefaultUpdateIntervalMilliseconds = 1000.0L / 60.0L;
 
 struct Options {
     size_t samplesPerDistance = 20;
     int viewDistance = 2;
     int workerThreads = 2;
     int timeoutSeconds = 30;
-    double updateIntervalMilliseconds = kDefaultUpdateIntervalMilliseconds;
+    long double updateIntervalMilliseconds = kDefaultUpdateIntervalMilliseconds;
     BenchmarkClock::duration updateInterval =
         std::chrono::duration_cast<BenchmarkClock::duration>(
-            std::chrono::duration<double, std::milli>(
+            std::chrono::duration<long double, std::milli>(
                 kDefaultUpdateIntervalMilliseconds));
     double comparisonBudgetMilliseconds = 50.0;
     bool updateIntervalSpecified = false;
@@ -85,21 +85,33 @@ std::optional<double> parseDouble(std::string_view value) {
     return parsed;
 }
 
-std::optional<BenchmarkClock::duration> toUpdateInterval(double milliseconds) {
-    using Milliseconds = std::chrono::duration<double, std::milli>;
-    const auto minimumMilliseconds =
-        Milliseconds(BenchmarkClock::duration{1}).count();
-    const auto maximumMilliseconds =
-        Milliseconds(BenchmarkClock::duration::max()).count();
-    if (!std::isfinite(milliseconds) ||
-        milliseconds < minimumMilliseconds ||
-        milliseconds >= maximumMilliseconds) {
+std::optional<long double> parseLongDouble(std::string_view value) {
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    char* end = nullptr;
+    const std::string owned(value);
+    const long double parsed = std::strtold(owned.c_str(), &end);
+    if (!end || *end != '\0') {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+std::optional<BenchmarkClock::duration> toUpdateInterval(
+    long double milliseconds) {
+    using Milliseconds = std::chrono::duration<long double, std::milli>;
+    const Milliseconds requested{milliseconds};
+    const Milliseconds minimum{BenchmarkClock::duration{1}};
+    const Milliseconds maximum{BenchmarkClock::duration::max()};
+    if (!std::isfinite(milliseconds) || requested < minimum ||
+        requested >= maximum) {
         return std::nullopt;
     }
 
     const auto interval =
         std::chrono::duration_cast<BenchmarkClock::duration>(
-            Milliseconds(milliseconds));
+            requested);
     if (interval <= BenchmarkClock::duration::zero()) {
         return std::nullopt;
     }
@@ -142,35 +154,37 @@ bool parseOptions(int argc, char** argv, Options& options) {
             return false;
         }
         const std::string_view value(argv[++index]);
-        if (argument == "--update-interval-ms" ||
-            argument == "--comparison-budget-ms") {
+        if (argument == "--update-interval-ms") {
+            const auto parsed = parseLongDouble(value);
+            const auto interval = parsed
+                ? toUpdateInterval(*parsed)
+                : std::nullopt;
+            if (!interval) {
+                std::cerr
+                    << "Invalid application-like update interval: "
+                    << value
+                    << " (must be at least one steady-clock tick and below "
+                       "the maximum representable duration)\n";
+                return false;
+            }
+            if (options.schedulerLowerBoundStress) {
+                std::cerr
+                    << "An explicit update interval cannot be combined "
+                       "with scheduler stress\n";
+                return false;
+            }
+            options.updateIntervalMilliseconds = *parsed;
+            options.updateInterval = *interval;
+            options.updateIntervalSpecified = true;
+            continue;
+        }
+        if (argument == "--comparison-budget-ms") {
             const auto parsed = parseDouble(value);
             if (!parsed || !std::isfinite(*parsed) || *parsed <= 0.0) {
                 std::cerr << "Invalid positive duration: " << value << '\n';
                 return false;
             }
-            if (argument == "--update-interval-ms") {
-                const auto interval = toUpdateInterval(*parsed);
-                if (!interval) {
-                    std::cerr
-                        << "Invalid application-like update interval: "
-                        << value
-                        << " (must convert to a positive, representable "
-                           "steady-clock duration)\n";
-                    return false;
-                }
-                if (options.schedulerLowerBoundStress) {
-                    std::cerr
-                        << "An explicit update interval cannot be combined "
-                           "with scheduler stress\n";
-                    return false;
-                }
-                options.updateIntervalMilliseconds = *parsed;
-                options.updateInterval = *interval;
-                options.updateIntervalSpecified = true;
-            } else {
-                options.comparisonBudgetMilliseconds = *parsed;
-            }
+            options.comparisonBudgetMilliseconds = *parsed;
             continue;
         }
         const auto parsed = parseInteger(value);
@@ -216,6 +230,29 @@ std::shared_ptr<Voxel::WorldGenerator> makeGenerator(
         registry, std::move(config));
 }
 
+Voxel::StreamingConfig makeStreamingConfig(const Options& options) {
+    Voxel::StreamingConfig stream;
+    stream.viewDistanceChunks = options.viewDistance;
+    stream.unloadDistanceChunks = options.viewDistance;
+    stream.genQueueLimit = 0;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = options.workerThreads;
+    stream.maxResidentChunks = 0;
+    return stream;
+}
+
+Voxel::StreamingDiagnosticSnapshot runtimeSchedulerMetadata(
+    const Options& options) {
+    Voxel::ChunkManager manager;
+    Voxel::BlockRegistry registry;
+    Voxel::WorldMeshStore meshStore;
+    Voxel::ChunkStreamer streamer(manager, meshStore, registry, nullptr, {});
+    streamer.setConfig(makeStreamingConfig(options));
+    return streamer.diagnostics();
+}
+
 RunResult runSample(const Options& options,
                     Voxel::ChunkCoord target,
                     int distanceSquared) {
@@ -228,16 +265,7 @@ RunResult runSample(const Options& options,
     Voxel::ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, generator);
 
-    Voxel::StreamingConfig stream;
-    stream.viewDistanceChunks = options.viewDistance;
-    stream.unloadDistanceChunks = options.viewDistance;
-    stream.genQueueLimit = 0;
-    stream.meshQueueLimit = 0;
-    stream.updateBudgetPerFrame = 0;
-    stream.applyBudgetPerFrame = 0;
-    stream.workerThreads = options.workerThreads;
-    stream.maxResidentChunks = 0;
-    streamer.setConfig(stream);
+    streamer.setConfig(makeStreamingConfig(options));
     streamer.setVisibilityTracer(tracer);
     streamer.setChunkLoader([](Voxel::ChunkLoadRequest) {
         return Voxel::ChunkLoadRequestResult::Missing;
@@ -370,6 +398,8 @@ int main(int argc, char** argv) {
         return argc > 1 && std::string_view(argv[1]) == "--help" ? 0 : 2;
     }
 
+    const auto schedulerMetadata = runtimeSchedulerMetadata(options);
+
     std::cout << std::fixed << std::setprecision(3);
     std::cout
         << "benchmark name=near_camera_visibility version=2"
@@ -388,8 +418,9 @@ int main(int argc, char** argv) {
         << " worker_threads=" << options.workerThreads
         << " gen_queue_limit=unbounded"
         << " mesh_queue_limit_setting=unbounded"
+        << " mesh_submission_limit_source=runtime_diagnostics"
         << " effective_mesh_submission_limit="
-        << std::max(1, options.workerThreads / 2)
+        << schedulerMetadata.meshSubmissionLimit
         << " update_budget=unbounded"
         << " apply_budget=unbounded"
         << " cadence_mode="
@@ -403,8 +434,12 @@ int main(int argc, char** argv) {
         std::cout << options.updateIntervalMilliseconds;
     }
     std::cout
-        << " representative_time_to_visible="
-        << (options.schedulerLowerBoundStress ? "false" : "true")
+        << " evidence_scope="
+        << (options.schedulerLowerBoundStress
+                ? "nonrepresentative_scheduler_lower_bound"
+                : "controlled_fixture_application_like_cadence")
+        << " shipped_time_to_visible_evidence=false"
+        << " interactive_time_to_visible_evidence=false"
         << " comparison_budget_ms="
         << options.comparisonBudgetMilliseconds
         << " comparison_budget_role=operator_supplied\n";
@@ -502,13 +537,11 @@ int main(int argc, char** argv) {
     std::cout
         << "assessment comparison_budget_status="
         << (withinBudget ? "within" : "exceeds")
-        << " maximum_near_dependency_p95_ms=" << maximumDependencyP95
+        << " maximum_dependency_wait_p95_ms=" << maximumDependencyP95
         << " comparison_budget_ms="
         << options.comparisonBudgetMilliseconds
         << " comparison_budget_role=operator_supplied_comparison_only"
-        << " proves_interactive_acceptability=false"
-        << " provisional_neighbor_policy="
-        << (withinBudget ? "not_justified" : "requires_separate_validation")
+        << " assessment_scope=numeric_result_only"
         << '\n';
     std::cout
         << "external_validation required=true"

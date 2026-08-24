@@ -224,6 +224,66 @@ struct ChunkStreamerTestAccess {
         return streamer.m_generationFlights.size();
     }
 
+    static size_t generationOwnerCount(const ChunkStreamer& streamer) {
+        return streamer.m_generationFlights.size();
+    }
+
+    static size_t generationOwnerCountInPhase(
+        const ChunkStreamer& streamer,
+        ChunkStreamer::GenerationExecutorPhase phase) {
+        return static_cast<size_t>(std::count_if(
+            streamer.m_generationFlights.begin(),
+            streamer.m_generationFlights.end(),
+            [phase](const auto& entry) {
+                const auto& flight = entry.second;
+                return flight->phase.load(std::memory_order_acquire) == phase;
+            }));
+    }
+
+    static size_t generationRunningOwnerCount(
+        const ChunkStreamer& streamer) {
+        return generationOwnerCountInPhase(
+            streamer,
+            ChunkStreamer::GenerationExecutorPhase::WorkerRunning);
+    }
+
+    static size_t generationQueuedOwnerCount(
+        const ChunkStreamer& streamer) {
+        return generationOwnerCountInPhase(
+            streamer,
+            ChunkStreamer::GenerationExecutorPhase::ExecutorQueued);
+    }
+
+    static ThreadPool::JobHandle generationExecutorJob(
+        const ChunkStreamer& streamer,
+        ChunkCoord coord) {
+        auto it = streamer.m_generationFlights.find(coord);
+        return it == streamer.m_generationFlights.end()
+            ? ThreadPool::JobHandle{}
+            : it->second->executorJob;
+    }
+
+    static bool cancelGenerationExecutorJob(
+        ChunkStreamer& streamer,
+        const ThreadPool::JobHandle& job) {
+        return streamer.m_genPool && streamer.m_genPool->cancel(job);
+    }
+
+    static size_t generationPoolPendingCount(ChunkStreamer& streamer) {
+        return streamer.m_genPool
+            ? ThreadPoolTestAccess::pendingJobCount(*streamer.m_genPool)
+            : 0;
+    }
+
+    static std::weak_ptr<const void> generationFlightWeak(
+        const ChunkStreamer& streamer,
+        ChunkCoord coord) {
+        auto it = streamer.m_generationFlights.find(coord);
+        return it == streamer.m_generationFlights.end()
+            ? std::weak_ptr<const void>{}
+            : std::weak_ptr<const void>{it->second};
+    }
+
     static size_t pendingGenerationCount(const ChunkStreamer& streamer) {
         return streamer.m_pendingGenerations.size();
     }
@@ -557,6 +617,17 @@ bool waitForGenerationCompletion(const ChunkStreamer& streamer) {
     }
     return Rigel::Voxel::detail::ChunkStreamerTestAccess::generationCompletionCount(
         streamer) > 0;
+}
+
+void checkGenerationAccounting(const ChunkStreamer& streamer) {
+    const auto& metrics = streamer.workMetrics();
+    const size_t owners = Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        generationOwnerCount(streamer);
+    CHECK_EQ(streamer.diagnostics().generation.inFlight, owners);
+    CHECK_EQ(
+        metrics.generationJobsStarted,
+        metrics.generationJobsCompleted +
+            metrics.generationJobsCancelled + owners);
 }
 
 bool waitForMeshCompletions(ChunkStreamer& streamer, uint64_t target) {
@@ -2963,6 +3034,104 @@ TEST_CASE(ChunkStreamer_GenerationFailureCompletesJob) {
     }
 }
 
+TEST_CASE(ChunkStreamer_GenerationFailureRetriesAfterGeneratorReplacement) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto originalGenerator = makeGenerator(registry);
+    auto replacementGenerator = std::make_shared<WorldGenerator>(
+        registry, originalGenerator->config());
+    std::atomic<size_t> generationAttempts{0};
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, originalGenerator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 1;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [&generationAttempts]() {
+            if (generationAttempts.fetch_add(
+                    1, std::memory_order_relaxed) == 0) {
+                throw std::runtime_error("injected retryable failure");
+            }
+        });
+
+    const ChunkCoord coord{0, 0, 0};
+    streamer.update(coord.toWorldCenter());
+    CHECK(waitForGenerationCompletion(streamer));
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsFailed,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.terminalErrors,
+             static_cast<size_t>(1));
+    CHECK(!manager.hasChunk(coord));
+    checkGenerationAccounting(streamer);
+
+    streamer.setGenerator(replacementGenerator);
+    streamer.update(coord.toWorldCenter());
+    CHECK(waitForGenerationCompletion(streamer));
+    streamer.processCompletions();
+
+    CHECK(manager.hasChunk(coord));
+    CHECK_EQ(generationAttempts.load(std::memory_order_relaxed),
+             static_cast<size_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsFailed,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().generation.terminalErrors,
+             static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationFlightCount(
+            streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationIndexCount(streamer),
+        static_cast<size_t>(0));
+    checkGenerationAccounting(streamer);
+
+    bool quiescent = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        streamer.update(coord.toWorldCenter());
+        streamer.processCompletions();
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            quiescent = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+    CHECK(quiescent);
+    CHECK(streamer.diagnostics().workEmpty());
+    checkGenerationAccounting(streamer);
+}
+
 TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     ChunkManager manager;
     BlockRegistry registry;
@@ -3075,6 +3244,125 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     }
     CHECK_EQ(accepted->worldGenVersion(), replacementConfig.world.version);
     CHECK_EQ(accepted->getBlock(0, 0, 0).id, replacementBlock);
+}
+
+TEST_CASE(ChunkStreamer_ResetRetiresPendingGenerationImmediately) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    auto gate = std::make_shared<WorkerGate>();
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    WorkerGateRelease releaseOnExit(gate);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 128;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [gate]() { gate->enterAndWait(); });
+
+    const ChunkCoord original{0, 0, 0};
+    streamer.update(original.toWorldCenter());
+    CHECK(gate->waitUntilEntered());
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(5));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationCount(streamer),
+        static_cast<size_t>(5));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationIndexCount(streamer),
+        static_cast<size_t>(5));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(1));
+    checkGenerationAccounting(streamer);
+
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::reset(streamer);
+
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationCount(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationIndexCount(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationFlightCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(0));
+    checkGenerationAccounting(streamer);
+
+    gate->release();
+    CHECK(waitForGenerationCompletion(streamer));
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(0));
+    CHECK(!manager.hasChunk(original));
+    checkGenerationAccounting(streamer);
+
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer, {});
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+    const ChunkCoord current{4, 0, 0};
+    bool quiescent = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        streamer.update(current.toWorldCenter());
+        streamer.processCompletions();
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            quiescent = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+    CHECK(quiescent);
+    CHECK(manager.hasChunk(current));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK(streamer.diagnostics().workEmpty());
+    checkGenerationAccounting(streamer);
 }
 
 TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGeneration) {
@@ -3327,6 +3615,272 @@ TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGene
         CHECK_EQ(streamer.diagnostics().stableUpdates, stable);
     }
     CHECK_EQ(streamer.diagnostics().state, StreamingLifecycleState::Quiescent);
+}
+
+TEST_CASE(ChunkStreamer_RecreatedGenerationPoolRejectsRetiredJobIdentity) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto originalGenerator = makeGenerator(registry);
+    WorldGenConfig replacementConfig = originalGenerator->config();
+    ++replacementConfig.world.version;
+    auto replacementGenerator =
+        std::make_shared<WorldGenerator>(registry, replacementConfig);
+    auto replacementGate = std::make_shared<WorkerGate>();
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, originalGenerator);
+    WorkerGateRelease releaseOnExit(replacementGate);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 128;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    const ChunkCoord coord{0, 0, 0};
+    streamer.update(coord.toWorldCenter());
+    CHECK(waitForGenerationCompletion(streamer));
+    const auto retiredJob = Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        generationExecutorJob(streamer, coord);
+    CHECK(retiredJob);
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(0));
+    checkGenerationAccounting(streamer);
+
+    stream.workerThreads = 4;
+    streamer.setConfig(stream);
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [replacementGate]() { replacementGate->enterAndWait(); });
+    streamer.setGenerator(replacementGenerator);
+    streamer.update(coord.toWorldCenter());
+
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        cancelGenerationExecutorJob(streamer, retiredJob));
+    checkGenerationAccounting(streamer);
+
+    streamer.processCompletions();
+    CHECK(replacementGate->waitUntilEntered());
+
+    const auto currentJob = Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        generationExecutorJob(streamer, coord);
+    CHECK(currentJob);
+    CHECK_EQ(
+        Rigel::Voxel::detail::ThreadPoolTestAccess::jobId(retiredJob),
+        Rigel::Voxel::detail::ThreadPoolTestAccess::jobId(currentJob));
+    CHECK(!Rigel::Voxel::detail::ThreadPoolTestAccess::sameIncarnation(
+        retiredJob, currentJob));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        cancelGenerationExecutorJob(streamer, retiredJob));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasSubmittedGeneration(streamer, coord));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK(!manager.hasChunk(coord));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(1));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasSubmittedGeneration(streamer, coord));
+    checkGenerationAccounting(streamer);
+
+    replacementGate->release();
+    bool quiescent = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        streamer.processCompletions();
+        streamer.update(coord.toWorldCenter());
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            quiescent = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+
+    CHECK(quiescent);
+    Chunk* accepted = manager.getChunk(coord);
+    CHECK(accepted != nullptr);
+    if (accepted) {
+        CHECK_EQ(accepted->worldGenVersion(), replacementConfig.world.version);
+    }
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(0));
+    CHECK(streamer.diagnostics().workEmpty());
+    checkGenerationAccounting(streamer);
+}
+
+TEST_CASE(ChunkStreamer_GeneratorReplacementCancelsQueuedGeneration) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto originalGenerator = makeGenerator(registry);
+    WorldGenConfig replacementConfig = originalGenerator->config();
+    ++replacementConfig.world.version;
+    auto replacementGenerator =
+        std::make_shared<WorldGenerator>(registry, replacementConfig);
+    auto gate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> generationsEntered{0};
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, originalGenerator);
+    WorkerGateRelease releaseOnExit(gate);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 128;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [gate, &generationsEntered]() {
+            if (generationsEntered.fetch_add(
+                    1, std::memory_order_relaxed) == 0) {
+                gate->enterAndWait();
+            }
+        });
+
+    const ChunkCoord center{0, 0, 0};
+    streamer.update(center.toWorldCenter());
+    CHECK(gate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(5));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(1));
+
+    streamer.setGenerator(replacementGenerator);
+
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationFlightCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationCount(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationIndexCount(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(0));
+    checkGenerationAccounting(streamer);
+
+    streamer.update(center.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(6));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationFlightCount(
+            streamer),
+        static_cast<size_t>(2));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(1));
+    checkGenerationAccounting(streamer);
+
+    gate->release();
+    bool quiescent = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        streamer.processCompletions();
+        streamer.update(center.toWorldCenter());
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            quiescent = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+
+    CHECK(quiescent);
+    CHECK_EQ(generationsEntered.load(std::memory_order_relaxed),
+             static_cast<size_t>(8));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(9));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(8));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationFlightCount(
+            streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationIndexCount(streamer),
+        static_cast<size_t>(0));
+    manager.forEachChunk([&](ChunkCoord, const Chunk& chunk) {
+        CHECK_EQ(chunk.worldGenVersion(), replacementConfig.world.version);
+    });
+    CHECK(streamer.diagnostics().workEmpty());
+    checkGenerationAccounting(streamer);
 }
 
 TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
@@ -6621,6 +7175,94 @@ TEST_CASE(ChunkStreamer_ConfigShrinkCancelsDepartedLoadBeforeNextUpdate) {
     CHECK(cancelled.find(departedCoord) != cancelled.end());
 }
 
+TEST_CASE(ChunkStreamer_ConfigShrinkCancelsQueuedGenerationImmediately) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    auto gate = std::make_shared<WorkerGate>();
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    WorkerGateRelease releaseOnExit(gate);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 128;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [gate]() { gate->enterAndWait(); });
+
+    const ChunkCoord center{0, 0, 0};
+    const ChunkCoord queued{-1, 0, 0};
+    streamer.update(center.toWorldCenter());
+    CHECK(gate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(5));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasSubmittedGeneration(streamer, center));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasSubmittedGeneration(streamer, queued));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(1));
+    checkGenerationAccounting(streamer);
+
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    streamer.setConfig(stream);
+
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(0));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasSubmittedGeneration(streamer, center));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasSubmittedGeneration(streamer, queued));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationCount(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationIndexCount(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(0));
+    checkGenerationAccounting(streamer);
+
+    gate->release();
+    CHECK(waitForGenerationCompletion(streamer));
+    streamer.processCompletions();
+    CHECK(manager.hasChunk(center));
+    CHECK(!manager.hasChunk(queued));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(0));
+    checkGenerationAccounting(streamer);
+}
+
 TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
     enum class CompletionKind {
         Load,
@@ -7213,8 +7855,14 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRetiresVersionReplacementWait) {
             streamer, retiringCoord));
         CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
             hasPendingGeneration(streamer, retiringCoord));
-        CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
-            hasSubmittedGeneration(streamer, retiringCoord));
+        CHECK_EQ(
+            Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                hasSubmittedGeneration(streamer, retiringCoord),
+            phase != GenerationPhase::CapacityWaiting);
+        if (phase != GenerationPhase::CapacityWaiting) {
+            CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                generationFlightCancelled(streamer, retiringCoord));
+        }
         CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
             hasVersionReplacementWait(streamer, retiringCoord));
         CHECK_EQ(streamer.diagnostics().eviction.pending,
@@ -8226,10 +8874,15 @@ TEST_CASE(ChunkStreamer_GenerationCompletionRefillsStandbyBeforeReturning) {
     streamer.setConfig(stream);
     const ChunkCoord settledCenter{20, 20, 20};
     streamer.update(settledCenter.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(4));
     CHECK_EQ(streamer.diagnostics().generation.inFlight,
              static_cast<size_t>(2));
     CHECK_EQ(streamer.diagnostics().generation.pending,
-             static_cast<size_t>(1));
+             static_cast<size_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    checkGenerationAccounting(streamer);
 
     Rigel::Voxel::detail::ChunkStreamerTestAccess::
         setGenerationStartCallback(streamer, {});
@@ -8250,7 +8903,7 @@ TEST_CASE(ChunkStreamer_GenerationCompletionRefillsStandbyBeforeReturning) {
     CHECK_EQ(streamer.workMetrics().generationJobsStarted,
              static_cast<uint64_t>(4));
     CHECK_EQ(streamer.diagnostics().generation.inFlight,
-             static_cast<size_t>(1));
+             static_cast<size_t>(0));
     CHECK_EQ(streamer.diagnostics().generation.pending,
              static_cast<size_t>(0));
 
@@ -8335,6 +8988,368 @@ TEST_CASE(ChunkStreamer_MovementCancelsDepartedGeneration) {
     }
     CHECK(quiescent);
     CHECK(streamer.diagnostics().workEmpty());
+}
+
+TEST_CASE(ChunkStreamer_CancelAndRedemandKeepsOneCurrentGenerationFlight) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    auto originalGate = std::make_shared<WorkerGate>();
+    auto replacementGate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> generationsEntered{0};
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    WorkerGateRelease releaseOriginalOnExit(originalGate);
+    WorkerGateRelease releaseReplacementOnExit(replacementGate);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 128;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [originalGate, replacementGate, &generationsEntered]() {
+            const size_t generation = generationsEntered.fetch_add(
+                1, std::memory_order_relaxed);
+            if (generation == 0) {
+                originalGate->enterAndWait();
+            } else if (generation == 1) {
+                replacementGate->enterAndWait();
+            }
+        });
+
+    const ChunkCoord first{0, 0, 0};
+    const ChunkCoord away{1, 0, 0};
+    streamer.update(first.toWorldCenter());
+    CHECK(originalGate->waitUntilEntered());
+    streamer.update(away.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(2));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(1));
+
+    streamer.update(first.toWorldCenter());
+
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationFlightCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasSubmittedGeneration(streamer, first));
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasSubmittedGeneration(streamer, away));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasPendingGeneration(streamer, first));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        generationFlightCancelled(streamer, first));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationCount(streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationIndexCount(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationRunningOwnerCount(streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(generationsEntered.load(std::memory_order_relaxed),
+             static_cast<size_t>(1));
+    checkGenerationAccounting(streamer);
+
+    originalGate->release();
+    CHECK(waitForGenerationCompletion(streamer));
+    streamer.processCompletions();
+    CHECK(replacementGate->waitUntilEntered());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(1));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(1));
+    CHECK(!manager.hasChunk(first));
+    checkGenerationAccounting(streamer);
+
+    replacementGate->release();
+    bool quiescent = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        streamer.processCompletions();
+        streamer.update(first.toWorldCenter());
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            quiescent = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+
+    CHECK(quiescent);
+    CHECK(manager.hasChunk(first));
+    CHECK(!manager.hasChunk(away));
+    CHECK_EQ(generationsEntered.load(std::memory_order_relaxed),
+             static_cast<size_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationFlightCount(
+            streamer),
+        static_cast<size_t>(0));
+    CHECK(streamer.diagnostics().workEmpty());
+    checkGenerationAccounting(streamer);
+}
+
+TEST_CASE(ChunkStreamer_ContinuousMotionReleasesQueuedGenerationCapacity) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    auto gate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> generationsEntered{0};
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    WorkerGateRelease releaseOnExit(gate);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.genQueueLimit = 128;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        streamer,
+        [gate, &generationsEntered]() {
+            if (generationsEntered.fetch_add(
+                    1, std::memory_order_relaxed) == 0) {
+                gate->enterAndWait();
+            }
+        });
+
+    const ChunkCoord initial{0, 0, 0};
+    const ChunkCoord trailing{1, 0, 0};
+    const ChunkCoord leading{2, 0, 0};
+    streamer.update(initial.toWorldCenter());
+    CHECK(gate->waitUntilEntered());
+    streamer.update(trailing.toWorldCenter());
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(2));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationRunningOwnerCount(streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(1));
+    checkGenerationAccounting(streamer);
+
+    streamer.update(leading.toWorldCenter());
+
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(3));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(0));
+    CHECK_EQ(generationsEntered.load(std::memory_order_relaxed),
+             static_cast<size_t>(1));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(2));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationFlightCount(
+            streamer),
+        static_cast<size_t>(2));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationRunningOwnerCount(streamer),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(streamer),
+        static_cast<size_t>(1));
+    checkGenerationAccounting(streamer);
+
+    gate->release();
+    bool quiescent = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        streamer.processCompletions();
+        streamer.update(leading.toWorldCenter());
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            quiescent = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+    CHECK(quiescent);
+    CHECK(!manager.hasChunk(initial));
+    CHECK(!manager.hasChunk(trailing));
+    CHECK(manager.hasChunk(leading));
+    CHECK_EQ(generationsEntered.load(std::memory_order_relaxed),
+             static_cast<size_t>(2));
+    CHECK_EQ(streamer.diagnostics().generation.inFlight,
+             static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().generation.pending,
+             static_cast<size_t>(0));
+    CHECK_EQ(streamer.workMetrics().generationJobsCompleted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(streamer.workMetrics().generationJobsCancelled,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationOwnerCount(
+            streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::generationFlightCount(
+            streamer),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            pendingGenerationIndexCount(streamer),
+        static_cast<size_t>(0));
+    checkGenerationAccounting(streamer);
+    CHECK(streamer.diagnostics().workEmpty());
+}
+
+TEST_CASE(ChunkStreamer_DestructionCancelsQueuedGenerationBeforeJoiningWorker) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    auto gate = std::make_shared<WorkerGate>();
+    std::atomic<size_t> generationsEntered{0};
+    std::atomic<bool> destroyed{false};
+
+    auto streamer = std::make_unique<ChunkStreamer>(
+        manager, meshStore, registry, nullptr, generator);
+    WorkerGateRelease releaseOnExit(gate);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.genQueueLimit = 128;
+    stream.meshQueueLimit = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 2;
+    stream.maxResidentChunks = 0;
+    streamer->setConfig(stream);
+    streamer->markSpawnDiscoveryComplete();
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::setGenerationStartCallback(
+        *streamer,
+        [gate, &generationsEntered]() {
+            if (generationsEntered.fetch_add(
+                    1, std::memory_order_relaxed) == 0) {
+                gate->enterAndWait();
+            }
+        });
+
+    const ChunkCoord center{0, 0, 0};
+    const ChunkCoord executorQueued{-1, 0, 0};
+    streamer->update(center.toWorldCenter());
+    CHECK(gate->waitUntilEntered());
+    CHECK_EQ(streamer->workMetrics().generationJobsStarted,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            generationPoolPendingCount(*streamer),
+        static_cast<size_t>(1));
+    auto queuedFlight = Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        generationFlightWeak(*streamer, executorQueued);
+    CHECK(!queuedFlight.expired());
+
+    std::jthread destroyer([&]() {
+        streamer.reset();
+        destroyed.store(true, std::memory_order_release);
+    });
+    // On assertion unwind, release the worker before jthread joins the
+    // destructor that is waiting for that worker. The earlier guard covers
+    // failures before the destroyer is launched.
+    WorkerGateRelease releaseBeforeDestroyerJoin(gate);
+    const auto cancellationDeadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!queuedFlight.expired() &&
+           std::chrono::steady_clock::now() < cancellationDeadline) {
+        std::this_thread::yield();
+    }
+
+    CHECK(queuedFlight.expired());
+    CHECK(!destroyed.load(std::memory_order_acquire));
+    CHECK_EQ(generationsEntered.load(std::memory_order_relaxed),
+             static_cast<size_t>(1));
+    gate->release();
+    destroyer.join();
+    CHECK(destroyed.load(std::memory_order_acquire));
+    CHECK_EQ(generationsEntered.load(std::memory_order_relaxed),
+             static_cast<size_t>(1));
 }
 
 TEST_CASE(ChunkStreamer_CardinalMotionReprioritizesPendingGeneration) {
@@ -8547,11 +9562,11 @@ TEST_CASE(ChunkStreamer_CardinalMotionReprioritizesPendingGeneration) {
         CHECK_EQ(
             Rigel::Voxel::detail::ChunkStreamerTestAccess::
                 pendingGenerationCount(streamer),
-            static_cast<size_t>(32));
+            static_cast<size_t>(31));
         CHECK_EQ(
             Rigel::Voxel::detail::ChunkStreamerTestAccess::
                 pendingGenerationIndexCount(streamer),
-            static_cast<size_t>(32));
+            static_cast<size_t>(31));
         CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
             generationFlightCancelled(streamer, initialCenter));
 
@@ -8658,7 +9673,7 @@ TEST_CASE(ChunkStreamer_CappedMovementKeepsPendingGenerationIndexCanonical) {
         ChunkCoord{20, 0, 0},
         ChunkCoord{30, 0, 0}};
     const std::array<size_t, 4> expectedPending{6, 7, 7, 7};
-    const std::array<size_t, 4> expectedCurrentFlights{1, 0, 0, 0};
+    const std::array<size_t, 4> expectedCurrentFlights{1, 1, 1, 1};
 
     for (size_t index = 0; index < centers.size(); ++index) {
         streamer.update(centers[index].toWorldCenter());

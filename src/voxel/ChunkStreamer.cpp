@@ -121,10 +121,13 @@ ChunkStreamer::ChunkStreamer(ChunkManager& manager,
 
 ChunkStreamer::~ChunkStreamer() {
     abandonVisibilityTraces(ChunkVisibilityOutcome::StreamerDestroyed);
+    m_desiredSet.clear();
+    retireAllGenerations();
     if (m_genPool) {
         m_genPool->stop();
         m_genPool.reset();
     }
+    applyGenCompletions(std::numeric_limits<size_t>::max());
     if (m_meshPool) {
         m_meshPool->stop();
         m_meshPool.reset();
@@ -172,24 +175,19 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                     coord, ConfigRetiredWorkKind::LoadGen);
                 cancelPendingLoad(coord);
             }
-            for (auto it = m_generationFlights.begin();
-                 it != m_generationFlights.end();) {
+            std::vector<ChunkCoord> retiredGenerationFlights;
+            retiredGenerationFlights.reserve(m_generationFlights.size());
+            for (const auto& [coord, flight] : m_generationFlights) {
+                (void)flight;
                 ++schedulerCoordinatesInspected;
-                if (remainsDirectlyDesired(it->first)) {
-                    ++it;
-                    continue;
+                if (!remainsDirectlyDesired(coord)) {
+                    retiredGenerationFlights.push_back(coord);
                 }
-                const ChunkCoord coord = it->first;
+            }
+            for (const ChunkCoord& coord : retiredGenerationFlights) {
                 rememberConfigRetiredWork(
                     coord, ConfigRetiredWorkKind::LoadGen);
-                it->second->cancelled.store(
-                    true, std::memory_order_relaxed);
-                it = m_generationFlights.erase(it);
-                auto stateIt = m_states.find(coord);
-                if (stateIt != m_states.end() &&
-                    stateIt->second == ChunkState::QueuedGen) {
-                    m_states.erase(stateIt);
-                }
+                retireGeneration(coord);
             }
             std::vector<ChunkCoord> retiredGenerations;
             retiredGenerations.reserve(m_pendingGenerations.size());
@@ -340,15 +338,7 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
         }
     }
 
-    for (auto& [coord, flight] : m_generationFlights) {
-        flight->cancelled.store(true, std::memory_order_relaxed);
-        auto stateIt = m_states.find(coord);
-        if (stateIt != m_states.end() &&
-            stateIt->second == ChunkState::QueuedGen) {
-            m_states.erase(stateIt);
-        }
-    }
-    m_generationFlights.clear();
+    retireAllGenerations();
 
     std::vector<std::pair<ChunkCoord, bool>> retiredMeshRequests;
     retiredMeshRequests.reserve(
@@ -722,12 +712,10 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 m_desiredSet.find(it->first) == m_desiredSet.end() &&
                 !retainedMeshRequest) {
                 if (it->second == ChunkState::QueuedGen) {
-                    auto flightIt = m_generationFlights.find(it->first);
-                    if (flightIt != m_generationFlights.end()) {
-                        flightIt->second->cancelled.store(
-                            true, std::memory_order_relaxed);
-                        m_generationFlights.erase(flightIt);
-                    }
+                    const ChunkCoord coord = it->first;
+                    ++it;
+                    retireGeneration(coord);
+                    continue;
                 }
                 it = m_states.erase(it);
                 continue;
@@ -1328,9 +1316,7 @@ void ChunkStreamer::reset() {
             break;
         }
     }
-    for (auto& entry : m_generationFlights) {
-        entry.second->cancelled.store(true, std::memory_order_relaxed);
-    }
+    retireAllGenerations();
 
     uint64_t nextEpoch = m_workEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
     if (nextEpoch == 0) {
@@ -1384,7 +1370,6 @@ void ChunkStreamer::reset() {
     m_nextPendingMeshSequence = 1;
     m_streamingUpdateSequence = 0;
     m_lifecycleUpdateSequence = 0;
-    m_generationFlights.clear();
     m_replacementPendingMeshCount = 0;
 
     applyGenCompletions(std::numeric_limits<size_t>::max());
@@ -1712,28 +1697,28 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
     size_t applied = 0;
     GenResult genResult;
     while (applied < budget && m_genComplete.tryPop(genResult)) {
-        if (m_inFlightGen > 0) {
-            --m_inFlightGen;
-        }
-        if (genResult.flight) {
-            auto flightIt = m_generationFlights.find(genResult.coord);
-            if (flightIt != m_generationFlights.end() &&
-                flightIt->second == genResult.flight) {
-                m_generationFlights.erase(flightIt);
+        const bool ownerSettled = settleGenerationOwner(
+            genResult.coord, genResult.flight, false);
+        const auto handOffReplacement = [&]() {
+            if (ownerSettled) {
+                activatePendingGeneration(genResult.coord);
             }
-        }
+        };
 
         if (genResult.workEpoch !=
             m_workEpoch.load(std::memory_order_relaxed)) {
+            handOffReplacement();
             continue;
         }
         if (!m_generator ||
             genResult.worldGenVersion != m_generator->config().world.version) {
+            handOffReplacement();
             continue;
         }
 
         if (genResult.cancelled || (genResult.flight &&
             genResult.flight->cancelled.load(std::memory_order_relaxed))) {
+            handOffReplacement();
             continue;
         }
 
@@ -2038,8 +2023,7 @@ void ChunkStreamer::queuePendingGeneration(ChunkCoord coord) {
     if (!hasDirectStreamingDemand(coord)) {
         return;
     }
-    if (m_generationFlights.find(coord) != m_generationFlights.end() ||
-        m_pendingGenerations.find(coord) != m_pendingGenerations.end()) {
+    if (m_pendingGenerations.find(coord) != m_pendingGenerations.end()) {
         return;
     }
     markVisibilityStage(coord, ChunkVisibilityStage::DataRequest);
@@ -2048,8 +2032,12 @@ void ChunkStreamer::queuePendingGeneration(ChunkCoord coord) {
     const ChunkCoord camera = m_lastCenter.value_or(coord);
     const ChunkImportance importance = chunkImportance(camera, coord);
     m_pendingGenerations.emplace(coord, importance);
-    m_pendingGenerationQueue.insert(importance);
-    if (m_inFlightGen >= generationDispatchLimit()) {
+    const bool retainedOwner =
+        m_generationFlights.find(coord) != m_generationFlights.end();
+    if (!retainedOwner) {
+        m_pendingGenerationQueue.insert(importance);
+    }
+    if (retainedOwner || m_inFlightGen >= generationDispatchLimit()) {
         markVisibilityStage(
             coord, ChunkVisibilityStage::GenerationCapacityWait);
     }
@@ -2063,6 +2051,81 @@ void ChunkStreamer::erasePendingGeneration(ChunkCoord coord) {
     }
     m_pendingGenerationQueue.erase(pendingIt->second);
     m_pendingGenerations.erase(pendingIt);
+}
+
+bool ChunkStreamer::settleGenerationOwner(
+    ChunkCoord coord,
+    const std::shared_ptr<GenerationFlight>& flight,
+    bool cancelledBeforeStart) {
+    auto ownerIt = m_generationFlights.find(coord);
+    if (!flight || ownerIt == m_generationFlights.end() ||
+        ownerIt->second != flight) {
+        return false;
+    }
+    m_generationFlights.erase(ownerIt);
+    assert(m_inFlightGen > 0);
+    --m_inFlightGen;
+    if (cancelledBeforeStart) {
+        ++m_workMetrics.generationJobsCancelled;
+    } else {
+        ++m_workMetrics.generationJobsCompleted;
+    }
+    return true;
+}
+
+void ChunkStreamer::activatePendingGeneration(ChunkCoord coord) {
+    if (!m_generator || !hasDirectStreamingDemand(coord) ||
+        (m_chunkManager && m_chunkManager->getChunk(coord)) ||
+        m_loadPending.find(coord) != m_loadPending.end()) {
+        erasePendingGeneration(coord);
+        return;
+    }
+    if (m_pendingGenerations.find(coord) == m_pendingGenerations.end()) {
+        // A generator replacement can settle before the owner-thread source
+        // queue has revisited this coordinate. Preserve persistence/version
+        // resolution instead of jumping directly back into generation.
+        queueLoadGen(coord);
+        return;
+    }
+    auto pendingIt = m_pendingGenerations.find(coord);
+    m_pendingGenerationQueue.erase(pendingIt->second);
+    pendingIt->second = chunkImportance(
+        m_lastCenter.value_or(coord), coord);
+    m_pendingGenerationQueue.insert(pendingIt->second);
+}
+
+void ChunkStreamer::retireGeneration(ChunkCoord coord) {
+    auto flightIt = m_generationFlights.find(coord);
+    if (flightIt == m_generationFlights.end()) {
+        return;
+    }
+
+    const auto flight = flightIt->second;
+    flight->cancelled.store(true, std::memory_order_relaxed);
+    const bool cancelledBeforeStart =
+        m_genPool && flight->executorJob &&
+        m_genPool->cancel(flight->executorJob);
+
+    auto stateIt = m_states.find(coord);
+    if (stateIt != m_states.end() &&
+        stateIt->second == ChunkState::QueuedGen) {
+        m_states.erase(stateIt);
+    }
+    if (cancelledBeforeStart) {
+        settleGenerationOwner(coord, flight, true);
+    }
+}
+
+void ChunkStreamer::retireAllGenerations() {
+    std::vector<ChunkCoord> coordinates;
+    coordinates.reserve(m_generationFlights.size());
+    for (const auto& [coord, flight] : m_generationFlights) {
+        (void)flight;
+        coordinates.push_back(coord);
+    }
+    for (const ChunkCoord& coord : coordinates) {
+        retireGeneration(coord);
+    }
 }
 
 void ChunkStreamer::waitForMeshDependencies(ChunkCoord coord) {
@@ -3011,11 +3074,6 @@ ChunkVisibilityBlockerState ChunkStreamer::classifyVisibilityBlocker(
     if (m_loadErrors.find(coord) != m_loadErrors.end()) {
         return ChunkVisibilityBlockerState::LoadTerminalFailed;
     }
-    if (m_pendingGenerations.find(coord) != m_pendingGenerations.end()) {
-        return m_inFlightGen >= generationDispatchLimit()
-            ? ChunkVisibilityBlockerState::GenerationCapacityWaiting
-            : ChunkVisibilityBlockerState::GenerationSchedulerPending;
-    }
     const auto flight = m_generationFlights.find(coord);
     if (flight != m_generationFlights.end()) {
         switch (flight->second->phase.load(std::memory_order_acquire)) {
@@ -3030,6 +3088,11 @@ ChunkVisibilityBlockerState ChunkStreamer::classifyVisibilityBlocker(
                 return ChunkVisibilityBlockerState::
                     GenerationResultPublished;
         }
+    }
+    if (m_pendingGenerations.find(coord) != m_pendingGenerations.end()) {
+        return m_inFlightGen >= generationDispatchLimit()
+            ? ChunkVisibilityBlockerState::GenerationCapacityWaiting
+            : ChunkVisibilityBlockerState::GenerationSchedulerPending;
     }
     if (m_generationErrors.find(coord) != m_generationErrors.end()) {
         return ChunkVisibilityBlockerState::GenerationTerminalFailed;
@@ -3138,7 +3201,10 @@ void ChunkStreamer::reprioritizePendingGenerations(
             continue;
         }
         it->second = chunkImportance(*m_lastCenter, it->first);
-        reprioritized.insert(it->second);
+        if (m_generationFlights.find(it->first) ==
+            m_generationFlights.end()) {
+            reprioritized.insert(it->second);
+        }
         ++it;
     }
     m_pendingGenerationQueue = std::move(reprioritized);
@@ -3182,6 +3248,10 @@ void ChunkStreamer::dispatchPendingGenerations(
         auto pendingIt = m_pendingGenerations.find(importance.coord);
         if (pendingIt == m_pendingGenerations.end() ||
             pendingIt->second != importance) {
+            continue;
+        }
+        if (m_generationFlights.find(importance.coord) !=
+            m_generationFlights.end()) {
             continue;
         }
         m_pendingGenerations.erase(pendingIt);
@@ -3454,7 +3524,6 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
 
     m_states[coord] = ChunkState::QueuedGen;
     ++m_inFlightGen;
-    ++m_workMetrics.generationJobsStarted;
 
     auto flight = std::make_shared<GenerationFlight>();
     m_generationFlights[coord] = flight;
@@ -3580,28 +3649,35 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
         GenerationExecutorPhase::ExecutorQueued,
         std::memory_order_release);
     if (m_genPool && m_genPool->threadCount() > 0) {
-        const auto jobId = m_genPool->enqueue(std::move(job));
-        if (jobId == 0) {
+        auto executorJob = m_genPool->enqueueCancellable(std::move(job));
+        if (!executorJob) {
             flight->cancelled.store(true, std::memory_order_relaxed);
             auto flightIt = m_generationFlights.find(coord);
+            bool erasedFlight = false;
             if (flightIt != m_generationFlights.end() &&
                 flightIt->second == flight) {
                 m_generationFlights.erase(flightIt);
+                erasedFlight = true;
             }
             auto stateIt = m_states.find(coord);
             if (stateIt != m_states.end() &&
                 stateIt->second == ChunkState::QueuedGen) {
                 m_states.erase(stateIt);
             }
-            if (m_inFlightGen > 0) {
+            assert(erasedFlight);
+            assert(m_inFlightGen > 0);
+            if (erasedFlight && m_inFlightGen > 0) {
                 --m_inFlightGen;
             }
             completePendingVisibilityTrace(
                 coord, ChunkVisibilityOutcome::Failed);
             return;
         }
+        flight->executorJob = std::move(executorJob);
+        ++m_workMetrics.generationJobsStarted;
     }
     if (!m_genPool || m_genPool->threadCount() == 0) {
+        ++m_workMetrics.generationJobsStarted;
         job();
     }
 }

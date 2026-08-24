@@ -43,6 +43,10 @@ public:
     // The last-update fields are replaced by each call to update().
     struct WorkMetrics {
         uint64_t generationJobsStarted = 0;
+        // Submitted jobs whose result was observed by the completion drain.
+        uint64_t generationJobsCompleted = 0;
+        // Submitted jobs removed from the executor before worker start.
+        uint64_t generationJobsCancelled = 0;
         uint64_t generationJobsFailed = 0;
         // Distinct coordinates whose load request transitioned to pending.
         uint64_t chunkLoadRequestsStarted = 0;
@@ -219,6 +223,7 @@ private:
         std::atomic_bool cancelled{false};
         std::atomic<GenerationExecutorPhase> phase{
             GenerationExecutorPhase::Submitting};
+        detail::ThreadPool::JobHandle executorJob;
     };
 
     struct GenResult {
@@ -453,6 +458,13 @@ private:
     void queueLoadGen(ChunkCoord coord);
     void queuePendingGeneration(ChunkCoord coord);
     void erasePendingGeneration(ChunkCoord coord);
+    void retireGeneration(ChunkCoord coord);
+    void retireAllGenerations();
+    bool settleGenerationOwner(
+        ChunkCoord coord,
+        const std::shared_ptr<GenerationFlight>& flight,
+        bool cancelledBeforeStart);
+    void activatePendingGeneration(ChunkCoord coord);
     void waitForMeshDependencies(ChunkCoord coord);
     void queueLoadedNeighbors(ChunkCoord coord);
     bool hasDirectStreamingDemand(ChunkCoord coord) const;

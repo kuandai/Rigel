@@ -189,14 +189,19 @@ Synchronization:
   (`applyGenCompletions`).
 
 **Queueing rules**:
-- `streaming.gen_queue_limit` caps in-flight generation jobs (0 = unlimited).
-- Capacity-blocked requests wait in the scheduler rather than starting another
-  job.
+- Generation-needed coordinates remain in the camera-prioritized scheduler
+  until dispatch.
+- `streaming.gen_queue_limit` caps selected jobs (0 = no configured cap), and
+  asynchronous dispatch is additionally capped at the generation worker count.
+- Camera movement reprioritizes pending generation without changing retained
+  running jobs.
 - Chunks outside the desired set are cancelled (token flipped).
 
 **Cancellation**:
 - Each gen task holds a shared `atomic_bool` cancel token.
-- If a chunk falls outside the desired set, the token is flipped.
+- If a chunk falls outside the desired set, pending ownership is erased. A
+  submitted executor job is removed if it has not started; otherwise its token
+  is flipped.
 - The worker checks the token; the main thread also requires the coordinate to
   remain in `QueuedGen` before applying the result.
 

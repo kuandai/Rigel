@@ -4,6 +4,7 @@
 #include "ChunkVisibilityTrace.h"
 #include "ChunkCache.h"
 #include "ChunkBenchmark.h"
+#include "ChunkImportance.h"
 #include "ChunkLoadRequest.h"
 #include "ChunkManager.h"
 #include "ChunkMesh.h"
@@ -21,6 +22,7 @@
 #include <map>
 #include <optional>
 #include <queue>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -218,6 +220,8 @@ private:
         std::atomic_bool cancelled{false};
         std::atomic<GenerationExecutorPhase> phase{
             GenerationExecutorPhase::Submitting};
+        detail::ThreadPool* executor = nullptr;
+        detail::ThreadPool::JobId poolJobId = 0;
     };
 
     struct GenResult {
@@ -360,8 +364,12 @@ private:
     std::unordered_map<ChunkCoord, uint32_t, ChunkCoordHash> m_countedMeshRetryRevisions;
     std::deque<ChunkCoord> m_loadGenQueue;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_loadGenQueued;
-    std::deque<ChunkCoord> m_generationCapacityWait;
-    std::unordered_set<ChunkCoord, ChunkCoordHash> m_generationCapacityWaiting;
+    // The map owns each logical request. The ordered set is its current-camera
+    // dispatch index and is rebuilt only when camera relevance changes.
+    std::unordered_map<ChunkCoord, ChunkImportance, ChunkCoordHash>
+        m_pendingGenerations;
+    std::set<ChunkImportance, ChunkImportancePrecedes>
+        m_pendingGenerationQueue;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_meshDependencyWaiting;
     // Retain the kind, but not explicit priority, until a desired-set rebuild
     // either transfers the work to its canonical owner or confirms departure.
@@ -425,9 +433,11 @@ private:
     ChunkLoadRequestId nextLoadRequestId();
     void cancelPendingLoad(ChunkCoord coord);
     void queueLoadGen(ChunkCoord coord);
-    void waitForGenerationCapacity(ChunkCoord coord);
+    void queuePendingGeneration(ChunkCoord coord);
+    void erasePendingGeneration(ChunkCoord coord);
+    bool cancelQueuedGeneration(
+        const std::shared_ptr<GenerationFlight>& flight);
     void waitForMeshDependencies(ChunkCoord coord);
-    void wakeGenerationCapacityWaiter();
     void queueLoadedNeighbors(ChunkCoord coord);
     bool hasDirectStreamingDemand(ChunkCoord coord) const;
     std::optional<size_t> dirtyMeshPriority(ChunkCoord coord) const;
@@ -491,6 +501,11 @@ private:
         MeshInFlight& flight,
         ChunkVisibilityOutcome outcome);
     void abandonVisibilityTraces(ChunkVisibilityOutcome outcome);
+    void reprioritizePendingGenerations(
+        uint64_t& schedulerCoordinatesInspected);
+    void dispatchPendingGenerations(
+        uint64_t& schedulerCoordinatesInspected);
+    size_t generationDispatchLimit() const;
     void reprioritizePendingMeshes(uint64_t& schedulerCoordinatesInspected);
     void dispatchPendingMeshes(uint64_t& schedulerCoordinatesInspected);
     size_t meshDispatchLimit() const;

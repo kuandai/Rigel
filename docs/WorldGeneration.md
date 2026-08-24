@@ -137,10 +137,9 @@ explicit failed state until a later streaming requeue retries them.
 
 - The desired set is a sphere around the camera chunk with radius
   `streaming.view_distance_chunks`.
-- Entries are sorted by distance, nearest first.
-- Equal-distance entries have no secondary comparator. The current radius-one
-  traversal order is not a scheduling guarantee: tests require exact cohort
-  membership and ordering only between strictly different distances.
+- Entries use shared chunk importance: the camera-containing chunk first,
+  then squared chunk distance, then lexicographic chunk coordinate. Generation
+  and direct-view mesh admission therefore use the same deterministic order.
 - Unload uses `streaming.unload_distance_chunks` for hysteresis.
 - Render distance is configured separately by `render.render_distance` in world
   units and does not change the streaming desired set.
@@ -149,24 +148,24 @@ explicit failed state until a later streaming requeue retries them.
 
 - Generation and meshing use separate pools partitioned from
   `streaming.worker_threads`. A pool with no worker executes its job inline.
-- `streaming.gen_queue_limit` caps in-flight generation work, while
+- `streaming.gen_queue_limit` caps selected generation work, while
   `streaming.mesh_queue_limit` caps mesh work selected from the pending
   scheduler (`0` means no configured cap). Executor capacity may narrow that
-  cap but the configured cap cannot expand executor capacity. With no mesh
+  cap but the configured cap cannot expand executor capacity. Asynchronous
+  generation submission is capped at the generation worker count. With no mesh
   worker, the inline executor owns at most one completed-but-unapplied mesh
   result regardless of `streaming.apply_budget_per_frame`; this effective
   bound is observable as the `meshSubmissionLimit` streaming diagnostic.
-- Generation admission has three FIFO boundaries. `m_loadGenQueue` holds
-  logical load/generation scheduler visits, `m_generationCapacityWait` holds
-  requests blocked by `gen_queue_limit`, and the generation `ThreadPool`
-  appends submitted normal-priority jobs to its `m_jobs` deque. Camera movement
-  rebuilds the first queue in new distance order, but does not reorder jobs
-  already submitted to the pool. Cancellation tokens suppress departed work;
-  they do not remove its physical pool entry or release its in-flight count
-  before the completion drain observes the cancelled result.
-  A coordinate waiting in `m_loadGenQueue` has not selected persisted load
-  versus generation yet and is reported as source-resolution-pending rather
-  than unowned or generation-pending.
+- `m_loadGenQueue` holds coordinates that have not selected persisted load
+  versus generation yet and reports them as source-resolution-pending. Once a
+  missing source establishes that generation is needed, one canonical pending
+  scheduler owns the coordinate until bounded dispatch. Camera movement
+  rebuilds only that pending index using current chunk importance; stationary
+  updates do not scan it when executor capacity is full. Submitted jobs retain
+  request epoch, generator version, and cancellation validity checks. A
+  departed job that is still queued in the executor is removed immediately;
+  running work is cancelled only when demand leaves, not when its relative
+  priority changes.
 - Eligible initial meshes and dirty remeshes share a distance-prioritized
   scheduler. Asynchronous submission is additionally capped at the actual
   mesh worker count so work that has not started remains reprioritizable.
@@ -188,47 +187,18 @@ explicit failed state until a later streaming requeue retries them.
 The shipped world configuration uses `view_distance_chunks=12`,
 `gen_queue_limit=128`, `update_budget_per_frame=4096`, and
 `worker_threads=12`. The pool split assigns six threads to generation and six
-to meshing. Generation can therefore own 128 submitted-but-undrained jobs, up
-to 122 more than the generation workers can start concurrently. The radius-12
-desired sphere contains 7,153 coordinates, so in one cold, stationary
-all-missing window up to 7,025 current chunks belong to the logical
-generation-capacity wait set after the first 128 submissions. That number is
-not a global bound on the physical capacity-wait deque across camera movement:
-departure erases logical membership but leaves its deque node for the next
-completion-driven wake to discard.
+to meshing. The configured generation cap cannot submit more than those six
+worker slots; the larger cold-view set remains reprioritizable in the logical
+pending scheduler.
 
-### 5.3.1 Cardinal-motion baseline
+### 5.3.1 Cardinal-motion ordering
 
-The constrained-worker regression
-`ChunkStreamer_CardinalMotionLeavesNearGenerationBehindOlderWork` runs the
-production queues with one generation worker, holds the first job, and moves
-the center twice in +X and +Z. Each axial radius-two step has exactly 13 leading
-and 13 trailing coordinates. The test compares those complete set differences,
-validates each strict-distance cohort without relying on equal-distance order,
-and then observes a newly leading chunk at squared distance 1 start after a
-retained, previously submitted chunk at squared distance 2. This confirms
-executor FIFO preservation across movement and rejects the hypothesis that a
-desired-set rebuild reprioritizes already submitted generation.
-
-The same evidence confirms that departure cancellation is validity-only at
-the generation executor boundary: departed unstarted jobs publish cancelled
-results when popped, and capacity is released when those results are drained.
-It rejects cancellation of a running generation solely because its distance
-priority changed; retained desired work continues. Capacity wakeup itself is
-event-driven and advances one valid FIFO waiter per observed completion rather
-than scanning the desired volume.
-
-`ChunkStreamer_CappedMovementAccumulatesStaleGenerationCapacityEntries`
-isolates that physical-capacity-wait behavior. With one generation slot held
-and four disjoint radius-one windows, `m_generationCapacityWaiting` contains 6,
-7, 7, and 7 current coordinates, while `m_generationCapacityWait` grows through
-6, 13, 20, and 27 physical entries. The final 20 extra nodes belong to departed
-windows. Thus current logical membership remains bounded by current demand,
-but the baseline physical capacity-wait deque is not globally bounded across
-saturated camera churn; stale nodes persist until a completion-driven wake
-walks past them. Releasing the fixture drains the stale entries and reaches
-stable quiescence. This is measured baseline evidence only; generation
-scheduling policy is unchanged here and is repaired in the next scheduler task.
+The constrained-worker regression holds the one physical generation slot and
+moves the center twice in both +X and +Z. Newly leading work at squared
+distance 1 dispatches before retained older work at squared distance 2. The
+running retained job is not cancelled, equal-distance work follows coordinate
+order, and the pending ownership map and ordered index remain equal through
+disjoint saturated windows and final quiescence.
 
 ### 5.4 Meshing Constraints
 

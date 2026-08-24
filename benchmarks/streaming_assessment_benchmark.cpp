@@ -218,7 +218,7 @@ bool overlayExecutionSettled(
         diagnostics.generation.inFlight == 0 &&
         diagnostics.generation.terminalErrors == 0 &&
         diagnostics.generationCompletionsPending == 0 &&
-        diagnostics.sourceResolutionPending > 0 &&
+        diagnostics.sourceResolutionPending == 0 &&
         diagnostics.generationSchedulerPending == 0 &&
         diagnostics.retiredWorkPending == 0 &&
         diagnostics.chunkLoad.pending > 0 &&
@@ -273,7 +273,9 @@ bool overlayStartupClassified(const OverlayStartupSnapshot& startup) {
     const auto count = [&](State state) {
         return startup.states[static_cast<size_t>(state)];
     };
-    return overlayExecutionSettled(startup.diagnostics, startup.work) &&
+    return startup.diagnostics.state ==
+            Voxel::StreamingLifecycleState::Streaming &&
+        overlayExecutionSettled(startup.diagnostics, startup.work) &&
         count(State::WaitingForData) ==
             startup.diagnostics.chunkLoad.pending &&
         count(State::WaitingForNeighbors) ==
@@ -533,19 +535,23 @@ OverlayPreparationResult prepareOverlayStreaming(
     Voxel::WorldView& view,
     const glm::vec3& cameraPosition) {
     const Voxel::ChunkCoord center = cameraChunk(cameraPosition);
-    view.setChunkLoader([center](Voxel::ChunkLoadRequest request) {
+    const auto retainedLoad = [center](Voxel::ChunkCoord coord) {
         const auto squared = [](int value) {
             const int64_t widened = value;
             return static_cast<uint64_t>(widened * widened);
         };
         const uint64_t distanceSquared =
-            squared(request.coord.x - center.x) +
-            squared(request.coord.y - center.y) +
-            squared(request.coord.z - center.z);
-        return distanceSquared <= 1
-            ? Voxel::ChunkLoadRequestResult::Missing
-            : Voxel::ChunkLoadRequestResult::Queued;
+            squared(coord.x - center.x) +
+            squared(coord.y - center.y) +
+            squared(coord.z - center.z);
+        return distanceSquared > 1;
+    };
+    view.setChunkLoader([retainedLoad](Voxel::ChunkLoadRequest request) {
+        return retainedLoad(request.coord)
+            ? Voxel::ChunkLoadRequestResult::Queued
+            : Voxel::ChunkLoadRequestResult::Missing;
     });
+    view.setChunkPendingCallback(retainedLoad);
     view.markSpawnDiscoveryComplete();
     const auto deadline = Clock::now() + std::chrono::seconds(30);
     std::vector<Voxel::ChunkStreamer::DebugChunkState> targetState;
@@ -617,6 +623,11 @@ void printStartupBacklog(const OverlayStartupSnapshot& startup) {
         << " workload=startup_backlog"
         << " startup_state="
         << Voxel::streamingLifecycleName(diagnostics.state)
+        << " startup_non_quiescent_classified_backlog=true"
+        << " startup_loader_missing_max_distance_squared=1"
+        << " startup_loader_outside=queued_indefinitely"
+        << " startup_pending_callback_matches_loader=true"
+        << " startup_retained_load_owner=load_pending"
         << " startup_tracked_records=" << startup.trackedRecords
         << " startup_waiting_for_data="
         << stateCount(State::WaitingForData)
@@ -733,6 +744,11 @@ bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
             return state.drawEvidence !=
                 Voxel::ChunkStreamer::DebugDrawEvidence::NotApplicable;
         }));
+    if (drawEvidenceRecords == 0) {
+        std::cerr << "overlay_cpu_assessment_failed "
+                     "reason=positive_draw_evidence_record_unavailable\n";
+        return false;
+    }
     std::vector<double> disabled;
     std::vector<double> enabled;
     disabled.reserve(frames);
@@ -754,11 +770,20 @@ bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
                   << " disabled_ms=" << disabledValue
                   << " enabled_ms=" << enabledValue << '\n';
     }
+    const size_t disabledSampleCount = disabled.size();
+    const size_t enabledSampleCount = enabled.size();
+    if (disabledSampleCount != frames || enabledSampleCount != frames) {
+        throw std::logic_error("overlay CPU pair cardinality mismatch");
+    }
     const auto disabledSummary = summarize(std::move(disabled));
     const auto enabledSummary = summarize(std::move(enabled));
     const uint64_t diameter = static_cast<uint64_t>(
         configuration.streaming.viewDistanceChunks * 2 + 1);
     std::cout << "overlay_cpu_comparison frames_per_mode=" << frames
+              << " requested_pair_count=" << frames
+              << " disabled_sample_count=" << disabledSampleCount
+              << " enabled_sample_count=" << enabledSampleCount
+              << " pair_cardinality_asserted=true"
               << " view_radius="
               << configuration.streaming.viewDistanceChunks
               << " scanned_coordinates="
@@ -899,9 +924,18 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
                   << " enabled_ms=" << enabledValue << '\n';
     }
 
+    const size_t disabledSampleCount = disabled.size();
+    const size_t enabledSampleCount = enabled.size();
+    if (disabledSampleCount != frames || enabledSampleCount != frames) {
+        throw std::logic_error("overlay GL pair cardinality mismatch");
+    }
     const auto disabledSummary = summarize(std::move(disabled));
     const auto enabledSummary = summarize(std::move(enabled));
     std::cout << "overlay_comparison frames_per_mode=" << frames
+              << " requested_pair_count=" << frames
+              << " disabled_sample_count=" << disabledSampleCount
+              << " enabled_sample_count=" << enabledSampleCount
+              << " pair_cardinality_asserted=true"
               << " view_radius="
               << configuration.streaming.viewDistanceChunks
               << " scanned_coordinates="
@@ -996,7 +1030,7 @@ int runBenchmark(int argc, char** argv) {
     const bool overlayCpu = mode == Mode::OverlayCpu;
 
     std::cout << std::fixed << std::setprecision(3)
-              << "benchmark name=streaming_assessment version=3"
+              << "benchmark name=streaming_assessment version=4"
               << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
               << " hardware_threads=" << std::thread::hardware_concurrency()
               << " shipped_world_configuration=true"

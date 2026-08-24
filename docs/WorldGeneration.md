@@ -223,6 +223,8 @@ and final quiescence.
   air, including rows of a partially intersecting resident chunk and rows
   restored by persistence. Authoritative stored voxels are retained unchanged,
   so widening the bounds can expose them again without data loss.
+- Debug snapshots label retained exterior data whose derived mesh is hidden as
+  `SuppressedByWorldBounds`; they do not attribute nonexistent neighbor work.
 - Mesh work uses padded block data to sample neighbors and AO.
 - A chunk has at most one mesh build in flight. Repeated invalidations are
   coalesced while it runs.

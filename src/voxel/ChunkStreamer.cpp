@@ -389,7 +389,8 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
     if (m_chunkManager && generator && (boundsChanged || !m_generator)) {
         const auto& replacementWorld = generator->config().world;
         const bool supersedesPendingReconciliation =
-            boundsChanged && m_worldBoundsReconciliation.has_value();
+            boundsChanged && m_worldBoundsReconciliation &&
+            m_worldBoundsReconciliation->remeshIntersectingRows;
         const bool reconciliationInProgress =
             m_worldBoundsReconciliation &&
             m_worldBoundsReconciliation->deferredCursor.has_value();
@@ -1227,6 +1228,39 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
              m_chunkManager->consumeDirtyMeshNotifications()) {
             if (m_chunkManager->getChunk(coord)) {
                 cancelPendingLoad(coord);
+                const auto [residentIt, inserted] =
+                    m_streamedResidents.insert(coord);
+                (void)residentIt;
+                const int currentUnloadDistance = std::max(
+                    std::max(0, m_config.viewDistanceChunks),
+                    m_config.unloadDistanceChunks);
+                const bool outsideRetention = m_lastCenter &&
+                    distanceSquared(*m_lastCenter, coord) >
+                        currentUnloadDistance * currentUnloadDistance;
+                if (inserted && m_generator &&
+                    (!chunkIntersectsWorldBounds(coord) ||
+                     outsideRetention)) {
+                    const bool cursorAlreadyPassed =
+                        m_worldBoundsReconciliation &&
+                        m_worldBoundsReconciliation->deferredCursor &&
+                        !(m_worldBoundsReconciliation->deferredCursor.value() <
+                          coord);
+                    if (!m_worldBoundsReconciliation) {
+                        m_worldBoundsReconciliation =
+                            PendingWorldBoundsReconciliation{
+                                .replacement = m_generator->config().world
+                            };
+                    } else {
+                        m_worldBoundsReconciliation->replacement =
+                            m_generator->config().world;
+                    }
+                    m_worldBoundsReconciliation->retentionCenter = m_lastCenter;
+                    m_worldBoundsReconciliation->retentionRadiusSquared =
+                        currentUnloadDistance * currentUnloadDistance;
+                    m_worldBoundsReconciliation->revisitFromStart =
+                        m_worldBoundsReconciliation->revisitFromStart ||
+                        cursorAlreadyPassed;
+                }
             }
             queueDirtyMesh(coord);
         }
@@ -1659,9 +1693,11 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                 remeshPending = remeshPending ||
                     (retiredIt != m_configRetiredWork.end() &&
                      retiredIt->second == ConfigRetiredWorkKind::DirtyMesh);
-                if (!chunkIntersectsWorldBounds(coord) &&
+                const bool suppressedByWorldBounds =
+                    !chunkIntersectsWorldBounds(coord) &&
                     m_worldBoundsSuppressedMeshes.find(coord) !=
-                        m_worldBoundsSuppressedMeshes.end()) {
+                        m_worldBoundsSuppressedMeshes.end();
+                if (suppressedByWorldBounds) {
                     remeshPending = false;
                 }
                 if (remeshPending) {
@@ -1744,7 +1780,10 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                         debug.state = DebugState::TerminalFailure;
                         break;
                     case DebugPipelineOwner::Complete:
-                        if (debug.voxelOccupancy ==
+                        if (suppressedByWorldBounds) {
+                            debug.state =
+                                DebugState::SuppressedByWorldBounds;
+                        } else if (debug.voxelOccupancy ==
                             DebugVoxelOccupancy::Empty) {
                             debug.state = DebugState::VoxelEmpty;
                         } else if (debug.installedGeometry ==

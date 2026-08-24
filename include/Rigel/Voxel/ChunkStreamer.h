@@ -90,6 +90,7 @@ public:
         AcceptedEmptyGeometry,
         AcceptedNonemptyGeometry,
         DirtyRemeshPending,
+        SuppressedByWorldBounds,
         TerminalFailure,
         Count
     };

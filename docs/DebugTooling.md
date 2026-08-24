@@ -97,6 +97,8 @@ The runtime legend and cube colors use this state mapping:
 - Violet: the accepted CPU mesh has nonempty geometry.
 - Pink: a dirty/remesh owner is pending while prior CPU geometry may remain
   installed.
+- Dark gray: finite world bounds hide derived geometry while the retained
+  exterior voxel data remains persistence-owned.
 - Magenta: a load, generation, mesh, or eviction failure currently owns the
   coordinate.
 

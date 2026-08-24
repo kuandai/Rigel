@@ -2930,6 +2930,8 @@ TEST_CASE(ChunkStreamer_SameVersionBoundsMaskPersistedPartialRowsInMeshes) {
         chunk.setBlock(0, 31, 0, BlockState{solid}, registry);
         chunk.setWorldGenVersion(generator->config().world.version);
         chunk.setLoadedFromDisk(true);
+        chunk.clearDirty();
+        chunk.clearPersistDirty();
         return ChunkLoadRequestResult::Queued;
     });
 
@@ -2954,7 +2956,8 @@ TEST_CASE(ChunkStreamer_SameVersionBoundsMaskPersistedPartialRowsInMeshes) {
     if (!persisted) {
         return;
     }
-    CHECK(persisted->isPersistDirty());
+    CHECK(!persisted->isDirty());
+    CHECK(!persisted->isPersistDirty());
     CHECK(!persisted->getBlock(0, 30, 0).isAir());
     CHECK(!persisted->getBlock(0, 31, 0).isAir());
     CHECK_EQ(installedMeshIndexCount(meshStore, center),
@@ -2975,7 +2978,8 @@ TEST_CASE(ChunkStreamer_SameVersionBoundsMaskPersistedPartialRowsInMeshes) {
         CHECK_EQ(after.meshJobsFailed, before.meshJobsFailed);
         CHECK_EQ(installedMeshIndexCount(meshStore, center),
                  expectedIndices);
-        CHECK(persisted->isPersistDirty());
+        CHECK(!persisted->isDirty());
+        CHECK(!persisted->isPersistDirty());
         CHECK(!persisted->getBlock(0, 30, 0).isAir());
         CHECK(!persisted->getBlock(0, 31, 0).isAir());
     };
@@ -3048,6 +3052,19 @@ TEST_CASE(ChunkStreamer_GeneratorRestorationReconcilesSuppressedBoundaryMesh) {
     CHECK_EQ(boundaryChunk->meshRevision(), boundaryRevision + 1);
     CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
         hasWorldBoundsSuppressedMesh(streamer, exterior));
+    std::vector<ChunkStreamer::DebugChunkState> suppressedDebug;
+    streamer.getDebugStates(suppressedDebug, exterior, 0);
+    CHECK_EQ(suppressedDebug.size(), static_cast<size_t>(1));
+    if (!suppressedDebug.empty()) {
+        CHECK_EQ(suppressedDebug.front().state,
+                 ChunkStreamer::DebugState::SuppressedByWorldBounds);
+        CHECK_EQ(suppressedDebug.front().pipelineOwner,
+                 ChunkStreamer::DebugPipelineOwner::Complete);
+        CHECK_EQ(suppressedDebug.front().installedGeometry,
+                 ChunkStreamer::DebugInstalledGeometry::None);
+        CHECK_EQ(suppressedDebug.front().failure,
+                 ChunkStreamer::DebugFailure::None);
+    }
 
     streamer.setGenerator(nullptr);
     CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
@@ -3175,6 +3192,245 @@ TEST_CASE(ChunkStreamer_ResetPreservesResidentInventoryForBoundsReplacement) {
              static_cast<size_t>(0));
     CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
              static_cast<size_t>(0));
+    checkGenerationAccounting(streamer);
+}
+
+TEST_CASE(ChunkStreamer_PublicDirtyNotificationReopensBoundsReconciliation) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeBoundedSolidGenerator(registry, 0, 63, 1);
+    const BlockID solid =
+        *registry.findByIdentifier("rigel:bounded_stone");
+    const ChunkCoord center{0, 0, 0};
+    const ChunkCoord exterior{0, 1, 0};
+    manager.setRegistry(&registry);
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 0;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    bool initiallyQuiescent = false;
+    for (int update = 0; update < 64; ++update) {
+        streamer.update(center.toWorldCenter());
+        streamer.processCompletions();
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            initiallyQuiescent = true;
+            break;
+        }
+    }
+    CHECK(initiallyQuiescent);
+
+    manager.setBlock(0, Chunk::SIZE, 0, BlockState{solid});
+    Chunk* lateResident = manager.getChunk(exterior);
+    CHECK(lateResident != nullptr);
+    if (!lateResident) {
+        return;
+    }
+    lateResident->setWorldGenVersion(generator->config().world.version);
+    ChunkMesh installed;
+    installed.vertices.resize(3);
+    installed.indices = {0, 1, 2};
+    meshStore.set(exterior, std::move(installed));
+    CHECK(meshStore.contains(exterior));
+    CHECK(lateResident->isPersistDirty());
+
+    bool persistenceSucceeds = false;
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord coord) {
+        CHECK_EQ(coord, exterior);
+        ++persistenceAttempts;
+        if (!persistenceSucceeds) {
+            return false;
+        }
+        if (Chunk* chunk = manager.getChunk(coord)) {
+            chunk->clearPersistDirty();
+        }
+        return true;
+    });
+
+    generator = makeBoundedSolidGenerator(registry, 0, 31, 1);
+    streamer.setGenerator(generator);
+    streamer.update(center.toWorldCenter());
+    streamer.processCompletions();
+
+    CHECK(meshStore.contains(exterior));
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(1));
+    CHECK(!streamer.diagnostics().workEmpty());
+    CHECK_NE(streamer.diagnostics().state,
+             StreamingLifecycleState::Quiescent);
+
+    streamer.update(center.toWorldCenter());
+    streamer.processCompletions();
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+    CHECK_EQ(manager.getChunk(exterior), lateResident);
+    CHECK(!meshStore.contains(exterior));
+    CHECK_EQ(streamer.diagnostics().eviction.pending,
+             static_cast<size_t>(1));
+    CHECK(!streamer.diagnostics().workEmpty());
+
+    persistenceSucceeds = true;
+    bool finalQuiescent = false;
+    for (int update = 0; update < 128; ++update) {
+        streamer.update(center.toWorldCenter());
+        streamer.processCompletions();
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            finalQuiescent = true;
+            break;
+        }
+    }
+
+    CHECK(finalQuiescent);
+    CHECK(streamer.diagnostics().workEmpty());
+    CHECK(manager.getChunk(exterior) == nullptr);
+    CHECK(!meshStore.contains(exterior));
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().eviction.pending,
+             static_cast<size_t>(0));
+    CHECK_EQ(streamer.diagnostics().eviction.terminalErrors,
+             static_cast<size_t>(0));
+    CHECK_EQ(streamer.workMetrics().meshJobsStarted,
+             streamer.workMetrics().meshJobsCompleted);
+    CHECK_EQ(streamer.workMetrics().meshJobsCompleted,
+             streamer.workMetrics().meshJobsAccepted +
+                 streamer.workMetrics().meshJobsRejectedStale +
+                 streamer.workMetrics().meshJobsFailed);
+    checkGenerationAccounting(streamer);
+}
+
+TEST_CASE(ChunkStreamer_ConfigPlannerDoesNotForceBoundsRemeshAndRevisitsLateResident) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeBoundedSolidGenerator(registry, 0, 63, 1);
+    const BlockID solid =
+        *registry.findByIdentifier("rigel:bounded_stone");
+    manager.setRegistry(&registry);
+
+    ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 24;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    auto installGeometry = [&](ChunkCoord coord) {
+        ChunkMesh mesh;
+        mesh.vertices.resize(3);
+        mesh.indices = {0, 1, 2};
+        meshStore.set(coord, std::move(mesh));
+    };
+    constexpr int residentCount = 13 * 11;
+    for (int x = -6; x <= 6; ++x) {
+        for (int z = -5; z <= 5; ++z) {
+            const ChunkCoord coord{x, 0, z};
+            Chunk& chunk = manager.getOrCreateChunk(coord);
+            chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
+            chunk.setWorldGenVersion(generator->config().world.version);
+            chunk.setLoadedFromDisk(true);
+            chunk.clearDirty();
+            chunk.clearPersistDirty();
+            installGeometry(coord);
+        }
+    }
+
+    const ChunkCoord camera{0, 0, 0};
+    bool initiallyQuiescent = false;
+    for (int update = 0; update < 16; ++update) {
+        streamer.update(camera.toWorldCenter());
+        streamer.processCompletions();
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            initiallyQuiescent = true;
+            break;
+        }
+    }
+    CHECK(initiallyQuiescent);
+    CHECK_EQ(manager.loadedChunkCount(),
+             static_cast<size_t>(residentCount));
+    const auto meshBefore = streamer.workMetrics();
+
+    stream.unloadDistanceChunks = 23;
+    streamer.setConfig(stream);
+    generator = makeBoundedSolidGenerator(registry, 0, 31, 1);
+    streamer.setGenerator(generator);
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(1));
+
+    // Complete the superseded pass and advance into the first half of its
+    // current-target pass with revisit=false and a live cursor.
+    for (int update = 0; update < 3; ++update) {
+        streamer.update(camera.toWorldCenter());
+        streamer.processCompletions();
+        CHECK(streamer.workMetrics().
+                  lastUpdateResidentEvictionCoordinatesInspected <=
+              static_cast<uint64_t>(64));
+        CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+                 static_cast<size_t>(1));
+    }
+
+    const ChunkCoord lateExterior{-7, 1, -6};
+    Chunk& late = manager.getOrCreateChunk(lateExterior);
+    late.setBlock(0, 0, 0, BlockState{solid}, registry);
+    late.setWorldGenVersion(generator->config().world.version);
+    late.setLoadedFromDisk(true);
+    installGeometry(lateExterior);
+    CHECK(late.isPersistDirty());
+
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord coord) {
+        CHECK_EQ(coord, lateExterior);
+        ++persistenceAttempts;
+        if (Chunk* chunk = manager.getChunk(coord)) {
+            chunk->clearPersistDirty();
+        }
+        return true;
+    });
+
+    bool finalQuiescent = false;
+    for (int update = 0; update < 32; ++update) {
+        streamer.update(camera.toWorldCenter());
+        streamer.processCompletions();
+        CHECK(streamer.workMetrics().
+                  lastUpdateResidentEvictionCoordinatesInspected <=
+              static_cast<uint64_t>(64));
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            finalQuiescent = true;
+            break;
+        }
+    }
+
+    CHECK(finalQuiescent);
+    CHECK(streamer.diagnostics().workEmpty());
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
+    CHECK(manager.getChunk(lateExterior) == nullptr);
+    CHECK(!meshStore.contains(lateExterior));
+    CHECK_EQ(manager.loadedChunkCount(),
+             static_cast<size_t>(residentCount));
+    CHECK_EQ(streamer.diagnostics().plannerReconciliationPending,
+             static_cast<size_t>(0));
+    const auto meshAfter = streamer.workMetrics();
+    CHECK_EQ(meshAfter.meshJobsStarted, meshBefore.meshJobsStarted);
+    CHECK_EQ(meshAfter.meshJobsCompleted, meshBefore.meshJobsCompleted);
+    CHECK_EQ(meshAfter.meshJobsAccepted, meshBefore.meshJobsAccepted);
+    CHECK_EQ(meshAfter.meshJobsRejectedStale,
+             meshBefore.meshJobsRejectedStale);
+    CHECK_EQ(meshAfter.meshJobsFailed, meshBefore.meshJobsFailed);
     checkGenerationAccounting(streamer);
 }
 

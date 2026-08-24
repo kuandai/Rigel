@@ -52,6 +52,10 @@ inline constexpr std::array kChunkDebugPresentations{
         "Dirty remesh pending",
         {1.00f, 0.35f, 0.65f}},
     ChunkDebugPresentation{
+        Voxel::ChunkStreamer::DebugState::SuppressedByWorldBounds,
+        "Geometry hidden by finite world bounds",
+        {0.35f, 0.40f, 0.45f}},
+    ChunkDebugPresentation{
         Voxel::ChunkStreamer::DebugState::TerminalFailure,
         "Terminal pipeline failure",
         {0.85f, 0.10f, 0.45f}}

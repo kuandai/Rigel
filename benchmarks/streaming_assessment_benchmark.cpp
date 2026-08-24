@@ -203,6 +203,8 @@ const char* debugStateName(Voxel::ChunkStreamer::DebugState state) {
         case State::AcceptedNonemptyGeometry:
             return "accepted_nonempty_geometry";
         case State::DirtyRemeshPending: return "dirty_remesh_pending";
+        case State::SuppressedByWorldBounds:
+            return "suppressed_by_world_bounds";
         case State::TerminalFailure: return "terminal_failure";
         case State::Count: break;
     }

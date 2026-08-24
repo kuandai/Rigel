@@ -722,17 +722,17 @@ one mesh worker. The shipped `worker_threads=12` setting remains a six/six
 split, with generation submission narrowed to twelve submitted-but-undrained
 jobs. No split or worker-pool policy changed in this validation.
 
-The shipped view radius is 12 and the shipped vertical bounds are -64 through
-320. A direct enumeration of the spherical desired set around chunk Y=0
-contains 7,153 coordinates. Of those, 2,482 chunks are wholly below the world,
-70 are wholly above it, and 2,552 total (35.7%) are wholly out of world. For
-surface camera chunk Y values 1, 2, and 3, the wholly out-of-world shares are
-31.7%, 28.7%, and 27.0%.
+The shipped view radius is 12 and the shipped inclusive vertical bounds are
+-64 through 320. Before finite-world clipping, a direct enumeration of the
+spherical desired set around chunk Y=0 contained 7,153 coordinates. Of those,
+2,482 chunks were wholly below the world, 70 were wholly above it, and 2,552
+total (35.7%) were wholly out of world. For surface camera chunk Y values 1,
+2, and 3, the wholly out-of-world shares were 31.7%, 28.7%, and 27.0%.
 
-The shipped-config assessment sampled nine X/Z columns at chunk Y=-3, wholly
-below `min_y`, and nine at chunk Y=11, wholly above `max_y`, in the same Release
-configuration, build directory, and host as the CPU overlay assessment. The
-direct generator results were:
+The pre-clipping shipped-config assessment sampled nine X/Z columns at chunk
+Y=-3, wholly below `min_y`, and nine at chunk Y=11, wholly above `max_y`, in
+the same Release configuration, build directory, and host as the CPU overlay
+assessment. The direct generator results were:
 
 | Position | Nonempty chunks | Total non-air blocks | Generation P50/P95/P99 (ms) |
 | --- | ---: | ---: | ---: |
@@ -748,34 +748,40 @@ recomputable. With nine nearest-rank samples, both P95 and P99 select the
 observed cohort maximum; they are the same noisy tail observation, not
 independent population-tail estimates.
 
-The production-lifecycle cohorts used the shipped view radius 12, unload
-radius 13, and 12-worker six/six generation/mesh split. Each generated the
-full 7,153-coordinate desired sphere and reached quiescence. The below-bound
-target contained 32,768 non-air voxels; 5,761 mesh jobs completed and were
-accepted, and the fully occluded target ended as accepted empty geometry rather
-than voxel-empty. The above-bound run likewise completed 7,153 generation jobs;
-335 mesh jobs completed and were accepted even though the target itself was
-voxel-empty. Generation cancellation/failure and mesh stale/failure counters
-were zero in both cohorts. Pending, in-flight, completion, terminal-failure,
-source-resolution, logical-generation, retired-work, load, and eviction owners
-were all zero at quiescence. The below and above runs required 7,184,743 and
-8,211,817 updates respectively; the combined process took 42.24 seconds and
-peaked at 6,318,664 KiB RSS on this host. This is measurement evidence only;
-no regression asserts that out-of-bounds chunks must remain nonempty or
-continue consuming mesh work.
+The pre-clipping production-lifecycle cohorts used the shipped view radius 12,
+unload radius 13, and 12-worker six/six generation/mesh split. Each generated
+the full 7,153-coordinate desired sphere and reached quiescence. The
+below-bound target contained 32,768 non-air voxels; 5,761 mesh jobs completed
+and were accepted, and the fully occluded target ended as accepted empty
+geometry rather than voxel-empty. The above-bound run likewise completed 7,153
+generation jobs; 335 mesh jobs completed and were accepted even though the
+target itself was voxel-empty. Generation cancellation/failure and mesh
+stale/failure counters were zero in both cohorts. Pending, in-flight,
+completion, terminal-failure, source-resolution, logical-generation,
+retired-work, load, and eviction owners were all zero at quiescence. The below
+and above runs required 7,184,743 and 8,211,817 updates respectively; the
+combined process took 42.24 seconds and peaked at 6,318,664 KiB RSS on this
+host. This is measurement evidence only; no regression asserts that
+out-of-bounds chunks must remain nonempty or continue consuming mesh work.
 
-Thus vertical bounds do not clip generation: above-bound empty results still
-consume generation time, while below-bound results can consume both generation
-and mesh capacity. This is a separate finite-world P1; it does not invalidate
-the measured moving-camera priority repair, but it does prevent the overall
-streaming program from being declared merge-ready. No vertical clipping or
-provisional neighbor policy is introduced in this change.
+The current finite-world implementation clips the desired-set Y traversal to
+chunks intersecting those inclusive bounds and reports both visited and
+avoided cube coordinates. At representative camera chunk Y values -2, 1, and
+10, the shipped radius inspects 8,125 coordinates and skips 7,500 before
+spherical filtering. The generator also clears every voxel outside the range,
+including the exterior rows of partially intersecting chunks.
 
-This is a substantial finite-world P1 assigned to the immediately dependent
-finite-world clipping change. Overall streaming-program merge readiness is
-withheld until that repair prevents wholly out-of-world desired coordinates
-from consuming generation and mesh capacity. The generation-priority runtime
-result remains valid and distinct from this blocking finite-world defect.
+A current headless Debug `--vertical-only` run sampled the same 18 wholly
+exterior chunks. All reported zero non-air blocks. Below-bound generation was
+0.017 ms P50 and 0.017 ms P95/P99; above-bound generation was 0.017 ms P50 and
+0.020 ms P95/P99. The production lifecycle centered one chunk outside each
+world face inspected 7,500 and skipped 8,125 cube coordinates, started and
+completed 3,356 generation jobs, and accepted 1,964 lower or 335 upper mesh
+jobs. Both cohorts reported zero cancellation, failure, pending, in-flight,
+completion, retired, load, and eviction owners at quiescence. These are
+headless accepted-geometry measurements; interactive shipped-backend
+first-draw timing remains an explicit external validation gate. No provisional
+neighbor policy or worker-pool policy is used.
 
 #### Overlay instrumentation comparison
 
@@ -971,12 +977,10 @@ Remaining maintainability debt is bounded and non-blocking:
 
 Generation-priority runtime readiness is unaffected by these P2 maintainability
 items. The matched motion evidence, deterministic regressions, exact lifecycle
-accounting, and quiescence checks cover that behavioral change. Overall
-streaming-program merge readiness is nevertheless withheld for the finite-world
-clipping P1 measured above. The opt-in full GL/ImGui overlay comparison was
-completed above; interactive shipped-backend first-draw timing remains an
-explicit external performance gate and does not change the default-off runtime
-path.
+accounting, finite-world clipping, and quiescence checks cover the headless
+behavioral changes. The opt-in full GL/ImGui overlay comparison was completed
+above; interactive shipped-backend first-draw timing remains an explicit
+external performance gate and does not change the default-off runtime path.
 
 ---
 

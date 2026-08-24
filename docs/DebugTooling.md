@@ -260,9 +260,11 @@ of `scheduler_wait`, not dependency wait. `ChunkVisibilityTraceRecord::durations
 returns an interval only when both of its endpoint stages exist.
 `eligibleToWorkerStart` spans `mesh_eligible` through `worker_start`, including
 both scheduler and pool delay. Each dispatched camera or remesh lifecycle also
-records the number of desired face neighbors still absent at its first observed
-eligibility check. A value of zero is retained rather than treated as a missing
-observation, and later neighbor arrivals do not rewrite the cohort.
+records `firstObservedMissingDesiredCardinalNeighborCount`: the number of
+desired face neighbors absent at its first observed eligibility check. This is
+a retained first observation, not a live count. A value of zero is retained
+rather than treated as a missing observation, and partial or final neighbor
+arrivals do not rewrite the cohort.
 
 Stage absence is intentional and follows the lifecycle:
 
@@ -315,57 +317,96 @@ complete.
 
 ### 8.2 Near-camera visibility benchmark
 
-`Rigel_near_camera_visibility_benchmark` runs repeatable cold, fresh-world
-streaming samples for the camera-containing chunk and one face-adjacent chunk.
-It uses the production generator, streamer, worker pools, mesh builder, and
-visibility trace. Persistence responds with a real missing-probe outcome, so the
-sample measures the generation path without changing scheduler settings. Every
-sample continues until `StreamingLifecycleState::Quiescent`; there is no fixed
-startup sleep. A deadline only turns a failure to reach quiescence into a failed
-sample.
+`Rigel_near_camera_visibility_benchmark` is a controlled cold-generation
+fixture for the camera-containing chunk and one face-adjacent chunk. It uses the
+production generator, streamer, worker pools, mesh builder, and visibility
+trace, but it is neither shipped nor interactive scheduling. Persistence
+returns a controlled missing-probe outcome, so every sample follows generation
+without changing production scheduler settings.
+
+The application-like mode is the default and starts updates at 16.667 ms
+intervals, approximately 60 Hz. Every successful sample still terminates only
+after the production lifecycle reports `StreamingLifecycleState::Quiescent`;
+there is no fixed startup or completion sleep. The deadline only converts a
+failure to reach quiescence into a failed sample. An explicit
+`--scheduler-lower-bound-stress` mode runs the old unpaced loop and labels its
+timings as non-representative scheduler lower-bound stress, so those timings
+must not be used as representative time-to-visible evidence.
 
 Build and run it from an out-of-tree build directory:
 
 ```text
+cmake -S <source-directory> -B <build-directory> \
+    -DRIGEL_BUILD_BENCHMARKS=ON
 cmake --build <build-directory> --target Rigel_near_camera_visibility_benchmark
 <build-directory>/Rigel_near_camera_visibility_benchmark --samples 20
 ```
 
+`RIGEL_BUILD_BENCHMARKS` defaults to `OFF`; enabling it does not change normal
+production scheduling or configuration.
+
 The runner emits each raw sample followed by nearest-rank P50/P95 summaries for
-distance and distance/dependency-count cohorts. `desired_to_visible` uses
-`first_draw` when a renderer supplied it and otherwise uses `result_accepted`.
-The current runner is headless, so its header explicitly reports `accepted` as
-the endpoint. Dependency wait, eligible-to-worker-start, scheduler wait, pool
-wait, and worker execution are reported separately. A 50 ms dependency P95
-budget, approximately three 60 Hz frame intervals, is used only to classify the
-headless residual and does not change production behavior.
+distance and distance/first-observed-missing-desired-cardinal-neighbor cohorts.
+`desired_to_visible` uses `first_draw` when a renderer supplies it and otherwise
+uses `result_accepted`. The current runner is headless, so its header explicitly
+reports `accepted` as the endpoint. Dependency wait, eligible-to-worker-start,
+scheduler wait, pool wait, and worker execution are reported separately.
 
-A matched capture used 10 samples per distance, view distance 2, two configured
-workers, the Debug build, and a 20-hardware-thread host. The comparison applied
-the same trace and benchmark instrumentation to the last implementation before
-bounded priority mesh dispatch. All 40 samples reached the real quiescent state,
-had no stale mesh results, and used accepted geometry as the visibility
-endpoint.
+The assessment takes an operator-supplied comparison budget, defaulting to
+50 ms because that is approximately three default update intervals and makes
+large stage residuals easy to identify. It is a comparison budget only: meeting
+or exceeding it is not proof of interactive acceptability and does not change
+production behavior.
 
-| Distance squared / dependencies | Scheduler | Desired to visible P50/P95 | Dependency wait P50/P95 | Eligible to worker P50/P95 | Worker execution P50/P95 |
-| --- | --- | ---: | ---: | ---: | ---: |
-| 0 / 6 | unbounded FIFO submission | 556.032 / 561.077 ms | 470.120 / 471.896 ms | 1.683 / 1.862 ms | 1.762 / 1.919 ms |
-| 0 / 6 | bounded priority dispatch | 556.999 / 560.630 ms | 470.606 / 473.241 ms | 1.668 / 1.812 ms | 1.777 / 1.887 ms |
-| 1 / 5 | unbounded FIFO submission | 2280.755 / 2286.205 ms | 1958.780 / 1964.505 ms | 3.502 / 3.602 ms | 1.442 / 1.519 ms |
-| 1 / 5 | bounded priority dispatch | 2278.755 / 2289.382 ms | 1958.609 / 1967.266 ms | 1.630 / 1.685 ms | 1.463 / 1.487 ms |
+#### Matched paced capture
+
+The exact revisions used to define this comparison were:
+
+- baseline scheduler: `677a4439afa3a40aa6799fa78ed4f1d8b00e30e3`;
+- dependency-count instrumentation: `5d04e609865449b7679331441360a29dadebf5ce`,
+  with the retained first-observation naming and regression at
+  `b1cda21b11b953c1e7c159c94d2c07f6d6a44cd8`;
+- paced benchmark: `5e92575aa380786f69f55588f85510984ca02933`;
+- repaired scheduler: `8a3b526e402da4f9a2083d5a0479f6af598e5c74`,
+  captured from the complete repaired tree at
+  `5e92575aa380786f69f55588f85510984ca02933`.
+
+Both builds used byte-identical version 2 benchmark sources. The capture ran
+sequentially on the same 12th Gen Intel Core i7-12700 host with 20 logical CPUs,
+Linux 7.0.12-201.fc44.x86_64, Debug builds, and otherwise uncontrolled host
+load. Each build used 10 samples per distance, view distance 2, two workers,
+unbounded generation, mesh, update, and apply settings, a 16.667 ms cadence,
+and the 50 ms comparison budget. The exact invocation from each build directory
+was:
+
+```text
+./Rigel_near_camera_visibility_benchmark --samples 10 --view-distance 2 --worker-threads 2 --timeout-seconds 30 --update-interval-ms 16.667 --comparison-budget-ms 50
+```
+
+All 40 samples reached the real quiescent state, reported three stable updates,
+had no stale mesh results, and used accepted geometry as the endpoint. Times
+below are nearest-rank P50/P95 in milliseconds; the neighbor count is the first
+observed missing desired-cardinal-neighbor count, not a live count.
+
+| Distance / first count | Scheduler | Desired to visible | Dependency wait | Eligible to worker | Scheduler wait | Pool wait | Worker execution |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Camera / 6 | Baseline | 583.420 / 616.771 | 467.826 / 484.490 | 16.982 / 17.116 | 16.900 / 17.030 | 0.079 / 0.190 | 1.736 / 1.926 |
+| Camera / 6 | Repaired | 583.418 / 616.782 | 467.832 / 501.246 | 16.972 / 17.073 | 16.911 / 16.976 | 0.079 / 0.132 | 1.780 / 1.930 |
+| Adjacent / 5 | Baseline | 2266.735 / 2300.108 | 1916.693 / 1950.046 | 19.971 / 20.006 | 19.525 / 19.624 | 0.466 / 0.542 | 1.447 / 1.491 |
+| Adjacent / 5 | Repaired | 2266.759 / 2283.469 | 1916.712 / 1933.430 | 18.097 / 18.231 | 18.034 / 18.177 | 0.055 / 0.074 | 1.444 / 1.776 |
 
 For the adjacent cohort, bounded priority dispatch reduced
-eligible-to-worker-start P95 by 53%, scheduler-wait P95 from 3.097 ms to
-1.629 ms, and pool-wait P95 from 0.519 ms to 0.084 ms. Worker execution and
-desired-to-visible were effectively unchanged. The scheduler repair therefore
-survives to physical worker start, but the neighbor barrier remains the dominant
-headless first-acceptance delay and exceeds the 50 ms budget for both near
-cohorts.
+eligible-to-worker-start P95 by 8.9%, scheduler-wait P95 by 7.4%, and pool-wait
+P95 by 86%. Desired-to-visible P95 was 0.7% lower and the camera cohort was
+unchanged, so this small controlled sample does not establish a material
+end-to-end improvement. Dependency wait still dominates both cohorts and
+exceeds the operator's 50 ms comparison budget.
 
-This capture is not sufficient evidence for provisional-neighbor meshes. It has
-no GPU context or main-pass draw, uses a fresh-world missing probe instead of a
-shipped persistence backend, is a Debug build, and does not control competing
-host load. The required external validation is a Release interactive capture on
+This controlled cold-generation capture is not sufficient evidence for
+provisional-neighbor meshes or interactive acceptability. It has no GPU context
+or main-pass draw, uses a controlled missing probe instead of a shipped
+persistence backend, is a Debug build, and does not control competing host
+load. The required external validation is a Release interactive capture on
 identified hardware using the shipped persistence backend, the renderer's
 actual `first_draw` event, the same camera-containing and adjacent cohorts, and
 quiescence as the terminal signal. If that capture confirms unacceptable

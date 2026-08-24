@@ -729,8 +729,8 @@ surface camera chunk Y values 1, 2, and 3, the wholly out-of-world shares are
 
 The shipped-config assessment sampled nine X/Z columns at chunk Y=-3, wholly
 below `min_y`, and nine at chunk Y=11, wholly above `max_y`, in the same Release
-build and host as the CPU overlay assessment. The direct generator results
-were:
+configuration, build directory, and host as the CPU overlay assessment. The
+direct generator results were:
 
 | Position | Nonempty chunks | Total non-air blocks | Generation P50/P95/P99 (ms) |
 | --- | ---: | ---: | ---: |
@@ -808,10 +808,10 @@ The overlay captures used runner source
 assessment at `ce1dd039bf0e37db89aec45efc0cb3acfffc4139` and the isolated CPU
 presentation boundary at `89afbefc2ba4f5b90f66cba396ae23f6b8223f3a`.
 The retained version 5 runner at
-`16e241f1027153e182c3f5ec07bc59f503ba3e55` adds only the raw vertical sample
-lines described above.
+`16e241f1027153e182c3f5ec07bc59f503ba3e55` adds the raw vertical sample lines
+described above and the associated schema-version bump.
 
-Build and run the modes from the same Release build:
+For a new capture, build once in Release and run the modes from that binary:
 
 ```text
 ./Rigel_streaming_assessment_benchmark --vertical-only

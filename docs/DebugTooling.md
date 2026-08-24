@@ -553,7 +553,9 @@ accepted-geometry endpoint:
 
 All 120 samples reached quiescence, used accepted geometry, and reported no
 stale mesh results. Times below are nearest-rank P50/P95 in milliseconds.
-Stage columns are P95 and are reported separately rather than added.
+The dependency column measures mesh dependency wait. The eligible-to-worker,
+scheduler, pool, and worker columns are mesh-stage P95 timings, not generation
+queue latency, and are reported separately rather than added.
 
 | Distance | Generation dispatch | Desired to accepted P50/P95 | P95 residual from FIFO | Dependency P95 | Eligible to worker P95 | Scheduler P95 | Pool P95 | Worker P95 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

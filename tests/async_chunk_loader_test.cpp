@@ -2642,11 +2642,12 @@ TEST_CASE(AsyncChunkLoader_RegionMetricsAccountDirectAndSpeculativeJobs) {
     CHECK_EQ(active.directOrigin.resultsPublished, static_cast<uint64_t>(1));
     CHECK_EQ(active.directOrigin.missingProbes, static_cast<uint64_t>(1));
     CHECK_EQ(active.speculativeOrigin.logicalAdmissions, static_cast<uint64_t>(2));
-    CHECK_EQ(active.speculativeOrigin.inlineExecutions, static_cast<uint64_t>(2));
-    CHECK_EQ(active.speculativeOrigin.resultsPublished, static_cast<uint64_t>(2));
-    CHECK_EQ(active.speculativeOrigin.missingProbes, static_cast<uint64_t>(2));
+    CHECK_EQ(active.speculativeOrigin.inlineExecutions, static_cast<uint64_t>(0));
+    CHECK_EQ(active.speculativeOrigin.resultsPublished, static_cast<uint64_t>(0));
+    CHECK_EQ(active.speculativeOrigin.missingProbes, static_cast<uint64_t>(0));
     CHECK_EQ(active.demandOwnedDispatchedUndrained, static_cast<size_t>(1));
-    CHECK_EQ(active.speculativeOwnedDispatchedUndrained, static_cast<size_t>(2));
+    CHECK_EQ(active.speculativeOwnedDispatchedUndrained, static_cast<size_t>(0));
+    CHECK_EQ(active.speculativeOwnedQueued, static_cast<size_t>(2));
     CHECK(active.directOrigin.maxAdmissionToWorkerStartNanoseconds <=
           active.directOrigin.admissionToWorkerStartNanoseconds);
     CHECK(active.speculativeOrigin.maxAdmissionToWorkerStartNanoseconds <=
@@ -2656,10 +2657,23 @@ TEST_CASE(AsyncChunkLoader_RegionMetricsAccountDirectAndSpeculativeJobs) {
     CHECK(active.speculativeOrigin.maxWorkerExecutionNanoseconds <=
           active.speculativeOrigin.workerExecutionNanoseconds);
 
-    auto resolved = loader.drainCompletions(8);
+    std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(8);
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));
     CHECK_EQ(resolved.front().coord, requested);
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Missing);
+    const auto firstDrain = loader.metrics();
+    CHECK_EQ(firstDrain.directOrigin.resultsDrained, static_cast<uint64_t>(1));
+    CHECK_EQ(firstDrain.speculativeOrigin.inlineExecutions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(firstDrain.speculativeOrigin.resultsPublished,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(firstDrain.speculativeOrigin.resultsDrained,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(firstDrain.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(1));
+    CHECK_EQ(firstDrain.speculativeOwnedQueued, static_cast<size_t>(1));
+
+    CHECK(drainRegionJobsUntilSettled(loader, resolved));
 
     auto settled = loader.metrics();
     CHECK_EQ(settled.demandOwnedDispatchedUndrained, static_cast<size_t>(0));
@@ -2668,6 +2682,69 @@ TEST_CASE(AsyncChunkLoader_RegionMetricsAccountDirectAndSpeculativeJobs) {
     CHECK_EQ(settled.speculativeOrigin.logicalAdmissions, settled.speculativeOrigin.resultsPublished);
     CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
     CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+}
+
+TEST_CASE(AsyncChunkLoader_InlineZeroCapBoundsMaximalPrefetchDispatch) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+
+    MemoryContext ctx;
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        0,
+        0,
+        12,
+        generator);
+    loader.setMaxInFlightRegions(0);
+    loader.setPrefetchRadius(4);
+    loader.setPrefetchPerRequest(0);
+
+    CHECK_EQ(loader.request(makeLoadRequest({0, 0, 0})),
+             ChunkLoadRequestResult::Queued);
+
+    const auto admitted = loader.metrics();
+    CHECK_EQ(admitted.directOrigin.logicalAdmissions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(admitted.speculativeOrigin.logicalAdmissions,
+             static_cast<uint64_t>(64));
+    CHECK_EQ(admitted.directOrigin.inlineExecutions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(admitted.speculativeOrigin.inlineExecutions,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(admitted.demandOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(admitted.speculativeOwnedQueued, static_cast<size_t>(64));
+    CHECK_EQ(admitted.demandOwnedDispatchedUndrained,
+             static_cast<size_t>(1));
+    CHECK_EQ(admitted.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionCompletionCount(loader),
+             static_cast<size_t>(1));
+
+    std::vector<ChunkLoadCompletion> resolved;
+    CHECK(drainRegionJobsUntilSettled(loader, resolved));
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    const auto settled = loader.metrics();
+    CHECK_EQ(settled.directOrigin.inlineExecutions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(settled.speculativeOrigin.inlineExecutions,
+             static_cast<uint64_t>(64));
+    CHECK_EQ(settled.directOrigin.resultsPublished,
+             settled.directOrigin.resultsDrained);
+    CHECK_EQ(settled.speculativeOrigin.resultsPublished,
+             settled.speculativeOrigin.resultsDrained);
+    CHECK_EQ(settled.demandOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(settled.speculativeOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(settled.demandOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
+    CHECK_EQ(settled.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
 }
 
 TEST_CASE(AsyncChunkLoader_PublishesRegionResultAndAccountingTogether) {
@@ -3063,7 +3140,8 @@ TEST_CASE(AsyncChunkLoader_PrefetchMetricsTrackCacheUseAndUnusedEviction) {
 
     CHECK_EQ(cacheHitLoader.request(makeLoadRequest({0, 0, 0})),
              ChunkLoadRequestResult::Queued);
-    cacheHitLoader.drainCompletions(8);
+    std::vector<ChunkLoadCompletion> cacheHitResolved;
+    CHECK(drainRegionJobsUntilSettled(cacheHitLoader, cacheHitResolved));
     CHECK(prefetchedKey.has_value());
     if (!prefetchedKey) {
         return;
@@ -3131,10 +3209,11 @@ TEST_CASE(AsyncChunkLoader_PrefetchMetricsTrackCacheUseAndUnusedEviction) {
 
     CHECK_EQ(evictionLoader.request(makeLoadRequest({0, 0, 0})),
              ChunkLoadRequestResult::Queued);
-    evictionLoader.drainCompletions(8);
+    std::vector<ChunkLoadCompletion> evictionResolved;
+    CHECK(drainRegionJobsUntilSettled(evictionLoader, evictionResolved));
     CHECK_EQ(evictionLoader.request(makeLoadRequest({160, 0, 0})),
              ChunkLoadRequestResult::Queued);
-    evictionLoader.drainCompletions(8);
+    CHECK(drainRegionJobsUntilSettled(evictionLoader, evictionResolved));
 
     const auto evictionMetrics = evictionLoader.metrics();
     CHECK_EQ(evictionMetrics.usefulPrefetchCacheHits,
@@ -3657,6 +3736,143 @@ TEST_CASE(AsyncChunkLoader_RunningDirectRegionOwnerSurvivesDemandChurn) {
              static_cast<size_t>(0));
     CHECK_EQ(settled.speculativeOwnedDispatchedUndrained,
              static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionOwnerCount(loader),
+             static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionAttemptOwnerCount(loader),
+             static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+}
+
+TEST_CASE(AsyncChunkLoader_RunningDirectCancellationCachesAsPrefetch) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+
+    MemoryContext ctx;
+    auto runningGate = std::make_shared<LoaderWorkGate>();
+    auto unusedPayloadGate = std::make_shared<LoaderWorkGate>();
+    std::atomic<size_t> starts{0};
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        1,
+        0,
+        0,
+        generator);
+    LoaderWorkRelease releaseOnExit(runningGate, unusedPayloadGate);
+    loader.setPrefetchRadius(0);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setRegionLoadStartObserver(
+            loader,
+            [runningGate, &starts](const RegionKey&, bool directOrigin) {
+                if (directOrigin) {
+                    starts.fetch_add(1, std::memory_order_relaxed);
+                    runningGate->enterAndWait();
+                }
+            });
+
+    const ChunkCoord demand{0, 0, 0};
+    const RegionKey key{"rigel:default", 0, 0, 0};
+    CHECK_EQ(loader.request(makeLoadRequest(demand)),
+             ChunkLoadRequestResult::Queued);
+    CHECK(runningGate->waitUntilEntered());
+
+    const auto identity = Rigel::Persistence::detail::
+        AsyncChunkLoaderTestAccess::regionJobIdentity(loader, key);
+    const auto poolJob = Rigel::Persistence::detail::
+        AsyncChunkLoaderTestAccess::regionPoolJobId(loader, key);
+    CHECK(identity);
+    CHECK(poolJob != 0);
+    CHECK(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+              regionJobHasDirectOrigin(loader, key));
+    CHECK(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+              regionJobHasDirectDemand(loader, key));
+
+    loader.cancel(demand);
+    CHECK(!loader.isPending(demand));
+    const auto cancelled = loader.metrics();
+    CHECK_EQ(cancelled.directOrigin.logicalAdmissions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(cancelled.directOrigin.logicalPreStartCancellations,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(cancelled.demandOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(cancelled.speculativeOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(cancelled.demandOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
+    CHECK_EQ(cancelled.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(1));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionJobIdentity(loader, key),
+             identity);
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionPoolJobId(loader, key),
+             poolJob);
+    CHECK(!Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+              regionJobHasDirectDemand(loader, key));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionLoadAttemptCount(loader, key),
+             static_cast<size_t>(1));
+
+    runningGate->release();
+    CHECK(waitForPublishedRegionJobs(loader, 1));
+    const auto published = loader.metrics();
+    CHECK_EQ(published.directOrigin.resultsPublished,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(published.directOrigin.resultsDrained,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(published.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(1));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionCompletionCount(loader),
+             static_cast<size_t>(1));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionJobIdentity(loader, key),
+             identity);
+
+    const auto resolved = loader.drainCompletions(1);
+    CHECK(resolved.empty());
+    const auto drained = loader.metrics();
+    CHECK_EQ(drained.directOrigin.resultsPublished,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(drained.directOrigin.resultsDrained,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(drained.directOrigin.poolSubmissions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(drained.directOrigin.poolWorkerStarts,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(drained.usefulPrefetchCacheHits, static_cast<uint64_t>(0));
+    CHECK_EQ(drained.demandOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(drained.speculativeOwnedQueued, static_cast<size_t>(0));
+    CHECK_EQ(drained.demandOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
+    CHECK_EQ(drained.speculativeOwnedDispatchedUndrained,
+             static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionCacheCount(loader),
+             static_cast<size_t>(1));
+
+    const RegionLifecycleSnapshot beforeCachedDemand =
+        regionLifecycleSnapshot(drained);
+    CHECK_EQ(loader.request(makeLoadRequest(demand)),
+             ChunkLoadRequestResult::Missing);
+    CHECK_EQ(loader.metrics().usefulPrefetchCacheHits,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(regionLifecycleSnapshot(loader.metrics()), beforeCachedDemand);
+
+    CHECK_EQ(loader.request(makeLoadRequest(demand)),
+             ChunkLoadRequestResult::Missing);
+    const auto repeatedCacheUse = loader.metrics();
+    CHECK_EQ(repeatedCacheUse.usefulPrefetchCacheHits,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(regionLifecycleSnapshot(repeatedCacheUse), beforeCachedDemand);
+    CHECK_EQ(starts.load(std::memory_order_relaxed), static_cast<size_t>(1));
     CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
                  regionOwnerCount(loader),
              static_cast<size_t>(0));

@@ -849,10 +849,7 @@ bool AsyncChunkLoader::queueRegionLoad(const RegionKey& key,
 }
 
 void AsyncChunkLoader::startQueuedRegionLoads() {
-    size_t dispatchLimit = m_ioPool.threadCount();
-    if (dispatchLimit == 0) {
-        dispatchLimit = std::numeric_limits<size_t>::max();
-    }
+    size_t dispatchLimit = std::max<size_t>(m_ioPool.threadCount(), 1);
     if (m_maxInFlightRegions > 0) {
         dispatchLimit = std::min(dispatchLimit, m_maxInFlightRegions);
     }

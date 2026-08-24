@@ -292,7 +292,7 @@ precedence.
 | `streaming.load_region_drain_budget` | int | `32` | Region completion drain budget. |
 | `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited; maximum explicit cap `32768`). |
 | `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = unlimited, maximum `256`). |
-| `streaming.load_max_inflight_regions` | int | `8` | Configured physical region-read cap (0 = no configured physical-read cap; maximum explicit cap `64`). The zero-cap fallback retains at most 64 speculative owners in the loader-owned queue; dispatched or pool-pending work is bounded separately by IO executor capacity. |
+| `streaming.load_max_inflight_regions` | int | `8` | Configured physical region-read cap (0 = no configured physical-read cap; maximum explicit cap `64`). The zero-cap fallback retains at most 64 speculative owners in the loader-owned queue; dispatched or pool-pending work is bounded separately by IO executor capacity, including one inline result when `io_threads` is 0. |
 | `streaming.load_prefetch_radius` | int | `1` | Region prefetch radius (maximum `4`). |
 | `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request (0 = all candidates; maximum `728`). |
 | `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited, maximum explicit cap `65536`). |
@@ -301,9 +301,10 @@ Region worker submission is also capped by the physical IO thread count.
 Speculative owners remain in a direct-first loader queue bounded by
 `load_max_inflight_regions`, or by a 64-owner fallback when that setting is
 zero. That fallback does not include separately bounded dispatched or
-pool-pending work, which may occupy the IO executor capacity. The setting
-continues to control physical read concurrency rather than rejecting direct
-chunk demand.
+pool-pending work, which may occupy the IO executor capacity. With no IO
+worker, reads execute inline and at most one completed result remains
+dispatched-undrained. The setting continues to control physical read
+concurrency rather than rejecting direct chunk demand.
 
 The embedded configuration shipped with Rigel sets the view distance to 12
 chunks and the unload distance to 13 chunks. The effective unload distance is

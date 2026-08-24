@@ -15,6 +15,7 @@
 namespace Rigel::Voxel::detail {
 
 struct ThreadPoolTestAccess;
+struct ConcurrentQueueTestAccess;
 
 template <typename T>
 class ConcurrentQueue {
@@ -48,6 +49,8 @@ public:
     }
 
 private:
+    friend struct ConcurrentQueueTestAccess;
+
     mutable std::mutex m_mutex;
     std::deque<T> m_queue;
 };

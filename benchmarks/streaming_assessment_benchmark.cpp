@@ -51,7 +51,12 @@ public:
     explicit ScopeExit(Callback callback)
         : m_callback(std::move(callback)) {}
 
-    ~ScopeExit() { m_callback(); }
+    ~ScopeExit() noexcept {
+        try {
+            m_callback();
+        } catch (...) {
+        }
+    }
 
     ScopeExit(const ScopeExit&) = delete;
     ScopeExit& operator=(const ScopeExit&) = delete;
@@ -197,6 +202,80 @@ const char* debugStateName(Voxel::ChunkStreamer::DebugState state) {
     return "unknown";
 }
 
+using DebugStateCounts = std::array<
+    size_t,
+    static_cast<size_t>(Voxel::ChunkStreamer::DebugState::Count)>;
+
+struct OverlayStartupSnapshot {
+    Voxel::StreamingDiagnosticSnapshot diagnostics;
+    Voxel::ChunkStreamer::WorkMetrics work;
+    DebugStateCounts states{};
+    size_t trackedRecords = 0;
+};
+
+bool overlayExecutionSettled(
+    const Voxel::StreamingDiagnosticSnapshot& diagnostics,
+    const Voxel::ChunkStreamer::WorkMetrics& work) {
+    return diagnostics.generation.pending == 0 &&
+        diagnostics.generation.inFlight == 0 &&
+        diagnostics.generation.terminalErrors == 0 &&
+        diagnostics.generationCompletionsPending == 0 &&
+        diagnostics.sourceResolutionPending > 0 &&
+        diagnostics.generationSchedulerPending == 0 &&
+        diagnostics.retiredWorkPending == 0 &&
+        diagnostics.chunkLoad.pending > 0 &&
+        diagnostics.chunkLoad.inFlight == 0 &&
+        diagnostics.chunkLoad.terminalErrors == 0 &&
+        diagnostics.mesh.pending > 0 &&
+        diagnostics.mesh.inFlight == 0 &&
+        diagnostics.meshCompletionsPending == 0 &&
+        diagnostics.mesh.terminalErrors == 0 &&
+        diagnostics.eviction.pending == 0 &&
+        diagnostics.eviction.inFlight == 0 &&
+        diagnostics.eviction.terminalErrors == 0 &&
+        work.generationJobsStarted > 0 &&
+        work.generationJobsStarted == work.generationJobsCompleted &&
+        work.generationJobsCancelled == 0 &&
+        work.generationJobsFailed == 0 &&
+        work.meshJobsStarted > 0 &&
+        work.meshJobsStarted == work.meshJobsCompleted &&
+        work.meshJobsCompleted == work.meshJobsAccepted +
+            work.meshJobsRejectedStale + work.meshJobsFailed &&
+        work.meshJobsFailed == 0;
+}
+
+OverlayStartupSnapshot captureOverlayStartup(
+    Voxel::WorldView& view,
+    Voxel::ChunkCoord center,
+    int radius) {
+    OverlayStartupSnapshot snapshot;
+    snapshot.diagnostics = view.streamingDiagnostics();
+    snapshot.work = view.streamingMetrics();
+    std::vector<Voxel::ChunkStreamer::DebugChunkState> states;
+    view.getChunkDebugStates(states, center, radius);
+    snapshot.trackedRecords = states.size();
+    for (const auto& state : states) {
+        ++snapshot.states[static_cast<size_t>(state.state)];
+    }
+    return snapshot;
+}
+
+bool overlayStartupClassified(const OverlayStartupSnapshot& startup) {
+    using State = Voxel::ChunkStreamer::DebugState;
+    const auto count = [&](State state) {
+        return startup.states[static_cast<size_t>(state)];
+    };
+    return overlayExecutionSettled(startup.diagnostics, startup.work) &&
+        count(State::WaitingForData) ==
+            startup.diagnostics.chunkLoad.pending &&
+        count(State::WaitingForNeighbors) ==
+            startup.diagnostics.mesh.pending &&
+        count(State::MeshSchedulerWait) == 0 &&
+        count(State::MeshSubmittedOrBuilding) == 0 &&
+        count(State::DirtyRemeshPending) == 0 &&
+        count(State::TerminalFailure) == 0;
+}
+
 bool runVerticalAssessment(Asset::AssetManager& assets) {
     const auto configuration = loadShippedWorldConfiguration(assets);
     Voxel::BlockRegistry registry;
@@ -330,6 +409,23 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
 class OpenGLContext {
 public:
     OpenGLContext() {
+        try {
+            initialize();
+        } catch (...) {
+            release();
+            throw;
+        }
+    }
+
+    ~OpenGLContext() { release(); }
+
+    bool ready() const { return m_ready; }
+    const std::string& failure() const { return m_failure; }
+    const std::string& renderer() const { return m_renderer; }
+    const std::string& version() const { return m_version; }
+
+private:
+    void initialize() {
         if (!glfwInit()) {
             const char* description = nullptr;
             glfwGetError(&description);
@@ -380,23 +476,26 @@ public:
         }
     }
 
-    ~OpenGLContext() {
-        UI::shutdown();
+    void release() noexcept {
+        try {
+            if (m_window) {
+                glfwMakeContextCurrent(m_window);
+            }
+            UI::shutdown();
+        } catch (...) {
+        }
+        m_ready = false;
         if (m_window) {
             glfwMakeContextCurrent(nullptr);
             glfwDestroyWindow(m_window);
+            m_window = nullptr;
         }
         if (m_glfwInitialized) {
             glfwTerminate();
+            m_glfwInitialized = false;
         }
     }
 
-    bool ready() const { return m_ready; }
-    const std::string& failure() const { return m_failure; }
-    const std::string& renderer() const { return m_renderer; }
-    const std::string& version() const { return m_version; }
-
-private:
     GLFWwindow* m_window = nullptr;
     bool m_glfwInitialized = false;
     bool m_ready = false;
@@ -405,12 +504,23 @@ private:
     std::string m_version = "unavailable";
 };
 
-bool prepareOverlayStreaming(Voxel::WorldView& view,
-                             const glm::vec3& cameraPosition) {
-    const Voxel::ChunkCoord center = Voxel::worldToChunk(
+Voxel::ChunkCoord cameraChunk(const glm::vec3& cameraPosition) {
+    return Voxel::worldToChunk(
         static_cast<int>(std::floor(cameraPosition.x)),
         static_cast<int>(std::floor(cameraPosition.y)),
         static_cast<int>(std::floor(cameraPosition.z)));
+}
+
+enum class OverlayPreparationResult : uint8_t {
+    Ready,
+    NonemptyTargetUnavailable,
+    ExecutionNotSettled
+};
+
+OverlayPreparationResult prepareOverlayStreaming(
+    Voxel::WorldView& view,
+    const glm::vec3& cameraPosition) {
+    const Voxel::ChunkCoord center = cameraChunk(cameraPosition);
     view.setChunkLoader([center](Voxel::ChunkLoadRequest request) {
         const auto squared = [](int value) {
             const int64_t widened = value;
@@ -427,6 +537,7 @@ bool prepareOverlayStreaming(Voxel::WorldView& view,
     view.markSpawnDiscoveryComplete();
     const auto deadline = Clock::now() + std::chrono::seconds(30);
     std::vector<Voxel::ChunkStreamer::DebugChunkState> targetState;
+    bool observedNonemptyTarget = false;
     while (Clock::now() < deadline) {
         view.updateStreaming(cameraPosition);
         view.updateMeshes();
@@ -434,34 +545,122 @@ bool prepareOverlayStreaming(Voxel::WorldView& view,
         if (!targetState.empty() &&
             targetState.front().installedGeometry ==
                 Voxel::ChunkStreamer::DebugInstalledGeometry::Nonempty) {
-            return true;
+            observedNonemptyTarget = true;
+            if (overlayExecutionSettled(
+                    view.streamingDiagnostics(), view.streamingMetrics())) {
+                return OverlayPreparationResult::Ready;
+            }
         }
         std::this_thread::yield();
     }
-    return false;
+    return observedNonemptyTarget
+        ? OverlayPreparationResult::ExecutionNotSettled
+        : OverlayPreparationResult::NonemptyTargetUnavailable;
 }
 
-bool isStartupBacklog(
-    const Voxel::StreamingDiagnosticSnapshot& diagnostics) {
-    return diagnostics.state != Voxel::StreamingLifecycleState::Quiescent &&
-        !diagnostics.workEmpty();
+const char* overlayPreparationFailure(OverlayPreparationResult result) {
+    return result == OverlayPreparationResult::ExecutionNotSettled
+        ? "startup_execution_not_settled"
+        : "nonempty_target_geometry_unavailable";
 }
 
-void printStartupBacklog(
-    const Voxel::StreamingDiagnosticSnapshot& diagnostics) {
+void printUnsettledExecution(
+    const Voxel::StreamingDiagnosticSnapshot& diagnostics,
+    const Voxel::ChunkStreamer::WorkMetrics& work) {
+    std::cerr
+        << " generation=" << diagnostics.generation.pending << '/'
+        << diagnostics.generation.inFlight << '/'
+        << diagnostics.generationCompletionsPending << '/'
+        << diagnostics.generation.terminalErrors
+        << " canonical=" << diagnostics.sourceResolutionPending << '/'
+        << diagnostics.generationSchedulerPending << '/'
+        << diagnostics.retiredWorkPending
+        << " load=" << diagnostics.chunkLoad.pending << '/'
+        << diagnostics.chunkLoad.inFlight << '/'
+        << diagnostics.chunkLoad.terminalErrors
+        << " mesh=" << diagnostics.mesh.pending << '/'
+        << diagnostics.mesh.inFlight << '/'
+        << diagnostics.meshCompletionsPending << '/'
+        << diagnostics.mesh.terminalErrors
+        << " eviction=" << diagnostics.eviction.pending << '/'
+        << diagnostics.eviction.inFlight << '/'
+        << diagnostics.eviction.terminalErrors
+        << " generation_partition=" << work.generationJobsStarted << '/'
+        << work.generationJobsCompleted << '/'
+        << work.generationJobsCancelled << '/'
+        << work.generationJobsFailed
+        << " mesh_partition=" << work.meshJobsStarted << '/'
+        << work.meshJobsCompleted << '/' << work.meshJobsAccepted << '/'
+        << work.meshJobsRejectedStale << '/' << work.meshJobsFailed;
+}
+
+void printStartupBacklog(const OverlayStartupSnapshot& startup) {
+    using State = Voxel::ChunkStreamer::DebugState;
+    const auto stateCount = [&](State state) {
+        return startup.states[static_cast<size_t>(state)];
+    };
+    const auto& diagnostics = startup.diagnostics;
+    const auto& work = startup.work;
     std::cout
         << " workload=startup_backlog"
         << " startup_state="
         << Voxel::streamingLifecycleName(diagnostics.state)
+        << " startup_tracked_records=" << startup.trackedRecords
+        << " startup_waiting_for_data="
+        << stateCount(State::WaitingForData)
+        << " startup_waiting_for_neighbors="
+        << stateCount(State::WaitingForNeighbors)
+        << " startup_mesh_scheduler_wait="
+        << stateCount(State::MeshSchedulerWait)
+        << " startup_mesh_work="
+        << stateCount(State::MeshSubmittedOrBuilding)
+        << " startup_voxel_empty=" << stateCount(State::VoxelEmpty)
+        << " startup_accepted_empty_geometry="
+        << stateCount(State::AcceptedEmptyGeometry)
+        << " startup_accepted_nonempty_geometry="
+        << stateCount(State::AcceptedNonemptyGeometry)
+        << " startup_dirty_remesh_pending="
+        << stateCount(State::DirtyRemeshPending)
+        << " startup_terminal_failure="
+        << stateCount(State::TerminalFailure)
+        << " startup_generation_started=" << work.generationJobsStarted
+        << " startup_generation_completed=" << work.generationJobsCompleted
+        << " startup_generation_cancelled=" << work.generationJobsCancelled
+        << " startup_generation_failed=" << work.generationJobsFailed
         << " startup_generation_pending=" << diagnostics.generation.pending
         << " startup_generation_in_flight="
         << diagnostics.generation.inFlight
+        << " startup_generation_completion_pending="
+        << diagnostics.generationCompletionsPending
+        << " startup_generation_terminal_failures="
+        << diagnostics.generation.terminalErrors
+        << " startup_canonical_source_work="
+        << diagnostics.sourceResolutionPending
+        << " startup_canonical_generation_work="
+        << diagnostics.generationSchedulerPending
+        << " startup_canonical_retired_work="
+        << diagnostics.retiredWorkPending
         << " startup_chunk_load_pending=" << diagnostics.chunkLoad.pending
         << " startup_chunk_load_in_flight=" << diagnostics.chunkLoad.inFlight
+        << " startup_chunk_load_terminal_failures="
+        << diagnostics.chunkLoad.terminalErrors
+        << " startup_mesh_started=" << work.meshJobsStarted
+        << " startup_mesh_completed=" << work.meshJobsCompleted
+        << " startup_mesh_accepted=" << work.meshJobsAccepted
+        << " startup_mesh_stale=" << work.meshJobsRejectedStale
+        << " startup_mesh_failed=" << work.meshJobsFailed
         << " startup_mesh_pending=" << diagnostics.mesh.pending
         << " startup_mesh_in_flight=" << diagnostics.mesh.inFlight
+        << " startup_mesh_completion_pending="
+        << diagnostics.meshCompletionsPending
+        << " startup_mesh_terminal_failures="
+        << diagnostics.mesh.terminalErrors
         << " startup_eviction_pending=" << diagnostics.eviction.pending
-        << " startup_eviction_in_flight=" << diagnostics.eviction.inFlight;
+        << " startup_eviction_in_flight=" << diagnostics.eviction.inFlight
+        << " startup_eviction_terminal_failures="
+        << diagnostics.eviction.terminalErrors
+        << " startup_execution_settled=true"
+        << " startup_logical_backlog_classified=true";
 }
 
 bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
@@ -476,15 +675,24 @@ bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
     view.setGenerator(generator);
     view.setStreamConfig(configuration.streaming);
     const glm::vec3 cameraPosition(16.0f, 80.0f, 16.0f);
-    if (!prepareOverlayStreaming(view, cameraPosition)) {
+    const auto preparation = prepareOverlayStreaming(view, cameraPosition);
+    if (preparation != OverlayPreparationResult::Ready) {
         std::cerr << "overlay_cpu_assessment_failed "
-                     "reason=nonempty_target_geometry_unavailable\n";
+                  << "reason=" << overlayPreparationFailure(preparation);
+        if (preparation == OverlayPreparationResult::ExecutionNotSettled) {
+            printUnsettledExecution(
+                view.streamingDiagnostics(), view.streamingMetrics());
+        }
+        std::cerr << '\n';
         return false;
     }
-    const auto startupDiagnostics = view.streamingDiagnostics();
-    if (!isStartupBacklog(startupDiagnostics)) {
+    const auto startup = captureOverlayStartup(
+        view,
+        cameraChunk(cameraPosition),
+        configuration.streaming.viewDistanceChunks);
+    if (!overlayStartupClassified(startup)) {
         std::cerr << "overlay_cpu_assessment_failed "
-                     "reason=startup_backlog_became_quiescent\n";
+                     "reason=startup_backlog_not_exactly_classified\n";
         return false;
     }
 
@@ -551,7 +759,7 @@ bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
               << " presentation_maps_and_meshes=true"
               << " gl_calls=none"
               << " imgui_legend_rendering=false";
-    printStartupBacklog(startupDiagnostics);
+    printStartupBacklog(startup);
     printPercentiles("disabled_frame", disabledSummary);
     printPercentiles("enabled_frame", enabledSummary);
     std::cout << " p95_delta_ms="
@@ -584,15 +792,24 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
     view.initialize(assets);
     view.setStreamConfig(configuration.streaming);
     const glm::vec3 cameraPosition(16.0f, 80.0f, 16.0f);
-    if (!prepareOverlayStreaming(view, cameraPosition)) {
+    const auto preparation = prepareOverlayStreaming(view, cameraPosition);
+    if (preparation != OverlayPreparationResult::Ready) {
         std::cerr << "overlay_assessment_failed "
-                     "reason=nonempty_target_geometry_unavailable\n";
+                  << "reason=" << overlayPreparationFailure(preparation);
+        if (preparation == OverlayPreparationResult::ExecutionNotSettled) {
+            printUnsettledExecution(
+                view.streamingDiagnostics(), view.streamingMetrics());
+        }
+        std::cerr << '\n';
         return false;
     }
-    const auto startupDiagnostics = view.streamingDiagnostics();
-    if (!isStartupBacklog(startupDiagnostics)) {
+    const auto startup = captureOverlayStartup(
+        view,
+        cameraChunk(cameraPosition),
+        configuration.streaming.viewDistanceChunks);
+    if (!overlayStartupClassified(startup)) {
         std::cerr << "overlay_assessment_failed "
-                     "reason=startup_backlog_became_quiescent\n";
+                     "reason=startup_backlog_not_exactly_classified\n";
         return false;
     }
 
@@ -692,7 +909,7 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
               << " imgui_legend_rendering=true"
               << " gl_renderer=" << std::quoted(context.renderer())
               << " gl_version=" << std::quoted(context.version());
-    printStartupBacklog(startupDiagnostics);
+    printStartupBacklog(startup);
     printPercentiles("disabled_frame", disabledSummary);
     printPercentiles("enabled_frame", enabledSummary);
     std::cout << " p95_delta_ms="
@@ -703,7 +920,7 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int runBenchmark(int argc, char** argv) {
     enum class Mode : uint8_t {
         All,
         Vertical,
@@ -770,7 +987,10 @@ int main(int argc, char** argv) {
               << "benchmark name=streaming_assessment version=2"
               << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
               << " hardware_threads=" << std::thread::hardware_concurrency()
-              << " shipped_world_configuration=true\n";
+              << " shipped_world_configuration=true"
+              << " percentile_method=nearest_rank"
+              << " p95_p99_9_sample_interpretation="
+                 "observed_cohort_maximum_noisy_tail\n";
     Asset::AssetManager assets;
     assets.loadManifest("manifest.yaml");
     if (vertical && !runVerticalAssessment(assets)) {
@@ -783,4 +1003,17 @@ int main(int argc, char** argv) {
         return 1;
     }
     return 0;
+}
+
+int main(int argc, char** argv) {
+    try {
+        return runBenchmark(argc, argv);
+    } catch (const std::exception& error) {
+        std::cerr << "streaming_assessment_failed reason=\"exception: "
+                  << error.what() << "\"\n";
+    } catch (...) {
+        std::cerr << "streaming_assessment_failed "
+                     "reason=unknown_exception\n";
+    }
+    return 1;
 }

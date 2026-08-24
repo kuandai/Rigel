@@ -81,20 +81,24 @@ std::optional<NearCameraVisibilitySample> makeNearCameraVisibilitySample(
     }
 
     Duration dataReadyToNeighborsReady{};
-    std::optional<Voxel::ChunkVisibilityTimePoint> neighborsReady =
-        record.stage(Voxel::ChunkVisibilityStage::NeighborReady);
-    if (*record.firstObservedMissingDesiredCardinalNeighborCount > 0) {
+    std::optional<Voxel::ChunkVisibilityTimePoint> dependencyReady;
+    DependencyReadyBoundary dependencyReadyBoundary =
+        DependencyReadyBoundary::ObservedFinalNeighbor;
+    if (*record.firstObservedMissingDesiredCardinalNeighborCount == 0) {
+        dependencyReady = record.stage(Voxel::ChunkVisibilityStage::DataReady);
+        dependencyReadyBoundary =
+            DependencyReadyBoundary::InferredDataReady;
+    } else {
         if (!durations.dependencyWait) {
             return std::nullopt;
         }
+        dependencyReady =
+            record.stage(Voxel::ChunkVisibilityStage::NeighborReady);
         dataReadyToNeighborsReady = *durations.dependencyWait;
-    } else if (!neighborsReady) {
-        neighborsReady =
-            record.stage(Voxel::ChunkVisibilityStage::DataReady);
     }
     const auto meshStart =
         record.stage(Voxel::ChunkVisibilityStage::WorkerStart);
-    if (!neighborsReady || !meshStart || *meshStart < *neighborsReady) {
+    if (!dependencyReady || !meshStart || *meshStart < *dependencyReady) {
         return std::nullopt;
     }
 
@@ -102,6 +106,7 @@ std::optional<NearCameraVisibilitySample> makeNearCameraVisibilitySample(
         .distanceSquared = distanceSquared,
         .firstObservedMissingDesiredCardinalNeighborCount =
             *record.firstObservedMissingDesiredCardinalNeighborCount,
+        .dependencyReadyBoundary = dependencyReadyBoundary,
         .endpoint = firstDraw
             ? VisibilityEndpoint::FirstDraw
             : VisibilityEndpoint::Accepted,
@@ -114,7 +119,7 @@ std::optional<NearCameraVisibilitySample> makeNearCameraVisibilitySample(
         .generationPoolWait = *durations.generationPoolWait,
         .generationExecution = *durations.generationExecution,
         .dataReadyToNeighborsReady = dataReadyToNeighborsReady,
-        .neighborsReadyToMeshStart = *meshStart - *neighborsReady,
+        .neighborsReadyToMeshStart = *meshStart - *dependencyReady,
         .meshExecution = *durations.workerExecution,
         .desiredToAcceptedGeometry = *durations.desiredToAccepted,
         .desiredToFirstDraw = durations.desiredToFirstDraw
@@ -125,6 +130,10 @@ NearCameraVisibilitySummary summarizeNearCameraVisibility(
     const std::vector<NearCameraVisibilitySample>& samples) {
     NearCameraVisibilitySummary summary;
     summary.samples = samples.size();
+    if (!samples.empty()) {
+        summary.dependencyReadyBoundary =
+            samples.front().dependencyReadyBoundary;
+    }
     std::vector<Duration> desiredToVisible;
     std::vector<Duration> desiredToGenerationStart;
     std::vector<Duration> generationQueueWait;
@@ -151,6 +160,10 @@ NearCameraVisibilitySummary summarizeNearCameraVisibility(
     desiredToFirstDraw.reserve(samples.size());
 
     for (const auto& sample : samples) {
+        if (summary.dependencyReadyBoundary !=
+            sample.dependencyReadyBoundary) {
+            summary.dependencyReadyBoundary = std::nullopt;
+        }
         if (sample.endpoint == VisibilityEndpoint::FirstDraw) {
             ++summary.firstDrawEndpoints;
         } else {

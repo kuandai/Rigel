@@ -243,7 +243,7 @@ if (RIGEL_BUILD_TESTS)
             Rigel_streaming_assessment_cpu_contract
             PROPERTIES
                 PASS_REGULAR_EXPRESSION
-                    "view_radius=12.*draw_evidence_records=1.*presentation_maps_and_meshes=true.*gl_calls=none.*imgui_legend_rendering=false.*workload=startup_backlog.*startup_state=streaming"
+                    "view_radius=12.*draw_evidence_records=1.*presentation_maps_and_meshes=true.*gl_calls=none.*imgui_legend_rendering=false.*workload=startup_backlog.*startup_state=streaming.*startup_waiting_for_data=[1-9][0-9]*.*startup_waiting_for_neighbors=[1-9][0-9]*.*startup_mesh_scheduler_wait=0 startup_mesh_work=0.*startup_terminal_failure=0.*startup_generation_started=[1-9][0-9]* startup_generation_completed=[1-9][0-9]* startup_generation_cancelled=0 startup_generation_failed=0 startup_generation_pending=0 startup_generation_in_flight=0 startup_generation_completion_pending=0 startup_generation_terminal_failures=0 startup_canonical_source_work=[1-9][0-9]* startup_canonical_generation_work=0 startup_canonical_retired_work=0.*startup_chunk_load_in_flight=0 startup_chunk_load_terminal_failures=0.*startup_mesh_in_flight=0 startup_mesh_completion_pending=0 startup_mesh_terminal_failures=0 startup_eviction_pending=0 startup_eviction_in_flight=0 startup_eviction_terminal_failures=0 startup_execution_settled=true startup_logical_backlog_classified=true"
                 TIMEOUT 60
         )
         add_test(

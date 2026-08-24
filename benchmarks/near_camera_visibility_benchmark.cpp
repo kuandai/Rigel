@@ -525,10 +525,10 @@ void printSummary(
             << " first_observed_missing_desired_cardinal_neighbors=all";
     }
     std::cout << " data_ready_to_neighbors_ready_boundary=";
-    if (!summary.firstObservedMissingDesiredCardinalNeighborCount) {
+    if (!summary.dependencyReadyBoundary) {
         std::cout << "mixed";
-    } else if (
-        *summary.firstObservedMissingDesiredCardinalNeighborCount == 0) {
+    } else if (*summary.dependencyReadyBoundary ==
+               Benchmark::DependencyReadyBoundary::InferredDataReady) {
         std::cout << "inferred_data_ready";
     } else {
         std::cout << "observed_final_neighbor";
@@ -569,7 +569,7 @@ void printSummary(
 
 } // namespace
 
-int main(int argc, char** argv) {
+int runBenchmark(int argc, char** argv) {
     Options options;
     if (!parseOptions(argc, argv, options)) {
         return argc > 1 && std::string_view(argv[1]) == "--help" ? 0 : 2;
@@ -714,7 +714,8 @@ int main(int argc, char** argv) {
                 << static_cast<unsigned>(
                        sample.firstObservedMissingDesiredCardinalNeighborCount)
                 << " data_ready_to_neighbors_ready_boundary="
-                << (sample.firstObservedMissingDesiredCardinalNeighborCount == 0
+                << (sample.dependencyReadyBoundary ==
+                            Benchmark::DependencyReadyBoundary::InferredDataReady
                         ? "inferred_data_ready"
                         : "observed_final_neighbor")
                 << " endpoint="
@@ -838,4 +839,17 @@ int main(int argc, char** argv) {
         << " persistence=shipped_backend"
         << " wait_signal=streaming_quiescent\n";
     return 0;
+}
+
+int main(int argc, char** argv) {
+    try {
+        return runBenchmark(argc, argv);
+    } catch (const std::exception& error) {
+        std::cerr << "near_camera_visibility_benchmark_failed "
+                  << "reason=\"exception: " << error.what() << "\"\n";
+    } catch (...) {
+        std::cerr << "near_camera_visibility_benchmark_failed "
+                     "reason=unknown_exception\n";
+    }
+    return 1;
 }

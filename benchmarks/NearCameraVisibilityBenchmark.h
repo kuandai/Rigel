@@ -15,6 +15,11 @@ enum class VisibilityEndpoint : uint8_t {
     FirstDraw
 };
 
+enum class DependencyReadyBoundary : uint8_t {
+    ObservedFinalNeighbor,
+    InferredDataReady
+};
+
 enum class MeshSubmissionLimitSource : uint8_t {
     RuntimeConfiguration,
     RuntimeDiagnostics
@@ -56,6 +61,8 @@ MeshSubmissionLimitMetadata meshSubmissionLimitMetadata(
 struct NearCameraVisibilitySample {
     int distanceSquared = 0;
     uint8_t firstObservedMissingDesiredCardinalNeighborCount = 0;
+    DependencyReadyBoundary dependencyReadyBoundary =
+        DependencyReadyBoundary::ObservedFinalNeighbor;
     VisibilityEndpoint endpoint = VisibilityEndpoint::Accepted;
     Voxel::ChunkVisibilityDuration desiredToVisible{};
     Voxel::ChunkVisibilityDuration desiredToGenerationStart{};
@@ -81,6 +88,7 @@ struct DurationPercentiles {
 struct NearCameraVisibilitySummary {
     int distanceSquared = 0;
     std::optional<uint8_t> firstObservedMissingDesiredCardinalNeighborCount;
+    std::optional<DependencyReadyBoundary> dependencyReadyBoundary;
     size_t samples = 0;
     size_t acceptedEndpoints = 0;
     size_t firstDrawEndpoints = 0;

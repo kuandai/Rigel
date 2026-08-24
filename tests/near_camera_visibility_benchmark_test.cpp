@@ -20,6 +20,10 @@ Benchmark::NearCameraVisibilitySample sample(
         .distanceSquared = distanceSquared,
         .firstObservedMissingDesiredCardinalNeighborCount =
             firstObservedMissingDesiredCardinalNeighborCount,
+        .dependencyReadyBoundary =
+            firstObservedMissingDesiredCardinalNeighborCount == 0
+                ? Benchmark::DependencyReadyBoundary::InferredDataReady
+                : Benchmark::DependencyReadyBoundary::ObservedFinalNeighbor,
         .endpoint = Benchmark::VisibilityEndpoint::Accepted,
         .desiredToVisible = milliseconds(value),
         .desiredToGenerationStart = milliseconds(value + 1),
@@ -193,6 +197,7 @@ TEST_CASE(NearCameraVisibilityBenchmark_RequiresGeneratedNonemptyAcceptance) {
     setStage(Voxel::ChunkVisibilityStage::GenerationWorkerFinish, 11);
     setStage(Voxel::ChunkVisibilityStage::GenerationReady, 12);
     setStage(Voxel::ChunkVisibilityStage::DataReady, 13);
+    setStage(Voxel::ChunkVisibilityStage::NeighborReady, 14);
     setStage(Voxel::ChunkVisibilityStage::MeshEligible, 14);
     setStage(Voxel::ChunkVisibilityStage::SchedulerWait, 14);
     setStage(Voxel::ChunkVisibilityStage::PoolSubmit, 15);
@@ -207,6 +212,10 @@ TEST_CASE(NearCameraVisibilityBenchmark_RequiresGeneratedNonemptyAcceptance) {
     CHECK_EQ(converted->generationCapacityWait, milliseconds(2));
     CHECK_EQ(converted->generationPoolWait, milliseconds(2));
     CHECK_EQ(converted->dataReadyToNeighborsReady, milliseconds(0));
+    CHECK_EQ(
+        converted->dependencyReadyBoundary,
+        Benchmark::DependencyReadyBoundary::InferredDataReady);
+    CHECK_EQ(converted->neighborsReadyToMeshStart, milliseconds(3));
 
     record.origin = Voxel::ChunkVisibilityOrigin::Persisted;
     CHECK(!Benchmark::makeNearCameraVisibilitySample(record, 1).has_value());

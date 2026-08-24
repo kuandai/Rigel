@@ -40,6 +40,7 @@ struct Options {
     size_t samplesPerDistance = 20;
     int viewDistance = 2;
     int workerThreads = 2;
+    int meshQueueLimit = 0;
     int timeoutSeconds = 30;
     long double updateIntervalMilliseconds = kDefaultUpdateIntervalMilliseconds;
     BenchmarkClock::duration updateInterval =
@@ -124,6 +125,7 @@ void printUsage() {
         << "  --samples N                samples for each distance (default 20)\n"
         << "  --view-distance N          cold-start view radius (default 2)\n"
         << "  --worker-threads N         production worker setting (default 2)\n"
+        << "  --mesh-queue-limit N       configured submission cap (default unbounded)\n"
         << "  --timeout-seconds N        per-sample safety deadline (default 30)\n"
         << "  --update-interval-ms N     application-like cadence (default 16.667)\n"
         << "  --comparison-budget-ms N   operator comparison budget (default 50)\n"
@@ -199,6 +201,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.viewDistance = static_cast<int>(*parsed);
         } else if (argument == "--worker-threads") {
             options.workerThreads = static_cast<int>(*parsed);
+        } else if (argument == "--mesh-queue-limit") {
+            options.meshQueueLimit = static_cast<int>(*parsed);
         } else if (argument == "--timeout-seconds") {
             options.timeoutSeconds = static_cast<int>(*parsed);
         } else {
@@ -235,7 +239,7 @@ Voxel::StreamingConfig makeStreamingConfig(const Options& options) {
     stream.viewDistanceChunks = options.viewDistance;
     stream.unloadDistanceChunks = options.viewDistance;
     stream.genQueueLimit = 0;
-    stream.meshQueueLimit = 0;
+    stream.meshQueueLimit = options.meshQueueLimit;
     stream.updateBudgetPerFrame = 0;
     stream.applyBudgetPerFrame = 0;
     stream.workerThreads = options.workerThreads;
@@ -243,14 +247,16 @@ Voxel::StreamingConfig makeStreamingConfig(const Options& options) {
     return stream;
 }
 
-Voxel::StreamingDiagnosticSnapshot runtimeSchedulerMetadata(
+Benchmark::MeshSubmissionLimitMetadata runtimeSchedulerMetadata(
     const Options& options) {
     Voxel::ChunkManager manager;
     Voxel::BlockRegistry registry;
     Voxel::WorldMeshStore meshStore;
     Voxel::ChunkStreamer streamer(manager, meshStore, registry, nullptr, {});
     streamer.setConfig(makeStreamingConfig(options));
-    return streamer.diagnostics();
+    return Benchmark::meshSubmissionLimitMetadata(
+        streamer.diagnostics(),
+        static_cast<size_t>(options.meshQueueLimit));
 }
 
 RunResult runSample(const Options& options,
@@ -402,7 +408,7 @@ int main(int argc, char** argv) {
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout
-        << "benchmark name=near_camera_visibility version=2"
+        << "benchmark name=near_camera_visibility version=3"
         << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
         << " hardware_threads=" << std::thread::hardware_concurrency()
         << " fixture=controlled_cold_generation"
@@ -417,10 +423,37 @@ int main(int argc, char** argv) {
         << " view_distance=" << options.viewDistance
         << " worker_threads=" << options.workerThreads
         << " gen_queue_limit=unbounded"
-        << " mesh_queue_limit_setting=unbounded"
-        << " mesh_submission_limit_source=runtime_diagnostics"
-        << " effective_mesh_submission_limit="
-        << schedulerMetadata.meshSubmissionLimit
+        << " mesh_queue_limit_setting=";
+    if (options.meshQueueLimit > 0) {
+        std::cout << options.meshQueueLimit;
+    } else {
+        std::cout << "unbounded";
+    }
+    std::cout
+        << " mesh_submission_limit_source="
+        << (schedulerMetadata.source ==
+                    Benchmark::MeshSubmissionLimitSource::RuntimeDiagnostics
+                ? "runtime_diagnostics"
+                : "runtime_configuration")
+        << " mesh_submission_behavior=";
+    switch (schedulerMetadata.behavior) {
+        case Benchmark::MeshSubmissionBehavior::ConfiguredUnbounded:
+            std::cout << "configured_unbounded";
+            break;
+        case Benchmark::MeshSubmissionBehavior::ConfiguredBounded:
+            std::cout << "configured_bounded";
+            break;
+        case Benchmark::MeshSubmissionBehavior::EffectiveBounded:
+            std::cout << "effective_bounded";
+            break;
+    }
+    std::cout << " effective_mesh_submission_limit=";
+    if (schedulerMetadata.effectiveLimit) {
+        std::cout << *schedulerMetadata.effectiveLimit;
+    } else {
+        std::cout << "unavailable";
+    }
+    std::cout
         << " update_budget=unbounded"
         << " apply_budget=unbounded"
         << " cadence_mode="

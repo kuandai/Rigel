@@ -15,6 +15,44 @@ enum class VisibilityEndpoint : uint8_t {
     FirstDraw
 };
 
+enum class MeshSubmissionLimitSource : uint8_t {
+    RuntimeConfiguration,
+    RuntimeDiagnostics
+};
+
+enum class MeshSubmissionBehavior : uint8_t {
+    ConfiguredUnbounded,
+    ConfiguredBounded,
+    EffectiveBounded
+};
+
+struct MeshSubmissionLimitMetadata {
+    MeshSubmissionLimitSource source =
+        MeshSubmissionLimitSource::RuntimeConfiguration;
+    MeshSubmissionBehavior behavior =
+        MeshSubmissionBehavior::ConfiguredUnbounded;
+    std::optional<size_t> effectiveLimit;
+};
+
+template <typename DiagnosticSnapshot>
+MeshSubmissionLimitMetadata meshSubmissionLimitMetadata(
+    const DiagnosticSnapshot& diagnostics,
+    size_t configuredLimit) {
+    if constexpr (requires { diagnostics.meshSubmissionLimit; }) {
+        return {
+            .source = MeshSubmissionLimitSource::RuntimeDiagnostics,
+            .behavior = MeshSubmissionBehavior::EffectiveBounded,
+            .effectiveLimit = diagnostics.meshSubmissionLimit
+        };
+    }
+    return {
+        .source = MeshSubmissionLimitSource::RuntimeConfiguration,
+        .behavior = configuredLimit > 0
+            ? MeshSubmissionBehavior::ConfiguredBounded
+            : MeshSubmissionBehavior::ConfiguredUnbounded
+    };
+}
+
 struct NearCameraVisibilitySample {
     int distanceSquared = 0;
     uint8_t firstObservedMissingDesiredCardinalNeighborCount = 0;

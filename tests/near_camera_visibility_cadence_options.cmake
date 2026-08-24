@@ -2,6 +2,28 @@ if (NOT DEFINED BENCHMARK_EXECUTABLE)
     message(FATAL_ERROR "BENCHMARK_EXECUTABLE is required")
 endif()
 
+function(assert_evidence_contract MODE OUTPUT_VARIABLE EXPECTED_SCOPE EXCLUDED_SCOPE)
+    set(BENCHMARK_OUTPUT "${${OUTPUT_VARIABLE}}")
+    if (NOT BENCHMARK_OUTPUT MATCHES
+        "configuration [^\n]*evidence_scope=${EXPECTED_SCOPE} shipped_time_to_visible_evidence=false interactive_time_to_visible_evidence=false comparison_budget_ms=100000\\.000 comparison_budget_role=operator_supplied")
+        message(FATAL_ERROR
+            "${MODE} output omitted required evidence or comparison-budget labels")
+    endif()
+    if (BENCHMARK_OUTPUT MATCHES "evidence_scope=${EXCLUDED_SCOPE}")
+        message(FATAL_ERROR "${MODE} output mixed evidence scopes")
+    endif()
+    if (NOT BENCHMARK_OUTPUT MATCHES
+        "assessment comparison_budget_status=within[^\n]*comparison_budget_ms=100000\\.000 comparison_budget_role=operator_supplied_comparison_only assessment_scope=numeric_result_only")
+        message(FATAL_ERROR
+            "${MODE} budget assessment did not classify only the numeric result")
+    endif()
+    if (BENCHMARK_OUTPUT MATCHES
+        "neighbor[-_a-z]*policy|policy_conclusion")
+        message(FATAL_ERROR
+            "${MODE} budget assessment emitted a neighbor-policy conclusion")
+    endif()
+endfunction()
+
 set(SAMPLE_ARGUMENTS
     --samples 1
     --view-distance 1
@@ -26,24 +48,15 @@ if (NOT APPLICATION_OUTPUT MATCHES
         "Application-like benchmark did not declare its lifecycle wait signal")
 endif()
 if (NOT APPLICATION_OUTPUT MATCHES
-    "configuration [^\n]*mesh_submission_limit_source=runtime_diagnostics effective_mesh_submission_limit=1[^\n]*cadence_mode=application_like update_interval_ms=16\\.667 evidence_scope=controlled_fixture_application_like_cadence shipped_time_to_visible_evidence=false interactive_time_to_visible_evidence=false")
+    "configuration [^\n]*mesh_submission_limit_source=runtime_diagnostics mesh_submission_behavior=effective_bounded effective_mesh_submission_limit=1[^\n]*cadence_mode=application_like update_interval_ms=16\\.667")
     message(FATAL_ERROR
         "Default application-like cadence metadata was absent or incorrect")
 endif()
-if (APPLICATION_OUTPUT MATCHES
-    "evidence_scope=nonrepresentative_scheduler_lower_bound")
-    message(FATAL_ERROR
-        "Default application-like result also claimed scheduler stress scope")
-endif()
-if (NOT APPLICATION_OUTPUT MATCHES
-    "assessment comparison_budget_status=within[^\n]*assessment_scope=numeric_result_only")
-    message(FATAL_ERROR
-        "Application-like budget assessment did not classify only the numeric result")
-endif()
-if (APPLICATION_OUTPUT MATCHES "provisional_neighbor_policy=")
-    message(FATAL_ERROR
-        "Application-like budget assessment emitted a neighbor-policy conclusion")
-endif()
+assert_evidence_contract(
+    "Default application-like"
+    APPLICATION_OUTPUT
+    controlled_fixture_application_like_cadence
+    nonrepresentative_scheduler_lower_bound)
 string(REGEX MATCHALL "sample index=[^\n]*" APPLICATION_SAMPLE_LINES
     "${APPLICATION_OUTPUT}")
 list(LENGTH APPLICATION_SAMPLE_LINES APPLICATION_SAMPLE_COUNT)
@@ -98,15 +111,11 @@ if (NOT STRESS_OUTPUT MATCHES
     message(FATAL_ERROR
         "Scheduler lower-bound stress metadata was absent or incorrect")
 endif()
-if (STRESS_OUTPUT MATCHES
-    "evidence_scope=controlled_fixture_application_like_cadence")
-    message(FATAL_ERROR
-        "Scheduler stress result also claimed application-like evidence scope")
-endif()
-if (STRESS_OUTPUT MATCHES "provisional_neighbor_policy=")
-    message(FATAL_ERROR
-        "Scheduler stress budget assessment emitted a neighbor-policy conclusion")
-endif()
+assert_evidence_contract(
+    "Scheduler lower-bound stress"
+    STRESS_OUTPUT
+    nonrepresentative_scheduler_lower_bound
+    controlled_fixture_application_like_cadence)
 string(REGEX MATCHALL "sample index=[^\n]*" STRESS_SAMPLE_LINES
     "${STRESS_OUTPUT}")
 list(LENGTH STRESS_SAMPLE_LINES STRESS_SAMPLE_COUNT)
@@ -177,6 +186,7 @@ execute_process(
         --samples 1
         --view-distance 1
         --worker-threads 4
+        --mesh-queue-limit 1
         --timeout-seconds 10
         --comparison-budget-ms 100000
         --update-interval-ms 5
@@ -189,10 +199,15 @@ if (NOT EXPLICIT_RESULT EQUAL 0)
         "Explicit application-like benchmark failed: ${EXPLICIT_ERROR}")
 endif()
 if (NOT EXPLICIT_OUTPUT MATCHES
-    "configuration [^\n]*worker_threads=4[^\n]*mesh_submission_limit_source=runtime_diagnostics effective_mesh_submission_limit=2[^\n]*cadence_mode=application_like update_interval_ms=5\\.000 evidence_scope=controlled_fixture_application_like_cadence")
+    "configuration [^\n]*worker_threads=4[^\n]*mesh_queue_limit_setting=1 mesh_submission_limit_source=runtime_diagnostics mesh_submission_behavior=effective_bounded effective_mesh_submission_limit=1[^\n]*cadence_mode=application_like update_interval_ms=5\\.000")
     message(FATAL_ERROR
         "Explicit application-like cadence or scheduler metadata was absent or incorrect")
 endif()
+assert_evidence_contract(
+    "Explicit application-like"
+    EXPLICIT_OUTPUT
+    controlled_fixture_application_like_cadence
+    nonrepresentative_scheduler_lower_bound)
 string(REGEX MATCHALL "sample index=[^\n]*completion_state=quiescent"
     EXPLICIT_QUIESCENT_SAMPLES "${EXPLICIT_OUTPUT}")
 list(LENGTH EXPLICIT_QUIESCENT_SAMPLES EXPLICIT_QUIESCENT_COUNT)
@@ -200,12 +215,6 @@ if (NOT EXPLICIT_QUIESCENT_COUNT EQUAL 2)
     message(FATAL_ERROR
         "Explicit application-like cadence did not produce two Quiescent samples")
 endif()
-if (EXPLICIT_OUTPUT MATCHES
-    "evidence_scope=nonrepresentative_scheduler_lower_bound|provisional_neighbor_policy=")
-    message(FATAL_ERROR
-        "Explicit application-like output mixed evidence scopes or policy conclusions")
-endif()
-
 foreach(INVALID_INTERVAL IN ITEMS 0.0000001 1e300)
     execute_process(
         COMMAND "${BENCHMARK_EXECUTABLE}"

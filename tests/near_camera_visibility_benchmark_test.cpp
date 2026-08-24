@@ -67,6 +67,40 @@ TEST_CASE(NearCameraVisibilityBenchmark_UsesNearestRankAndStableCohorts) {
         cohorts[1].workerExecution.p95Milliseconds, 124.0, 0.0001);
 }
 
+TEST_CASE(NearCameraVisibilityBenchmark_DistinguishesSchedulerLimitMetadata) {
+    struct BaselineDiagnostics {};
+    struct RepairedDiagnostics {
+        size_t meshSubmissionLimit = 0;
+    };
+
+    const auto baseline = Benchmark::meshSubmissionLimitMetadata(
+        BaselineDiagnostics{}, 0);
+    CHECK_EQ(
+        baseline.source,
+        Benchmark::MeshSubmissionLimitSource::RuntimeConfiguration);
+    CHECK_EQ(
+        baseline.behavior,
+        Benchmark::MeshSubmissionBehavior::ConfiguredUnbounded);
+    CHECK(!baseline.effectiveLimit.has_value());
+
+    const auto configuredBaseline =
+        Benchmark::meshSubmissionLimitMetadata(BaselineDiagnostics{}, 5);
+    CHECK_EQ(
+        configuredBaseline.behavior,
+        Benchmark::MeshSubmissionBehavior::ConfiguredBounded);
+    CHECK(!configuredBaseline.effectiveLimit.has_value());
+
+    const auto repaired = Benchmark::meshSubmissionLimitMetadata(
+        RepairedDiagnostics{3}, 0);
+    CHECK_EQ(
+        repaired.source,
+        Benchmark::MeshSubmissionLimitSource::RuntimeDiagnostics);
+    CHECK_EQ(
+        repaired.behavior,
+        Benchmark::MeshSubmissionBehavior::EffectiveBounded);
+    CHECK_EQ(repaired.effectiveLimit, std::optional<size_t>{3});
+}
+
 TEST_CASE(NearCameraVisibilityBenchmark_PrefersDrawAndRejectsCensoredWork) {
     Voxel::ChunkVisibilityTraceRecord record;
     record.kind = Voxel::ChunkVisibilityLifecycleKind::CameraDemand;

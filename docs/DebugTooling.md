@@ -734,33 +734,38 @@ were:
 
 | Position | Nonempty chunks | Total non-air blocks | Generation P50/P95/P99 (ms) |
 | --- | ---: | ---: | ---: |
-| Wholly below | 9 / 9 | 291,833 | 16.985 / 19.110 / 19.110 |
-| Wholly above | 0 / 9 | 0 | 16.109 / 18.002 / 18.002 |
+| Wholly below | 9 / 9 | 291,833 | 16.733 / 18.945 / 18.945 |
+| Wholly above | 0 / 9 | 0 | 16.015 / 17.544 / 17.544 |
 
-This rerun used the retained assessment source at
-`9f08f0bf6344b36c2a8d2becd1bb04baf94fe8d7`. With nine nearest-rank samples,
-both P95 and P99 select the observed cohort maximum; they are the same noisy
-tail observation, not independent population-tail estimates.
+This hardened rerun used assessment source
+`acabd94f52c30f57e57f5cd13c7533f3059af6ad`; its raw log has SHA-256
+`64bb3ee0accf69ea9354d196c314f15dfe2bfdc36f024c9c5b60ea449ee285f3`.
+With nine nearest-rank samples, both P95 and P99 select the observed cohort
+maximum; they are the same noisy tail observation, not independent
+population-tail estimates.
 
-A radius-1 production-lifecycle run retained the shipped 12-worker six/six
-generation/mesh split while limiting only the representative coordinate set.
-Both runs generated seven chunks and reached quiescence. The below-bound target
-contained 32,768 non-air voxels; all seven generated chunks entered mesh work,
-and all seven mesh results were accepted. The fully occluded target therefore
-ended as accepted empty geometry, not as voxel-empty. The above-bound run also
-executed seven generation jobs, but all data was voxel-empty and no mesh job
-started. Both lifecycles reported zero pending, in-flight, completion,
-terminal-failure, source-resolution, logical-generation, and retired-work
-owners at quiescence. This is measurement evidence only; no regression asserts
-that out-of-bounds chunks must remain nonempty or continue consuming mesh work.
+The production-lifecycle cohorts used the shipped view radius 12, unload
+radius 13, and 12-worker six/six generation/mesh split. Each generated the
+full 7,153-coordinate desired sphere and reached quiescence. The below-bound
+target contained 32,768 non-air voxels; 5,761 mesh jobs completed and were
+accepted, and the fully occluded target ended as accepted empty geometry rather
+than voxel-empty. The above-bound run likewise completed 7,153 generation jobs;
+335 mesh jobs completed and were accepted even though the target itself was
+voxel-empty. Generation cancellation/failure and mesh stale/failure counters
+were zero in both cohorts. Pending, in-flight, completion, terminal-failure,
+source-resolution, logical-generation, retired-work, load, and eviction owners
+were all zero at quiescence. The below and above runs required 8,434,078 and
+8,665,521 updates respectively; the combined process took 41.49 seconds and
+peaked at 6,316,112 KiB RSS on this host. This is measurement evidence only;
+no regression asserts that out-of-bounds chunks must remain nonempty or
+continue consuming mesh work.
 
 Thus vertical bounds do not clip generation: above-bound empty results still
 consume generation time, while below-bound results can consume both generation
-and mesh capacity. The cost is material follow-up evidence, but it does not
-re-establish a moving-camera P1 in this change: approached generation remains
-priority-dispatched, and measured neighbor readiness remains the dominant
-repaired moving-camera stage. No vertical clipping or provisional neighbor
-policy is introduced here.
+and mesh capacity. This is a separate finite-world P1; it does not invalidate
+the measured moving-camera priority repair, but it does prevent the overall
+streaming program from being declared merge-ready. No vertical clipping or
+provisional neighbor policy is introduced in this change.
 
 This is a substantial finite-world P1 assigned to the immediately dependent
 finite-world clipping change. Overall streaming-program merge readiness is
@@ -844,15 +849,31 @@ regression verifies that F1 release changes false to true and a second release
 changes it back. Production collection, presentation construction, GL work,
 and the ImGui legend are therefore opt-in rather than per-frame startup work.
 
-The full GL/ImGui comparison could not run on this validation host: GLFW
-reported `X11: Failed to open display localhost:10.0`, and a local virtual
-display could not bind a listening socket. No full-render timing is inferred
-from the CPU result. The failure record reports both GL renderer and version as
-unavailable. On a usable host, a successful full run emits the actual GL
-renderer/version, requires at least one current-revision `drawn` record after a
-real main-pass draw, and emits the same alternating raw-pair provenance before
-its exact P50/P95/P99. `--overlay-only` remains the explicit external gate,
-alongside interactive first-draw validation.
+The same Release binary subsequently completed the existing production
+GLFW/OpenGL/ImGui path under Xvfb with Mesa software rendering:
+
+```text
+DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 ./Rigel_streaming_assessment_benchmark --overlay-only --frames 120
+```
+
+The binary used assessment source `499292343d871e5a65df4da55301cbc5a0aeb024`.
+The repository checkout did not contain its ignored texture pack, so the
+`assets/textures` directory from an adjacent clean Rigel checkout was staged
+only while configuring and packing this validation binary, then removed; it is
+an external validation input rather than a committed product artifact.
+The imported shipped resources contained 248 registered blocks and 134 atlas
+textures. The capture used the same classified 7,153-record cohort and reported
+one current-revision `drawn` record after the main pass. It identified
+`llvmpipe (LLVM 22.1.5, 256 bits)` and OpenGL
+`4.5 (Core Profile) Mesa 26.0.8`. Disabled P50/P95/P99 were
+0.545/0.669/0.776 ms; enabled values were 3.358/3.712/6.113 ms. The 3.043 ms
+P95 increase is 18.3% of a 16.667 ms frame budget, so shipped-radius detail is
+material and supports the default-off, F1-opt-in behavior. All 120 independently
+counted pairs are present with alternating order; their raw log has SHA-256
+`6c08a1e730800d9c4d43432c1974de2ecd4978b4f4648607606791c87afae1a2`.
+This is a controlled virtual-display/software-renderer result, not an
+interactive first-draw capture. Interactive first-draw validation with the
+shipped persistence backend remains an external gate.
 
 Assessment frame counts are strictly parsed and bounded to 10,000 per mode;
 suffixes, overflow, repeated frame options, conflicting modes, and frame counts

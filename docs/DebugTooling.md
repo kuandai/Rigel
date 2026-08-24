@@ -212,6 +212,12 @@ completion drain, including stale or cancelled running results;
 `generationJobsCancelled` counts jobs removed physically before worker start.
 At owner-thread observation boundaries, `generationJobsStarted` equals those
 two counters plus the current physical generation-owner count.
+The diagnostic snapshot also exposes exact source-resolution, logical
+generation, retired-work, generation-completion, and mesh-completion owner
+gauges. These are observation-only views of the canonical containers, not
+parallel lifecycle owners. A successful benchmark sample requires every gauge,
+all pending/in-flight/terminal counts, and both completion queues to be zero in
+addition to the `quiescent` state.
 Quiescence bookkeeping examines active requests and explicitly retained
 unresolved state; it does not rescan the desired chunk set or poll persistence
 for discovery.
@@ -444,6 +450,29 @@ without a capacity-wait transition contributes zero capacity wait; other
 absent trace durations continue to invalidate the sample rather than being
 coerced to zero.
 
+The conversion accepts only generated `camera_demand` records ending in
+accepted nonempty geometry. A first-draw endpoint additionally requires the
+record's real `drawn` outcome; persisted, resident-left-censored, remesh,
+voxel-empty, accepted-empty, stale, failed, and replaced-before-draw records
+are rejected. When the first missing desired-cardinal-neighbor count is zero,
+there is no final-neighbor event to observe: the runner uses `data_ready` as
+the zero-duration boundary and labels it `inferred_data_ready`. Nonzero cohorts
+label the boundary `observed_final_neighbor`.
+
+Nearest-rank P99 for a 20-sample cohort is the observed cohort maximum. It is
+a noisy tail observation, not an interpolated or stable population estimate;
+the runner prints that interpretation in its header.
+
+The CLI rejects integer suffixes and overflow, more than 1,000 samples per
+workload, view radii above the production maximum, worker or mesh-queue values
+above production limits, more than 100,000 motion steps, timeouts above one
+hour, and comparison budgets above one hour. These bounds also keep coordinate
+motion and all sample-vector allocations finite. Every successful raw sample
+prints the exact generation/load/mesh/eviction pending, in-flight, completion,
+terminal-failure, source-resolution, logical-generation, and retired-work
+gauges alongside the cumulative completion/cancellation counts and
+`completion_state=quiescent`.
+
 `--collect-debug-detail` is a separate opt-in measurement mode. It calls the
 same bounded streamer snapshot used by the chunk field after each streaming
 update, but it does not create a GPU context or render the overlay. Normal
@@ -653,6 +682,13 @@ the priority target instead started within 37 ms at P99. This, together with
 the constrained-worker ordering regressions, demonstrates that an approached
 chunk is no longer buried behind the older unstarted generation backlog.
 
+The independent diagonal regression uses one generation worker with a bounded
+standby wave. It holds the first demanded job running, moves the camera one
+chunk in both X and Z, and proves the newly entered diagonal-near coordinate
+starts before retained older farther work. The running job remains demanded
+and is not cancelled; after release, all logical, physical, completion, and
+retired owners drain to stable quiescence.
+
 Neighbor dependency remains the largest repaired P95 stage: 150.1 ms in both
 cardinal workloads and 166.7 ms diagonally, versus at most 35.7 ms for
 generation queue wait and 26.9 ms for generation execution. This controlled
@@ -679,8 +715,8 @@ were:
 
 | Position | Nonempty chunks | Total non-air blocks | Generation P50/P95/P99 (ms) |
 | --- | ---: | ---: | ---: |
-| Wholly below | 9 / 9 | 291,833 | 16.343 / 18.867 / 18.867 |
-| Wholly above | 0 / 9 | 0 | 15.607 / 18.155 / 18.155 |
+| Wholly below | 9 / 9 | 291,833 | 16.691 / 19.090 / 19.090 |
+| Wholly above | 0 / 9 | 0 | 15.524 / 17.902 / 17.902 |
 
 A radius-1 production-lifecycle run retained the shipped 12-worker six/six
 generation/mesh split while limiting only the representative coordinate set.
@@ -689,8 +725,10 @@ contained 32,768 non-air voxels; all seven generated chunks entered mesh work,
 and all seven mesh results were accepted. The fully occluded target therefore
 ended as accepted empty geometry, not as voxel-empty. The above-bound run also
 executed seven generation jobs, but all data was voxel-empty and no mesh job
-started. A regression loads the embedded shipped configuration and checks both
-the occupancy and downstream lifecycle distinctions.
+started. Both lifecycles reported zero pending, in-flight, completion,
+terminal-failure, source-resolution, logical-generation, and retired-work
+owners at quiescence. This is measurement evidence only; no regression asserts
+that out-of-bounds chunks must remain nonempty or continue consuming mesh work.
 
 Thus vertical bounds do not clip generation: above-bound empty results still
 consume generation time, while below-bound results can consume both generation
@@ -699,6 +737,12 @@ re-establish a moving-camera P1 in this change: approached generation remains
 priority-dispatched, and measured neighbor readiness remains the dominant
 repaired moving-camera stage. No vertical clipping or provisional neighbor
 policy is introduced here.
+
+This is a substantial finite-world P1 assigned to the immediately dependent
+finite-world clipping change. Overall streaming-program merge readiness is
+withheld until that repair prevents wholly out-of-world desired coordinates
+from consuming generation and mesh capacity. The generation-priority runtime
+result remains valid and distinct from this blocking finite-world defect.
 
 #### Overlay instrumentation comparison
 
@@ -717,11 +761,13 @@ snapshot comparison.
 
 `Rigel_streaming_assessment_benchmark` adds two production-path comparisons at
 the shipped radius. Its renderer-independent mode invokes
-`Render::renderDebugField`, which calls `WorldView::getChunkDebugStates`,
+the CPU presentation boundary used by `Render::renderDebugField`, which calls
+`WorldView::getChunkDebugStates`,
 decorates installed geometry from the renderer draw cache, selects detail,
-builds the presentation maps and exposed-face meshes, and reaches the GL call
-sites with stubbed calls. It intentionally excludes driver/GPU work and ImGui,
-and labels both exclusions in its output. The full mode creates a real context,
+and builds the presentation maps and exposed-face meshes. It makes no GL calls,
+so its automated test is safe without a graphics context. It intentionally
+excludes driver/GPU work and ImGui and labels both exclusions in its output.
+The full mode creates a real context,
 initializes shipped block and texture resources, runs `FrameRenderer`, executes
 the GL field and frame graph, builds the ImGui legend/detail window, submits the
 ImGui draw data, and synchronizes each timed frame with `glFinish`.
@@ -734,12 +780,17 @@ Build and run the modes from the same Release build:
 ./Rigel_streaming_assessment_benchmark --overlay-only --frames 120
 ```
 
-The CPU comparison used 7,153 tracked records in the 15,625-coordinate
+The Release CPU comparison used 7,153 tracked records in the 15,625-coordinate
 radius-12 cube, including one installed mesh that exercised `WorldView` draw-
-evidence decoration. Disabled P50/P95/P99 were all below the printed 0.001 ms
-precision. Enabled P50/P95/P99 were 2.082/2.112/2.123 ms, a 2.112 ms P95
-increase. This is a CPU-side lower bound because GL was stubbed and ImGui was
-excluded; it is already 12.7% of a 16.667 ms frame budget.
+evidence decoration. It retained a non-quiescent startup backlog of 7,146 load
+owners and five mesh owners while alternating disabled-first and enabled-first
+pairs. Disabled P50/P95/P99 were all below the printed 0.001 ms precision.
+Enabled P50/P95/P99 were 2.040/2.089/2.103 ms, a 2.088 ms P95 increase. This is
+a CPU-side lower bound because GL and ImGui were excluded; it is 12.5% of a
+16.667 ms frame budget. Each of the 120 pairs is emitted as a raw sample with
+its index, execution order, and exact disabled/enabled durations; the summary
+records the Release build, 20 hardware threads, shipped configuration, radius,
+scanned and tracked counts, draw-evidence count, and startup ownership gauges.
 
 The same runner reports `startup_overlay_enabled=false`. The focused toggle
 regression verifies that F1 release changes false to true and a second release
@@ -749,8 +800,18 @@ and the ImGui legend are therefore opt-in rather than per-frame startup work.
 The full GL/ImGui comparison could not run on this validation host: GLFW
 reported `X11: Failed to open display localhost:10.0`, and a local virtual
 display could not bind a listening socket. No full-render timing is inferred
-from the CPU result. `--overlay-only` remains the explicit external gate on a
-host with a usable OpenGL display, alongside interactive first-draw validation.
+from the CPU result. The failure record reports both GL renderer and version as
+unavailable. On a usable host, a successful full run emits the actual GL
+renderer/version, requires at least one current-revision `drawn` record after a
+real main-pass draw, and emits the same alternating raw-pair provenance before
+its exact P50/P95/P99. `--overlay-only` remains the explicit external gate,
+alongside interactive first-draw validation.
+
+Assessment frame counts are strictly parsed and bounded to 10,000 per mode;
+suffixes, overflow, repeated frame options, conflicting modes, and frame counts
+for vertical-only mode are rejected before assets load. Graphics and ImGui
+shutdown, renderer/view release, atlas release, and cached shader destruction
+all occur while the real context remains current, including failure paths.
 
 #### Scheduler boundary assessment
 
@@ -762,6 +823,7 @@ listed separately even though `ChunkStreamer` owns it.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `ChunkStreamer` source/generation | 2 | 3 | 2 | 2 | 2 | 2 | 4 |
 | `ChunkStreamer` mesh scheduling | 3 | 3 | 3 | 2 | 3 | 3 | 3 |
+| `ChunkStreamer` persistence/eviction/version replacement | 2 | 2 | 3 | 3 | 3 | 2 | 4 |
 | `AsyncChunkLoader` | 3 | 4 | 5 | 4 | 4 | 2 | 5 |
 | `ThreadPool` | 2 | 1 | 2 | 1 | 2 | 0 | 1 |
 
@@ -775,6 +837,15 @@ class, and apply bounds; ready, dependency, and replacement pending state;
 pending retirement and stale-flight rejection; neighbor, completion, and dirty
 wakes; failure/revision/config reconciliation; and pending, in-flight, and
 completion ownership.
+
+The persistence/eviction/version row counts distance/cache-pressure and
+version-replacement ordering; resident/cache and deferred-work bounds;
+persistence retry, replacement retry, and replacement-wait pending state;
+re-demand, reset, and configuration-change retirement; movement, update, and
+retry-deadline wakes; delayed persistence and generation-version
+reconciliation; and resident chunk, cache, retry, and replacement-wait
+ownership. The canonical source handoff is counted only in the
+source/generation row rather than duplicated here.
 
 The loader row counts direct/speculative ordering, promotion, and executor
 priority; chunk, region, executor, and drain bounds; direct, deferred, retry,
@@ -815,12 +886,13 @@ Remaining maintainability debt is bounded and non-blocking:
   bounded, and opt-in; full overlay snapshots remain per-enabled-frame cube
   walks rather than sampled telemetry, but the overlay now starts disabled.
 
-Runtime merge readiness is unaffected by these P2 maintainability items. The
-matched motion evidence, deterministic regressions, exact lifecycle accounting,
-and quiescence checks cover the current behavioral change. Interactive shipped-
-backend first-draw timing and the opt-in full GL/ImGui overlay comparison remain
-explicit external performance gates; neither changes the default-off runtime
-path.
+Generation-priority runtime readiness is unaffected by these P2 maintainability
+items. The matched motion evidence, deterministic regressions, exact lifecycle
+accounting, and quiescence checks cover that behavioral change. Overall
+streaming-program merge readiness is nevertheless withheld for the finite-world
+clipping P1 measured above. Interactive shipped-backend first-draw timing and
+the opt-in full GL/ImGui overlay comparison remain explicit external
+performance gates; neither changes the default-off runtime path.
 
 ---
 

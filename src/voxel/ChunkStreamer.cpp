@@ -342,13 +342,32 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
     }
 
     std::vector<ChunkCoord> enteringWorldBounds;
-    if (m_chunkManager && m_generator && generator &&
+    const bool boundsChanged = m_generator && generator &&
         (m_generator->config().world.minY != generator->config().world.minY ||
-         m_generator->config().world.maxY != generator->config().world.maxY)) {
-        const auto& previousWorld = m_generator->config().world;
+         m_generator->config().world.maxY != generator->config().world.maxY);
+    if (m_chunkManager && generator && (boundsChanged || !m_generator)) {
         const auto& replacementWorld = generator->config().world;
-        m_chunkManager->forEachChunk(
-            [&](ChunkCoord coord, Chunk& chunk) {
+        auto reconcileEnteringChunk = [&](ChunkCoord coord, Chunk& chunk) {
+            const bool replacementVersion =
+                chunk.worldGenVersion() == replacementWorld.version;
+            if (chunk.isEmpty() || !replacementVersion) {
+                m_worldBoundsSuppressedMeshes.erase(coord);
+                if (!chunk.isEmpty()) {
+                    m_states[coord] = ChunkState::ReadyData;
+                }
+                return;
+            }
+
+            m_chunkManager->invalidateFaceNeighbors(coord);
+            if (m_worldBoundsSuppressedMeshes.find(coord) !=
+                m_worldBoundsSuppressedMeshes.end()) {
+                enteringWorldBounds.push_back(coord);
+            }
+        };
+
+        if (boundsChanged) {
+            const auto& previousWorld = m_generator->config().world;
+            m_chunkManager->forEachChunk([&](ChunkCoord coord, Chunk& chunk) {
                 ++m_workMetrics.schedulerCoordinatesInspected;
                 const bool previouslyInside =
                     intersectsWorldBounds(coord, previousWorld);
@@ -358,6 +377,9 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
                     return;
                 }
                 if (!replacementInside) {
+                    if (!chunk.isEmpty()) {
+                        m_chunkManager->invalidateFaceNeighbors(coord);
+                    }
                     if (m_meshStore && m_meshStore->contains(coord)) {
                         m_meshStore->remove(coord);
                         if (!chunk.isEmpty()) {
@@ -371,22 +393,25 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
                     return;
                 }
 
-                const bool replacementVersion =
-                    chunk.worldGenVersion() == replacementWorld.version;
-                if (chunk.isEmpty() || !replacementVersion) {
-                    m_worldBoundsSuppressedMeshes.erase(coord);
-                    if (!chunk.isEmpty()) {
-                        m_states[coord] = ChunkState::ReadyData;
-                    }
-                    return;
-                }
-
-                m_chunkManager->invalidateFaceNeighbors(coord);
-                if (m_worldBoundsSuppressedMeshes.find(coord) !=
-                    m_worldBoundsSuppressedMeshes.end()) {
-                    enteringWorldBounds.push_back(coord);
-                }
+                reconcileEnteringChunk(coord, chunk);
             });
+        } else {
+            std::vector<ChunkCoord> suppressed(
+                m_worldBoundsSuppressedMeshes.begin(),
+                m_worldBoundsSuppressedMeshes.end());
+            std::sort(suppressed.begin(), suppressed.end());
+            for (const ChunkCoord& coord : suppressed) {
+                ++m_workMetrics.schedulerCoordinatesInspected;
+                Chunk* chunk = m_chunkManager->getChunk(coord);
+                if (!chunk) {
+                    m_worldBoundsSuppressedMeshes.erase(coord);
+                    continue;
+                }
+                if (intersectsWorldBounds(coord, replacementWorld)) {
+                    reconcileEnteringChunk(coord, *chunk);
+                }
+            }
+        }
     }
 
     for (const auto& pending : m_pendingVisibilityTraces) {
@@ -1040,16 +1065,19 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 const bool alreadyDeferred =
                     m_evictionRetryAfter.find(coord) !=
                         m_evictionRetryAfter.end();
+                const bool alreadySuppressed =
+                    m_worldBoundsSuppressedMeshes.find(coord) !=
+                        m_worldBoundsSuppressedMeshes.end();
                 Chunk* exteriorChunk = m_chunkManager->getChunk(coord);
+                if (!alreadyDeferred && !alreadySuppressed) {
+                    m_chunkManager->invalidateFaceNeighbors(coord);
+                }
                 if (m_meshStore && m_meshStore->contains(coord)) {
                     m_meshStore->remove(coord);
                     if (exteriorChunk && !exteriorChunk->isEmpty()) {
                         m_states[coord] = ChunkState::ReadyMesh;
                         m_worldBoundsSuppressedMeshes.insert(coord);
                     }
-                }
-                if (!alreadyDeferred) {
-                    m_chunkManager->invalidateFaceNeighbors(coord);
                 }
             }
             if (evictChunk(coord)) {

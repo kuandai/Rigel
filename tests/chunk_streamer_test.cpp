@@ -2748,6 +2748,114 @@ TEST_CASE(ChunkStreamer_UnalignedBoundsReplacementRegeneratesNewVersion) {
     checkGenerationAccounting(streamer);
 }
 
+TEST_CASE(ChunkStreamer_GeneratorRestorationReconcilesSuppressedBoundaryMesh) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto wideGenerator = makeBoundedSolidGenerator(registry, 0, 63);
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, wideGenerator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 1;
+    stream.unloadDistanceChunks = 1;
+    stream.updateBudgetPerFrame = 0;
+    stream.applyBudgetPerFrame = 0;
+    stream.workerThreads = 0;
+    streamer.setConfig(stream);
+    streamer.markSpawnDiscoveryComplete();
+
+    const ChunkCoord boundary{0, 0, 0};
+    const ChunkCoord exterior{0, 1, 0};
+    bool initiallyQuiescent = false;
+    for (int update = 0; update < 128; ++update) {
+        streamer.update(boundary.toWorldCenter());
+        streamer.processCompletions();
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            initiallyQuiescent = true;
+            break;
+        }
+    }
+
+    Chunk* boundaryChunk = manager.getChunk(boundary);
+    Chunk* exteriorChunk = manager.getChunk(exterior);
+    CHECK(boundaryChunk != nullptr);
+    CHECK(exteriorChunk != nullptr);
+    if (!boundaryChunk || !exteriorChunk) {
+        return;
+    }
+    CHECK(initiallyQuiescent);
+    CHECK(meshStore.contains(boundary));
+    CHECK(meshStore.contains(exterior));
+    CHECK(!boundaryChunk->isDirty());
+    CHECK(!exteriorChunk->isDirty());
+
+    const uint32_t boundaryRevision = boundaryChunk->meshRevision();
+    const uint64_t generationJobsStarted =
+        streamer.workMetrics().generationJobsStarted;
+    const size_t dispatchLimit = Rigel::Voxel::detail::
+        ChunkStreamerTestAccess::generationDispatchLimit(streamer);
+
+    auto narrowGenerator = makeBoundedSolidGenerator(registry, 0, 31);
+    streamer.setGenerator(narrowGenerator);
+
+    CHECK(!meshStore.contains(exterior));
+    CHECK(boundaryChunk->isDirty());
+    CHECK_EQ(boundaryChunk->meshRevision(), boundaryRevision + 1);
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasWorldBoundsSuppressedMesh(streamer, exterior));
+
+    streamer.setGenerator(nullptr);
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasWorldBoundsSuppressedMesh(streamer, exterior));
+
+    streamer.setGenerator(wideGenerator);
+    CHECK(exteriorChunk->isDirty());
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasWorldBoundsSuppressedMesh(streamer, exterior));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasReadyPendingMesh(streamer, exterior));
+    CHECK(!streamer.diagnostics().workEmpty());
+    CHECK_EQ(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                 generationDispatchLimit(streamer),
+             dispatchLimit);
+
+    bool restoredQuiescent = false;
+    for (int update = 0; update < 128; ++update) {
+        streamer.update(boundary.toWorldCenter());
+        streamer.processCompletions();
+        if (!meshStore.contains(exterior)) {
+            CHECK_NE(streamer.diagnostics().state,
+                     StreamingLifecycleState::Quiescent);
+            CHECK(!streamer.diagnostics().workEmpty());
+        }
+        if (streamer.diagnostics().state ==
+            StreamingLifecycleState::Quiescent) {
+            restoredQuiescent = true;
+            break;
+        }
+    }
+
+    CHECK(restoredQuiescent);
+    CHECK(streamer.diagnostics().workEmpty());
+    CHECK(meshStore.contains(boundary));
+    CHECK(meshStore.contains(exterior));
+    CHECK(!boundaryChunk->isDirty());
+    CHECK(!exteriorChunk->isDirty());
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::
+        hasWorldBoundsSuppressedMesh(streamer, exterior));
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             generationJobsStarted);
+    CHECK_EQ(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                 pendingGenerationCount(streamer),
+             static_cast<size_t>(0));
+    CHECK_EQ(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                 generationOwnerCount(streamer),
+             static_cast<size_t>(0));
+    checkGenerationAccounting(streamer);
+}
+
 TEST_CASE(ChunkStreamer_DepartingFiniteWorldDoesNotReportFalseQuiescence) {
     ChunkManager manager;
     BlockRegistry registry;

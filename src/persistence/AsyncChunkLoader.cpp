@@ -1137,7 +1137,7 @@ void AsyncChunkLoader::startRegionLoad(
         RegionMetricCounters& counters =
             regionMetricCounters(jobState->origin);
         (poolExecution ? counters.poolWorkerStarts : counters.inlineExecutions)
-            .fetch_add(1, std::memory_order_relaxed);
+            .fetch_add(1, std::memory_order_seq_cst);
         const uint64_t admissionToStart =
             nanosecondsBetween(jobState->admittedAt, workerStart);
         counters.admissionToWorkerStartNanoseconds.fetch_add(
@@ -1238,14 +1238,12 @@ void AsyncChunkLoader::startRegionLoad(
             std::move(job),
             jobState->demanded
                 ? Voxel::detail::ThreadPool::Priority::High
-                : Voxel::detail::ThreadPool::Priority::Normal);
+                : Voxel::detail::ThreadPool::Priority::Normal,
+            Voxel::detail::ThreadPool::SubmissionCommitAccounting{
+                counters.poolSubmissions,
+                resubmission ? &counters.poolResubmissions : nullptr});
         if (jobState->poolJobId != 0) {
             ++jobState->poolSubmissionCount;
-            counters.poolSubmissions.fetch_add(1, std::memory_order_relaxed);
-            if (resubmission) {
-                counters.poolResubmissions.fetch_add(
-                    1, std::memory_order_relaxed);
-            }
         } else if (speculativePoolPending) {
             retireSpeculativeRegionPoolPending(jobState);
         }
@@ -1482,6 +1480,18 @@ AsyncChunkLoader::regionMetricCounters(RegionJobOrigin origin) const {
 
 Voxel::RegionSchedulerOriginDiagnostics AsyncChunkLoader::regionJobMetrics(
     const RegionMetricCounters& counters) {
+    const uint64_t resultsDrained =
+        counters.resultsDrained.load(std::memory_order_seq_cst);
+    const uint64_t resultsPublished =
+        counters.resultsPublished.load(std::memory_order_seq_cst);
+    const uint64_t inlineExecutions =
+        counters.inlineExecutions.load(std::memory_order_seq_cst);
+    const uint64_t poolWorkerStarts =
+        counters.poolWorkerStarts.load(std::memory_order_seq_cst);
+    const uint64_t poolResubmissions =
+        counters.poolResubmissions.load(std::memory_order_seq_cst);
+    const uint64_t poolSubmissions =
+        counters.poolSubmissions.load(std::memory_order_seq_cst);
     return Voxel::RegionSchedulerOriginDiagnostics{
         .logicalAdmissions =
             counters.logicalAdmissions.load(std::memory_order_relaxed),
@@ -1490,23 +1500,17 @@ Voxel::RegionSchedulerOriginDiagnostics AsyncChunkLoader::regionJobMetrics(
         .logicalPreStartCancellations =
             counters.logicalPreStartCancellations.load(
                 std::memory_order_relaxed),
-        .poolSubmissions =
-            counters.poolSubmissions.load(std::memory_order_relaxed),
-        .poolResubmissions =
-            counters.poolResubmissions.load(std::memory_order_relaxed),
+        .poolSubmissions = poolSubmissions,
+        .poolResubmissions = poolResubmissions,
         .successfulPoolYields =
             counters.successfulPoolYields.load(std::memory_order_relaxed),
         .terminalPoolCancellations =
             counters.terminalPoolCancellations.load(
                 std::memory_order_relaxed),
-        .poolWorkerStarts =
-            counters.poolWorkerStarts.load(std::memory_order_relaxed),
-        .inlineExecutions =
-            counters.inlineExecutions.load(std::memory_order_relaxed),
-        .resultsPublished =
-            counters.resultsPublished.load(std::memory_order_seq_cst),
-        .resultsDrained =
-            counters.resultsDrained.load(std::memory_order_seq_cst),
+        .poolWorkerStarts = poolWorkerStarts,
+        .inlineExecutions = inlineExecutions,
+        .resultsPublished = resultsPublished,
+        .resultsDrained = resultsDrained,
         .missingProbes = counters.missingProbes.load(std::memory_order_relaxed),
         .admissionToWorkerStartNanoseconds =
             counters.admissionToWorkerStartNanoseconds.load(

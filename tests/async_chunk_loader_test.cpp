@@ -1,4 +1,5 @@
 #include "TestFramework.h"
+#include "ThreadPoolTestAccess.h"
 
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
@@ -71,6 +72,18 @@ struct AsyncChunkLoaderTestAccess {
         AsyncChunkLoader& loader,
         std::function<void()> job) {
         return loader.m_ioPool.enqueue(std::move(job));
+    }
+
+    static void gateNextIoPoolEnqueueReturn(
+        AsyncChunkLoader& loader,
+        std::atomic<bool>& entered,
+        std::atomic<bool>& released) {
+        Voxel::detail::ThreadPoolTestAccess::gateNextEnqueueReturn(
+            loader.m_ioPool, entered, released);
+    }
+
+    static void stopIoPool(AsyncChunkLoader& loader) {
+        loader.m_ioPool.stop();
     }
 
     static std::shared_ptr<const void> regionJobIdentity(
@@ -228,6 +241,11 @@ public:
             [this]() { return m_entered; });
     }
 
+    void waitUntilEnteredWithoutTimeout() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_condition.wait(lock, [this]() { return m_entered; });
+    }
+
     void release() {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_released = true;
@@ -240,6 +258,30 @@ private:
     bool m_entered = false;
     bool m_released = false;
 };
+
+class AtomicFlagRelease {
+public:
+    explicit AtomicFlagRelease(std::atomic<bool>& released)
+        : m_released(released) {}
+
+    ~AtomicFlagRelease() {
+        release();
+    }
+
+    void release() {
+        m_released.store(true, std::memory_order_release);
+        m_released.notify_all();
+    }
+
+private:
+    std::atomic<bool>& m_released;
+};
+
+void waitUntilTrue(std::atomic<bool>& value) {
+    while (!value.load(std::memory_order_acquire)) {
+        value.wait(false, std::memory_order_acquire);
+    }
+}
 
 class LoaderWorkRelease {
 public:
@@ -3015,6 +3057,208 @@ TEST_CASE(AsyncChunkLoader_PoolYieldResubmissionRetainsAdmissionTiming) {
     CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
                  regionCompletionCount(loader),
              static_cast<size_t>(0));
+}
+
+TEST_CASE(AsyncChunkLoader_InitialPoolSubmissionPrecedesObservableStart) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+
+    MemoryContext ctx;
+    auto workerStartGate = std::make_shared<LoaderWorkGate>();
+    auto unusedPayloadGate = std::make_shared<LoaderWorkGate>();
+    std::atomic<bool> enqueueReturnEntered{false};
+    std::atomic<bool> enqueueReturnReleased{false};
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        1,
+        0,
+        0,
+        generator);
+    loader.setMaxInFlightRegions(1);
+    loader.setPrefetchRadius(0);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setRegionLoadStartObserver(
+            loader,
+            [workerStartGate](const RegionKey&, bool direct) {
+                if (direct) {
+                    workerStartGate->enterAndWait();
+                }
+            });
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        gateNextIoPoolEnqueueReturn(
+            loader, enqueueReturnEntered, enqueueReturnReleased);
+
+    const ChunkLoadRequest request = makeLoadRequest({0, 0, 0});
+    ChunkLoadRequestResult requestResult = ChunkLoadRequestResult::Missing;
+    std::jthread submitter;
+    LoaderWorkRelease releaseWorkerOnExit(
+        workerStartGate, unusedPayloadGate);
+    AtomicFlagRelease releaseEnqueueOnExit(enqueueReturnReleased);
+    submitter = std::jthread([&]() {
+        requestResult = loader.request(request);
+    });
+
+    waitUntilTrue(enqueueReturnEntered);
+    workerStartGate->waitUntilEnteredWithoutTimeout();
+    const auto boundary = loader.metrics();
+
+    workerStartGate->release();
+    releaseEnqueueOnExit.release();
+    submitter.join();
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::stopIoPool(loader);
+    const auto resolved = loader.drainCompletions(1);
+    const auto settled = loader.metrics();
+
+    CHECK_EQ(requestResult, ChunkLoadRequestResult::Queued);
+    CHECK_EQ(boundary.directOrigin.poolSubmissions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(boundary.directOrigin.poolWorkerStarts,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(boundary.directOrigin.resultsPublished,
+             static_cast<uint64_t>(0));
+    CHECK(boundary.directOrigin.resultsPublished <=
+          boundary.directOrigin.poolWorkerStarts);
+    CHECK(boundary.directOrigin.poolWorkerStarts <=
+          boundary.directOrigin.poolSubmissions);
+    CHECK_EQ(boundary.speculativeOrigin.poolSubmissions,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Missing);
+    CHECK_EQ(settled.directOrigin.logicalAdmissions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(settled.directOrigin.poolSubmissions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(settled.directOrigin.poolWorkerStarts,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(settled.directOrigin.resultsPublished,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(settled.directOrigin.resultsDrained,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
+}
+
+TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+
+    MemoryContext ctx;
+    auto poolBlocker = std::make_shared<LoaderWorkGate>();
+    auto barrierGate = std::make_shared<LoaderWorkGate>();
+    auto resubmissionStartGate = std::make_shared<LoaderWorkGate>();
+    auto unusedPayloadGate = std::make_shared<LoaderWorkGate>();
+    std::atomic<bool> enqueueReturnEntered{false};
+    std::atomic<bool> enqueueReturnReleased{false};
+    AsyncChunkLoader loader(
+        ctx.service,
+        ctx.context,
+        world,
+        generator->config().world.version,
+        1,
+        0,
+        0,
+        generator);
+    LoaderWorkRelease releasePoolOnExit(poolBlocker, barrierGate);
+    LoaderWorkRelease releaseResubmissionOnExit(
+        resubmissionStartGate, unusedPayloadGate);
+    loader.setMaxInFlightRegions(1);
+    loader.setPrefetchRadius(0);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setRegionLoadStartObserver(
+            loader,
+            [resubmissionStartGate](const RegionKey&, bool direct) {
+                if (!direct) {
+                    resubmissionStartGate->enterAndWait();
+                }
+            });
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::enqueueIoPoolJob(
+        loader, [poolBlocker]() { poolBlocker->enterAndWait(); });
+    poolBlocker->waitUntilEnteredWithoutTimeout();
+
+    const RegionKey speculativeKey{"rigel:default", 1, 0, 0};
+    const bool speculativeQueued = Rigel::Persistence::detail::
+        AsyncChunkLoaderTestAccess::queueSpeculativeRegionLoad(
+            loader, speculativeKey);
+    const ChunkLoadRequest directRequest = makeLoadRequest({160, 0, 0});
+    const ChunkLoadRequestResult directRequestResult =
+        loader.request(directRequest);
+    const auto yielded = loader.metrics();
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::enqueueIoPoolJob(
+        loader, [barrierGate]() { barrierGate->enterAndWait(); });
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        gateNextIoPoolEnqueueReturn(
+            loader, enqueueReturnEntered, enqueueReturnReleased);
+
+    poolBlocker->release();
+    barrierGate->waitUntilEnteredWithoutTimeout();
+    std::vector<ChunkLoadCompletion> resolved;
+    std::jthread drainer;
+    AtomicFlagRelease releaseEnqueueOnExit(enqueueReturnReleased);
+    barrierGate->release();
+    drainer = std::jthread([&]() {
+        resolved = loader.drainCompletions(1);
+    });
+
+    waitUntilTrue(enqueueReturnEntered);
+    resubmissionStartGate->waitUntilEnteredWithoutTimeout();
+    const auto boundary = loader.metrics();
+
+    resubmissionStartGate->release();
+    releaseEnqueueOnExit.release();
+    drainer.join();
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::stopIoPool(loader);
+    auto speculativeResolved = loader.drainCompletions(1);
+    resolved.insert(
+        resolved.end(), speculativeResolved.begin(), speculativeResolved.end());
+    const auto settled = loader.metrics();
+
+    CHECK(speculativeQueued);
+    CHECK_EQ(directRequestResult, ChunkLoadRequestResult::Queued);
+    CHECK_EQ(yielded.speculativeOrigin.poolSubmissions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(yielded.speculativeOrigin.successfulPoolYields,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(yielded.speculativeOrigin.poolResubmissions,
+             static_cast<uint64_t>(0));
+    CHECK_EQ(boundary.speculativeOrigin.poolSubmissions,
+             static_cast<uint64_t>(2));
+    CHECK_EQ(boundary.speculativeOrigin.poolResubmissions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(boundary.speculativeOrigin.poolWorkerStarts,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(boundary.speculativeOrigin.resultsPublished,
+             static_cast<uint64_t>(0));
+    CHECK(boundary.speculativeOrigin.resultsPublished <=
+          boundary.speculativeOrigin.poolWorkerStarts);
+    CHECK(boundary.speculativeOrigin.poolWorkerStarts <=
+          boundary.speculativeOrigin.poolSubmissions);
+    CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Missing);
+    CHECK_EQ(settled.directOrigin.logicalAdmissions,
+             settled.directOrigin.resultsPublished);
+    CHECK_EQ(settled.directOrigin.poolSubmissions,
+             settled.directOrigin.poolWorkerStarts);
+    CHECK_EQ(settled.speculativeOrigin.logicalAdmissions,
+             settled.speculativeOrigin.resultsPublished);
+    CHECK_EQ(settled.speculativeOrigin.poolSubmissions,
+             settled.speculativeOrigin.poolWorkerStarts +
+                 settled.speculativeOrigin.successfulPoolYields);
+    CHECK_EQ(settled.speculativeOrigin.poolResubmissions,
+             static_cast<uint64_t>(1));
+    CHECK_EQ(settled.speculativeOrigin.resultsPublished,
+             settled.speculativeOrigin.resultsDrained);
+    CHECK_EQ(settled.speculativePoolJobsPending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().pending, static_cast<size_t>(0));
+    CHECK_EQ(loader.workCount().inFlight, static_cast<size_t>(0));
 }
 
 TEST_CASE(AsyncChunkLoader_PromotionRetainsOriginTimingAndConsumesNoPrefetchHit) {

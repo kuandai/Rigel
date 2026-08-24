@@ -59,6 +59,34 @@ class ThreadPool {
 public:
     using JobId = uint64_t;
 
+    // Counter-only publication performed while the queued job is still
+    // protected by the pool mutex. This deliberately cannot run user code.
+    class SubmissionCommitAccounting {
+    public:
+        SubmissionCommitAccounting() noexcept = default;
+
+        explicit SubmissionCommitAccounting(
+            std::atomic<uint64_t>& submissions,
+            std::atomic<uint64_t>* subset = nullptr) noexcept
+            : m_submissions(&submissions),
+              m_subset(subset) {}
+
+    private:
+        friend class ThreadPool;
+
+        void commit() const noexcept {
+            if (m_subset) {
+                m_subset->fetch_add(1, std::memory_order_seq_cst);
+            }
+            if (m_submissions) {
+                m_submissions->fetch_add(1, std::memory_order_seq_cst);
+            }
+        }
+
+        std::atomic<uint64_t>* m_submissions = nullptr;
+        std::atomic<uint64_t>* m_subset = nullptr;
+    };
+
     enum class Priority : uint8_t {
         Normal,
         High
@@ -78,9 +106,13 @@ public:
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
 
-    JobId enqueue(std::function<void()> job,
-                  Priority priority = Priority::Normal) {
+    JobId enqueue(
+        std::function<void()> job,
+        Priority priority = Priority::Normal,
+        SubmissionCommitAccounting accounting = {}) {
         JobId id = 0;
+        std::atomic<bool>* enqueueReturnEntered = nullptr;
+        std::atomic<bool>* enqueueReturnReleased = nullptr;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (m_stopping) {
@@ -97,8 +129,20 @@ public:
                 m_jobs.emplace_back(id);
                 m_jobs.back().run.swap(job);
             }
+            accounting.commit();
+            enqueueReturnEntered = m_nextEnqueueReturnEntered;
+            enqueueReturnReleased = m_nextEnqueueReturnReleased;
+            m_nextEnqueueReturnEntered = nullptr;
+            m_nextEnqueueReturnReleased = nullptr;
         }
         m_cv.notify_one();
+        if (enqueueReturnEntered && enqueueReturnReleased) {
+            enqueueReturnEntered->store(true, std::memory_order_release);
+            enqueueReturnEntered->notify_all();
+            while (!enqueueReturnReleased->load(std::memory_order_acquire)) {
+                enqueueReturnReleased->wait(false, std::memory_order_acquire);
+            }
+        }
         return id;
     }
 
@@ -249,6 +293,9 @@ private:
     JobQueue m_highPriorityJobs;
     JobQueue m_jobs;
     std::vector<std::thread> m_threads;
+    // One-shot deterministic boundary exposed only through test access.
+    std::atomic<bool>* m_nextEnqueueReturnEntered = nullptr;
+    std::atomic<bool>* m_nextEnqueueReturnReleased = nullptr;
     JobId m_nextJobId = 1;
     bool m_stopping = false;
 };

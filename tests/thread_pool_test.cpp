@@ -1,4 +1,5 @@
 #include "TestFramework.h"
+#include "ThreadPoolTestAccess.h"
 
 #include "Rigel/Voxel/ChunkTasks.h"
 
@@ -22,17 +23,6 @@ struct ConcurrentQueueTestAccess {
     }
 };
 
-struct ThreadPoolTestAccess {
-    static void construct(
-        size_t threadCount,
-        std::function<std::thread(std::function<void()>)> startThread) {
-        ThreadPool pool(threadCount, std::move(startThread));
-    }
-
-    static constexpr bool pendingJobsAreMovable() {
-        return std::is_move_constructible_v<ThreadPool::PendingJob>;
-    }
-};
 }
 
 static_assert(
@@ -124,6 +114,69 @@ TEST_CASE(ThreadPool_ConstructionFailureJoinsStartedWorker) {
 
     CHECK(exceptionReachedCaller);
     CHECK_EQ(startCount, 2u);
+}
+
+TEST_CASE(ThreadPool_CommitsSubmissionAccountingBeforeWorkerStart) {
+    ThreadPoolGate workerStartGate;
+    ThreadPoolRelease releaseWorkerOnExit(workerStartGate);
+    std::atomic<bool> enqueueReturnEntered{false};
+    std::atomic<bool> enqueueReturnReleased{false};
+    std::atomic<uint64_t> submissions{0};
+    std::atomic<uint64_t> observedAtWorkerStart{0};
+    Rigel::Voxel::detail::ThreadPool pool(1);
+    Rigel::Voxel::detail::ThreadPoolTestAccess::gateNextEnqueueReturn(
+        pool, enqueueReturnEntered, enqueueReturnReleased);
+
+    Rigel::Voxel::detail::ThreadPool::JobId jobId = 0;
+    std::thread submitter([&]() {
+        jobId = pool.enqueue(
+            [&]() {
+                observedAtWorkerStart.store(
+                    submissions.load(std::memory_order_seq_cst),
+                    std::memory_order_seq_cst);
+                workerStartGate.enterAndWait();
+            },
+            Rigel::Voxel::detail::ThreadPool::Priority::Normal,
+            Rigel::Voxel::detail::ThreadPool::SubmissionCommitAccounting{
+                submissions});
+    });
+
+    while (!enqueueReturnEntered.load(std::memory_order_acquire)) {
+        enqueueReturnEntered.wait(false, std::memory_order_acquire);
+    }
+    workerStartGate.waitUntilEnteredWithoutTimeout();
+    const uint64_t submissionsAtBoundary =
+        submissions.load(std::memory_order_seq_cst);
+    const uint64_t workerObservation =
+        observedAtWorkerStart.load(std::memory_order_seq_cst);
+
+    workerStartGate.release();
+    enqueueReturnReleased.store(true, std::memory_order_release);
+    enqueueReturnReleased.notify_all();
+    submitter.join();
+    pool.stop();
+
+    CHECK(jobId != 0);
+    CHECK_EQ(submissionsAtBoundary, static_cast<uint64_t>(1));
+    CHECK_EQ(workerObservation, static_cast<uint64_t>(1));
+}
+
+TEST_CASE(ThreadPool_RejectedEnqueueDoesNotCommitSubmissionAccounting) {
+    Rigel::Voxel::detail::ThreadPool pool(0);
+    std::atomic<uint64_t> submissions{0};
+    std::atomic<uint64_t> subset{0};
+    pool.stop();
+
+    const auto jobId = pool.enqueue(
+        []() {},
+        Rigel::Voxel::detail::ThreadPool::Priority::Normal,
+        Rigel::Voxel::detail::ThreadPool::SubmissionCommitAccounting{
+            submissions, &subset});
+
+    CHECK_EQ(jobId, Rigel::Voxel::detail::ThreadPool::JobId{0});
+    CHECK_EQ(submissions.load(std::memory_order_seq_cst),
+             static_cast<uint64_t>(0));
+    CHECK_EQ(subset.load(std::memory_order_seq_cst), static_cast<uint64_t>(0));
 }
 
 TEST_CASE(ConcurrentQueue_PublicationCallbackCompletesBeforeDrain) {

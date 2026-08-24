@@ -139,6 +139,16 @@ struct AsyncChunkLoaderTestAccess {
         return it == loader.m_regionJobs.end() ? 0 : it->second->poolJobId;
     }
 
+    static std::optional<Voxel::ChunkLoadExecutionPhase> regionJobPhase(
+        const AsyncChunkLoader& loader,
+        const RegionKey& key) {
+        auto it = loader.m_regionJobs.find(key);
+        return it == loader.m_regionJobs.end()
+            ? std::nullopt
+            : std::optional<Voxel::ChunkLoadExecutionPhase>{
+                  it->second->phase.load(std::memory_order_acquire)};
+    }
+
     static bool regionJobHasDirectDemand(const AsyncChunkLoader& loader,
                                          const RegionKey& key) {
         auto it = loader.m_regionJobs.find(key);
@@ -3194,6 +3204,7 @@ TEST_CASE(AsyncChunkLoader_PoolYieldResubmissionRetainsAdmissionTiming) {
     MemoryContext ctx;
     const ChunkCoord directCoord{160, 0, 0};
     const RegionKey directKey{"rigel:default", 10, 0, 0};
+    const RegionKey speculativeKey{"rigel:default", 1, 0, 0};
     {
         auto format = ctx.service.openFormat(ctx.context);
         ChunkRegionSnapshot region;
@@ -3202,7 +3213,11 @@ TEST_CASE(AsyncChunkLoader_PoolYieldResubmissionRetainsAdmissionTiming) {
     }
 
     auto poolGate = std::make_shared<LoaderWorkGate>();
+    auto barrierGate = std::make_shared<LoaderWorkGate>();
+    auto speculativeStartGate = std::make_shared<LoaderWorkGate>();
     auto unusedPayloadGate = std::make_shared<LoaderWorkGate>();
+    const std::array<int64_t, 6> clockNanoseconds{10, 20, 30, 40, 50, 60};
+    std::atomic<size_t> clockIndex{0};
     AsyncChunkLoader loader(
         ctx.service,
         ctx.context,
@@ -3213,14 +3228,23 @@ TEST_CASE(AsyncChunkLoader_PoolYieldResubmissionRetainsAdmissionTiming) {
         1,
         generator);
     LoaderWorkRelease releaseOnExit(poolGate, unusedPayloadGate);
+    LoaderWorkRelease releaseResubmissionOnExit(
+        barrierGate, speculativeStartGate);
     loader.setMaxInFlightRegions(1);
     loader.setPrefetchRadius(0);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        setRegionLoadStartObserver(
+            loader,
+            [speculativeKey, speculativeStartGate](
+                const RegionKey& key, bool) {
+                if (key == speculativeKey) {
+                    speculativeStartGate->enterAndWait();
+                }
+            });
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::enqueueIoPoolJob(
         loader, [poolGate]() { poolGate->enterAndWait(); });
     CHECK(poolGate->waitUntilEntered());
 
-    const std::array<int64_t, 6> clockNanoseconds{10, 20, 30, 40, 50, 60};
-    std::atomic<size_t> clockIndex{0};
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::setMetricClock(
         loader,
         [&clockNanoseconds, &clockIndex]() {
@@ -3233,7 +3257,6 @@ TEST_CASE(AsyncChunkLoader_PoolYieldResubmissionRetainsAdmissionTiming) {
                 std::chrono::nanoseconds(value)};
         });
 
-    const RegionKey speculativeKey{"rigel:default", 1, 0, 0};
     CHECK(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
               queueSpeculativeRegionLoad(loader, speculativeKey));
     const auto speculativeIdentity = Rigel::Persistence::detail::
@@ -3255,12 +3278,55 @@ TEST_CASE(AsyncChunkLoader_PoolYieldResubmissionRetainsAdmissionTiming) {
     CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
                  regionJobIdentity(loader, speculativeKey),
              speculativeIdentity);
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionPoolJobId(loader, speculativeKey),
+             Rigel::Voxel::detail::ThreadPool::JobId{0});
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionLoadAttemptCount(loader, speculativeKey),
+             static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, speculativeKey),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::SchedulerPending});
+
+    CHECK_NE(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            enqueueIoPoolJob(
+                loader,
+                [barrierGate]() { barrierGate->enterAndWait(); }),
+        Rigel::Voxel::detail::ThreadPool::JobId{0});
 
     poolGate->release();
+    CHECK(barrierGate->waitUntilEntered());
     CHECK(waitForPublishedRegionJobs(loader, 1));
     std::vector<ChunkLoadCompletion> resolved = loader.drainCompletions(1);
     CHECK_EQ(resolved.size(), static_cast<size_t>(1));
+    CHECK(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+              regionPoolJobId(loader, speculativeKey) != 0);
+    CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+                 regionLoadAttemptCount(loader, speculativeKey),
+             static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, speculativeKey),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::PoolQueued});
+
+    barrierGate->release();
+    CHECK(speculativeStartGate->waitUntilEntered());
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, speculativeKey),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::WorkerRunning});
+    speculativeStartGate->release();
     CHECK(waitForPublishedRegionJobs(loader, 1));
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, speculativeKey),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::ResultPublished});
     auto speculativeDrain = loader.drainCompletions(1);
     resolved.insert(
         resolved.end(), speculativeDrain.begin(), speculativeDrain.end());
@@ -5169,6 +5235,9 @@ TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
     MemoryContext ctx;
     auto firstPoolBlocker = std::make_shared<LoaderWorkGate>();
     auto secondPoolBlocker = std::make_shared<LoaderWorkGate>();
+    auto prefetchedStartGate = std::make_shared<LoaderWorkGate>();
+    auto unusedPayloadGate = std::make_shared<LoaderWorkGate>();
+    auto gatedKey = std::make_shared<std::optional<RegionKey>>();
     std::mutex startsMutex;
     std::vector<std::pair<RegionKey, bool>> starts;
     AsyncChunkLoader loader(
@@ -5181,6 +5250,8 @@ TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
         12,
         generator);
     LoaderWorkRelease releaseOnExit(firstPoolBlocker, secondPoolBlocker);
+    LoaderWorkRelease releasePrefetchedOnExit(
+        prefetchedStartGate, unusedPayloadGate);
     loader.setMaxInFlightRegions(16);
     loader.setPrefetchRadius(1);
     loader.setPrefetchPerRequest(12);
@@ -5197,11 +5268,18 @@ TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
         setRegionLoadStartObserver(
             loader,
-            [&startsMutex, &starts](
+            [prefetchedStartGate, gatedKey, &startsMutex, &starts](
                 const RegionKey& key,
                 bool direct) {
-                std::lock_guard<std::mutex> lock(startsMutex);
-                starts.emplace_back(key, direct);
+                bool gateStart = false;
+                {
+                    std::lock_guard<std::mutex> lock(startsMutex);
+                    starts.emplace_back(key, direct);
+                    gateStart = *gatedKey && key == **gatedKey;
+                }
+                if (gateStart) {
+                    prefetchedStartGate->enterAndWait();
+                }
             });
 
     CHECK_EQ(loader.request(makeLoadRequest({0, 0, 0})),
@@ -5213,6 +5291,7 @@ TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
         AsyncChunkLoaderTestAccess::submittedSpeculativeRegionKeys(loader);
     CHECK_EQ(submittedSpeculative.size(), static_cast<size_t>(1));
     const RegionKey prefetchedKey = submittedSpeculative.front();
+    *gatedKey = prefetchedKey;
     const ChunkCoord prefetchedNeighbor{
         prefetchedKey.x * 16,
         prefetchedKey.y * 16,
@@ -5269,6 +5348,11 @@ TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
     CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
                  regionLoadAttemptCount(loader, prefetchedKey),
              static_cast<size_t>(0));
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, prefetchedKey),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::SchedulerPending});
 
     CHECK_EQ(loader.request(makeLoadRequest(prefetchedNeighbor)),
              ChunkLoadRequestResult::Queued);
@@ -5288,10 +5372,27 @@ TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
     CHECK_EQ(Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
                  regionLoadAttemptCount(loader, prefetchedKey),
              static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, prefetchedKey),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::PoolQueued});
 
     firstPoolBlocker->release();
     secondPoolBlocker->release();
+    CHECK(prefetchedStartGate->waitUntilEntered());
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, prefetchedKey),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::WorkerRunning});
+    prefetchedStartGate->release();
     CHECK(waitForPublishedRegionJobs(loader, 2));
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            regionJobPhase(loader, prefetchedKey),
+        std::optional<ChunkLoadExecutionPhase>{
+            ChunkLoadExecutionPhase::ResultPublished});
     auto resolved = loader.drainCompletions(2);
     {
         std::lock_guard<std::mutex> lock(startsMutex);

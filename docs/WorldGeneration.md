@@ -164,6 +164,9 @@ explicit failed state until a later streaming requeue retries them.
   already submitted to the pool. Cancellation tokens suppress departed work;
   they do not remove its physical pool entry or release its in-flight count
   before the completion drain observes the cancelled result.
+  When a loader is configured, a coordinate waiting in `m_loadGenQueue` has not
+  selected persisted load versus generation yet and is reported as unresolved
+  rather than generation-pending.
 - Eligible initial meshes and dirty remeshes share a distance-prioritized
   scheduler. Asynchronous submission is additionally capped at the actual
   mesh worker count so work that has not started remains reprioritizable.
@@ -268,6 +271,10 @@ at most 64 speculative owners are retained in the loader-owned queue.
 Dispatched-undrained work, including an unstarted pool-pending submission, is
 bounded separately by the IO executor capacity. Direct demand can displace an
 unstarted speculative read at capacity without changing region coalescing.
+After a successful pre-start pool yield or demand-cancellation demotion, the
+same region owner returns to `SchedulerPending` before it becomes visible in a
+loader queue. Resubmission then advances it through `PoolQueued`,
+`WorkerRunning`, and `ResultPublished` again.
 
 `AsyncChunkLoader::metrics()` exposes bounded lifetime aggregates rather than
 per-region history. Direct and speculative admissions retain their immutable

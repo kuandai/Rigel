@@ -1003,6 +1003,9 @@ bool AsyncChunkLoader::yieldSubmittedSpeculativeRegionLoad() {
         --m_speculativeOwnedDispatchedRegionJobCount;
         job->poolJobId = 0;
         job->started = false;
+        job->phase.store(
+            Voxel::ChunkLoadExecutionPhase::SchedulerPending,
+            std::memory_order_release);
         if (reserveQueuedSpeculativeRegionSlot()) {
             ++m_queuedSpeculativeRegionJobCount;
             m_speculativeRegionLoads.push_front(job->key);
@@ -1096,6 +1099,9 @@ void AsyncChunkLoader::cancelQueuedDirectRegionLoad(const RegionKey& key) {
                 1, std::memory_order_relaxed);
             jobIt->second->poolJobId = 0;
             jobIt->second->started = false;
+            jobIt->second->phase.store(
+                Voxel::ChunkLoadExecutionPhase::SchedulerPending,
+                std::memory_order_release);
         }
         if (!jobIt->second->started) {
             eraseQueuedRegion(m_directRegionLoads, key);

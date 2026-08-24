@@ -646,13 +646,13 @@ built with the byte-identical version 4 benchmark sources committed at
 `8bec1583f0371e8c0df46fc7819091c61a1873e5`. SHA-256 checks matched for all
 three benchmark source files in the two source trees.
 
-The retained assessment source was subsequently hardened at
-`9f08f0bf6344b36c2a8d2becd1bb04baf94fe8d7`. That revision makes the
-zero-neighbor boundary source explicit, adds the conflicting-timestamp
-fixture, validates the controlled overlay backlog before timing, and adds
-exception-safe assessment teardown. The motion numbers below remain
-provenanced to the byte-identical capture source above rather than being
-relabelled as a new timing run.
+The retained assessment source was subsequently hardened through
+`499292343d871e5a65df4da55301cbc5a0aeb024`. Those revisions make the
+zero-neighbor boundary source explicit, add the conflicting-timestamp fixture,
+validate exact controlled overlay ownership and pair cardinality before
+reporting timing, and add exception-safe assessment teardown. The motion
+numbers below remain provenanced to the byte-identical capture source above
+rather than being relabelled as a new timing run.
 
 Both builds used Release, GCC 16.1.1, Linux 7.0.12, and the same 12th Gen Intel
 Core i7-12700 host with 20 logical CPUs. Runs were sequential with otherwise
@@ -789,7 +789,7 @@ the GL field and frame graph, builds the ImGui legend/detail window, submits the
 ImGui draw data, and synchronizes each timed frame with `glFinish`.
 
 The retained runner source is
-`9f08f0bf6344b36c2a8d2becd1bb04baf94fe8d7`, descended from the initial
+`499292343d871e5a65df4da55301cbc5a0aeb024`, descended from the initial
 assessment at `ce1dd039bf0e37db89aec45efc0cb3acfffc4139` and the isolated CPU
 presentation boundary at `89afbefc2ba4f5b90f66cba396ae23f6b8223f3a`.
 
@@ -801,25 +801,32 @@ Build and run the modes from the same Release build:
 ./Rigel_streaming_assessment_benchmark --overlay-only --frames 120
 ```
 
-The Release CPU comparison used 7,153 tracked records in the 15,625-coordinate
-radius-12 cube, including one installed mesh that exercised `WorldView` draw-
-evidence decoration. It retained a non-quiescent startup backlog of 7,146 load
-owners, 3,050 canonical source-resolution entries, and five chunks waiting for
-neighbors while alternating disabled-first and enabled-first pairs. All seven
-generation jobs were completed, and the one physical mesh job was completed
-and accepted before timing. Generation pending, in-flight, completion,
-terminal, and canonical-generation gauges were zero; physical mesh in-flight,
-completion, and terminal gauges were zero. The classified field contained
-7,146 waiting-for-data, five waiting-for-neighbor, one voxel-empty, and one
-accepted-nonempty record, with no scheduler-wait, mesh-work, dirty-remesh, or
-terminal record.
+The corrected Release CPU comparison used 7,153 tracked records in the
+15,625-coordinate radius-12 cube, including one installed mesh that exercised
+`WorldView` draw-evidence decoration. Its controlled synthetic loader reports
+Missing inside distance-squared one and indefinitely Queued outside. The
+matching pending callback leaves `m_loadPending` as the sole owner of all 7,146
+retained loads; `sourceResolutionPending` is exactly zero. Five chunks wait for
+neighbors. The lifecycle is explicitly Streaming, not Quiescent, only because
+of that classified logical backlog. The field contained 7,146 waiting-for-data,
+five waiting-for-neighbor, one voxel-empty, and one accepted-nonempty record,
+with no scheduler-wait, mesh-work, dirty-remesh, or terminal record.
+
+All seven generation jobs were completed, and the one physical mesh job was
+completed and accepted before timing. Generation pending, in-flight,
+completion, terminal, canonical-source, canonical-generation, and retired-work
+gauges were zero; physical mesh in-flight, completion, and terminal gauges were
+zero. The cumulative partitions were generation 7 started, 7 completed, zero
+cancelled, zero failed and mesh 1 started, 1 completed, 1 accepted, zero stale,
+zero failed.
 
 Disabled P50/P95/P99 were all below the printed 0.001 ms precision. Enabled
-P50/P95/P99 were 2.045/2.859/2.902 ms, a 2.859 ms P95 increase. This is a
+P50/P95/P99 were 2.003/2.026/2.035 ms, a 2.026 ms P95 increase. This is a
 CPU-side lower bound because GL and ImGui were excluded; the P95 increase is
-17.2% of a 16.667 ms frame budget. Each of the 120 pairs is emitted as a raw
-sample with its index, execution order, and exact disabled/enabled durations;
-the summary records the Release build, 20 hardware threads, shipped
+12.2% of a 16.667 ms frame budget. All 120 raw pairs are emitted with their
+index, execution order, and exact disabled/enabled durations. The independently
+asserted disabled and enabled sample counts are both 120, equal to the requested
+pair count. The summary records the Release build, 20 hardware threads, shipped
 configuration, radius, scanned and tracked counts, draw-evidence count, exact
 logical backlog, cumulative accounting partitions, and hard-zero physical
 execution gauges.

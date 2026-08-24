@@ -333,6 +333,12 @@ failure to reach quiescence into a failed sample. An explicit
 timings as non-representative scheduler lower-bound stress, so those timings
 must not be used as representative time-to-visible evidence.
 
+The machine-readable `evidence_scope` is
+`controlled_fixture_application_like_cadence` for paced runs and
+`nonrepresentative_scheduler_lower_bound` for stress runs. Both modes report
+`shipped_time_to_visible_evidence=false` and
+`interactive_time_to_visible_evidence=false`.
+
 Build and run it from an out-of-tree build directory:
 
 ```text
@@ -351,25 +357,37 @@ distance and distance/first-observed-missing-desired-cardinal-neighbor cohorts.
 uses `result_accepted`. The current runner is headless, so its header explicitly
 reports `accepted` as the endpoint. Dependency wait, eligible-to-worker-start,
 scheduler wait, pool wait, and worker execution are reported separately.
+The configured mesh queue setting and effective submission limit are distinct:
+the latter is read from the streamer's runtime diagnostic snapshot, the same
+source used by production diagnostics, rather than reconstructed from worker
+configuration in the runner.
 
 The assessment takes an operator-supplied comparison budget, defaulting to
 50 ms because that is approximately three default update intervals and makes
 large stage residuals easy to identify. It is a comparison budget only: meeting
-or exceeding it is not proof of interactive acceptability and does not change
-production behavior.
+or exceeding it classifies only the measured numeric result. It is not proof of
+interactive acceptability, does not imply a neighbor-policy conclusion, and
+does not change production behavior.
 
 #### Matched paced capture
 
 The exact revisions used to define this comparison were:
 
-- baseline scheduler: `677a4439afa3a40aa6799fa78ed4f1d8b00e30e3`;
-- dependency-count instrumentation: `5d04e609865449b7679331441360a29dadebf5ce`,
-  with the retained first-observation naming and regression at
-  `b1cda21b11b953c1e7c159c94d2c07f6d6a44cd8`;
-- paced benchmark: `5e92575aa380786f69f55588f85510984ca02933`;
-- repaired scheduler: `8a3b526e402da4f9a2083d5a0479f6af598e5c74`,
-  captured from the complete repaired tree at
-  `5e92575aa380786f69f55588f85510984ca02933`.
+- baseline engine revision:
+  `677a4439afa3a40aa6799fa78ed4f1d8b00e30e3`;
+- trace instrumentation revision:
+  `b1cda21b11b953c1e7c159c94d2c07f6d6a44cd8`, which retains and names the
+  first observation from the initial dependency instrumentation at
+  `5d04e609865449b7679331441360a29dadebf5ce`;
+- paced benchmark revision:
+  `5e92575aa380786f69f55588f85510984ca02933`;
+- repaired engine revision:
+  `8a3b526e402da4f9a2083d5a0479f6af598e5c74`, including the bounded priority
+  dispatcher introduced at
+  `b11dce614d89dba9b9e32612123afdb88a3c3006`.
+
+The evidence-scope, cadence-boundary, runtime-limit, and assessment-label
+hardening is revision `482e6dfc4ef4e0d3b128d1017e4611c819b619f9`.
 
 Both builds used byte-identical version 2 benchmark sources. The capture ran
 sequentially on the same 12th Gen Intel Core i7-12700 host with 20 logical CPUs,
@@ -388,6 +406,19 @@ had no stale mesh results, and used accepted geometry as the endpoint. Times
 below are nearest-rank P50/P95 in milliseconds; the neighbor count is the first
 observed missing desired-cardinal-neighbor count, not a live count.
 
+Both configurations set `mesh_queue_limit=0`. At the baseline revision that
+means configured-unbounded submission: ready mesh work can be submitted beyond
+the physical worker count into the worker backlog. In the repaired revision the
+same setting remains unbounded as configuration, while the scheduler's runtime
+diagnostic reports an effective submission limit of one for the configured two
+workers. The capture benchmark originally duplicated that repaired-tree value
+from the worker setting and therefore printed `effective_mesh_submission_limit=1`
+for both executables; that baseline field is not used as evidence. The current
+runner instead emits `mesh_submission_limit_source=runtime_diagnostics`, and
+the conditional CLI regression checks that four configured workers report the
+runtime effective limit of two. Baseline results are described only as
+configured-unbounded and are not assigned a false effective limit.
+
 | Distance / first count | Scheduler | Desired to visible | Dependency wait | Eligible to worker | Scheduler wait | Pool wait | Worker execution |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Camera / 6 | Baseline | 583.420 / 616.771 | 467.826 / 484.490 | 16.982 / 17.116 | 16.900 / 17.030 | 0.079 / 0.190 | 1.736 / 1.926 |
@@ -402,16 +433,14 @@ unchanged, so this small controlled sample does not establish a material
 end-to-end improvement. Dependency wait still dominates both cohorts and
 exceeds the operator's 50 ms comparison budget.
 
-This controlled cold-generation capture is not sufficient evidence for
-provisional-neighbor meshes or interactive acceptability. It has no GPU context
-or main-pass draw, uses a controlled missing probe instead of a shipped
-persistence backend, is a Debug build, and does not control competing host
-load. The required external validation is a Release interactive capture on
-identified hardware using the shipped persistence backend, the renderer's
-actual `first_draw` event, the same camera-containing and adjacent cohorts, and
-quiescence as the terminal signal. If that capture confirms unacceptable
-dependency P95, provisional-neighbor behavior belongs in a separate change with
-explicit duplicate-remesh and coalescing bounds.
+This controlled cold-generation capture is not evidence of interactive
+acceptability. It has no GPU context or main-pass draw, uses a controlled
+missing probe instead of a shipped persistence backend, is a Debug build, and
+does not control competing host load. No neighbor-policy conclusion is drawn
+from the comparison budget. The required external validation remains a Release
+interactive capture on identified hardware using the shipped persistence
+backend, the renderer's actual `first_draw` event, the same camera-containing
+and adjacent cohorts, and quiescence as the terminal signal.
 
 ---
 

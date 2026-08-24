@@ -456,6 +456,11 @@ int main(int argc, char** argv) {
                 << " mesh_started=" << result.work.meshJobsStarted
                 << " mesh_stale=" << result.work.meshJobsRejectedStale
                 << " stable_updates=" << result.diagnostics.stableUpdates
+                << " completion_state="
+                << (result.diagnostics.state ==
+                            Voxel::StreamingLifecycleState::Quiescent
+                        ? "quiescent"
+                        : "non_quiescent")
                 << '\n';
             samples.push_back(sample);
         }

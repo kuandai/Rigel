@@ -152,9 +152,9 @@ explicit failed state until a later streaming requeue retries them.
   `streaming.mesh_queue_limit` caps mesh work selected from the pending
   scheduler (`0` means no configured cap). Executor capacity may narrow that
   cap but the configured cap cannot expand executor capacity. Asynchronous
-  generation submission is capped at the generation worker count. With no mesh
-  worker, the inline executor owns at most one completed-but-unapplied mesh
-  result regardless of `streaming.apply_budget_per_frame`; this effective
+  generation submission is capped at the generation worker count. With no
+  worker, generation and mesh each own at most one completed-but-unapplied
+  inline result regardless of `streaming.apply_budget_per_frame`; the mesh
   bound is observable as the `meshSubmissionLimit` streaming diagnostic.
 - `m_loadGenQueue` holds coordinates that have not selected persisted load
   versus generation yet and reports them as source-resolution-pending. Once a
@@ -163,8 +163,9 @@ explicit failed state until a later streaming requeue retries them.
   rebuilds only that pending index using current chunk importance; stationary
   updates do not scan it when executor capacity is full. Submitted jobs retain
   request epoch, generator version, and cancellation validity checks. A
-  departed job that is still queued in the executor is removed immediately;
-  running work is cancelled only when demand leaves, not when its relative
+  completion drain refills available generation slots before returning.
+  Departed submitted jobs retain token-only physical ownership until their
+  result is drained; retained jobs are not cancelled when only their relative
   priority changes.
 - Eligible initial meshes and dirty remeshes share a distance-prioritized
   scheduler. Asynchronous submission is additionally capped at the actual

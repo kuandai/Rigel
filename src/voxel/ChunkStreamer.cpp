@@ -159,7 +159,6 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
                     coord, ConfigRetiredWorkKind::LoadGen);
                 it->second->cancelled.store(
                     true, std::memory_order_relaxed);
-                cancelQueuedGeneration(it->second);
                 it = m_generationFlights.erase(it);
                 auto stateIt = m_states.find(coord);
                 if (stateIt != m_states.end() &&
@@ -318,7 +317,6 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
 
     for (auto& [coord, flight] : m_generationFlights) {
         flight->cancelled.store(true, std::memory_order_relaxed);
-        cancelQueuedGeneration(flight);
         auto stateIt = m_states.find(coord);
         if (stateIt != m_states.end() &&
             stateIt->second == ChunkState::QueuedGen) {
@@ -703,7 +701,6 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     if (flightIt != m_generationFlights.end()) {
                         flightIt->second->cancelled.store(
                             true, std::memory_order_relaxed);
-                        cancelQueuedGeneration(flightIt->second);
                         m_generationFlights.erase(flightIt);
                     }
                 }
@@ -1040,6 +1037,10 @@ void ChunkStreamer::processCompletions() {
         PROFILE_SCOPE("Streaming/GenApply");
         applyGenCompletions(budget);
     }
+    uint64_t schedulerCoordinatesInspected = 0;
+    dispatchPendingGenerations(schedulerCoordinatesInspected);
+    m_workMetrics.schedulerCoordinatesInspected +=
+        schedulerCoordinatesInspected;
     {
         PROFILE_SCOPE("Streaming/MeshApply");
         applyMeshCompletions(budget);
@@ -1304,7 +1305,6 @@ void ChunkStreamer::reset() {
     }
     for (auto& entry : m_generationFlights) {
         entry.second->cancelled.store(true, std::memory_order_relaxed);
-        cancelQueuedGeneration(entry.second);
     }
 
     uint64_t nextEpoch = m_workEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -2038,18 +2038,6 @@ void ChunkStreamer::erasePendingGeneration(ChunkCoord coord) {
     }
     m_pendingGenerationQueue.erase(pendingIt->second);
     m_pendingGenerations.erase(pendingIt);
-}
-
-bool ChunkStreamer::cancelQueuedGeneration(
-    const std::shared_ptr<GenerationFlight>& flight) {
-    if (!flight || !m_genPool || flight->executor != m_genPool.get() ||
-        flight->poolJobId == 0 ||
-        !m_genPool->cancel(flight->poolJobId)) {
-        return false;
-    }
-    assert(m_inFlightGen > 0);
-    --m_inFlightGen;
-    return true;
 }
 
 void ChunkStreamer::waitForMeshDependencies(ChunkCoord coord) {
@@ -3140,6 +3128,10 @@ size_t ChunkStreamer::generationDispatchLimit() const {
         : 0;
     if (workerCount > 0) {
         limit = std::min(limit, workerCount);
+    } else {
+        // Inline jobs complete during dispatch, but remain owned until the
+        // main-thread drain observes the single executor slot.
+        limit = std::min(limit, static_cast<size_t>(1));
     }
     return limit;
 }
@@ -3561,9 +3553,7 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
         GenerationExecutorPhase::ExecutorQueued,
         std::memory_order_release);
     if (m_genPool && m_genPool->threadCount() > 0) {
-        flight->executor = m_genPool.get();
         const auto jobId = m_genPool->enqueue(std::move(job));
-        flight->poolJobId = jobId;
         if (jobId == 0) {
             flight->cancelled.store(true, std::memory_order_relaxed);
             auto flightIt = m_generationFlights.find(coord);

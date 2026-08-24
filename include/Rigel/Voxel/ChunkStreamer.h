@@ -220,8 +220,6 @@ private:
         std::atomic_bool cancelled{false};
         std::atomic<GenerationExecutorPhase> phase{
             GenerationExecutorPhase::Submitting};
-        detail::ThreadPool* executor = nullptr;
-        detail::ThreadPool::JobId poolJobId = 0;
     };
 
     struct GenResult {
@@ -435,8 +433,6 @@ private:
     void queueLoadGen(ChunkCoord coord);
     void queuePendingGeneration(ChunkCoord coord);
     void erasePendingGeneration(ChunkCoord coord);
-    bool cancelQueuedGeneration(
-        const std::shared_ptr<GenerationFlight>& flight);
     void waitForMeshDependencies(ChunkCoord coord);
     void queueLoadedNeighbors(ChunkCoord coord);
     bool hasDirectStreamingDemand(ChunkCoord coord) const;

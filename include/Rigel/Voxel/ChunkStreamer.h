@@ -4,7 +4,6 @@
 #include "ChunkVisibilityTrace.h"
 #include "ChunkCache.h"
 #include "ChunkBenchmark.h"
-#include "ChunkImportance.h"
 #include "ChunkLoadRequest.h"
 #include "ChunkManager.h"
 #include "ChunkMesh.h"
@@ -282,6 +281,27 @@ private:
         Mesh
     };
 
+    struct ChunkImportance {
+        bool cameraContaining = false;
+        uint64_t distanceSquared = 0;
+        ChunkCoord coord{};
+
+        bool operator==(const ChunkImportance&) const = default;
+    };
+
+    struct ChunkImportancePrecedes {
+        bool operator()(const ChunkImportance& lhs,
+                        const ChunkImportance& rhs) const {
+            if (lhs.cameraContaining != rhs.cameraContaining) {
+                return lhs.cameraContaining;
+            }
+            if (lhs.distanceSquared != rhs.distanceSquared) {
+                return lhs.distanceSquared < rhs.distanceSquared;
+            }
+            return lhs.coord < rhs.coord;
+        }
+    };
+
     struct MeshInFlight {
         MeshRequestKind kind = MeshRequestKind::Missing;
         uint64_t requestId = 0;
@@ -501,6 +521,8 @@ private:
         uint64_t& schedulerCoordinatesInspected);
     void dispatchPendingGenerations(
         uint64_t& schedulerCoordinatesInspected);
+    static ChunkImportance chunkImportance(ChunkCoord camera,
+                                           ChunkCoord coord);
     size_t generationDispatchLimit() const;
     void reprioritizePendingMeshes(uint64_t& schedulerCoordinatesInspected);
     void dispatchPendingMeshes(uint64_t& schedulerCoordinatesInspected);

@@ -83,6 +83,31 @@ size_t visibilityKindIndex(ChunkVisibilityLifecycleKind kind) {
 }
 } // namespace
 
+ChunkStreamer::ChunkImportance ChunkStreamer::chunkImportance(
+    ChunkCoord camera,
+    ChunkCoord coord) {
+    const auto magnitude = [](int64_t value) {
+        return static_cast<uint64_t>(value < 0 ? -value : value);
+    };
+    const auto saturatedAdd = [](uint64_t lhs, uint64_t rhs) {
+        const uint64_t maximum = std::numeric_limits<uint64_t>::max();
+        return rhs > maximum - lhs ? maximum : lhs + rhs;
+    };
+
+    const uint64_t dx = magnitude(
+        static_cast<int64_t>(coord.x) - camera.x);
+    const uint64_t dy = magnitude(
+        static_cast<int64_t>(coord.y) - camera.y);
+    const uint64_t dz = magnitude(
+        static_cast<int64_t>(coord.z) - camera.z);
+    const uint64_t xy = saturatedAdd(dx * dx, dy * dy);
+    return ChunkImportance{
+        .cameraContaining = coord == camera,
+        .distanceSquared = saturatedAdd(xy, dz * dz),
+        .coord = coord
+    };
+}
+
 ChunkStreamer::ChunkStreamer(ChunkManager& manager,
                              WorldMeshStore& meshStore,
                              BlockRegistry& registry,

@@ -8,7 +8,7 @@ using namespace Rigel::Voxel;
 
 template<typename T>
 concept HasPublicChunkUnload = requires(T& manager, ChunkCoord coord) {
-    manager.unloadChunk(coord);
+    manager.unloadChunk(coord, true);
 };
 
 static_assert(!HasPublicChunkUnload<ChunkManager>);

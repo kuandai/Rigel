@@ -287,7 +287,13 @@ private:
 
     struct PendingWorldBoundsReconciliation {
         WorldGenConfig::WorldConfig replacement;
+        std::optional<WorldGenConfig::WorldConfig> previous;
         std::optional<ChunkCoord> deferredCursor;
+        std::optional<ChunkCoord> retentionCenter;
+        int retentionRadiusSquared = 0;
+        bool remeshIntersectingRows = false;
+        bool forceRemeshIntersecting = false;
+        bool revisitFromStart = false;
     };
 
     enum class PendingWorkKind : uint8_t {
@@ -475,7 +481,7 @@ private:
 
     void applyGenCompletions(size_t budget);
     void applyMeshCompletions(size_t budget);
-    void reconcileDeferredWorldBounds();
+    uint64_t reconcileDeferredWorldBounds();
     ChunkLoadRequestId nextLoadRequestId();
     void cancelPendingLoad(ChunkCoord coord);
     void queueLoadGen(ChunkCoord coord);

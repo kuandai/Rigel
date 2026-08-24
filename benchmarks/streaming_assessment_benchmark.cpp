@@ -128,7 +128,9 @@ size_t nonAirBlocks(const Voxel::ChunkBuffer& buffer) {
 
 struct LifecycleResult {
     bool quiescent = false;
+    bool targetTracked = false;
     size_t targetNonAirBlocks = 0;
+    size_t desiredCoordinates = 0;
     Voxel::ChunkStreamer::DebugState targetState =
         Voxel::ChunkStreamer::DebugState::WaitingForData;
     Voxel::ChunkStreamer::DebugInstalledGeometry targetGeometry =
@@ -174,10 +176,17 @@ LifecycleResult runOutOfBoundsLifecycle(
         result.targetNonAirBlocks = chunk->nonAirCount();
     }
     std::vector<Voxel::ChunkStreamer::DebugChunkState> states;
-    streamer.getDebugStates(states, target, 0);
-    if (!states.empty()) {
-        result.targetState = states.front().state;
-        result.targetGeometry = states.front().installedGeometry;
+    streamer.getDebugStates(
+        states, target, shippedStreaming.viewDistanceChunks);
+    result.desiredCoordinates = states.size();
+    const auto targetIt = std::find_if(
+        states.begin(), states.end(), [&](const auto& state) {
+            return state.coord == target;
+        });
+    if (targetIt != states.end()) {
+        result.targetTracked = true;
+        result.targetState = targetIt->state;
+        result.targetGeometry = targetIt->installedGeometry;
     }
     return result;
 }
@@ -354,8 +363,12 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
                   << configuration.streaming.workerThreads / 2
                   << " target_non_air_blocks="
                   << lifecycle.targetNonAirBlocks
+                  << " target_tracked="
+                  << (lifecycle.targetTracked ? "true" : "false")
                   << " target_state="
-                  << debugStateName(lifecycle.targetState)
+                  << (lifecycle.targetTracked
+                          ? debugStateName(lifecycle.targetState)
+                          : "not_tracked")
                   << " target_geometry="
                   << (lifecycle.targetGeometry ==
                               Voxel::ChunkStreamer::DebugInstalledGeometry::Nonempty
@@ -369,6 +382,8 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
                   << " desired_build_coordinates_skipped_by_world_bounds="
                   << lifecycle.work
                          .desiredBuildCoordinatesSkippedByWorldBounds
+                  << " desired_coordinates="
+                  << lifecycle.desiredCoordinates
                   << " generation_started="
                   << lifecycle.work.generationJobsStarted
                   << " generation_completed="
@@ -385,6 +400,8 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
                   << lifecycle.diagnostics.generationCompletionsPending
                   << " generation_terminal_failures="
                   << lifecycle.diagnostics.generation.terminalErrors
+                  << " planner_reconciliation_pending="
+                  << lifecycle.diagnostics.plannerReconciliationPending
                   << " canonical_source_work="
                   << lifecycle.diagnostics.sourceResolutionPending
                   << " canonical_generation_work="
@@ -421,7 +438,13 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
                   << " completion_state="
                   << (lifecycle.quiescent ? "quiescent" : "timeout")
                   << '\n';
-        if (!lifecycle.quiescent || !lifecycle.diagnostics.workEmpty() ||
+        if (nonemptyChunks != 0 || nonAirTotal != 0 ||
+            lifecycle.targetTracked || lifecycle.targetNonAirBlocks != 0 ||
+            lifecycle.targetGeometry !=
+                Voxel::ChunkStreamer::DebugInstalledGeometry::None ||
+            lifecycle.desiredCoordinates != 3356 ||
+            !lifecycle.quiescent || !lifecycle.diagnostics.workEmpty() ||
+            lifecycle.diagnostics.plannerReconciliationPending != 0 ||
             lifecycle.diagnostics.sourceResolutionPending != 0 ||
             lifecycle.diagnostics.generationSchedulerPending != 0 ||
             lifecycle.diagnostics.generationCompletionsPending != 0 ||
@@ -1044,7 +1067,7 @@ int runBenchmark(int argc, char** argv) {
     const bool overlayCpu = mode == Mode::OverlayCpu;
 
     std::cout << std::fixed << std::setprecision(3)
-              << "benchmark name=streaming_assessment version=5"
+              << "benchmark name=streaming_assessment version=6"
               << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
               << " hardware_threads=" << std::thread::hardware_concurrency()
               << " shipped_world_configuration=true"

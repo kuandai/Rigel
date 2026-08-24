@@ -192,7 +192,8 @@ Synchronization:
 - Generation-needed coordinates remain in the camera-prioritized scheduler
   until dispatch.
 - `streaming.gen_queue_limit` caps selected jobs (0 = no configured cap), and
-  asynchronous dispatch is additionally capped at the generation worker count.
+  asynchronous dispatch is additionally capped at two generation worker
+  widths: one running wave and at most one standby wave.
 - With no generation worker, one inline result remains submitted until the
   owner-thread completion drain observes it.
 - A completion drain refills newly available generation slots before returning.

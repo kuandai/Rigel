@@ -152,10 +152,11 @@ explicit failed state until a later streaming requeue retries them.
   `streaming.mesh_queue_limit` caps mesh work selected from the pending
   scheduler (`0` means no configured cap). Executor capacity may narrow that
   cap but the configured cap cannot expand executor capacity. Asynchronous
-  generation submission is capped at the generation worker count. With no
-  worker, generation and mesh each own at most one completed-but-unapplied
-  inline result regardless of `streaming.apply_budget_per_frame`; the mesh
-  bound is observable as the `meshSubmissionLimit` streaming diagnostic.
+  generation submission is capped at two generation worker widths, allowing
+  one standby wave behind the running wave. With no worker, generation and mesh
+  each own at most one completed-but-unapplied inline result regardless of
+  `streaming.apply_budget_per_frame`; the mesh bound is observable as the
+  `meshSubmissionLimit` streaming diagnostic.
 - `m_loadGenQueue` holds coordinates that have not selected persisted load
   versus generation yet and reports them as source-resolution-pending. Once a
   missing source establishes that generation is needed, one canonical pending

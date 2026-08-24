@@ -3127,7 +3127,9 @@ size_t ChunkStreamer::generationDispatchLimit() const {
         ? m_genPool->threadCount()
         : 0;
     if (workerCount > 0) {
-        limit = std::min(limit, workerCount);
+        // Keep one worker-width standby wave queued so workers can continue
+        // without waiting for the owner-thread completion drain.
+        limit = std::min(limit, workerCount * 2);
     } else {
         // Inline jobs complete during dispatch, but remain owned until the
         // main-thread drain observes the single executor slot.

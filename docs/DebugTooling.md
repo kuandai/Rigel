@@ -357,10 +357,15 @@ distance and distance/first-observed-missing-desired-cardinal-neighbor cohorts.
 uses `result_accepted`. The current runner is headless, so its header explicitly
 reports `accepted` as the endpoint. Dependency wait, eligible-to-worker-start,
 scheduler wait, pool wait, and worker execution are reported separately.
-The configured mesh queue setting and effective submission limit are distinct:
-the latter is read from the streamer's runtime diagnostic snapshot, the same
-source used by production diagnostics, rather than reconstructed from worker
-configuration in the runner.
+The configured mesh queue setting and effective submission limit are distinct.
+Version 3 reads an effective limit from the streamer's runtime diagnostic
+snapshot, the same source used by production diagnostics, rather than
+reconstructing it from worker configuration in the runner. When the same
+benchmark source is built against the baseline scheduler, whose diagnostic
+snapshot has no effective-limit field, it reports the authoritative configured
+behavior instead: an unbounded setting is labeled `configured_unbounded` and
+`effective_mesh_submission_limit=unavailable`. It does not assign repaired-tree
+limit semantics to that scheduler.
 
 The assessment takes an operator-supplied comparison budget, defaulting to
 50 ms because that is approximately three default update intervals and makes
@@ -388,6 +393,8 @@ The exact revisions used to define this comparison were:
 
 The evidence-scope, cadence-boundary, runtime-limit, and assessment-label
 hardening is revision `482e6dfc4ef4e0d3b128d1017e4611c819b619f9`.
+Version 3's cross-scheduler limit metadata and complete CLI evidence-contract
+regressions are revision `034eda5ef39539c1031171025fca06cf80a5e321`.
 
 Both builds used byte-identical version 2 benchmark sources. The capture ran
 sequentially on the same 12th Gen Intel Core i7-12700 host with 20 logical CPUs,
@@ -414,10 +421,14 @@ diagnostic reports an effective submission limit of one for the configured two
 workers. The capture benchmark originally duplicated that repaired-tree value
 from the worker setting and therefore printed `effective_mesh_submission_limit=1`
 for both executables; that baseline field is not used as evidence. The current
-runner instead emits `mesh_submission_limit_source=runtime_diagnostics`, and
-the conditional CLI regression checks that four configured workers report the
-runtime effective limit of two. Baseline results are described only as
-configured-unbounded and are not assigned a false effective limit.
+runner instead emits `mesh_submission_limit_source=runtime_diagnostics` only
+when that field exists and emits `runtime_configuration`,
+`configured_unbounded`, and an unavailable effective limit for the baseline.
+A focused regression covers both diagnostic shapes. The conditional CLI
+regression uses four configured workers with an explicit queue limit of one;
+the runtime effective limit is one, whereas the removed worker-count formula
+would report two. Baseline results are described only as configured-unbounded
+and are not assigned a false effective limit.
 
 | Distance / first count | Scheduler | Desired to visible | Dependency wait | Eligible to worker | Scheduler wait | Pool wait | Worker execution |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |

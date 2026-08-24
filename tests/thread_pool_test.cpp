@@ -87,6 +87,34 @@ private:
     ThreadPoolGate& m_gate;
 };
 
+class AtomicFlagRelease {
+public:
+    explicit AtomicFlagRelease(std::atomic<bool>& released)
+        : m_released(released) {}
+
+    ~AtomicFlagRelease() {
+        release();
+    }
+
+    void release() {
+        m_released.store(true, std::memory_order_release);
+        m_released.notify_all();
+    }
+
+private:
+    std::atomic<bool>& m_released;
+};
+
+bool waitUntilTrue(std::atomic<bool>& value) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!value.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    return value.load(std::memory_order_acquire);
+}
+
 }
 
 TEST_CASE(ThreadPool_ConstructionFailureJoinsStartedWorker) {
@@ -118,47 +146,59 @@ TEST_CASE(ThreadPool_ConstructionFailureJoinsStartedWorker) {
 
 TEST_CASE(ThreadPool_CommitsSubmissionAccountingBeforeWorkerStart) {
     ThreadPoolGate workerStartGate;
-    ThreadPoolRelease releaseWorkerOnExit(workerStartGate);
     std::atomic<bool> enqueueReturnEntered{false};
     std::atomic<bool> enqueueReturnReleased{false};
     std::atomic<uint64_t> submissions{0};
-    std::atomic<uint64_t> observedAtWorkerStart{0};
+    std::atomic<uint64_t> resubmissions{0};
+    std::atomic<uint64_t> submissionsAtWorkerStart{0};
+    std::atomic<uint64_t> resubmissionsAtWorkerStart{0};
+    Rigel::Voxel::detail::ThreadPool::JobId jobId = 0;
     Rigel::Voxel::detail::ThreadPool pool(1);
+    std::jthread submitter;
+    ThreadPoolRelease releaseWorkerOnExit(workerStartGate);
+    AtomicFlagRelease releaseEnqueueOnExit(enqueueReturnReleased);
     Rigel::Voxel::detail::ThreadPoolTestAccess::gateNextEnqueueReturn(
         pool, enqueueReturnEntered, enqueueReturnReleased);
 
-    Rigel::Voxel::detail::ThreadPool::JobId jobId = 0;
-    std::thread submitter([&]() {
+    submitter = std::jthread([&]() {
         jobId = pool.enqueue(
             [&]() {
-                observedAtWorkerStart.store(
+                resubmissionsAtWorkerStart.store(
+                    resubmissions.load(std::memory_order_seq_cst),
+                    std::memory_order_seq_cst);
+                submissionsAtWorkerStart.store(
                     submissions.load(std::memory_order_seq_cst),
                     std::memory_order_seq_cst);
                 workerStartGate.enterAndWait();
             },
             Rigel::Voxel::detail::ThreadPool::Priority::Normal,
             Rigel::Voxel::detail::ThreadPool::SubmissionCommitAccounting{
-                submissions});
+                submissions, &resubmissions});
     });
 
-    while (!enqueueReturnEntered.load(std::memory_order_acquire)) {
-        enqueueReturnEntered.wait(false, std::memory_order_acquire);
-    }
-    workerStartGate.waitUntilEnteredWithoutTimeout();
+    CHECK(waitUntilTrue(enqueueReturnEntered));
+    CHECK(workerStartGate.waitUntilEntered());
+    const uint64_t resubmissionsAtBoundary =
+        resubmissions.load(std::memory_order_seq_cst);
     const uint64_t submissionsAtBoundary =
         submissions.load(std::memory_order_seq_cst);
-    const uint64_t workerObservation =
-        observedAtWorkerStart.load(std::memory_order_seq_cst);
+    const uint64_t workerSubmissionObservation =
+        submissionsAtWorkerStart.load(std::memory_order_seq_cst);
+    const uint64_t workerResubmissionObservation =
+        resubmissionsAtWorkerStart.load(std::memory_order_seq_cst);
 
     workerStartGate.release();
-    enqueueReturnReleased.store(true, std::memory_order_release);
-    enqueueReturnReleased.notify_all();
+    releaseEnqueueOnExit.release();
     submitter.join();
     pool.stop();
 
     CHECK(jobId != 0);
     CHECK_EQ(submissionsAtBoundary, static_cast<uint64_t>(1));
-    CHECK_EQ(workerObservation, static_cast<uint64_t>(1));
+    CHECK_EQ(resubmissionsAtBoundary, static_cast<uint64_t>(1));
+    CHECK_EQ(workerSubmissionObservation, static_cast<uint64_t>(1));
+    CHECK_EQ(workerResubmissionObservation, static_cast<uint64_t>(1));
+    CHECK_EQ(submissions.load(std::memory_order_seq_cst),
+             resubmissions.load(std::memory_order_seq_cst));
 }
 
 TEST_CASE(ThreadPool_RejectedEnqueueDoesNotCommitSubmissionAccounting) {

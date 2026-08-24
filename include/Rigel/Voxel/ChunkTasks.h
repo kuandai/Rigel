@@ -75,11 +75,12 @@ public:
         friend class ThreadPool;
 
         void commit() const noexcept {
-            if (m_subset) {
-                m_subset->fetch_add(1, std::memory_order_seq_cst);
-            }
+            // Readers load the subset first, so publish the total first.
             if (m_submissions) {
                 m_submissions->fetch_add(1, std::memory_order_seq_cst);
+            }
+            if (m_subset) {
+                m_subset->fetch_add(1, std::memory_order_seq_cst);
             }
         }
 

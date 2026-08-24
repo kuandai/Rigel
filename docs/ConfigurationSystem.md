@@ -144,8 +144,8 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `seed` | int | `1337` | Global world seed. |
 | `solid_block` | string | `base:debug` | Block ID used for solid fill. |
 | `surface_block` | string | `base:debug` | Block ID used for surface fill. |
-| `world.min_y` | int | `-64` | Inclusive minimum generated Y; lower voxels are air. Supported range is `[-4096,4096]`. |
-| `world.max_y` | int | `320` | Inclusive maximum generated Y; higher voxels are air. Supported range is `[-4096,4096]`. |
+| `world.min_y` | int | `-64` | Inclusive minimum generated Y; lower generator output is air. Persisted rows are retained but masked from meshes while excluded. Supported range is `[-4096,4096]`. |
+| `world.max_y` | int | `320` | Inclusive maximum generated Y; higher generator output is air. Persisted rows are retained but masked from meshes while excluded. Supported range is `[-4096,4096]`. |
 | `world.sea_level` | int | `0` | Sea level for water placement. Values outside the world bounds coherently produce no water or flood all eligible air. |
 | `world.version` | int | `1` | Generated-content version. Increment whenever generator settings, including partially intersecting world bounds, change retained voxel output. |
 | `terrain.base_height` | float | `16.0` | Base terrain height. |

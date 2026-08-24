@@ -136,7 +136,9 @@ explicit failed state until a later streaming requeue retries them.
 ### 5.2 Desired Set and Distances
 
 - The desired set is a sphere around the camera chunk with radius
-  `streaming.view_distance_chunks`.
+  `streaming.view_distance_chunks`, intersected with the generator's inclusive
+  finite Y range. Chunks wholly below `world.min_y` or wholly above
+  `world.max_y` never enter source, generation, or mesh scheduling.
 - Entries use shared chunk importance: the camera-containing chunk first,
   then squared chunk distance, then lexicographic chunk coordinate. Generation
   and direct-view mesh admission therefore use the same deterministic order.
@@ -214,8 +216,13 @@ and final quiescence.
 
 ### 5.4 Meshing Constraints
 
-- Meshes wait for all cardinal neighbors that fall inside the desired set.
-  Missing neighbors outside that set are sampled as air.
+- Meshes wait for all cardinal neighbors that fall inside the desired set. A
+  missing neighbor outside that set is sampled as air; an already resident,
+  in-world neighbor can still contribute through unload hysteresis.
+- Every mesh snapshot treats samples outside the inclusive finite Y range as
+  air, including rows of a partially intersecting resident chunk and rows
+  restored by persistence. Authoritative stored voxels are retained unchanged,
+  so widening the bounds can expose them again without data loss.
 - Mesh work uses padded block data to sample neighbors and AO.
 - A chunk has at most one mesh build in flight. Repeated invalidations are
   coalesced while it runs.
@@ -239,6 +246,12 @@ and final quiescence.
   remains explicit pending lifecycle work between attempts. Due retry and
   generator-bounds reconciliation scans advance in deterministic batches of
   at most 64 coordinates per scheduler call.
+- Generator/config replacement owns a bounded desired rebuild and, when it
+  overlaps camera movement, one bounded resident reconciliation. The owner
+  stays visible in diagnostics until the latest retention/bounds snapshot has
+  completed a full pass. Replacement also cancels newly exterior load owners
+  synchronously so a stale persisted payload cannot be admitted before that
+  rebuild.
 - If a loaded chunk’s `worldGenVersion` does not match the generator, modified
   data is persisted through the same removal gate before the chunk is discarded
   and regenerated. A deferred replacement remains unresolved until replacement
@@ -260,7 +273,9 @@ region data asynchronously, builds chunk payloads off-thread, then applies
 payloads on the main thread with a budget. Partial Memory-format spans use
 generator base fill before stored overlays because Memory enables
 `fillMissingChunkSpans`; CR and the default capability leave uncovered voxels
-as air.
+as air. Generator base fill is clipped to `world.min_y..world.max_y`; stored
+overlays remain authoritative data, while mesh-task sampling masks any stored
+rows currently outside that visible range.
 
 Region reads enter a loader-owned priority scheduler. Direct chunk demand and
 promoted same-region prefetch are selected before unstarted speculative reads.

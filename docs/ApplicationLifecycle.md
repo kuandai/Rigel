@@ -251,7 +251,10 @@ Synchronization:
 
 **Neighbor gating**:
 - Meshing waits for each cardinal neighbor that is also in the desired set.
-  Neighbors outside the desired set are sampled as air.
+- A missing neighbor outside the desired set is sampled as air. A resident
+  in-world neighbor outside current demand can still be sampled during unload
+  hysteresis. Any sample outside the generator's inclusive finite Y bounds is
+  forced to air, including excluded rows in a partially intersecting chunk.
 
 **Thread-safety**:
 - Worker threads operate on copied block data only.

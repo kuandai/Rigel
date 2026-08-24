@@ -768,20 +768,42 @@ The current finite-world implementation clips the desired-set Y traversal to
 chunks intersecting those inclusive bounds and reports both visited and
 avoided cube coordinates. At representative camera chunk Y values -2, 1, and
 10, the shipped radius inspects 8,125 coordinates and skips 7,500 before
-spherical filtering. The generator also clears every voxel outside the range,
-including the exterior rows of partially intersecting chunks.
+spherical filtering. The resulting spherical desired cardinalities are 3,797,
+4,885, and 3,797 respectively; camera chunk Y=0 selects 4,601 of the original
+7,153 coordinates. Thus clipping avoids 3,356, 2,268, 3,356, and 2,552 actual
+spherical coordinates for Y=-2, 1, 10, and 0, distinct from the cube-traversal
+metric. The generator also clears every generated voxel outside the range,
+including the exterior rows of partially intersecting chunks. Persisted voxels
+are retained, but mesh snapshots mask excluded rows to air.
 
-A current headless Debug `--vertical-only` run sampled the same 18 wholly
-exterior chunks. All reported zero non-air blocks. Below-bound generation was
-0.017 ms P50 and 0.017 ms P95/P99; above-bound generation was 0.017 ms P50 and
-0.020 ms P95/P99. The production lifecycle centered one chunk outside each
-world face inspected 7,500 and skipped 8,125 cube coordinates, started and
-completed 3,356 generation jobs, and accepted 1,964 lower or 335 upper mesh
-jobs. Both cohorts reported zero cancellation, failure, pending, in-flight,
-completion, retired, load, and eviction owners at quiescence. These are
-headless accepted-geometry measurements; interactive shipped-backend
-first-draw timing remains an explicit external validation gate. No provisional
-neighbor policy or worker-pool policy is used.
+The final Release schema-version 6 `--vertical-only` capture was built from
+source `f5b704f7508b0628c4dfde71348f95aaa8e301ef`. Its retained raw log
+`finite-world-vertical-v6.log` has SHA-256
+`4051e6cdc201af8ac3bef543e0a2e9ba701ea86e914d95b09cfbb02f752f31c9`.
+The log contains 23 structured benchmark records (plus two asset-loader log
+records): one header, all 18 per-coordinate samples, two aggregates, and two
+production-lifecycle records. All 18 samples contain zero non-air blocks.
+Below-bound generation measured 0.020/0.020/0.020 ms P50/P95/P99; above-bound
+generation measured 0.009/0.045/0.045 ms. With nine nearest-rank samples, P95
+and P99 are both the observed cohort maximum and do not represent independent
+tail estimates.
+
+Each production lifecycle was centered one chunk outside a world face. It
+inspected 7,500 and skipped 8,125 cube coordinates, selected exactly 3,356
+in-bounds spherical coordinates, and completed 3,356 of 3,356 generation jobs.
+The lower cohort completed and accepted 1,964 mesh jobs; the upper completed
+and accepted 335. Both exterior targets were explicitly untracked, contained
+zero non-air blocks, and had no installed geometry. Cancellation, generation
+failure, mesh stale/failure, planner, source, logical generation, completion,
+retired, load, mesh, and eviction owners were all zero at quiescence. The runs
+required 4,022,900 and 4,101,096 updates. Together they took 19.38 seconds and
+peaked at 5,022,236 KiB RSS on this 20-hardware-thread host; the companion
+`/usr/bin/time -v` record has SHA-256
+`94d532ae058963c07672b88132e8d2278615aecbc236b61455be04a85127cb19`.
+These are headless accepted-geometry
+measurements for the surrounding in-bounds cohort; interactive shipped-backend
+first-draw timing remains an explicit external validation gate. No worker-pool
+policy changed.
 
 #### Overlay instrumentation comparison
 
@@ -815,9 +837,12 @@ The overlay captures used runner source
 `499292343d871e5a65df4da55301cbc5a0aeb024`, descended from the initial
 assessment at `ce1dd039bf0e37db89aec45efc0cb3acfffc4139` and the isolated CPU
 presentation boundary at `89afbefc2ba4f5b90f66cba396ae23f6b8223f3a`.
-The retained version 5 runner at
-`16e241f1027153e182c3f5ec07bc59f503ba3e55` adds the raw vertical sample lines
-described above and the associated schema-version bump.
+The historical version 5 runner at
+`16e241f1027153e182c3f5ec07bc59f503ba3e55` added raw vertical sample lines.
+The current version 6 runner at
+`f5b704f7508b0628c4dfde71348f95aaa8e301ef` adds explicit target tracking,
+spherical desired cardinality, planner ownership, and hard success gates for
+the finite-world capture described above.
 
 For a new capture, build once in Release and run the modes from that binary:
 
@@ -910,22 +935,25 @@ listed separately even though `ChunkStreamer` owns it.
 
 | Area | Priority | Capacity | Pending | Cancellation | Wake/refill | Retry | Ownership |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `ChunkStreamer` source/generation | 2 | 3 | 2 | 2 | 2 | 2 | 4 |
-| `ChunkStreamer` mesh scheduling | 3 | 3 | 3 | 2 | 3 | 3 | 3 |
+| `ChunkStreamer` source/generation | 2 | 3 | 3 | 2 | 3 | 2 | 5 |
+| `ChunkStreamer` mesh scheduling | 3 | 3 | 3 | 2 | 3 | 3 | 4 |
 | `ChunkStreamer` persistence/eviction/version replacement | 2 | 2 | 3 | 3 | 3 | 2 | 4 |
 | `AsyncChunkLoader` | 3 | 4 | 5 | 4 | 4 | 2 | 5 |
 | `ThreadPool` | 2 | 1 | 2 | 1 | 2 | 0 | 1 |
 
 The source/generation row counts the shared desired importance and ordered
-generation index; update, dispatch, and apply bounds; the canonical source and
-generation pending lanes; load and generation retirement; update/completion
-refill; terminal requeue/config reconciliation; and source, load-request,
-logical-generation, and physical-flight ownership. The mesh row counts shared
+generation index; update, dispatch, and apply bounds; the canonical source,
+generation, and desired/bounds-reconciliation pending lanes; load and
+generation retirement; update/completion and bounded replacement reconciliation
+refill; terminal requeue/config reconciliation; and desired-planner, source,
+load-request, logical-generation, and physical-flight ownership. The mesh row counts shared
 importance, missing/dirty class ordering, explicit dirty priority; dispatch,
 class, and apply bounds; ready, dependency, and replacement pending state;
 pending retirement and stale-flight rejection; neighbor, completion, and dirty
 wakes; failure/revision/config reconciliation; and pending, in-flight, and
-completion ownership.
+completion ownership plus the finite-bounds suppression marker. That marker
+hides derived geometry while dirty exterior voxel data remains persistence-owned
+and wakes one remesh when the bounds admit the resident again.
 
 The persistence/eviction/version row counts distance/cache-pressure and
 version-replacement ordering; resident/cache and deferred-work bounds;

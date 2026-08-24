@@ -146,6 +146,8 @@ TEST_CASE(ThreadPool_ConstructionFailureJoinsStartedWorker) {
 
 TEST_CASE(ThreadPool_CommitsSubmissionAccountingBeforeWorkerStart) {
     ThreadPoolGate workerStartGate;
+    std::atomic<bool> submissionCommitEntered{false};
+    std::atomic<bool> submissionCommitReleased{false};
     std::atomic<bool> enqueueReturnEntered{false};
     std::atomic<bool> enqueueReturnReleased{false};
     std::atomic<uint64_t> submissions{0};
@@ -157,6 +159,10 @@ TEST_CASE(ThreadPool_CommitsSubmissionAccountingBeforeWorkerStart) {
     std::jthread submitter;
     ThreadPoolRelease releaseWorkerOnExit(workerStartGate);
     AtomicFlagRelease releaseEnqueueOnExit(enqueueReturnReleased);
+    AtomicFlagRelease releaseSubmissionCommitOnExit(
+        submissionCommitReleased);
+    Rigel::Voxel::detail::ThreadPoolTestAccess::gateNextSubmissionCommit(
+        pool, submissionCommitEntered, submissionCommitReleased);
     Rigel::Voxel::detail::ThreadPoolTestAccess::gateNextEnqueueReturn(
         pool, enqueueReturnEntered, enqueueReturnReleased);
 
@@ -176,6 +182,19 @@ TEST_CASE(ThreadPool_CommitsSubmissionAccountingBeforeWorkerStart) {
                 submissions, &resubmissions});
     });
 
+    CHECK(waitUntilTrue(submissionCommitEntered));
+    const uint64_t resubmissionsAfterFirstPublication =
+        resubmissions.load(std::memory_order_seq_cst);
+    const uint64_t submissionsAfterFirstPublication =
+        submissions.load(std::memory_order_seq_cst);
+    CHECK_EQ(resubmissionsAfterFirstPublication, static_cast<uint64_t>(0));
+    CHECK_EQ(submissionsAfterFirstPublication, static_cast<uint64_t>(1));
+    CHECK_EQ(submissionsAtWorkerStart.load(std::memory_order_seq_cst),
+             static_cast<uint64_t>(0));
+    CHECK_EQ(resubmissionsAtWorkerStart.load(std::memory_order_seq_cst),
+             static_cast<uint64_t>(0));
+
+    releaseSubmissionCommitOnExit.release();
     CHECK(waitUntilTrue(enqueueReturnEntered));
     CHECK(workerStartGate.waitUntilEntered());
     const uint64_t resubmissionsAtBoundary =

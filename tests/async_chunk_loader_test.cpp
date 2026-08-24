@@ -89,6 +89,14 @@ struct AsyncChunkLoaderTestAccess {
             loader.m_ioPool, entered, released);
     }
 
+    static void gateNextIoPoolSubmissionCommit(
+        AsyncChunkLoader& loader,
+        std::atomic<bool>& entered,
+        std::atomic<bool>& released) {
+        Voxel::detail::ThreadPoolTestAccess::gateNextSubmissionCommit(
+            loader.m_ioPool, entered, released);
+    }
+
     static void stopIoPool(AsyncChunkLoader& loader) {
         loader.m_ioPool.stop();
     }
@@ -3185,6 +3193,8 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
     auto barrierGate = std::make_shared<LoaderWorkGate>();
     auto resubmissionStartGate = std::make_shared<LoaderWorkGate>();
     auto unusedPayloadGate = std::make_shared<LoaderWorkGate>();
+    std::atomic<bool> submissionCommitEntered{false};
+    std::atomic<bool> submissionCommitReleased{false};
     std::atomic<bool> enqueueReturnEntered{false};
     std::atomic<bool> enqueueReturnReleased{false};
     std::vector<ChunkLoadCompletion> resolved;
@@ -3202,6 +3212,8 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
     LoaderWorkRelease releaseResubmissionOnExit(
         resubmissionStartGate, unusedPayloadGate);
     AtomicFlagRelease releaseEnqueueOnExit(enqueueReturnReleased);
+    AtomicFlagRelease releaseSubmissionCommitOnExit(
+        submissionCommitReleased);
     loader.setMaxInFlightRegions(1);
     loader.setPrefetchRadius(0);
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
@@ -3229,6 +3241,9 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
     Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
         gateNextIoPoolEnqueueReturn(
             loader, enqueueReturnEntered, enqueueReturnReleased);
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        gateNextIoPoolSubmissionCommit(
+            loader, submissionCommitEntered, submissionCommitReleased);
 
     poolBlocker->release();
     CHECK(barrierGate->waitUntilEntered());
@@ -3237,6 +3252,15 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
         resolved = loader.drainCompletions(1);
     });
 
+    CHECK(waitUntilTrue(submissionCommitEntered));
+    const auto firstPublication = Rigel::Persistence::detail::
+        AsyncChunkLoaderTestAccess::speculativeRegionBoundaryMetrics(loader);
+    CHECK_EQ(firstPublication.poolResubmissions, static_cast<uint64_t>(0));
+    CHECK_EQ(firstPublication.poolSubmissions, static_cast<uint64_t>(2));
+    CHECK_EQ(firstPublication.poolWorkerStarts, static_cast<uint64_t>(0));
+    CHECK_EQ(firstPublication.resultsPublished, static_cast<uint64_t>(0));
+
+    releaseSubmissionCommitOnExit.release();
     CHECK(waitUntilTrue(enqueueReturnEntered));
     CHECK(resubmissionStartGate->waitUntilEntered());
     const auto boundary = Rigel::Persistence::detail::

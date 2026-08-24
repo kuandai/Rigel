@@ -74,10 +74,22 @@ public:
     private:
         friend class ThreadPool;
 
-        void commit() const noexcept {
+        void commit(std::atomic<bool>* firstPublicationEntered,
+                    std::atomic<bool>* firstPublicationReleased)
+            const noexcept {
             // Readers load the subset first, so publish the total first.
             if (m_submissions) {
                 m_submissions->fetch_add(1, std::memory_order_seq_cst);
+            }
+            if (m_subset && firstPublicationEntered &&
+                firstPublicationReleased) {
+                firstPublicationEntered->store(true, std::memory_order_release);
+                firstPublicationEntered->notify_all();
+                while (!firstPublicationReleased->load(
+                    std::memory_order_acquire)) {
+                    firstPublicationReleased->wait(
+                        false, std::memory_order_acquire);
+                }
             }
             if (m_subset) {
                 m_subset->fetch_add(1, std::memory_order_seq_cst);
@@ -130,7 +142,11 @@ public:
                 m_jobs.emplace_back(id);
                 m_jobs.back().run.swap(job);
             }
-            accounting.commit();
+            accounting.commit(
+                m_nextSubmissionCommitEntered,
+                m_nextSubmissionCommitReleased);
+            m_nextSubmissionCommitEntered = nullptr;
+            m_nextSubmissionCommitReleased = nullptr;
             enqueueReturnEntered = m_nextEnqueueReturnEntered;
             enqueueReturnReleased = m_nextEnqueueReturnReleased;
             m_nextEnqueueReturnEntered = nullptr;
@@ -294,7 +310,9 @@ private:
     JobQueue m_highPriorityJobs;
     JobQueue m_jobs;
     std::vector<std::thread> m_threads;
-    // One-shot deterministic boundary exposed only through test access.
+    // One-shot deterministic boundaries exposed only through test access.
+    std::atomic<bool>* m_nextSubmissionCommitEntered = nullptr;
+    std::atomic<bool>* m_nextSubmissionCommitReleased = nullptr;
     std::atomic<bool>* m_nextEnqueueReturnEntered = nullptr;
     std::atomic<bool>* m_nextEnqueueReturnReleased = nullptr;
     JobId m_nextJobId = 1;

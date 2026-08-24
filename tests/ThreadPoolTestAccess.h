@@ -28,6 +28,14 @@ struct ThreadPoolTestAccess {
         pool.m_nextEnqueueReturnEntered = &entered;
         pool.m_nextEnqueueReturnReleased = &released;
     }
+
+    static void gateNextSubmissionCommit(ThreadPool& pool,
+                                         std::atomic<bool>& entered,
+                                         std::atomic<bool>& released) {
+        std::lock_guard<std::mutex> lock(pool.m_mutex);
+        pool.m_nextSubmissionCommitEntered = &entered;
+        pool.m_nextSubmissionCommitReleased = &released;
+    }
 };
 
 } // namespace Rigel::Voxel::detail

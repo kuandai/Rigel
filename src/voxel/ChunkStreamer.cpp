@@ -1704,6 +1704,9 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
                 activatePendingGeneration(genResult.coord);
             }
         };
+        if (!ownerSettled) {
+            continue;
+        }
 
         if (genResult.workEpoch !=
             m_workEpoch.load(std::memory_order_relaxed)) {

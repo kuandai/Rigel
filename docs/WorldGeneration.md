@@ -190,9 +190,12 @@ The shipped world configuration uses `view_distance_chunks=12`,
 `worker_threads=12`. The pool split assigns six threads to generation and six
 to meshing. Generation can therefore own 128 submitted-but-undrained jobs, up
 to 122 more than the generation workers can start concurrently. The radius-12
-desired sphere contains 7,153 coordinates, so in a cold all-missing window up
-to 7,025 additional chunks wait in the generation-capacity FIFO after the
-first 128 submissions.
+desired sphere contains 7,153 coordinates, so in one cold, stationary
+all-missing window up to 7,025 current chunks belong to the logical
+generation-capacity wait set after the first 128 submissions. That number is
+not a global bound on the physical capacity-wait deque across camera movement:
+departure erases logical membership but leaves its deque node for the next
+completion-driven wake to discard.
 
 ### 5.3.1 Cardinal-motion baseline
 
@@ -214,6 +217,18 @@ It rejects cancellation of a running generation solely because its distance
 priority changed; retained desired work continues. Capacity wakeup itself is
 event-driven and advances one valid FIFO waiter per observed completion rather
 than scanning the desired volume.
+
+`ChunkStreamer_CappedMovementAccumulatesStaleGenerationCapacityEntries`
+isolates that physical-capacity-wait behavior. With one generation slot held
+and four disjoint radius-one windows, `m_generationCapacityWaiting` contains 6,
+7, 7, and 7 current coordinates, while `m_generationCapacityWait` grows through
+6, 13, 20, and 27 physical entries. The final 20 extra nodes belong to departed
+windows. Thus current logical membership remains bounded by current demand,
+but the baseline physical capacity-wait deque is not globally bounded across
+saturated camera churn; stale nodes persist until a completion-driven wake
+walks past them. Releasing the fixture drains the stale entries and reaches
+stable quiescence. This is measured baseline evidence only; generation
+scheduling policy is unchanged here and is repaired in the next scheduler task.
 
 ### 5.4 Meshing Constraints
 

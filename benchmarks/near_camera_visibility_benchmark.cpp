@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -32,12 +33,17 @@ namespace {
 
 using namespace Rigel;
 
+constexpr double kDefaultUpdateIntervalMilliseconds = 1000.0 / 60.0;
+
 struct Options {
     size_t samplesPerDistance = 20;
     int viewDistance = 2;
     int workerThreads = 2;
     int timeoutSeconds = 30;
-    double dependencyBudgetMilliseconds = 50.0;
+    double updateIntervalMilliseconds = kDefaultUpdateIntervalMilliseconds;
+    double comparisonBudgetMilliseconds = 50.0;
+    bool updateIntervalSpecified = false;
+    bool schedulerLowerBoundStress = false;
 };
 
 struct RunResult {
@@ -81,7 +87,11 @@ void printUsage() {
         << "  --view-distance N          cold-start view radius (default 2)\n"
         << "  --worker-threads N         production worker setting (default 2)\n"
         << "  --timeout-seconds N        per-sample safety deadline (default 30)\n"
-        << "  --dependency-budget-ms N   P95 assessment threshold (default 50)\n";
+        << "  --update-interval-ms N     application-like cadence (default 16.667)\n"
+        << "  --comparison-budget-ms N   operator comparison budget (default 50)\n"
+        << "  --scheduler-lower-bound-stress\n"
+        << "                             run unpaced scheduler stress; timings are\n"
+        << "                             not representative time-to-visible evidence\n";
 }
 
 bool parseOptions(int argc, char** argv, Options& options) {
@@ -91,18 +101,40 @@ bool parseOptions(int argc, char** argv, Options& options) {
             printUsage();
             return false;
         }
+        if (argument == "--scheduler-lower-bound-stress") {
+            if (options.updateIntervalSpecified) {
+                std::cerr
+                    << "Scheduler stress cannot be combined with an explicit "
+                       "update interval\n";
+                return false;
+            }
+            options.schedulerLowerBoundStress = true;
+            continue;
+        }
         if (index + 1 >= argc) {
             std::cerr << "Missing value for " << argument << '\n';
             return false;
         }
         const std::string_view value(argv[++index]);
-        if (argument == "--dependency-budget-ms") {
+        if (argument == "--update-interval-ms" ||
+            argument == "--comparison-budget-ms") {
             const auto parsed = parseDouble(value);
-            if (!parsed || *parsed <= 0.0) {
-                std::cerr << "Invalid dependency budget: " << value << '\n';
+            if (!parsed || !std::isfinite(*parsed) || *parsed <= 0.0) {
+                std::cerr << "Invalid positive duration: " << value << '\n';
                 return false;
             }
-            options.dependencyBudgetMilliseconds = *parsed;
+            if (argument == "--update-interval-ms") {
+                if (options.schedulerLowerBoundStress) {
+                    std::cerr
+                        << "An explicit update interval cannot be combined "
+                           "with scheduler stress\n";
+                    return false;
+                }
+                options.updateIntervalMilliseconds = *parsed;
+                options.updateIntervalSpecified = true;
+            } else {
+                options.comparisonBudgetMilliseconds = *parsed;
+            }
             continue;
         }
         const auto parsed = parseInteger(value);
@@ -177,10 +209,21 @@ RunResult runSample(const Options& options,
     streamer.markSpawnDiscoveryComplete();
 
     RunResult result;
-    const auto deadline = std::chrono::steady_clock::now() +
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() +
         std::chrono::seconds(options.timeoutSeconds);
+    const auto updateInterval = std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double, std::milli>(
+            options.updateIntervalMilliseconds));
+    auto nextUpdate = Clock::now();
     const Voxel::ChunkCoord cameraChunk{0, 0, 0};
-    while (std::chrono::steady_clock::now() < deadline) {
+    while (Clock::now() < deadline) {
+        if (!options.schedulerLowerBoundStress) {
+            if (nextUpdate >= deadline) {
+                break;
+            }
+            std::this_thread::sleep_until(nextUpdate);
+        }
         streamer.update(cameraChunk.toWorldCenter());
         streamer.processCompletions();
         ++result.updateCount;
@@ -188,7 +231,15 @@ RunResult runSample(const Options& options,
             Voxel::StreamingLifecycleState::Quiescent) {
             break;
         }
-        std::this_thread::yield();
+        if (options.schedulerLowerBoundStress) {
+            std::this_thread::yield();
+        } else {
+            nextUpdate += updateInterval;
+            const auto now = Clock::now();
+            if (nextUpdate < now) {
+                nextUpdate = now;
+            }
+        }
     }
 
     result.work = streamer.workMetrics();
@@ -288,12 +339,14 @@ int main(int argc, char** argv) {
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout
-        << "benchmark name=near_camera_visibility version=1"
+        << "benchmark name=near_camera_visibility version=2"
         << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
         << " hardware_threads=" << std::thread::hardware_concurrency()
+        << " fixture=controlled_cold_generation"
         << " renderer=headless"
         << " visibility_endpoint=accepted"
-        << " persistence=fresh_world_missing_probe"
+        << " persistence=controlled_missing_probe"
+        << " scheduling_context=not_shipped_or_interactive"
         << " wait_signal=streaming_quiescent"
         << " fixed_startup_sleep=false\n";
     std::cout
@@ -306,8 +359,22 @@ int main(int argc, char** argv) {
         << std::max(1, options.workerThreads / 2)
         << " update_budget=unbounded"
         << " apply_budget=unbounded"
-        << " dependency_budget_ms="
-        << options.dependencyBudgetMilliseconds << '\n';
+        << " cadence_mode="
+        << (options.schedulerLowerBoundStress
+                ? "scheduler_lower_bound_stress"
+                : "application_like")
+        << " update_interval_ms=";
+    if (options.schedulerLowerBoundStress) {
+        std::cout << "unpaced";
+    } else {
+        std::cout << options.updateIntervalMilliseconds;
+    }
+    std::cout
+        << " representative_time_to_visible="
+        << (options.schedulerLowerBoundStress ? "false" : "true")
+        << " comparison_budget_ms="
+        << options.comparisonBudgetMilliseconds
+        << " comparison_budget_role=operator_supplied\n";
     std::cout
         << "limitations first_draw_unavailable=true"
         << " gpu_context=false"
@@ -393,13 +460,15 @@ int main(int argc, char** argv) {
     auto overall = Benchmark::summarizeNearCameraVisibility(samples);
     printSummary("overall", overall);
     const bool withinBudget =
-        maximumDependencyP95 <= options.dependencyBudgetMilliseconds;
+        maximumDependencyP95 <= options.comparisonBudgetMilliseconds;
     std::cout
-        << "assessment six_neighbor_barrier="
-        << (withinBudget ? "within_headless_budget" : "exceeds_headless_budget")
+        << "assessment comparison_budget_status="
+        << (withinBudget ? "within" : "exceeds")
         << " maximum_near_dependency_p95_ms=" << maximumDependencyP95
-        << " dependency_budget_ms="
-        << options.dependencyBudgetMilliseconds
+        << " comparison_budget_ms="
+        << options.comparisonBudgetMilliseconds
+        << " comparison_budget_role=operator_supplied_comparison_only"
+        << " proves_interactive_acceptability=false"
         << " provisional_neighbor_policy="
         << (withinBudget ? "not_justified" : "requires_separate_validation")
         << '\n';

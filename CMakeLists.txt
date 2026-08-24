@@ -102,7 +102,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-option(RIGEL_BUILD_BENCHMARKS "Build Rigel performance benchmarks" ON)
+option(RIGEL_BUILD_BENCHMARKS "Build Rigel performance benchmarks" OFF)
 if (RIGEL_BUILD_BENCHMARKS)
     add_executable(Rigel_near_camera_visibility_benchmark
         ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/NearCameraVisibilityBenchmark.cpp

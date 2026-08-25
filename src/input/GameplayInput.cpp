@@ -120,19 +120,121 @@ bool raycastBlock(const Voxel::World& world,
 
 } // namespace
 
+void capturedCursorCenter(int windowWidth, int windowHeight, double& x, double& y) {
+    x = static_cast<double>(windowWidth) * 0.5;
+    y = static_cast<double>(windowHeight) * 0.5;
+}
+
+void applyCapturedCursorPosition(WindowState& window, CameraState& camera,
+                                 double xpos, double ypos) {
+    if (!window.cursorCaptured) {
+        return;
+    }
+
+    if (window.firstMouse) {
+        window.lastMouseX = xpos;
+        window.lastMouseY = ypos;
+        window.firstMouse = false;
+        return;
+    }
+
+    double xoffset = xpos - window.lastMouseX;
+    double yoffset = ypos - window.lastMouseY;
+    window.lastMouseX = xpos;
+    window.lastMouseY = ypos;
+
+    camera.yaw += static_cast<float>(xoffset) * camera.mouseSensitivity;
+    camera.pitch -= static_cast<float>(yoffset) * camera.mouseSensitivity;
+    camera.pitch = std::clamp(camera.pitch, -89.0f, 89.0f);
+}
+
+namespace {
+
+void recenterCapturedCursor(WindowState& window) {
+    if (!window.cursorCaptured || !window.window) {
+        return;
+    }
+
+    int width = 0;
+    int height = 0;
+    glfwGetWindowSize(window.window, &width, &height);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    double x = 0.0;
+    double y = 0.0;
+    capturedCursorCenter(width, height, x, y);
+    window.firstMouse = true;
+    glfwSetCursorPos(window.window, x, y);
+    window.lastMouseX = x;
+    window.lastMouseY = y;
+    window.firstMouse = false;
+}
+
+bool usesDisabledCursorLock() {
+#if defined(__APPLE__)
+    // GLFW 3.3 reports GLFW_CURSOR_DISABLED on macOS without confining the
+    // pointer, so look stops when the visible cursor hits the screen edge.
+    return false;
+#else
+    return true;
+#endif
+}
+
+} // namespace
+
 void setCursorCaptured(WindowState& window, bool captured) {
     window.cursorCaptured = captured;
+    window.firstMouse = true;
     if (!window.window) {
         return;
     }
 
-    glfwSetInputMode(window.window, GLFW_CURSOR,
-                     captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
-    if (glfwRawMouseMotionSupported()) {
-        glfwSetInputMode(window.window, GLFW_RAW_MOUSE_MOTION,
-                         captured ? GLFW_TRUE : GLFW_FALSE);
+    if (captured) {
+        if (usesDisabledCursorLock()) {
+            glfwSetInputMode(window.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            if (glfwRawMouseMotionSupported()) {
+                glfwSetInputMode(window.window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+            }
+            if (glfwGetInputMode(window.window, GLFW_CURSOR) == GLFW_CURSOR_DISABLED) {
+                return;
+            }
+        }
+        if (glfwRawMouseMotionSupported()) {
+            glfwSetInputMode(window.window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+        }
+        glfwSetInputMode(window.window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+        recenterCapturedCursor(window);
+        return;
     }
-    window.firstMouse = true;
+
+    if (glfwRawMouseMotionSupported()) {
+        glfwSetInputMode(window.window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+    }
+    glfwSetInputMode(window.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+}
+
+void maintainCursorLock(WindowState& window) {
+    if (!window.cursorCaptured || !window.window || !window.windowFocused) {
+        return;
+    }
+
+    const int mode = glfwGetInputMode(window.window, GLFW_CURSOR);
+    if (usesDisabledCursorLock() && mode == GLFW_CURSOR_DISABLED) {
+        if (glfwRawMouseMotionSupported()) {
+            glfwSetInputMode(window.window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        }
+        return;
+    }
+
+    if (glfwRawMouseMotionSupported()) {
+        glfwSetInputMode(window.window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+    }
+    if (mode != GLFW_CURSOR_HIDDEN) {
+        glfwSetInputMode(window.window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+    }
+    recenterCapturedCursor(window);
 }
 
 void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) {
@@ -195,28 +297,7 @@ void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) 
         if (!ctx || !ctx->window || !ctx->camera) {
             return;
         }
-        WindowState& windowState = *ctx->window;
-        CameraState& camera = *ctx->camera;
-
-        if (!windowState.cursorCaptured) {
-            return;
-        }
-
-        if (windowState.firstMouse) {
-            windowState.lastMouseX = xpos;
-            windowState.lastMouseY = ypos;
-            windowState.firstMouse = false;
-            return;
-        }
-
-        double xoffset = xpos - windowState.lastMouseX;
-        double yoffset = ypos - windowState.lastMouseY;
-        windowState.lastMouseX = xpos;
-        windowState.lastMouseY = ypos;
-
-        camera.yaw += static_cast<float>(xoffset) * camera.mouseSensitivity;
-        camera.pitch -= static_cast<float>(yoffset) * camera.mouseSensitivity;
-        camera.pitch = std::clamp(camera.pitch, -89.0f, 89.0f);
+        applyCapturedCursorPosition(*ctx->window, *ctx->camera, xpos, ypos);
     });
     glfwSetWindowFocusCallback(window, [](GLFWwindow* cbWindow, int focused) {
         auto* ctx = static_cast<InputCallbackContext*>(glfwGetWindowUserPointer(cbWindow));

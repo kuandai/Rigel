@@ -88,6 +88,7 @@ Per frame:
    callback-fed key and mouse-button state and notify action listeners.
 4. Apply cursor-capture actions, then update camera and interaction logic.
    - Mouse look is applied if the cursor is captured.
+   - A captured cursor is re-locked each frame so it cannot leave the window.
    - Block edit raycasts use mouse press edges; demo entity spawning uses an
      action press edge.
 5. Tick entities (`World::tickEntities`).

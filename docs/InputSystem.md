@@ -122,14 +122,19 @@ release. They are bound independently to `debug_overlay` and `imgui_overlay`.
 ## Mouse Look and Cursor Capture
 
 - The cursor-position callback updates camera yaw and pitch while the cursor is
-  captured.
-- `setCursorCaptured()` selects `GLFW_CURSOR_DISABLED` or
-  `GLFW_CURSOR_NORMAL`, enables raw mouse motion when supported, and resets the
-  first-sample guard.
+  captured. The first sample after capture or a warp is stored as the origin
+  and does not rotate the camera.
+- `setCursorCaptured()` hides the cursor for look. On platforms where GLFW 3.3
+  honors `GLFW_CURSOR_DISABLED`, that mode and raw mouse motion are used. On
+  macOS, GLFW can report a disabled cursor without confining it, so capture
+  falls back to `GLFW_CURSOR_HIDDEN` and pins the pointer to the window center.
+- `maintainCursorLock()` re-applies that confinement each frame so the cursor
+  cannot walk off-screen while looking around.
 - The `toggle_mouse_capture` action changes capture state once on its key press
   edge.
-- Focus changes reset frame timing; regaining focus restores disabled-cursor
-  mode when capture is active.
+- Focus changes reset frame timing; regaining focus restores capture when it is
+  active. ImGui is configured not to change the GLFW cursor while gameplay owns
+  it.
 
 ## Mouse Buttons
 

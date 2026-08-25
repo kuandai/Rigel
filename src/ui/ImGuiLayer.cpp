@@ -40,6 +40,7 @@ bool init(GLFWwindow* window) {
         g_contextCreated = true;
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         io.IniFilename = nullptr;
         ImGui::StyleColorsDark();
 

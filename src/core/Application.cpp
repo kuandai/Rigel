@@ -640,11 +640,10 @@ void Application::run() {
                 if (m_impl->input.isActionJustPressed("toggle_mouse_capture")) {
                     Input::setCursorCaptured(m_impl->window, !m_impl->window.cursorCaptured);
                 }
-                if (m_impl->window.cursorCaptured &&
-                    glfwGetInputMode(m_impl->window.window, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
-                    Input::setCursorCaptured(m_impl->window, true);
-                }
+            }
+            Input::maintainCursorLock(m_impl->window);
 
+            if (m_impl->world.ready && m_impl->world.world && m_impl->world.worldView) {
                 {
                     PROFILE_SCOPE("Simulation");
                     Input::updateCamera(m_impl->input, m_impl->camera, deltaTime);

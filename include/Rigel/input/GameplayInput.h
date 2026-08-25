@@ -70,6 +70,19 @@ struct InputCallbackContext {
 
 void setCursorCaptured(WindowState& window, bool captured);
 
+/// Window-local point used to pin a captured cursor so it cannot walk off-screen.
+void capturedCursorCenter(int windowWidth, int windowHeight, double& x, double& y);
+
+/// Apply one cursor-position sample to yaw/pitch. The first sample after capture
+/// or a cursor warp is stored as the origin and does not rotate the camera.
+void applyCapturedCursorPosition(WindowState& window, CameraState& camera,
+                                 double xpos, double ypos);
+
+/// Keep a captured cursor hidden and inside the window. GLFW 3.3's disabled
+/// cursor can still leave the screen on macOS, so this falls back to hiding
+/// the cursor and warping it to the window center.
+void maintainCursorLock(WindowState& window);
+
 void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context);
 
 void loadInputBindings(Asset::AssetManager& assets, InputState& input);

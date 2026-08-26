@@ -117,6 +117,14 @@ TEST_CASE(GeneratorSnapshot_rejects_dangling_graph_and_content_references) {
     disabledCaveOutput.densityGraph.outputs["disabled_cave_semantic"] =
         "dead_authoring_node";
     CHECK_THROWS(serializeGeneratorSnapshot(disabledCaveOutput));
+
+    disabledCaveOutput = snapshotDefinition();
+    disabledCaveOutput.caves.densityOutput = "discarded_semantic";
+    CHECK_THROWS(serializeGeneratorSnapshot(disabledCaveOutput));
+
+    WorldGenConfig disabledCaveThreshold = snapshotDefinition();
+    disabledCaveThreshold.caves.threshold = 0.75f;
+    CHECK_THROWS(serializeGeneratorSnapshot(disabledCaveThreshold));
 }
 
 TEST_CASE(GeneratorSnapshot_validates_referenced_runtime_content) {

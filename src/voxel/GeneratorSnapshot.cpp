@@ -236,17 +236,27 @@ void validateGraph(const WorldGenConfig& definition) {
         throw std::invalid_argument(
             "Generator definition requires the 'base_density' output");
     }
-    if (definition.isStageEnabled("caves") &&
+    const bool cavesEnabled = definition.isStageEnabled("caves");
+    if (cavesEnabled &&
         !definition.densityGraph.outputs.contains(
             definition.caves.densityOutput)) {
         throw std::invalid_argument(
             "Generator definition cave output is not defined: " +
             definition.caves.densityOutput);
     }
+    if (!cavesEnabled) {
+        const WorldGenConfig::CavesConfig defaults;
+        if (definition.caves.densityOutput != defaults.densityOutput ||
+            definition.caves.threshold != defaults.threshold) {
+            throw std::invalid_argument(
+                "Generator definition cannot declare cave settings when "
+                "caves are disabled");
+        }
+    }
     for (const auto& [semantic, node] : definition.densityGraph.outputs) {
         static_cast<void>(node);
         if (semantic == "base_density" ||
-            (definition.isStageEnabled("caves") &&
+            (cavesEnabled &&
              semantic == definition.caves.densityOutput)) {
             continue;
         }

@@ -42,6 +42,10 @@ enum class SavedWorldGenerationPresence {
 SavedWorldGenerationPresence inspectSavedWorldGeneration(
     const PersistenceContext& context);
 
+// Bootstrap recovery must run before creation can begin for this world root.
+void recoverAbandonedWorldGenerationStaging(
+    const PersistenceContext& context);
+
 void publishNewWorldGeneration(const WorldSettings& settings,
                                const Voxel::WorldGenConfig& definition,
                                const PersistenceContext& context);

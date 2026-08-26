@@ -309,7 +309,9 @@ Synchronization:
 
 **Behavior**:
 - Synchronous on the main thread.
-- Startup inspects the active save before attaching a generator. A missing save
+- Startup first reclaims abandoned sibling staging directories from interrupted
+  creation attempts, then inspects the active save before attaching a generator.
+  A missing save
   validates an installed definition, publishes its settings and canonical
   snapshot, and only then attaches the generator. A published save bypasses
   installed generator resolution and constructs from its local snapshot.

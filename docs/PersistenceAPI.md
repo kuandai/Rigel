@@ -241,6 +241,9 @@ Current behavior:
   `generator-definition.yaml` and `world-settings.yaml` in a sibling staging
   directory, then atomically publishes that complete directory without
   replacing an existing save. A failed write leaves no final save root.
+- Bootstrap removes abandoned staging siblings for the selected world before
+  inspecting its final root. A transient rollback-cleanup failure is therefore
+  retried on the next startup before another creation attempt can begin.
 - `loadSavedWorldGeneration` requires both files, checks the distinct world
   settings, definition-schema, source-revision, and evaluator-semantics
   meanings, and supplies the saved snapshot as the only generator input.

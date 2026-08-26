@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <exception>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -44,7 +45,7 @@ std::string childPath(const PersistenceContext& context,
     return context.rootPath + "/" + std::string(filename);
 }
 
-std::string quoted(std::string_view value) {
+std::string quoteYamlString(std::string_view value) {
     std::string out;
     out.reserve(value.size() + 2);
     out.push_back('"');
@@ -102,7 +103,7 @@ void validateSettings(const WorldSettings& settings) {
         throw std::invalid_argument(
             "World display name must contain between 1 and 256 bytes");
     }
-    static_cast<void>(quoted(settings.displayName));
+    static_cast<void>(quoteYamlString(settings.displayName));
     if (!validGeneratorSourceId(settings.generator.sourceId)) {
         throw std::invalid_argument(
             "World generator source ID must be a non-empty namespaced ID");
@@ -130,10 +131,10 @@ std::string serializeSettings(const WorldSettings& settings) {
     std::string out;
     out += "world:\n";
     out += "  schema_version: " + std::to_string(settings.schemaVersion) + "\n";
-    out += "  display_name: " + quoted(settings.displayName) + "\n";
+    out += "  display_name: " + quoteYamlString(settings.displayName) + "\n";
     out += "  seed: " + std::to_string(settings.seed) + "\n";
     out += "  generator:\n";
-    out += "    id: " + quoted(settings.generator.sourceId) + "\n";
+    out += "    id: " + quoteYamlString(settings.generator.sourceId) + "\n";
     out += "    source_revision: " +
         std::to_string(settings.generator.sourceRevision) + "\n";
     out += "    definition_schema_version: " +
@@ -293,10 +294,14 @@ std::string stagingRoot(const PersistenceContext& context) {
 void removeStagingWorld(StorageBackend& storage,
                         const PersistenceContext& stagedContext) {
     std::exception_ptr firstFailure;
-    for (const std::string& path : {
-             childPath(stagedContext, kWorldSettingsFilename),
-             childPath(stagedContext, kGeneratorSnapshotFilename),
-             stagedContext.rootPath}) {
+    std::vector<std::string> entries;
+    try {
+        entries = storage.list(stagedContext.rootPath);
+    } catch (...) {
+        firstFailure = std::current_exception();
+    }
+    entries.push_back(stagedContext.rootPath);
+    for (const std::string& path : entries) {
         try {
             removeIfPresent(storage, path);
         } catch (...) {
@@ -327,6 +332,46 @@ SavedWorldGenerationPresence inspectSavedWorldGeneration(
         return SavedWorldGenerationPresence::Published;
     }
     return SavedWorldGenerationPresence::LegacyOrIncomplete;
+}
+
+void recoverAbandonedWorldGenerationStaging(
+    const PersistenceContext& context) {
+    StorageBackend& storage = storageFor(context);
+    const std::filesystem::path worldRoot(context.rootPath);
+    const std::string worldName = worldRoot.filename().string();
+    if (worldName.empty()) {
+        throw std::invalid_argument(
+            "World generation persistence requires a named world root path");
+    }
+
+    std::filesystem::path parent = worldRoot.parent_path();
+    if (parent.empty()) {
+        parent = ".";
+    }
+    const std::string stagingPrefix = worldName + ".staging.";
+    const std::vector<std::string> entries = storage.list(parent.string());
+
+    std::exception_ptr firstFailure;
+    for (const std::string& entry : entries) {
+        const std::string entryName =
+            std::filesystem::path(entry).filename().string();
+        if (!entryName.starts_with(stagingPrefix)) {
+            continue;
+        }
+
+        PersistenceContext stagedContext = context;
+        stagedContext.rootPath = entry;
+        try {
+            removeStagingWorld(storage, stagedContext);
+        } catch (...) {
+            if (!firstFailure) {
+                firstFailure = std::current_exception();
+            }
+        }
+    }
+    if (firstFailure) {
+        std::rethrow_exception(firstFailure);
+    }
 }
 
 void publishNewWorldGeneration(const WorldSettings& settings,

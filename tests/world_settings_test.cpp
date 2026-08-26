@@ -7,6 +7,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -79,6 +80,19 @@ void writeText(Persistence::StorageBackend& storage,
     session->writer().writeBytes(
         reinterpret_cast<const uint8_t*>(text.data()), text.size());
     session->commit();
+}
+
+std::vector<std::filesystem::path> stagingRoots(
+    const std::filesystem::path& worldRoot) {
+    std::vector<std::filesystem::path> roots;
+    const std::string prefix = worldRoot.filename().string() + ".staging.";
+    for (const auto& entry :
+         std::filesystem::directory_iterator(worldRoot.parent_path())) {
+        if (entry.path().filename().string().starts_with(prefix)) {
+            roots.push_back(entry.path());
+        }
+    }
+    return roots;
 }
 
 class ObservedWriteSession final : public Persistence::AtomicWriteSession {
@@ -272,7 +286,7 @@ TEST_CASE(WorldSettings_settings_write_failure_removes_committed_snapshot) {
     }
 }
 
-TEST_CASE(WorldSettings_cleanup_failure_never_publishes_staged_world) {
+TEST_CASE(WorldSettings_startup_recovers_failed_staging_cleanup) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_cleanup_failure";
     auto storage = std::make_shared<ObservingStorage>();
@@ -287,6 +301,34 @@ TEST_CASE(WorldSettings_cleanup_failure_never_publishes_staged_world) {
     CHECK_EQ(
         Persistence::inspectSavedWorldGeneration(context),
         Persistence::SavedWorldGenerationPresence::Missing);
+
+    const std::vector<std::filesystem::path> abandoned =
+        stagingRoots(worldRoot);
+    CHECK_EQ(abandoned.size(), static_cast<size_t>(1));
+    CHECK(std::filesystem::exists(
+        abandoned.front() / "generator-definition.yaml"));
+    CHECK(std::filesystem::exists(
+        abandoned.front() / "world-settings.yaml"));
+    {
+        std::ofstream interruptedWrite(
+            abandoned.front() / "generator-definition.yaml.tmp.interrupted");
+        interruptedWrite << "unpublished bytes";
+    }
+
+    const auto unrelated = directory.path() / "world_other.staging.unchanged";
+    std::filesystem::create_directories(unrelated);
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext = contextFor(worldRoot, restartedStorage);
+    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+
+    CHECK(stagingRoots(worldRoot).empty());
+    CHECK(std::filesystem::exists(unrelated));
+    Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), restartedContext);
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(restartedContext),
+        Persistence::SavedWorldGenerationPresence::Published);
 }
 
 TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {

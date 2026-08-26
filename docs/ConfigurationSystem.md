@@ -159,6 +159,9 @@ Both documents are durably committed in a unique sibling staging directory,
 then the complete directory is atomically published without replacing an
 existing root. Failed creation never exposes a partial final root. A root
 containing only one file is incomplete and is not loaded.
+Startup removes abandoned staging siblings before inspecting or creating the
+world, so a transient rollback-cleanup failure is retried before another
+publication attempt can begin.
 Existing save data without both files is legacy or unknown and is rejected
 without mutation.
 

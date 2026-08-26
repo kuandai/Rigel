@@ -292,6 +292,8 @@ void Application::initialize() {
         Persistence::PersistenceContext persistenceContext =
             m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId);
         std::shared_ptr<const Voxel::WorldGenerator> generator;
+        Persistence::recoverAbandonedWorldGenerationStaging(
+            persistenceContext);
         const auto savedPresence =
             Persistence::inspectSavedWorldGeneration(persistenceContext);
         persistenceContext.discoverExistingFormat =

@@ -610,6 +610,32 @@ TEST_CASE(Persistence_FormatResolutionRejectsConflictingPersistedMarkers) {
     CHECK_THROWS(registry.resolveFormat(context));
 }
 
+TEST_CASE(Persistence_FormatResolutionSeparatesIdentityOnlyFromWeakEvidence) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::Memory::descriptor(),
+        Backends::Memory::factory(),
+        Backends::Memory::probe());
+    registry.registerFormat(
+        Backends::CR::descriptor(),
+        Backends::CR::factory(),
+        Backends::CR::probe());
+
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.discoverExistingFormat = true;
+    context.storage = storage;
+    CHECK_EQ(
+        registry.resolveFormat(context)->descriptor().id,
+        std::string("memory"));
+
+    auto weakEvidence = storage->openWrite("root/zones");
+    weakEvidence->commit();
+    CHECK_THROWS(registry.resolveFormat(context));
+}
+
 TEST_CASE(Persistence_MaximumMemoryMetadataDocumentRoundTrip) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
 

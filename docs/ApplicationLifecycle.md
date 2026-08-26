@@ -68,8 +68,9 @@ Shutdown persists world state and releases resources.
      abort world bootstrap before spawn discovery.
    - Successful initialization records loaded block and texture counts.
 7. Load world config and create `World` + `WorldView`.
-   - New saves publish backend world metadata after world identity and before
-     `WorldGenerator` is attached to either runtime owner. This gives format
+   - Rigel ensures backend world metadata exists after world identity and
+     before `WorldGenerator` is attached to either runtime owner. An
+     identity-only save retries this step on restart. This gives format
      discovery an authoritative marker before any chunks can be generated or
      persisted.
    - `WorldGenerator` is then attached to both.

@@ -324,12 +324,6 @@ void Application::initialize() {
             Persistence::publishNewWorldGeneration(
                 settings, generator->config(), persistenceContext);
             m_impl->world.settings = std::move(settings);
-            Persistence::WorldMetadata backendMetadata;
-            backendMetadata.worldId =
-                "world_" + std::to_string(m_impl->world.activeWorldId);
-            backendMetadata.displayName = m_impl->world.settings->displayName;
-            m_impl->world.worldSet.persistenceService().saveWorldMetadata(
-                backendMetadata, persistenceContext);
         } else if (savedPresence ==
                    Persistence::SavedWorldGenerationPresence::Published) {
             config.streaming = configProvider.loadStreamingConfig();
@@ -347,6 +341,22 @@ void Application::initialize() {
             throw std::runtime_error(
                 "Existing world is legacy, unknown, or incompletely published; "
                 "the save was left unchanged");
+        }
+
+        auto& persistenceService =
+            m_impl->world.worldSet.persistenceService();
+        auto persistenceFormat = persistenceService.openFormat(
+            persistenceContext);
+        const std::string backendMetadataPath =
+            persistenceFormat->worldMetadataCodec().metadataPath(
+                persistenceContext);
+        if (!persistenceContext.storage->exists(backendMetadataPath)) {
+            Persistence::WorldMetadata backendMetadata;
+            backendMetadata.worldId =
+                "world_" + std::to_string(m_impl->world.activeWorldId);
+            backendMetadata.displayName = m_impl->world.settings->displayName;
+            persistenceService.saveWorldMetadata(
+                backendMetadata, persistenceContext);
         }
 
         m_impl->world.world->setGenerator(generator);

@@ -100,11 +100,14 @@ format using:
 - authoritative storage probes for an existing format
 - the preferred format from context only when no existing format is detected
 
-Weak probes remain a fallback when no preference is supplied; they do not
-override an explicit preference when layouts share generic directory names.
-Other contexts use the explicit preferred format directly.
+Outside published-world discovery, weak probes remain a fallback when no
+preference is supplied. Other contexts use the explicit preferred format
+directly.
 Multiple authoritative format markers are an integrity error; registry order
 never chooses between conflicting persisted formats.
+For a published world, weak evidence without an authoritative marker is also
+an integrity error. A world with identity files but no backend evidence uses
+the preferred format only to create its marker before generation is attached.
 
 ---
 

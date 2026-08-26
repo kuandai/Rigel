@@ -4,6 +4,7 @@
 #include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Voxel/GeneratorSnapshot.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -27,6 +28,7 @@ namespace {
 constexpr std::string_view kStagingOwnershipFilename =
     ".rigel-world-generation-stage";
 constexpr std::string_view kCleanupOwnershipSuffix = ".rigel-cleanup";
+constexpr size_t kStagingSlotCount = 64;
 
 Voxel::WorldGenConfig savedDefinition() {
     Voxel::WorldGenConfig definition;
@@ -334,6 +336,7 @@ class CollidingReservationStorage final
 public:
     enum class CollisionKind {
         Directory,
+        RegularFile,
         DirectorySymlink
     };
 
@@ -356,6 +359,11 @@ public:
                     *this,
                     collisionPath / "must-survive.txt",
                     "pre-existing directory");
+            } else if (m_collisionKind == CollisionKind::RegularFile) {
+                writeText(
+                    *this,
+                    collisionPath,
+                    "pre-existing regular file");
             } else {
                 std::filesystem::create_directory(m_symlinkTarget);
                 writeText(
@@ -393,6 +401,15 @@ public:
         throw std::runtime_error("injected post-publication failure");
     }
 
+    void remove(const std::string& path) override {
+        if (std::filesystem::path(path) ==
+            cleanupOwnershipPathForTest(reusedPath)) {
+            throw std::runtime_error(
+                "injected post-publication tombstone cleanup failure");
+        }
+        Persistence::FilesystemBackend::remove(path);
+    }
+
     std::filesystem::path reusedPath;
 };
 
@@ -411,6 +428,67 @@ public:
     }
 
     std::filesystem::path failedStage;
+};
+
+class AmbiguousReservationFailureStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    bool createDirectoryExclusive(const std::string& path) override {
+        const bool created = Persistence::FilesystemBackend::
+            createDirectoryExclusive(path);
+        if (created) {
+            failedStages.emplace_back(path);
+            throw std::runtime_error(
+                "injected ambiguous directory reservation failure");
+        }
+        return false;
+    }
+
+    void remove(const std::string& path) override {
+        if (std::find(
+                failedStages.begin(),
+                failedStages.end(),
+                std::filesystem::path(path)) != failedStages.end()) {
+            throw std::runtime_error(
+                "injected ambiguous reservation rollback failure");
+        }
+        Persistence::FilesystemBackend::remove(path);
+    }
+
+    std::vector<std::filesystem::path> failedStages;
+};
+
+class CollidingReservationRemovalFailureStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    bool createDirectoryExclusive(const std::string& path) override {
+        ++reservationAttempts;
+        if (collisionPath.empty()) {
+            collisionPath = path;
+            std::filesystem::create_directories(
+                collisionPath.parent_path());
+            std::filesystem::create_directory(collisionPath);
+            writeText(
+                *this,
+                collisionPath / "must-survive.txt",
+                "pre-existing directory");
+        }
+        return Persistence::FilesystemBackend::
+            createDirectoryExclusive(path);
+    }
+
+    void remove(const std::string& path) override {
+        if (std::filesystem::path(path) ==
+            cleanupOwnershipPathForTest(collisionPath)) {
+            removalAttempted = true;
+            throw std::runtime_error("injected tombstone removal failure");
+        }
+        Persistence::FilesystemBackend::remove(path);
+    }
+
+    size_t reservationAttempts = 0;
+    bool removalAttempted = false;
+    std::filesystem::path collisionPath;
 };
 
 class CollidingCleanupOwnershipStorage final
@@ -662,7 +740,7 @@ TEST_CASE(WorldSettings_marker_write_failure_cleans_exclusive_reservation) {
     }
 }
 
-TEST_CASE(WorldSettings_post_create_sync_failure_leaves_recovery_tombstone) {
+TEST_CASE(WorldSettings_post_create_sync_failure_cleans_current_reservation) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot =
         directory.path() / "world_post_create_sync_failure";
@@ -673,20 +751,51 @@ TEST_CASE(WorldSettings_post_create_sync_failure_leaves_recovery_tombstone) {
     CHECK_THROWS(Persistence::publishNewWorldGeneration(
         savedSettings(), savedDefinition(), context));
     CHECK(!storage->failedStage.empty());
-    CHECK(std::filesystem::is_directory(storage->failedStage));
-    CHECK(std::filesystem::is_regular_file(
-        cleanupOwnershipPathForTest(storage->failedStage)));
-    CHECK(!std::filesystem::exists(
-        storage->failedStage / kStagingOwnershipFilename));
-
-    auto restartedStorage =
-        std::make_shared<Persistence::FilesystemBackend>();
-    const auto restartedContext = contextFor(worldRoot, restartedStorage);
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
-
     CHECK(!std::filesystem::exists(storage->failedStage));
     CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(storage->failedStage)));
+}
+
+TEST_CASE(WorldSettings_markerless_ambiguous_remnants_are_bounded) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_bounded_ambiguous_reservations";
+    auto storage =
+        std::make_shared<AmbiguousReservationFailureStorage>();
+    const auto context = contextFor(worldRoot, storage);
+
+    for (size_t slot = 0; slot < kStagingSlotCount; ++slot) {
+        CHECK_THROWS(Persistence::publishNewWorldGeneration(
+            savedSettings(), savedDefinition(), context));
+        CHECK_EQ(storage->failedStages.size(), slot + 1);
+        const auto expected = std::filesystem::path(
+            worldRoot.string() + ".staging." + std::to_string(slot));
+        CHECK_EQ(storage->failedStages.back(), expected);
+        CHECK(std::filesystem::is_directory(expected));
+        CHECK(!std::filesystem::exists(
+            expected / kStagingOwnershipFilename));
+        CHECK(!std::filesystem::exists(
+            cleanupOwnershipPathForTest(expected)));
+    }
+
+    bool actionableExhaustion = false;
+    try {
+        Persistence::publishNewWorldGeneration(
+            savedSettings(), savedDefinition(), context);
+    } catch (const std::exception& failure) {
+        actionableExhaustion =
+            std::string(failure.what()).find(
+                "all 64 bounded staging slots are occupied") !=
+            std::string::npos;
+    }
+    CHECK(actionableExhaustion);
+    CHECK_EQ(stagingDirectories(worldRoot).size(), kStagingSlotCount);
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    Persistence::recoverAbandonedWorldGenerationStaging(
+        contextFor(worldRoot, restartedStorage));
+    CHECK_EQ(stagingDirectories(worldRoot).size(), kStagingSlotCount);
 }
 
 TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_directory) {
@@ -708,6 +817,59 @@ TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_directory) {
     CHECK_EQ(
         Persistence::inspectSavedWorldGeneration(context),
         Persistence::SavedWorldGenerationPresence::Published);
+}
+
+TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_file) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_file_collision";
+    auto storage = std::make_shared<CollidingReservationStorage>(
+        CollidingReservationStorage::CollisionKind::RegularFile);
+    const auto context = contextFor(worldRoot, storage);
+
+    Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context);
+
+    CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(2));
+    CHECK_EQ(
+        readText(*storage, storage->collisionPath),
+        std::string("pre-existing regular file"));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(storage->collisionPath)));
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(context),
+        Persistence::SavedWorldGenerationPresence::Published);
+}
+
+TEST_CASE(WorldSettings_preexisting_directory_never_gains_cleanup_tombstone) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_directory_tombstone_interruption";
+    auto storage =
+        std::make_shared<CollidingReservationRemovalFailureStorage>();
+    const auto context = contextFor(worldRoot, storage);
+
+    Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context);
+
+    CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(2));
+    CHECK(!storage->removalAttempted);
+    CHECK_EQ(
+        readText(*storage, storage->collisionPath / "must-survive.txt"),
+        std::string("pre-existing directory"));
+    CHECK(!std::filesystem::exists(
+        storage->collisionPath / kStagingOwnershipFilename));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(storage->collisionPath)));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    Persistence::recoverAbandonedWorldGenerationStaging(
+        contextFor(worldRoot, restartedStorage));
+    CHECK_EQ(
+        readText(
+            *restartedStorage,
+            storage->collisionPath / "must-survive.txt"),
+        std::string("pre-existing directory"));
 }
 
 TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_symlink) {
@@ -784,9 +946,24 @@ TEST_CASE(WorldSettings_post_publish_failure_preserves_reused_staging_path) {
         std::string("unowned post-publish reuse"));
     CHECK(!std::filesystem::exists(
         storage->reusedPath / kStagingOwnershipFilename));
+    CHECK(std::filesystem::is_regular_file(
+        cleanupOwnershipPathForTest(storage->reusedPath)));
     CHECK_EQ(
         Persistence::inspectSavedWorldGeneration(context),
         Persistence::SavedWorldGenerationPresence::Published);
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext = contextFor(worldRoot, restartedStorage);
+    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+
+    CHECK_EQ(
+        readText(
+            *restartedStorage,
+            storage->reusedPath / "must-survive.txt"),
+        std::string("unowned post-publish reuse"));
+    CHECK(std::filesystem::is_regular_file(
+        cleanupOwnershipPathForTest(storage->reusedPath)));
 }
 
 TEST_CASE(WorldSettings_snapshot_write_failure_rolls_back_new_world) {
@@ -871,7 +1048,7 @@ TEST_CASE(WorldSettings_cleanup_tombstone_survives_marker_removal_failure) {
     const auto worldRoot =
         directory.path() / "world_cleanup_after_marker_removal";
     const auto unrelated = std::filesystem::path(
-        worldRoot.string() + ".staging.7.8");
+        worldRoot.string() + ".staging.7");
     std::filesystem::create_directory(unrelated);
 
     auto storage =
@@ -914,7 +1091,7 @@ TEST_CASE(WorldSettings_recovery_removes_valid_dangling_tombstone) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_dangling_tombstone";
     const auto stagedRoot = std::filesystem::path(
-        worldRoot.string() + ".staging.7.8");
+        worldRoot.string() + ".staging.7");
     const auto cleanupPath = cleanupOwnershipPathForTest(stagedRoot);
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
     const auto context = contextFor(worldRoot, storage);
@@ -935,9 +1112,9 @@ TEST_CASE(WorldSettings_publish_cleans_all_candidates_before_reservation) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_selective_cleanup";
     const auto failingStage = std::filesystem::path(
-        worldRoot.string() + ".staging.7.8");
+        worldRoot.string() + ".staging.7");
     const auto removableStage = std::filesystem::path(
-        worldRoot.string() + ".staging.9.10");
+        worldRoot.string() + ".staging.9");
     std::filesystem::create_directory(failingStage);
     std::filesystem::create_directory(removableStage);
 
@@ -976,7 +1153,7 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
         savedSettings(), savedDefinition(), context);
 
     const auto unmarkedDirectory = std::filesystem::path(
-        worldRoot.string() + ".staging.7.8");
+        worldRoot.string() + ".staging.7");
     std::filesystem::create_directory(unmarkedDirectory);
     writeText(
         *storage, unmarkedDirectory / "must-survive.txt", "unowned directory");
@@ -988,7 +1165,7 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
         "not a Rigel cleanup marker");
 
     const auto wrongMarkerDirectory = std::filesystem::path(
-        worldRoot.string() + ".staging.9.10");
+        worldRoot.string() + ".staging.9");
     std::filesystem::create_directory(wrongMarkerDirectory);
     writeText(
         *storage,
@@ -1000,7 +1177,7 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
         "marker bound to a different path");
 
     const auto malformedMarkerDirectory = std::filesystem::path(
-        worldRoot.string() + ".staging.11.12");
+        worldRoot.string() + ".staging.11");
     std::filesystem::create_directory(malformedMarkerDirectory);
     writeText(
         *storage,
@@ -1008,14 +1185,14 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
         "not a Rigel staging marker");
 
     const auto regularFile = std::filesystem::path(
-        worldRoot.string() + ".staging.13.14");
+        worldRoot.string() + ".staging.13");
     writeText(*storage, regularFile, "unowned regular file");
 
     const std::vector<std::filesystem::path> noncanonicalDirectories = {
         std::filesystem::path(worldRoot.string() + ".staging.backup"),
-        std::filesystem::path(worldRoot.string() + ".staging.17"),
+        std::filesystem::path(worldRoot.string() + ".staging.64"),
         std::filesystem::path(worldRoot.string() + ".staging.17.18.backup"),
-        std::filesystem::path(worldRoot.string() + ".staging.017.18")};
+        std::filesystem::path(worldRoot.string() + ".staging.017")};
     for (const auto& entry : noncanonicalDirectories) {
         std::filesystem::create_directory(entry);
         writeText(
@@ -1029,7 +1206,7 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
     const auto symlinkTarget = directory.path() / "unowned-symlink-target";
     std::filesystem::create_directory(symlinkTarget);
     const auto directorySymlink = std::filesystem::path(
-        worldRoot.string() + ".staging.15.16");
+        worldRoot.string() + ".staging.15");
     writeText(*storage, symlinkTarget / "must-survive.txt", "symlink target");
     writeText(
         *storage,
@@ -1039,7 +1216,7 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
         symlinkTarget, directorySymlink);
 
     const auto markerSymlinkDirectory = std::filesystem::path(
-        worldRoot.string() + ".staging.19.20");
+        worldRoot.string() + ".staging.19");
     std::filesystem::create_directory(markerSymlinkDirectory);
     const auto externalMarker = directory.path() / "external-marker";
     writeText(
@@ -1114,7 +1291,7 @@ TEST_CASE(WorldSettings_recovery_waits_for_live_publication) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_recovery_publish_race";
     const auto unrelated = std::filesystem::path(
-        worldRoot.string() + ".staging.7.8");
+        worldRoot.string() + ".staging.7");
     std::filesystem::create_directory(unrelated);
 
     auto publisherStorage =
@@ -1175,7 +1352,7 @@ TEST_CASE(WorldSettings_recovery_waits_for_live_publication) {
         std::string("unrelated data"));
 }
 
-TEST_CASE(WorldSettings_waiting_publisher_recovers_after_empty_prescan) {
+TEST_CASE(WorldSettings_waiting_publisher_skips_ambiguous_failed_reservation) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot =
         directory.path() / "world_empty_prescan_publish_race";
@@ -1222,11 +1399,16 @@ TEST_CASE(WorldSettings_waiting_publisher_recovers_after_empty_prescan) {
     if (waitingPublicationFailure) {
         std::rethrow_exception(waitingPublicationFailure);
     }
-    CHECK(waitingStorage->cleanupCompleteBeforeReservation);
+    CHECK(!waitingStorage->cleanupCompleteBeforeReservation);
     CHECK_EQ(
         Persistence::inspectSavedWorldGeneration(waitingContext),
         Persistence::SavedWorldGenerationPresence::Published);
-    CHECK(stagingRoots(worldRoot).empty());
+    CHECK_EQ(stagingDirectories(worldRoot).size(), static_cast<size_t>(1));
+    CHECK(std::filesystem::is_directory(coordination.abandonedStage));
+    CHECK(!std::filesystem::exists(
+        coordination.abandonedStage / kStagingOwnershipFilename));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(coordination.abandonedStage)));
 }
 
 TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {

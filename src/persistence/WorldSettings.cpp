@@ -8,9 +8,7 @@
 #include <ryml_std.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
@@ -31,7 +29,7 @@ constexpr std::string_view kStagingOwnershipFilename =
 constexpr std::string_view kCleanupOwnershipSuffix = ".rigel-cleanup";
 constexpr size_t kMaxWorldSettingsBytes = 16 * 1024;
 constexpr size_t kMaxGeneratorSnapshotBytes = 4 * 1024 * 1024;
-constexpr size_t kMaxStagingReservationAttempts = 64;
+constexpr size_t kWorldGenerationStagingSlotCount = 64;
 
 std::filesystem::path worldRootPath(const PersistenceContext& context) {
     if (context.rootPath.empty()) {
@@ -296,15 +294,15 @@ void writeDocument(StorageBackend& storage,
 void removeEntryIfPresent(StorageBackend& storage, const std::string& path) {
     if (storage.entryKind(path) != StorageEntryKind::Missing) {
         storage.remove(path);
+        if (storage.entryKind(path) != StorageEntryKind::Missing) {
+            throw std::runtime_error(
+                "Storage backend did not remove entry: " + path);
+        }
     }
 }
 
-std::string stagingRoot(const PersistenceContext& context) {
-    static std::atomic<uint64_t> nextId{0};
-    const auto timestamp =
-        std::chrono::steady_clock::now().time_since_epoch().count();
-    return context.rootPath + ".staging." + std::to_string(timestamp) + "." +
-        std::to_string(nextId.fetch_add(1, std::memory_order_relaxed));
+std::string stagingRoot(const PersistenceContext& context, size_t slot) {
+    return context.rootPath + ".staging." + std::to_string(slot);
 }
 
 std::string normalizedPathIdentity(const std::filesystem::path& path) {
@@ -348,16 +346,6 @@ std::string cleanupOwnershipMarker(
     return marker;
 }
 
-template <typename Integer>
-bool isCanonicalDecimal(std::string_view text) {
-    Integer value = 0;
-    const auto parsed =
-        std::from_chars(text.data(), text.data() + text.size(), value);
-    return parsed.ec == std::errc{} &&
-        parsed.ptr == text.data() + text.size() &&
-        std::to_string(value) == text;
-}
-
 bool isWorldGenerationStagingName(std::string_view worldName,
                                   std::string_view entryName) {
     const std::string stagingPrefix =
@@ -367,16 +355,13 @@ bool isWorldGenerationStagingName(std::string_view worldName,
     }
 
     const std::string_view suffix = entryName.substr(stagingPrefix.size());
-    const size_t separator = suffix.find('.');
-    if (separator == std::string_view::npos ||
-        suffix.find('.', separator + 1) != std::string_view::npos) {
-        return false;
-    }
-
-    using StagingTimestamp = decltype(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-    return isCanonicalDecimal<StagingTimestamp>(suffix.substr(0, separator)) &&
-        isCanonicalDecimal<uint64_t>(suffix.substr(separator + 1));
+    size_t slot = 0;
+    const auto parsed =
+        std::from_chars(suffix.data(), suffix.data() + suffix.size(), slot);
+    return parsed.ec == std::errc{} &&
+        parsed.ptr == suffix.data() + suffix.size() &&
+        std::to_string(slot) == suffix &&
+        slot < kWorldGenerationStagingSlotCount;
 }
 
 bool stagingNameFromCleanupName(std::string_view worldName,
@@ -474,6 +459,25 @@ void ensureCleanupOwnershipMarker(
     }
 }
 
+bool reserveCleanupOwnershipMarker(
+    StorageBackend& storage,
+    const std::filesystem::path& worldRoot,
+    const PersistenceContext& stagedContext) {
+    const std::filesystem::path stagedRoot(stagedContext.rootPath);
+    const std::filesystem::path markerPath =
+        cleanupOwnershipPath(stagedRoot);
+    const std::string marker = cleanupOwnershipMarker(worldRoot, stagedRoot);
+    if (!storage.createFileExclusive(markerPath.string(), marker)) {
+        return false;
+    }
+    if (!hasExactRegularFile(storage, markerPath, marker)) {
+        throw std::runtime_error(
+            "Cannot reserve staged-world cleanup ownership because the marker was not committed: " +
+            markerPath.string());
+    }
+    return true;
+}
+
 void removeCleanupOwnershipMarker(
     StorageBackend& storage,
     const std::filesystem::path& worldRoot,
@@ -490,17 +494,9 @@ void removeCleanupOwnershipMarker(
     removeEntryIfPresent(storage, cleanupPath.string());
 }
 
-void removeStagingWorld(StorageBackend& storage,
-                        const std::filesystem::path& worldRoot,
-                        const PersistenceContext& stagedContext,
-                        bool ownsReservation = false) {
-    if (!ownsReservation &&
-        !hasValidStagingOwnershipMarker(storage, worldRoot, stagedContext) &&
-        !hasValidCleanupOwnershipMarker(storage, worldRoot, stagedContext)) {
-        return;
-    }
-    ensureCleanupOwnershipMarker(storage, worldRoot, stagedContext);
-
+void removeStagingDirectory(
+    StorageBackend& storage,
+    const PersistenceContext& stagedContext) {
     std::exception_ptr firstFailure;
     std::vector<std::string> entries;
     const std::filesystem::path stagedRoot(stagedContext.rootPath);
@@ -518,6 +514,18 @@ void removeStagingWorld(StorageBackend& storage,
             stagedContext.rootPath));
     }
 
+    std::stable_sort(
+        entries.begin(),
+        entries.end(),
+        [](const std::string& lhs, const std::string& rhs) {
+            const bool lhsIsMarker =
+                std::filesystem::path(lhs).filename() ==
+                kStagingOwnershipFilename;
+            const bool rhsIsMarker =
+                std::filesystem::path(rhs).filename() ==
+                kStagingOwnershipFilename;
+            return lhsIsMarker < rhsIsMarker;
+        });
     for (const std::string& path : entries) {
         try {
             const std::filesystem::path entry(path);
@@ -540,6 +548,12 @@ void removeStagingWorld(StorageBackend& storage,
             storage.entryKind(stagedContext.rootPath);
         if (currentKind == StorageEntryKind::Directory) {
             storage.remove(stagedContext.rootPath);
+            if (storage.entryKind(stagedContext.rootPath) !=
+                StorageEntryKind::Missing) {
+                throw std::runtime_error(
+                    "Storage backend did not remove staged world directory: " +
+                    stagedContext.rootPath);
+            }
         } else if (currentKind != StorageEntryKind::Missing) {
             throw std::runtime_error(
                 "Refusing to remove a staged world path that is no longer a directory: " +
@@ -553,6 +567,54 @@ void removeStagingWorld(StorageBackend& storage,
     if (firstFailure) {
         std::rethrow_exception(firstFailure);
     }
+}
+
+void removeCurrentStagingReservation(
+    StorageBackend& storage,
+    const PersistenceContext& stagedContext) {
+    removeStagingDirectory(storage, stagedContext);
+}
+
+void removeStagingWorld(StorageBackend& storage,
+                        const std::filesystem::path& worldRoot,
+                        const PersistenceContext& stagedContext) {
+    const StorageEntryKind stagedKind =
+        storage.entryKind(stagedContext.rootPath);
+    const bool hasStagingOwnership = hasValidStagingOwnershipMarker(
+        storage, worldRoot, stagedContext);
+    const bool hasCleanupOwnership = hasValidCleanupOwnershipMarker(
+        storage, worldRoot, stagedContext);
+
+    if (stagedKind == StorageEntryKind::Missing) {
+        if (hasCleanupOwnership) {
+            removeCleanupOwnershipMarker(
+                storage, worldRoot, stagedContext);
+        }
+        return;
+    }
+    if (stagedKind != StorageEntryKind::Directory) {
+        if (hasStagingOwnership || hasCleanupOwnership) {
+            throw std::runtime_error(
+                "Refusing to clean a staged world path that is not a directory: " +
+                stagedContext.rootPath);
+        }
+        return;
+    }
+    if (!hasStagingOwnership && !hasCleanupOwnership) {
+        return;
+    }
+
+    if (hasStagingOwnership) {
+        ensureCleanupOwnershipMarker(storage, worldRoot, stagedContext);
+    } else if (storage.entryKind(worldRoot.string()) !=
+               StorageEntryKind::Missing) {
+        // A successful rename frees the bounded slot before its external
+        // tombstone can be removed. If that slot has since been reused, the
+        // old tombstone alone must not authorize deletion of the new entry.
+        return;
+    }
+
+    removeStagingDirectory(storage, stagedContext);
 
     removeCleanupOwnershipMarker(
         storage, worldRoot, stagedContext);
@@ -724,22 +786,95 @@ void publishNewWorldGeneration(const WorldSettings& settings,
 
     PersistenceContext stagedContext = context;
     bool reserved = false;
-    for (size_t attempt = 0;
-         attempt < kMaxStagingReservationAttempts;
-         ++attempt) {
-        stagedContext.rootPath = stagingRoot(context);
-        const std::filesystem::path stagedRoot(stagedContext.rootPath);
-        const std::filesystem::path cleanupPath =
-            cleanupOwnershipPath(stagedRoot);
-        const std::string cleanupMarker =
-            cleanupOwnershipMarker(worldRoot, stagedRoot);
-        if (!storage.createFileExclusive(
-                cleanupPath.string(), cleanupMarker)) {
+    for (size_t slot = 0;
+         slot < kWorldGenerationStagingSlotCount;
+         ++slot) {
+        stagedContext.rootPath = stagingRoot(context, slot);
+        if (storage.entryKind(stagedContext.rootPath) !=
+            StorageEntryKind::Missing) {
             continue;
         }
-        if (!storage.createDirectoryExclusive(stagedContext.rootPath)) {
-            removeCleanupOwnershipMarker(
+
+        bool directoryCreated = false;
+        try {
+            directoryCreated =
+                storage.createDirectoryExclusive(stagedContext.rootPath);
+        } catch (...) {
+            const std::exception_ptr reservationFailure =
+                std::current_exception();
+            try {
+                if (storage.entryKind(stagedContext.rootPath) ==
+                    StorageEntryKind::Directory) {
+                    removeCurrentStagingReservation(
+                        storage, stagedContext);
+                }
+            } catch (const std::exception& rollbackFailure) {
+                throw std::runtime_error(
+                    "Staging reservation failed and rollback could not "
+                    "remove the newly reserved directory: " +
+                    std::string(rollbackFailure.what()));
+            }
+            std::rethrow_exception(reservationFailure);
+        }
+        if (!directoryCreated) {
+            continue;
+        }
+
+        try {
+            writeDocument(
+                storage,
+                childPath(stagedContext, kStagingOwnershipFilename),
+                stagingOwnershipMarker(
+                    worldRoot,
+                    std::filesystem::path(stagedContext.rootPath)));
+            if (!hasValidStagingOwnershipMarker(
+                    storage, worldRoot, stagedContext)) {
+                throw std::runtime_error(
+                    "Staging ownership marker was not committed: " +
+                    stagedContext.rootPath);
+            }
+        } catch (...) {
+            const std::exception_ptr markerFailure =
+                std::current_exception();
+            try {
+                removeCurrentStagingReservation(
+                    storage, stagedContext);
+            } catch (const std::exception& rollbackFailure) {
+                throw std::runtime_error(
+                    "Staging ownership commit failed and rollback could not "
+                    "remove the newly reserved directory: " +
+                    std::string(rollbackFailure.what()));
+            }
+            std::rethrow_exception(markerFailure);
+        }
+
+        bool cleanupReserved = false;
+        try {
+            cleanupReserved = reserveCleanupOwnershipMarker(
                 storage, worldRoot, stagedContext);
+        } catch (...) {
+            const std::exception_ptr cleanupReservationFailure =
+                std::current_exception();
+            try {
+                removeStagingWorld(storage, worldRoot, stagedContext);
+            } catch (const std::exception& rollbackFailure) {
+                throw std::runtime_error(
+                    "Cleanup ownership reservation failed and rollback could "
+                    "not remove the staged save: " +
+                    std::string(rollbackFailure.what()));
+            }
+            std::rethrow_exception(cleanupReservationFailure);
+        }
+        if (!cleanupReserved) {
+            try {
+                removeCurrentStagingReservation(
+                    storage, stagedContext);
+            } catch (const std::exception& rollbackFailure) {
+                throw std::runtime_error(
+                    "Cleanup ownership path is occupied and rollback could "
+                    "not remove the staged save: " +
+                    std::string(rollbackFailure.what()));
+            }
             continue;
         }
         reserved = true;
@@ -747,19 +882,14 @@ void publishNewWorldGeneration(const WorldSettings& settings,
     }
     if (!reserved) {
         throw std::runtime_error(
-            "Cannot create world because no unique staging directory could be reserved: " +
+            "Cannot create world because all 64 bounded staging slots are "
+            "occupied; inspect and remove only verified unowned remnants for: " +
             context.rootPath);
     }
 
     bool publicationAttempted = false;
     bool publicationCompleted = false;
     try {
-        writeDocument(
-            storage,
-            childPath(stagedContext, kStagingOwnershipFilename),
-            stagingOwnershipMarker(
-                worldRoot,
-                std::filesystem::path(stagedContext.rootPath)));
         writeDocument(
             storage,
             childPath(stagedContext, kGeneratorSnapshotFilename),
@@ -788,8 +918,7 @@ void publishNewWorldGeneration(const WorldSettings& settings,
                 removeStagingWorld(
                     storage,
                     worldRoot,
-                    stagedContext,
-                    !publicationAttempted);
+                    stagedContext);
             }
         } catch (const std::exception& rollbackFailure) {
             throw std::runtime_error(

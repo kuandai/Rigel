@@ -29,6 +29,7 @@ constexpr std::string_view kStagingOwnershipFilename =
     ".rigel-world-generation-stage";
 constexpr size_t kMaxWorldSettingsBytes = 16 * 1024;
 constexpr size_t kMaxGeneratorSnapshotBytes = 4 * 1024 * 1024;
+constexpr size_t kMaxStagingReservationAttempts = 64;
 
 std::filesystem::path worldRootPath(const PersistenceContext& context) {
     if (context.rootPath.empty()) {
@@ -391,7 +392,13 @@ bool hasValidStagingOwnershipMarker(
 }
 
 void removeStagingWorld(StorageBackend& storage,
+                        const std::filesystem::path& worldRoot,
                         const PersistenceContext& stagedContext) {
+    if (!hasValidStagingOwnershipMarker(
+            storage, worldRoot, stagedContext)) {
+        return;
+    }
+
     std::exception_ptr firstFailure;
     std::vector<std::string> entries;
     try {
@@ -461,12 +468,8 @@ void recoverAbandonedWorldGenerationStaging(
 
         PersistenceContext stagedContext = context;
         stagedContext.rootPath = entry;
-        if (!hasValidStagingOwnershipMarker(
-                storage, worldRoot, stagedContext)) {
-            continue;
-        }
         try {
-            removeStagingWorld(storage, stagedContext);
+            removeStagingWorld(storage, worldRoot, stagedContext);
         } catch (...) {
             if (!firstFailure) {
                 firstFailure = std::current_exception();
@@ -509,14 +512,30 @@ void publishNewWorldGeneration(const WorldSettings& settings,
             context.rootPath);
     }
 
+    const std::filesystem::path worldRoot = worldRootPath(context);
     PersistenceContext stagedContext = context;
-    stagedContext.rootPath = stagingRoot(context);
+    bool reserved = false;
+    for (size_t attempt = 0;
+         attempt < kMaxStagingReservationAttempts;
+         ++attempt) {
+        stagedContext.rootPath = stagingRoot(context);
+        if (storage.createDirectoryExclusive(stagedContext.rootPath)) {
+            reserved = true;
+            break;
+        }
+    }
+    if (!reserved) {
+        throw std::runtime_error(
+            "Cannot create world because no unique staging directory could be reserved: " +
+            context.rootPath);
+    }
+
     try {
         writeDocument(
             storage,
             childPath(stagedContext, kStagingOwnershipFilename),
             stagingOwnershipMarker(
-                worldRootPath(context),
+                worldRoot,
                 std::filesystem::path(stagedContext.rootPath)));
         writeDocument(
             storage,
@@ -530,7 +549,7 @@ void publishNewWorldGeneration(const WorldSettings& settings,
     } catch (...) {
         const std::exception_ptr publicationFailure = std::current_exception();
         try {
-            removeStagingWorld(storage, stagedContext);
+            removeStagingWorld(storage, worldRoot, stagedContext);
         } catch (const std::exception& rollbackFailure) {
             throw std::runtime_error(
                 "World creation failed and rollback could not remove the staged save: " +

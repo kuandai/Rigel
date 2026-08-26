@@ -503,6 +503,30 @@ void FilesystemBackend::mkdirs(const std::string& path) {
     prepareDirectories(std::filesystem::path(path));
 }
 
+bool StorageBackend::createDirectoryExclusive(const std::string&) {
+    throw std::runtime_error(
+        "Storage backend does not support exclusive directory creation");
+}
+
+bool FilesystemBackend::createDirectoryExclusive(const std::string& path) {
+    const std::filesystem::path directory(path);
+    prepareDirectories(directory.parent_path());
+
+    std::error_code error;
+    const bool created = std::filesystem::create_directory(directory, error);
+    if (!created) {
+        if (!error || error == std::errc::file_exists) {
+            return false;
+        }
+        throw std::system_error(
+            error,
+            "Failed to exclusively create directory: " + directory.string());
+    }
+
+    synchronizeDirectory(detail::containingDirectory(directory));
+    return true;
+}
+
 void FilesystemBackend::remove(const std::string& path) {
     detail::removeFileDurably(
         std::filesystem::path(path),

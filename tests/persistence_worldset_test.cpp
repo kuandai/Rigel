@@ -69,3 +69,8 @@ TEST_CASE(WorldSet_PersistenceContextIncludesProviders) {
     ctx = worldSet.persistenceContext(world.id());
     CHECK_EQ(ctx.preferredFormat, std::string("cr"));
 }
+
+TEST_CASE(StorageBackend_exclusive_directory_creation_defaults_to_rejection) {
+    DummyStorage storage;
+    CHECK_THROWS(storage.createDirectoryExclusive("staging"));
+}

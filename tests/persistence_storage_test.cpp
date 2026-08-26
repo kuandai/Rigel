@@ -213,6 +213,35 @@ TEST_CASE(FilesystemBackend_open_write_creates_absent_nested_hierarchy) {
     CHECK(std::filesystem::is_directory(path.parent_path()));
 }
 
+TEST_CASE(FilesystemBackend_exclusively_creates_only_absent_directories) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto reserved = directory.path() / "parent" / "reserved";
+
+    CHECK(storage.createDirectoryExclusive(reserved.string()));
+    writeRawFile(reserved / "must-survive.bin", {1, 2, 3});
+    CHECK(!storage.createDirectoryExclusive(reserved.string()));
+    CHECK_EQ(
+        readFile(storage, reserved / "must-survive.bin"),
+        (std::vector<uint8_t>{1, 2, 3}));
+
+    const auto occupiedByFile = directory.path() / "occupied-file";
+    writeRawFile(occupiedByFile, {4, 5, 6});
+    CHECK(!storage.createDirectoryExclusive(occupiedByFile.string()));
+    CHECK_EQ(readFile(storage, occupiedByFile),
+             (std::vector<uint8_t>{4, 5, 6}));
+
+#ifndef _WIN32
+    const auto target = directory.path() / "symlink-target";
+    std::filesystem::create_directory(target);
+    const auto occupiedBySymlink = directory.path() / "occupied-symlink";
+    std::filesystem::create_directory_symlink(target, occupiedBySymlink);
+    CHECK(!storage.createDirectoryExclusive(occupiedBySymlink.string()));
+    CHECK(std::filesystem::is_symlink(
+        std::filesystem::symlink_status(occupiedBySymlink)));
+#endif
+}
+
 TEST_CASE(FilesystemBackend_open_write_preserves_missing_parent_traversal) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;

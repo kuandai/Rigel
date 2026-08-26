@@ -81,6 +81,10 @@ public:
                               const StorageEntryVisitor& visitor) = 0;
     virtual std::vector<std::string> list(const std::string& path);
     virtual void mkdirs(const std::string& path) = 0;
+    // Atomically creates the directory only when no entry already occupies
+    // its path. Returns false for a collision. Backends without that
+    // guarantee reject the operation.
+    virtual bool createDirectoryExclusive(const std::string& path);
     virtual void remove(const std::string& path) = 0;
     // Atomically publishes a prepared directory only when the destination does
     // not already exist. Backends without that guarantee reject the operation.
@@ -97,6 +101,7 @@ public:
     void forEachEntry(const std::string& path,
                       const StorageEntryVisitor& visitor) override;
     void mkdirs(const std::string& path) override;
+    bool createDirectoryExclusive(const std::string& path) override;
     void remove(const std::string& path) override;
     void publishDirectory(const std::string& stagedPath,
                           const std::string& finalPath) override;

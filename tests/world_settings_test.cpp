@@ -208,6 +208,73 @@ private:
     size_t m_waiting = 0;
 };
 
+class CollidingReservationStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    enum class CollisionKind {
+        Directory,
+        DirectorySymlink
+    };
+
+    CollidingReservationStorage(
+        CollisionKind collisionKind,
+        std::filesystem::path symlinkTarget = {})
+        : m_collisionKind(collisionKind)
+        , m_symlinkTarget(std::move(symlinkTarget)) {
+    }
+
+    bool createDirectoryExclusive(const std::string& path) override {
+        ++reservationAttempts;
+        if (collisionPath.empty()) {
+            collisionPath = path;
+            std::filesystem::create_directories(
+                collisionPath.parent_path());
+            if (m_collisionKind == CollisionKind::Directory) {
+                std::filesystem::create_directory(collisionPath);
+                writeText(
+                    *this,
+                    collisionPath / "must-survive.txt",
+                    "pre-existing directory");
+            } else {
+                std::filesystem::create_directory(m_symlinkTarget);
+                writeText(
+                    *this,
+                    m_symlinkTarget / "must-survive.txt",
+                    "pre-existing symlink target");
+                std::filesystem::create_directory_symlink(
+                    m_symlinkTarget, collisionPath);
+            }
+        }
+        return Persistence::FilesystemBackend::createDirectoryExclusive(path);
+    }
+
+    size_t reservationAttempts = 0;
+    std::filesystem::path collisionPath;
+
+private:
+    CollisionKind m_collisionKind;
+    std::filesystem::path m_symlinkTarget;
+};
+
+class ReusingPublishedStagingPathStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    void publishDirectory(const std::string& stagedPath,
+                          const std::string& finalPath) override {
+        Persistence::FilesystemBackend::publishDirectory(
+            stagedPath, finalPath);
+        reusedPath = stagedPath;
+        std::filesystem::create_directory(reusedPath);
+        writeText(
+            *this,
+            reusedPath / "must-survive.txt",
+            "unowned post-publish reuse");
+        throw std::runtime_error("injected post-publication failure");
+    }
+
+    std::filesystem::path reusedPath;
+};
+
 } // namespace
 
 TEST_CASE(WorldSettings_close_reload_uses_only_saved_generator_snapshot) {
@@ -275,6 +342,103 @@ TEST_CASE(WorldSettings_publication_commits_marker_before_payload) {
         worldRoot / kStagingOwnershipFilename));
     CHECK(std::filesystem::exists(worldRoot / "generator-definition.yaml"));
     CHECK(std::filesystem::exists(worldRoot / "world-settings.yaml"));
+}
+
+TEST_CASE(WorldSettings_marker_write_failure_cleans_only_committed_ownership) {
+    for (const bool failAfterCommit : {false, true}) {
+        Test::TemporaryDirectory directory("rigel_world_settings");
+        const auto worldRoot = directory.path() /
+            (failAfterCommit ? "marker-after-commit" : "marker-before-commit");
+        auto storage = std::make_shared<ObservingStorage>();
+        storage->failOrdinal = 1;
+        storage->failAfterCommit = failAfterCommit;
+        const auto context = contextFor(worldRoot, storage);
+
+        CHECK_THROWS(Persistence::publishNewWorldGeneration(
+            savedSettings(), savedDefinition(), context));
+        CHECK(!std::filesystem::exists(worldRoot));
+
+        const auto staged = stagingRoots(worldRoot);
+        if (failAfterCommit) {
+            CHECK(staged.empty());
+        } else {
+            CHECK_EQ(staged.size(), static_cast<size_t>(1));
+            CHECK(std::filesystem::is_directory(staged.front()));
+            CHECK(!std::filesystem::exists(
+                staged.front() / kStagingOwnershipFilename));
+        }
+    }
+}
+
+TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_directory) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_directory_collision";
+    auto storage = std::make_shared<CollidingReservationStorage>(
+        CollidingReservationStorage::CollisionKind::Directory);
+    const auto context = contextFor(worldRoot, storage);
+
+    Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context);
+
+    CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(2));
+    CHECK_EQ(
+        readText(*storage, storage->collisionPath / "must-survive.txt"),
+        std::string("pre-existing directory"));
+    CHECK(!std::filesystem::exists(
+        storage->collisionPath / kStagingOwnershipFilename));
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(context),
+        Persistence::SavedWorldGenerationPresence::Published);
+}
+
+TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_symlink) {
+#ifdef _WIN32
+    throw Test::TestSkip(
+        "Directory symlink collision is validated on POSIX platforms");
+#else
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_symlink_collision";
+    const auto symlinkTarget = directory.path() / "external-stage-target";
+    auto storage = std::make_shared<CollidingReservationStorage>(
+        CollidingReservationStorage::CollisionKind::DirectorySymlink,
+        symlinkTarget);
+    const auto context = contextFor(worldRoot, storage);
+
+    Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context);
+
+    CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(2));
+    CHECK(std::filesystem::is_symlink(
+        std::filesystem::symlink_status(storage->collisionPath)));
+    CHECK_EQ(
+        readText(*storage, symlinkTarget / "must-survive.txt"),
+        std::string("pre-existing symlink target"));
+    CHECK(!std::filesystem::exists(
+        symlinkTarget / kStagingOwnershipFilename));
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(context),
+        Persistence::SavedWorldGenerationPresence::Published);
+#endif
+}
+
+TEST_CASE(WorldSettings_post_publish_failure_preserves_reused_staging_path) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_reused_staging_path";
+    auto storage =
+        std::make_shared<ReusingPublishedStagingPathStorage>();
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+
+    CHECK_EQ(
+        readText(*storage, storage->reusedPath / "must-survive.txt"),
+        std::string("unowned post-publish reuse"));
+    CHECK(!std::filesystem::exists(
+        storage->reusedPath / kStagingOwnershipFilename));
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(context),
+        Persistence::SavedWorldGenerationPresence::Published);
 }
 
 TEST_CASE(WorldSettings_snapshot_write_failure_rolls_back_new_world) {

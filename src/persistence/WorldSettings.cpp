@@ -600,19 +600,14 @@ void removeStagingWorld(StorageBackend& storage,
         }
         return;
     }
-    if (!hasStagingOwnership && !hasCleanupOwnership) {
+    if (!hasStagingOwnership) {
+        // The external tombstone records an interrupted cleanup, but the
+        // bounded slot may have been reused after publication. Only the
+        // marker inside the current directory can authorize deleting it.
         return;
     }
 
-    if (hasStagingOwnership) {
-        ensureCleanupOwnershipMarker(storage, worldRoot, stagedContext);
-    } else if (storage.entryKind(worldRoot.string()) !=
-               StorageEntryKind::Missing) {
-        // A successful rename frees the bounded slot before its external
-        // tombstone can be removed. If that slot has since been reused, the
-        // old tombstone alone must not authorize deletion of the new entry.
-        return;
-    }
+    ensureCleanupOwnershipMarker(storage, worldRoot, stagedContext);
 
     removeStagingDirectory(storage, stagedContext);
 

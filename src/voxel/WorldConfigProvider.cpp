@@ -27,19 +27,22 @@ bool validGeneratorSourceId(std::string_view id) {
     return true;
 }
 
-std::optional<GeneratorDefinitionSource> readGeneratorSource(
+struct CreationLayer {
+    std::optional<GeneratorDefinitionSource> generatorSource;
+    bool changesDefinition = false;
+};
+
+bool isGeneratorDefinitionField(std::string_view field) {
+    return field == "solid_block" || field == "surface_block" ||
+        field == "water_block" || field == "shore_block" ||
+        field == "world" || field == "terrain" || field == "climate" ||
+        field == "biomes" || field == "density_graph" || field == "caves" ||
+        field == "structures" || field == "generation";
+}
+
+GeneratorDefinitionSource parseGeneratorSource(
     const char* sourceName,
-    const std::string& yaml) {
-    if (yaml.empty()) {
-        return std::nullopt;
-    }
-    const ryml::Tree tree = ryml::parse_in_arena(
-        ryml::to_csubstr(sourceName), ryml::to_csubstr(yaml));
-    const ryml::ConstNodeRef root = tree.rootref();
-    if (!root.has_child("generator")) {
-        return std::nullopt;
-    }
-    const ryml::ConstNodeRef generator = root["generator"];
+    ryml::ConstNodeRef generator) {
     if (!generator.is_map()) {
         throw std::invalid_argument(
             "Generator definition source in '" + std::string(sourceName) +
@@ -90,6 +93,44 @@ std::optional<GeneratorDefinitionSource> readGeneratorSource(
     return result;
 }
 
+CreationLayer inspectCreationLayer(const char* sourceName,
+                                   const std::string& yaml) {
+    CreationLayer result;
+    if (yaml.empty()) {
+        return result;
+    }
+    const ryml::Tree tree = ryml::parse_in_arena(
+        ryml::to_csubstr(sourceName), ryml::to_csubstr(yaml));
+    const ryml::ConstNodeRef root = tree.rootref();
+    if (!root.is_map()) {
+        return result;
+    }
+    for (const ryml::ConstNodeRef field : root.children()) {
+        result.changesDefinition = result.changesDefinition ||
+            isGeneratorDefinitionField(Util::toStdString(field.key()));
+    }
+    if (root.has_child("generator")) {
+        result.generatorSource =
+            parseGeneratorSource(sourceName, root["generator"]);
+    }
+    return result;
+}
+
+void validateSourceIdentityCoupling(const char* sourceName,
+                                    const CreationLayer& source,
+                                    bool changesDefinition) {
+    if (changesDefinition && !source.generatorSource) {
+        throw std::invalid_argument(
+            "Generator definition fields in '" + std::string(sourceName) +
+            "' require a generator source ID and revision in the same source");
+    }
+    if (!changesDefinition && source.generatorSource) {
+        throw std::invalid_argument(
+            "Generator source identity in '" + std::string(sourceName) +
+            "' requires generator definition fields in the same source");
+    }
+}
+
 void validateResolvedGeneratorSource(
     const GeneratorDefinitionSource& source) {
     if (!validGeneratorSourceId(source.id) || source.revision == 0) {
@@ -112,6 +153,7 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
         WorldConfiguration& target,
         const Config::IConfigSource& source,
         std::vector<WorldGenConfig::OverlayConfig> pending) {
+        bool changesDefinition = false;
         std::unordered_set<std::string> appliedPaths;
         size_t overlayIndex = 0;
         while (overlayIndex < pending.size()) {
@@ -132,10 +174,16 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
                     "' declared by '" + source.name() + "'");
             }
 
-            if (auto generatorSource = readGeneratorSource(
-                    overlayData->name.c_str(), overlayData->content)) {
-                target.generatorSource = std::move(*generatorSource);
+            const CreationLayer overlayLayer = inspectCreationLayer(
+                overlayData->name.c_str(), overlayData->content);
+            if (overlayLayer.generatorSource) {
+                throw std::invalid_argument(
+                    "Generator source identity must be declared by '" +
+                    source.name() + "', not by overlay '" +
+                    overlayData->name + "'");
             }
+            changesDefinition =
+                changesDefinition || overlayLayer.changesDefinition;
             auto nestedOverlays =
                 target.generation.applyCreationYamlWithOverlays(
                 overlayData->name.c_str(),
@@ -149,6 +197,7 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
                 std::make_move_iterator(nestedOverlays.end())
             );
         }
+        return changesDefinition;
     };
 
     for (const auto& source : m_sources) {
@@ -156,15 +205,20 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
         if (!yaml) {
             continue;
         }
+        const CreationLayer sourceLayer =
+            inspectCreationLayer(source->name().c_str(), *yaml);
         WorldConfiguration candidate = config;
-        if (auto generatorSource = readGeneratorSource(
-                source->name().c_str(), *yaml)) {
-            candidate.generatorSource = std::move(*generatorSource);
-        }
         auto overlays = candidate.generation.applyCreationYamlWithOverlays(
             source->name().c_str(), *yaml);
         candidate.streaming.applyYaml(source->name().c_str(), *yaml);
-        applyOverlays(candidate, *source, std::move(overlays));
+        const bool overlayChangesDefinition =
+            applyOverlays(candidate, *source, std::move(overlays));
+        validateSourceIdentityCoupling(
+            source->name().c_str(), sourceLayer,
+            sourceLayer.changesDefinition || overlayChangesDefinition);
+        if (sourceLayer.generatorSource) {
+            candidate.generatorSource = *sourceLayer.generatorSource;
+        }
         config = std::move(candidate);
     }
 

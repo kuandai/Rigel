@@ -183,6 +183,11 @@ supported schema/semantics versions.
 source and its overlays are applied to both typed configurations before loading
 moves to the next source. The highest-precedence complete `generator` identity
 records the selected definition's namespaced ID and positive source revision.
+Every source that changes definition fields, directly or through an applied
+overlay, declares that identity at its root. Identity-only sources and
+definition-changing sources without identity are rejected; seed- and
+streaming-only sources may retain the selected definition's identity. Overlays
+cannot replace provenance independently from their declaring source.
 Existing worlds apply only streaming fields from base sources and available
 overlays; their saved generator snapshot remains the sole generation input.
 
@@ -228,9 +233,11 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `flags` | map | - | Boolean flags for overlays. |
 | `overlays[]` | list | - | Overlay definitions. |
 
-Creation sources are strict for generator fields. Unknown keys, duplicate
-fixed fields, legacy `world.version`, and fields that do not apply to a density
-node's declared type reject creation before any save path is published.
+Creation sources are strict for generator fields. Unknown keys, wrong
+collection shapes, missing or duplicate node identities, duplicate fixed
+fields, unused output semantics, legacy `world.version`, and fields that do not
+apply to a density node's declared type reject creation before any save path is
+published.
 
 Noise objects (`terrain.noise`, `terrain.density_noise`, `climate.*.*`) use:
 

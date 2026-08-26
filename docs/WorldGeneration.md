@@ -358,9 +358,12 @@ New-world generator creation input is loaded from:
 
 The selected creation input declares `generator.id` and
 `generator.source_revision` separately from runtime definition data. Unknown,
-duplicate, and density-node-type-inapplicable generator fields are rejected;
-the evaluator semantics version is engine-owned and is not read from
-`world.version`.
+duplicate, malformed, missing-identity, unused-output, and
+density-node-type-inapplicable generator fields are rejected. Generator fields
+and provenance are selected as one source: overlays inherit their declaring
+source's identity, while seed- and streaming-only sources may retain the
+already-selected identity. The evaluator semantics version is engine-owned and
+is not read from `world.version`.
 
 The resolved graph definition is validated and canonically stored as
 `saves/world_<worldId>/generator-definition.yaml`; actual seed and generator

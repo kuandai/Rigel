@@ -46,7 +46,10 @@ void validateKeys(ryml::ConstNodeRef node,
         return;
     }
     if (!node.readable() || !node.is_map()) {
-        return;
+        throw std::invalid_argument(
+            "Generator definition field '" +
+            std::string(path.empty() ? "document" : path) + "' in '" +
+            sourceName + "' must be a mapping");
     }
     std::unordered_set<std::string> encountered;
     for (const ryml::ConstNodeRef child : node.children()) {
@@ -67,6 +70,54 @@ void validateKeys(ryml::ConstNodeRef node,
             "Unknown generator definition field '" + fullPath +
             "' in '" + sourceName + "'");
     }
+}
+
+void validateDynamicMap(ryml::ConstNodeRef node,
+                        const char* sourceName,
+                        std::string_view path,
+                        bool strict) {
+    if (!strict) {
+        return;
+    }
+    if (!node.readable() || !node.is_map()) {
+        throw std::invalid_argument(
+            "Generator definition field '" + std::string(path) + "' in '" +
+            sourceName + "' must be a mapping");
+    }
+    std::unordered_set<std::string> encountered;
+    for (const ryml::ConstNodeRef child : node.children()) {
+        const std::string key = Util::toStdString(child.key());
+        if (!encountered.insert(key).second) {
+            throw std::invalid_argument(
+                "Duplicate generator definition field '" +
+                std::string(path) + "." + key + "' in '" + sourceName +
+                "'");
+        }
+    }
+}
+
+void requireSequence(ryml::ConstNodeRef node,
+                     const char* sourceName,
+                     std::string_view path,
+                     bool strict) {
+    if (strict && (!node.readable() || !node.is_seq())) {
+        throw std::invalid_argument(
+            "Generator definition field '" + std::string(path) + "' in '" +
+            sourceName + "' must be a sequence");
+    }
+}
+
+std::string requireNonEmptyString(ryml::ConstNodeRef node,
+                                  const char* key,
+                                  const char* sourceName,
+                                  std::string_view path) {
+    const std::string value = Util::readString(node, key, "");
+    if (value.empty()) {
+        throw std::invalid_argument(
+            "Generator definition field '" + std::string(path) + "." + key +
+            "' in '" + sourceName + "' must be a non-empty string");
+    }
+    return value;
 }
 
 std::vector<WorldGenConfig::OverlayConfig> applyOverlayRouting(
@@ -106,7 +157,10 @@ std::vector<WorldGenConfig::OverlayConfig> applyOverlayRouting(
 void validateGenerationStages(ryml::ConstNodeRef stages,
                               const char* sourceName,
                               bool strict) {
-    if (!stages.readable() || !stages.is_map()) {
+    if (strict) {
+        validateDynamicMap(
+            stages, sourceName, "generation.stages", true);
+    } else if (!stages.readable() || !stages.is_map()) {
         return;
     }
 
@@ -218,18 +272,44 @@ void validateDensityNodeKeys(ryml::ConstNodeRef node,
             true);
     }
 
+    if (strict) {
+        static_cast<void>(requireNonEmptyString(
+            node, "id", sourceName, "density_graph.nodes"));
+        static_cast<void>(requireNonEmptyString(
+            node, "type", sourceName, "density_graph.nodes"));
+    }
+
+    if (node.has_child("inputs")) {
+        requireSequence(
+            node["inputs"], sourceName, "density_graph.nodes.inputs",
+            strict);
+    }
+
     if (node.has_child("noise")) {
         validateNoiseKeys(
             node["noise"], sourceName, "density_graph.nodes.noise", strict);
     }
     if (node.has_child("spline")) {
+        requireSequence(
+            node["spline"], sourceName, "density_graph.nodes.spline",
+            strict);
         for (const ryml::ConstNodeRef point : node["spline"].children()) {
-            validateKeys(
-                point,
-                sourceName,
-                "density_graph.nodes.spline",
-                {"x", "y"},
-                strict);
+            if (point.is_seq()) {
+                if (strict && point.num_children() != 2) {
+                    throw std::invalid_argument(
+                        "Generator definition field "
+                        "'density_graph.nodes.spline' in '" +
+                        std::string(sourceName) +
+                        "' requires two-value points");
+                }
+            } else {
+                validateKeys(
+                    point,
+                    sourceName,
+                    "density_graph.nodes.spline",
+                    {"x", "y"},
+                    strict);
+            }
         }
     }
 }
@@ -249,6 +329,10 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root,
         },
         strict
     );
+
+    if (root.has_child("flags")) {
+        validateDynamicMap(root["flags"], sourceName, "flags", strict);
+    }
 
     if (root.has_child("world")) {
         if (strict) {
@@ -326,6 +410,8 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root,
             );
         }
         if (biomes.has_child("entries")) {
+            requireSequence(
+                biomes["entries"], sourceName, "biomes.entries", strict);
             for (ryml::ConstNodeRef entry : biomes["entries"].children()) {
                 validateKeys(
                     entry,
@@ -334,6 +420,10 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root,
                     {"name", "target", "weight", "surface"},
                     strict
                 );
+                if (strict) {
+                    static_cast<void>(requireNonEmptyString(
+                        entry, "name", sourceName, "biomes.entries"));
+                }
                 if (entry.has_child("target")) {
                     validateKeys(
                         entry["target"],
@@ -344,6 +434,9 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root,
                     );
                 }
                 if (entry.has_child("surface")) {
+                    requireSequence(
+                        entry["surface"], sourceName,
+                        "biomes.entries.surface", strict);
                     for (ryml::ConstNodeRef layer : entry["surface"].children()) {
                         validateKeys(
                             layer,
@@ -352,6 +445,11 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root,
                             {"block", "depth"},
                             strict
                         );
+                        if (strict) {
+                            static_cast<void>(requireNonEmptyString(
+                                layer, "block", sourceName,
+                                "biomes.entries.surface"));
+                        }
                     }
                 }
             }
@@ -363,9 +461,42 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root,
         validateKeys(
             graph, sourceName, "density_graph", {"outputs", "nodes"},
             strict);
+        if (graph.has_child("outputs")) {
+            const ryml::ConstNodeRef outputs = graph["outputs"];
+            validateDynamicMap(
+                outputs, sourceName, "density_graph.outputs", strict);
+            if (strict) {
+                for (const ryml::ConstNodeRef output : outputs.children()) {
+                    const std::string semantic =
+                        Util::toStdString(output.key());
+                    std::string node;
+                    if (output.has_val()) {
+                        output >> node;
+                    }
+                    if (semantic.empty() || node.empty()) {
+                        throw std::invalid_argument(
+                            "Generator definition outputs in '" +
+                            std::string(sourceName) +
+                            "' require non-empty semantics and node IDs");
+                    }
+                }
+            }
+        }
         if (graph.has_child("nodes")) {
+            requireSequence(
+                graph["nodes"], sourceName, "density_graph.nodes", strict);
+            std::unordered_set<std::string> nodeIds;
             for (ryml::ConstNodeRef node : graph["nodes"].children()) {
                 validateDensityNodeKeys(node, sourceName, strict);
+                if (strict) {
+                    const std::string id =
+                        Util::readString(node, "id", "");
+                    if (!nodeIds.insert(id).second) {
+                        throw std::invalid_argument(
+                            "Duplicate generator definition density node ID '" +
+                            id + "' in '" + sourceName + "'");
+                    }
+                }
             }
         }
     }
@@ -385,6 +516,9 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root,
         validateKeys(
             structures, sourceName, "structures", {"features"}, strict);
         if (structures.has_child("features")) {
+            requireSequence(
+                structures["features"], sourceName, "structures.features",
+                strict);
             for (ryml::ConstNodeRef feature : structures["features"].children()) {
                 validateKeys(
                     feature,
@@ -393,6 +527,19 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root,
                     {"name", "block", "chance", "min_height", "max_height", "biomes"},
                     strict
                 );
+                if (strict) {
+                    static_cast<void>(requireNonEmptyString(
+                        feature, "name", sourceName,
+                        "structures.features"));
+                    static_cast<void>(requireNonEmptyString(
+                        feature, "block", sourceName,
+                        "structures.features"));
+                }
+                if (feature.has_child("biomes")) {
+                    requireSequence(
+                        feature["biomes"], sourceName,
+                        "structures.features.biomes", strict);
+                }
             }
         }
     }
@@ -408,9 +555,15 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root,
     }
 
     if (root.has_child("overlays")) {
+        requireSequence(
+            root["overlays"], sourceName, "overlays", strict);
         for (ryml::ConstNodeRef overlay : root["overlays"].children()) {
             validateKeys(
                 overlay, sourceName, "overlays", {"path", "when"}, strict);
+            if (strict) {
+                static_cast<void>(requireNonEmptyString(
+                    overlay, "path", sourceName, "overlays"));
+            }
         }
     }
 }

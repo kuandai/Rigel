@@ -37,7 +37,6 @@ WorldGenConfig snapshotDefinition() {
     dead.type = "constant";
     dead.value = -100.0f;
     definition.densityGraph.nodes.push_back(std::move(dead));
-    definition.densityGraph.outputs["unused_semantic"] = "dead_authoring_node";
     definition.stageEnabled["caves"] = false;
     definition.stageEnabled["structures"] = false;
     return definition;
@@ -56,7 +55,6 @@ TEST_CASE(GeneratorSnapshot_round_trips_normalized_runtime_definition) {
     CHECK(snapshot.find("overlays:") == std::string::npos);
     CHECK(snapshot.find("\nstructures:\n") == std::string::npos);
     CHECK(snapshot.find("dead_authoring_node") == std::string::npos);
-    CHECK(snapshot.find("unused_semantic") == std::string::npos);
 
     const WorldGenConfig loaded = parseGeneratorSnapshot(
         snapshot,
@@ -108,6 +106,11 @@ TEST_CASE(GeneratorSnapshot_rejects_dangling_graph_and_content_references) {
     danglingBiome.biomes.coastBand.enabled = true;
     danglingBiome.biomes.coastBand.biome = "missing";
     CHECK_THROWS(serializeGeneratorSnapshot(danglingBiome));
+
+    WorldGenConfig unusedOutput = snapshotDefinition();
+    unusedOutput.densityGraph.outputs["unused_semantic"] =
+        "dead_authoring_node";
+    CHECK_THROWS(serializeGeneratorSnapshot(unusedOutput));
 }
 
 TEST_CASE(GeneratorSnapshot_validates_referenced_runtime_content) {

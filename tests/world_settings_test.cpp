@@ -1051,6 +1051,43 @@ TEST_CASE(WorldSettings_close_reload_uses_only_saved_generator_snapshot) {
     CHECK(settingsYaml.find("semantics_version: 1") != std::string::npos);
 }
 
+TEST_CASE(WorldSettings_reload_uses_save_owned_display_name) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_display_name";
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    auto context = contextFor(worldRoot, storage);
+    Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context);
+
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    context.discoverExistingFormat = true;
+    Persistence::WorldMetadata derivedMetadata =
+        persistence.loadWorldMetadata(context);
+    derivedMetadata.displayName = "Stale backend display name";
+    persistence.saveWorldMetadata(derivedMetadata, context);
+
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+    context.discoverExistingFormat = false;
+    const auto reopened = Persistence::bootstrapWorldGeneration(
+        std::nullopt,
+        persistence,
+        blocks,
+        context);
+
+    CHECK_EQ(reopened.generation.settings.displayName,
+             savedSettings().displayName);
+    context.discoverExistingFormat = true;
+    CHECK_EQ(
+        persistence.loadWorldMetadata(context).displayName,
+        std::string("Stale backend display name"));
+}
+
 TEST_CASE(WorldSettings_publication_commits_marker_before_payload) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_8";

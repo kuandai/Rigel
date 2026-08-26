@@ -801,7 +801,8 @@ std::string validatePublicationIdentityAndFormat(
     PersistenceService& persistence,
     const PersistenceContext& publicationContext,
     const std::filesystem::path& worldRoot,
-    std::string_view expectedFormat) {
+    std::string_view expectedFormat,
+    bool requireDerivedDisplayName) {
     if (publicationContext.storage->entryKind(
             publicationContext.rootPath) != StorageEntryKind::Directory ||
         publicationContext.storage->entryKind(childPath(
@@ -845,10 +846,14 @@ std::string validatePublicationIdentityAndFormat(
         expectedWorldId = std::filesystem::path(
             publicationContext.rootPath).filename().string();
     }
-    if (metadata.displayName != generation.settings.displayName ||
-        metadata.worldId != expectedWorldId) {
+    if (metadata.worldId != expectedWorldId) {
         throw std::runtime_error(
-            "Published persistence backend identity does not match world settings");
+            "Published persistence backend world ID does not match the save root");
+    }
+    if (requireDerivedDisplayName &&
+        metadata.displayName != generation.settings.displayName) {
+        throw std::runtime_error(
+            "Published persistence backend display name does not match world settings");
     }
     return formatId;
 }
@@ -899,7 +904,7 @@ void recoverPublicationHandoff(
                 "Published world unexpectedly retains staging deletion authority");
         }
         static_cast<void>(validatePublicationIdentityAndFormat(
-            *persistence, context, worldRoot, {}));
+            *persistence, context, worldRoot, {}, true));
         if (!hasValidHandoffOwnershipMarker(
                 storage, worldRoot, stagedContext)) {
             throw std::runtime_error(
@@ -916,7 +921,7 @@ void recoverPublicationHandoff(
     }
 
     const std::string formatId = validatePublicationIdentityAndFormat(
-        *persistence, stagedContext, worldRoot, {});
+        *persistence, stagedContext, worldRoot, {}, true);
     const std::string stagingMarkerPath =
         childPath(stagedContext, kStagingOwnershipFilename);
     const StorageEntryKind stagingMarkerKind =
@@ -937,7 +942,7 @@ void recoverPublicationHandoff(
 
     storage.publishDirectory(stagedContext.rootPath, context.rootPath);
     static_cast<void>(validatePublicationIdentityAndFormat(
-        *persistence, context, worldRoot, formatId));
+        *persistence, context, worldRoot, formatId, true));
     if (!hasValidHandoffOwnershipMarker(
             storage, worldRoot, stagedContext)) {
         throw std::runtime_error(
@@ -1256,7 +1261,8 @@ static std::string publishNewWorldGenerationImpl(
             persistence,
             stagedContext,
             worldRoot,
-            selectedFormatId));
+            selectedFormatId,
+            true));
         beginPublicationHandoff(storage, worldRoot, stagedContext);
         try {
             storage.publishDirectory(
@@ -1282,7 +1288,8 @@ static std::string publishNewWorldGenerationImpl(
             persistence,
             context,
             worldRoot,
-            selectedFormatId));
+            selectedFormatId,
+            true));
         removeHandoffOwnershipMarker(
             storage, worldRoot, stagedContext);
     } catch (...) {
@@ -1403,7 +1410,7 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
     Voxel::validateGeneratorSnapshotContent(
         result.generation.definition, registry);
     result.persistenceFormat = validatePublicationIdentityAndFormat(
-        persistence, context, worldRoot, {});
+        persistence, context, worldRoot, {}, false);
     return result;
 }
 

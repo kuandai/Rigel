@@ -155,6 +155,11 @@ existing `saves/world_<worldId>` root:
 - `generator-definition.yaml` is the canonical resolved generator runtime
   snapshot.
 
+Persistence backends may repeat the display name for byte-format compatibility,
+but that copy is derived. Reload uses `world-settings.yaml` even when the
+backend copy is stale; the backend's world ID and format marker still identify
+the save and must remain valid.
+
 Both documents are durably committed in a unique sibling staging directory,
 along with the selected persistence backend's authoritative metadata marker,
 then the complete directory is atomically published without replacing an

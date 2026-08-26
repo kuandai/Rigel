@@ -264,9 +264,12 @@ Current behavior:
 - `PersistenceService` chunk and entity payload writes require explicit region snapshots.
 - Runtime chunk loads use region snapshots through `AsyncChunkLoader`.
 - Only chunks marked `isPersistDirty()` are saved.
-- `saveWorldToDisk` receives `WorldSettings` directly and derives the backend's
-  compatibility display-name field from it. Backend metadata is not a second
-  source for seed or generator provenance.
+- When `saveWorldToDisk` must create backend metadata, it derives the
+  compatibility display-name field from `WorldSettings`.
+  `world-settings.yaml` remains the display-name authority; a stale backend
+  copy cannot replace it or prevent a valid save from reopening. Backend
+  metadata is not a second source for seed, generator provenance, or the
+  display name.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,
   and all-air spans are skipped.
 - Save and entity load validate a pending `entity-regions.journal` schema,

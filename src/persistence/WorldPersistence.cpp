@@ -143,6 +143,11 @@ void loadBootstrapEntities(Voxel::World& world,
                            Asset::AssetManager& assets,
                            PersistenceService& service,
                            PersistenceContext context) {
+    const BootstrappedWorldGeneration published =
+        requirePublishedWorldGeneration(world, service, context);
+    context.preferredFormat = published.persistenceFormat;
+    context.discoverExistingFormat = false;
+
     auto format = service.openFormat(context);
     requireSupportedDefaultZone(*format, context);
 

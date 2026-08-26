@@ -34,6 +34,11 @@ constexpr size_t kMaxWorldSettingsBytes = 16 * 1024;
 constexpr size_t kMaxGeneratorSnapshotBytes = 4 * 1024 * 1024;
 constexpr size_t kWorldGenerationStagingSlotCount = 64;
 
+class WorldGenerationLoadError final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 std::filesystem::path worldRootPath(const PersistenceContext& context) {
     if (context.rootPath.empty()) {
         throw std::invalid_argument(
@@ -60,6 +65,59 @@ StorageBackend& storageFor(const PersistenceContext& context) {
 std::string childPath(const PersistenceContext& context,
                       std::string_view filename) {
     return context.rootPath + "/" + std::string(filename);
+}
+
+[[noreturn]] void throwWorldGenerationLoadError(
+    const PersistenceContext& context,
+    const std::string& problem) {
+    throw WorldGenerationLoadError(
+        "Cannot load world save '" + context.rootPath + "': " + problem +
+        ". Restore the authoritative save files from a matching backup or "
+        "choose a new world. The save was not modified; no seed or current, "
+        "installed, or default generator was substituted.");
+}
+
+std::string joinProblems(const std::vector<std::string>& problems) {
+    std::string result;
+    for (const std::string& problem : problems) {
+        if (!result.empty()) {
+            result += "; ";
+        }
+        result += problem;
+    }
+    return result;
+}
+
+void requireAuthoritativeGenerationFiles(
+    StorageBackend& storage,
+    const PersistenceContext& context) {
+    std::vector<std::string> problems;
+    const StorageEntryKind rootKind = storage.entryKind(context.rootPath);
+    if (rootKind != StorageEntryKind::Directory) {
+        problems.push_back(
+            rootKind == StorageEntryKind::Missing
+                ? "the save root is missing"
+                : "the save root is not a directory");
+    }
+
+    for (const std::string_view filename : {
+             kWorldSettingsFilename,
+             kGeneratorSnapshotFilename}) {
+        const StorageEntryKind kind =
+            storage.entryKind(childPath(context, filename));
+        if (kind == StorageEntryKind::RegularFile) {
+            continue;
+        }
+        problems.push_back(
+            std::string(filename) +
+            (kind == StorageEntryKind::Missing
+                 ? " is missing"
+                 : " is not a regular file"));
+    }
+
+    if (!problems.empty()) {
+        throwWorldGenerationLoadError(context, joinProblems(problems));
+    }
 }
 
 std::string quoteYamlString(std::string_view value) {
@@ -822,61 +880,69 @@ BootstrappedWorldGeneration validatePublicationIdentityAndFormat(
     const std::filesystem::path& worldRoot,
     std::string_view expectedFormat,
     bool requireDerivedDisplayName) {
-    if (publicationContext.storage->entryKind(
-            publicationContext.rootPath) != StorageEntryKind::Directory ||
-        publicationContext.storage->entryKind(childPath(
-            publicationContext, kWorldSettingsFilename)) !=
-            StorageEntryKind::RegularFile ||
-        publicationContext.storage->entryKind(childPath(
-            publicationContext, kGeneratorSnapshotFilename)) !=
-            StorageEntryKind::RegularFile) {
-        throw std::runtime_error(
-            "World-publication identity is not stored in regular save files: " +
-            publicationContext.rootPath);
-    }
+    requireAuthoritativeGenerationFiles(
+        *publicationContext.storage, publicationContext);
     BootstrappedWorldGeneration result;
     result.generation = loadSavedWorldGeneration(publicationContext);
-    Voxel::validateGeneratorSnapshotContent(
-        result.generation.definition, registry);
-
-    PersistenceContext discoveryContext = publicationContext;
-    discoveryContext.preferredFormat.clear();
-    discoveryContext.discoverExistingFormat = true;
-    auto format = persistence.openFormat(discoveryContext);
-    const std::string formatId = format->descriptor().id;
-    if (!expectedFormat.empty() && formatId != expectedFormat) {
-        throw std::runtime_error(
-            "Published persistence format does not match the staged format");
+    try {
+        Voxel::validateGeneratorSnapshotContent(
+            result.generation.definition, registry);
+    } catch (const WorldGenerationLoadError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throwWorldGenerationLoadError(
+            publicationContext,
+            "generator-definition.yaml references unavailable runtime content: " +
+                std::string(error.what()));
     }
 
-    const std::string metadataPath =
-        format->worldMetadataCodec().metadataPath(discoveryContext);
-    validateBackendMetadataPath(discoveryContext, metadataPath);
-    if (publicationContext.storage->entryKind(metadataPath) !=
-        StorageEntryKind::RegularFile) {
-        throw std::runtime_error(
-            "Published persistence backend identity is not a regular file: " +
-            metadataPath);
-    }
+    try {
+        PersistenceContext discoveryContext = publicationContext;
+        discoveryContext.preferredFormat.clear();
+        discoveryContext.discoverExistingFormat = true;
+        auto format = persistence.openFormat(discoveryContext);
+        const std::string formatId = format->descriptor().id;
+        if (!expectedFormat.empty() && formatId != expectedFormat) {
+            throw std::runtime_error(
+                "Published persistence format does not match the staged format");
+        }
 
-    const WorldMetadata metadata =
-        persistence.loadWorldMetadata(discoveryContext);
-    std::string expectedWorldId = worldRoot.filename().string();
-    if (format->descriptor().capabilities.worldIdSource ==
-        WorldIdSource::RootBasename) {
-        expectedWorldId = std::filesystem::path(
-            publicationContext.rootPath).filename().string();
+        const std::string metadataPath =
+            format->worldMetadataCodec().metadataPath(discoveryContext);
+        validateBackendMetadataPath(discoveryContext, metadataPath);
+        if (publicationContext.storage->entryKind(metadataPath) !=
+            StorageEntryKind::RegularFile) {
+            throw std::runtime_error(
+                "Published persistence backend identity is not a regular file: " +
+                metadataPath);
+        }
+
+        const WorldMetadata metadata =
+            persistence.loadWorldMetadata(discoveryContext);
+        std::string expectedWorldId = worldRoot.filename().string();
+        if (format->descriptor().capabilities.worldIdSource ==
+            WorldIdSource::RootBasename) {
+            expectedWorldId = std::filesystem::path(
+                publicationContext.rootPath).filename().string();
+        }
+        if (metadata.worldId != expectedWorldId) {
+            throw std::runtime_error(
+                "Published persistence backend world ID does not match the save root");
+        }
+        if (requireDerivedDisplayName &&
+            metadata.displayName != result.generation.settings.displayName) {
+            throw std::runtime_error(
+                "Published persistence backend display name does not match world settings");
+        }
+        result.persistenceFormat = formatId;
+    } catch (const WorldGenerationLoadError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throwWorldGenerationLoadError(
+            publicationContext,
+            "the persistence backend identity is invalid: " +
+                std::string(error.what()));
     }
-    if (metadata.worldId != expectedWorldId) {
-        throw std::runtime_error(
-            "Published persistence backend world ID does not match the save root");
-    }
-    if (requireDerivedDisplayName &&
-        metadata.displayName != result.generation.settings.displayName) {
-        throw std::runtime_error(
-            "Published persistence backend display name does not match world settings");
-    }
-    result.persistenceFormat = formatId;
     return result;
 }
 
@@ -1042,15 +1108,16 @@ void recoverAbandonedWorldGenerationStagingLocked(
 SavedWorldGenerationPresence inspectSavedWorldGeneration(
     const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
-    if (!storage.exists(context.rootPath)) {
+    if (storage.entryKind(context.rootPath) == StorageEntryKind::Missing) {
         return SavedWorldGenerationPresence::Missing;
     }
 
-    const bool hasSettings = storage.exists(
-        childPath(context, kWorldSettingsFilename));
-    const bool hasSnapshot = storage.exists(
-        childPath(context, kGeneratorSnapshotFilename));
-    if (hasSettings && hasSnapshot) {
+    const bool hasSettings = storage.entryKind(childPath(
+        context, kWorldSettingsFilename)) == StorageEntryKind::RegularFile;
+    const bool hasSnapshot = storage.entryKind(childPath(
+        context, kGeneratorSnapshotFilename)) == StorageEntryKind::RegularFile;
+    if (storage.entryKind(context.rootPath) == StorageEntryKind::Directory &&
+        hasSettings && hasSnapshot) {
         return SavedWorldGenerationPresence::Published;
     }
     return SavedWorldGenerationPresence::LegacyOrIncomplete;
@@ -1089,6 +1156,10 @@ void recoverWorldGenerationPublication(
     const std::filesystem::path worldRoot = worldRootPath(context);
     auto bootstrapLock =
         storage.lockWorldGenerationBootstrap(context.rootPath);
+    if (storage.entryKind(context.rootPath) != StorageEntryKind::Missing) {
+        static_cast<void>(validatePublicationIdentityAndFormat(
+            persistence, registry, context, worldRoot, {}, false));
+    }
     recoverAbandonedWorldGenerationStagingLocked(
         storage, context, worldRoot, &persistence, &registry);
 }
@@ -1319,32 +1390,62 @@ SavedWorldGeneration loadSavedWorldGeneration(
         throw std::runtime_error(
             "World save does not exist: " + context.rootPath);
     case SavedWorldGenerationPresence::LegacyOrIncomplete:
-        throw std::runtime_error(
-            "World save is legacy, unknown, or incompletely published and cannot be loaded: " +
-            context.rootPath);
+        requireAuthoritativeGenerationFiles(storage, context);
+        throw std::logic_error(
+            "World generation presence disagrees with authoritative files");
     case SavedWorldGenerationPresence::Published:
         break;
     }
 
-    const std::string settingsDocument = readDocument(
-        storage,
-        childPath(context, kWorldSettingsFilename),
-        kMaxWorldSettingsBytes,
-        "Saved world settings");
-    const WorldSettings settings = parseSettings(settingsDocument);
-    const std::string snapshot = readDocument(
-        storage,
-        childPath(context, kGeneratorSnapshotFilename),
-        kMaxGeneratorSnapshotBytes,
-        "Saved generator definition");
+    WorldSettings settings;
+    try {
+        const std::string settingsDocument = readDocument(
+            storage,
+            childPath(context, kWorldSettingsFilename),
+            kMaxWorldSettingsBytes,
+            "Saved world settings");
+        settings = parseSettings(settingsDocument);
+    } catch (const WorldGenerationLoadError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throwWorldGenerationLoadError(
+            context,
+            "world-settings.yaml is invalid: " +
+                std::string(error.what()));
+    }
+
+    std::string snapshot;
+    try {
+        snapshot = readDocument(
+            storage,
+            childPath(context, kGeneratorSnapshotFilename),
+            kMaxGeneratorSnapshotBytes,
+            "Saved generator definition");
+    } catch (const WorldGenerationLoadError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throwWorldGenerationLoadError(
+            context,
+            "generator-definition.yaml is invalid: " +
+                std::string(error.what()));
+    }
 
     SavedWorldGeneration saved;
     saved.settings = settings;
-    saved.definition = Voxel::parseGeneratorSnapshot(
-        snapshot,
-        settings.generator.definitionSchemaVersion,
-        settings.seed,
-        settings.generator.semanticsVersion);
+    try {
+        saved.definition = Voxel::parseGeneratorSnapshot(
+            snapshot,
+            settings.generator.definitionSchemaVersion,
+            settings.seed,
+            settings.generator.semanticsVersion);
+    } catch (const WorldGenerationLoadError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throwWorldGenerationLoadError(
+            context,
+            "generator-definition.yaml is invalid: " +
+                std::string(error.what()));
+    }
     return saved;
 }
 
@@ -1366,6 +1467,10 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
     auto bootstrapLock =
         storage.lockWorldGenerationBootstrap(context.rootPath);
     const std::filesystem::path worldRoot = worldRootPath(context);
+    if (storage.entryKind(context.rootPath) != StorageEntryKind::Missing) {
+        static_cast<void>(validatePublicationIdentityAndFormat(
+            persistence, registry, context, worldRoot, {}, false));
+    }
     recoverAbandonedWorldGenerationStagingLocked(
         storage, context, worldRoot, &persistence, &registry);
 
@@ -1394,9 +1499,9 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
         return result;
     }
     if (presence == SavedWorldGenerationPresence::LegacyOrIncomplete) {
-        throw std::runtime_error(
-            "Existing world is legacy, unknown, or incompletely published; "
-            "the save was left unchanged");
+        requireAuthoritativeGenerationFiles(storage, context);
+        throw std::logic_error(
+            "World generation presence disagrees with authoritative files");
     }
 
     return validatePublicationIdentityAndFormat(

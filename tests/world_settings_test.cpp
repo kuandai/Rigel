@@ -18,7 +18,9 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -146,6 +148,54 @@ void writeText(Persistence::StorageBackend& storage,
     session->writer().writeBytes(
         reinterpret_cast<const uint8_t*>(text.data()), text.size());
     session->commit();
+}
+
+std::string exceptionMessage(const std::function<void()>& operation) {
+    try {
+        operation();
+    } catch (const std::exception& error) {
+        return error.what();
+    }
+    throw Test::TestFailure("Expected operation to fail");
+}
+
+using SaveTreeSnapshot = std::map<std::string, std::string>;
+
+SaveTreeSnapshot snapshotSaveTree(const std::filesystem::path& parent) {
+    SaveTreeSnapshot snapshot;
+    for (const auto& entry :
+         std::filesystem::recursive_directory_iterator(parent)) {
+        const std::string relative = std::filesystem::relative(
+            entry.path(), parent).generic_string();
+        const std::filesystem::file_status status = entry.symlink_status();
+        if (std::filesystem::is_directory(status)) {
+            snapshot.emplace(relative, "directory");
+        } else if (std::filesystem::is_regular_file(status)) {
+            std::ifstream stream(entry.path(), std::ios::binary);
+            snapshot.emplace(
+                relative,
+                "file:" + std::string(
+                    std::istreambuf_iterator<char>(stream),
+                    std::istreambuf_iterator<char>()));
+        } else if (std::filesystem::is_symlink(status)) {
+            snapshot.emplace(
+                relative,
+                "symlink:" +
+                    std::filesystem::read_symlink(entry.path()).generic_string());
+        } else {
+            snapshot.emplace(relative, "other");
+        }
+    }
+    return snapshot;
+}
+
+std::string rejectionDiagnostic(
+    const std::filesystem::path& root,
+    const std::string& problem) {
+    return "Cannot load world save '" + root.string() + "': " + problem +
+        ". Restore the authoritative save files from a matching backup or "
+        "choose a new world. The save was not modified; no seed or current, "
+        "installed, or default generator was substituted.";
 }
 
 void corruptMemoryWorldMetadataWorldId(
@@ -3250,5 +3300,226 @@ TEST_CASE(WorldSettings_rejects_each_unsupported_version_without_repairing_save)
         CHECK_THROWS(Persistence::loadSavedWorldGeneration(context));
         CHECK_EQ(readText(*storage, settingsPath), settingsDocument);
         CHECK_EQ(readText(*storage, snapshotPath), snapshotBefore);
+    }
+}
+
+TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
+    struct Scenario {
+        std::string name;
+        std::function<void(
+            Persistence::StorageBackend&,
+            const std::filesystem::path&)> corrupt;
+        std::string problem;
+    };
+
+    const auto removeDocument = [](
+        std::string filename) {
+        return [filename = std::move(filename)](
+            Persistence::StorageBackend& storage,
+            const std::filesystem::path& root) {
+            storage.remove((root / filename).string());
+        };
+    };
+    const auto replaceWithDirectory = [](
+        std::string filename) {
+        return [filename = std::move(filename)](
+            Persistence::StorageBackend& storage,
+            const std::filesystem::path& root) {
+            const std::filesystem::path path = root / filename;
+            storage.remove(path.string());
+            storage.mkdirs(path.string());
+            writeText(storage, path / "sentinel", "preserve wrong-kind bytes");
+        };
+    };
+    const auto replaceSettingsToken = [](
+        std::string supported,
+        std::string unsupported) {
+        return [supported = std::move(supported),
+                unsupported = std::move(unsupported)](
+            Persistence::StorageBackend& storage,
+            const std::filesystem::path& root) {
+            const std::filesystem::path path = root / "world-settings.yaml";
+            std::string document = readText(storage, path);
+            const size_t position = document.find(supported);
+            if (position == std::string::npos) {
+                throw Test::TestFailure(
+                    "Expected saved settings token was not found");
+            }
+            document.replace(position, supported.size(), unsupported);
+            writeText(storage, path, document);
+        };
+    };
+
+    const std::vector<Scenario> scenarios = {
+        {
+            "both-missing",
+            [](Persistence::StorageBackend& storage,
+               const std::filesystem::path& root) {
+                storage.remove((root / "world-settings.yaml").string());
+                storage.remove((root / "generator-definition.yaml").string());
+            },
+            "world-settings.yaml is missing; generator-definition.yaml is missing",
+        },
+        {
+            "settings-only",
+            removeDocument("generator-definition.yaml"),
+            "generator-definition.yaml is missing",
+        },
+        {
+            "snapshot-only",
+            removeDocument("world-settings.yaml"),
+            "world-settings.yaml is missing",
+        },
+        {
+            "settings-directory",
+            replaceWithDirectory("world-settings.yaml"),
+            "world-settings.yaml is not a regular file",
+        },
+        {
+            "snapshot-directory",
+            replaceWithDirectory("generator-definition.yaml"),
+            "generator-definition.yaml is not a regular file",
+        },
+        {
+            "root-file",
+            [](Persistence::StorageBackend& storage,
+               const std::filesystem::path& root) {
+                std::error_code error;
+                std::filesystem::remove_all(root, error);
+                if (error) {
+                    throw std::filesystem::filesystem_error(
+                        "Failed to replace test world root",
+                        root,
+                        error);
+                }
+                writeText(storage, root, "preserve non-directory root bytes");
+            },
+            "the save root is not a directory; world-settings.yaml is missing; generator-definition.yaml is missing",
+        },
+        {
+            "missing-backend-marker",
+            [](Persistence::StorageBackend& storage,
+               const std::filesystem::path& root) {
+                for (const std::string filename : {
+                         "world.meta", "worldInfo.json"}) {
+                    const std::filesystem::path path = root / filename;
+                    if (storage.entryKind(path.string()) !=
+                        Persistence::StorageEntryKind::Missing) {
+                        storage.remove(path.string());
+                    }
+                }
+            },
+            "the persistence backend identity is invalid: FormatRegistry: published save is missing an authoritative format marker",
+        },
+        {
+            "empty-settings",
+            [](Persistence::StorageBackend& storage,
+               const std::filesystem::path& root) {
+                writeText(storage, root / "world-settings.yaml", {});
+            },
+            "world-settings.yaml is invalid: Saved world settings are empty",
+        },
+        {
+            "empty-snapshot",
+            [](Persistence::StorageBackend& storage,
+               const std::filesystem::path& root) {
+                writeText(storage, root / "generator-definition.yaml", {});
+            },
+            "generator-definition.yaml is invalid: Generator definition snapshot is empty",
+        },
+        {
+            "settings-version",
+            replaceSettingsToken("schema_version: 1", "schema_version: 2"),
+            "world-settings.yaml is invalid: Unsupported world settings schema version: 2",
+        },
+        {
+            "definition-version",
+            replaceSettingsToken(
+                "definition_schema_version: 1",
+                "definition_schema_version: 2"),
+            "world-settings.yaml is invalid: Unsupported generator definition schema version: 2",
+        },
+        {
+            "semantics-version",
+            replaceSettingsToken(
+                "semantics_version: 1", "semantics_version: 2"),
+            "world-settings.yaml is invalid: Unsupported generator semantics version: 2",
+        },
+    };
+
+    for (const std::string formatId : {std::string("memory"), std::string("cr")}) {
+        for (const Scenario& scenario : scenarios) {
+            Test::TemporaryDirectory directory(
+                "rigel_world_rejection_" + formatId + "_" + scenario.name);
+            const std::filesystem::path worldRoot =
+                directory.path() / "world_7";
+            auto storage =
+                std::make_shared<Persistence::FilesystemBackend>();
+            auto context = contextFor(worldRoot, storage);
+            context.preferredFormat = formatId;
+
+            Persistence::FormatRegistry formats;
+            formats.registerFormat(
+                Persistence::Backends::Memory::descriptor(),
+                Persistence::Backends::Memory::factory(),
+                Persistence::Backends::Memory::probe());
+            formats.registerFormat(
+                Persistence::Backends::CR::descriptor(),
+                Persistence::Backends::CR::factory(),
+                Persistence::Backends::CR::probe());
+            Persistence::PersistenceService persistence(formats);
+            Voxel::BlockRegistry blocks;
+            registerSavedDefinitionBlocks(blocks);
+            const Persistence::NewWorldGeneration original{
+                savedSettings(), savedDefinition()};
+            Persistence::bootstrapWorldGeneration(
+                original, persistence, blocks, context);
+
+            scenario.corrupt(*storage, worldRoot);
+            const std::filesystem::path stagedRoot =
+                std::filesystem::path(worldRoot.string() + ".staging.0");
+            writeText(
+                *storage,
+                stagedRoot / kStagingOwnershipFilename,
+                stagingOwnershipMarkerForTest(worldRoot, stagedRoot));
+            writeText(
+                *storage,
+                stagedRoot / "preserve.bin",
+                "owned staging bytes must survive invalid final rejection");
+
+            auto currentDefaultSettings = savedSettings();
+            auto currentDefaultDefinition = savedDefinition();
+            currentDefaultSettings.displayName = "Current installed default";
+            currentDefaultSettings.seed = 999u;
+            currentDefaultDefinition.seed = 999u;
+            currentDefaultDefinition.densityGraph.nodes.front().value = -1.0f;
+            const Persistence::NewWorldGeneration currentDefault{
+                currentDefaultSettings, currentDefaultDefinition};
+
+            const SaveTreeSnapshot before =
+                snapshotSaveTree(directory.path());
+            const std::string expected =
+                rejectionDiagnostic(worldRoot, scenario.problem);
+
+            CHECK_EQ(
+                exceptionMessage([&] {
+                    Persistence::recoverWorldGenerationPublication(
+                        persistence, blocks, context);
+                }),
+                expected);
+            CHECK_EQ(snapshotSaveTree(directory.path()), before);
+
+            CHECK_EQ(
+                exceptionMessage([&] {
+                    static_cast<void>(
+                        Persistence::bootstrapWorldGeneration(
+                            currentDefault,
+                            persistence,
+                            blocks,
+                            context));
+                }),
+                expected);
+            CHECK_EQ(snapshotSaveTree(directory.path()), before);
+        }
     }
 }

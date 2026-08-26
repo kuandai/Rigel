@@ -951,6 +951,8 @@ void saveRawRegions(
     Persistence::FormatRegistry formats;
     registerFormats(formats);
     Persistence::PersistenceService service(formats);
+    ensureSavedWorldGenerationFixture(
+        files, service, preferredFormat);
     auto context = makeContext(files, {}, preferredFormat);
     for (const auto& region : regions) {
         service.saveEntities(region, context);
@@ -986,6 +988,8 @@ void bootstrapEntities(
     Persistence::FormatRegistry formats;
     registerFormats(formats);
     Persistence::PersistenceService service(formats);
+    ensureSavedWorldGenerationFixture(
+        files, service, preferredFormat);
     auto context = makeContext(
         files, control, std::move(preferredFormat));
     context.providers = world.persistenceProvidersHandle();
@@ -1070,6 +1074,16 @@ size_t entityRegionReadCount(const std::shared_ptr<SharedFiles>& files) {
         }
     }
     return count;
+}
+
+size_t entityRegionFileCount(const std::shared_ptr<SharedFiles>& files) {
+    const std::string prefix = entityRegionDirectory() + "/";
+    return static_cast<size_t>(std::count_if(
+        files->files.begin(),
+        files->files.end(),
+        [&](const auto& entry) {
+            return entry.first.starts_with(prefix);
+        }));
 }
 
 Persistence::EntityRegionSnapshot bootstrapChunkRegion(
@@ -1994,6 +2008,78 @@ TEST_CASE(Persistence_UnknownEntityPlaceholderSurvivesUntilFactoryIsAvailable) {
     }
 }
 
+TEST_CASE(Persistence_EntityBootstrapRejectsUnknownWorldBeforeJournalReplay) {
+    for (const std::string& preferredFormat : {"memory", "cr"}) {
+        auto files = std::make_shared<SharedFiles>();
+        const EntityRecord pending{
+            Entity::EntityId{154, 155, preferredFormat == "memory" ? 1u : 2u},
+            "rigel:pending_" + preferredFormat,
+            glm::vec3(1.0f, 2.0f, 3.0f)};
+        auto interrupted = std::make_shared<MutationControl>();
+        interrupted->failAt = 1;
+        CHECK_THROWS(saveRecords(
+            files, {pending}, interrupted, preferredFormat));
+        CHECK(journalExists(files));
+
+        for (const std::string filename : {
+                 "world-settings.yaml",
+                 "generator-definition.yaml"}) {
+            const std::string path =
+                std::string(kRootPath) + "/" + filename;
+            files->files.erase(path);
+            files->durableFiles.erase(path);
+        }
+
+        const auto filesBefore = files->files;
+        const auto durableFilesBefore = files->durableFiles;
+        const auto directoriesBefore = files->directories;
+        const auto durableDirectoriesBefore = files->durableDirectories;
+        const auto operationsBefore = files->durabilityOperations;
+        const auto openedReadsBefore = files->openedReads;
+        const auto dataAccessesBefore = files->readerDataAccesses;
+
+        Persistence::FormatRegistry formats;
+        registerFormats(formats);
+        Persistence::PersistenceService service(formats);
+        Voxel::WorldResources resources;
+        Voxel::World world(resources);
+        world.setId(1);
+        Asset::AssetManager assets;
+        auto replayControl = std::make_shared<MutationControl>();
+        replayControl->observeAllPaths = true;
+        auto context = makeContext(
+            files, replayControl, preferredFormat);
+        context.providers = world.persistenceProvidersHandle();
+
+        std::string diagnostic;
+        try {
+            Persistence::loadBootstrapEntities(
+                world, assets, service, context);
+        } catch (const std::exception& error) {
+            diagnostic = error.what();
+        }
+
+        CHECK_EQ(
+            diagnostic,
+            std::string("Cannot load world save '") + kRootPath +
+                "': world-settings.yaml is missing; "
+                "generator-definition.yaml is missing. Restore the "
+                "authoritative save files from a matching backup or choose "
+                "a new world. The save was not modified; no seed or current, "
+                "installed, or default generator was substituted.");
+        CHECK_EQ(world.entities().size(), static_cast<size_t>(0));
+        CHECK(replayControl->attempted.empty());
+        CHECK_EQ(files->files, filesBefore);
+        CHECK_EQ(files->durableFiles, durableFilesBefore);
+        CHECK_EQ(files->directories, directoriesBefore);
+        CHECK_EQ(files->durableDirectories, durableDirectoriesBefore);
+        CHECK_EQ(files->durabilityOperations, operationsBefore);
+        CHECK_EQ(files->openedReads, openedReadsBefore);
+        CHECK_EQ(files->readerDataAccesses, dataAccessesBefore);
+        CHECK(journalExists(files));
+    }
+}
+
 TEST_CASE(Persistence_EntityBootstrapRejectsLiveIdCollisionBeforeSpawning) {
     auto files = std::make_shared<SharedFiles>();
     const EntityRecord unique{
@@ -2119,7 +2205,7 @@ TEST_CASE(Persistence_EntityBootstrapStopsRegionEnumerationAtLimit) {
             overflowRegionCount);
 
         CHECK_EQ(
-            files->files.size(),
+            entityRegionFileCount(files),
             static_cast<size_t>(
                 Persistence::detail::MaxEntityJournalRegions) +
                 overflowRegionCount);
@@ -3185,7 +3271,7 @@ TEST_CASE(Persistence_EntityJournalRejectsUnexpectedZoneBeforeMutation) {
     CHECK(journalExists(files));
 }
 
-TEST_CASE(Persistence_EntityJournalExplicitLoadRejectsDifferentPersistenceFormat) {
+TEST_CASE(Persistence_EntityJournalExplicitLoadUsesPublishedPersistenceFormat) {
     auto files = std::make_shared<SharedFiles>();
     const EntityRecord desired{
         Entity::EntityId{80, 81, 82},
@@ -3200,12 +3286,12 @@ TEST_CASE(Persistence_EntityJournalExplicitLoadRejectsDifferentPersistenceFormat
     Voxel::WorldResources resources;
     Voxel::World world(resources);
     Asset::AssetManager assets;
-    const std::string error = loadFailure(
+    bootstrapEntities(
         files, world, assets, "cr", replayControl);
 
-    CHECK(error.find("persistence format mismatch") != std::string::npos);
-    CHECK(replayControl->attempted.empty());
-    CHECK(journalExists(files));
+    CHECK(world.entities().get(desired.id) != nullptr);
+    CHECK(!replayControl->attempted.empty());
+    CHECK(!journalExists(files));
     CHECK(std::none_of(
         files->files.begin(), files->files.end(),
         [](const auto& entry) {

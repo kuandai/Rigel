@@ -35,6 +35,40 @@ bool isKnownGenerationStage(std::string_view name) {
     );
 }
 
+std::vector<WorldGenConfig::OverlayConfig> applyOverlayRouting(
+    WorldGenConfig& config,
+    ryml::ConstNodeRef root,
+    const char* sourceName) {
+    std::vector<WorldGenConfig::OverlayConfig> declaredOverlays;
+    if (root.has_child("flags")) {
+        const ryml::ConstNodeRef flagsNode = root["flags"];
+        if (flagsNode.is_map()) {
+            for (ryml::ConstNodeRef flagNode : flagsNode.children()) {
+                const std::string key = Util::toStdString(flagNode.key());
+                config.flags[key] = Util::readBool(
+                    flagsNode, key.c_str(), false, sourceName, "flags");
+            }
+        }
+    }
+
+    if (root.has_child("overlays")) {
+        const ryml::ConstNodeRef overlaysNode = root["overlays"];
+        if (overlaysNode.is_seq()) {
+            config.overlays.clear();
+            for (ryml::ConstNodeRef overlayNode : overlaysNode.children()) {
+                WorldGenConfig::OverlayConfig overlay;
+                overlay.path = Util::readString(overlayNode, "path", "");
+                overlay.when = Util::readString(overlayNode, "when", "");
+                if (!overlay.path.empty()) {
+                    declaredOverlays.push_back(overlay);
+                    config.overlays.push_back(std::move(overlay));
+                }
+            }
+        }
+    }
+    return declaredOverlays;
+}
+
 void warnUnknownGenerationStages(ryml::ConstNodeRef stages,
                                  const char* sourceName) {
     if (!stages.readable() || !stages.is_map()) {
@@ -346,6 +380,31 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays
     auto overlays = candidate.applyYamlUnchecked(sourceName, yaml);
     *this = std::move(candidate);
     return overlays;
+}
+
+std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlRouting(
+    const char* sourceName,
+    const std::string& yaml) {
+    if (yaml.empty()) {
+        return {};
+    }
+
+    WorldGenConfig candidate = *this;
+    const ryml::Tree tree = ryml::parse_in_arena(
+        ryml::to_csubstr(sourceName),
+        ryml::to_csubstr(yaml));
+    const ryml::ConstNodeRef root = tree.rootref();
+    if (root.has_child("overlays")) {
+        for (const ryml::ConstNodeRef overlay :
+             root["overlays"].children()) {
+            Util::warnUnknownKeys(
+                overlay, sourceName, "overlays", {"path", "when"});
+        }
+    }
+    auto declaredOverlays = applyOverlayRouting(
+        candidate, root, sourceName);
+    *this = std::move(candidate);
+    return declaredOverlays;
 }
 
 std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlUnchecked(
@@ -706,33 +765,7 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlUnchecked(
         }
     }
 
-    if (root.has_child("flags")) {
-        ryml::ConstNodeRef flagsNode = root["flags"];
-        if (flagsNode.is_map()) {
-            for (ryml::ConstNodeRef flagNode : flagsNode.children()) {
-                std::string key = Util::toStdString(flagNode.key());
-                bool value = Util::readBool(
-                    flagsNode, key.c_str(), false, sourceName, "flags");
-                flags[key] = value;
-            }
-        }
-    }
-
-    if (root.has_child("overlays")) {
-        ryml::ConstNodeRef overlaysNode = root["overlays"];
-        if (overlaysNode.is_seq()) {
-            overlays.clear();
-            for (ryml::ConstNodeRef overlayNode : overlaysNode.children()) {
-                OverlayConfig overlay;
-                overlay.path = Util::readString(overlayNode, "path", "");
-                overlay.when = Util::readString(overlayNode, "when", "");
-                if (!overlay.path.empty()) {
-                    declaredOverlays.push_back(overlay);
-                    overlays.push_back(std::move(overlay));
-                }
-            }
-        }
-    }
+    declaredOverlays = applyOverlayRouting(*this, root, sourceName);
 
     spdlog::debug("Applied world gen config from {}", sourceName);
     return declaredOverlays;

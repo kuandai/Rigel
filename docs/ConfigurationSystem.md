@@ -55,7 +55,8 @@ Typed providers load each subsystem's settings from YAML input using rapidyaml.
 when creating a world so their shared overlays have one deterministic order.
 When opening a published save, it loads only `StreamingConfig`; invalid,
 changed, or absent installed generator content cannot replace the saved
-definition. Rendering is loaded by
+definition. It follows available overlay routing only to retain streaming
+precedence and does not apply generation fields. Rendering is loaded by
 `Render::RenderConfigProvider`, and persistence by
 `Persistence::PersistenceConfigProvider`. Each subsystem's bootstrap function
 uses the shared standard-source builder, but the typed provider remains the
@@ -85,8 +86,9 @@ Sources (in order):
 
 The generation fields in these sources are resolved only while creating a new
 world. Streaming fields remain bootstrap policy and are loaded for both new and
-existing worlds. Generator overlays are not resolved while opening an existing
-world.
+existing worlds. Opening an existing world follows `flags` and `overlays` to
+apply available streaming values, but does not parse those files as generator
+input and does not require unavailable installed overlay content.
 
 ### Rendering
 
@@ -133,9 +135,12 @@ applied first, followed by its overlays in declaration order. Loading then
 continues with the next source, so project-root and per-world values cannot be
 overridden by an overlay from a lower-precedence source. Overlay paths are
 resolved only by the source that declared them.
-Declaring an overlay that the source cannot load is a configuration error. The
-diagnostic names both the declaring source and the resolved file or embedded
-resource path; the source layer is not published partially.
+During new-world creation, declaring an overlay that the source cannot load is
+a configuration error. The diagnostic names both the declaring source and the
+resolved file or embedded resource path; the source layer is not published
+partially. The existing-world streaming-only load skips unavailable overlay
+content because installed generator definitions are not required to reopen a
+published save.
 
 ---
 
@@ -171,8 +176,10 @@ supported schema/semantics versions.
 ## World Generation Config
 
 `WorldConfiguration` holds separate `WorldGenConfig` and `StreamingConfig`
-values. Each source and its overlays are applied to both typed configurations
-before loading moves to the next source.
+values. For new-world creation, each source and its overlays are applied to
+both typed configurations before loading moves to the next source. Existing
+worlds apply only streaming fields from base sources and available overlays;
+their saved generator snapshot remains the sole generation input.
 
 Defaults below reflect the code defaults from `WorldGenConfig`. The embedded
 config (`assets/config/world_generation.yaml`) overrides many of these values.
@@ -518,7 +525,8 @@ These files are optional and only override fields they define. As the last
 source layer, they have the highest precedence. Generation fields affect only
 new-world creation; they do not override a published save's generator
 snapshot. The world-generation file's streaming fields still apply at
-bootstrap for an existing world, without resolving its generator overlays.
+bootstrap for an existing world. Available conditional and nested overlays
+retain their normal streaming precedence without applying generation fields.
 
 ---
 

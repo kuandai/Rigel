@@ -284,6 +284,68 @@ TEST_CASE(WorldConfigProvider_StreamingLoadDoesNotResolveGeneratorContent) {
     CHECK_THROWS(provider.loadConfig());
 }
 
+TEST_CASE(WorldConfigProvider_StreamingLoadPreservesConditionalNestedOverlays) {
+    WorldConfigProvider provider;
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "installed definition",
+        "world:\n"
+        "  min_y: 500\n"
+        "  max_y: 0\n"
+        "flags:\n"
+        "  tuning: true\n"
+        "  disabled: false\n"
+        "overlays:\n"
+        "  - path: tuning.yaml\n"
+        "    when: tuning\n"
+        "  - path: disabled.yaml\n"
+        "    when: disabled\n"
+        "streaming:\n"
+        "  view_distance_chunks: 7\n",
+        std::unordered_map<std::string, std::string>{
+            {
+                "tuning.yaml",
+                "flags:\n"
+                "  nested: true\n"
+                "overlays:\n"
+                "  - path: nested.yaml\n"
+                "    when: nested\n"
+                "streaming:\n"
+                "  worker_threads: 4\n"
+            },
+            {
+                "nested.yaml",
+                "streaming:\n"
+                "  view_distance_chunks: 10\n"
+                "  worker_threads: 5\n"
+            },
+            {
+                "disabled.yaml",
+                "streaming:\n"
+                "  view_distance_chunks: 16\n"
+            }
+        }));
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "per-world override",
+        "overlays:\n"
+        "  - path: per-world-tuning.yaml\n"
+        "    when: tuning\n"
+        "streaming:\n"
+        "  view_distance_chunks: 11\n",
+        std::unordered_map<std::string, std::string>{
+            {
+                "per-world-tuning.yaml",
+                "streaming:\n"
+                "  view_distance_chunks: 12\n"
+                "  worker_threads: 6\n"
+            }
+        }));
+
+    const StreamingConfig streaming = provider.loadStreamingConfig();
+    CHECK_EQ(streaming.viewDistanceChunks, 12);
+    CHECK_EQ(streaming.workerThreads, 6);
+    CHECK_THROWS(provider.loadConfig());
+}
+
 TEST_CASE(WorldConfigProvider_ShippedDefinitionProducesNormalizedSnapshot) {
     Rigel::Asset::AssetManager assets;
     assets.loadManifest("manifest.yaml");

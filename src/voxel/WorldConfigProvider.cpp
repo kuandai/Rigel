@@ -72,14 +72,58 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
 
 StreamingConfig WorldConfigProvider::loadStreamingConfig() const {
     StreamingConfig config;
+    WorldGenConfig routing;
+    auto applyOverlays = [](
+        StreamingConfig& target,
+        WorldGenConfig& routingState,
+        const Config::IConfigSource& source,
+        std::vector<WorldGenConfig::OverlayConfig> pending) {
+        std::unordered_set<std::string> appliedPaths;
+        size_t overlayIndex = 0;
+        while (overlayIndex < pending.size()) {
+            WorldGenConfig::OverlayConfig overlay =
+                std::move(pending[overlayIndex]);
+            ++overlayIndex;
+            if (!overlay.when.empty() &&
+                !routingState.isFlagEnabled(overlay.when)) {
+                continue;
+            }
+            if (!appliedPaths.insert(overlay.path).second) {
+                continue;
+            }
+
+            auto overlayData = source.loadPath(overlay.path);
+            if (!overlayData) {
+                continue;
+            }
+            auto nestedOverlays = routingState.applyYamlRouting(
+                overlayData->name.c_str(), overlayData->content);
+            target.applyYaml(
+                overlayData->name.c_str(), overlayData->content);
+            pending.insert(
+                pending.end(),
+                std::make_move_iterator(nestedOverlays.begin()),
+                std::make_move_iterator(nestedOverlays.end()));
+        }
+    };
+
     for (const auto& source : m_sources) {
         auto yaml = source->load();
         if (!yaml) {
             continue;
         }
         StreamingConfig candidate = config;
+        WorldGenConfig routingCandidate = routing;
+        auto overlays = routingCandidate.applyYamlRouting(
+            source->name().c_str(), *yaml);
         candidate.applyYaml(source->name().c_str(), *yaml);
+        applyOverlays(
+            candidate,
+            routingCandidate,
+            *source,
+            std::move(overlays));
         config = std::move(candidate);
+        routing = std::move(routingCandidate);
     }
     config.validate("merged streaming configuration");
     return config;

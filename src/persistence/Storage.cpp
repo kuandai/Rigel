@@ -847,7 +847,8 @@ void FilesystemBackend::remove(const std::string& path) {
 
 void StorageBackend::publishDirectory(const std::string&,
                                       const std::string&) {
-    throw std::runtime_error(
+    throw DirectoryPublicationError(
+        DirectoryPublicationState::NotPublished,
         "Storage backend does not support atomic directory publication");
 }
 
@@ -855,16 +856,32 @@ void FilesystemBackend::publishDirectory(const std::string& stagedPath,
                                          const std::string& finalPath) {
     const std::filesystem::path staged(stagedPath);
     const std::filesystem::path final(finalPath);
-    prepareDirectories(final.parent_path());
+    const std::filesystem::path stagedParent =
+        detail::containingDirectory(staged);
+    const std::filesystem::path parent = detail::containingDirectory(final);
+    if (stagedParent.lexically_normal() != parent.lexically_normal()) {
+        throw DirectoryPublicationError(
+            DirectoryPublicationState::NotPublished,
+            "Atomic directory publication requires sibling staging and final paths");
+    }
+    try {
+        prepareDirectories(parent);
+    } catch (const std::exception& failure) {
+        throw DirectoryPublicationError(
+            DirectoryPublicationState::NotPublished,
+            "Failed to prepare directory publication parent: " +
+                parent.string() + ": " + failure.what());
+    }
 
 #ifdef _WIN32
     if (::MoveFileExW(
             staged.c_str(), final.c_str(), MOVEFILE_WRITE_THROUGH) == 0) {
-        throw std::system_error(
-            static_cast<int>(::GetLastError()),
-            std::system_category(),
+        const std::error_code error(
+            static_cast<int>(::GetLastError()), std::system_category());
+        throw DirectoryPublicationError(
+            DirectoryPublicationState::NotPublished,
             "Failed to publish directory without replacing existing save: " +
-                final.string());
+                final.string() + ": " + error.message());
     }
 #elif defined(__linux__)
     if (::syscall(
@@ -874,24 +891,39 @@ void FilesystemBackend::publishDirectory(const std::string& stagedPath,
             AT_FDCWD,
             final.c_str(),
             1U) != 0) {
-        throw std::system_error(
-            errno,
-            std::generic_category(),
+        const std::error_code error(errno, std::generic_category());
+        throw DirectoryPublicationError(
+            DirectoryPublicationState::NotPublished,
             "Failed to publish directory without replacing existing save: " +
-                final.string());
+                final.string() + ": " + error.message());
     }
-    synchronizeDirectory(final.parent_path());
+    try {
+        synchronizeDirectory(parent);
+    } catch (const std::exception& failure) {
+        throw DirectoryPublicationError(
+            DirectoryPublicationState::Indeterminate,
+            "Published directory but failed to synchronize its parent: " +
+                final.string() + ": " + failure.what());
+    }
 #elif defined(__APPLE__)
     if (::renamex_np(staged.c_str(), final.c_str(), RENAME_EXCL) != 0) {
-        throw std::system_error(
-            errno,
-            std::generic_category(),
+        const std::error_code error(errno, std::generic_category());
+        throw DirectoryPublicationError(
+            DirectoryPublicationState::NotPublished,
             "Failed to publish directory without replacing existing save: " +
-                final.string());
+                final.string() + ": " + error.message());
     }
-    synchronizeDirectory(final.parent_path());
+    try {
+        synchronizeDirectory(parent);
+    } catch (const std::exception& failure) {
+        throw DirectoryPublicationError(
+            DirectoryPublicationState::Indeterminate,
+            "Published directory but failed to synchronize its parent: " +
+                final.string() + ": " + failure.what());
+    }
 #else
-    throw std::runtime_error(
+    throw DirectoryPublicationError(
+        DirectoryPublicationState::NotPublished,
         "Atomic no-replace directory publication is unsupported on this platform");
 #endif
 }

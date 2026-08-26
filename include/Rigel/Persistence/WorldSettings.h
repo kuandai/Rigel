@@ -59,7 +59,9 @@ enum class SavedWorldGenerationPresence {
 SavedWorldGenerationPresence inspectSavedWorldGeneration(
     const PersistenceContext& context);
 
-// Bootstrap recovery must run before creation can begin for this world root.
+// Cleans deletion-authorized abandoned staging. Non-deleting publication
+// handoffs are preserved here and completed by bootstrapWorldGeneration(),
+// which can validate their saved identity and persistence format.
 void recoverAbandonedWorldGenerationStaging(
     const PersistenceContext& context);
 

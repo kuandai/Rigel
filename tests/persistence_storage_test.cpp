@@ -853,3 +853,26 @@ TEST_CASE(FilesystemBackend_failed_session_does_not_disable_overlapping_session)
     usable->commit();
     CHECK_EQ(readFile(storage, path), replacement);
 }
+
+TEST_CASE(FilesystemBackend_directory_publication_requires_sibling_paths) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto sourceParent = directory.path() / "source";
+    const auto finalParent = directory.path() / "final";
+    const auto staged = sourceParent / "world.staging";
+    const auto final = finalParent / "world";
+    std::filesystem::create_directories(staged);
+    std::filesystem::create_directories(finalParent);
+
+    bool definitelyNotPublished = false;
+    try {
+        storage.publishDirectory(staged.string(), final.string());
+    } catch (const DirectoryPublicationError& failure) {
+        definitelyNotPublished =
+            failure.state() == DirectoryPublicationState::NotPublished;
+    }
+
+    CHECK(definitelyNotPublished);
+    CHECK(std::filesystem::is_directory(staged));
+    CHECK(!std::filesystem::exists(final));
+}

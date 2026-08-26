@@ -18,6 +18,27 @@ enum class StorageEntryKind {
     Other
 };
 
+enum class DirectoryPublicationState {
+    NotPublished,
+    Indeterminate
+};
+
+class DirectoryPublicationError : public std::runtime_error {
+public:
+    DirectoryPublicationError(DirectoryPublicationState state,
+                              const std::string& message)
+        : std::runtime_error(message)
+        , m_state(state) {
+    }
+
+    DirectoryPublicationState state() const noexcept {
+        return m_state;
+    }
+
+private:
+    DirectoryPublicationState m_state;
+};
+
 class StorageReadError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -100,8 +121,12 @@ public:
     virtual std::unique_ptr<WorldGenerationBootstrapLock>
     lockWorldGenerationBootstrap(const std::string& worldRoot);
     virtual void remove(const std::string& path) = 0;
-    // Atomically publishes a prepared directory only when the destination does
-    // not already exist. Backends without that guarantee reject the operation.
+    // Atomically publishes a prepared directory to a sibling path only when
+    // the destination does not already exist. A backend may report
+    // NotPublished only when no rename occurred; post-rename failures must be
+    // Indeterminate. Other exception types are also treated as indeterminate
+    // by publication recovery. Backends without the no-replace guarantee
+    // reject the operation.
     virtual void publishDirectory(const std::string& stagedPath,
                                   const std::string& finalPath);
 };

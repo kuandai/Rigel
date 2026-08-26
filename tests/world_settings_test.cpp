@@ -315,15 +315,25 @@ TEST_CASE(WorldSettings_startup_recovers_failed_staging_cleanup) {
         interruptedWrite << "unpublished bytes";
     }
 
-    const auto unrelated = directory.path() / "world_other.staging.unchanged";
-    std::filesystem::create_directories(unrelated);
+    const std::vector<std::filesystem::path> lookalikes = {
+        std::filesystem::path(worldRoot.string() + ".staging.backup"),
+        std::filesystem::path(worldRoot.string() + ".staging.7"),
+        std::filesystem::path(worldRoot.string() + ".staging.7.8.backup"),
+        std::filesystem::path(worldRoot.string() + ".staging.07.8")};
+    for (const auto& lookalike : lookalikes) {
+        std::filesystem::create_directories(lookalike);
+        std::ofstream sentinel(lookalike / "must-survive.txt");
+        sentinel << "unrelated data";
+    }
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();
     const auto restartedContext = contextFor(worldRoot, restartedStorage);
     Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
 
-    CHECK(stagingRoots(worldRoot).empty());
-    CHECK(std::filesystem::exists(unrelated));
+    CHECK(!std::filesystem::exists(abandoned.front()));
+    for (const auto& lookalike : lookalikes) {
+        CHECK(std::filesystem::exists(lookalike / "must-survive.txt"));
+    }
     Persistence::publishNewWorldGeneration(
         savedSettings(), savedDefinition(), restartedContext);
     CHECK_EQ(

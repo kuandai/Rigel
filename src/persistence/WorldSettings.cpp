@@ -291,6 +291,37 @@ std::string stagingRoot(const PersistenceContext& context) {
         std::to_string(nextId.fetch_add(1, std::memory_order_relaxed));
 }
 
+template <typename Integer>
+bool isCanonicalDecimal(std::string_view text) {
+    Integer value = 0;
+    const auto parsed =
+        std::from_chars(text.data(), text.data() + text.size(), value);
+    return parsed.ec == std::errc{} &&
+        parsed.ptr == text.data() + text.size() &&
+        std::to_string(value) == text;
+}
+
+bool isWorldGenerationStagingName(std::string_view worldName,
+                                  std::string_view entryName) {
+    const std::string stagingPrefix =
+        std::string(worldName) + ".staging.";
+    if (!entryName.starts_with(stagingPrefix)) {
+        return false;
+    }
+
+    const std::string_view suffix = entryName.substr(stagingPrefix.size());
+    const size_t separator = suffix.find('.');
+    if (separator == std::string_view::npos ||
+        suffix.find('.', separator + 1) != std::string_view::npos) {
+        return false;
+    }
+
+    using StagingTimestamp = decltype(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    return isCanonicalDecimal<StagingTimestamp>(suffix.substr(0, separator)) &&
+        isCanonicalDecimal<uint64_t>(suffix.substr(separator + 1));
+}
+
 void removeStagingWorld(StorageBackend& storage,
                         const PersistenceContext& stagedContext) {
     std::exception_ptr firstFailure;
@@ -348,14 +379,13 @@ void recoverAbandonedWorldGenerationStaging(
     if (parent.empty()) {
         parent = ".";
     }
-    const std::string stagingPrefix = worldName + ".staging.";
     const std::vector<std::string> entries = storage.list(parent.string());
 
     std::exception_ptr firstFailure;
     for (const std::string& entry : entries) {
         const std::string entryName =
             std::filesystem::path(entry).filename().string();
-        if (!entryName.starts_with(stagingPrefix)) {
+        if (!isWorldGenerationStagingName(worldName, entryName)) {
             continue;
         }
 

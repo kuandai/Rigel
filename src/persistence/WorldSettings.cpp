@@ -497,75 +497,59 @@ void removeCleanupOwnershipMarker(
 void removeStagingDirectory(
     StorageBackend& storage,
     const PersistenceContext& stagedContext) {
-    std::exception_ptr firstFailure;
-    std::vector<std::string> entries;
     const std::filesystem::path stagedRoot(stagedContext.rootPath);
     const StorageEntryKind stagedKind =
         storage.entryKind(stagedContext.rootPath);
-    if (stagedKind == StorageEntryKind::Directory) {
-        try {
-            entries = storage.list(stagedContext.rootPath);
-        } catch (...) {
-            firstFailure = std::current_exception();
-        }
-    } else if (stagedKind != StorageEntryKind::Missing) {
-        firstFailure = std::make_exception_ptr(std::runtime_error(
+    if (stagedKind == StorageEntryKind::Missing) {
+        return;
+    }
+    if (stagedKind != StorageEntryKind::Directory) {
+        throw std::runtime_error(
             "Refusing to clean a staged world path that is not a directory: " +
-            stagedContext.rootPath));
+            stagedContext.rootPath);
     }
 
-    std::stable_sort(
-        entries.begin(),
-        entries.end(),
-        [](const std::string& lhs, const std::string& rhs) {
-            const bool lhsIsMarker =
-                std::filesystem::path(lhs).filename() ==
-                kStagingOwnershipFilename;
-            const bool rhsIsMarker =
-                std::filesystem::path(rhs).filename() ==
-                kStagingOwnershipFilename;
-            return lhsIsMarker < rhsIsMarker;
-        });
+    const std::vector<std::string> entries =
+        storage.list(stagedContext.rootPath);
+    std::vector<std::string> payloadEntries;
+    std::string ownershipMarkerEntry;
     for (const std::string& path : entries) {
-        try {
-            const std::filesystem::path entry(path);
-            if (normalizedPathIdentity(entry.parent_path()) !=
-                normalizedPathIdentity(stagedRoot)) {
-                throw std::runtime_error(
-                    "Refusing to clean an entry outside the owned staging directory: " +
-                    path);
-            }
-            removeEntryIfPresent(storage, path);
-        } catch (...) {
-            if (!firstFailure) {
-                firstFailure = std::current_exception();
-            }
+        const std::filesystem::path entry(path);
+        if (normalizedPathIdentity(entry.parent_path()) !=
+            normalizedPathIdentity(stagedRoot)) {
+            throw std::runtime_error(
+                "Refusing to clean an entry outside the owned staging directory: " +
+                path);
+        }
+        if (entry.filename() == kStagingOwnershipFilename) {
+            ownershipMarkerEntry = path;
+        } else {
+            payloadEntries.push_back(path);
         }
     }
 
-    try {
-        const StorageEntryKind currentKind =
-            storage.entryKind(stagedContext.rootPath);
-        if (currentKind == StorageEntryKind::Directory) {
-            storage.remove(stagedContext.rootPath);
-            if (storage.entryKind(stagedContext.rootPath) !=
-                StorageEntryKind::Missing) {
-                throw std::runtime_error(
-                    "Storage backend did not remove staged world directory: " +
-                    stagedContext.rootPath);
-            }
-        } else if (currentKind != StorageEntryKind::Missing) {
+    for (const std::string& path : payloadEntries) {
+        removeEntryIfPresent(storage, path);
+    }
+
+    if (!ownershipMarkerEntry.empty()) {
+        removeEntryIfPresent(storage, ownershipMarkerEntry);
+    }
+
+    const StorageEntryKind currentKind =
+        storage.entryKind(stagedContext.rootPath);
+    if (currentKind == StorageEntryKind::Directory) {
+        storage.remove(stagedContext.rootPath);
+        if (storage.entryKind(stagedContext.rootPath) !=
+            StorageEntryKind::Missing) {
             throw std::runtime_error(
-                "Refusing to remove a staged world path that is no longer a directory: " +
+                "Storage backend did not remove staged world directory: " +
                 stagedContext.rootPath);
         }
-    } catch (...) {
-        if (!firstFailure) {
-            firstFailure = std::current_exception();
-        }
-    }
-    if (firstFailure) {
-        std::rethrow_exception(firstFailure);
+    } else if (currentKind != StorageEntryKind::Missing) {
+        throw std::runtime_error(
+            "Refusing to remove a staged world path that is no longer a directory: " +
+            stagedContext.rootPath);
     }
 }
 
@@ -601,9 +585,26 @@ void removeStagingWorld(StorageBackend& storage,
         return;
     }
     if (!hasStagingOwnership) {
-        // The external tombstone records an interrupted cleanup, but the
-        // bounded slot may have been reused after publication. Only the
-        // marker inside the current directory can authorize deleting it.
+        // Cleanup can be interrupted after the child marker is removed but
+        // before the now-empty directory is removed. A valid bound external
+        // tombstone authorizes removing only that empty directory; it never
+        // authorizes deleting any entries from a markerless directory.
+        if (hasCleanupOwnership &&
+            storage.list(stagedContext.rootPath).empty()) {
+            if (storage.entryKind(stagedContext.rootPath) !=
+                StorageEntryKind::Directory) {
+                return;
+            }
+            storage.remove(stagedContext.rootPath);
+            if (storage.entryKind(stagedContext.rootPath) !=
+                StorageEntryKind::Missing) {
+                throw std::runtime_error(
+                    "Storage backend did not remove empty staged world directory: " +
+                    stagedContext.rootPath);
+            }
+            removeCleanupOwnershipMarker(
+                storage, worldRoot, stagedContext);
+        }
         return;
     }
 

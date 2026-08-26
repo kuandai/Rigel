@@ -304,28 +304,49 @@ private:
     bool m_acquired = false;
 };
 
-class MarkerRemovingCleanupFailureStorage final
+class PayloadCleanupFailureStorage final
     : public ObservingStorage {
 public:
     void remove(const std::string& path) override {
         const std::filesystem::path removalPath(path);
         if (!m_failed && removalPath.filename() ==
                 "generator-definition.yaml") {
-            const std::filesystem::path marker =
-                removalPath.parent_path() / kStagingOwnershipFilename;
-            if (entryKind(marker.string()) ==
-                Persistence::StorageEntryKind::RegularFile) {
-                Persistence::FilesystemBackend::remove(marker.string());
-            }
             m_failed = true;
             failedStage = removalPath.parent_path();
             throw std::runtime_error(
-                "injected cleanup failure after marker removal");
+                "injected payload cleanup failure");
         }
         Persistence::FilesystemBackend::remove(path);
     }
 
     std::filesystem::path failedStage;
+
+private:
+    bool m_failed = false;
+};
+
+class EmptyStageRemovalFailureStorage final
+    : public ObservingStorage {
+public:
+    bool createDirectoryExclusive(const std::string& path) override {
+        const bool created = Persistence::FilesystemBackend::
+            createDirectoryExclusive(path);
+        if (created) {
+            stagedRoot = path;
+        }
+        return created;
+    }
+
+    void remove(const std::string& path) override {
+        if (!m_failed && std::filesystem::path(path) == stagedRoot) {
+            m_failed = true;
+            throw std::runtime_error(
+                "injected empty staging directory cleanup interruption");
+        }
+        Persistence::FilesystemBackend::remove(path);
+    }
+
+    std::filesystem::path stagedRoot;
 
 private:
     bool m_failed = false;
@@ -1094,16 +1115,16 @@ TEST_CASE(WorldSettings_startup_recovers_failed_staging_cleanup) {
     }
 }
 
-TEST_CASE(WorldSettings_cleanup_tombstone_survives_marker_removal_failure) {
+TEST_CASE(WorldSettings_payload_cleanup_failure_preserves_child_marker) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot =
-        directory.path() / "world_cleanup_after_marker_removal";
+        directory.path() / "world_payload_cleanup_failure";
     const auto unrelated = std::filesystem::path(
         worldRoot.string() + ".staging.7");
     std::filesystem::create_directory(unrelated);
 
     auto storage =
-        std::make_shared<MarkerRemovingCleanupFailureStorage>();
+        std::make_shared<PayloadCleanupFailureStorage>();
     writeText(*storage, unrelated / "must-survive.txt", "unrelated data");
     storage->failOrdinal = 4;
     const auto context = contextFor(worldRoot, storage);
@@ -1115,7 +1136,7 @@ TEST_CASE(WorldSettings_cleanup_tombstone_survives_marker_removal_failure) {
     const std::filesystem::path ownedStage = storage->failedStage;
     CHECK(!ownedStage.empty());
     CHECK(std::filesystem::is_directory(ownedStage));
-    CHECK(!std::filesystem::exists(
+    CHECK(std::filesystem::is_regular_file(
         ownedStage / kStagingOwnershipFilename));
     CHECK(std::filesystem::is_regular_file(
         cleanupOwnershipPathForTest(ownedStage)));
@@ -1130,14 +1151,57 @@ TEST_CASE(WorldSettings_cleanup_tombstone_survives_marker_removal_failure) {
     const auto restartedContext = contextFor(worldRoot, restartedStorage);
     Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
 
-    CHECK(std::filesystem::is_directory(ownedStage));
-    CHECK(std::filesystem::is_regular_file(
-        ownedStage / "generator-definition.yaml"));
-    CHECK(std::filesystem::is_regular_file(
+    CHECK(!std::filesystem::exists(ownedStage));
+    CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(ownedStage)));
     CHECK_EQ(
         readText(*restartedStorage, unrelated / "must-survive.txt"),
         std::string("unrelated data"));
+
+    Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), restartedContext);
+    CHECK_EQ(
+        readText(
+            *restartedStorage,
+            worldRoot / kStagingOwnershipFilename),
+        stagingOwnershipMarkerForTest(worldRoot, ownedStage));
+}
+
+TEST_CASE(WorldSettings_recovery_reclaims_empty_tombstoned_stage) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_empty_tombstoned_stage";
+    auto storage =
+        std::make_shared<EmptyStageRemovalFailureStorage>();
+    storage->failOrdinal = 3;
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+    const std::filesystem::path stagedRoot = storage->stagedRoot;
+    CHECK(!stagedRoot.empty());
+    CHECK(std::filesystem::is_directory(stagedRoot));
+    CHECK(std::filesystem::is_empty(stagedRoot));
+    CHECK(!std::filesystem::exists(
+        stagedRoot / kStagingOwnershipFilename));
+    CHECK(std::filesystem::is_regular_file(
+        cleanupOwnershipPathForTest(stagedRoot)));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext = contextFor(worldRoot, restartedStorage);
+    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+
+    CHECK(!std::filesystem::exists(stagedRoot));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(stagedRoot)));
+    Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), restartedContext);
+    CHECK_EQ(
+        readText(
+            *restartedStorage,
+            worldRoot / kStagingOwnershipFilename),
+        stagingOwnershipMarkerForTest(worldRoot, stagedRoot));
 }
 
 TEST_CASE(WorldSettings_recovery_removes_valid_dangling_tombstone) {
@@ -1161,7 +1225,7 @@ TEST_CASE(WorldSettings_recovery_removes_valid_dangling_tombstone) {
     CHECK(!std::filesystem::exists(cleanupPath));
 }
 
-TEST_CASE(WorldSettings_tombstone_alone_never_owns_present_staging_directory) {
+TEST_CASE(WorldSettings_tombstone_only_nonempty_stage_preserves_entries) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_tombstone_only_stage";
     const auto stagedRoot = std::filesystem::path(

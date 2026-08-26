@@ -113,6 +113,19 @@ Persistence::WorldSettings savedSettings() {
     return settings;
 }
 
+std::string savedSettingsDocument() {
+    return
+        "world:\n"
+        "  schema_version: 1\n"
+        "  display_name: \"Close and Reload\"\n"
+        "  seed: 424242\n"
+        "  generator:\n"
+        "    id: \"rigel:default\"\n"
+        "    source_revision: 19\n"
+        "    definition_schema_version: 1\n"
+        "    semantics_version: 1\n";
+}
+
 void registerSavedDefinitionBlocks(Voxel::BlockRegistry& registry) {
     for (const std::string identifier : {
              "base:stone_shale",
@@ -638,6 +651,33 @@ private:
     std::condition_variable m_changed;
     bool m_attempting = false;
     bool m_acquired = false;
+};
+
+class CorruptingOnLockAcquisitionStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    std::unique_ptr<Persistence::WorldGenerationBootstrapLock>
+    lockWorldGenerationBootstrap(const std::string& worldRoot) override {
+        auto result = Persistence::FilesystemBackend::
+            lockWorldGenerationBootstrap(worldRoot);
+        if (armed) {
+            writeText(
+                *this,
+                std::filesystem::path(worldRoot) / "world-settings.yaml",
+                "world: invalid\n");
+            corrupted = true;
+        }
+        return result;
+    }
+
+    void remove(const std::string& path) override {
+        ++removeAttempts;
+        Persistence::FilesystemBackend::remove(path);
+    }
+
+    bool armed = false;
+    bool corrupted = false;
+    size_t removeAttempts = 0;
 };
 
 class PayloadCleanupFailureStorage final
@@ -3227,6 +3267,258 @@ TEST_CASE(WorldSettings_legacy_save_is_rejected_without_mutation) {
     CHECK_EQ(readText(*storage, legacyPath), legacyBytes);
     CHECK(!std::filesystem::exists(worldRoot / "world-settings.yaml"));
     CHECK(!std::filesystem::exists(worldRoot / "generator-definition.yaml"));
+}
+
+TEST_CASE(WorldSettings_inspection_rejects_invalid_regular_documents) {
+    struct Scenario {
+        std::string name;
+        std::function<void(std::string&, std::string&)> corrupt;
+    };
+
+    const auto replace = [](
+        std::string& document,
+        std::string_view supported,
+        std::string_view invalid) {
+        const size_t position = document.find(supported);
+        if (position == std::string::npos) {
+            throw Test::TestFailure(
+                "Expected canonical document token was not found");
+        }
+        document.replace(position, supported.size(), invalid);
+    };
+    const std::vector<Scenario> scenarios = {
+        {
+            "malformed-settings",
+            [](std::string& settings, std::string&) {
+                settings = "world: invalid\n";
+            },
+        },
+        {
+            "malformed-snapshot",
+            [replace](std::string&, std::string& snapshot) {
+                replace(
+                    snapshot,
+                    "type: \"constant\"",
+                    "type: \"unsupported\"");
+            },
+        },
+        {
+            "truncated-settings",
+            [](std::string& settings, std::string&) {
+                settings.pop_back();
+            },
+        },
+        {
+            "truncated-snapshot",
+            [](std::string&, std::string& snapshot) {
+                snapshot.pop_back();
+            },
+        },
+        {
+            "noncanonical-settings",
+            [](std::string& settings, std::string&) {
+                settings += "\n";
+            },
+        },
+        {
+            "noncanonical-snapshot",
+            [](std::string&, std::string& snapshot) {
+                snapshot += "\n";
+            },
+        },
+        {
+            "unsupported-settings-version",
+            [replace](std::string& settings, std::string&) {
+                replace(settings, "schema_version: 1", "schema_version: 2");
+            },
+        },
+        {
+            "unsupported-definition-version",
+            [replace](std::string& settings, std::string&) {
+                replace(
+                    settings,
+                    "definition_schema_version: 1",
+                    "definition_schema_version: 2");
+            },
+        },
+        {
+            "unsupported-semantics-version",
+            [replace](std::string& settings, std::string&) {
+                replace(
+                    settings,
+                    "semantics_version: 1",
+                    "semantics_version: 2");
+            },
+        },
+        {
+            "structurally-invalid-snapshot",
+            [replace](std::string&, std::string& snapshot) {
+                replace(
+                    snapshot,
+                    "\"base_density\": \"ground\"",
+                    "\"base_density\": \"missing\"");
+            },
+        },
+    };
+
+    for (const Scenario& scenario : scenarios) {
+        Test::TemporaryDirectory directory(
+            "rigel_world_inspection_" + scenario.name);
+        const auto worldRoot = directory.path() / "world_12";
+        auto storage =
+            std::make_shared<Persistence::FilesystemBackend>();
+        const auto context = contextFor(worldRoot, storage);
+        std::string settings = savedSettingsDocument();
+        std::string snapshot =
+            Voxel::serializeGeneratorSnapshot(savedDefinition());
+        scenario.corrupt(settings, snapshot);
+        writeText(*storage, worldRoot / "world-settings.yaml", settings);
+        writeText(
+            *storage,
+            worldRoot / "generator-definition.yaml",
+            snapshot);
+
+        CHECK_EQ(
+            storage->entryKind(
+                (worldRoot / "world-settings.yaml").string()),
+            Persistence::StorageEntryKind::RegularFile);
+        CHECK_EQ(
+            storage->entryKind(
+                (worldRoot / "generator-definition.yaml").string()),
+            Persistence::StorageEntryKind::RegularFile);
+        CHECK_EQ(
+            Persistence::inspectSavedWorldGeneration(context),
+            Persistence::SavedWorldGenerationPresence::LegacyOrIncomplete);
+        CHECK_THROWS(Persistence::loadSavedWorldGeneration(context));
+    }
+}
+
+TEST_CASE(WorldSettings_first_legacy_rejection_preserves_parent_tree) {
+    Test::TemporaryDirectory directory("rigel_world_first_legacy_rejection");
+    const auto worldRoot = directory.path() / "world_13";
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    auto context = contextFor(worldRoot, storage);
+    context.preferredFormat = "memory";
+    writeText(
+        *storage,
+        worldRoot / "world.meta",
+        "legacy CR metadata bytes created without world bootstrap");
+    writeText(
+        *storage,
+        worldRoot / "zones" / "preserve.bin",
+        "legacy chunk tree bytes");
+
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+    const Persistence::NewWorldGeneration currentDefault{
+        savedSettings(), savedDefinition()};
+    const SaveTreeSnapshot before = snapshotSaveTree(directory.path());
+    const std::string expected = rejectionDiagnostic(
+        worldRoot,
+        "world-settings.yaml is missing; generator-definition.yaml is missing");
+
+    CHECK_EQ(
+        exceptionMessage([&] {
+            Persistence::recoverWorldGenerationPublication(
+                persistence, blocks, context);
+        }),
+        expected);
+    CHECK_EQ(snapshotSaveTree(directory.path()), before);
+
+    CHECK_EQ(
+        exceptionMessage([&] {
+            static_cast<void>(Persistence::bootstrapWorldGeneration(
+                currentDefault,
+                persistence,
+                blocks,
+                context));
+        }),
+        expected);
+    CHECK_EQ(snapshotSaveTree(directory.path()), before);
+}
+
+TEST_CASE(WorldSettings_revalidates_existing_root_before_recovery_cleanup) {
+    for (const bool bootstrap : {false, true}) {
+        Test::TemporaryDirectory directory(
+            bootstrap
+                ? "rigel_world_bootstrap_revalidation"
+                : "rigel_world_recovery_revalidation");
+        const auto worldRoot = directory.path() / "world_14";
+        auto storage =
+            std::make_shared<CorruptingOnLockAcquisitionStorage>();
+        auto context = contextFor(worldRoot, storage);
+        context.preferredFormat = "memory";
+
+        Persistence::FormatRegistry formats;
+        formats.registerFormat(
+            Persistence::Backends::Memory::descriptor(),
+            Persistence::Backends::Memory::factory(),
+            Persistence::Backends::Memory::probe());
+        Persistence::PersistenceService persistence(formats);
+        Voxel::BlockRegistry blocks;
+        registerSavedDefinitionBlocks(blocks);
+        writeText(
+            *storage,
+            worldRoot / "world-settings.yaml",
+            savedSettingsDocument());
+        writeText(
+            *storage,
+            worldRoot / "generator-definition.yaml",
+            Voxel::serializeGeneratorSnapshot(savedDefinition()));
+        persistence.saveWorldMetadata(
+            Persistence::WorldMetadata{
+                worldRoot.filename().string(),
+                savedSettings().displayName},
+            context);
+
+        const std::filesystem::path stagedRoot =
+            std::filesystem::path(worldRoot.string() + ".staging.0");
+        writeText(
+            *storage,
+            stagedRoot / kStagingOwnershipFilename,
+            stagingOwnershipMarkerForTest(worldRoot, stagedRoot));
+        writeText(
+            *storage,
+            stagedRoot / "preserve.bin",
+            "recovery must not clean after failed revalidation");
+        storage->removeAttempts = 0;
+        storage->armed = true;
+
+        const auto operation = [&] {
+            if (bootstrap) {
+                const Persistence::NewWorldGeneration currentDefault{
+                    savedSettings(), savedDefinition()};
+                static_cast<void>(Persistence::bootstrapWorldGeneration(
+                    currentDefault,
+                    persistence,
+                    blocks,
+                    context));
+            } else {
+                Persistence::recoverWorldGenerationPublication(
+                    persistence, blocks, context);
+            }
+        };
+        CHECK_EQ(
+            exceptionMessage(operation),
+            rejectionDiagnostic(
+                worldRoot,
+                "world-settings.yaml is invalid: Saved world settings 'world' must be a mapping"));
+        CHECK(storage->corrupted);
+        CHECK_EQ(storage->removeAttempts, static_cast<size_t>(0));
+        CHECK_EQ(
+            readText(*storage, stagedRoot / "preserve.bin"),
+            std::string(
+                "recovery must not clean after failed revalidation"));
+        CHECK_EQ(
+            Persistence::inspectSavedWorldGeneration(context),
+            Persistence::SavedWorldGenerationPresence::LegacyOrIncomplete);
+    }
 }
 
 TEST_CASE(WorldSettings_rejects_dual_runtime_identity_before_write) {

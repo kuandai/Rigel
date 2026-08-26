@@ -56,6 +56,9 @@ enum class SavedWorldGenerationPresence {
     LegacyOrIncomplete
 };
 
+// Classifies save-local generation authority without mutation. Published means
+// both documents are canonical, supported, and structurally valid; persistence
+// format identity and runtime content references are validated when opening.
 SavedWorldGenerationPresence inspectSavedWorldGeneration(
     const PersistenceContext& context);
 

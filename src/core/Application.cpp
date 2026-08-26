@@ -322,9 +322,10 @@ void Application::initialize() {
                    Persistence::SavedWorldGenerationPresence::Published) {
             config.streaming = configProvider.loadStreamingConfig();
         } else {
-            throw std::runtime_error(
-                "Existing world is legacy, unknown, or incompletely published; "
-                "the save was left unchanged");
+            static_cast<void>(
+                Persistence::loadSavedWorldGeneration(persistenceContext));
+            throw std::logic_error(
+                "World generation inspection disagrees with document validation");
         }
 
         detail::ApplicationWorldGenerationBootstrapResult bootstrapped =

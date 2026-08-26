@@ -204,6 +204,45 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_failure_never_installs_generator) 
     }
 }
 
+TEST_CASE(ApplicationWorldGenerationBootstrap_malformed_save_starts_no_generation) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_malformed_save");
+    const auto root = directory.path() / "world_1";
+    auto storage =
+        std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    writeDocument(
+        *storage,
+        root / "world-settings.yaml",
+        "world: invalid\n");
+    writeDocument(
+        *storage,
+        root / "generator-definition.yaml",
+        Rigel::Voxel::serializeGeneratorSnapshot(
+            definition(101u, 0.25f)));
+
+    Rigel::Voxel::WorldSet worldSet;
+    configureWorldSet(worldSet, root, storage, "memory");
+    Rigel::Voxel::World& world = worldSet.createWorld(1);
+    Rigel::Voxel::WorldView view(world, worldSet.resources());
+    const auto before = view.streamingMetrics();
+
+    CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+        worldSet,
+        1,
+        world,
+        view,
+        creation(999u, -1.0f, "installed fallback"),
+        worldSet.persistenceContext(1)));
+    CHECK(world.generator() == nullptr);
+    CHECK(view.generator() == nullptr);
+    CHECK_EQ(
+        view.streamingMetrics().generationJobsStarted,
+        before.generationJobsStarted);
+    CHECK_EQ(view.streamingMetrics().generationJobsStarted, uint64_t{0});
+    CHECK_EQ(view.streamingMetrics().chunkLoadRequestsStarted, uint64_t{0});
+    CHECK_EQ(view.streamingMetrics().meshJobsStarted, uint64_t{0});
+}
+
 TEST_CASE(ApplicationWorldGenerationBootstrap_reload_uses_saved_snapshot) {
     Rigel::Test::TemporaryDirectory directory("rigel_application_bootstrap_reload");
     const auto root = directory.path() / "world_1";

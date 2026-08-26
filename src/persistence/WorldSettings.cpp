@@ -340,6 +340,63 @@ std::string readDocument(StorageBackend& storage,
     return std::string(bytes.begin(), bytes.end());
 }
 
+SavedWorldGeneration loadSavedWorldGenerationDocuments(
+    StorageBackend& storage,
+    const PersistenceContext& context) {
+    requireAuthoritativeGenerationFiles(storage, context);
+
+    WorldSettings settings;
+    try {
+        const std::string settingsDocument = readDocument(
+            storage,
+            childPath(context, kWorldSettingsFilename),
+            kMaxWorldSettingsBytes,
+            "Saved world settings");
+        settings = parseSettings(settingsDocument);
+    } catch (const WorldGenerationLoadError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throwWorldGenerationLoadError(
+            context,
+            "world-settings.yaml is invalid: " +
+                std::string(error.what()));
+    }
+
+    std::string snapshot;
+    try {
+        snapshot = readDocument(
+            storage,
+            childPath(context, kGeneratorSnapshotFilename),
+            kMaxGeneratorSnapshotBytes,
+            "Saved generator definition");
+    } catch (const WorldGenerationLoadError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throwWorldGenerationLoadError(
+            context,
+            "generator-definition.yaml is invalid: " +
+                std::string(error.what()));
+    }
+
+    SavedWorldGeneration saved;
+    saved.settings = settings;
+    try {
+        saved.definition = Voxel::parseGeneratorSnapshot(
+            snapshot,
+            settings.generator.definitionSchemaVersion,
+            settings.seed,
+            settings.generator.semanticsVersion);
+    } catch (const WorldGenerationLoadError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throwWorldGenerationLoadError(
+            context,
+            "generator-definition.yaml is invalid: " +
+                std::string(error.what()));
+    }
+    return saved;
+}
+
 void writeDocument(StorageBackend& storage,
                    const std::string& path,
                    std::string_view document) {
@@ -1108,19 +1165,21 @@ void recoverAbandonedWorldGenerationStagingLocked(
 SavedWorldGenerationPresence inspectSavedWorldGeneration(
     const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
-    if (storage.entryKind(context.rootPath) == StorageEntryKind::Missing) {
+    const StorageEntryKind rootKind = storage.entryKind(context.rootPath);
+    if (rootKind == StorageEntryKind::Missing) {
         return SavedWorldGenerationPresence::Missing;
     }
-
-    const bool hasSettings = storage.entryKind(childPath(
-        context, kWorldSettingsFilename)) == StorageEntryKind::RegularFile;
-    const bool hasSnapshot = storage.entryKind(childPath(
-        context, kGeneratorSnapshotFilename)) == StorageEntryKind::RegularFile;
-    if (storage.entryKind(context.rootPath) == StorageEntryKind::Directory &&
-        hasSettings && hasSnapshot) {
-        return SavedWorldGenerationPresence::Published;
+    if (rootKind != StorageEntryKind::Directory) {
+        return SavedWorldGenerationPresence::LegacyOrIncomplete;
     }
-    return SavedWorldGenerationPresence::LegacyOrIncomplete;
+
+    try {
+        static_cast<void>(loadSavedWorldGenerationDocuments(
+            storage, context));
+        return SavedWorldGenerationPresence::Published;
+    } catch (const WorldGenerationLoadError&) {
+        return SavedWorldGenerationPresence::LegacyOrIncomplete;
+    }
 }
 
 void detail::recoverAbandonedWorldGenerationStagingForTesting(
@@ -1154,8 +1213,15 @@ void recoverWorldGenerationPublication(
     const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
     const std::filesystem::path worldRoot = worldRootPath(context);
+    // An existing invalid root must fail before the filesystem lock can create
+    // its durable sidecar in the save parent.
+    if (storage.entryKind(context.rootPath) != StorageEntryKind::Missing) {
+        static_cast<void>(validatePublicationIdentityAndFormat(
+            persistence, registry, context, worldRoot, {}, false));
+    }
     auto bootstrapLock =
         storage.lockWorldGenerationBootstrap(context.rootPath);
+    // Revalidate under the lock before recovery can remove owned staging.
     if (storage.entryKind(context.rootPath) != StorageEntryKind::Missing) {
         static_cast<void>(validatePublicationIdentityAndFormat(
             persistence, registry, context, worldRoot, {}, false));
@@ -1385,68 +1451,11 @@ static std::string publishValidatedWorldGenerationLocked(
 SavedWorldGeneration loadSavedWorldGeneration(
     const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
-    switch (inspectSavedWorldGeneration(context)) {
-    case SavedWorldGenerationPresence::Missing:
+    if (storage.entryKind(context.rootPath) == StorageEntryKind::Missing) {
         throw std::runtime_error(
             "World save does not exist: " + context.rootPath);
-    case SavedWorldGenerationPresence::LegacyOrIncomplete:
-        requireAuthoritativeGenerationFiles(storage, context);
-        throw std::logic_error(
-            "World generation presence disagrees with authoritative files");
-    case SavedWorldGenerationPresence::Published:
-        break;
     }
-
-    WorldSettings settings;
-    try {
-        const std::string settingsDocument = readDocument(
-            storage,
-            childPath(context, kWorldSettingsFilename),
-            kMaxWorldSettingsBytes,
-            "Saved world settings");
-        settings = parseSettings(settingsDocument);
-    } catch (const WorldGenerationLoadError&) {
-        throw;
-    } catch (const std::exception& error) {
-        throwWorldGenerationLoadError(
-            context,
-            "world-settings.yaml is invalid: " +
-                std::string(error.what()));
-    }
-
-    std::string snapshot;
-    try {
-        snapshot = readDocument(
-            storage,
-            childPath(context, kGeneratorSnapshotFilename),
-            kMaxGeneratorSnapshotBytes,
-            "Saved generator definition");
-    } catch (const WorldGenerationLoadError&) {
-        throw;
-    } catch (const std::exception& error) {
-        throwWorldGenerationLoadError(
-            context,
-            "generator-definition.yaml is invalid: " +
-                std::string(error.what()));
-    }
-
-    SavedWorldGeneration saved;
-    saved.settings = settings;
-    try {
-        saved.definition = Voxel::parseGeneratorSnapshot(
-            snapshot,
-            settings.generator.definitionSchemaVersion,
-            settings.seed,
-            settings.generator.semanticsVersion);
-    } catch (const WorldGenerationLoadError&) {
-        throw;
-    } catch (const std::exception& error) {
-        throwWorldGenerationLoadError(
-            context,
-            "generator-definition.yaml is invalid: " +
-                std::string(error.what()));
-    }
-    return saved;
+    return loadSavedWorldGenerationDocuments(storage, context);
 }
 
 BootstrappedWorldGeneration loadPublishedWorldGeneration(
@@ -1464,9 +1473,16 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
     const Voxel::BlockRegistry& registry,
     const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
+    const std::filesystem::path worldRoot = worldRootPath(context);
+    // An existing invalid root must fail before the filesystem lock can create
+    // its durable sidecar in the save parent.
+    if (storage.entryKind(context.rootPath) != StorageEntryKind::Missing) {
+        static_cast<void>(validatePublicationIdentityAndFormat(
+            persistence, registry, context, worldRoot, {}, false));
+    }
     auto bootstrapLock =
         storage.lockWorldGenerationBootstrap(context.rootPath);
-    const std::filesystem::path worldRoot = worldRootPath(context);
+    // Revalidate under the lock before recovery can remove owned staging.
     if (storage.entryKind(context.rootPath) != StorageEntryKind::Missing) {
         static_cast<void>(validatePublicationIdentityAndFormat(
             persistence, registry, context, worldRoot, {}, false));
@@ -1499,9 +1515,9 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
         return result;
     }
     if (presence == SavedWorldGenerationPresence::LegacyOrIncomplete) {
-        requireAuthoritativeGenerationFiles(storage, context);
+        static_cast<void>(loadSavedWorldGeneration(context));
         throw std::logic_error(
-            "World generation presence disagrees with authoritative files");
+            "World generation inspection disagrees with document validation");
     }
 
     return validatePublicationIdentityAndFormat(

@@ -5,6 +5,7 @@
 #include "Rigel/Voxel/GeneratorSnapshot.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -25,6 +26,7 @@ namespace {
 
 constexpr std::string_view kStagingOwnershipFilename =
     ".rigel-world-generation-stage";
+constexpr std::string_view kCleanupOwnershipSuffix = ".rigel-cleanup";
 
 Voxel::WorldGenConfig savedDefinition() {
     Voxel::WorldGenConfig definition;
@@ -99,6 +101,24 @@ std::vector<std::filesystem::path> stagingRoots(
     return roots;
 }
 
+std::vector<std::filesystem::path> stagingDirectories(
+    const std::filesystem::path& worldRoot) {
+    std::vector<std::filesystem::path> directories;
+    for (const std::filesystem::path& root : stagingRoots(worldRoot)) {
+        if (std::filesystem::is_directory(
+                std::filesystem::symlink_status(root))) {
+            directories.push_back(root);
+        }
+    }
+    return directories;
+}
+
+std::filesystem::path cleanupOwnershipPathForTest(
+    const std::filesystem::path& stagedRoot) {
+    return std::filesystem::path(
+        stagedRoot.string() + std::string(kCleanupOwnershipSuffix));
+}
+
 std::string stagingOwnershipMarkerForTest(
     const std::filesystem::path& worldRoot,
     const std::filesystem::path& stagedRoot) {
@@ -159,7 +179,7 @@ private:
     std::vector<std::string>& m_commits;
 };
 
-class ObservingStorage final : public Persistence::FilesystemBackend {
+class ObservingStorage : public Persistence::FilesystemBackend {
 public:
     size_t failOrdinal = std::numeric_limits<size_t>::max();
     bool failAfterCommit = false;
@@ -189,23 +209,108 @@ private:
     size_t m_openOrdinal = 0;
 };
 
-class CoordinatedPublishStorage final : public Persistence::FilesystemBackend {
+class PausedPublicationStorage final
+    : public Persistence::FilesystemBackend {
 public:
     void publishDirectory(const std::string& stagedPath,
                           const std::string& finalPath) override {
         {
             std::unique_lock lock(m_mutex);
-            ++m_waiting;
-            m_ready.notify_all();
-            m_ready.wait(lock, [&] { return m_waiting == 2; });
+            m_publishReady = true;
+            m_changed.notify_all();
+            m_changed.wait(lock, [&] { return m_releasePublish; });
         }
         Persistence::FilesystemBackend::publishDirectory(stagedPath, finalPath);
     }
 
+    void waitUntilPublishReady() {
+        std::unique_lock lock(m_mutex);
+        m_changed.wait(lock, [&] { return m_publishReady; });
+    }
+
+    void releasePublish() {
+        std::lock_guard lock(m_mutex);
+        m_releasePublish = true;
+        m_changed.notify_all();
+    }
+
 private:
     std::mutex m_mutex;
-    std::condition_variable m_ready;
-    size_t m_waiting = 0;
+    std::condition_variable m_changed;
+    bool m_publishReady = false;
+    bool m_releasePublish = false;
+};
+
+class ObservedLockAcquisitionStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    std::unique_ptr<Persistence::WorldGenerationBootstrapLock>
+    lockWorldGenerationBootstrap(const std::string& worldRoot) override {
+        {
+            std::lock_guard lock(m_mutex);
+            m_attempting = true;
+            m_changed.notify_all();
+        }
+        auto result = Persistence::FilesystemBackend::
+            lockWorldGenerationBootstrap(worldRoot);
+        {
+            std::lock_guard lock(m_mutex);
+            m_acquired = true;
+            m_changed.notify_all();
+        }
+        return result;
+    }
+
+    void waitUntilAttempting() {
+        std::unique_lock lock(m_mutex);
+        m_changed.wait(lock, [&] { return m_attempting; });
+    }
+
+    bool acquired() {
+        std::lock_guard lock(m_mutex);
+        return m_acquired;
+    }
+
+    bool waitBrieflyForAcquisition() {
+        std::unique_lock lock(m_mutex);
+        return m_changed.wait_for(
+            lock,
+            std::chrono::milliseconds(100),
+            [&] { return m_acquired; });
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_changed;
+    bool m_attempting = false;
+    bool m_acquired = false;
+};
+
+class MarkerRemovingCleanupFailureStorage final
+    : public ObservingStorage {
+public:
+    void remove(const std::string& path) override {
+        const std::filesystem::path removalPath(path);
+        if (!m_failed && removalPath.filename() ==
+                "generator-definition.yaml") {
+            const std::filesystem::path marker =
+                removalPath.parent_path() / kStagingOwnershipFilename;
+            if (entryKind(marker.string()) ==
+                Persistence::StorageEntryKind::RegularFile) {
+                Persistence::FilesystemBackend::remove(marker.string());
+            }
+            m_failed = true;
+            failedStage = removalPath.parent_path();
+            throw std::runtime_error(
+                "injected cleanup failure after marker removal");
+        }
+        Persistence::FilesystemBackend::remove(path);
+    }
+
+    std::filesystem::path failedStage;
+
+private:
+    bool m_failed = false;
 };
 
 class CollidingReservationStorage final
@@ -344,7 +449,7 @@ TEST_CASE(WorldSettings_publication_commits_marker_before_payload) {
     CHECK(std::filesystem::exists(worldRoot / "world-settings.yaml"));
 }
 
-TEST_CASE(WorldSettings_marker_write_failure_cleans_only_committed_ownership) {
+TEST_CASE(WorldSettings_marker_write_failure_cleans_exclusive_reservation) {
     for (const bool failAfterCommit : {false, true}) {
         Test::TemporaryDirectory directory("rigel_world_settings");
         const auto worldRoot = directory.path() /
@@ -358,15 +463,7 @@ TEST_CASE(WorldSettings_marker_write_failure_cleans_only_committed_ownership) {
             savedSettings(), savedDefinition(), context));
         CHECK(!std::filesystem::exists(worldRoot));
 
-        const auto staged = stagingRoots(worldRoot);
-        if (failAfterCommit) {
-            CHECK(staged.empty());
-        } else {
-            CHECK_EQ(staged.size(), static_cast<size_t>(1));
-            CHECK(std::filesystem::is_directory(staged.front()));
-            CHECK(!std::filesystem::exists(
-                staged.front() / kStagingOwnershipFilename));
-        }
+        CHECK(stagingRoots(worldRoot).empty());
     }
 }
 
@@ -493,7 +590,7 @@ TEST_CASE(WorldSettings_startup_recovers_failed_staging_cleanup) {
             Persistence::SavedWorldGenerationPresence::Missing);
 
         const std::vector<std::filesystem::path> abandoned =
-            stagingRoots(worldRoot);
+            stagingDirectories(worldRoot);
         CHECK_EQ(abandoned.size(), static_cast<size_t>(1));
         CHECK(std::filesystem::is_regular_file(
             abandoned.front() / kStagingOwnershipFilename));
@@ -518,6 +615,50 @@ TEST_CASE(WorldSettings_startup_recovers_failed_staging_cleanup) {
     }
 }
 
+TEST_CASE(WorldSettings_cleanup_tombstone_survives_marker_removal_failure) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_cleanup_after_marker_removal";
+    const auto unrelated = std::filesystem::path(
+        worldRoot.string() + ".staging.7.8");
+    std::filesystem::create_directory(unrelated);
+
+    auto storage =
+        std::make_shared<MarkerRemovingCleanupFailureStorage>();
+    writeText(*storage, unrelated / "must-survive.txt", "unrelated data");
+    storage->failOrdinal = 4;
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+    CHECK(!std::filesystem::exists(worldRoot));
+
+    const std::filesystem::path ownedStage = storage->failedStage;
+    CHECK(!ownedStage.empty());
+    CHECK(std::filesystem::is_directory(ownedStage));
+    CHECK(!std::filesystem::exists(
+        ownedStage / kStagingOwnershipFilename));
+    CHECK(std::filesystem::is_regular_file(
+        cleanupOwnershipPathForTest(ownedStage)));
+    CHECK(std::filesystem::is_regular_file(
+        ownedStage / "generator-definition.yaml"));
+    CHECK_EQ(
+        readText(*storage, unrelated / "must-survive.txt"),
+        std::string("unrelated data"));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext = contextFor(worldRoot, restartedStorage);
+    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+
+    CHECK(!std::filesystem::exists(ownedStage));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(ownedStage)));
+    CHECK_EQ(
+        readText(*restartedStorage, unrelated / "must-survive.txt"),
+        std::string("unrelated data"));
+}
+
 TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_recovery_ownership";
@@ -531,6 +672,12 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
     std::filesystem::create_directory(unmarkedDirectory);
     writeText(
         *storage, unmarkedDirectory / "must-survive.txt", "unowned directory");
+    const auto malformedCleanupMarker =
+        cleanupOwnershipPathForTest(unmarkedDirectory);
+    writeText(
+        *storage,
+        malformedCleanupMarker,
+        "not a Rigel cleanup marker");
 
     const auto wrongMarkerDirectory = std::filesystem::path(
         worldRoot.string() + ".staging.9.10");
@@ -606,6 +753,9 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
         readText(*storage, unmarkedDirectory / "must-survive.txt"),
         std::string("unowned directory"));
     CHECK_EQ(
+        readText(*storage, malformedCleanupMarker),
+        std::string("not a Rigel cleanup marker"));
+    CHECK_EQ(
         readText(*storage, wrongMarkerDirectory / "must-survive.txt"),
         std::string("marker bound to a different path"));
     CHECK_EQ(
@@ -652,11 +802,78 @@ TEST_CASE(WorldSettings_rejects_trailing_separator_world_roots) {
     CHECK(stagingRoots(worldRoot).empty());
 }
 
+TEST_CASE(WorldSettings_recovery_waits_for_live_publication) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_recovery_publish_race";
+    const auto unrelated = std::filesystem::path(
+        worldRoot.string() + ".staging.7.8");
+    std::filesystem::create_directory(unrelated);
+
+    auto publisherStorage =
+        std::make_shared<PausedPublicationStorage>();
+    auto recoveryStorage =
+        std::make_shared<ObservedLockAcquisitionStorage>();
+    writeText(
+        *publisherStorage,
+        unrelated / "must-survive.txt",
+        "unrelated data");
+    const auto publisherContext = contextFor(worldRoot, publisherStorage);
+    const auto recoveryContext = contextFor(worldRoot, recoveryStorage);
+
+    std::exception_ptr publicationFailure;
+    std::exception_ptr recoveryFailure;
+    std::thread publisher([&] {
+        try {
+            Persistence::publishNewWorldGeneration(
+                savedSettings(), savedDefinition(), publisherContext);
+        } catch (...) {
+            publicationFailure = std::current_exception();
+        }
+    });
+    publisherStorage->waitUntilPublishReady();
+
+    std::thread recovery([&] {
+        try {
+            Persistence::recoverAbandonedWorldGenerationStaging(
+                recoveryContext);
+        } catch (...) {
+            recoveryFailure = std::current_exception();
+        }
+    });
+    recoveryStorage->waitUntilAttempting();
+    const bool acquiredWhilePublisherPaused =
+        recoveryStorage->waitBrieflyForAcquisition();
+    publisherStorage->releasePublish();
+    publisher.join();
+    recovery.join();
+
+    if (publicationFailure) {
+        std::rethrow_exception(publicationFailure);
+    }
+    if (recoveryFailure) {
+        std::rethrow_exception(recoveryFailure);
+    }
+    CHECK(!acquiredWhilePublisherPaused);
+    CHECK(recoveryStorage->acquired());
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(recoveryContext),
+        Persistence::SavedWorldGenerationPresence::Published);
+    const auto loaded =
+        Persistence::loadSavedWorldGeneration(recoveryContext);
+    CHECK_EQ(loaded.settings, savedSettings());
+    CHECK_EQ(loaded.definition.seed, savedDefinition().seed);
+    CHECK_EQ(
+        readText(*recoveryStorage, unrelated / "must-survive.txt"),
+        std::string("unrelated data"));
+}
+
 TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_concurrent";
-    auto storage = std::make_shared<CoordinatedPublishStorage>();
-    const auto context = contextFor(worldRoot, storage);
+    auto storageA = std::make_shared<Persistence::FilesystemBackend>();
+    auto storageB = std::make_shared<Persistence::FilesystemBackend>();
+    const auto contextA = contextFor(worldRoot, storageA);
+    const auto contextB = contextFor(worldRoot, storageB);
 
     auto settingsA = savedSettings();
     auto definitionA = savedDefinition();
@@ -674,7 +891,18 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
 
     std::atomic<size_t> successes = 0;
     std::atomic<size_t> failures = 0;
-    auto publish = [&](const auto& settings, const auto& definition) {
+    std::mutex startMutex;
+    std::condition_variable startChanged;
+    size_t ready = 0;
+    auto publish = [&](const auto& settings,
+                       const auto& definition,
+                       const auto& context) {
+        {
+            std::unique_lock lock(startMutex);
+            ++ready;
+            startChanged.notify_all();
+            startChanged.wait(lock, [&] { return ready == 2; });
+        }
         try {
             Persistence::publishNewWorldGeneration(
                 settings, definition, context);
@@ -683,14 +911,22 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
             ++failures;
         }
     };
-    std::thread first(publish, std::cref(settingsA), std::cref(definitionA));
-    std::thread second(publish, std::cref(settingsB), std::cref(definitionB));
+    std::thread first(
+        publish,
+        std::cref(settingsA),
+        std::cref(definitionA),
+        std::cref(contextA));
+    std::thread second(
+        publish,
+        std::cref(settingsB),
+        std::cref(definitionB),
+        std::cref(contextB));
     first.join();
     second.join();
 
     CHECK_EQ(successes.load(), static_cast<size_t>(1));
     CHECK_EQ(failures.load(), static_cast<size_t>(1));
-    const auto loaded = Persistence::loadSavedWorldGeneration(context);
+    const auto loaded = Persistence::loadSavedWorldGeneration(contextA);
     if (loaded.settings.displayName == settingsA.displayName) {
         CHECK_EQ(loaded.settings.seed, settingsA.seed);
         CHECK_EQ(loaded.definition.densityGraph.nodes.front().value, 0.25f);

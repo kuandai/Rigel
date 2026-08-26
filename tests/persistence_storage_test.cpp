@@ -242,6 +242,53 @@ TEST_CASE(FilesystemBackend_exclusively_creates_only_absent_directories) {
 #endif
 }
 
+TEST_CASE(FilesystemBackend_exclusively_creates_only_absent_files) {
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto marker = directory.path() / "parent" / "marker";
+
+    CHECK(storage.createFileExclusive(marker.string(), "owned marker"));
+    CHECK_EQ(
+        readFile(storage, marker),
+        (std::vector<uint8_t>{
+            'o', 'w', 'n', 'e', 'd', ' ', 'm', 'a', 'r', 'k', 'e', 'r'}));
+    CHECK(!storage.createFileExclusive(marker.string(), "replacement"));
+    CHECK_EQ(
+        readFile(storage, marker),
+        (std::vector<uint8_t>{
+            'o', 'w', 'n', 'e', 'd', ' ', 'm', 'a', 'r', 'k', 'e', 'r'}));
+
+#ifndef _WIN32
+    const auto target = directory.path() / "exclusive-file-target";
+    writeRawFile(target, {7, 8, 9});
+    const auto symlink = directory.path() / "exclusive-file-symlink";
+    std::filesystem::create_symlink(target, symlink);
+    CHECK(!storage.createFileExclusive(symlink.string(), "replacement"));
+    CHECK_EQ(readFile(storage, target), (std::vector<uint8_t>{7, 8, 9}));
+#endif
+}
+
+TEST_CASE(FilesystemBackend_world_bootstrap_lock_does_not_follow_symlink) {
+#ifdef _WIN32
+    throw Rigel::Test::TestSkip(
+        "Bootstrap lock symlink rejection is validated on POSIX platforms");
+#else
+    Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
+    FilesystemBackend storage;
+    const auto worldRoot = directory.path() / "world";
+    const auto target = directory.path() / "lock-target";
+    const auto lockPath = std::filesystem::path(
+        worldRoot.string() + ".rigel-bootstrap.lock");
+    writeRawFile(target, {1, 3, 5});
+    std::filesystem::create_symlink(target, lockPath);
+
+    CHECK_THROWS(storage.lockWorldGenerationBootstrap(worldRoot.string()));
+    CHECK(std::filesystem::is_symlink(
+        std::filesystem::symlink_status(lockPath)));
+    CHECK_EQ(readFile(storage, target), (std::vector<uint8_t>{1, 3, 5}));
+#endif
+}
+
 TEST_CASE(FilesystemBackend_open_write_preserves_missing_parent_traversal) {
     Rigel::Test::TemporaryDirectory directory("rigel_persistence_storage");
     FilesystemBackend storage;

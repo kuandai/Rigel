@@ -65,6 +65,11 @@ public:
     virtual void abort() = 0;
 };
 
+class WorldGenerationBootstrapLock {
+public:
+    virtual ~WorldGenerationBootstrapLock() = default;
+};
+
 class StorageBackend {
 public:
     virtual ~StorageBackend() = default;
@@ -85,6 +90,15 @@ public:
     // its path. Returns false for a collision. Backends without that
     // guarantee reject the operation.
     virtual bool createDirectoryExclusive(const std::string& path);
+    // Creates and durably writes a regular file only when no directory entry
+    // already occupies its path. Returns false for a collision. Backends
+    // without that guarantee reject the operation.
+    virtual bool createFileExclusive(const std::string& path,
+                                     const std::string& contents);
+    // Serializes bootstrap recovery and initial publication for one world.
+    // The lock spans backend instances and cooperating processes.
+    virtual std::unique_ptr<WorldGenerationBootstrapLock>
+    lockWorldGenerationBootstrap(const std::string& worldRoot);
     virtual void remove(const std::string& path) = 0;
     // Atomically publishes a prepared directory only when the destination does
     // not already exist. Backends without that guarantee reject the operation.
@@ -102,6 +116,10 @@ public:
                       const StorageEntryVisitor& visitor) override;
     void mkdirs(const std::string& path) override;
     bool createDirectoryExclusive(const std::string& path) override;
+    bool createFileExclusive(const std::string& path,
+                             const std::string& contents) override;
+    std::unique_ptr<WorldGenerationBootstrapLock>
+    lockWorldGenerationBootstrap(const std::string& worldRoot) override;
     void remove(const std::string& path) override;
     void publishDirectory(const std::string& stagedPath,
                           const std::string& finalPath) override;

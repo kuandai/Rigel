@@ -73,4 +73,6 @@ TEST_CASE(WorldSet_PersistenceContextIncludesProviders) {
 TEST_CASE(StorageBackend_exclusive_directory_creation_defaults_to_rejection) {
     DummyStorage storage;
     CHECK_THROWS(storage.createDirectoryExclusive("staging"));
+    CHECK_THROWS(storage.createFileExclusive("cleanup", "ownership"));
+    CHECK_THROWS(storage.lockWorldGenerationBootstrap("world"));
 }

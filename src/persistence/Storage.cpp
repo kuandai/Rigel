@@ -3,12 +3,14 @@
 #include "AtomicFileCommit.h"
 #include "DurableDirectory.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <system_error>
 
@@ -19,6 +21,8 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #ifdef __APPLE__
 #include <stdio.h>
 #endif
@@ -177,6 +181,155 @@ void prepareDirectories(const std::filesystem::path& path) {
             synchronizeDirectory(directoryPath);
         });
 }
+
+std::filesystem::path worldGenerationLockPath(
+    const std::filesystem::path& worldRoot) {
+    const std::filesystem::path absoluteRoot =
+        std::filesystem::absolute(worldRoot).lexically_normal();
+    return std::filesystem::path(
+        absoluteRoot.string() + ".rigel-bootstrap.lock");
+}
+
+#ifdef _WIN32
+
+class FilesystemWorldGenerationBootstrapLock final
+    : public WorldGenerationBootstrapLock {
+public:
+    explicit FilesystemWorldGenerationBootstrapLock(
+        const std::filesystem::path& worldRoot) {
+        const std::filesystem::path lockPath =
+            worldGenerationLockPath(worldRoot);
+        prepareDirectories(lockPath.parent_path());
+        m_file = ::CreateFileW(
+            lockPath.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+        if (m_file == INVALID_HANDLE_VALUE) {
+            throw std::system_error(
+                static_cast<int>(::GetLastError()),
+                std::system_category(),
+                "Failed to open world bootstrap lock: " +
+                    lockPath.string());
+        }
+
+        BY_HANDLE_FILE_INFORMATION information{};
+        const bool informationRead =
+            ::GetFileInformationByHandle(m_file, &information) != 0;
+        if (!informationRead ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) !=
+                0 ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            const int error = informationRead
+                ? ERROR_INVALID_DATA
+                : static_cast<int>(::GetLastError());
+            ::CloseHandle(m_file);
+            m_file = INVALID_HANDLE_VALUE;
+            throw std::system_error(
+                error,
+                std::system_category(),
+                "World bootstrap lock is not a regular file: " +
+                    lockPath.string());
+        }
+
+        OVERLAPPED overlapped{};
+        if (::LockFileEx(
+                m_file,
+                LOCKFILE_EXCLUSIVE_LOCK,
+                0,
+                1,
+                0,
+                &overlapped) == 0) {
+            const int error = static_cast<int>(::GetLastError());
+            ::CloseHandle(m_file);
+            m_file = INVALID_HANDLE_VALUE;
+            throw std::system_error(
+                error,
+                std::system_category(),
+                "Failed to acquire world bootstrap lock: " +
+                    lockPath.string());
+        }
+    }
+
+    ~FilesystemWorldGenerationBootstrapLock() override {
+        if (m_file == INVALID_HANDLE_VALUE) {
+            return;
+        }
+        OVERLAPPED overlapped{};
+        ::UnlockFileEx(m_file, 0, 1, 0, &overlapped);
+        ::CloseHandle(m_file);
+    }
+
+private:
+    HANDLE m_file = INVALID_HANDLE_VALUE;
+};
+
+#else
+
+class FilesystemWorldGenerationBootstrapLock final
+    : public WorldGenerationBootstrapLock {
+public:
+    explicit FilesystemWorldGenerationBootstrapLock(
+        const std::filesystem::path& worldRoot) {
+        const std::filesystem::path lockPath =
+            worldGenerationLockPath(worldRoot);
+        prepareDirectories(lockPath.parent_path());
+        m_descriptor = ::open(
+            lockPath.c_str(),
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+            0600);
+        if (m_descriptor < 0) {
+            throw std::system_error(
+                errno,
+                std::generic_category(),
+                "Failed to open world bootstrap lock: " +
+                    lockPath.string());
+        }
+
+        struct stat status {};
+        const bool statusRead = ::fstat(m_descriptor, &status) == 0;
+        if (!statusRead || !S_ISREG(status.st_mode)) {
+            const int error = statusRead ? EINVAL : errno;
+            ::close(m_descriptor);
+            m_descriptor = -1;
+            throw std::system_error(
+                error,
+                std::generic_category(),
+                "World bootstrap lock is not a regular file: " +
+                    lockPath.string());
+        }
+
+        while (::flock(m_descriptor, LOCK_EX) != 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            const int error = errno;
+            ::close(m_descriptor);
+            m_descriptor = -1;
+            throw std::system_error(
+                error,
+                std::generic_category(),
+                "Failed to acquire world bootstrap lock: " +
+                    lockPath.string());
+        }
+    }
+
+    ~FilesystemWorldGenerationBootstrapLock() override {
+        if (m_descriptor < 0) {
+            return;
+        }
+        ::flock(m_descriptor, LOCK_UN);
+        ::close(m_descriptor);
+    }
+
+private:
+    int m_descriptor = -1;
+};
+
+#endif
 
 class FileByteReader final : public ByteReader {
 public:
@@ -525,6 +678,160 @@ bool FilesystemBackend::createDirectoryExclusive(const std::string& path) {
 
     synchronizeDirectory(detail::containingDirectory(directory));
     return true;
+}
+
+bool StorageBackend::createFileExclusive(const std::string&,
+                                         const std::string&) {
+    throw std::runtime_error(
+        "Storage backend does not support exclusive file creation");
+}
+
+bool FilesystemBackend::createFileExclusive(
+    const std::string& path,
+    const std::string& contents) {
+    const std::filesystem::path filePath(path);
+    prepareDirectories(filePath.parent_path());
+
+#ifdef _WIN32
+    HANDLE file = ::CreateFileW(
+        filePath.c_str(),
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        const int error = static_cast<int>(::GetLastError());
+        if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
+            return false;
+        }
+        throw std::system_error(
+            error,
+            std::system_category(),
+            "Failed to exclusively create file: " + filePath.string());
+    }
+
+    try {
+        size_t offset = 0;
+        while (offset < contents.size()) {
+            const DWORD remaining = static_cast<DWORD>(std::min<size_t>(
+                contents.size() - offset,
+                std::numeric_limits<DWORD>::max()));
+            DWORD written = 0;
+            if (::WriteFile(
+                    file,
+                    contents.data() + offset,
+                    remaining,
+                    &written,
+                    nullptr) == 0 ||
+                written == 0) {
+                throw std::system_error(
+                    static_cast<int>(::GetLastError()),
+                    std::system_category(),
+                    "Failed to write exclusively created file: " +
+                        filePath.string());
+            }
+            offset += written;
+        }
+        if (::FlushFileBuffers(file) == 0) {
+            throw std::system_error(
+                static_cast<int>(::GetLastError()),
+                std::system_category(),
+                "Failed to synchronize exclusively created file: " +
+                    filePath.string());
+        }
+        if (::CloseHandle(file) == 0) {
+            file = INVALID_HANDLE_VALUE;
+            throw std::system_error(
+                static_cast<int>(::GetLastError()),
+                std::system_category(),
+                "Failed to close exclusively created file: " +
+                    filePath.string());
+        }
+        file = INVALID_HANDLE_VALUE;
+    } catch (...) {
+        if (file != INVALID_HANDLE_VALUE) {
+            ::CloseHandle(file);
+        }
+        ::DeleteFileW(filePath.c_str());
+        throw;
+    }
+#else
+    int descriptor = ::open(
+        filePath.c_str(),
+        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+        0600);
+    if (descriptor < 0) {
+        if (errno == EEXIST) {
+            return false;
+        }
+        throw std::system_error(
+            errno,
+            std::generic_category(),
+            "Failed to exclusively create file: " + filePath.string());
+    }
+
+    try {
+        size_t offset = 0;
+        while (offset < contents.size()) {
+            const ssize_t written = ::write(
+                descriptor,
+                contents.data() + offset,
+                contents.size() - offset);
+            if (written < 0 && errno == EINTR) {
+                continue;
+            }
+            if (written <= 0) {
+                throw std::system_error(
+                    errno == 0 ? EIO : errno,
+                    std::generic_category(),
+                    "Failed to write exclusively created file: " +
+                        filePath.string());
+            }
+            offset += static_cast<size_t>(written);
+        }
+        if (::fsync(descriptor) != 0) {
+            throw std::system_error(
+                errno,
+                std::generic_category(),
+                "Failed to synchronize exclusively created file: " +
+                    filePath.string());
+        }
+        if (::close(descriptor) != 0) {
+            descriptor = -1;
+            throw std::system_error(
+                errno,
+                std::generic_category(),
+                "Failed to close exclusively created file: " +
+                    filePath.string());
+        }
+        descriptor = -1;
+    } catch (...) {
+        if (descriptor >= 0) {
+            ::close(descriptor);
+        }
+        std::error_code cleanupError;
+        std::filesystem::remove(filePath, cleanupError);
+        throw;
+    }
+#endif
+
+    synchronizeDirectory(detail::containingDirectory(filePath));
+    return true;
+}
+
+std::unique_ptr<WorldGenerationBootstrapLock>
+StorageBackend::lockWorldGenerationBootstrap(const std::string&) {
+    throw std::runtime_error(
+        "Storage backend does not support world bootstrap locking");
+}
+
+std::unique_ptr<WorldGenerationBootstrapLock>
+FilesystemBackend::lockWorldGenerationBootstrap(
+    const std::string& worldRoot) {
+    return std::make_unique<FilesystemWorldGenerationBootstrapLock>(
+        worldRoot);
 }
 
 void FilesystemBackend::remove(const std::string& path) {

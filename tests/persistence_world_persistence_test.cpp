@@ -26,6 +26,13 @@ Persistence::WorldSettings testWorldSettings() {
     return Test::savedWorldSettingsFixture("Persistence Test World");
 }
 
+std::vector<uint8_t> readStorageBytes(
+    Persistence::StorageBackend& storage,
+    const std::string& path) {
+    auto reader = storage.openRead(path);
+    return reader->readAt(0, reader->size());
+}
+
 class RejectChunkRegionEnumerationStorage final
     : public Persistence::FilesystemBackend {
 public:
@@ -198,6 +205,23 @@ TEST_CASE(Persistence_WorldReloadRetainsDiscoveredFormatForCloseSave) {
             testWorldSettings(),
             worldSet.persistenceService(),
             creationContext);
+
+        Persistence::PersistenceContext wrongFormatContext =
+            worldSet.persistenceContext(world.id());
+        CHECK_EQ(wrongFormatContext.preferredFormat, configuredFormat);
+        Persistence::saveWorldToDisk(
+            world,
+            testWorldSettings(),
+            worldSet.persistenceService(),
+            wrongFormatContext);
+        CHECK(std::filesystem::exists(
+            persistedFormat == "memory"
+                ? directory.path() / "world.meta"
+                : directory.path() / "worldInfo.json"));
+        CHECK(!std::filesystem::exists(
+            persistedFormat == "memory"
+                ? directory.path() / "worldInfo.json"
+                : directory.path() / "world.meta"));
 
         Persistence::PersistenceContext reloadContext =
             worldSet.persistenceContext(world.id());
@@ -475,9 +499,62 @@ TEST_CASE(Persistence_SaveAPIsRejectUnpublishedWorldWithoutMutation) {
 
     Test::installSavedWorldGenerationDocumentsFixture(
         *storage, context.rootPath, testWorldSettings());
+    const std::string settingsPath =
+        context.rootPath + "/world-settings.yaml";
+    const std::string definitionPath =
+        context.rootPath + "/generator-definition.yaml";
+    const std::vector<uint8_t> settingsBefore =
+        readStorageBytes(*storage, settingsPath);
+    const std::vector<uint8_t> definitionBefore =
+        readStorageBytes(*storage, definitionPath);
+    const std::string abandonedPath =
+        context.rootPath + ".staging.0/unowned-sentinel";
+    const std::string cleanupPath =
+        context.rootPath + ".staging.0.rigel-cleanup";
+    Test::writeWorldGenerationFixtureDocument(
+        *storage, abandonedPath, "leave staged sibling intact");
+    Test::writeWorldGenerationFixtureDocument(
+        *storage, cleanupPath, "leave cleanup sibling intact");
+    const std::vector<uint8_t> abandonedBefore =
+        readStorageBytes(*storage, abandonedPath);
+    const std::vector<uint8_t> cleanupBefore =
+        readStorageBytes(*storage, cleanupPath);
+
     CHECK_THROWS(Persistence::saveWorldToDisk(
         world, testWorldSettings(), service, context));
+    CHECK_THROWS(Persistence::saveChunkToDisk(
+        world, service, context, {0, 0, 0}));
+    CHECK_EQ(readStorageBytes(*storage, settingsPath), settingsBefore);
+    CHECK_EQ(readStorageBytes(*storage, definitionPath), definitionBefore);
+    CHECK_EQ(readStorageBytes(*storage, abandonedPath), abandonedBefore);
+    CHECK_EQ(readStorageBytes(*storage, cleanupPath), cleanupBefore);
     CHECK(!std::filesystem::exists(root / "world.meta"));
     CHECK(!std::filesystem::exists(root / "zones"));
+    CHECK(chunk.isPersistDirty());
+
+    Persistence::PersistenceContext legacyContext = context;
+    const std::filesystem::path legacyRoot = parent.path() / "legacy";
+    legacyContext.rootPath = legacyRoot.string();
+    service.saveWorldMetadata(
+        Persistence::WorldMetadata{
+            legacyRoot.filename().string(), "Legacy Metadata Only"},
+        legacyContext);
+    const std::string legacyMetadataPath =
+        legacyContext.rootPath + "/world.meta";
+    const std::vector<uint8_t> legacyMetadataBefore =
+        readStorageBytes(*storage, legacyMetadataPath);
+
+    CHECK_THROWS(Persistence::saveWorldToDisk(
+        world, testWorldSettings(), service, legacyContext));
+    CHECK_THROWS(Persistence::saveChunkToDisk(
+        world, service, legacyContext, {0, 0, 0}));
+    CHECK_EQ(
+        readStorageBytes(*storage, legacyMetadataPath),
+        legacyMetadataBefore);
+    CHECK(!std::filesystem::exists(
+        legacyRoot / "world-settings.yaml"));
+    CHECK(!std::filesystem::exists(
+        legacyRoot / "generator-definition.yaml"));
+    CHECK(!std::filesystem::exists(legacyRoot / "zones"));
     CHECK(chunk.isPersistDirty());
 }

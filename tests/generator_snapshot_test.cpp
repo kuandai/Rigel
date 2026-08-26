@@ -242,6 +242,11 @@ TEST_CASE(GeneratorSnapshot_rejects_ambiguous_spline_coordinates) {
     definition.densityGraph.nodes.push_back(std::move(spline));
     definition.densityGraph.outputs["base_density"] = "shaped";
 
+    definition.densityGraph.nodes.back().splinePoints.clear();
+    CHECK_THROWS(serializeGeneratorSnapshot(definition));
+
+    definition.densityGraph.nodes.back().splinePoints = {
+        {0.0f, 0.25f}, {1.0f, 0.75f}, {0.0f, -0.5f}};
     CHECK_THROWS(serializeGeneratorSnapshot(definition));
 
     const float infinity = std::numeric_limits<float>::infinity();

@@ -360,6 +360,18 @@ TEST_CASE(WorldGenerator_RejectsAmbiguousSplineCoordinates) {
             .inputs = {"base"},
             .splinePoints = {{0.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, -1.0f}}}};
 
+    config.densityGraph.nodes.back().splinePoints.clear();
+    std::string emptyDiagnostic;
+    try {
+        WorldGenerator generator(registry, config);
+    } catch (const std::exception& error) {
+        emptyDiagnostic = error.what();
+    }
+    CHECK(emptyDiagnostic.find("requires at least one point") !=
+          std::string::npos);
+
+    config.densityGraph.nodes.back().splinePoints = {
+        {0.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, -1.0f}};
     std::string duplicateDiagnostic;
     try {
         WorldGenerator generator(registry, config);

@@ -14,6 +14,7 @@
 #include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Voxel/Block.h"
 #include "Rigel/Voxel/BlockType.h"
+#include "Rigel/Voxel/GeneratorSnapshot.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldResources.h"
@@ -2439,7 +2440,14 @@ TEST_CASE(CRBackend_async_loader_rejects_alternate_default_zone) {
     std::string diagnostic;
     try {
         AsyncChunkLoader loader(
-            service, context, world, 0, 0, 0, 4, nullptr);
+            service,
+            context,
+            world,
+            Rigel::Voxel::kGeneratorSemanticsVersion,
+            0,
+            0,
+            4,
+            nullptr);
     } catch (const std::exception& error) {
         diagnostic = error.what();
     }

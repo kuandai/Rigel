@@ -247,10 +247,11 @@ Current behavior:
   save. A failure before directory publication leaves no final save root; an
   ambiguous or post-publication failure preserves a complete, reopenable
   settings/snapshot/backend identity for the next bootstrap.
-- Bootstrap removes only abandoned staging siblings carrying the exact bound
-  child and cleanup ownership required by the deletion protocol. Markerless or
-  ambiguous entries are preserved in the bounded 64-slot namespace for manual
-  inspection; a transient authorized-cleanup failure is retried on startup.
+- For an existing final root, bootstrap validates the complete saved generation
+  and backend identity before removing any owned staging sibling. A missing
+  root may resume a valid handoff. Other cleanup still requires the exact bound
+  child and cleanup ownership; markerless or ambiguous entries are preserved in
+  the bounded 64-slot namespace for manual inspection.
 - Format-aware publication recovery validates the exact saved snapshot against
   the runtime block registry before publishing a handoff or retiring its
   marker. Unavailable saved block IDs leave the staged/final identity and
@@ -275,9 +276,13 @@ Current behavior:
   resolve the saved backend format without a preferred-format fallback and
   never create or recover a world root. The aggregate save also rejects an
   in-memory `WorldSettings` value that differs from the published record.
+- `loadBootstrapEntities` requires the complete published generation and
+  backend identity before opening entity storage or replaying its journal.
 - `AsyncChunkLoader` validates and retains the published backend format when
-  it is constructed. Dirty eviction writes reuse that validated format rather
-  than re-reading the settings and generator snapshot for every chunk.
+  it is constructed, and rejects a supplied generation version or runtime
+  generator that differs from the saved snapshot. Dirty eviction writes reuse
+  that validated format rather than re-reading the settings and generator
+  snapshot for every chunk.
 - A missing zone metadata document is encoded before recovery-journal replay
   or chunk/entity mutation. Its bounded encoded bytes are retained for later
   publication, so a zone metadata serialization failure leaves aggregate

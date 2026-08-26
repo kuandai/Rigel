@@ -6,6 +6,7 @@
 #include "Rigel/Persistence/RegionLayout.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/WorldPersistence.h"
+#include "Rigel/Voxel/GeneratorSnapshot.h"
 #include "WorldPersistenceDetail.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
@@ -26,13 +27,43 @@ namespace Rigel::Persistence {
 namespace {
 constexpr size_t kMaxRegionLoadAttempts = 3;
 
+bool matchesPublishedGenerator(
+    const Voxel::WorldGenerator& generator,
+    const SavedWorldGeneration& published) {
+    if (generator.config().seed != published.settings.seed ||
+        generator.config().world.version != published.definition.world.version) {
+        return false;
+    }
+    try {
+        return Voxel::serializeGeneratorSnapshot(generator.config()) ==
+            Voxel::serializeGeneratorSnapshot(published.definition);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 PersistenceContext validatedPublishedContext(
     PersistenceService& service,
     const Voxel::World& world,
-    PersistenceContext context) {
+    PersistenceContext context,
+    uint32_t worldGenVersion,
+    const std::shared_ptr<const Voxel::WorldGenerator>& generator) {
     const BootstrappedWorldGeneration published =
         loadPublishedWorldGeneration(
             service, world.blockRegistry(), context);
+    if (worldGenVersion != published.generation.definition.world.version) {
+        throw std::runtime_error(
+            "Runtime generation semantics version does not match authoritative "
+            "generator-definition.yaml for world save '" +
+            context.rootPath + "'");
+    }
+    if (generator &&
+        !matchesPublishedGenerator(*generator, published.generation)) {
+        throw std::runtime_error(
+            "Runtime generator does not match authoritative "
+            "generator-definition.yaml for world save '" +
+            context.rootPath + "'");
+    }
     context.preferredFormat = published.persistenceFormat;
     context.discoverExistingFormat = false;
     return context;
@@ -136,7 +167,11 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
                                    std::shared_ptr<const Voxel::WorldGenerator> generator)
     : m_service(&service),
       m_context(validatedPublishedContext(
-          service, world, std::move(context))),
+          service,
+          world,
+          std::move(context),
+          worldGenVersion,
+          generator)),
       m_format(service.openFormat(m_context)),
       m_world(&world),
       m_worldGenVersion(worldGenVersion),

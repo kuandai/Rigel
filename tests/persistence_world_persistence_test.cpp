@@ -134,11 +134,10 @@ TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
     Persistence::loadBootstrapEntities(loaded, assets, service, context);
     CHECK_EQ(loaded.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
 
-    Voxel::WorldGenConfig generatorConfig;
-    generatorConfig.solidBlock = testIdentifier;
-    generatorConfig.surfaceBlock = testIdentifier;
+    const auto savedGeneration =
+        Persistence::loadSavedWorldGeneration(context);
     auto generator = std::make_shared<Voxel::WorldGenerator>(
-        resources.registry(), std::move(generatorConfig));
+        resources.registry(), savedGeneration.definition);
     loaded.setGenerator(generator);
     Persistence::AsyncChunkLoader loader(
         service,
@@ -166,6 +165,137 @@ TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
         completions.front().outcome,
         Voxel::ChunkLoadOutcome::Loaded);
     CHECK(!loaded.chunkManager().getChunk(loadedCoord)->isPersistDirty());
+}
+
+TEST_CASE(Persistence_CRReloadPreservesContentAndGeneratesFromSavedSnapshot) {
+    Voxel::WorldResources resources;
+    Voxel::BlockType existingBlock;
+    existingBlock.identifier = "rigel:existing_cr_block";
+    existingBlock.isOpaque = true;
+    existingBlock.isSolid = true;
+    const std::string existingIdentifier = existingBlock.identifier;
+    const Voxel::BlockID existingId = resources.registry().registerBlock(
+        existingIdentifier, std::move(existingBlock));
+
+    Voxel::BlockType generatedBlock;
+    generatedBlock.identifier = "rigel:snapshot_generated_block";
+    generatedBlock.isOpaque = true;
+    generatedBlock.isSolid = true;
+    const std::string generatedIdentifier = generatedBlock.identifier;
+    const Voxel::BlockID generatedId = resources.registry().registerBlock(
+        generatedIdentifier, std::move(generatedBlock));
+
+    Persistence::WorldSettings settings = testWorldSettings();
+    settings.displayName = "CR Snapshot Continuity";
+    Voxel::WorldGenConfig definition =
+        Test::savedGeneratorDefinitionFixture(settings);
+    definition.solidBlock = generatedIdentifier;
+    definition.surfaceBlock = generatedIdentifier;
+    definition.waterBlock = generatedIdentifier;
+    definition.shoreBlock = generatedIdentifier;
+    definition.densityGraph.nodes.front().value = 1.0f;
+
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    formats.registerFormat(
+        Persistence::Backends::CR::descriptor(),
+        Persistence::Backends::CR::factory(),
+        Persistence::Backends::CR::probe());
+    Persistence::PersistenceService service(formats);
+    Test::TemporaryDirectory directory("rigel_cr_snapshot_continuity");
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    Persistence::PersistenceContext context;
+    context.rootPath = (directory.path() / "world_8").string();
+    context.preferredFormat = "cr";
+    context.storage = storage;
+
+    Voxel::World source(resources);
+    source.setId(8);
+    context.providers = source.persistenceProvidersHandle();
+    const Persistence::BootstrappedWorldGeneration created =
+        Persistence::bootstrapWorldGeneration(
+            Persistence::NewWorldGeneration{settings, definition},
+            service,
+            resources.registry(),
+            context);
+    CHECK_EQ(created.persistenceFormat, std::string("cr"));
+    source.setGenerator(std::make_shared<Voxel::WorldGenerator>(
+        resources.registry(), created.generation.definition));
+
+    const Voxel::ChunkCoord existingCoord{0, 0, 0};
+    source.setBlock(0, 0, 0, Voxel::BlockState{existingId});
+    auto entity = std::make_unique<Entity::Entity>("rigel:cr_saved_entity");
+    entity->setPosition(glm::vec3(2.0f, 3.0f, 4.0f));
+    const Entity::EntityId savedEntityId =
+        source.entities().spawn(std::move(entity));
+    Persistence::saveWorldToDisk(source, settings, service, context);
+
+    Voxel::World loaded(resources);
+    loaded.setId(8);
+    context.providers = loaded.persistenceProvidersHandle();
+    const Persistence::BootstrappedWorldGeneration reopened =
+        Persistence::bootstrapWorldGeneration(
+            std::nullopt,
+            service,
+            resources.registry(),
+            context);
+    CHECK_EQ(reopened.persistenceFormat, std::string("cr"));
+    auto savedGenerator = std::make_shared<Voxel::WorldGenerator>(
+        resources.registry(), reopened.generation.definition);
+    loaded.setGenerator(savedGenerator);
+    Asset::AssetManager assets;
+    Persistence::loadBootstrapEntities(
+        loaded, assets, service, context);
+    CHECK(loaded.entities().get(savedEntityId) != nullptr);
+
+    Persistence::AsyncChunkLoader loader(
+        service,
+        context,
+        loaded,
+        reopened.generation.definition.world.version,
+        0,
+        0,
+        2,
+        savedGenerator);
+    loader.setPrefetchRadius(0);
+    const Voxel::ChunkCoord unexploredCoord{1, 0, 0};
+    CHECK_EQ(
+        loader.request(Voxel::ChunkLoadRequest{existingCoord, 1}),
+        Voxel::ChunkLoadRequestResult::Queued);
+    CHECK_EQ(
+        loader.request(Voxel::ChunkLoadRequest{unexploredCoord, 2}),
+        Voxel::ChunkLoadRequestResult::Queued);
+
+    std::vector<Voxel::ChunkLoadCompletion> completions;
+    for (size_t attempt = 0; attempt < 8 && completions.size() < 2; ++attempt) {
+        auto drained = loader.drainCompletions(2);
+        completions.insert(
+            completions.end(), drained.begin(), drained.end());
+    }
+    CHECK_EQ(completions.size(), static_cast<size_t>(2));
+    CHECK_EQ(
+        loaded.getBlock(0, 0, 0),
+        Voxel::BlockState{existingId});
+    const auto unexploredCompletion = std::find_if(
+        completions.begin(),
+        completions.end(),
+        [&](const Voxel::ChunkLoadCompletion& completion) {
+            return completion.coord == unexploredCoord;
+        });
+    CHECK(unexploredCompletion != completions.end());
+    if (unexploredCompletion == completions.end()) {
+        return;
+    }
+    CHECK_EQ(
+        unexploredCompletion->outcome,
+        Voxel::ChunkLoadOutcome::Missing);
+
+    Voxel::ChunkBuffer generated;
+    savedGenerator->generate(unexploredCoord, generated);
+    CHECK_EQ(generated.at(0, 0, 0).id, generatedId);
 }
 
 TEST_CASE(Persistence_WorldReloadRetainsDiscoveredFormatForCloseSave) {
@@ -354,15 +484,6 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         const auto secondId = resources.registry().registerBlock(
             secondIdentifier, std::move(secondBlock));
 
-        Voxel::BlockType fillerBlock;
-        fillerBlock.identifier = "base:filler";
-        fillerBlock.model = "cube";
-        fillerBlock.isOpaque = true;
-        fillerBlock.isSolid = true;
-        const std::string fillerIdentifier = fillerBlock.identifier;
-        resources.registry().registerBlock(
-            fillerIdentifier, std::move(fillerBlock));
-
         Persistence::FormatRegistry formats;
         formats.registerFormat(
             Persistence::Backends::Memory::descriptor(),
@@ -417,11 +538,10 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         Voxel::World loaded(resources);
         loaded.setId(1);
         context.providers = loaded.persistenceProvidersHandle();
-        Voxel::WorldGenConfig generatorConfig;
-        generatorConfig.solidBlock = fillerIdentifier;
-        generatorConfig.surfaceBlock = fillerIdentifier;
+        const auto savedGeneration =
+            Persistence::loadSavedWorldGeneration(context);
         auto generator = std::make_shared<Voxel::WorldGenerator>(
-            resources.registry(), std::move(generatorConfig));
+            resources.registry(), savedGeneration.definition);
         loaded.setGenerator(generator);
         Persistence::AsyncChunkLoader loader(
             service,

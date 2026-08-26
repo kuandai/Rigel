@@ -85,7 +85,8 @@ inline std::string quoteWorldSettingsFixtureString(std::string_view value) {
 }
 
 inline SavedWorldGenerationFixtureDocuments savedWorldGenerationFixtureDocuments(
-    const Persistence::WorldSettings& settings) {
+    const Persistence::WorldSettings& settings,
+    const Voxel::WorldGenConfig& definition) {
     SavedWorldGenerationFixtureDocuments documents;
     documents.settings =
         "world:\n"
@@ -102,9 +103,14 @@ inline SavedWorldGenerationFixtureDocuments savedWorldGenerationFixtureDocuments
         std::to_string(settings.generator.definitionSchemaVersion) + "\n" +
         "    semantics_version: " +
         std::to_string(settings.generator.semanticsVersion) + "\n";
-    documents.definition = Voxel::serializeGeneratorSnapshot(
-        savedGeneratorDefinitionFixture(settings));
+    documents.definition = Voxel::serializeGeneratorSnapshot(definition);
     return documents;
+}
+
+inline SavedWorldGenerationFixtureDocuments savedWorldGenerationFixtureDocuments(
+    const Persistence::WorldSettings& settings) {
+    return savedWorldGenerationFixtureDocuments(
+        settings, savedGeneratorDefinitionFixture(settings));
 }
 
 inline void writeWorldGenerationFixtureDocument(
@@ -121,9 +127,10 @@ inline void writeWorldGenerationFixtureDocument(
 inline void installSavedWorldGenerationDocumentsFixture(
     Persistence::StorageBackend& storage,
     const std::string& rootPath,
-    const Persistence::WorldSettings& settings) {
+    const Persistence::WorldSettings& settings,
+    const Voxel::WorldGenConfig& definition) {
     const SavedWorldGenerationFixtureDocuments documents =
-        savedWorldGenerationFixtureDocuments(settings);
+        savedWorldGenerationFixtureDocuments(settings, definition);
     writeWorldGenerationFixtureDocument(
         storage,
         rootPath + "/world-settings.yaml",
@@ -134,17 +141,40 @@ inline void installSavedWorldGenerationDocumentsFixture(
         documents.definition);
 }
 
+inline void installSavedWorldGenerationDocumentsFixture(
+    Persistence::StorageBackend& storage,
+    const std::string& rootPath,
+    const Persistence::WorldSettings& settings) {
+    installSavedWorldGenerationDocumentsFixture(
+        storage,
+        rootPath,
+        settings,
+        savedGeneratorDefinitionFixture(settings));
+}
+
 inline void installSavedWorldGenerationFixture(
     Persistence::PersistenceService& persistence,
     const Persistence::PersistenceContext& context,
-    const Persistence::WorldSettings& settings) {
+    const Persistence::WorldSettings& settings,
+    const Voxel::WorldGenConfig& definition) {
     installSavedWorldGenerationDocumentsFixture(
-        *context.storage, context.rootPath, settings);
+        *context.storage, context.rootPath, settings, definition);
     persistence.saveWorldMetadata(
         Persistence::WorldMetadata{
             std::filesystem::path(context.rootPath).filename().string(),
             settings.displayName},
         context);
+}
+
+inline void installSavedWorldGenerationFixture(
+    Persistence::PersistenceService& persistence,
+    const Persistence::PersistenceContext& context,
+    const Persistence::WorldSettings& settings) {
+    installSavedWorldGenerationFixture(
+        persistence,
+        context,
+        settings,
+        savedGeneratorDefinitionFixture(settings));
 }
 
 } // namespace Rigel::Test

@@ -166,12 +166,12 @@ then the complete directory is atomically published without replacing an
 existing root. Failed creation never exposes a partial final root. A root
 containing only one identity file, or lacking a decodable authoritative backend
 marker, is incomplete and is not loaded or repaired from current preferences.
-Startup removes deletion-authorized abandoned staging siblings before
-inspecting or creating the world, so a transient authorized-cleanup failure is
-retried before another publication attempt can begin. Markerless or ambiguous
-staging entries are preserved in the bounded slot namespace for inspection.
-Existing save data without both files is legacy or unknown and is rejected
-without mutation.
+When a final root exists, startup validates its settings, snapshot, referenced
+content, and backend identity before removing any deletion-authorized staging
+sibling. A missing final root may still resume a valid publication handoff.
+Markerless or ambiguous staging entries are preserved in the bounded slot
+namespace for inspection. Existing save data without both files is legacy or
+unknown and is rejected without mutation.
 
 The seed and source revision are deliberately absent from the generator
 snapshot. The seed and evaluator semantics version are applied from

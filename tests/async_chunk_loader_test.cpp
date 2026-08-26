@@ -272,6 +272,15 @@ ChunkLoadRequest makeLoadRequest(ChunkCoord coord) {
     return {coord, nextRequestId++};
 }
 
+std::string exceptionMessage(const std::function<void()>& operation) {
+    try {
+        operation();
+    } catch (const std::exception& error) {
+        return error.what();
+    }
+    throw Rigel::Test::TestFailure("Expected operation to fail");
+}
+
 class LoaderWorkGate {
 public:
     void enterAndWait() {
@@ -457,6 +466,30 @@ bool waitForPayloadCompletions(const AsyncChunkLoader& loader, size_t count) {
         payloadCompletionCount(loader) >= count;
 }
 
+WorldGenConfig loaderGeneratorDefinition() {
+    WorldGenConfig config;
+    config.seed = 1;
+    config.solidBlock = "rigel:test_solid";
+    config.surfaceBlock = "rigel:test_surface";
+    config.waterBlock = config.solidBlock;
+    config.shoreBlock = config.surfaceBlock;
+    config.terrain.baseHeight = 64.0f;
+    config.terrain.heightVariation = 0.0f;
+    config.terrain.surfaceDepth = 1;
+    config.biomes.entries.clear();
+
+    WorldGenConfig::DensityNodeConfig density;
+    density.id = "flat_height";
+    density.type = "y";
+    density.scale = -1.0f;
+    density.offset = 64.0f;
+    config.densityGraph.nodes.push_back(std::move(density));
+    config.densityGraph.outputs["base_density"] = "flat_height";
+    config.stageEnabled["caves"] = false;
+    config.stageEnabled["structures"] = false;
+    return config;
+}
+
 std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     BlockType solid;
     solid.identifier = "rigel:test_solid";
@@ -470,14 +503,8 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     surface.isSolid = true;
     registry.registerBlock(surface.identifier, surface);
 
-    WorldGenConfig config;
-    config.seed = 1;
-    config.solidBlock = solid.identifier;
-    config.surfaceBlock = surface.identifier;
-    config.terrain.baseHeight = 64.0f;
-    config.terrain.heightVariation = 0.0f;
-    config.terrain.surfaceDepth = 1;
-    return std::make_shared<WorldGenerator>(registry, std::move(config));
+    return std::make_shared<WorldGenerator>(
+        registry, loaderGeneratorDefinition());
 }
 
 BlockID registerTestBlock(BlockRegistry& registry, const std::string& identifier) {
@@ -575,11 +602,14 @@ struct MemoryContext {
         context.rootPath = directory.path().string();
         context.preferredFormat = "memory";
         context.storage = std::make_shared<FilesystemBackend>();
+        auto settings = Rigel::Test::savedWorldSettingsFixture(
+            "Async Chunk Loader Test World");
+        settings.seed = loaderGeneratorDefinition().seed;
         Rigel::Test::installSavedWorldGenerationFixture(
             service,
             context,
-            Rigel::Test::savedWorldSettingsFixture(
-                "Async Chunk Loader Test World"));
+            settings,
+            loaderGeneratorDefinition());
     }
 };
 
@@ -1072,6 +1102,75 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK_EQ(resolved.front().coord, coord);
     CHECK_EQ(resolved.front().requestId, request.requestId);
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
+}
+
+TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto authoritative = makeGenerator(resources.registry());
+    world.setGenerator(authoritative);
+    MemoryContext context;
+
+    auto divergentDefinition = loaderGeneratorDefinition();
+    divergentDefinition.densityGraph.nodes.front().offset = 32.0f;
+    auto divergent = std::make_shared<WorldGenerator>(
+        resources.registry(), std::move(divergentDefinition));
+
+    CHECK_EQ(
+        exceptionMessage([&] {
+            AsyncChunkLoader loader(
+                context.service,
+                context.context,
+                world,
+                authoritative->config().world.version,
+                0,
+                0,
+                1,
+                divergent);
+        }),
+        "Runtime generator does not match authoritative "
+        "generator-definition.yaml for world save '" +
+            context.context.rootPath + "'");
+    CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
+
+    auto wrongSeedDefinition = loaderGeneratorDefinition();
+    wrongSeedDefinition.seed += 1;
+    auto wrongSeed = std::make_shared<WorldGenerator>(
+        resources.registry(), std::move(wrongSeedDefinition));
+    CHECK_EQ(
+        exceptionMessage([&] {
+            AsyncChunkLoader loader(
+                context.service,
+                context.context,
+                world,
+                authoritative->config().world.version,
+                0,
+                0,
+                1,
+                wrongSeed);
+        }),
+        "Runtime generator does not match authoritative "
+        "generator-definition.yaml for world save '" +
+            context.context.rootPath + "'");
+    CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
+
+    CHECK_EQ(
+        exceptionMessage([&] {
+            AsyncChunkLoader loader(
+                context.service,
+                context.context,
+                world,
+                authoritative->config().world.version + 1,
+                0,
+                0,
+                1,
+                authoritative);
+        }),
+        "Runtime generation semantics version does not match authoritative "
+        "generator-definition.yaml for world save '" +
+            context.context.rootPath + "'");
+    CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
 }
 
 TEST_CASE(AsyncChunkLoader_ExecutionStateTracksPhysicalRegionAndPayloadOwners) {
@@ -6152,11 +6251,14 @@ TEST_CASE(AsyncChunkLoader_PartialSpan_RespectsDisabledBaseFillCapability) {
     context.rootPath = directory.path().string();
     context.preferredFormat = descriptor.id;
     context.storage = std::make_shared<FilesystemBackend>();
+    auto settings = Rigel::Test::savedWorldSettingsFixture(
+        "Disabled Base Fill Test World");
+    settings.seed = loaderGeneratorDefinition().seed;
     Rigel::Test::installSavedWorldGenerationFixture(
         service,
         context,
-        Rigel::Test::savedWorldSettingsFixture(
-            "Disabled Base Fill Test World"));
+        settings,
+        loaderGeneratorDefinition());
     saveRegionForPayload(service, context, "rigel:default", coord, payload);
 
     AsyncChunkLoader loader(

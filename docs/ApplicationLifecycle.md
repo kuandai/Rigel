@@ -77,7 +77,9 @@ Shutdown persists world state and releases resources.
      rejected unchanged before either runtime owner receives a generator.
    - `WorldGenerator` is then attached to both.
 8. Load entity data from disk (chunks are lazy-loaded).
-   - `loadBootstrapEntities(...)` validates and adds persisted entities without
+   - `loadBootstrapEntities(...)` first requires the published settings,
+     generator snapshot, and backend identity. Only then may it replay an
+     entity journal, validate records, and add persisted entities without
      changing live chunks or unrelated entities.
 9. Create the async chunk loader (disk IO) and wire it into `WorldView`.
    - Loader provides non-blocking requests + budgeted apply callbacks.

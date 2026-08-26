@@ -293,7 +293,9 @@ void Application::initialize() {
         Persistence::PersistenceContext persistenceContext =
             m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId);
         Persistence::recoverWorldGenerationPublication(
-            m_impl->world.worldSet.persistenceService(), persistenceContext);
+            m_impl->world.worldSet.persistenceService(),
+            m_impl->world.worldSet.resources().registry(),
+            persistenceContext);
         std::optional<Persistence::NewWorldGeneration> creation;
         const auto savedPresence =
             Persistence::inspectSavedWorldGeneration(persistenceContext);

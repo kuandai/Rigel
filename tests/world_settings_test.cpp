@@ -1,4 +1,5 @@
 #include "TestFramework.h"
+#include "GeneratorDefinitionTestRegistry.h"
 
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
@@ -7,6 +8,7 @@
 #include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/GeneratorSnapshot.h"
+#include "WorldSettingsDetail.h"
 
 #include <algorithm>
 #include <atomic>
@@ -30,10 +32,23 @@ using namespace Rigel;
 
 namespace Rigel::Persistence {
 
-// Most tests in this file focus on staging and recovery. Keep their call sites
-// compact while exercising the production requirement that every publication
-// also contains an authoritative backend marker.
-static std::string publishNewWorldGeneration(
+// Publication fault tests still enter through the supported lifecycle. Their
+// fixture registry contains every referenced block unless a test explicitly
+// supplies a registry to exercise missing-content rejection.
+static std::string bootstrapCreationForTest(
+    const WorldSettings& settings,
+    const Voxel::WorldGenConfig& definition,
+    PersistenceService& persistence,
+    const PersistenceContext& context) {
+    Voxel::BlockRegistry registry;
+    Test::registerGeneratorDefinitionBlocks(definition, registry);
+    const NewWorldGeneration creation{settings, definition};
+    return bootstrapWorldGeneration(
+               creation, persistence, registry, context)
+        .persistenceFormat;
+}
+
+static std::string bootstrapCreationForTest(
     const WorldSettings& settings,
     const Voxel::WorldGenConfig& definition,
     const PersistenceContext& context) {
@@ -45,7 +60,7 @@ static std::string publishNewWorldGeneration(
     PersistenceService persistence(formats);
     PersistenceContext creationContext = context;
     creationContext.preferredFormat = "memory";
-    return publishNewWorldGeneration(
+    return bootstrapCreationForTest(
         settings,
         definition,
         persistence,
@@ -1137,7 +1152,7 @@ TEST_CASE(WorldSettings_close_reload_uses_only_saved_generator_snapshot) {
     Voxel::WorldGenConfig installed = savedDefinition();
     const Persistence::WorldSettings settings = savedSettings();
 
-    Persistence::publishNewWorldGeneration(settings, installed, context);
+    Persistence::bootstrapCreationForTest(settings, installed, context);
     CHECK_EQ(
         Persistence::inspectSavedWorldGeneration(context),
         Persistence::SavedWorldGenerationPresence::Published);
@@ -1176,7 +1191,7 @@ TEST_CASE(WorldSettings_reload_uses_save_owned_display_name) {
     const auto worldRoot = directory.path() / "world_display_name";
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
     auto context = contextFor(worldRoot, storage);
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context);
 
     Persistence::FormatRegistry formats;
@@ -1214,7 +1229,7 @@ TEST_CASE(WorldSettings_publication_commits_marker_before_payload) {
     auto storage = std::make_shared<ObservingStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context);
 
     CHECK_EQ(storage->commits.size(), static_cast<size_t>(5));
@@ -1252,7 +1267,7 @@ TEST_CASE(WorldSettings_parentless_relative_root_publishes_and_reloads) {
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
     auto context = contextFor(relativeRoot, storage);
 
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context);
     CHECK(std::filesystem::is_directory(actualRoot));
     CHECK(!std::filesystem::exists(
@@ -1382,6 +1397,41 @@ TEST_CASE(WorldSettings_creation_uses_the_published_canonical_definition) {
         Voxel::serializeGeneratorSnapshot(reloaded.generation.definition));
 }
 
+TEST_CASE(WorldSettings_bootstrap_rejects_unavailable_blocks_before_publication) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_missing_block";
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    auto context = contextFor(worldRoot, storage);
+    context.preferredFormat = "memory";
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+    Persistence::NewWorldGeneration creation{
+        savedSettings(), savedDefinition()};
+    creation.definition.shoreBlock = "base:unavailable-shore";
+
+    std::string failureMessage;
+    try {
+        static_cast<void>(Persistence::bootstrapWorldGeneration(
+            creation, persistence, blocks, context));
+    } catch (const std::invalid_argument& failure) {
+        failureMessage = failure.what();
+    }
+
+    CHECK(failureMessage.find("base:unavailable-shore") !=
+          std::string::npos);
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(context),
+        Persistence::SavedWorldGenerationPresence::Missing);
+    CHECK(!std::filesystem::exists(worldRoot));
+    CHECK(stagingRoots(worldRoot).empty());
+}
+
 TEST_CASE(WorldSettings_rejects_corrupted_staged_world_id_before_publish) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot =
@@ -1391,7 +1441,7 @@ TEST_CASE(WorldSettings_rejects_corrupted_staged_world_id_before_publish) {
             StagedMetadataCorruption::WorldId);
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
 
     CHECK(storage->metadataCorrupted);
@@ -1413,7 +1463,7 @@ TEST_CASE(WorldSettings_rejects_corrupted_staged_display_name_before_publish) {
             StagedMetadataCorruption::DisplayName);
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
 
     CHECK(storage->metadataCorrupted);
@@ -1434,7 +1484,7 @@ TEST_CASE(WorldSettings_cleanup_rechecks_child_ownership_for_each_payload) {
         std::make_shared<ReplacingPayloadCleanupStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     CHECK(storage->metadataCorrupted);
     CHECK(storage->stageReplaced);
@@ -1450,7 +1500,7 @@ TEST_CASE(WorldSettings_cleanup_rechecks_child_ownership_for_each_payload) {
         std::make_shared<Persistence::FilesystemBackend>();
     const auto restartedContext =
         contextFor(worldRoot, restartedStorage);
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
 
     CHECK_EQ(
         readText(*restartedStorage, storage->replacementPayload),
@@ -1468,7 +1518,7 @@ TEST_CASE(WorldSettings_definite_pre_rename_failure_recovers_handoff) {
         std::make_shared<DefinitelyFailedPublicationStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
 
     CHECK(!storage->stagedRoot.empty());
@@ -1515,7 +1565,7 @@ TEST_CASE(WorldSettings_not_published_failure_preserves_reused_stage) {
         std::make_shared<ReplacedDefinitelyFailedPublicationStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     CHECK(!std::filesystem::exists(worldRoot));
     CHECK_EQ(
@@ -1565,7 +1615,7 @@ TEST_CASE(WorldSettings_handoff_precedes_child_marker_during_recovery) {
         std::make_shared<ChildRetirementFailureStorage>();
     const auto interruptedContext = contextFor(worldRoot, interruptedStorage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), interruptedContext));
     const std::filesystem::path stagedRoot =
         interruptedStorage->stagedRoot;
@@ -1584,7 +1634,7 @@ TEST_CASE(WorldSettings_handoff_precedes_child_marker_during_recovery) {
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();
     const auto restartedContext = contextFor(worldRoot, restartedStorage);
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
     CHECK(std::filesystem::exists(stagedRoot / "generator-definition.yaml"));
     CHECK(std::filesystem::exists(stagedRoot / "world-settings.yaml"));
     CHECK(std::filesystem::exists(stagedRoot / "world.meta"));
@@ -1601,7 +1651,7 @@ TEST_CASE(WorldSettings_handoff_precedes_child_marker_during_recovery) {
         savedSettings(), savedDefinition()};
     unrelatedCreation.definition.shoreBlock = "base:missing-installed-block";
     Persistence::recoverWorldGenerationPublication(
-        persistence, restartedContext);
+        persistence, blocks, restartedContext);
     CHECK_EQ(
         Persistence::inspectSavedWorldGeneration(restartedContext),
         Persistence::SavedWorldGenerationPresence::Published);
@@ -1627,7 +1677,7 @@ TEST_CASE(WorldSettings_restart_finishes_indeterminate_published_handoff) {
         std::make_shared<IndeterminatePublicationStorage>();
     const auto interruptedContext = contextFor(worldRoot, interruptedStorage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), interruptedContext));
     const std::filesystem::path stagedRoot =
         interruptedStorage->stagedRoot;
@@ -1644,7 +1694,7 @@ TEST_CASE(WorldSettings_restart_finishes_indeterminate_published_handoff) {
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();
     const auto restartedContext = contextFor(worldRoot, restartedStorage);
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
     CHECK(std::filesystem::exists(
         cleanupOwnershipPathForTest(stagedRoot)));
 
@@ -1678,7 +1728,7 @@ TEST_CASE(WorldSettings_handoff_final_rejects_corrupted_world_id_without_deletio
         std::make_shared<IndeterminatePublicationStorage>();
     const auto interruptedContext = contextFor(worldRoot, interruptedStorage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), interruptedContext));
     const std::filesystem::path stagedRoot =
         interruptedStorage->stagedRoot;
@@ -1731,7 +1781,7 @@ TEST_CASE(WorldSettings_restart_retires_interrupted_external_handoff) {
         std::make_shared<HandoffRemovalFailureStorage>();
     const auto interruptedContext = contextFor(worldRoot, interruptedStorage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), interruptedContext));
     const std::filesystem::path stagedRoot =
         interruptedStorage->stagedRoot;
@@ -1777,7 +1827,7 @@ TEST_CASE(WorldSettings_recovery_resumes_moved_back_handoff_without_deletion) {
         std::make_shared<MovedBackPublicationStorage>();
     const auto interruptedContext = contextFor(worldRoot, interruptedStorage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), interruptedContext));
     const std::filesystem::path stagedRoot =
         interruptedStorage->stagedRoot;
@@ -1792,7 +1842,7 @@ TEST_CASE(WorldSettings_recovery_resumes_moved_back_handoff_without_deletion) {
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();
     const auto restartedContext = contextFor(worldRoot, restartedStorage);
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
     CHECK(std::filesystem::exists(stagedRoot / "generator-definition.yaml"));
     CHECK(std::filesystem::exists(stagedRoot / "world-settings.yaml"));
     CHECK(std::filesystem::exists(stagedRoot / "world.meta"));
@@ -1818,6 +1868,70 @@ TEST_CASE(WorldSettings_recovery_resumes_moved_back_handoff_without_deletion) {
         cleanupOwnershipPathForTest(stagedRoot)));
 }
 
+TEST_CASE(WorldSettings_recovery_rejects_unavailable_saved_blocks_before_publish) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_handoff_missing_block";
+    auto interruptedStorage =
+        std::make_shared<MovedBackPublicationStorage>();
+    const auto interruptedContext = contextFor(worldRoot, interruptedStorage);
+    auto definition = savedDefinition();
+    definition.shoreBlock = "base:retired-shore";
+
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
+        savedSettings(), definition, interruptedContext));
+    const std::filesystem::path stagedRoot = interruptedStorage->stagedRoot;
+    const std::string snapshotBefore = readText(
+        *interruptedStorage, stagedRoot / "generator-definition.yaml");
+    const std::filesystem::path handoffMarker =
+        cleanupOwnershipPathForTest(stagedRoot);
+    const std::string handoffBefore =
+        readText(*interruptedStorage, handoffMarker);
+    CHECK(!std::filesystem::exists(worldRoot));
+    CHECK(std::filesystem::is_directory(stagedRoot));
+
+    auto restartedStorage =
+        std::make_shared<PublishCountingStorage>();
+    const auto restartedContext = contextFor(worldRoot, restartedStorage);
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+
+    CHECK_THROWS(Persistence::recoverWorldGenerationPublication(
+        persistence, blocks, restartedContext));
+    CHECK_THROWS(Persistence::bootstrapWorldGeneration(
+        std::nullopt, persistence, blocks, restartedContext));
+    CHECK_EQ(restartedStorage->publishAttempts, static_cast<size_t>(0));
+    CHECK(!std::filesystem::exists(worldRoot));
+    CHECK(std::filesystem::is_directory(stagedRoot));
+    CHECK_EQ(
+        readText(*restartedStorage, stagedRoot / "generator-definition.yaml"),
+        snapshotBefore);
+    CHECK_EQ(readText(*restartedStorage, handoffMarker), handoffBefore);
+
+    Voxel::BlockType restoredBlock;
+    restoredBlock.identifier = definition.shoreBlock;
+    blocks.registerBlock(
+        definition.shoreBlock, std::move(restoredBlock));
+    Persistence::recoverWorldGenerationPublication(
+        persistence, blocks, restartedContext);
+    CHECK_EQ(restartedStorage->publishAttempts, static_cast<size_t>(1));
+    const auto bootstrapped = Persistence::bootstrapWorldGeneration(
+        std::nullopt, persistence, blocks, restartedContext);
+
+    CHECK_EQ(bootstrapped.generation.settings, savedSettings());
+    CHECK_EQ(
+        bootstrapped.generation.definition.shoreBlock,
+        definition.shoreBlock);
+    CHECK(std::filesystem::is_directory(worldRoot));
+    CHECK(!std::filesystem::exists(stagedRoot));
+    CHECK(!std::filesystem::exists(handoffMarker));
+}
+
 TEST_CASE(WorldSettings_cr_recovery_resumes_moved_back_handoff) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot =
@@ -1834,7 +1948,7 @@ TEST_CASE(WorldSettings_cr_recovery_resumes_moved_back_handoff) {
         Persistence::Backends::CR::probe());
     Persistence::PersistenceService persistence(formats);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(),
         savedDefinition(),
         persistence,
@@ -1894,7 +2008,7 @@ TEST_CASE(WorldSettings_handoff_stage_rejects_corrupted_world_id_before_publish)
         std::make_shared<MovedBackPublicationStorage>();
     const auto interruptedContext = contextFor(worldRoot, interruptedStorage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), interruptedContext));
     const std::filesystem::path stagedRoot =
         interruptedStorage->stagedRoot;
@@ -1912,7 +2026,7 @@ TEST_CASE(WorldSettings_handoff_stage_rejects_corrupted_world_id_before_publish)
     auto restartedStorage =
         std::make_shared<PublishCountingStorage>();
     const auto restartedContext = contextFor(worldRoot, restartedStorage);
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
     Persistence::FormatRegistry formats;
     formats.registerFormat(
         Persistence::Backends::Memory::descriptor(),
@@ -1948,13 +2062,13 @@ TEST_CASE(WorldSettings_recovery_cannot_delete_relocated_published_world) {
         worldRoot.string() + ".staging.0");
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
     const auto context = contextFor(worldRoot, storage);
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context);
 
     std::filesystem::rename(worldRoot, relocatedRoot);
     CHECK(!std::filesystem::exists(
         relocatedRoot / kStagingOwnershipFilename));
-    Persistence::recoverAbandonedWorldGenerationStaging(context);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(context);
 
     CHECK(std::filesystem::exists(
         relocatedRoot / "generator-definition.yaml"));
@@ -1973,7 +2087,7 @@ TEST_CASE(WorldSettings_marker_failure_requires_durable_cleanup_authority) {
         storage->failAfterCommit = failAfterCommit;
         const auto context = contextFor(worldRoot, storage);
 
-        CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        CHECK_THROWS(Persistence::bootstrapCreationForTest(
             savedSettings(), savedDefinition(), context));
         CHECK(!std::filesystem::exists(worldRoot));
 
@@ -1998,7 +2112,7 @@ TEST_CASE(WorldSettings_marker_failure_preserves_replaced_stage) {
         std::make_shared<ReplacedMarkerWriteFailureStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     CHECK_EQ(
         readText(*storage, storage->replacedStage / "must-survive.txt"),
@@ -2010,7 +2124,7 @@ TEST_CASE(WorldSettings_marker_failure_preserves_replaced_stage) {
 
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();
-    Persistence::recoverAbandonedWorldGenerationStaging(
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(
         contextFor(worldRoot, restartedStorage));
     CHECK_EQ(
         readText(
@@ -2027,7 +2141,7 @@ TEST_CASE(WorldSettings_post_create_sync_failure_preserves_unproven_reservation)
         std::make_shared<PostCreateDirectorySyncFailureStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     CHECK(!storage->failedStage.empty());
     CHECK(std::filesystem::is_directory(storage->failedStage));
@@ -2043,7 +2157,7 @@ TEST_CASE(WorldSettings_reservation_exception_preserves_replacement_on_restart) 
         std::make_shared<ReplacedReservationFailureStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     CHECK_EQ(
         readText(*storage, storage->replacedStage / "must-survive.txt"),
@@ -2057,7 +2171,7 @@ TEST_CASE(WorldSettings_reservation_exception_preserves_replacement_on_restart) 
         std::make_shared<Persistence::FilesystemBackend>();
     const auto restartedContext =
         contextFor(worldRoot, restartedStorage);
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
 
     CHECK_EQ(
         readText(
@@ -2079,7 +2193,7 @@ TEST_CASE(WorldSettings_markerless_ambiguous_remnants_are_bounded) {
     const auto context = contextFor(worldRoot, storage);
 
     for (size_t slot = 0; slot < kStagingSlotCount; ++slot) {
-        CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        CHECK_THROWS(Persistence::bootstrapCreationForTest(
             savedSettings(), savedDefinition(), context));
         CHECK_EQ(storage->failedStages.size(), slot + 1);
         const auto expected = std::filesystem::path(
@@ -2094,7 +2208,7 @@ TEST_CASE(WorldSettings_markerless_ambiguous_remnants_are_bounded) {
 
     bool actionableExhaustion = false;
     try {
-        Persistence::publishNewWorldGeneration(
+        Persistence::bootstrapCreationForTest(
             savedSettings(), savedDefinition(), context);
     } catch (const std::exception& failure) {
         actionableExhaustion =
@@ -2107,7 +2221,7 @@ TEST_CASE(WorldSettings_markerless_ambiguous_remnants_are_bounded) {
 
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();
-    Persistence::recoverAbandonedWorldGenerationStaging(
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(
         contextFor(worldRoot, restartedStorage));
     CHECK_EQ(stagingDirectories(worldRoot).size(), kStagingSlotCount);
 }
@@ -2119,7 +2233,7 @@ TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_directory) {
         CollidingReservationStorage::CollisionKind::Directory);
     const auto context = contextFor(worldRoot, storage);
 
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context);
 
     CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(2));
@@ -2140,7 +2254,7 @@ TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_file) {
         CollidingReservationStorage::CollisionKind::RegularFile);
     const auto context = contextFor(worldRoot, storage);
 
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context);
 
     CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(2));
@@ -2162,7 +2276,7 @@ TEST_CASE(WorldSettings_preexisting_directory_never_gains_cleanup_tombstone) {
         std::make_shared<CollidingReservationRemovalFailureStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context);
 
     CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(2));
@@ -2177,7 +2291,7 @@ TEST_CASE(WorldSettings_preexisting_directory_never_gains_cleanup_tombstone) {
 
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();
-    Persistence::recoverAbandonedWorldGenerationStaging(
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(
         contextFor(worldRoot, restartedStorage));
     CHECK_EQ(
         readText(
@@ -2199,7 +2313,7 @@ TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_symlink) {
         symlinkTarget);
     const auto context = contextFor(worldRoot, storage);
 
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context);
 
     CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(2));
@@ -2224,7 +2338,7 @@ TEST_CASE(WorldSettings_cleanup_collision_preserves_stage_and_sidecar) {
         std::make_shared<CollidingCleanupOwnershipStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
 
     CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(1));
@@ -2252,7 +2366,7 @@ TEST_CASE(WorldSettings_cleanup_collision_preserves_stage_and_sidecar) {
     const auto restartedContext =
         contextFor(worldRoot, restartedStorage);
     CHECK_THROWS(
-        Persistence::recoverAbandonedWorldGenerationStaging(
+        Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(
             restartedContext));
     CHECK(std::filesystem::is_directory(collidingStage));
     CHECK_EQ(
@@ -2267,7 +2381,7 @@ TEST_CASE(WorldSettings_restart_loads_valid_final_with_reused_staging_path) {
         std::make_shared<ReusingPublishedStagingPathStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
 
     CHECK_EQ(
@@ -2323,7 +2437,7 @@ TEST_CASE(WorldSettings_restart_loads_valid_final_with_reused_staging_path) {
     CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(storage->reusedPath)));
 
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
 
     CHECK_EQ(
         readText(
@@ -2337,7 +2451,7 @@ TEST_CASE(WorldSettings_restart_loads_valid_final_with_reused_staging_path) {
         worldRoot.string() + ".displaced-after-recovery");
     std::filesystem::rename(worldRoot, displacedWorldRoot);
     CHECK(!std::filesystem::exists(worldRoot));
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
 
     CHECK_EQ(
         readText(
@@ -2360,7 +2474,7 @@ TEST_CASE(WorldSettings_invalid_final_preserves_reused_stage_and_handoff) {
         std::make_shared<ReusingPublishedStagingPathStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     const std::filesystem::path stagedRoot = storage->reusedPath;
     corruptMemoryWorldMetadataWorldId(*storage, worldRoot / "world.meta");
@@ -2409,7 +2523,7 @@ TEST_CASE(WorldSettings_ambiguous_publish_preserves_reused_stage_without_root) {
     storage->displacePublishedRootBeforeFailure = true;
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
 
     CHECK(!std::filesystem::exists(worldRoot));
@@ -2433,7 +2547,7 @@ TEST_CASE(WorldSettings_snapshot_write_failure_rolls_back_new_world) {
     storage->failOrdinal = 2;
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     CHECK(!std::filesystem::exists(worldRoot));
     CHECK_EQ(
@@ -2450,7 +2564,7 @@ TEST_CASE(WorldSettings_settings_write_failure_removes_committed_snapshot) {
         storage->failAfterCommit = failAfterCommit;
         const auto context = contextFor(worldRoot, storage);
 
-        CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        CHECK_THROWS(Persistence::bootstrapCreationForTest(
             savedSettings(), savedDefinition(), context));
         CHECK(!std::filesystem::exists(worldRoot));
         CHECK_EQ(
@@ -2470,7 +2584,7 @@ TEST_CASE(WorldSettings_startup_recovers_failed_staging_cleanup) {
         storage->failRemovals = true;
         const auto context = contextFor(worldRoot, storage);
 
-        CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        CHECK_THROWS(Persistence::bootstrapCreationForTest(
             savedSettings(), savedDefinition(), context));
         CHECK(!std::filesystem::exists(worldRoot));
         CHECK_EQ(
@@ -2492,10 +2606,10 @@ TEST_CASE(WorldSettings_startup_recovers_failed_staging_cleanup) {
         auto restartedStorage =
             std::make_shared<Persistence::FilesystemBackend>();
         const auto restartedContext = contextFor(worldRoot, restartedStorage);
-        Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+        Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
 
         CHECK(!std::filesystem::exists(abandoned.front()));
-        Persistence::publishNewWorldGeneration(
+        Persistence::bootstrapCreationForTest(
             savedSettings(), savedDefinition(), restartedContext);
         CHECK_EQ(
             Persistence::inspectSavedWorldGeneration(restartedContext),
@@ -2517,7 +2631,7 @@ TEST_CASE(WorldSettings_payload_cleanup_failure_preserves_child_marker) {
     storage->failOrdinal = 4;
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     CHECK(!std::filesystem::exists(worldRoot));
 
@@ -2537,7 +2651,7 @@ TEST_CASE(WorldSettings_payload_cleanup_failure_preserves_child_marker) {
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();
     const auto restartedContext = contextFor(worldRoot, restartedStorage);
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
 
     CHECK(!std::filesystem::exists(ownedStage));
     CHECK(!std::filesystem::exists(
@@ -2546,7 +2660,7 @@ TEST_CASE(WorldSettings_payload_cleanup_failure_preserves_child_marker) {
         readText(*restartedStorage, unrelated / "must-survive.txt"),
         std::string("unrelated data"));
 
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), restartedContext);
     CHECK(!std::filesystem::exists(
         worldRoot / kStagingOwnershipFilename));
@@ -2561,7 +2675,7 @@ TEST_CASE(WorldSettings_recovery_reclaims_empty_tombstoned_stage) {
     storage->failOrdinal = 3;
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     const std::filesystem::path stagedRoot = storage->stagedRoot;
     CHECK(!stagedRoot.empty());
@@ -2575,12 +2689,12 @@ TEST_CASE(WorldSettings_recovery_reclaims_empty_tombstoned_stage) {
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();
     const auto restartedContext = contextFor(worldRoot, restartedStorage);
-    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(restartedContext);
 
     CHECK(!std::filesystem::exists(stagedRoot));
     CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(stagedRoot)));
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), restartedContext);
     CHECK(!std::filesystem::exists(
         worldRoot / kStagingOwnershipFilename));
@@ -2601,7 +2715,7 @@ TEST_CASE(WorldSettings_recovery_removes_valid_dangling_tombstone) {
 
     CHECK(!std::filesystem::exists(stagedRoot));
     CHECK(std::filesystem::is_regular_file(cleanupPath));
-    Persistence::recoverAbandonedWorldGenerationStaging(context);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(context);
 
     CHECK(!std::filesystem::exists(stagedRoot));
     CHECK(!std::filesystem::exists(cleanupPath));
@@ -2623,7 +2737,7 @@ TEST_CASE(WorldSettings_tombstone_only_nonempty_stage_preserves_entries) {
         cleanupOwnershipMarkerForTest(worldRoot, stagedRoot));
 
     CHECK(!std::filesystem::exists(worldRoot));
-    Persistence::recoverAbandonedWorldGenerationStaging(context);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(context);
 
     CHECK_EQ(
         readText(*storage, stagedRoot / "must-survive.txt"),
@@ -2662,7 +2776,7 @@ TEST_CASE(WorldSettings_publish_cleans_all_candidates_before_reservation) {
     storage->failingStage = failingStage;
     const auto context = contextFor(worldRoot, storage);
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
 
     CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(0));
@@ -2680,7 +2794,7 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
     const auto worldRoot = directory.path() / "world_recovery_ownership";
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
     const auto context = contextFor(worldRoot, storage);
-    Persistence::publishNewWorldGeneration(
+    Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context);
 
     const auto unmarkedDirectory = std::filesystem::path(
@@ -2763,7 +2877,7 @@ TEST_CASE(WorldSettings_recovery_preserves_unowned_canonical_entries) {
         "symlink marker is not ownership");
 #endif
 
-    Persistence::recoverAbandonedWorldGenerationStaging(context);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(context);
 
     CHECK_EQ(
         readText(*storage, unmarkedDirectory / "must-survive.txt"),
@@ -2810,8 +2924,8 @@ TEST_CASE(WorldSettings_rejects_trailing_separator_world_roots) {
 
     CHECK_THROWS(Persistence::inspectSavedWorldGeneration(context));
     CHECK_THROWS(
-        Persistence::recoverAbandonedWorldGenerationStaging(context));
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(context));
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     CHECK_THROWS(Persistence::loadSavedWorldGeneration(context));
     CHECK(!std::filesystem::exists(worldRoot));
@@ -2840,7 +2954,7 @@ TEST_CASE(WorldSettings_recovery_waits_for_live_publication) {
     std::exception_ptr recoveryFailure;
     std::thread publisher([&] {
         try {
-            Persistence::publishNewWorldGeneration(
+            Persistence::bootstrapCreationForTest(
                 savedSettings(), savedDefinition(), publisherContext);
         } catch (...) {
             publicationFailure = std::current_exception();
@@ -2850,7 +2964,7 @@ TEST_CASE(WorldSettings_recovery_waits_for_live_publication) {
 
     std::thread recovery([&] {
         try {
-            Persistence::recoverAbandonedWorldGenerationStaging(
+            Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(
                 recoveryContext);
         } catch (...) {
             recoveryFailure = std::current_exception();
@@ -2895,14 +3009,14 @@ TEST_CASE(WorldSettings_waiting_publisher_skips_ambiguous_failed_reservation) {
     const auto failedContext = contextFor(worldRoot, failedStorage);
     const auto waitingContext = contextFor(worldRoot, waitingStorage);
 
-    Persistence::recoverAbandonedWorldGenerationStaging(failedContext);
-    Persistence::recoverAbandonedWorldGenerationStaging(waitingContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(failedContext);
+    Persistence::detail::recoverAbandonedWorldGenerationStagingForTesting(waitingContext);
 
     std::exception_ptr failedPublication;
     std::exception_ptr waitingPublicationFailure;
     std::thread firstPublisher([&] {
         try {
-            Persistence::publishNewWorldGeneration(
+            Persistence::bootstrapCreationForTest(
                 savedSettings(), savedDefinition(), failedContext);
         } catch (...) {
             failedPublication = std::current_exception();
@@ -2912,7 +3026,7 @@ TEST_CASE(WorldSettings_waiting_publisher_skips_ambiguous_failed_reservation) {
 
     std::thread waitingPublisher([&] {
         try {
-            Persistence::publishNewWorldGeneration(
+            Persistence::bootstrapCreationForTest(
                 savedSettings(), savedDefinition(), waitingContext);
         } catch (...) {
             waitingPublicationFailure = std::current_exception();
@@ -2947,8 +3061,10 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
     const auto worldRoot = directory.path() / "world_concurrent";
     auto storageA = std::make_shared<Persistence::FilesystemBackend>();
     auto storageB = std::make_shared<Persistence::FilesystemBackend>();
-    const auto contextA = contextFor(worldRoot, storageA);
-    const auto contextB = contextFor(worldRoot, storageB);
+    auto contextA = contextFor(worldRoot, storageA);
+    auto contextB = contextFor(worldRoot, storageB);
+    contextA.preferredFormat = "memory";
+    contextB.preferredFormat = "memory";
 
     auto settingsA = savedSettings();
     auto definitionA = savedDefinition();
@@ -2966,12 +3082,16 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
 
     std::atomic<size_t> successes = 0;
     std::atomic<size_t> failures = 0;
+    std::optional<Persistence::BootstrappedWorldGeneration> resultA;
+    std::optional<Persistence::BootstrappedWorldGeneration> resultB;
     std::mutex startMutex;
     std::condition_variable startChanged;
     size_t ready = 0;
-    auto publish = [&](const auto& settings,
-                       const auto& definition,
-                       const auto& context) {
+    auto publish = [&](
+        std::optional<Persistence::BootstrappedWorldGeneration>& result,
+        const Persistence::WorldSettings& settings,
+        const Voxel::WorldGenConfig& definition,
+        const Persistence::PersistenceContext& context) {
         {
             std::unique_lock lock(startMutex);
             ++ready;
@@ -2979,8 +3099,18 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
             startChanged.wait(lock, [&] { return ready == 2; });
         }
         try {
-            Persistence::publishNewWorldGeneration(
-                settings, definition, context);
+            Persistence::FormatRegistry formats;
+            formats.registerFormat(
+                Persistence::Backends::Memory::descriptor(),
+                Persistence::Backends::Memory::factory(),
+                Persistence::Backends::Memory::probe());
+            Persistence::PersistenceService persistence(formats);
+            Voxel::BlockRegistry blocks;
+            Test::registerGeneratorDefinitionBlocks(definition, blocks);
+            const Persistence::NewWorldGeneration creation{
+                settings, definition};
+            result = Persistence::bootstrapWorldGeneration(
+                creation, persistence, blocks, context);
             ++successes;
         } catch (...) {
             ++failures;
@@ -2988,20 +3118,37 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
     };
     std::thread first(
         publish,
+        std::ref(resultA),
         std::cref(settingsA),
         std::cref(definitionA),
         std::cref(contextA));
     std::thread second(
         publish,
+        std::ref(resultB),
         std::cref(settingsB),
         std::cref(definitionB),
         std::cref(contextB));
     first.join();
     second.join();
 
-    CHECK_EQ(successes.load(), static_cast<size_t>(1));
-    CHECK_EQ(failures.load(), static_cast<size_t>(1));
+    CHECK_EQ(successes.load(), static_cast<size_t>(2));
+    CHECK_EQ(failures.load(), static_cast<size_t>(0));
+    CHECK(resultA.has_value());
+    CHECK(resultB.has_value());
+    if (!resultA || !resultB) {
+        return;
+    }
     const auto loaded = Persistence::loadSavedWorldGeneration(contextA);
+    CHECK_EQ(resultA->generation.settings, loaded.settings);
+    CHECK_EQ(resultB->generation.settings, loaded.settings);
+    CHECK_EQ(
+        Voxel::serializeGeneratorSnapshot(resultA->generation.definition),
+        Voxel::serializeGeneratorSnapshot(loaded.definition));
+    CHECK_EQ(
+        Voxel::serializeGeneratorSnapshot(resultB->generation.definition),
+        Voxel::serializeGeneratorSnapshot(loaded.definition));
+    CHECK_EQ(resultA->persistenceFormat, std::string("memory"));
+    CHECK_EQ(resultB->persistenceFormat, std::string("memory"));
     if (loaded.settings.displayName == settingsA.displayName) {
         CHECK_EQ(loaded.settings.seed, settingsA.seed);
         CHECK_EQ(loaded.definition.densityGraph.nodes.front().value, 0.25f);
@@ -3025,7 +3172,7 @@ TEST_CASE(WorldSettings_legacy_save_is_rejected_without_mutation) {
         Persistence::inspectSavedWorldGeneration(context),
         Persistence::SavedWorldGenerationPresence::LegacyOrIncomplete);
     CHECK_THROWS(Persistence::loadSavedWorldGeneration(context));
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), savedDefinition(), context));
     CHECK_EQ(readText(*storage, legacyPath), legacyBytes);
     CHECK(!std::filesystem::exists(worldRoot / "world-settings.yaml"));
@@ -3040,7 +3187,7 @@ TEST_CASE(WorldSettings_rejects_dual_runtime_identity_before_write) {
     mismatchedSettings.seed += 1;
     const auto seedRoot = directory.path() / "seed-mismatch";
     const auto seedContext = contextFor(seedRoot, storage);
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         mismatchedSettings, savedDefinition(), seedContext));
     CHECK(!std::filesystem::exists(seedRoot));
 
@@ -3048,7 +3195,7 @@ TEST_CASE(WorldSettings_rejects_dual_runtime_identity_before_write) {
     mismatchedDefinition.world.version += 1;
     const auto semanticsRoot = directory.path() / "semantics-mismatch";
     const auto semanticsContext = contextFor(semanticsRoot, storage);
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), mismatchedDefinition, semanticsContext));
     CHECK(!std::filesystem::exists(semanticsRoot));
 }
@@ -3061,7 +3208,7 @@ TEST_CASE(WorldSettings_rejects_documents_larger_than_reload_limits) {
     auto settings = savedSettings();
     settings.generator.sourceId = "rigel:" + std::string(17 * 1024, 'x');
 
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         settings, savedDefinition(), context));
     CHECK(!std::filesystem::exists(worldRoot));
 
@@ -3069,7 +3216,7 @@ TEST_CASE(WorldSettings_rejects_documents_larger_than_reload_limits) {
     const auto snapshotContext = contextFor(snapshotRoot, storage);
     auto definition = savedDefinition();
     definition.solidBlock = std::string(4 * 1024 * 1024, 's');
-    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+    CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), definition, snapshotContext));
     CHECK(!std::filesystem::exists(snapshotRoot));
 }
@@ -3087,7 +3234,7 @@ TEST_CASE(WorldSettings_rejects_each_unsupported_version_without_repairing_save)
             directory.path() / ("unsupported-" + std::to_string(index));
         auto storage = std::make_shared<Persistence::FilesystemBackend>();
         const auto context = contextFor(worldRoot, storage);
-        Persistence::publishNewWorldGeneration(
+        Persistence::bootstrapCreationForTest(
             savedSettings(), savedDefinition(), context);
 
         const auto settingsPath = worldRoot / "world-settings.yaml";

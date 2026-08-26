@@ -238,18 +238,23 @@ Current behavior:
 
 - The default zone ID is `rigel:default`.
 - The world root path is `saves/world_<worldId>`.
-- Before a new world can generate chunks, `publishNewWorldGeneration` commits
+- Before a new world can generate chunks, `bootstrapWorldGeneration` validates
+  every referenced block against the runtime registry, then commits
   `generator-definition.yaml`, `world-settings.yaml`, and the selected
-  backend's authoritative world-metadata marker in a sibling staging
-  directory. It re-probes that staged identity without a preferred-format
-  fallback, then atomically publishes the complete directory without replacing
-  an existing save. A failure before directory publication leaves no final
-  save root; an ambiguous or post-publication failure preserves a complete,
-  reopenable settings/snapshot/backend identity for the next bootstrap.
+  backend's authoritative world-metadata marker in a sibling staging directory.
+  It re-probes that staged identity without a preferred-format fallback, then
+  atomically publishes the complete directory without replacing an existing
+  save. A failure before directory publication leaves no final save root; an
+  ambiguous or post-publication failure preserves a complete, reopenable
+  settings/snapshot/backend identity for the next bootstrap.
 - Bootstrap removes only abandoned staging siblings carrying the exact bound
   child and cleanup ownership required by the deletion protocol. Markerless or
   ambiguous entries are preserved in the bounded 64-slot namespace for manual
   inspection; a transient authorized-cleanup failure is retried on startup.
+- Format-aware publication recovery validates the exact saved snapshot against
+  the runtime block registry before publishing a handoff or retiring its
+  marker. Unavailable saved block IDs leave the staged/final identity and
+  handoff state unchanged.
 - `loadSavedWorldGeneration` requires both files, checks the distinct world
   settings, definition-schema, source-revision, and evaluator-semantics
   meanings, and supplies the saved snapshot as the only generator input.

@@ -1,5 +1,7 @@
 #include "Rigel/Persistence/WorldSettings.h"
 
+#include "WorldSettingsDetail.h"
+
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Util/Ryml.h"
@@ -815,6 +817,7 @@ bool hasRecoverableStaging(
 
 std::string validatePublicationIdentityAndFormat(
     PersistenceService& persistence,
+    const Voxel::BlockRegistry& registry,
     const PersistenceContext& publicationContext,
     const std::filesystem::path& worldRoot,
     std::string_view expectedFormat,
@@ -833,6 +836,8 @@ std::string validatePublicationIdentityAndFormat(
     }
     const SavedWorldGeneration generation =
         loadSavedWorldGeneration(publicationContext);
+    Voxel::validateGeneratorSnapshotContent(
+        generation.definition, registry);
 
     PersistenceContext discoveryContext = publicationContext;
     discoveryContext.preferredFormat.clear();
@@ -877,6 +882,7 @@ std::string validatePublicationIdentityAndFormat(
 void recoverPublicationHandoff(
     StorageBackend& storage,
     PersistenceService* persistence,
+    const Voxel::BlockRegistry* registry,
     const PersistenceContext& context,
     const std::filesystem::path& worldRoot,
     const PersistenceContext& stagedContext) {
@@ -887,10 +893,15 @@ void recoverPublicationHandoff(
             stagedContext.rootPath);
     }
 
+    if (static_cast<bool>(persistence) != static_cast<bool>(registry)) {
+        throw std::logic_error(
+            "Publication recovery requires persistence and registry together");
+    }
+
     const StorageEntryKind finalKind = storage.entryKind(context.rootPath);
     if (persistence && finalKind == StorageEntryKind::Directory) {
         static_cast<void>(validatePublicationIdentityAndFormat(
-            *persistence, context, worldRoot, {}, true));
+            *persistence, *registry, context, worldRoot, {}, true));
         if (storage.entryKind(childPath(
                 context, kStagingOwnershipFilename)) !=
             StorageEntryKind::Missing) {
@@ -916,9 +927,9 @@ void recoverPublicationHandoff(
         return;
     }
     if (!persistence) {
-        // The public staging-only recovery entry point cannot validate the
-        // saved format. Handoff state is non-deleting, so preserving it for
-        // bootstrap recovery is the safe outcome.
+        // The private test-only cleanup seam cannot validate saved content or
+        // format. Handoff state is non-deleting, so preserving it for
+        // format-aware recovery is the safe outcome.
         return;
     }
     if (finalKind != StorageEntryKind::Missing ||
@@ -928,7 +939,7 @@ void recoverPublicationHandoff(
     }
 
     const std::string formatId = validatePublicationIdentityAndFormat(
-        *persistence, stagedContext, worldRoot, {}, true);
+        *persistence, *registry, stagedContext, worldRoot, {}, true);
     const std::string stagingMarkerPath =
         childPath(stagedContext, kStagingOwnershipFilename);
     const StorageEntryKind stagingMarkerKind =
@@ -949,7 +960,7 @@ void recoverPublicationHandoff(
 
     storage.publishDirectory(stagedContext.rootPath, context.rootPath);
     static_cast<void>(validatePublicationIdentityAndFormat(
-        *persistence, context, worldRoot, formatId, true));
+        *persistence, *registry, context, worldRoot, formatId, true));
     if (!hasValidHandoffOwnershipMarker(
             storage, worldRoot, stagedContext)) {
         throw std::runtime_error(
@@ -962,7 +973,12 @@ void recoverAbandonedWorldGenerationStagingLocked(
     StorageBackend& storage,
     const PersistenceContext& context,
     const std::filesystem::path& worldRoot,
-    PersistenceService* persistence) {
+    PersistenceService* persistence,
+    const Voxel::BlockRegistry* registry) {
+    if (static_cast<bool>(persistence) != static_cast<bool>(registry)) {
+        throw std::logic_error(
+            "Publication recovery requires persistence and registry together");
+    }
     const std::string worldName = worldRoot.filename().string();
     std::filesystem::path parent = worldRoot.parent_path();
     if (parent.empty()) {
@@ -993,6 +1009,7 @@ void recoverAbandonedWorldGenerationStagingLocked(
             recoverPublicationHandoff(
                 storage,
                 persistence,
+                registry,
                 context,
                 worldRoot,
                 *handoffContext);
@@ -1036,7 +1053,7 @@ SavedWorldGenerationPresence inspectSavedWorldGeneration(
     return SavedWorldGenerationPresence::LegacyOrIncomplete;
 }
 
-void recoverAbandonedWorldGenerationStaging(
+void detail::recoverAbandonedWorldGenerationStagingForTesting(
     const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
     const std::filesystem::path worldRoot = worldRootPath(context);
@@ -1058,26 +1075,29 @@ void recoverAbandonedWorldGenerationStaging(
     auto bootstrapLock =
         storage.lockWorldGenerationBootstrap(context.rootPath);
     recoverAbandonedWorldGenerationStagingLocked(
-        storage, context, worldRoot, nullptr);
+        storage, context, worldRoot, nullptr, nullptr);
 }
 
 void recoverWorldGenerationPublication(
     PersistenceService& persistence,
+    const Voxel::BlockRegistry& registry,
     const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
     const std::filesystem::path worldRoot = worldRootPath(context);
     auto bootstrapLock =
         storage.lockWorldGenerationBootstrap(context.rootPath);
     recoverAbandonedWorldGenerationStagingLocked(
-        storage, context, worldRoot, &persistence);
+        storage, context, worldRoot, &persistence, &registry);
 }
 
-static std::string publishNewWorldGenerationImpl(
+// Requires the per-world bootstrap lock and staging recovery performed by
+// bootstrapWorldGeneration.
+static std::string publishValidatedWorldGenerationLocked(
     const WorldSettings& settings,
     const Voxel::WorldGenConfig& definition,
     PersistenceService& persistence,
-    const PersistenceContext& context,
-    bool bootstrapLockAlreadyHeld) {
+    const Voxel::BlockRegistry& registry,
+    const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
     validateSettings(settings);
     if (settings.seed != definition.seed) {
@@ -1109,13 +1129,6 @@ static std::string publishNewWorldGenerationImpl(
     WorldMetadata backendMetadata;
     backendMetadata.worldId = worldRoot.filename().string();
     backendMetadata.displayName = settings.displayName;
-    std::unique_ptr<WorldGenerationBootstrapLock> bootstrapLock;
-    if (!bootstrapLockAlreadyHeld) {
-        bootstrapLock =
-            storage.lockWorldGenerationBootstrap(context.rootPath);
-    }
-    recoverAbandonedWorldGenerationStagingLocked(
-        storage, context, worldRoot, &persistence);
     if (storage.exists(context.rootPath)) {
         throw std::runtime_error(
             "Cannot create world because the save root already exists: " +
@@ -1257,6 +1270,7 @@ static std::string publishNewWorldGenerationImpl(
         }
         static_cast<void>(validatePublicationIdentityAndFormat(
             persistence,
+            registry,
             stagedContext,
             worldRoot,
             selectedFormatId,
@@ -1266,6 +1280,7 @@ static std::string publishNewWorldGenerationImpl(
             stagedContext.rootPath, context.rootPath);
         static_cast<void>(validatePublicationIdentityAndFormat(
             persistence,
+            registry,
             context,
             worldRoot,
             selectedFormatId,
@@ -1291,19 +1306,6 @@ static std::string publishNewWorldGenerationImpl(
         std::rethrow_exception(publicationFailure);
     }
     return selectedFormatId;
-}
-
-std::string publishNewWorldGeneration(
-    const WorldSettings& settings,
-    const Voxel::WorldGenConfig& definition,
-    PersistenceService& persistence,
-    const PersistenceContext& context) {
-    return publishNewWorldGenerationImpl(
-        settings,
-        definition,
-        persistence,
-        context,
-        false);
 }
 
 SavedWorldGeneration loadSavedWorldGeneration(
@@ -1353,7 +1355,7 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
         storage.lockWorldGenerationBootstrap(context.rootPath);
     const std::filesystem::path worldRoot = worldRootPath(context);
     recoverAbandonedWorldGenerationStagingLocked(
-        storage, context, worldRoot, &persistence);
+        storage, context, worldRoot, &persistence, &registry);
 
     const SavedWorldGenerationPresence presence =
         inspectSavedWorldGeneration(context);
@@ -1366,12 +1368,12 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
         Voxel::validateGeneratorSnapshotContent(
             creation->definition, registry);
         BootstrappedWorldGeneration result;
-        result.persistenceFormat = publishNewWorldGenerationImpl(
+        result.persistenceFormat = publishValidatedWorldGenerationLocked(
             creation->settings,
             creation->definition,
             persistence,
-            context,
-            true);
+            registry,
+            context);
         // The save-local canonical snapshot is authoritative from the first
         // generation-capable moment, not only after the first reload.
         result.generation = loadSavedWorldGeneration(context);
@@ -1390,7 +1392,7 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
     Voxel::validateGeneratorSnapshotContent(
         result.generation.definition, registry);
     result.persistenceFormat = validatePublicationIdentityAndFormat(
-        persistence, context, worldRoot, {}, false);
+        persistence, registry, context, worldRoot, {}, false);
     return result;
 }
 

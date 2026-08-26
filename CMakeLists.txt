@@ -156,6 +156,7 @@ if (RIGEL_BUILD_TESTS)
     target_include_directories(Rigel_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks
         ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     target_link_libraries(Rigel_tests PRIVATE RigelLib)

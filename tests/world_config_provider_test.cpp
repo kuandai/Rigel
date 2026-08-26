@@ -1,4 +1,5 @@
 #include "TestFramework.h"
+#include "GeneratorDefinitionTestRegistry.h"
 
 #include "Rigel/Voxel/WorldConfigProvider.h"
 #include "Rigel/Voxel/WorldConfigBootstrap.h"
@@ -518,11 +519,13 @@ TEST_CASE(WorldConfigProvider_SavedWorldReloadToleratesRemovedFileOverlay) {
         Rigel::Persistence::Backends::Memory::factory(),
         Rigel::Persistence::Backends::Memory::probe());
     Rigel::Persistence::PersistenceService persistence(formats);
-    Rigel::Persistence::publishNewWorldGeneration(
-        settings,
-        created.generation,
-        persistence,
-        context);
+    Rigel::Voxel::BlockRegistry registry;
+    Rigel::Test::registerGeneratorDefinitionBlocks(
+        created.generation, registry);
+    const Rigel::Persistence::NewWorldGeneration creation{
+        settings, created.generation};
+    Rigel::Persistence::bootstrapWorldGeneration(
+        creation, persistence, registry, context);
 
     CHECK(std::filesystem::remove(overlayPath));
     const StreamingConfig streaming = provider.loadStreamingConfig();

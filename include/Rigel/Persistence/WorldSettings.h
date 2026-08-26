@@ -59,32 +59,20 @@ enum class SavedWorldGenerationPresence {
 SavedWorldGenerationPresence inspectSavedWorldGeneration(
     const PersistenceContext& context);
 
-// Cleans deletion-authorized abandoned staging. Non-deleting publication
-// handoffs are preserved here and completed by bootstrapWorldGeneration(),
-// which can validate their saved identity and persistence format.
-void recoverAbandonedWorldGenerationStaging(
-    const PersistenceContext& context);
-
 // Completes a durable publication handoff before creation inputs are resolved.
-// This never invents a missing backend identity or consults installed generator
-// content.
+// The saved snapshot is validated against the runtime block registry before
+// any handoff mutation. This never invents a missing backend identity or
+// consults installed generator-definition content.
 void recoverWorldGenerationPublication(
     PersistenceService& persistence,
-    const PersistenceContext& context);
-
-// Selects and durably publishes the persistence backend identity in the same
-// atomic directory publication as the save-owned settings and definition.
-// Returns the selected format ID for subsequent operations on this world.
-std::string publishNewWorldGeneration(
-    const WorldSettings& settings,
-    const Voxel::WorldGenConfig& definition,
-    PersistenceService& persistence,
+    const Voxel::BlockRegistry& registry,
     const PersistenceContext& context);
 
 // Opens a saved generation identity and its authoritative persistence format
 // under the per-world bootstrap lock. When the root is still missing, the
-// optional creation input is published atomically. Published roots without an
-// authoritative backend marker are rejected without mutation.
+// optional creation input is block-registry validated and published atomically.
+// This is the only supported world-generation creation lifecycle. Published
+// roots without an authoritative backend marker are rejected without mutation.
 BootstrappedWorldGeneration bootstrapWorldGeneration(
     const std::optional<NewWorldGeneration>& creation,
     PersistenceService& persistence,

@@ -11,6 +11,13 @@ namespace Rigel::Persistence {
 
 using StorageEntryVisitor = std::function<bool(const std::string&)>;
 
+enum class StorageEntryKind {
+    Missing,
+    RegularFile,
+    Directory,
+    Other
+};
+
 class StorageReadError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -67,6 +74,9 @@ public:
     // session leaves the destination unchanged.
     virtual std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path) = 0;
     virtual bool exists(const std::string& path) = 0;
+    // Classifies the directory entry itself without following symbolic links.
+    // The safe default is Other for backends without that capability.
+    virtual StorageEntryKind entryKind(const std::string& path);
     virtual void forEachEntry(const std::string& path,
                               const StorageEntryVisitor& visitor) = 0;
     virtual std::vector<std::string> list(const std::string& path);
@@ -83,6 +93,7 @@ public:
     std::unique_ptr<ByteReader> openRead(const std::string& path) override;
     std::unique_ptr<AtomicWriteSession> openWrite(const std::string& path) override;
     bool exists(const std::string& path) override;
+    StorageEntryKind entryKind(const std::string& path) override;
     void forEachEntry(const std::string& path,
                       const StorageEntryVisitor& visitor) override;
     void mkdirs(const std::string& path) override;

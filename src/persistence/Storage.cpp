@@ -457,6 +457,25 @@ bool FilesystemBackend::exists(const std::string& path) {
     return std::filesystem::exists(path);
 }
 
+StorageEntryKind StorageBackend::entryKind(const std::string&) {
+    return StorageEntryKind::Other;
+}
+
+StorageEntryKind FilesystemBackend::entryKind(const std::string& path) {
+    const std::filesystem::file_status status =
+        std::filesystem::symlink_status(path);
+    if (status.type() == std::filesystem::file_type::not_found) {
+        return StorageEntryKind::Missing;
+    }
+    if (std::filesystem::is_regular_file(status)) {
+        return StorageEntryKind::RegularFile;
+    }
+    if (std::filesystem::is_directory(status)) {
+        return StorageEntryKind::Directory;
+    }
+    return StorageEntryKind::Other;
+}
+
 std::vector<std::string> StorageBackend::list(const std::string& path) {
     std::vector<std::string> entries;
     forEachEntry(path, [&](const std::string& entry) {

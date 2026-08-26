@@ -25,18 +25,31 @@ namespace {
 constexpr std::string_view kWorldSettingsFilename = "world-settings.yaml";
 constexpr std::string_view kGeneratorSnapshotFilename =
     "generator-definition.yaml";
+constexpr std::string_view kStagingOwnershipFilename =
+    ".rigel-world-generation-stage";
 constexpr size_t kMaxWorldSettingsBytes = 16 * 1024;
 constexpr size_t kMaxGeneratorSnapshotBytes = 4 * 1024 * 1024;
+
+std::filesystem::path worldRootPath(const PersistenceContext& context) {
+    if (context.rootPath.empty()) {
+        throw std::invalid_argument(
+            "World generation persistence requires a world root path");
+    }
+    const std::filesystem::path root(context.rootPath);
+    const std::filesystem::path name = root.filename();
+    if (name.empty() || name == "." || name == "..") {
+        throw std::invalid_argument(
+            "World generation persistence requires a named world root path without a trailing separator");
+    }
+    return root;
+}
 
 StorageBackend& storageFor(const PersistenceContext& context) {
     if (!context.storage) {
         throw std::invalid_argument(
             "World generation persistence requires a storage backend");
     }
-    if (context.rootPath.empty()) {
-        throw std::invalid_argument(
-            "World generation persistence requires a world root path");
-    }
+    static_cast<void>(worldRootPath(context));
     return *context.storage;
 }
 
@@ -291,6 +304,31 @@ std::string stagingRoot(const PersistenceContext& context) {
         std::to_string(nextId.fetch_add(1, std::memory_order_relaxed));
 }
 
+std::string normalizedPathIdentity(const std::filesystem::path& path) {
+    return path.lexically_normal().generic_string();
+}
+
+void appendBoundPath(std::string& marker,
+                     std::string_view field,
+                     const std::filesystem::path& path) {
+    const std::string identity = normalizedPathIdentity(path);
+    marker += field;
+    marker += "-bytes: ";
+    marker += std::to_string(identity.size());
+    marker += "\n";
+    marker += identity;
+    marker += "\n";
+}
+
+std::string stagingOwnershipMarker(
+    const std::filesystem::path& worldRoot,
+    const std::filesystem::path& stagedRoot) {
+    std::string marker = "rigel-world-generation-staging\nversion: 1\n";
+    appendBoundPath(marker, "world-root", worldRoot);
+    appendBoundPath(marker, "staging-root", stagedRoot);
+    return marker;
+}
+
 template <typename Integer>
 bool isCanonicalDecimal(std::string_view text) {
     Integer value = 0;
@@ -320,6 +358,36 @@ bool isWorldGenerationStagingName(std::string_view worldName,
         std::chrono::steady_clock::now().time_since_epoch().count());
     return isCanonicalDecimal<StagingTimestamp>(suffix.substr(0, separator)) &&
         isCanonicalDecimal<uint64_t>(suffix.substr(separator + 1));
+}
+
+bool hasValidStagingOwnershipMarker(
+    StorageBackend& storage,
+    const std::filesystem::path& worldRoot,
+    const PersistenceContext& stagedContext) {
+    try {
+        if (storage.entryKind(stagedContext.rootPath) !=
+            StorageEntryKind::Directory) {
+            return false;
+        }
+        const std::string markerPath =
+            childPath(stagedContext, kStagingOwnershipFilename);
+        if (storage.entryKind(markerPath) !=
+            StorageEntryKind::RegularFile) {
+            return false;
+        }
+
+        const std::string expected = stagingOwnershipMarker(
+            worldRoot, std::filesystem::path(stagedContext.rootPath));
+        auto reader = storage.openRead(markerPath);
+        if (reader->size() != expected.size()) {
+            return false;
+        }
+        const std::vector<uint8_t> bytes =
+            reader->readAt(0, reader->size());
+        return std::string(bytes.begin(), bytes.end()) == expected;
+    } catch (...) {
+        return false;
+    }
 }
 
 void removeStagingWorld(StorageBackend& storage,
@@ -368,12 +436,8 @@ SavedWorldGenerationPresence inspectSavedWorldGeneration(
 void recoverAbandonedWorldGenerationStaging(
     const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
-    const std::filesystem::path worldRoot(context.rootPath);
+    const std::filesystem::path worldRoot = worldRootPath(context);
     const std::string worldName = worldRoot.filename().string();
-    if (worldName.empty()) {
-        throw std::invalid_argument(
-            "World generation persistence requires a named world root path");
-    }
 
     std::filesystem::path parent = worldRoot.parent_path();
     if (parent.empty()) {
@@ -389,8 +453,18 @@ void recoverAbandonedWorldGenerationStaging(
             continue;
         }
 
+        const std::filesystem::path expectedEntry = parent / entryName;
+        if (normalizedPathIdentity(entry) !=
+            normalizedPathIdentity(expectedEntry)) {
+            continue;
+        }
+
         PersistenceContext stagedContext = context;
         stagedContext.rootPath = entry;
+        if (!hasValidStagingOwnershipMarker(
+                storage, worldRoot, stagedContext)) {
+            continue;
+        }
         try {
             removeStagingWorld(storage, stagedContext);
         } catch (...) {
@@ -438,6 +512,12 @@ void publishNewWorldGeneration(const WorldSettings& settings,
     PersistenceContext stagedContext = context;
     stagedContext.rootPath = stagingRoot(context);
     try {
+        writeDocument(
+            storage,
+            childPath(stagedContext, kStagingOwnershipFilename),
+            stagingOwnershipMarker(
+                worldRootPath(context),
+                std::filesystem::path(stagedContext.rootPath)));
         writeDocument(
             storage,
             childPath(stagedContext, kGeneratorSnapshotFilename),

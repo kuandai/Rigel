@@ -270,6 +270,10 @@ Current behavior:
   copy cannot replace it or prevent a valid save from reopening. Backend
   metadata is not a second source for seed, generator provenance, or the
   display name.
+- Missing world and zone metadata documents are each encoded exactly once
+  before recovery-journal replay or chunk/entity mutation. Their bounded
+  encoded bytes are retained for later publication, so a metadata
+  serialization failure leaves the aggregate close storage unchanged.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,
   and all-air spans are skipped.
 - Save and entity load validate a pending `entity-regions.journal` schema,

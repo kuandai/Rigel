@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <map>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -234,6 +235,26 @@ void saveWorldToDisk(const Voxel::World& world,
     requireSupportedDefaultZone(*format, context);
 
     std::string zoneId = kDefaultZoneId;
+    const bool worldMetadataExists = context.storage->exists(
+        format->worldMetadataCodec().metadataPath(context));
+    const bool zoneMetadataExists = context.storage->exists(
+        format->zoneMetadataCodec().metadataPath(ZoneKey{zoneId}, context));
+    WorldMetadata worldMetadata;
+    worldMetadata.worldId = "world_" + std::to_string(world.id());
+    worldMetadata.displayName = settings.displayName;
+    std::optional<PersistenceService::PreparedMetadata>
+        preparedWorldMetadata;
+    if (!worldMetadataExists) {
+        preparedWorldMetadata = service.prepareWorldMetadataSave(
+            worldMetadata, *format, context);
+    }
+    std::optional<PersistenceService::PreparedMetadata>
+        preparedZoneMetadata;
+    if (!zoneMetadataExists) {
+        preparedZoneMetadata = service.prepareZoneMetadataSave(
+            ZoneMetadata{zoneId, zoneId}, *format, context);
+    }
+
     detail::EntityRegionJournalPlan entityJournalPlan;
     std::vector<EntityRegionSnapshot> desiredEntityRegions;
     if (format->descriptor().capabilities.supportsEntityRegions) {
@@ -359,10 +380,6 @@ void saveWorldToDisk(const Voxel::World& world,
             std::move(desiredEntityRegions));
     }
 
-    const bool worldMetadataExists = context.storage->exists(
-        format->worldMetadataCodec().metadataPath(context));
-    const bool zoneMetadataExists = context.storage->exists(
-        format->zoneMetadataCodec().metadataPath(ZoneKey{zoneId}, context));
     std::vector<Voxel::ChunkCoord> dirtyChunks;
     world.chunkManager().forEachChunk(
         [&](Voxel::ChunkCoord coord, const Voxel::Chunk& chunk) {
@@ -377,14 +394,11 @@ void saveWorldToDisk(const Voxel::World& world,
             *format, context, entityJournalPlan);
     }
 
-    WorldMetadata worldMetadata;
-    worldMetadata.worldId = "world_" + std::to_string(world.id());
-    worldMetadata.displayName = settings.displayName;
-    if (!worldMetadataExists) {
-        service.saveWorldMetadata(worldMetadata, context);
+    if (preparedWorldMetadata) {
+        service.publishMetadataSave(std::move(*preparedWorldMetadata));
     }
-    if (!zoneMetadataExists) {
-        service.saveZoneMetadata(ZoneMetadata{zoneId, zoneId}, context);
+    if (preparedZoneMetadata) {
+        service.publishMetadataSave(std::move(*preparedZoneMetadata));
     }
 }
 

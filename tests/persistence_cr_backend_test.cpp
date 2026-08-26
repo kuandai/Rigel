@@ -348,6 +348,11 @@ public:
     }
 
     void remove(const std::string& path) override {
+        ++m_removeCount;
+        if (m_failRemoves) {
+            throw std::runtime_error(
+                "InMemoryStorageBackend injected remove failure");
+        }
         m_files.erase(path);
     }
 
@@ -359,10 +364,24 @@ public:
         return m_mkdirCount;
     }
 
+    size_t removeCount() const {
+        return m_removeCount;
+    }
+
+    const std::unordered_map<std::string, std::vector<uint8_t>>& files() const {
+        return m_files;
+    }
+
+    void setFailRemoves(bool fail) {
+        m_failRemoves = fail;
+    }
+
 private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
     size_t m_writeSessionCount = 0;
     size_t m_mkdirCount = 0;
+    size_t m_removeCount = 0;
+    bool m_failRemoves = false;
 };
 
 void createEmptyFile(StorageBackend& storage, const std::string& path) {
@@ -2162,6 +2181,78 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
         CHECK(!storage->exists(regionPath));
         CHECK(!storage->exists(entityPath));
     }
+}
+
+TEST_CASE(CRBackend_invalid_save_owned_metadata_preflights_before_world_mutation) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    Rigel::Voxel::WorldResources resources;
+    const Rigel::Voxel::BlockID blockId = registerTestBlock(
+        resources.registry(), "base:metadata_preflight_marker");
+    Rigel::Voxel::World world(resources);
+    world.setId(41);
+    world.setBlock(0, 0, 0, Rigel::Voxel::BlockState{blockId});
+
+    auto entity = std::make_unique<Rigel::Entity::Entity>(
+        "rigel:metadata_preflight_entity");
+    const Rigel::Entity::EntityId entityId{41, 42, 43};
+    entity->setId(entityId);
+    entity->setPosition(1.0f, 2.0f, 3.0f);
+    CHECK_EQ(world.entities().spawn(std::move(entity)), entityId);
+
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::CR::descriptor(),
+        Backends::CR::factory(),
+        Backends::CR::probe());
+    PersistenceService service(registry);
+    PersistenceContext context;
+    context.rootPath = "worlds/save_metadata_preflight";
+    context.preferredFormat = "cr";
+    context.storage = storage;
+    context.providers = world.persistenceProvidersHandle();
+
+    WorldSettings settings = testWorldSettings();
+    settings.displayName = std::string("\xed\xa0\x80", 3);
+
+    const auto worldPath = CRPaths::worldInfoPath(context);
+    const auto zonePath = CRPaths::zoneInfoPath(
+        ZoneKey{"rigel:default"}, context);
+    const auto regionPath = CRPaths::regionPath(
+        RegionKey{"rigel:default", 0, 0, 0}, context);
+    const auto entityPath = CRPaths::entityRegionPath(
+        EntityRegionKey{"rigel:default", 0, 0, 0}, context);
+    const std::string journalPath =
+        context.rootPath + "/entity-regions.journal";
+    storage->setFailRemoves(true);
+    CHECK_THROWS(saveWorldToDisk(
+        world, testWorldSettings(), service, context));
+    storage->setFailRemoves(false);
+
+    CHECK(storage->exists(regionPath));
+    CHECK(storage->exists(journalPath));
+    CHECK(storage->exists(entityPath));
+    CHECK(!storage->exists(worldPath));
+    CHECK(!storage->exists(zonePath));
+    const auto filesBefore = storage->files();
+    const size_t mkdirCount = storage->mkdirCount();
+    const size_t writeSessionCount = storage->writeSessionCount();
+    const size_t removeCount = storage->removeCount();
+
+    checkCRMetadataError(
+        [&]() { saveWorldToDisk(world, settings, service, context); },
+        "CRMetadata: invalid JSON string");
+
+    CHECK_EQ(storage->mkdirCount(), mkdirCount);
+    CHECK_EQ(storage->writeSessionCount(), writeSessionCount);
+    CHECK_EQ(storage->removeCount(), removeCount);
+    CHECK_EQ(storage->files(), filesBefore);
+    CHECK(storage->exists(regionPath));
+    CHECK(storage->exists(journalPath));
+    CHECK(storage->exists(entityPath));
+    CHECK(!storage->exists(worldPath));
+    CHECK(!storage->exists(zonePath));
+    CHECK(world.chunkManager().getChunk({0, 0, 0})->isPersistDirty());
+    CHECK(world.entities().get(entityId) != nullptr);
 }
 
 TEST_CASE(CRBackend_world_save_preserves_existing_metadata_bytes) {

@@ -130,14 +130,6 @@ void publishMetadata(StorageBackend& storage,
     session->commit();
 }
 
-template <typename Codec, typename Metadata>
-void writeMetadata(StorageBackend& storage,
-                   Codec& codec,
-                   const Metadata& metadata,
-                   const std::string& path) {
-    publishMetadata(storage, encodeMetadata(codec, metadata), path);
-}
-
 } // namespace
 
 PersistenceService::PersistenceService(FormatRegistry& registry)
@@ -164,13 +156,35 @@ void PersistenceService::handleUnsupportedFeature(const PersistenceContext& cont
     }
 }
 
+PersistenceService::PreparedMetadata
+PersistenceService::prepareWorldMetadataSave(
+    const WorldMetadata& metadata,
+    PersistenceFormat& format,
+    const PersistenceContext& context) const {
+    auto& worldCodec = format.worldMetadataCodec();
+    const std::string path = worldCodec.metadataPath(context);
+    return PreparedMetadata{
+        context.storage,
+        path,
+        encodeMetadata(worldCodec, metadata)};
+}
+
+void PersistenceService::publishMetadataSave(
+    PreparedMetadata prepared) const {
+    if (!prepared.m_storage) {
+        throw std::logic_error("Invalid prepared metadata save");
+    }
+    publishMetadata(
+        *prepared.m_storage, prepared.m_bytes, prepared.m_path);
+}
+
 void PersistenceService::saveWorldMetadata(
     const WorldMetadata& metadata,
     const PersistenceContext& context) {
     auto format = resolve(context);
-    auto& worldCodec = format->worldMetadataCodec();
-    const auto worldPath = worldCodec.metadataPath(context);
-    writeMetadata(*context.storage, worldCodec, metadata, worldPath);
+    auto prepared =
+        prepareWorldMetadataSave(metadata, *format, context);
+    publishMetadataSave(std::move(prepared));
 }
 
 WorldMetadata PersistenceService::loadWorldMetadata(const PersistenceContext& context) {
@@ -181,13 +195,25 @@ WorldMetadata PersistenceService::loadWorldMetadata(const PersistenceContext& co
     return codec.read(*reader);
 }
 
-void PersistenceService::saveZoneMetadata(const ZoneMetadata& metadata, const PersistenceContext& context) {
+PersistenceService::PreparedMetadata
+PersistenceService::prepareZoneMetadataSave(
+    const ZoneMetadata& metadata,
+    PersistenceFormat& format,
+    const PersistenceContext& context) const {
     detail::validateZoneIdentifier(metadata.zoneId);
-    auto format = resolve(context);
-    auto& codec = format->zoneMetadataCodec();
+    auto& codec = format.zoneMetadataCodec();
     ZoneKey key{metadata.zoneId};
-    auto path = codec.metadataPath(key, context);
-    writeMetadata(*context.storage, codec, metadata, path);
+    const std::string path = codec.metadataPath(key, context);
+    return PreparedMetadata{
+        context.storage,
+        path,
+        encodeMetadata(codec, metadata)};
+}
+
+void PersistenceService::saveZoneMetadata(const ZoneMetadata& metadata, const PersistenceContext& context) {
+    auto format = resolve(context);
+    auto prepared = prepareZoneMetadataSave(metadata, *format, context);
+    publishMetadataSave(std::move(prepared));
 }
 
 ZoneMetadata PersistenceService::loadZoneMetadata(const ZoneKey& key, const PersistenceContext& context) {

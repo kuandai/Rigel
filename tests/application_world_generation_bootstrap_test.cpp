@@ -58,6 +58,27 @@ Persistence::NewWorldGeneration creation(
     return result;
 }
 
+std::string configureEmptySequenceCase(
+    Persistence::NewWorldGeneration& input,
+    int scenario) {
+    if (scenario == 0) {
+        input.definition.biomes.entries.clear();
+        return "  entries: []\n";
+    }
+    if (scenario == 1) {
+        input.definition.biomes.entries.front().surface.clear();
+        return "      surface: []\n";
+    }
+
+    input.definition.stageEnabled["structures"] = true;
+    Voxel::WorldGenConfig::FeatureConfig feature;
+    feature.name = "unrestricted";
+    feature.block = "test:grass";
+    feature.chance = 0.25f;
+    input.definition.structures.features.push_back(std::move(feature));
+    return "      biomes: []\n";
+}
+
 std::string readDocument(
     Persistence::StorageBackend& storage,
     const std::filesystem::path& path) {
@@ -231,6 +252,89 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_reload_uses_saved_snapshot) {
             0.25f);
         CHECK_EQ(result.generator, world.generator());
         CHECK_EQ(result.generator, view.generator());
+    }
+}
+
+TEST_CASE(ApplicationWorldGenerationBootstrap_publishes_and_reloads_empty_sequences) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_empty_sequences");
+
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        const auto root =
+            directory.path() / ("world_" + std::to_string(scenario));
+        auto input = creation(
+            600u + static_cast<uint32_t>(scenario),
+            0.25f,
+            "empty sequence world");
+        const std::string emptySequenceToken =
+            configureEmptySequenceCase(input, scenario);
+        input.definition.terrain.baseHeight = 999.0f;
+        const std::string expectedSnapshot =
+            Rigel::Voxel::serializeGeneratorSnapshot(input.definition);
+        std::string publishedSnapshot;
+
+        {
+            auto storage =
+                std::make_shared<Rigel::Persistence::FilesystemBackend>();
+            Rigel::Voxel::WorldSet worldSet;
+            configureWorldSet(worldSet, root, storage, "memory");
+            Rigel::Voxel::World& world = worldSet.createWorld(1);
+            Rigel::Voxel::WorldView view(world, worldSet.resources());
+            const auto result =
+                Rigel::detail::bootstrapApplicationWorldGeneration(
+                    worldSet,
+                    1,
+                    world,
+                    view,
+                    input,
+                    worldSet.persistenceContext(1));
+
+            publishedSnapshot = readDocument(
+                *storage, root / "generator-definition.yaml");
+            CHECK_EQ(publishedSnapshot, expectedSnapshot);
+            CHECK(
+                publishedSnapshot.find(emptySequenceToken) !=
+                std::string::npos);
+            CHECK_EQ(
+                Rigel::Voxel::serializeGeneratorSnapshot(
+                    result.generator->config()),
+                publishedSnapshot);
+            CHECK_EQ(
+                result.generator->config().terrain.baseHeight,
+                Rigel::Voxel::WorldGenConfig{}.terrain.baseHeight);
+        }
+
+        {
+            auto storage =
+                std::make_shared<Rigel::Persistence::FilesystemBackend>();
+            Rigel::Voxel::WorldSet worldSet;
+            configureWorldSet(worldSet, root, storage, "cr");
+            Rigel::Voxel::World& world = worldSet.createWorld(1);
+            Rigel::Voxel::WorldView view(world, worldSet.resources());
+            const auto result =
+                Rigel::detail::bootstrapApplicationWorldGeneration(
+                    worldSet,
+                    1,
+                    world,
+                    view,
+                    std::nullopt,
+                    worldSet.persistenceContext(1));
+
+            CHECK_EQ(result.persistenceFormat, std::string("memory"));
+            CHECK_EQ(
+                Rigel::Voxel::serializeGeneratorSnapshot(
+                    result.generator->config()),
+                publishedSnapshot);
+            if (scenario == 0) {
+                CHECK(result.generator->config().biomes.entries.empty());
+            } else if (scenario == 1) {
+                CHECK(result.generator->config()
+                          .biomes.entries.front().surface.empty());
+            } else {
+                CHECK(result.generator->config()
+                          .structures.features.front().biomes.empty());
+            }
+        }
     }
 }
 

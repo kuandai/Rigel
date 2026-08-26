@@ -70,6 +70,62 @@ TEST_CASE(GeneratorSnapshot_round_trips_normalized_runtime_definition) {
     CHECK_EQ(serializeGeneratorSnapshot(loaded), snapshot);
 }
 
+TEST_CASE(GeneratorSnapshot_round_trips_supported_empty_sequences) {
+    {
+        WorldGenConfig definition = snapshotDefinition();
+        definition.biomes.entries.clear();
+
+        const std::string snapshot = serializeGeneratorSnapshot(definition);
+        CHECK(snapshot.find("  entries: []\n") != std::string::npos);
+        CHECK(snapshot.find("  entries:\n") == std::string::npos);
+        const WorldGenConfig loaded = parseGeneratorSnapshot(
+            snapshot,
+            kGeneratorDefinitionSchemaVersion,
+            definition.seed,
+            definition.world.version);
+        CHECK(loaded.biomes.entries.empty());
+        CHECK_EQ(serializeGeneratorSnapshot(loaded), snapshot);
+    }
+
+    {
+        WorldGenConfig definition = snapshotDefinition();
+        definition.biomes.entries.front().surface.clear();
+
+        const std::string snapshot = serializeGeneratorSnapshot(definition);
+        CHECK(snapshot.find("      surface: []\n") != std::string::npos);
+        CHECK(snapshot.find("      surface:\n") == std::string::npos);
+        const WorldGenConfig loaded = parseGeneratorSnapshot(
+            snapshot,
+            kGeneratorDefinitionSchemaVersion,
+            definition.seed,
+            definition.world.version);
+        CHECK(loaded.biomes.entries.front().surface.empty());
+        CHECK_EQ(serializeGeneratorSnapshot(loaded), snapshot);
+    }
+
+    {
+        WorldGenConfig definition = snapshotDefinition();
+        definition.stageEnabled["structures"] = true;
+        WorldGenConfig::FeatureConfig feature;
+        feature.name = "unrestricted";
+        feature.block = "base:grass";
+        feature.chance = 0.25f;
+        definition.structures.features.push_back(std::move(feature));
+
+        const std::string snapshot = serializeGeneratorSnapshot(definition);
+        CHECK(snapshot.find("      biomes: []\n") != std::string::npos);
+        CHECK(snapshot.find("      biomes:\n") == std::string::npos);
+        const WorldGenConfig loaded = parseGeneratorSnapshot(
+            snapshot,
+            kGeneratorDefinitionSchemaVersion,
+            definition.seed,
+            definition.world.version);
+        CHECK(loaded.isStageEnabled("structures"));
+        CHECK(loaded.structures.features.front().biomes.empty());
+        CHECK_EQ(serializeGeneratorSnapshot(loaded), snapshot);
+    }
+}
+
 TEST_CASE(GeneratorSnapshot_rejects_noncanonical_or_unknown_content) {
     const std::string canonical = serializeGeneratorSnapshot(snapshotDefinition());
 

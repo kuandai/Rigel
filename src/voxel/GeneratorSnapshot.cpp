@@ -429,7 +429,9 @@ std::string serializeGeneratorSnapshot(const WorldGenConfig& definition) {
         out += "    min_continentalness: " + number(coastMin) + "\n";
         out += "    max_continentalness: " + number(coastMax) + "\n";
     }
-    out += "  entries:\n";
+    out += definition.biomes.entries.empty()
+        ? "  entries: []\n"
+        : "  entries:\n";
     for (const auto& biome : definition.biomes.entries) {
         out += "    - name: " + quoted(biome.name) + "\n";
         out += "      target:\n";
@@ -438,7 +440,9 @@ std::string serializeGeneratorSnapshot(const WorldGenConfig& definition) {
         out += "        continentalness: " +
             number(biome.target.continentalness) + "\n";
         out += "      weight: " + number(biome.weight) + "\n";
-        out += "      surface:\n";
+        out += biome.surface.empty()
+            ? "      surface: []\n"
+            : "      surface:\n";
         for (const auto& layer : biome.surface) {
             out += "        - block: " + quoted(layer.block) + "\n";
             out += "          depth: " + std::to_string(layer.depth) + "\n";
@@ -484,7 +488,9 @@ std::string serializeGeneratorSnapshot(const WorldGenConfig& definition) {
             out += "      max_height: " +
                 std::to_string(std::max(feature.minHeight, feature.maxHeight)) +
                 "\n";
-            out += "      biomes:\n";
+            out += feature.biomes.empty()
+                ? "      biomes: []\n"
+                : "      biomes:\n";
             for (const auto& biome : feature.biomes) {
                 out += "        - " + quoted(biome) + "\n";
             }

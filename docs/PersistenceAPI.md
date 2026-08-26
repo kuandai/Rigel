@@ -270,16 +270,19 @@ Current behavior:
 - `PersistenceService` chunk and entity payload writes require explicit region snapshots.
 - Runtime chunk loads use region snapshots through `AsyncChunkLoader`.
 - Only chunks marked `isPersistDirty()` are saved.
-- When `saveWorldToDisk` must create backend metadata, it derives the
-  compatibility display-name field from `WorldSettings`.
-  `world-settings.yaml` remains the display-name authority; a stale backend
-  copy cannot replace it or prevent a valid save from reopening. Backend
-  metadata is not a second source for seed, generator provenance, or the
-  display name.
-- Missing world and zone metadata documents are each encoded exactly once
-  before recovery-journal replay or chunk/entity mutation. Their bounded
-  encoded bytes are retained for later publication, so a metadata
-  serialization failure leaves the aggregate close storage unchanged.
+- `saveWorldToDisk` and the direct `saveChunkToDisk` entry point require a
+  complete published settings/snapshot/backend identity before mutation. They
+  resolve the saved backend format without a preferred-format fallback and
+  never create or recover a world root. The aggregate save also rejects an
+  in-memory `WorldSettings` value that differs from the published record.
+- `AsyncChunkLoader` validates and retains the published backend format when
+  it is constructed. Dirty eviction writes reuse that validated format rather
+  than re-reading the settings and generator snapshot for every chunk.
+- A missing zone metadata document is encoded before recovery-journal replay
+  or chunk/entity mutation. Its bounded encoded bytes are retained for later
+  publication, so a zone metadata serialization failure leaves aggregate
+  close storage unchanged. Backend world metadata is created only by the
+  atomic world-publication lifecycle.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,
   and all-air spans are skipped.
 - Save and entity load validate a pending `entity-regions.journal` schema,

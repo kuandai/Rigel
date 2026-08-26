@@ -6,6 +6,7 @@
 #include "Rigel/Persistence/RegionLayout.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/WorldPersistence.h"
+#include "WorldPersistenceDetail.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Core/Profiler.h"
@@ -24,6 +25,18 @@ namespace Rigel::Persistence {
 
 namespace {
 constexpr size_t kMaxRegionLoadAttempts = 3;
+
+PersistenceContext validatedPublishedContext(
+    PersistenceService& service,
+    const Voxel::World& world,
+    PersistenceContext context) {
+    const BootstrappedWorldGeneration published =
+        loadPublishedWorldGeneration(
+            service, world.blockRegistry(), context);
+    context.preferredFormat = published.persistenceFormat;
+    context.discoverExistingFormat = false;
+    return context;
+}
 
 void advanceFailureVersion(uint64_t& version) {
     ++version;
@@ -122,7 +135,8 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
                                    int viewDistanceChunks,
                                    std::shared_ptr<const Voxel::WorldGenerator> generator)
     : m_service(&service),
-      m_context(std::move(context)),
+      m_context(validatedPublishedContext(
+          service, world, std::move(context))),
       m_format(service.openFormat(m_context)),
       m_world(&world),
       m_worldGenVersion(worldGenVersion),
@@ -399,7 +413,8 @@ bool AsyncChunkLoader::persistChunk(Voxel::ChunkCoord coord) {
     }
 
     try {
-        saveChunkToDisk(*m_world, *m_service, m_context, coord);
+        detail::saveChunkToPublishedWorld(
+            *m_world, *m_format, m_context, coord);
         RegionKey key = m_format->regionLayout().regionForChunk(m_zoneId, coord);
         invalidateRegion(key);
     } catch (const std::exception& e) {

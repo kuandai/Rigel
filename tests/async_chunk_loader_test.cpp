@@ -620,6 +620,10 @@ private:
     std::unique_ptr<PersistenceFormat> m_delegate;
 };
 
+bool isChunkRegionStoragePath(const std::string& path) {
+    return path.find("/regions/region_") != std::string::npos;
+}
+
 class TransientReadFailureStorage final : public StorageBackend {
 public:
     TransientReadFailureStorage(std::shared_ptr<StorageBackend> delegate,
@@ -628,6 +632,9 @@ public:
           m_failuresRemaining(failures) {}
 
     std::unique_ptr<ByteReader> openRead(const std::string& path) override {
+        if (!isChunkRegionStoragePath(path)) {
+            return m_delegate->openRead(path);
+        }
         ++m_readAttempts;
         size_t remaining = m_failuresRemaining.load();
         while (remaining > 0) {
@@ -693,6 +700,9 @@ public:
           m_failuresRemaining(failures) {}
 
     std::unique_ptr<ByteReader> openRead(const std::string& path) override {
+        if (!isChunkRegionStoragePath(path)) {
+            return m_delegate->openRead(path);
+        }
         restoreFile();
         auto reader = m_delegate->openRead(path);
         ++m_readAttempts;
@@ -776,6 +786,11 @@ public:
           m_failuresRemaining(failures) {}
 
     std::unique_ptr<ByteReader> openRead(const std::string& path) override {
+        if (path.ends_with("/world-settings.yaml") ||
+            path.ends_with("/generator-definition.yaml") ||
+            path.ends_with("/world.meta")) {
+            ++m_identityReadAttempts;
+        }
         return m_delegate->openRead(path);
     }
 
@@ -823,10 +838,15 @@ public:
         return m_writeAttempts.load();
     }
 
+    size_t identityReadAttempts() const {
+        return m_identityReadAttempts.load();
+    }
+
 private:
     std::shared_ptr<StorageBackend> m_delegate;
     std::atomic<size_t> m_failuresRemaining;
     std::atomic<size_t> m_writeAttempts = 0;
+    std::atomic<size_t> m_identityReadAttempts = 0;
 };
 
 ChunkRegionSnapshot buildRegionSnapshot(const std::string& zoneId,
@@ -1887,6 +1907,9 @@ TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {
         0,
         generator);
     loader->setPrefetchRadius(0);
+    const size_t identityReadsAfterConstruction =
+        failingStorage->identityReadAttempts();
+    CHECK(identityReadsAfterConstruction > 0);
 
     WorldMeshStore meshStore;
     ChunkStreamer streamer(
@@ -1921,6 +1944,9 @@ TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {
     CHECK(loaded->isPersistDirty());
     CHECK_EQ(loaded->getBlock(0, 0, 0).id, edited);
     CHECK_EQ(failingStorage->writeAttempts(), static_cast<size_t>(1));
+    CHECK_EQ(
+        failingStorage->identityReadAttempts(),
+        identityReadsAfterConstruction);
 
     for (int update = 0; update < 59; ++update) {
         streamer.update(distant);
@@ -1931,6 +1957,9 @@ TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {
     streamer.update(distant);
     CHECK(!world.chunkManager().hasChunk(coord));
     CHECK_EQ(failingStorage->writeAttempts(), static_cast<size_t>(2));
+    CHECK_EQ(
+        failingStorage->identityReadAttempts(),
+        identityReadsAfterConstruction);
 }
 
 TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration) {
@@ -6112,14 +6141,22 @@ TEST_CASE(AsyncChunkLoader_PartialSpan_RespectsDisabledBaseFillCapability) {
             return std::make_unique<CapabilityOverrideFormat>(
                 descriptor, Backends::Memory::factory()(context));
         },
-        [](StorageBackend&, const PersistenceContext&) {
-            return std::optional<ProbeResult>();
+        [](StorageBackend& storage, const PersistenceContext& context) {
+            if (!storage.exists(context.rootPath + "/world.meta")) {
+                return std::optional<ProbeResult>();
+            }
+            return std::optional<ProbeResult>{ProbeResult{1.0f, true}};
         });
     PersistenceService service(formats);
     PersistenceContext context;
     context.rootPath = directory.path().string();
     context.preferredFormat = descriptor.id;
     context.storage = std::make_shared<FilesystemBackend>();
+    Rigel::Test::installSavedWorldGenerationFixture(
+        service,
+        context,
+        Rigel::Test::savedWorldSettingsFixture(
+            "Disabled Base Fill Test World"));
     saveRegionForPayload(service, context, "rigel:default", coord, payload);
 
     AsyncChunkLoader loader(

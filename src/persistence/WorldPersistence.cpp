@@ -12,6 +12,7 @@
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "EntityRegionJournal.h"
+#include "WorldPersistenceDetail.h"
 #include "../entity/EntityPersistenceDetail.h"
 #include "../entity/EntityPersistenceLimits.h"
 #include "backends/cr/CRWorldMetadata.h"
@@ -419,8 +420,21 @@ void saveChunkToDisk(const Voxel::World& world,
     context.preferredFormat = published.persistenceFormat;
     context.discoverExistingFormat = false;
     auto format = service.openFormat(context);
-    requireSupportedDefaultZone(*format, context);
-    saveChunkRegions(world, *format, {coord});
+    detail::saveChunkToPublishedWorld(world, *format, context, coord);
+}
+
+void detail::saveChunkToPublishedWorld(
+    const Voxel::World& world,
+    PersistenceFormat& format,
+    const PersistenceContext& context,
+    const Voxel::ChunkCoord& coord) {
+    const Voxel::Chunk* chunk = world.chunkManager().getChunk(coord);
+    if (!chunk || !chunk->isPersistDirty()) {
+        return;
+    }
+
+    requireSupportedDefaultZone(format, context);
+    saveChunkRegions(world, format, {coord});
 }
 
 } // namespace Rigel::Persistence

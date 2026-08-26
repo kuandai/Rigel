@@ -4,11 +4,16 @@
 #include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Voxel/GeneratorSnapshot.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -125,6 +130,7 @@ class ObservingStorage final : public Persistence::FilesystemBackend {
 public:
     size_t failOrdinal = std::numeric_limits<size_t>::max();
     bool failAfterCommit = false;
+    bool failRemovals = false;
     std::vector<std::string> commits;
 
     std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
@@ -139,8 +145,34 @@ public:
             commits);
     }
 
+    void remove(const std::string& path) override {
+        if (failRemovals) {
+            throw std::runtime_error("injected cleanup failure");
+        }
+        Persistence::FilesystemBackend::remove(path);
+    }
+
 private:
     size_t m_openOrdinal = 0;
+};
+
+class CoordinatedPublishStorage final : public Persistence::FilesystemBackend {
+public:
+    void publishDirectory(const std::string& stagedPath,
+                          const std::string& finalPath) override {
+        {
+            std::unique_lock lock(m_mutex);
+            ++m_waiting;
+            m_ready.notify_all();
+            m_ready.wait(lock, [&] { return m_waiting == 2; });
+        }
+        Persistence::FilesystemBackend::publishDirectory(stagedPath, finalPath);
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_ready;
+    size_t m_waiting = 0;
 };
 
 } // namespace
@@ -172,12 +204,13 @@ TEST_CASE(WorldSettings_close_reload_uses_only_saved_generator_snapshot) {
     CHECK_EQ(loaded.definition.seed, settings.seed);
     CHECK_EQ(
         loaded.definition.world.version,
-        settings.generator.sourceRevision);
+        settings.generator.semanticsVersion);
     CHECK_EQ(loaded.definition.world.seaLevel, 0);
     CHECK_EQ(loaded.definition.densityGraph.nodes.front().value, 0.75f);
 
     const std::string settingsYaml = readText(
         *reopenedStorage, worldRoot / "world-settings.yaml");
+    CHECK(settingsYaml.starts_with("world:\n"));
     CHECK(settingsYaml.find("schema_version: 1") != std::string::npos);
     CHECK(settingsYaml.find("seed: 424242") != std::string::npos);
     CHECK(settingsYaml.find("source_revision: 19") != std::string::npos);
@@ -239,6 +272,72 @@ TEST_CASE(WorldSettings_settings_write_failure_removes_committed_snapshot) {
     }
 }
 
+TEST_CASE(WorldSettings_cleanup_failure_never_publishes_staged_world) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_cleanup_failure";
+    auto storage = std::make_shared<ObservingStorage>();
+    storage->failOrdinal = 2;
+    storage->failAfterCommit = true;
+    storage->failRemovals = true;
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+    CHECK(!std::filesystem::exists(worldRoot));
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(context),
+        Persistence::SavedWorldGenerationPresence::Missing);
+}
+
+TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_concurrent";
+    auto storage = std::make_shared<CoordinatedPublishStorage>();
+    const auto context = contextFor(worldRoot, storage);
+
+    auto settingsA = savedSettings();
+    auto definitionA = savedDefinition();
+    settingsA.displayName = "Publisher A";
+    settingsA.seed = 101;
+    definitionA.seed = 101;
+    definitionA.densityGraph.nodes.front().value = 0.25f;
+
+    auto settingsB = savedSettings();
+    auto definitionB = savedDefinition();
+    settingsB.displayName = "Publisher B";
+    settingsB.seed = 202;
+    definitionB.seed = 202;
+    definitionB.densityGraph.nodes.front().value = 0.5f;
+
+    std::atomic<size_t> successes = 0;
+    std::atomic<size_t> failures = 0;
+    auto publish = [&](const auto& settings, const auto& definition) {
+        try {
+            Persistence::publishNewWorldGeneration(
+                settings, definition, context);
+            ++successes;
+        } catch (...) {
+            ++failures;
+        }
+    };
+    std::thread first(publish, std::cref(settingsA), std::cref(definitionA));
+    std::thread second(publish, std::cref(settingsB), std::cref(definitionB));
+    first.join();
+    second.join();
+
+    CHECK_EQ(successes.load(), static_cast<size_t>(1));
+    CHECK_EQ(failures.load(), static_cast<size_t>(1));
+    const auto loaded = Persistence::loadSavedWorldGeneration(context);
+    if (loaded.settings.displayName == settingsA.displayName) {
+        CHECK_EQ(loaded.settings.seed, settingsA.seed);
+        CHECK_EQ(loaded.definition.densityGraph.nodes.front().value, 0.25f);
+    } else {
+        CHECK_EQ(loaded.settings.displayName, settingsB.displayName);
+        CHECK_EQ(loaded.settings.seed, settingsB.seed);
+        CHECK_EQ(loaded.definition.densityGraph.nodes.front().value, 0.5f);
+    }
+}
+
 TEST_CASE(WorldSettings_legacy_save_is_rejected_without_mutation) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_11";
@@ -259,7 +358,7 @@ TEST_CASE(WorldSettings_legacy_save_is_rejected_without_mutation) {
     CHECK(!std::filesystem::exists(worldRoot / "generator-definition.yaml"));
 }
 
-TEST_CASE(WorldSettings_rejects_dual_seed_or_revision_authority_before_write) {
+TEST_CASE(WorldSettings_rejects_dual_seed_authority_before_write) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
 
@@ -271,13 +370,27 @@ TEST_CASE(WorldSettings_rejects_dual_seed_or_revision_authority_before_write) {
         mismatchedSettings, savedDefinition(), seedContext));
     CHECK(!std::filesystem::exists(seedRoot));
 
-    mismatchedSettings = savedSettings();
-    mismatchedSettings.generator.sourceRevision += 1;
-    const auto revisionRoot = directory.path() / "revision-mismatch";
-    const auto revisionContext = contextFor(revisionRoot, storage);
+}
+
+TEST_CASE(WorldSettings_rejects_documents_larger_than_reload_limits) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "oversized-settings";
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    const auto context = contextFor(worldRoot, storage);
+    auto settings = savedSettings();
+    settings.generator.sourceId = "rigel:" + std::string(17 * 1024, 'x');
+
     CHECK_THROWS(Persistence::publishNewWorldGeneration(
-        mismatchedSettings, savedDefinition(), revisionContext));
-    CHECK(!std::filesystem::exists(revisionRoot));
+        settings, savedDefinition(), context));
+    CHECK(!std::filesystem::exists(worldRoot));
+
+    const auto snapshotRoot = directory.path() / "oversized-snapshot";
+    const auto snapshotContext = contextFor(snapshotRoot, storage);
+    auto definition = savedDefinition();
+    definition.solidBlock = std::string(4 * 1024 * 1024, 's');
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), definition, snapshotContext));
+    CHECK(!std::filesystem::exists(snapshotRoot));
 }
 
 TEST_CASE(WorldSettings_rejects_each_unsupported_version_without_repairing_save) {

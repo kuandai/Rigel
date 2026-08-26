@@ -87,9 +87,9 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
         sourceName,
         "",
         {
-            "seed", "solid_block", "surface_block", "world", "terrain", "climate",
-            "biomes", "density_graph", "caves", "structures", "streaming",
-            "generation", "flags", "overlays"
+            "seed", "solid_block", "surface_block", "water_block", "shore_block",
+            "world", "terrain", "climate", "biomes", "density_graph", "caves",
+            "structures", "streaming", "generation", "flags", "overlays"
         }
     );
 
@@ -366,6 +366,8 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlUnchecked(
     seed = static_cast<uint32_t>(Util::readInt(root, "seed", static_cast<int>(seed)));
     solidBlock = Util::readString(root, "solid_block", solidBlock);
     surfaceBlock = Util::readString(root, "surface_block", surfaceBlock);
+    waterBlock = Util::readString(root, "water_block", waterBlock);
+    shoreBlock = Util::readString(root, "shore_block", shoreBlock);
 
     if (root.has_child("world")) {
         ryml::ConstNodeRef worldNode = root["world"];

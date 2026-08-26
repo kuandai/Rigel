@@ -150,18 +150,21 @@ existing `saves/world_<worldId>` root:
 - `generator-definition.yaml` is the canonical resolved generator runtime
   snapshot.
 
-The definition is written and durably committed first. `world-settings.yaml`
-is committed last and is the publication boundary; failed creation removes the
-new root. A root containing only one file is incomplete and is not loaded.
+Both documents are durably committed in a unique sibling staging directory,
+then the complete directory is atomically published without replacing an
+existing root. Failed creation never exposes a partial final root. A root
+containing only one file is incomplete and is not loaded.
 Existing save data without both files is legacy or unknown and is rejected
 without mutation.
 
 The seed and source revision are deliberately absent from the generator
-snapshot. They are injected from `WorldSettings` when the snapshot is decoded,
-so layered config and snapshot data cannot become competing owners. Snapshot
+snapshot. The seed and evaluator semantics version are applied from
+`WorldSettings` when the snapshot is decoded; source revision remains provenance
+only. Snapshot
 serialization also omits flags, overlays, aliases, comments, and inactive
-legacy scalar terrain inputs. Snapshot parsing is strict and accepts only the
-canonical representation and supported schema/semantics versions.
+legacy scalar terrain inputs and graph nodes unreachable from runtime outputs.
+Snapshot parsing is strict and accepts only the canonical representation and
+supported schema/semantics versions.
 
 ---
 

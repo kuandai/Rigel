@@ -21,6 +21,6 @@ void validateGeneratorSnapshotContent(const WorldGenConfig& definition,
 WorldGenConfig parseGeneratorSnapshot(std::string_view snapshot,
                                       uint32_t definitionSchemaVersion,
                                       uint32_t seed,
-                                      uint32_t sourceRevision);
+                                      uint32_t runtimeGenerationVersion);
 
 } // namespace Rigel::Voxel

@@ -32,6 +32,12 @@ WorldGenConfig snapshotDefinition() {
     baseDensity.value = 0.25f;
     definition.densityGraph.nodes.push_back(std::move(baseDensity));
     definition.densityGraph.outputs["base_density"] = "base";
+    WorldGenConfig::DensityNodeConfig dead;
+    dead.id = "dead_authoring_node";
+    dead.type = "constant";
+    dead.value = -100.0f;
+    definition.densityGraph.nodes.push_back(std::move(dead));
+    definition.densityGraph.outputs["unused_semantic"] = "dead_authoring_node";
     definition.stageEnabled["caves"] = false;
     definition.stageEnabled["structures"] = false;
     return definition;
@@ -49,6 +55,8 @@ TEST_CASE(GeneratorSnapshot_round_trips_normalized_runtime_definition) {
     CHECK(snapshot.find("flags:") == std::string::npos);
     CHECK(snapshot.find("overlays:") == std::string::npos);
     CHECK(snapshot.find("\nstructures:\n") == std::string::npos);
+    CHECK(snapshot.find("dead_authoring_node") == std::string::npos);
+    CHECK(snapshot.find("unused_semantic") == std::string::npos);
 
     const WorldGenConfig loaded = parseGeneratorSnapshot(
         snapshot,
@@ -60,6 +68,7 @@ TEST_CASE(GeneratorSnapshot_round_trips_normalized_runtime_definition) {
     CHECK_EQ(loaded.world.seaLevel, installed.world.seaLevel);
     CHECK_EQ(loaded.solidBlock, installed.solidBlock);
     CHECK_EQ(loaded.densityGraph.nodes.size(), static_cast<size_t>(1));
+    CHECK_EQ(loaded.densityGraph.outputs.size(), static_cast<size_t>(1));
     CHECK_EQ(serializeGeneratorSnapshot(loaded), snapshot);
 }
 
@@ -105,7 +114,8 @@ TEST_CASE(GeneratorSnapshot_validates_referenced_runtime_content) {
     WorldGenConfig definition = snapshotDefinition();
     BlockRegistry registry;
     for (const std::string identifier : {
-             "base:stone_shale", "base:grass"}) {
+             "base:stone_shale", "base:grass", "base:water[type=source]",
+             "base:sand"}) {
         BlockType block;
         block.identifier = identifier;
         registry.registerBlock(identifier, std::move(block));
@@ -114,4 +124,36 @@ TEST_CASE(GeneratorSnapshot_validates_referenced_runtime_content) {
     CHECK_NO_THROW(validateGeneratorSnapshotContent(definition, registry));
     definition.biomes.entries.front().surface.front().block = "base:missing";
     CHECK_THROWS(validateGeneratorSnapshotContent(definition, registry));
+}
+
+TEST_CASE(GeneratorSnapshot_requires_every_runtime_material_dependency) {
+    WorldGenConfig definition = snapshotDefinition();
+    BlockRegistry registry;
+    auto registerBlock = [&](const std::string& identifier) {
+        BlockType block;
+        block.identifier = identifier;
+        registry.registerBlock(identifier, std::move(block));
+    };
+    registerBlock(definition.solidBlock);
+    registerBlock(definition.surfaceBlock);
+
+    CHECK_THROWS(validateGeneratorSnapshotContent(definition, registry));
+    registerBlock(definition.waterBlock);
+    CHECK_THROWS(validateGeneratorSnapshotContent(definition, registry));
+    registerBlock(definition.shoreBlock);
+    CHECK_NO_THROW(validateGeneratorSnapshotContent(definition, registry));
+}
+
+TEST_CASE(GeneratorSnapshot_rejects_incoherent_node_and_pipeline_contracts) {
+    WorldGenConfig definition = snapshotDefinition();
+    definition.densityGraph.nodes.front().type = "abs";
+    CHECK_THROWS(serializeGeneratorSnapshot(definition));
+
+    definition = snapshotDefinition();
+    definition.stageEnabled["terrain_density"] = false;
+    CHECK_THROWS(serializeGeneratorSnapshot(definition));
+
+    definition = snapshotDefinition();
+    definition.climate.global.temperature.octaves = -1;
+    CHECK_THROWS(serializeGeneratorSnapshot(definition));
 }

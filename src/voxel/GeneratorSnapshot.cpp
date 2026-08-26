@@ -8,9 +8,11 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -156,6 +158,27 @@ void requireUniqueNames(const WorldGenConfig& definition) {
 }
 
 void validateNodeContracts(const WorldGenConfig& definition) {
+    auto requireNonnegativeOctaves = [](const WorldGenConfig::NoiseConfig& noise,
+                                        std::string_view path) {
+        if (noise.octaves < 0) {
+            throw std::invalid_argument(
+                "Generator definition noise field '" + std::string(path) +
+                ".octaves' cannot be negative");
+        }
+    };
+    const auto validateClimateLayer = [&](
+        const WorldGenConfig::ClimateLayerConfig& layer,
+        std::string_view path) {
+        requireNonnegativeOctaves(layer.temperature,
+                                  std::string(path) + ".temperature");
+        requireNonnegativeOctaves(layer.humidity,
+                                  std::string(path) + ".humidity");
+        requireNonnegativeOctaves(layer.continentalness,
+                                  std::string(path) + ".continentalness");
+    };
+    validateClimateLayer(definition.climate.global, "climate.global");
+    validateClimateLayer(definition.climate.local, "climate.local");
+
     for (const auto& node : definition.densityGraph.nodes) {
         if (!isKnownDensityNodeType(node.type)) {
             throw std::invalid_argument(
@@ -166,6 +189,39 @@ void validateNodeContracts(const WorldGenConfig& definition) {
             throw std::invalid_argument(
                 "Generator definition has unknown climate field '" +
                 node.field + "' for node '" + node.id + "'");
+        }
+        const size_t inputCount = node.inputs.size();
+        const bool variadic = node.type == "add" || node.type == "mul" ||
+            node.type == "max" || node.type == "min";
+        const bool unary = node.type == "clamp" || node.type == "abs" ||
+            node.type == "invert" || node.type == "spline";
+        if ((variadic && inputCount == 0) || (unary && inputCount != 1) ||
+            (!variadic && !unary && inputCount != 0)) {
+            throw std::invalid_argument(
+                "Generator definition density node '" + node.id +
+                "' has an invalid input count for type '" + node.type + "'");
+        }
+        if (node.type == "spline" && node.splinePoints.empty()) {
+            throw std::invalid_argument(
+                "Generator definition spline node '" + node.id +
+                "' requires at least one point");
+        }
+        if (node.type == "noise2d" || node.type == "noise3d" ||
+            node.type == "noise3d_xy") {
+            requireNonnegativeOctaves(
+                node.noise, "density_graph.nodes." + node.id + ".noise");
+        }
+    }
+}
+
+void validatePipeline(const WorldGenConfig& definition) {
+    for (const char* stage : {
+             "climate_global", "climate_local", "biome_resolve",
+             "terrain_density", "surface_rules"}) {
+        if (!definition.isStageEnabled(stage)) {
+            throw std::invalid_argument(
+                "Generator definition cannot disable internal pipeline stage '" +
+                std::string(stage) + "'");
         }
     }
 }
@@ -200,7 +256,60 @@ void validateDefinition(const WorldGenConfig& definition) {
     definition.validate("generator definition snapshot");
     requireUniqueNames(definition);
     validateNodeContracts(definition);
+    validatePipeline(definition);
     validateGraph(definition);
+}
+
+std::vector<std::pair<std::string, std::string>> runtimeOutputs(
+    const WorldGenConfig& definition) {
+    std::vector<std::pair<std::string, std::string>> outputs;
+    auto retain = [&](const std::string& semantic) {
+        const auto found = definition.densityGraph.outputs.find(semantic);
+        if (found == definition.densityGraph.outputs.end()) {
+            return;
+        }
+        const auto duplicate = std::find_if(
+            outputs.begin(), outputs.end(), [&](const auto& output) {
+                return output.first == found->first;
+            });
+        if (duplicate == outputs.end()) {
+            outputs.push_back(*found);
+        }
+    };
+    retain("base_density");
+    if (definition.isStageEnabled("caves")) {
+        retain(definition.caves.densityOutput);
+    }
+    std::sort(outputs.begin(), outputs.end());
+    return outputs;
+}
+
+std::unordered_set<std::string> reachableRuntimeNodes(
+    const WorldGenConfig& definition,
+    const std::vector<std::pair<std::string, std::string>>& outputs) {
+    std::unordered_map<std::string, const WorldGenConfig::DensityNodeConfig*>
+        nodes;
+    for (const auto& node : definition.densityGraph.nodes) {
+        nodes.emplace(node.id, &node);
+    }
+
+    std::unordered_set<std::string> reachable;
+    std::function<void(const std::string&)> visit = [&](const std::string& id) {
+        if (!reachable.insert(id).second) {
+            return;
+        }
+        const auto found = nodes.find(id);
+        if (found == nodes.end()) {
+            return;
+        }
+        for (const auto& input : found->second->inputs) {
+            visit(input);
+        }
+    };
+    for (const auto& output : outputs) {
+        visit(output.second);
+    }
+    return reachable;
 }
 
 void appendNodeInputs(std::string& out,
@@ -235,8 +344,8 @@ void appendDensityNode(std::string& out,
         out += "    scale: " + number(node.scale) + "\n";
         out += "    offset: " + number(node.offset) + "\n";
     } else if (node.type == "clamp") {
-        out += "    min: " + number(node.minValue) + "\n";
-        out += "    max: " + number(node.maxValue) + "\n";
+        out += "    min: " + number(std::min(node.minValue, node.maxValue)) + "\n";
+        out += "    max: " + number(std::max(node.minValue, node.maxValue)) + "\n";
     } else if (node.type == "spline") {
         std::vector<std::pair<float, float>> points = node.splinePoints;
         std::stable_sort(points.begin(), points.end(), [](const auto& left,
@@ -264,6 +373,8 @@ std::string serializeGeneratorSnapshot(const WorldGenConfig& definition) {
     out.reserve(8192);
     out += "solid_block: " + quoted(definition.solidBlock) + "\n";
     out += "surface_block: " + quoted(definition.surfaceBlock) + "\n";
+    out += "water_block: " + quoted(definition.waterBlock) + "\n";
+    out += "shore_block: " + quoted(definition.shoreBlock) + "\n";
     out += "world:\n";
     out += "  min_y: " + std::to_string(definition.world.minY) + "\n";
     out += "  max_y: " + std::to_string(definition.world.maxY) + "\n";
@@ -315,16 +426,24 @@ std::string serializeGeneratorSnapshot(const WorldGenConfig& definition) {
 
     out += "density_graph:\n";
     out += "  outputs:\n";
-    std::vector<std::pair<std::string, std::string>> outputs(
-        definition.densityGraph.outputs.begin(),
-        definition.densityGraph.outputs.end());
-    std::sort(outputs.begin(), outputs.end());
+    const auto outputs = runtimeOutputs(definition);
     for (const auto& [semantic, node] : outputs) {
         out += "    " + quoted(semantic) + ": " + quoted(node) + "\n";
     }
     out += "  nodes:\n";
+    const auto reachableNodes = reachableRuntimeNodes(definition, outputs);
+    std::vector<const WorldGenConfig::DensityNodeConfig*> canonicalNodes;
     for (const auto& node : definition.densityGraph.nodes) {
-        appendDensityNode(out, node);
+        if (reachableNodes.contains(node.id)) {
+            canonicalNodes.push_back(&node);
+        }
+    }
+    std::sort(canonicalNodes.begin(), canonicalNodes.end(), [](const auto* left,
+                                                               const auto* right) {
+        return left->id < right->id;
+    });
+    for (const auto* node : canonicalNodes) {
+        appendDensityNode(out, *node);
     }
 
     if (definition.isStageEnabled("caves")) {
@@ -332,7 +451,8 @@ std::string serializeGeneratorSnapshot(const WorldGenConfig& definition) {
         out += "  density_output: " + quoted(definition.caves.densityOutput) + "\n";
         out += "  threshold: " + number(definition.caves.threshold) + "\n";
     }
-    if (definition.isStageEnabled("structures")) {
+    if (definition.isStageEnabled("structures") &&
+        !definition.structures.features.empty()) {
         out += "structures:\n";
         out += "  features:\n";
         for (const auto& feature : definition.structures.features) {
@@ -350,12 +470,6 @@ std::string serializeGeneratorSnapshot(const WorldGenConfig& definition) {
         }
     }
 
-    out += "generation:\n";
-    out += "  stages:\n";
-    for (const char* stage : kWorldGenPipelineStages) {
-        out += "    " + std::string(stage) + ": ";
-        out += definition.isStageEnabled(stage) ? "true\n" : "false\n";
-    }
     return out;
 }
 
@@ -373,9 +487,11 @@ void validateGeneratorSnapshotContent(const WorldGenConfig& definition,
 
     if (definition.isStageEnabled("terrain_density")) {
         requireBlock(definition.solidBlock, "solid_block");
+        requireBlock(definition.waterBlock, "water_block");
     }
     if (definition.isStageEnabled("surface_rules")) {
         requireBlock(definition.surfaceBlock, "surface_block");
+        requireBlock(definition.shoreBlock, "shore_block");
         for (size_t biomeIndex = 0;
              biomeIndex < definition.biomes.entries.size(); ++biomeIndex) {
             const auto& biome = definition.biomes.entries[biomeIndex];
@@ -403,7 +519,7 @@ void validateGeneratorSnapshotContent(const WorldGenConfig& definition,
 WorldGenConfig parseGeneratorSnapshot(std::string_view snapshot,
                                       uint32_t definitionSchemaVersion,
                                       uint32_t seed,
-                                      uint32_t sourceRevision) {
+                                      uint32_t runtimeGenerationVersion) {
     if (definitionSchemaVersion != kGeneratorDefinitionSchemaVersion) {
         throw std::invalid_argument(
             "Unsupported generator definition schema version: " +
@@ -415,7 +531,11 @@ WorldGenConfig parseGeneratorSnapshot(std::string_view snapshot,
 
     WorldGenConfig definition;
     definition.seed = seed;
-    definition.world.version = sourceRevision;
+    definition.world.version = runtimeGenerationVersion;
+    definition.stageEnabled["caves"] =
+        snapshot.find("\ncaves:\n") != std::string_view::npos;
+    definition.stageEnabled["structures"] =
+        snapshot.find("\nstructures:\n") != std::string_view::npos;
     definition.applyYaml(
         "saved generator definition",
         std::string(snapshot));

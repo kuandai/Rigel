@@ -8,6 +8,8 @@
 #include <ryml_std.hpp>
 
 #include <charconv>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <stdexcept>
@@ -126,16 +128,17 @@ void validateSettings(const WorldSettings& settings) {
 std::string serializeSettings(const WorldSettings& settings) {
     validateSettings(settings);
     std::string out;
-    out += "schema_version: " + std::to_string(settings.schemaVersion) + "\n";
-    out += "display_name: " + quoted(settings.displayName) + "\n";
-    out += "seed: " + std::to_string(settings.seed) + "\n";
-    out += "generator:\n";
-    out += "  id: " + quoted(settings.generator.sourceId) + "\n";
-    out += "  source_revision: " +
+    out += "world:\n";
+    out += "  schema_version: " + std::to_string(settings.schemaVersion) + "\n";
+    out += "  display_name: " + quoted(settings.displayName) + "\n";
+    out += "  seed: " + std::to_string(settings.seed) + "\n";
+    out += "  generator:\n";
+    out += "    id: " + quoted(settings.generator.sourceId) + "\n";
+    out += "    source_revision: " +
         std::to_string(settings.generator.sourceRevision) + "\n";
-    out += "  definition_schema_version: " +
+    out += "    definition_schema_version: " +
         std::to_string(settings.generator.definitionSchemaVersion) + "\n";
-    out += "  semantics_version: " +
+    out += "    semantics_version: " +
         std::to_string(settings.generator.semanticsVersion) + "\n";
     return out;
 }
@@ -209,11 +212,13 @@ WorldSettings parseSettings(std::string_view yaml) {
         "world-settings.yaml",
         ryml::csubstr(yaml.data(), yaml.size()));
     const ryml::ConstNodeRef root = tree.rootref();
+    requireMapKeys(root, "document", {"world"});
+    const ryml::ConstNodeRef world = root["world"];
     requireMapKeys(
-        root,
+        world,
         "world",
         {"schema_version", "display_name", "seed", "generator"});
-    const ryml::ConstNodeRef generator = root["generator"];
+    const ryml::ConstNodeRef generator = world["generator"];
     requireMapKeys(
         generator,
         "world.generator",
@@ -222,10 +227,10 @@ WorldSettings parseSettings(std::string_view yaml) {
 
     WorldSettings settings;
     settings.schemaVersion = readUint32(
-        root, "schema_version", "world.schema_version");
+        world, "schema_version", "world.schema_version");
     settings.displayName = readString(
-        root, "display_name", "world.display_name");
-    settings.seed = readUint32(root, "seed", "world.seed");
+        world, "display_name", "world.display_name");
+    settings.seed = readUint32(world, "seed", "world.seed");
     settings.generator.sourceId = readString(
         generator, "id", "world.generator.id");
     settings.generator.sourceRevision = readUint32(
@@ -277,11 +282,32 @@ void removeIfPresent(StorageBackend& storage, const std::string& path) {
     }
 }
 
-void rollbackNewWorld(StorageBackend& storage,
-                      const PersistenceContext& context) {
-    removeIfPresent(storage, childPath(context, kWorldSettingsFilename));
-    removeIfPresent(storage, childPath(context, kGeneratorSnapshotFilename));
-    removeIfPresent(storage, context.rootPath);
+std::string stagingRoot(const PersistenceContext& context) {
+    static std::atomic<uint64_t> nextId{0};
+    const auto timestamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    return context.rootPath + ".staging." + std::to_string(timestamp) + "." +
+        std::to_string(nextId.fetch_add(1, std::memory_order_relaxed));
+}
+
+void removeStagingWorld(StorageBackend& storage,
+                        const PersistenceContext& stagedContext) {
+    std::exception_ptr firstFailure;
+    for (const std::string& path : {
+             childPath(stagedContext, kWorldSettingsFilename),
+             childPath(stagedContext, kGeneratorSnapshotFilename),
+             stagedContext.rootPath}) {
+        try {
+            removeIfPresent(storage, path);
+        } catch (...) {
+            if (!firstFailure) {
+                firstFailure = std::current_exception();
+            }
+        }
+    }
+    if (firstFailure) {
+        std::rethrow_exception(firstFailure);
+    }
 }
 
 } // namespace
@@ -312,12 +338,21 @@ void publishNewWorldGeneration(const WorldSettings& settings,
         throw std::invalid_argument(
             "World settings seed does not match the resolved generator input");
     }
-    if (settings.generator.sourceRevision != definition.world.version) {
-        throw std::invalid_argument(
-            "World generator source revision does not match the resolved generator input");
-    }
     const std::string snapshot = Voxel::serializeGeneratorSnapshot(definition);
     const std::string settingsDocument = serializeSettings(settings);
+    if (settingsDocument.size() > kMaxWorldSettingsBytes) {
+        throw std::length_error(
+            "World settings exceed the supported size limit");
+    }
+    if (snapshot.size() > kMaxGeneratorSnapshotBytes) {
+        throw std::length_error(
+            "Generator definition snapshot exceeds the supported size limit");
+    }
+    static_cast<void>(Voxel::parseGeneratorSnapshot(
+        snapshot,
+        settings.generator.definitionSchemaVersion,
+        settings.seed,
+        settings.generator.semanticsVersion));
 
     if (storage.exists(context.rootPath)) {
         throw std::runtime_error(
@@ -325,19 +360,22 @@ void publishNewWorldGeneration(const WorldSettings& settings,
             context.rootPath);
     }
 
+    PersistenceContext stagedContext = context;
+    stagedContext.rootPath = stagingRoot(context);
     try {
         writeDocument(
             storage,
-            childPath(context, kGeneratorSnapshotFilename),
+            childPath(stagedContext, kGeneratorSnapshotFilename),
             snapshot);
         writeDocument(
             storage,
-            childPath(context, kWorldSettingsFilename),
+            childPath(stagedContext, kWorldSettingsFilename),
             settingsDocument);
+        storage.publishDirectory(stagedContext.rootPath, context.rootPath);
     } catch (...) {
         const std::exception_ptr publicationFailure = std::current_exception();
         try {
-            rollbackNewWorld(storage, context);
+            removeStagingWorld(storage, stagedContext);
         } catch (const std::exception& rollbackFailure) {
             throw std::runtime_error(
                 "World creation failed and rollback could not remove the staged save: " +
@@ -380,7 +418,7 @@ SavedWorldGeneration loadSavedWorldGeneration(
         snapshot,
         settings.generator.definitionSchemaVersion,
         settings.seed,
-        settings.generator.sourceRevision);
+        settings.generator.semanticsVersion);
     return saved;
 }
 

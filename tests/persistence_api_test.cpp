@@ -579,7 +579,7 @@ TEST_CASE(Persistence_FormatResolutionIgnoresUnusedManifestFiles) {
 
     context.preferredFormat = "memory";
     auto preferred = service.openFormat(context);
-    CHECK_EQ(preferred->descriptor().id, std::string("memory"));
+    CHECK_EQ(preferred->descriptor().id, std::string("cr"));
 }
 
 TEST_CASE(Persistence_MaximumMemoryMetadataDocumentRoundTrip) {

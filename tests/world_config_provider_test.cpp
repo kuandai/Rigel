@@ -1,6 +1,8 @@
 #include "TestFramework.h"
 
 #include "Rigel/Voxel/WorldConfigProvider.h"
+#include "Rigel/Voxel/WorldConfigBootstrap.h"
+#include "Rigel/Voxel/GeneratorSnapshot.h"
 #include "Rigel/Asset/Types.h"
 
 #include <filesystem>
@@ -280,6 +282,28 @@ TEST_CASE(WorldConfigProvider_StreamingLoadDoesNotResolveGeneratorContent) {
     const StreamingConfig streaming = provider.loadStreamingConfig();
     CHECK_EQ(streaming.viewDistanceChunks, 9);
     CHECK_THROWS(provider.loadConfig());
+}
+
+TEST_CASE(WorldConfigProvider_ShippedDefinitionProducesNormalizedSnapshot) {
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    const WorldConfiguration config =
+        makeWorldConfigProvider(assets, 0).loadConfig();
+
+    const std::string snapshot =
+        serializeGeneratorSnapshot(config.generation);
+    const WorldGenConfig loaded = parseGeneratorSnapshot(
+        snapshot,
+        kGeneratorDefinitionSchemaVersion,
+        config.generation.seed,
+        kGeneratorSemanticsVersion);
+
+    CHECK(loaded.densityGraph.nodes.size() <
+          config.generation.densityGraph.nodes.size());
+    CHECK(snapshot.find("base_height") == std::string::npos);
+    CHECK(snapshot.find("height_noise") == std::string::npos);
+    CHECK(snapshot.find("generation:") == std::string::npos);
+    CHECK_EQ(loaded.seed, config.generation.seed);
 }
 
 TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {

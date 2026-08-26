@@ -94,8 +94,8 @@ through unused capability descriptors.
 
 `FormatRegistry` resolves a format using:
 
-- preferred format from context
-- storage probe (format-specific)
+- storage probes for an existing format
+- the preferred format from context only when no existing format is detected
 
 ---
 
@@ -222,8 +222,9 @@ Current behavior:
 - The default zone ID is `rigel:default`.
 - The world root path is `saves/world_<worldId>`.
 - Before a new world can generate chunks, `publishNewWorldGeneration` commits
-  `generator-definition.yaml` and then `world-settings.yaml`. The latter is the
-  publication boundary. A failed write removes the new save root.
+  `generator-definition.yaml` and `world-settings.yaml` in a sibling staging
+  directory, then atomically publishes that complete directory without
+  replacing an existing save. A failed write leaves no final save root.
 - `loadSavedWorldGeneration` requires both files, checks the distinct world
   settings, definition-schema, source-revision, and evaluator-semantics
   meanings, and supplies the saved snapshot as the only generator input.

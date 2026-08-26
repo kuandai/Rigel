@@ -362,6 +362,8 @@ provenance are stored separately in `world-settings.yaml`. The snapshot is the
 authoritative input on reload, so later installed-definition changes or absence
 do not alter unexplored generation in that world. Saves without the complete
 supported pair are rejected without modifying their existing files.
+Solid, surface, water, shore, biome-layer, and structure material identifiers
+are part of that saved definition and are validated before generation starts.
 
 Overlays:
 

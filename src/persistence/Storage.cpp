@@ -19,6 +19,12 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#ifdef __APPLE__
+#include <stdio.h>
+#endif
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -487,6 +493,57 @@ void FilesystemBackend::remove(const std::string& path) {
         [](const std::filesystem::path& directoryPath) {
             synchronizeDirectory(directoryPath);
         });
+}
+
+void StorageBackend::publishDirectory(const std::string&,
+                                      const std::string&) {
+    throw std::runtime_error(
+        "Storage backend does not support atomic directory publication");
+}
+
+void FilesystemBackend::publishDirectory(const std::string& stagedPath,
+                                         const std::string& finalPath) {
+    const std::filesystem::path staged(stagedPath);
+    const std::filesystem::path final(finalPath);
+    prepareDirectories(final.parent_path());
+
+#ifdef _WIN32
+    if (::MoveFileExW(
+            staged.c_str(), final.c_str(), MOVEFILE_WRITE_THROUGH) == 0) {
+        throw std::system_error(
+            static_cast<int>(::GetLastError()),
+            std::system_category(),
+            "Failed to publish directory without replacing existing save: " +
+                final.string());
+    }
+#elif defined(__linux__)
+    if (::syscall(
+            SYS_renameat2,
+            AT_FDCWD,
+            staged.c_str(),
+            AT_FDCWD,
+            final.c_str(),
+            1U) != 0) {
+        throw std::system_error(
+            errno,
+            std::generic_category(),
+            "Failed to publish directory without replacing existing save: " +
+                final.string());
+    }
+    synchronizeDirectory(final.parent_path());
+#elif defined(__APPLE__)
+    if (::renamex_np(staged.c_str(), final.c_str(), RENAME_EXCL) != 0) {
+        throw std::system_error(
+            errno,
+            std::generic_category(),
+            "Failed to publish directory without replacing existing save: " +
+                final.string());
+    }
+    synchronizeDirectory(final.parent_path());
+#else
+    throw std::runtime_error(
+        "Atomic no-replace directory publication is unsupported on this platform");
+#endif
 }
 
 } // namespace Rigel::Persistence

@@ -14,8 +14,6 @@
 namespace Rigel::Voxel {
 
 namespace {
-constexpr const char* kDefaultWaterBlock = "base:water[type=source]";
-constexpr const char* kDefaultSandBlock = "base:sand";
 constexpr int kClimateColumnCount = Chunk::SIZE * Chunk::SIZE;
 constexpr int kDefaultNoiseSampleStep = 4;
 static_assert(Chunk::SIZE % kDefaultNoiseSampleStep == 0,
@@ -1038,10 +1036,10 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
     auto surfaceId = m_registry.findByIdentifier(m_config.surfaceBlock);
     ctx.surfaceBlock = surfaceId.value_or(BlockRegistry::airId());
 
-    auto waterId = m_registry.findByIdentifier(kDefaultWaterBlock);
+    auto waterId = m_registry.findByIdentifier(m_config.waterBlock);
     ctx.waterBlock = waterId.value_or(BlockRegistry::airId());
 
-    auto sandId = m_registry.findByIdentifier(kDefaultSandBlock);
+    auto sandId = m_registry.findByIdentifier(m_config.shoreBlock);
     ctx.sandBlock = sandId.value_or(BlockRegistry::airId());
 
     if (ctx.solidBlock.isAir() || ctx.surfaceBlock.isAir() ||
@@ -1055,10 +1053,10 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
                 spdlog::warn("WorldGenerator: surface block '{}' not found, using air", m_config.surfaceBlock);
             }
             if (ctx.waterBlock.isAir()) {
-                spdlog::warn("WorldGenerator: water block '{}' not found, using air", kDefaultWaterBlock);
+                spdlog::warn("WorldGenerator: water block '{}' not found, using air", m_config.waterBlock);
             }
             if (ctx.sandBlock.isAir()) {
-                spdlog::warn("WorldGenerator: sand block '{}' not found, using air", kDefaultSandBlock);
+                spdlog::warn("WorldGenerator: shore block '{}' not found, using air", m_config.shoreBlock);
             }
         }
     }

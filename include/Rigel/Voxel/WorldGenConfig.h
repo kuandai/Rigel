@@ -151,6 +151,8 @@ struct WorldGenConfig {
     uint32_t seed = 1337;
     std::string solidBlock = "base:debug";
     std::string surfaceBlock = "base:debug";
+    std::string waterBlock = "base:water[type=source]";
+    std::string shoreBlock = "base:sand";
     WorldConfig world;
     TerrainConfig terrain;
     ClimateConfig climate;

@@ -59,7 +59,9 @@ Shutdown persists world state and releases resources.
 5. Register persistence formats and configure persistence root.
    - Formats are registered with `WorldSet::persistenceFormats()`.
    - Root path is resolved from the world id.
-   - Preferred format + provider options come from `persistence.yaml`.
+   - Provider options come from `persistence.yaml`. Storage probes take
+     precedence over its preferred format, which is used only when no existing
+     format can be detected.
 6. Initialize world resources.
    - Block registry, texture atlas, and other shared resources.
    - Failed block definitions, an all-air registry, or an empty texture atlas

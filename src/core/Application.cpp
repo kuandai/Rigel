@@ -260,9 +260,9 @@ void Application::initialize() {
         Persistence::PersistenceConfig persistenceConfig =
             persistenceConfigProvider.load();
         if (!persistenceConfig.format.empty()) {
-            m_impl->world.worldSet.setPersistencePreferredFormat(persistenceConfig.format);
+            m_impl->world.worldSet.setPersistencePreferredFormat(
+                persistenceConfig.format);
         }
-
         Voxel::WorldConfigProvider configProvider =
             Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
         Voxel::WorldConfiguration config;
@@ -297,16 +297,13 @@ void Application::initialize() {
         if (savedPresence ==
             Persistence::SavedWorldGenerationPresence::Missing) {
             config = configProvider.loadConfig();
-            if (config.generation.solidBlock.empty()) {
-                config.generation.solidBlock = "base:stone_shale";
-            }
-            if (config.generation.surfaceBlock.empty()) {
-                config.generation.surfaceBlock = "base:grass";
-            }
-
             Voxel::validateGeneratorSnapshotContent(
                 config.generation,
                 m_impl->world.worldSet.resources().registry());
+            const uint32_t generatorSourceRevision =
+                config.generation.world.version;
+            config.generation.world.version =
+                Voxel::kGeneratorSemanticsVersion;
             generator = std::make_shared<const Voxel::WorldGenerator>(
                 m_impl->world.worldSet.resources().registry(),
                 config.generation);
@@ -316,7 +313,7 @@ void Application::initialize() {
             settings.seed = generator->config().seed;
             settings.generator.sourceId = "rigel:default";
             settings.generator.sourceRevision =
-                generator->config().world.version;
+                generatorSourceRevision;
             settings.generator.definitionSchemaVersion =
                 Voxel::kGeneratorDefinitionSchemaVersion;
             settings.generator.semanticsVersion =

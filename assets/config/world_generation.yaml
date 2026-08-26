@@ -1,6 +1,8 @@
 seed: 1337
 solid_block: base:stone_shale
 surface_block: base:grass
+water_block: base:water[type=source]
+shore_block: base:sand
 
 world:
   min_y: -64

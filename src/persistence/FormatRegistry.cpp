@@ -18,14 +18,6 @@ std::unique_ptr<PersistenceFormat> FormatRegistry::resolveFormat(const Persisten
         throw std::runtime_error("FormatRegistry: no storage backend provided");
     }
 
-    if (!context.preferredFormat.empty()) {
-        auto it = m_entries.find(context.preferredFormat);
-        if (it == m_entries.end()) {
-            throw std::runtime_error("FormatRegistry: preferred format not registered: " + context.preferredFormat);
-        }
-        return it->second.factory(context);
-    }
-
     std::optional<ProbeResult> bestProbe;
     const Entry* bestEntry = nullptr;
     for (const auto& [id, entry] : m_entries) {
@@ -39,11 +31,19 @@ std::unique_ptr<PersistenceFormat> FormatRegistry::resolveFormat(const Persisten
         }
     }
 
-    if (!bestEntry) {
-        throw std::runtime_error("FormatRegistry: unable to detect persistence format");
+    if (bestEntry) {
+        return bestEntry->factory(context);
     }
 
-    return bestEntry->factory(context);
+    if (!context.preferredFormat.empty()) {
+        auto it = m_entries.find(context.preferredFormat);
+        if (it == m_entries.end()) {
+            throw std::runtime_error("FormatRegistry: preferred format not registered: " + context.preferredFormat);
+        }
+        return it->second.factory(context);
+    }
+
+    throw std::runtime_error("FormatRegistry: unable to detect persistence format");
 }
 
 std::optional<ProbeResult> FormatRegistry::probeFromStorage(const Entry& entry, StorageBackend& storage, const PersistenceContext& context) const {

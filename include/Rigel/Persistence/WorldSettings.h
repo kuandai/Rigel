@@ -4,9 +4,16 @@
 #include "Rigel/Voxel/WorldGenConfig.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
+namespace Rigel::Voxel {
+class BlockRegistry;
+}
+
 namespace Rigel::Persistence {
+
+class PersistenceService;
 
 inline constexpr uint32_t kWorldSettingsSchemaVersion = 1;
 
@@ -33,6 +40,16 @@ struct SavedWorldGeneration {
     Voxel::WorldGenConfig definition;
 };
 
+struct NewWorldGeneration {
+    WorldSettings settings;
+    Voxel::WorldGenConfig definition;
+};
+
+struct BootstrappedWorldGeneration {
+    SavedWorldGeneration generation;
+    std::string persistenceFormat;
+};
+
 enum class SavedWorldGenerationPresence {
     Missing,
     Published,
@@ -46,9 +63,24 @@ SavedWorldGenerationPresence inspectSavedWorldGeneration(
 void recoverAbandonedWorldGenerationStaging(
     const PersistenceContext& context);
 
-void publishNewWorldGeneration(const WorldSettings& settings,
-                               const Voxel::WorldGenConfig& definition,
-                               const PersistenceContext& context);
+// Selects and durably publishes the persistence backend identity in the same
+// atomic directory publication as the save-owned settings and definition.
+// Returns the selected format ID for subsequent operations on this world.
+std::string publishNewWorldGeneration(
+    const WorldSettings& settings,
+    const Voxel::WorldGenConfig& definition,
+    PersistenceService& persistence,
+    const PersistenceContext& context);
+
+// Opens a saved generation identity and its authoritative persistence format
+// under the per-world bootstrap lock. When the root is still missing, the
+// optional creation input is published atomically. Older identity-only roots
+// are claimed by exactly one preferred backend while the same lock is held.
+BootstrappedWorldGeneration bootstrapWorldGeneration(
+    const std::optional<NewWorldGeneration>& creation,
+    PersistenceService& persistence,
+    const Voxel::BlockRegistry& registry,
+    const PersistenceContext& context);
 
 SavedWorldGeneration loadSavedWorldGeneration(
     const PersistenceContext& context);

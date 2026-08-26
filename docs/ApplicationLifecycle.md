@@ -70,11 +70,11 @@ Shutdown persists world state and releases resources.
      abort world bootstrap before spawn discovery.
    - Successful initialization records loaded block and texture counts.
 7. Load world config and create `World` + `WorldView`.
-   - Rigel ensures backend world metadata exists after world identity and
-     before `WorldGenerator` is attached to either runtime owner. An
-     identity-only save retries this step on restart. This gives format
-     discovery an authoritative marker before any chunks can be generated or
-     persisted.
+   - For a new world, Rigel stages backend world metadata with world settings
+     and the generator snapshot, verifies the authoritative format probe, and
+     atomically publishes the complete save while holding the per-world
+     bootstrap lock. An older identity-only save is claimed under that same
+     lock before either runtime owner receives a generator.
    - `WorldGenerator` is then attached to both.
 8. Load entity data from disk (chunks are lazy-loaded).
    - `loadBootstrapEntities(...)` validates and adds persisted entities without
@@ -309,12 +309,13 @@ Synchronization:
 
 **Behavior**:
 - Synchronous on the main thread.
-- Startup first reclaims abandoned sibling staging directories from interrupted
-  creation attempts, then inspects the active save before attaching a generator.
-  A missing save
-  validates an installed definition, publishes its settings and canonical
-  snapshot, and only then attaches the generator. A published save bypasses
-  installed generator resolution and constructs from its local snapshot.
+- Startup locks the world, validates any still-needed creation candidate,
+  reclaims abandoned sibling staging directories from interrupted attempts,
+  and re-inspects the active save before attaching a generator. A missing save
+  validates an installed definition, publishes its settings, canonical
+  snapshot, and authoritative backend identity together, and only then
+  attaches the generator. A published save bypasses installed generator
+  resolution and constructs from its local snapshot.
 - A save root without the complete supported identity is rejected before
   entity loading, chunk loading, or generation is enabled.
 - Uses format containers + region layout to save chunk spans.

@@ -4,6 +4,8 @@
 #include "Rigel/Voxel/WorldConfigBootstrap.h"
 #include "Rigel/Voxel/GeneratorSnapshot.h"
 #include "Rigel/Asset/Types.h"
+#include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
+#include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/WorldSettings.h"
 
@@ -508,9 +510,19 @@ TEST_CASE(WorldConfigProvider_SavedWorldReloadToleratesRemovedFileOverlay) {
     auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
     Rigel::Persistence::PersistenceContext context;
     context.rootPath = worldRoot.string();
+    context.preferredFormat = "memory";
     context.storage = storage;
+    Rigel::Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Rigel::Persistence::Backends::Memory::descriptor(),
+        Rigel::Persistence::Backends::Memory::factory(),
+        Rigel::Persistence::Backends::Memory::probe());
+    Rigel::Persistence::PersistenceService persistence(formats);
     Rigel::Persistence::publishNewWorldGeneration(
-        settings, created.generation, context);
+        settings,
+        created.generation,
+        persistence,
+        context);
 
     CHECK(std::filesystem::remove(overlayPath));
     const StreamingConfig streaming = provider.loadStreamingConfig();

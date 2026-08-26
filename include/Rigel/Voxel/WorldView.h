@@ -42,6 +42,9 @@ public:
     const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
 
     void setGenerator(std::shared_ptr<const WorldGenerator> generator);
+    const std::shared_ptr<const WorldGenerator>& generator() const {
+        return m_streamer.m_generator;
+    }
     void setChunkLoader(ChunkStreamer::ChunkLoadCallback loader);
     void setChunkPendingCallback(ChunkStreamer::ChunkPendingCallback pending);
     void setChunkLoadDrain(ChunkStreamer::ChunkLoadDrainCallback drain);

@@ -1,5 +1,8 @@
 #include "TestFramework.h"
 
+#include "Rigel/Persistence/Backends/CR/CRFormat.h"
+#include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
+#include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Voxel/GeneratorSnapshot.h"
@@ -22,6 +25,32 @@
 #include <vector>
 
 using namespace Rigel;
+
+namespace Rigel::Persistence {
+
+// Most tests in this file focus on staging and recovery. Keep their call sites
+// compact while exercising the production requirement that every publication
+// also contains an authoritative backend marker.
+static std::string publishNewWorldGeneration(
+    const WorldSettings& settings,
+    const Voxel::WorldGenConfig& definition,
+    const PersistenceContext& context) {
+    FormatRegistry formats;
+    formats.registerFormat(
+        Backends::Memory::descriptor(),
+        Backends::Memory::factory(),
+        Backends::Memory::probe());
+    PersistenceService persistence(formats);
+    PersistenceContext creationContext = context;
+    creationContext.preferredFormat = "memory";
+    return publishNewWorldGeneration(
+        settings,
+        definition,
+        persistence,
+        creationContext);
+}
+
+} // namespace Rigel::Persistence
 
 namespace {
 
@@ -734,7 +763,7 @@ TEST_CASE(WorldSettings_publication_commits_marker_before_payload) {
     Persistence::publishNewWorldGeneration(
         savedSettings(), savedDefinition(), context);
 
-    CHECK_EQ(storage->commits.size(), static_cast<size_t>(3));
+    CHECK_EQ(storage->commits.size(), static_cast<size_t>(4));
     CHECK_EQ(
         std::filesystem::path(storage->commits[0]).filename(),
         std::filesystem::path(kStagingOwnershipFilename));
@@ -744,10 +773,14 @@ TEST_CASE(WorldSettings_publication_commits_marker_before_payload) {
     CHECK_EQ(
         std::filesystem::path(storage->commits[2]).filename(),
         std::filesystem::path("world-settings.yaml"));
+    CHECK_EQ(
+        std::filesystem::path(storage->commits[3]).filename(),
+        std::filesystem::path("world.meta"));
     CHECK(std::filesystem::exists(
         worldRoot / kStagingOwnershipFilename));
     CHECK(std::filesystem::exists(worldRoot / "generator-definition.yaml"));
     CHECK(std::filesystem::exists(worldRoot / "world-settings.yaml"));
+    CHECK(std::filesystem::exists(worldRoot / "world.meta"));
 }
 
 TEST_CASE(WorldSettings_marker_write_failure_cleans_exclusive_reservation) {
@@ -979,6 +1012,25 @@ TEST_CASE(WorldSettings_post_publish_failure_preserves_reused_staging_path) {
     CHECK_EQ(
         Persistence::inspectSavedWorldGeneration(context),
         Persistence::SavedWorldGenerationPresence::Published);
+    CHECK(std::filesystem::exists(worldRoot / "world.meta"));
+    CHECK(!std::filesystem::exists(worldRoot / "worldInfo.json"));
+
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    formats.registerFormat(
+        Persistence::Backends::CR::descriptor(),
+        Persistence::Backends::CR::factory(),
+        Persistence::Backends::CR::probe());
+    Persistence::PersistenceService persistence(formats);
+    auto oppositePreferenceContext = context;
+    oppositePreferenceContext.preferredFormat = "cr";
+    oppositePreferenceContext.discoverExistingFormat = true;
+    auto reopenedFormat = persistence.openFormat(oppositePreferenceContext);
+    CHECK_EQ(reopenedFormat->descriptor().id, std::string("memory"));
+    CHECK(!std::filesystem::exists(worldRoot / "worldInfo.json"));
 
     auto restartedStorage =
         std::make_shared<Persistence::FilesystemBackend>();

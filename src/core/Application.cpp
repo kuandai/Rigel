@@ -2,6 +2,7 @@
 #include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
 #include "GlfwRuntime.h"
+#include "WorldGenerationBootstrap.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Core/Profiler.h"
 #include "Rigel/Entity/EntityModelLoader.h"
@@ -291,29 +292,18 @@ void Application::initialize() {
 
         Persistence::PersistenceContext persistenceContext =
             m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId);
-        std::shared_ptr<const Voxel::WorldGenerator> generator;
-        Persistence::recoverAbandonedWorldGenerationStaging(
-            persistenceContext);
+        std::optional<Persistence::NewWorldGeneration> creation;
         const auto savedPresence =
             Persistence::inspectSavedWorldGeneration(persistenceContext);
-        persistenceContext.discoverExistingFormat =
-            savedPresence ==
-            Persistence::SavedWorldGenerationPresence::Published;
         if (savedPresence ==
             Persistence::SavedWorldGenerationPresence::Missing) {
             config = configProvider.loadConfig();
-            Voxel::validateGeneratorSnapshotContent(
-                config.generation,
-                m_impl->world.worldSet.resources().registry());
             config.generation.world.version =
                 Voxel::kGeneratorSemanticsVersion;
-            generator = std::make_shared<const Voxel::WorldGenerator>(
-                m_impl->world.worldSet.resources().registry(),
-                config.generation);
             Persistence::WorldSettings settings;
             settings.displayName =
                 "world_" + std::to_string(m_impl->world.activeWorldId);
-            settings.seed = generator->config().seed;
+            settings.seed = config.generation.seed;
             settings.generator.sourceId = config.generatorSource.id;
             settings.generator.sourceRevision =
                 config.generatorSource.revision;
@@ -321,52 +311,32 @@ void Application::initialize() {
                 Voxel::kGeneratorDefinitionSchemaVersion;
             settings.generator.semanticsVersion =
                 Voxel::kGeneratorSemanticsVersion;
-            Persistence::publishNewWorldGeneration(
-                settings, generator->config(), persistenceContext);
-            m_impl->world.settings = std::move(settings);
+            creation = Persistence::NewWorldGeneration{
+                std::move(settings),
+                config.generation};
         } else if (savedPresence ==
                    Persistence::SavedWorldGenerationPresence::Published) {
             config.streaming = configProvider.loadStreamingConfig();
-            Persistence::SavedWorldGeneration saved =
-                Persistence::loadSavedWorldGeneration(persistenceContext);
-            config.generation = std::move(saved.definition);
-            Voxel::validateGeneratorSnapshotContent(
-                config.generation,
-                m_impl->world.worldSet.resources().registry());
-            generator = std::make_shared<const Voxel::WorldGenerator>(
-                m_impl->world.worldSet.resources().registry(),
-                config.generation);
-            m_impl->world.settings = std::move(saved.settings);
         } else {
             throw std::runtime_error(
                 "Existing world is legacy, unknown, or incompletely published; "
                 "the save was left unchanged");
         }
 
-        auto& persistenceService =
-            m_impl->world.worldSet.persistenceService();
-        auto persistenceFormat = persistenceService.openFormat(
-            persistenceContext);
-        persistenceContext.preferredFormat =
-            persistenceFormat->descriptor().id;
-        persistenceContext.discoverExistingFormat = false;
-        m_impl->world.worldSet.setPersistenceActiveFormat(
-            m_impl->world.activeWorldId,
-            persistenceContext.preferredFormat);
-        const std::string backendMetadataPath =
-            persistenceFormat->worldMetadataCodec().metadataPath(
+        detail::ApplicationWorldGenerationBootstrapResult bootstrapped =
+            detail::bootstrapApplicationWorldGeneration(
+                m_impl->world.worldSet,
+                m_impl->world.activeWorldId,
+                *m_impl->world.world,
+                *m_impl->world.worldView,
+                creation,
                 persistenceContext);
-        if (!persistenceContext.storage->exists(backendMetadataPath)) {
-            Persistence::WorldMetadata backendMetadata;
-            backendMetadata.worldId =
-                "world_" + std::to_string(m_impl->world.activeWorldId);
-            backendMetadata.displayName = m_impl->world.settings->displayName;
-            persistenceService.saveWorldMetadata(
-                backendMetadata, persistenceContext);
-        }
-
-        m_impl->world.world->setGenerator(generator);
-        m_impl->world.worldView->setGenerator(generator);
+        auto generator = std::move(bootstrapped.generator);
+        config.generation = generator->config();
+        m_impl->world.settings = std::move(bootstrapped.settings);
+        persistenceContext.preferredFormat =
+            bootstrapped.persistenceFormat;
+        persistenceContext.discoverExistingFormat = false;
 
         Persistence::loadBootstrapEntities(
             *m_impl->world.world,

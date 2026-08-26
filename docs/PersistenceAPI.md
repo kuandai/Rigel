@@ -98,7 +98,8 @@ For a context marked `discoverExistingFormat`, `FormatRegistry` resolves a
 format using:
 
 - authoritative storage probes for an existing format
-- the preferred format from context only when no existing format is detected
+- the preferred format from context only while selecting an unclaimed format
+  under the per-world bootstrap lock
 
 Outside published-world discovery, weak probes remain a fallback when no
 preference is supplied. Other contexts use the explicit preferred format
@@ -106,8 +107,9 @@ directly.
 Multiple authoritative format markers are an integrity error; registry order
 never chooses between conflicting persisted formats.
 For a published world, weak evidence without an authoritative marker is also
-an integrity error. A world with identity files but no backend evidence uses
-the preferred format only to create its marker before generation is attached.
+an integrity error. An older world with identity files but no backend evidence
+uses the preferred format only to create and re-probe its marker while holding
+the per-world bootstrap lock, before generation is attached.
 After bootstrap resolves a backend, `WorldSet` retains its ID on the world
 entry. Later persistence contexts use that active format directly, so a
 configuration preference change cannot redirect close-time writes into a
@@ -238,9 +240,13 @@ Current behavior:
 - The default zone ID is `rigel:default`.
 - The world root path is `saves/world_<worldId>`.
 - Before a new world can generate chunks, `publishNewWorldGeneration` commits
-  `generator-definition.yaml` and `world-settings.yaml` in a sibling staging
-  directory, then atomically publishes that complete directory without
-  replacing an existing save. A failed write leaves no final save root.
+  `generator-definition.yaml`, `world-settings.yaml`, and the selected
+  backend's authoritative world-metadata marker in a sibling staging
+  directory. It re-probes that staged identity without a preferred-format
+  fallback, then atomically publishes the complete directory without replacing
+  an existing save. A failure before directory publication leaves no final
+  save root; an ambiguous or post-publication failure preserves a complete,
+  reopenable settings/snapshot/backend identity for the next bootstrap.
 - Bootstrap removes abandoned staging siblings for the selected world before
   inspecting its final root. A transient rollback-cleanup failure is therefore
   retried on the next startup before another creation attempt can begin.

@@ -178,11 +178,13 @@ supported schema/semantics versions.
 
 ## World Generation Config
 
-`WorldConfiguration` holds separate `WorldGenConfig` and `StreamingConfig`
-values. For new-world creation, each source and its overlays are applied to
-both typed configurations before loading moves to the next source. Existing
-worlds apply only streaming fields from base sources and available overlays;
-their saved generator snapshot remains the sole generation input.
+`WorldConfiguration` holds an explicit generator source identity plus separate
+`WorldGenConfig` and `StreamingConfig` values. For new-world creation, each
+source and its overlays are applied to both typed configurations before loading
+moves to the next source. The highest-precedence complete `generator` identity
+records the selected definition's namespaced ID and positive source revision.
+Existing worlds apply only streaming fields from base sources and available
+overlays; their saved generator snapshot remains the sole generation input.
 
 Defaults below reflect the code defaults from `WorldGenConfig`. The embedded
 config (`assets/config/world_generation.yaml`) overrides many of these values.
@@ -191,13 +193,14 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
+| `generator.id` | namespaced string | required | Selected definition identity persisted as provenance. |
+| `generator.source_revision` | positive uint | required | Author revision persisted as provenance; it is not the runtime evaluator version. |
 | `seed` | int | `1337` | Global world seed. |
 | `solid_block` | string | `base:debug` | Block ID used for solid fill. |
 | `surface_block` | string | `base:debug` | Block ID used for surface fill. |
 | `world.min_y` | int | `-64` | Inclusive minimum generated Y; lower generator output is air. Persisted rows are retained but masked from meshes while excluded. Supported range is `[-4096,4096]`. |
 | `world.max_y` | int | `320` | Inclusive maximum generated Y; higher generator output is air. Persisted rows are retained but masked from meshes while excluded. Supported range is `[-4096,4096]`. |
 | `world.sea_level` | int | `0` | Sea level for water placement. Values outside the world bounds coherently produce no water or flood all eligible air. |
-| `world.version` | int | `1` | Generated-content version. Increment whenever generator settings, including partially intersecting world bounds, change retained voxel output. |
 | `terrain.base_height` | float | `16.0` | Base terrain height. |
 | `terrain.height_variation` | float | `16.0` | Terrain height variation. |
 | `terrain.surface_depth` | int | `3` | Surface layer depth (maximum `32`, the fixed chunk edge). |
@@ -224,6 +227,10 @@ config (`assets/config/world_generation.yaml`) overrides many of these values.
 | `generation.stages` | map | all enabled | Boolean stage enable flags. |
 | `flags` | map | - | Boolean flags for overlays. |
 | `overlays[]` | list | - | Overlay definitions. |
+
+Creation sources are strict for generator fields. Unknown keys, duplicate
+fixed fields, legacy `world.version`, and fields that do not apply to a density
+node's declared type reject creation before any save path is published.
 
 Noise objects (`terrain.noise`, `terrain.density_noise`, `climate.*.*`) use:
 
@@ -538,10 +545,11 @@ retain their normal streaming precedence without applying generation fields.
 - Configs and saved world identity are loaded once at startup; there is no hot
   reload.
 - Validation is implemented by the typed providers rather than one generic
-  schema engine. Unknown fixed keys are diagnosed and ignored; invalid scalar
-  shapes and types, strict booleans, numeric bounds, aggregate work limits,
-  cross-field world bounds, and density-graph cycles are rejected before
-  runtime resource construction.
+  schema engine. Generator creation fields are strict; other current config
+  domains diagnose and ignore unknown fixed keys. Invalid scalar shapes and
+  types, strict booleans, numeric bounds, aggregate work limits, cross-field
+  world bounds, and density-graph cycles are rejected before runtime resource
+  construction.
 - World generation overlays are the only supported overlay mechanism.
 - Input bindings are configured through the asset manifest, not this system.
 

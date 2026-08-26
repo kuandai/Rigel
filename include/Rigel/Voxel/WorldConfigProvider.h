@@ -5,12 +5,22 @@
 
 #include "Rigel/Config/ConfigSource.h"
 
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace Rigel::Voxel {
 
+struct GeneratorDefinitionSource {
+    std::string id;
+    uint32_t revision = 0;
+
+    bool operator==(const GeneratorDefinitionSource&) const = default;
+};
+
 struct WorldConfiguration {
+    GeneratorDefinitionSource generatorSource;
     WorldGenConfig generation;
     StreamingConfig streaming;
 };

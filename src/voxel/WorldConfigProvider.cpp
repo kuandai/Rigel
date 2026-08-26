@@ -1,10 +1,105 @@
 #include "Rigel/Voxel/WorldConfigProvider.h"
 
+#include "Rigel/Util/Ryml.h"
+
+#include <ryml.hpp>
+
+#include <charconv>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 
 namespace Rigel::Voxel {
+namespace {
+
+bool validGeneratorSourceId(std::string_view id) {
+    const size_t separator = id.find(':');
+    if (separator == std::string_view::npos || separator == 0 ||
+        separator + 1 == id.size()) {
+        return false;
+    }
+    for (const unsigned char byte : id) {
+        if (byte <= 0x20 || byte == 0x7f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<GeneratorDefinitionSource> readGeneratorSource(
+    const char* sourceName,
+    const std::string& yaml) {
+    if (yaml.empty()) {
+        return std::nullopt;
+    }
+    const ryml::Tree tree = ryml::parse_in_arena(
+        ryml::to_csubstr(sourceName), ryml::to_csubstr(yaml));
+    const ryml::ConstNodeRef root = tree.rootref();
+    if (!root.has_child("generator")) {
+        return std::nullopt;
+    }
+    const ryml::ConstNodeRef generator = root["generator"];
+    if (!generator.is_map()) {
+        throw std::invalid_argument(
+            "Generator definition source in '" + std::string(sourceName) +
+            "' must be a mapping");
+    }
+    std::unordered_set<std::string> fields;
+    for (const ryml::ConstNodeRef field : generator.children()) {
+        const std::string name = Util::toStdString(field.key());
+        if (name != "id" && name != "source_revision") {
+            throw std::invalid_argument(
+                "Unknown generator definition field 'generator." + name +
+                "' in '" + sourceName + "'");
+        }
+        if (!fields.insert(name).second) {
+            throw std::invalid_argument(
+                "Duplicate generator definition field 'generator." + name +
+                "' in '" + sourceName + "'");
+        }
+    }
+    for (const char* required : {"id", "source_revision"}) {
+        if (!generator.has_child(required)) {
+            throw std::invalid_argument(
+                "Missing generator definition field 'generator." +
+                std::string(required) + "' in '" + sourceName + "'");
+        }
+    }
+
+    GeneratorDefinitionSource result;
+    generator["id"] >> result.id;
+    if (!validGeneratorSourceId(result.id)) {
+        throw std::invalid_argument(
+            "Generator definition field 'generator.id' in '" +
+            std::string(sourceName) + "' must be a non-empty namespaced ID");
+    }
+
+    const std::string revision = Util::toStdString(
+        generator["source_revision"].val());
+    const char* begin = revision.data();
+    const char* end = begin + revision.size();
+    const auto parsed = std::from_chars(begin, end, result.revision);
+    if (parsed.ec != std::errc{} || parsed.ptr != end ||
+        result.revision == 0) {
+        throw std::invalid_argument(
+            "Generator definition field 'generator.source_revision' in '" +
+            std::string(sourceName) +
+            "' must be an unsigned integer greater than zero");
+    }
+    return result;
+}
+
+void validateResolvedGeneratorSource(
+    const GeneratorDefinitionSource& source) {
+    if (!validGeneratorSourceId(source.id) || source.revision == 0) {
+        throw std::invalid_argument(
+            "Merged world configuration requires a generator definition "
+            "source ID and revision");
+    }
+}
+
+} // namespace
 
 void WorldConfigProvider::addSource(
     std::unique_ptr<Config::IConfigSource> source) {
@@ -37,7 +132,12 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
                     "' declared by '" + source.name() + "'");
             }
 
-            auto nestedOverlays = target.generation.applyYamlWithOverlays(
+            if (auto generatorSource = readGeneratorSource(
+                    overlayData->name.c_str(), overlayData->content)) {
+                target.generatorSource = std::move(*generatorSource);
+            }
+            auto nestedOverlays =
+                target.generation.applyCreationYamlWithOverlays(
                 overlayData->name.c_str(),
                 overlayData->content
             );
@@ -57,7 +157,11 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
             continue;
         }
         WorldConfiguration candidate = config;
-        auto overlays = candidate.generation.applyYamlWithOverlays(
+        if (auto generatorSource = readGeneratorSource(
+                source->name().c_str(), *yaml)) {
+            candidate.generatorSource = std::move(*generatorSource);
+        }
+        auto overlays = candidate.generation.applyCreationYamlWithOverlays(
             source->name().c_str(), *yaml);
         candidate.streaming.applyYaml(source->name().c_str(), *yaml);
         applyOverlays(candidate, *source, std::move(overlays));
@@ -66,6 +170,7 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
 
     config.generation.validate("merged world configuration");
     config.streaming.validate("merged world configuration");
+    validateResolvedGeneratorSource(config.generatorSource);
 
     return config;
 }

@@ -752,6 +752,11 @@ void publishNewWorldGeneration(const WorldSettings& settings,
         throw std::invalid_argument(
             "World settings seed does not match the resolved generator input");
     }
+    if (settings.generator.semanticsVersion != definition.world.version) {
+        throw std::invalid_argument(
+            "World settings generator semantics version does not match the "
+            "resolved generator input");
+    }
     const std::string snapshot = Voxel::serializeGeneratorSnapshot(definition);
     const std::string settingsDocument = serializeSettings(settings);
     if (settingsDocument.size() > kMaxWorldSettingsBytes) {

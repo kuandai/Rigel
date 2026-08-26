@@ -305,8 +305,6 @@ void Application::initialize() {
             Voxel::validateGeneratorSnapshotContent(
                 config.generation,
                 m_impl->world.worldSet.resources().registry());
-            const uint32_t generatorSourceRevision =
-                config.generation.world.version;
             config.generation.world.version =
                 Voxel::kGeneratorSemanticsVersion;
             generator = std::make_shared<const Voxel::WorldGenerator>(
@@ -316,9 +314,9 @@ void Application::initialize() {
             settings.displayName =
                 "world_" + std::to_string(m_impl->world.activeWorldId);
             settings.seed = generator->config().seed;
-            settings.generator.sourceId = "rigel:default";
+            settings.generator.sourceId = config.generatorSource.id;
             settings.generator.sourceRevision =
-                generatorSourceRevision;
+                config.generatorSource.revision;
             settings.generator.definitionSchemaVersion =
                 Voxel::kGeneratorDefinitionSchemaVersion;
             settings.generator.semanticsVersion =

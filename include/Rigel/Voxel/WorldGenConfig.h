@@ -173,6 +173,10 @@ struct WorldGenConfig {
 
 private:
     friend class WorldConfigProvider;
+    std::vector<OverlayConfig> applyCreationYamlWithOverlays(
+        const char* sourceName,
+        const std::string& yaml
+    );
     std::vector<OverlayConfig> applyYamlWithOverlays(
         const char* sourceName,
         const std::string& yaml
@@ -183,7 +187,8 @@ private:
     );
     std::vector<OverlayConfig> applyYamlUnchecked(
         const char* sourceName,
-        const std::string& yaml
+        const std::string& yaml,
+        bool strictDefinitionFields
     );
 };
 

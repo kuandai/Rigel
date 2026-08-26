@@ -1,3 +1,7 @@
+generator:
+  id: rigel:default
+  source_revision: 1
+
 seed: 1337
 solid_block: base:stone_shale
 surface_block: base:grass
@@ -8,7 +12,6 @@ world:
   min_y: -64
   max_y: 320
   sea_level: 60
-  version: 1
 
 flags:
   no_carvers: false

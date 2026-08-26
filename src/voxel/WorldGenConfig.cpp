@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <unordered_set>
 
 #include "Rigel/Util/Yaml.h"
 #include "Rigel/Util/Ryml.h"
@@ -33,6 +34,39 @@ bool isKnownGenerationStage(std::string_view name) {
         kWorldGenPipelineStages.end(),
         [name](const char* stage) { return name == stage; }
     );
+}
+
+void validateKeys(ryml::ConstNodeRef node,
+                  const char* sourceName,
+                  std::string_view path,
+                  std::initializer_list<std::string_view> knownKeys,
+                  bool strict) {
+    if (!strict) {
+        Util::warnUnknownKeys(node, sourceName, path, knownKeys);
+        return;
+    }
+    if (!node.readable() || !node.is_map()) {
+        return;
+    }
+    std::unordered_set<std::string> encountered;
+    for (const ryml::ConstNodeRef child : node.children()) {
+        const std::string key = Util::toStdString(child.key());
+        const std::string fullPath = path.empty()
+            ? key
+            : std::string(path) + "." + key;
+        if (!encountered.insert(key).second) {
+            throw std::invalid_argument(
+                "Duplicate generator definition field '" + fullPath +
+                "' in '" + sourceName + "'");
+        }
+        if (std::find(knownKeys.begin(), knownKeys.end(), key) !=
+            knownKeys.end()) {
+            continue;
+        }
+        throw std::invalid_argument(
+            "Unknown generator definition field '" + fullPath +
+            "' in '" + sourceName + "'");
+    }
 }
 
 std::vector<WorldGenConfig::OverlayConfig> applyOverlayRouting(
@@ -69,8 +103,9 @@ std::vector<WorldGenConfig::OverlayConfig> applyOverlayRouting(
     return declaredOverlays;
 }
 
-void warnUnknownGenerationStages(ryml::ConstNodeRef stages,
-                                 const char* sourceName) {
+void validateGenerationStages(ryml::ConstNodeRef stages,
+                              const char* sourceName,
+                              bool strict) {
     if (!stages.readable() || !stages.is_map()) {
         return;
     }
@@ -79,6 +114,11 @@ void warnUnknownGenerationStages(ryml::ConstNodeRef stages,
         const std::string name = Util::toStdString(stage.key());
         if (isKnownGenerationStage(name)) {
             continue;
+        }
+        if (strict) {
+            throw std::invalid_argument(
+                "Unknown generator definition field 'generation.stages." +
+                name + "' in '" + sourceName + "'");
         }
         spdlog::warn(
             "Unknown configuration key 'generation.stages.{}' in '{}'",
@@ -90,130 +130,227 @@ void warnUnknownGenerationStages(ryml::ConstNodeRef stages,
 
 void validateNoiseKeys(ryml::ConstNodeRef node,
                        const char* sourceName,
-                       std::string_view path) {
-    Util::warnUnknownKeys(
+                       std::string_view path,
+                       bool strict) {
+    validateKeys(
         node,
         sourceName,
         path,
-        {"octaves", "frequency", "lacunarity", "persistence", "scale", "offset"}
+        {"octaves", "frequency", "lacunarity", "persistence", "scale", "offset"},
+        strict
     );
 }
 
 void validateClimateLayerKeys(ryml::ConstNodeRef node,
                               const char* sourceName,
-                              std::string_view path) {
-    Util::warnUnknownKeys(
+                              std::string_view path,
+                              bool strict) {
+    validateKeys(
         node,
         sourceName,
         path,
-        {"temperature", "humidity", "continentalness"}
+        {"temperature", "humidity", "continentalness"},
+        strict
     );
     for (const char* key : {"temperature", "humidity", "continentalness"}) {
         if (node.has_child(key)) {
-            validateNoiseKeys(node[key], sourceName, std::string(path) + "." + key);
+            validateNoiseKeys(
+                node[key], sourceName, std::string(path) + "." + key,
+                strict);
         }
     }
 }
 
-void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
-    Util::warnUnknownKeys(
+void validateDensityNodeKeys(ryml::ConstNodeRef node,
+                             const char* sourceName,
+                             bool strict) {
+    const std::string type = Util::readString(node, "type", "");
+    if (!strict) {
+        validateKeys(
+            node,
+            sourceName,
+            "density_graph.nodes",
+            {
+                "id", "type", "inputs", "field", "noise", "value", "min",
+                "max", "scale", "offset", "spline", "octaves", "frequency",
+                "lacunarity", "persistence"
+            },
+            false);
+    } else if (type == "constant") {
+        validateKeys(
+            node, sourceName, "density_graph.nodes",
+            {"id", "type", "value"}, true);
+    } else if (type == "noise2d" || type == "noise3d" ||
+               type == "noise3d_xy") {
+        validateKeys(
+            node, sourceName, "density_graph.nodes",
+            {"id", "type", "noise", "scale", "offset"}, true);
+    } else if (type == "add" || type == "mul" || type == "max" ||
+               type == "min" || type == "abs" || type == "invert") {
+        validateKeys(
+            node, sourceName, "density_graph.nodes",
+            {"id", "type", "inputs"}, true);
+    } else if (type == "clamp") {
+        validateKeys(
+            node, sourceName, "density_graph.nodes",
+            {"id", "type", "inputs", "min", "max"}, true);
+    } else if (type == "spline") {
+        validateKeys(
+            node, sourceName, "density_graph.nodes",
+            {"id", "type", "inputs", "spline"}, true);
+    } else if (type == "climate") {
+        validateKeys(
+            node, sourceName, "density_graph.nodes",
+            {"id", "type", "field"}, true);
+    } else if (type == "y") {
+        validateKeys(
+            node, sourceName, "density_graph.nodes",
+            {"id", "type", "scale", "offset"}, true);
+    } else {
+        validateKeys(
+            node,
+            sourceName,
+            "density_graph.nodes",
+            {
+                "id", "type", "inputs", "field", "noise", "value", "min",
+                "max", "scale", "offset", "spline"
+            },
+            true);
+    }
+
+    if (node.has_child("noise")) {
+        validateNoiseKeys(
+            node["noise"], sourceName, "density_graph.nodes.noise", strict);
+    }
+    if (node.has_child("spline")) {
+        for (const ryml::ConstNodeRef point : node["spline"].children()) {
+            validateKeys(
+                point,
+                sourceName,
+                "density_graph.nodes.spline",
+                {"x", "y"},
+                strict);
+        }
+    }
+}
+
+void validateWorldConfigKeys(ryml::ConstNodeRef root,
+                             const char* sourceName,
+                             bool strict) {
+    validateKeys(
         root,
         sourceName,
         "",
         {
             "seed", "solid_block", "surface_block", "water_block", "shore_block",
             "world", "terrain", "climate", "biomes", "density_graph", "caves",
-            "structures", "streaming", "generation", "flags", "overlays"
-        }
+            "structures", "streaming", "generation", "flags", "overlays",
+            "generator"
+        },
+        strict
     );
 
     if (root.has_child("world")) {
-        Util::warnUnknownKeys(
-            root["world"],
-            sourceName,
-            "world",
-            {"min_y", "max_y", "sea_level", "version"}
-        );
+        if (strict) {
+            validateKeys(
+                root["world"], sourceName, "world",
+                {"min_y", "max_y", "sea_level"}, true);
+        } else {
+            validateKeys(
+                root["world"], sourceName, "world",
+                {"min_y", "max_y", "sea_level", "version"}, false);
+        }
     }
 
     if (root.has_child("terrain")) {
         const ryml::ConstNodeRef terrain = root["terrain"];
-        Util::warnUnknownKeys(
+        validateKeys(
             terrain,
             sourceName,
             "terrain",
             {
                 "base_height", "height_variation", "surface_depth", "noise",
                 "density_noise", "density_strength", "gradient_strength"
-            }
+            },
+            strict
         );
         if (terrain.has_child("noise")) {
-            validateNoiseKeys(terrain["noise"], sourceName, "terrain.noise");
+            validateNoiseKeys(
+                terrain["noise"], sourceName, "terrain.noise", strict);
         }
         if (terrain.has_child("density_noise")) {
             validateNoiseKeys(
-                terrain["density_noise"], sourceName, "terrain.density_noise");
+                terrain["density_noise"], sourceName,
+                "terrain.density_noise", strict);
         }
     }
 
     if (root.has_child("climate")) {
         const ryml::ConstNodeRef climate = root["climate"];
-        Util::warnUnknownKeys(
+        validateKeys(
             climate,
             sourceName,
             "climate",
             {
                 "global", "local", "local_blend", "latitude_scale",
                 "latitude_strength"
-            }
+            },
+            strict
         );
         if (climate.has_child("global")) {
-            validateClimateLayerKeys(climate["global"], sourceName, "climate.global");
+            validateClimateLayerKeys(
+                climate["global"], sourceName, "climate.global", strict);
         }
         if (climate.has_child("local")) {
-            validateClimateLayerKeys(climate["local"], sourceName, "climate.local");
+            validateClimateLayerKeys(
+                climate["local"], sourceName, "climate.local", strict);
         }
     }
 
     if (root.has_child("biomes")) {
         const ryml::ConstNodeRef biomes = root["biomes"];
-        Util::warnUnknownKeys(
+        validateKeys(
             biomes,
             sourceName,
             "biomes",
-            {"blend_power", "epsilon", "entries", "coast_band"}
+            {"blend_power", "epsilon", "entries", "coast_band"},
+            strict
         );
         if (biomes.has_child("coast_band")) {
-            Util::warnUnknownKeys(
+            validateKeys(
                 biomes["coast_band"],
                 sourceName,
                 "biomes.coast_band",
-                {"biome", "min_continentalness", "max_continentalness", "min", "max"}
+                {"biome", "min_continentalness", "max_continentalness", "min", "max"},
+                strict
             );
         }
         if (biomes.has_child("entries")) {
             for (ryml::ConstNodeRef entry : biomes["entries"].children()) {
-                Util::warnUnknownKeys(
+                validateKeys(
                     entry,
                     sourceName,
                     "biomes.entries",
-                    {"name", "target", "weight", "surface"}
+                    {"name", "target", "weight", "surface"},
+                    strict
                 );
                 if (entry.has_child("target")) {
-                    Util::warnUnknownKeys(
+                    validateKeys(
                         entry["target"],
                         sourceName,
                         "biomes.entries.target",
-                        {"temperature", "humidity", "continentalness"}
+                        {"temperature", "humidity", "continentalness"},
+                        strict
                     );
                 }
                 if (entry.has_child("surface")) {
                     for (ryml::ConstNodeRef layer : entry["surface"].children()) {
-                        Util::warnUnknownKeys(
+                        validateKeys(
                             layer,
                             sourceName,
                             "biomes.entries.surface",
-                            {"block", "depth"}
+                            {"block", "depth"},
+                            strict
                         );
                     }
                 }
@@ -223,58 +360,38 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
 
     if (root.has_child("density_graph")) {
         const ryml::ConstNodeRef graph = root["density_graph"];
-        Util::warnUnknownKeys(
-            graph, sourceName, "density_graph", {"outputs", "nodes"});
+        validateKeys(
+            graph, sourceName, "density_graph", {"outputs", "nodes"},
+            strict);
         if (graph.has_child("nodes")) {
             for (ryml::ConstNodeRef node : graph["nodes"].children()) {
-                Util::warnUnknownKeys(
-                    node,
-                    sourceName,
-                    "density_graph.nodes",
-                    {
-                        "id", "type", "inputs", "field", "noise", "value", "min",
-                        "max", "scale", "offset", "spline", "octaves", "frequency",
-                        "lacunarity", "persistence"
-                    }
-                );
-                if (node.has_child("noise")) {
-                    validateNoiseKeys(
-                        node["noise"], sourceName, "density_graph.nodes.noise");
-                }
-                if (node.has_child("spline")) {
-                    for (ryml::ConstNodeRef point : node["spline"].children()) {
-                        Util::warnUnknownKeys(
-                            point,
-                            sourceName,
-                            "density_graph.nodes.spline",
-                            {"x", "y"}
-                        );
-                    }
-                }
+                validateDensityNodeKeys(node, sourceName, strict);
             }
         }
     }
 
     if (root.has_child("caves")) {
-        Util::warnUnknownKeys(
+        validateKeys(
             root["caves"],
             sourceName,
             "caves",
-            {"density_output", "threshold"}
+            {"density_output", "threshold"},
+            strict
         );
     }
 
     if (root.has_child("structures")) {
         const ryml::ConstNodeRef structures = root["structures"];
-        Util::warnUnknownKeys(
-            structures, sourceName, "structures", {"features"});
+        validateKeys(
+            structures, sourceName, "structures", {"features"}, strict);
         if (structures.has_child("features")) {
             for (ryml::ConstNodeRef feature : structures["features"].children()) {
-                Util::warnUnknownKeys(
+                validateKeys(
                     feature,
                     sourceName,
                     "structures.features",
-                    {"name", "block", "chance", "min_height", "max_height", "biomes"}
+                    {"name", "block", "chance", "min_height", "max_height", "biomes"},
+                    strict
                 );
             }
         }
@@ -282,17 +399,18 @@ void validateWorldConfigKeys(ryml::ConstNodeRef root, const char* sourceName) {
 
     if (root.has_child("generation")) {
         const ryml::ConstNodeRef generation = root["generation"];
-        Util::warnUnknownKeys(
-            generation, sourceName, "generation", {"stages"});
+        validateKeys(
+            generation, sourceName, "generation", {"stages"}, strict);
         if (generation.has_child("stages")) {
-            warnUnknownGenerationStages(generation["stages"], sourceName);
+            validateGenerationStages(
+                generation["stages"], sourceName, strict);
         }
     }
 
     if (root.has_child("overlays")) {
         for (ryml::ConstNodeRef overlay : root["overlays"].children()) {
-            Util::warnUnknownKeys(
-                overlay, sourceName, "overlays", {"path", "when"});
+            validateKeys(
+                overlay, sourceName, "overlays", {"path", "when"}, strict);
         }
     }
 }
@@ -373,11 +491,21 @@ void WorldGenConfig::applyYaml(const char* sourceName, const std::string& yaml) 
     applyYamlWithOverlays(sourceName, yaml);
 }
 
+std::vector<WorldGenConfig::OverlayConfig>
+WorldGenConfig::applyCreationYamlWithOverlays(
+    const char* sourceName,
+    const std::string& yaml) {
+    WorldGenConfig candidate = *this;
+    auto overlays = candidate.applyYamlUnchecked(sourceName, yaml, true);
+    *this = std::move(candidate);
+    return overlays;
+}
+
 std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlWithOverlays(
     const char* sourceName,
     const std::string& yaml) {
     WorldGenConfig candidate = *this;
-    auto overlays = candidate.applyYamlUnchecked(sourceName, yaml);
+    auto overlays = candidate.applyYamlUnchecked(sourceName, yaml, false);
     *this = std::move(candidate);
     return overlays;
 }
@@ -409,7 +537,8 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlRouting(
 
 std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlUnchecked(
     const char* sourceName,
-    const std::string& yaml) {
+    const std::string& yaml,
+    bool strictDefinitionFields) {
     std::vector<OverlayConfig> declaredOverlays;
     if (yaml.empty()) {
         return declaredOverlays;
@@ -420,7 +549,7 @@ std::vector<WorldGenConfig::OverlayConfig> WorldGenConfig::applyYamlUnchecked(
         ryml::to_csubstr(yaml)
     );
     ryml::ConstNodeRef root = tree.rootref();
-    validateWorldConfigKeys(root, sourceName);
+    validateWorldConfigKeys(root, sourceName, strictDefinitionFields);
 
     seed = static_cast<uint32_t>(Util::readInt(root, "seed", static_cast<int>(seed)));
     solidBlock = Util::readString(root, "solid_block", solidBlock);

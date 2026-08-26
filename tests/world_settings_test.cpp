@@ -33,7 +33,7 @@ constexpr size_t kStagingSlotCount = 64;
 Voxel::WorldGenConfig savedDefinition() {
     Voxel::WorldGenConfig definition;
     definition.seed = 424242u;
-    definition.world.version = 19u;
+    definition.world.version = Voxel::kGeneratorSemanticsVersion;
     definition.solidBlock = "base:stone_shale";
     definition.surfaceBlock = "base:grass";
 
@@ -1586,7 +1586,7 @@ TEST_CASE(WorldSettings_legacy_save_is_rejected_without_mutation) {
     CHECK(!std::filesystem::exists(worldRoot / "generator-definition.yaml"));
 }
 
-TEST_CASE(WorldSettings_rejects_dual_seed_authority_before_write) {
+TEST_CASE(WorldSettings_rejects_dual_runtime_identity_before_write) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
 
@@ -1598,6 +1598,13 @@ TEST_CASE(WorldSettings_rejects_dual_seed_authority_before_write) {
         mismatchedSettings, savedDefinition(), seedContext));
     CHECK(!std::filesystem::exists(seedRoot));
 
+    auto mismatchedDefinition = savedDefinition();
+    mismatchedDefinition.world.version += 1;
+    const auto semanticsRoot = directory.path() / "semantics-mismatch";
+    const auto semanticsContext = contextFor(semanticsRoot, storage);
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), mismatchedDefinition, semanticsContext));
+    CHECK(!std::filesystem::exists(semanticsRoot));
 }
 
 TEST_CASE(WorldSettings_rejects_documents_larger_than_reload_limits) {

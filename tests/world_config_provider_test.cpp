@@ -86,6 +86,15 @@ private:
     std::filesystem::path m_original;
 };
 
+std::string withGeneratorSource(
+    std::string yaml,
+    std::string_view id = "rigel:test",
+    uint32_t revision = 7) {
+    return "generator:\n"
+        "  id: " + std::string(id) + "\n"
+        "  source_revision: " + std::to_string(revision) + "\n" + yaml;
+}
+
 } // namespace
 
 TEST_CASE(WorldConfigProvider_FileSource) {
@@ -93,6 +102,7 @@ TEST_CASE(WorldConfigProvider_FileSource) {
     const auto path = directory.path() / "world.yaml";
     {
         std::ofstream out(path);
+        out << withGeneratorSource("");
         out << "seed: 99\n";
         out << "solid_block: base:stone_shale\n";
     }
@@ -105,12 +115,61 @@ TEST_CASE(WorldConfigProvider_FileSource) {
     CHECK_EQ(config.solidBlock, "base:stone_shale");
 }
 
+TEST_CASE(WorldConfigProvider_UsesExplicitHighestPrecedenceGeneratorSource) {
+    WorldConfigProvider provider;
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "shipped definition",
+        withGeneratorSource("seed: 11\n", "rigel:default", 4)));
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "selected definition",
+        withGeneratorSource("seed: 22\n", "example:skylands", 9)));
+
+    const WorldConfiguration config = provider.loadConfig();
+    CHECK_EQ(config.generatorSource.id, std::string("example:skylands"));
+    CHECK_EQ(config.generatorSource.revision, 9u);
+    CHECK_EQ(config.generation.seed, 22u);
+}
+
+TEST_CASE(WorldConfigProvider_RejectsUnknownOrInapplicableCreationFields) {
+    for (const std::string yaml : {
+             "density_grph:\n  outputs: {}\n",
+             "world:\n  version: 12\n",
+             "generator:\n"
+             "  id: rigel:duplicate\n"
+             "  source_revision: 8\n",
+             "density_graph:\n"
+             "  nodes:\n"
+             "    - id: ground\n"
+             "      type: constant\n"
+             "      value: 1\n"
+             "      offset: 2\n"}) {
+        WorldConfigProvider provider;
+        provider.addSource(std::make_unique<MemoryConfigSource>(
+            "invalid definition", withGeneratorSource(yaml)));
+        CHECK_THROWS(provider.loadConfig());
+    }
+}
+
+TEST_CASE(WorldConfigProvider_RequiresCompleteGeneratorSourceIdentity) {
+    for (const std::string yaml : {
+             "seed: 11\n",
+             "generator:\n  id: rigel:missing-revision\n",
+             "generator:\n  id: unnamespaced\n  source_revision: 1\n",
+             "generator:\n  id: rigel:zero\n  source_revision: 0\n"}) {
+        WorldConfigProvider provider;
+        provider.addSource(std::make_unique<MemoryConfigSource>(
+            "invalid identity", yaml));
+        CHECK_THROWS(provider.loadConfig());
+    }
+}
+
 TEST_CASE(WorldConfigProvider_OverlaySource) {
     Rigel::Test::TemporaryDirectory directory("rigel_world_config");
     const auto basePath = directory.path() / "base.yaml";
     const auto overlayPath = directory.path() / "overlay.yaml";
     {
         std::ofstream out(basePath);
+        out << withGeneratorSource("");
         out << "flags:\n";
         out << "  smooth: true\n";
         out << "overlays:\n";
@@ -188,12 +247,13 @@ TEST_CASE(WorldConfigProvider_HigherPrecedenceSourceOverridesLowerOverlay) {
     WorldConfigProvider provider;
     provider.addSource(std::make_unique<MemoryConfigSource>(
         "defaults",
-        "terrain:\n"
-        "  base_height: 1.0\n"
-        "streaming:\n"
-        "  worker_threads: 1\n"
-        "overlays:\n"
-        "  - path: tuning.yaml\n",
+        withGeneratorSource(
+            "terrain:\n"
+            "  base_height: 1.0\n"
+            "streaming:\n"
+            "  worker_threads: 1\n"
+            "overlays:\n"
+            "  - path: tuning.yaml\n"),
         std::unordered_map<std::string, std::string>{
             {
                 "tuning.yaml",
@@ -222,10 +282,11 @@ TEST_CASE(WorldConfigProvider_ValidatesCrossFieldsAfterAllSourcesMerge) {
     WorldConfigProvider provider;
     provider.addSource(std::make_unique<MemoryConfigSource>(
         "base",
-        "world:\n"
-        "  min_y: 400\n"
-        "streaming:\n"
-        "  worker_threads: 64\n"
+        withGeneratorSource(
+            "world:\n"
+            "  min_y: 400\n"
+            "streaming:\n"
+            "  worker_threads: 64\n")
     ));
     provider.addSource(std::make_unique<MemoryConfigSource>(
         "override",
@@ -294,11 +355,14 @@ TEST_CASE(WorldConfigProvider_SavedWorldReloadToleratesRemovedFileOverlay) {
     {
         std::ofstream source(sourcePath);
         source <<
+            "generator:\n"
+            "  id: rigel:removed-overlay\n"
+            "  source_revision: 27\n"
             "seed: 90817\n"
             "solid_block: base:stone_shale\n"
             "surface_block: base:grass\n"
             "world:\n"
-            "  version: 27\n"
+            "  sea_level: 0\n"
             "biomes:\n"
             "  entries:\n"
             "    - name: land\n"
@@ -341,8 +405,8 @@ TEST_CASE(WorldConfigProvider_SavedWorldReloadToleratesRemovedFileOverlay) {
     Rigel::Persistence::WorldSettings settings;
     settings.displayName = "Removed overlay reload";
     settings.seed = created.generation.seed;
-    settings.generator.sourceId = "rigel:test";
-    settings.generator.sourceRevision = created.generation.world.version;
+    settings.generator.sourceId = created.generatorSource.id;
+    settings.generator.sourceRevision = created.generatorSource.revision;
     settings.generator.definitionSchemaVersion =
         kGeneratorDefinitionSchemaVersion;
     settings.generator.semanticsVersion = kGeneratorSemanticsVersion;
@@ -433,6 +497,8 @@ TEST_CASE(WorldConfigProvider_ShippedDefinitionProducesNormalizedSnapshot) {
     assets.loadManifest("manifest.yaml");
     const WorldConfiguration config =
         makeWorldConfigProvider(assets, 0).loadConfig();
+    CHECK_EQ(config.generatorSource.id, std::string("rigel:default"));
+    CHECK_EQ(config.generatorSource.revision, 1u);
 
     const std::string snapshot =
         serializeGeneratorSnapshot(config.generation);
@@ -454,8 +520,11 @@ TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {
     WorldConfigProvider provider;
     provider.addSource(std::make_unique<MemoryConfigSource>(
         "defaults",
-        "overlays:\n"
-        "  - path: tuning.yaml\n",
+        withGeneratorSource(
+            "overlays:\n"
+            "  - path: tuning.yaml\n",
+            "rigel:defaults",
+            3),
         std::unordered_map<std::string, std::string>{
             {"tuning.yaml", "terrain:\n  base_height: 2.0\n"}
         }
@@ -478,11 +547,12 @@ TEST_CASE(WorldConfigProvider_AppliesNestedOverlaysAfterDeclaredOverlays) {
     WorldConfigProvider provider;
     provider.addSource(std::make_unique<MemoryConfigSource>(
         "defaults",
-        "terrain:\n"
-        "  base_height: 1.0\n"
-        "overlays:\n"
-        "  - path: first.yaml\n"
-        "  - path: second.yaml\n",
+        withGeneratorSource(
+            "terrain:\n"
+            "  base_height: 1.0\n"
+            "overlays:\n"
+            "  - path: first.yaml\n"
+            "  - path: second.yaml\n"),
         std::unordered_map<std::string, std::string>{
             {
                 "first.yaml",

@@ -801,8 +801,7 @@ std::string validatePublicationIdentityAndFormat(
     PersistenceService& persistence,
     const PersistenceContext& publicationContext,
     const std::filesystem::path& worldRoot,
-    std::string_view expectedFormat,
-    bool finalRoot) {
+    std::string_view expectedFormat) {
     if (publicationContext.storage->entryKind(
             publicationContext.rootPath) != StorageEntryKind::Directory ||
         publicationContext.storage->entryKind(childPath(
@@ -841,8 +840,7 @@ std::string validatePublicationIdentityAndFormat(
     const WorldMetadata metadata =
         persistence.loadWorldMetadata(discoveryContext);
     if (metadata.displayName != generation.settings.displayName ||
-        (finalRoot &&
-         metadata.worldId != worldRoot.filename().string())) {
+        metadata.worldId != worldRoot.filename().string()) {
         throw std::runtime_error(
             "Published persistence backend identity does not match world settings");
     }
@@ -895,7 +893,7 @@ void recoverPublicationHandoff(
                 "Published world unexpectedly retains staging deletion authority");
         }
         static_cast<void>(validatePublicationIdentityAndFormat(
-            *persistence, context, worldRoot, {}, true));
+            *persistence, context, worldRoot, {}));
         if (!hasValidHandoffOwnershipMarker(
                 storage, worldRoot, stagedContext)) {
             throw std::runtime_error(
@@ -912,7 +910,7 @@ void recoverPublicationHandoff(
     }
 
     const std::string formatId = validatePublicationIdentityAndFormat(
-        *persistence, stagedContext, worldRoot, {}, false);
+        *persistence, stagedContext, worldRoot, {});
     const std::string stagingMarkerPath =
         childPath(stagedContext, kStagingOwnershipFilename);
     const StorageEntryKind stagingMarkerKind =
@@ -933,7 +931,7 @@ void recoverPublicationHandoff(
 
     storage.publishDirectory(stagedContext.rootPath, context.rootPath);
     static_cast<void>(validatePublicationIdentityAndFormat(
-        *persistence, context, worldRoot, formatId, true));
+        *persistence, context, worldRoot, formatId));
     if (!hasValidHandoffOwnershipMarker(
             storage, worldRoot, stagedContext)) {
         throw std::runtime_error(
@@ -1241,8 +1239,7 @@ static std::string publishNewWorldGenerationImpl(
             persistence,
             stagedContext,
             worldRoot,
-            selectedFormatId,
-            false));
+            selectedFormatId));
         beginPublicationHandoff(storage, worldRoot, stagedContext);
         try {
             storage.publishDirectory(
@@ -1268,8 +1265,7 @@ static std::string publishNewWorldGenerationImpl(
             persistence,
             context,
             worldRoot,
-            selectedFormatId,
-            true));
+            selectedFormatId));
         removeHandoffOwnershipMarker(
             storage, worldRoot, stagedContext);
     } catch (...) {

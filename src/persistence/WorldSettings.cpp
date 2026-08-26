@@ -603,8 +603,15 @@ void beginPublicationHandoff(
 
 void removeStagingDirectory(
     StorageBackend& storage,
+    const std::filesystem::path& worldRoot,
     const PersistenceContext& stagedContext) {
     const std::filesystem::path stagedRoot(stagedContext.rootPath);
+    if (!hasValidStagingOwnershipMarker(
+            storage, worldRoot, stagedContext)) {
+        throw std::runtime_error(
+            "Refusing to clean staged world without exact child ownership: " +
+            stagedContext.rootPath);
+    }
     const StorageEntryKind stagedKind =
         storage.entryKind(stagedContext.rootPath);
     if (stagedKind == StorageEntryKind::Missing) {
@@ -635,17 +642,48 @@ void removeStagingDirectory(
         }
     }
 
+    // Storage backends participating in bootstrap locking must not replace a
+    // reserved path behind the lock. Recheck the durable child authority at
+    // the last backend boundary before the deletion sequence so a replacement
+    // performed by list() or cleanup-marker reservation is preserved.
+    if (!hasValidStagingOwnershipMarker(
+            storage, worldRoot, stagedContext)) {
+        throw std::runtime_error(
+            "Staging ownership changed immediately before cleanup: " +
+            stagedContext.rootPath);
+    }
+
     for (const std::string& path : payloadEntries) {
+        if (!hasValidStagingOwnershipMarker(
+                storage, worldRoot, stagedContext)) {
+            throw std::runtime_error(
+                "Staging ownership changed during payload cleanup: " +
+                stagedContext.rootPath);
+        }
         removeEntryIfPresent(storage, path);
     }
 
     if (!ownershipMarkerEntry.empty()) {
+        if (!hasValidStagingOwnershipMarker(
+                storage, worldRoot, stagedContext)) {
+            throw std::runtime_error(
+                "Staging ownership changed during cleanup: " +
+                stagedContext.rootPath);
+        }
         removeEntryIfPresent(storage, ownershipMarkerEntry);
     }
 
     const StorageEntryKind currentKind =
         storage.entryKind(stagedContext.rootPath);
     if (currentKind == StorageEntryKind::Directory) {
+        if (!storage.list(stagedContext.rootPath).empty()) {
+            throw std::runtime_error(
+                "Staged world directory changed before final cleanup: " +
+                stagedContext.rootPath);
+        }
+        // The bootstrap-lock contract excludes a cooperating backend from
+        // replacing the verified empty directory between this final check and
+        // removal. The StorageBackend API has no identity-bound rmdir.
         storage.remove(stagedContext.rootPath);
         if (storage.entryKind(stagedContext.rootPath) !=
             StorageEntryKind::Missing) {
@@ -658,31 +696,6 @@ void removeStagingDirectory(
             "Refusing to remove a staged world path that is no longer a directory: " +
             stagedContext.rootPath);
     }
-}
-
-void removeCurrentStagingReservation(
-    StorageBackend& storage,
-    const PersistenceContext& stagedContext) {
-    removeStagingDirectory(storage, stagedContext);
-}
-
-void rollbackDefinitelyUnpublishedHandoff(
-    StorageBackend& storage,
-    const std::filesystem::path& worldRoot,
-    const PersistenceContext& stagedContext) {
-    if (!hasValidHandoffOwnershipMarker(
-            storage, worldRoot, stagedContext) ||
-        storage.entryKind(stagedContext.rootPath) !=
-            StorageEntryKind::Directory ||
-        storage.entryKind(childPath(
-            stagedContext, kStagingOwnershipFilename)) !=
-            StorageEntryKind::Missing) {
-        throw std::runtime_error(
-            "Refusing to roll back an unverified world-publication handoff: " +
-            stagedContext.rootPath);
-    }
-    removeStagingDirectory(storage, stagedContext);
-    removeHandoffOwnershipMarker(storage, worldRoot, stagedContext);
 }
 
 void removeStagingWorld(StorageBackend& storage,
@@ -721,6 +734,9 @@ void removeStagingWorld(StorageBackend& storage,
                 StorageEntryKind::Directory) {
                 return;
             }
+            if (!storage.list(stagedContext.rootPath).empty()) {
+                return;
+            }
             storage.remove(stagedContext.rootPath);
             if (storage.entryKind(stagedContext.rootPath) !=
                 StorageEntryKind::Missing) {
@@ -736,7 +752,7 @@ void removeStagingWorld(StorageBackend& storage,
 
     ensureCleanupOwnershipMarker(storage, worldRoot, stagedContext);
 
-    removeStagingDirectory(storage, stagedContext);
+    removeStagingDirectory(storage, worldRoot, stagedContext);
 
     removeCleanupOwnershipMarker(
         storage, worldRoot, stagedContext);
@@ -871,9 +887,28 @@ void recoverPublicationHandoff(
             stagedContext.rootPath);
     }
 
+    const StorageEntryKind finalKind = storage.entryKind(context.rootPath);
+    if (persistence && finalKind == StorageEntryKind::Directory) {
+        static_cast<void>(validatePublicationIdentityAndFormat(
+            *persistence, context, worldRoot, {}, true));
+        if (storage.entryKind(childPath(
+                context, kStagingOwnershipFilename)) !=
+            StorageEntryKind::Missing) {
+            throw std::runtime_error(
+                "Published world unexpectedly retains staging deletion authority");
+        }
+        if (!hasValidHandoffOwnershipMarker(
+                storage, worldRoot, stagedContext)) {
+            throw std::runtime_error(
+                "World-publication handoff changed after final-world validation");
+        }
+        removeHandoffOwnershipMarker(
+            storage, worldRoot, stagedContext);
+        return;
+    }
+
     const StorageEntryKind stagedKind =
         storage.entryKind(stagedContext.rootPath);
-    const StorageEntryKind finalKind = storage.entryKind(context.rootPath);
     if (stagedKind == StorageEntryKind::Missing &&
         finalKind == StorageEntryKind::Missing) {
         removeHandoffOwnershipMarker(
@@ -884,34 +919,6 @@ void recoverPublicationHandoff(
         // The public staging-only recovery entry point cannot validate the
         // saved format. Handoff state is non-deleting, so preserving it for
         // bootstrap recovery is the safe outcome.
-        return;
-    }
-    if (stagedKind != StorageEntryKind::Missing &&
-        finalKind != StorageEntryKind::Missing) {
-        throw std::runtime_error(
-            "World-publication handoff is ambiguous because both staging and final paths are occupied");
-    }
-
-    if (finalKind == StorageEntryKind::Directory) {
-        if (stagedKind != StorageEntryKind::Missing) {
-            throw std::runtime_error(
-                "World-publication handoff has an invalid staging entry");
-        }
-        if (storage.entryKind(childPath(
-                context, kStagingOwnershipFilename)) !=
-            StorageEntryKind::Missing) {
-            throw std::runtime_error(
-                "Published world unexpectedly retains staging deletion authority");
-        }
-        static_cast<void>(validatePublicationIdentityAndFormat(
-            *persistence, context, worldRoot, {}, true));
-        if (!hasValidHandoffOwnershipMarker(
-                storage, worldRoot, stagedContext)) {
-            throw std::runtime_error(
-                "World-publication handoff changed after final-world validation");
-        }
-        removeHandoffOwnershipMarker(
-            storage, worldRoot, stagedContext);
         return;
     }
     if (finalKind != StorageEntryKind::Missing ||
@@ -1139,21 +1146,12 @@ static std::string publishNewWorldGenerationImpl(
             directoryCreated =
                 storage.createDirectoryExclusive(stagedContext.rootPath);
         } catch (...) {
-            const std::exception_ptr reservationFailure =
-                std::current_exception();
-            try {
-                if (storage.entryKind(stagedContext.rootPath) ==
-                    StorageEntryKind::Directory) {
-                    removeCurrentStagingReservation(
-                        storage, stagedContext);
-                }
-            } catch (const std::exception& rollbackFailure) {
-                throw std::runtime_error(
-                    "Staging reservation failed and rollback could not "
-                    "remove the newly reserved directory: " +
-                    std::string(rollbackFailure.what()));
-            }
-            std::rethrow_exception(reservationFailure);
+            // A throwing exclusive reservation has indeterminate ownership:
+            // it may have created this path, or another writer may already
+            // have replaced it. No durable child marker exists yet, so there
+            // is no proof authorizing deletion. Preserve the bounded slot for
+            // inspection and fail closed.
+            throw;
         }
         if (!directoryCreated) {
             continue;
@@ -1176,8 +1174,8 @@ static std::string publishNewWorldGenerationImpl(
             const std::exception_ptr markerFailure =
                 std::current_exception();
             try {
-                removeCurrentStagingReservation(
-                    storage, stagedContext);
+                removeStagingWorld(
+                    storage, worldRoot, stagedContext);
             } catch (const std::exception& rollbackFailure) {
                 throw std::runtime_error(
                     "Staging ownership commit failed and rollback could not "
@@ -1206,8 +1204,8 @@ static std::string publishNewWorldGenerationImpl(
         }
         if (!cleanupReserved) {
             try {
-                removeCurrentStagingReservation(
-                    storage, stagedContext);
+                removeStagingWorld(
+                    storage, worldRoot, stagedContext);
             } catch (const std::exception& rollbackFailure) {
                 throw std::runtime_error(
                     "Cleanup ownership path is occupied and rollback could "
@@ -1264,26 +1262,8 @@ static std::string publishNewWorldGenerationImpl(
             selectedFormatId,
             true));
         beginPublicationHandoff(storage, worldRoot, stagedContext);
-        try {
-            storage.publishDirectory(
-                stagedContext.rootPath, context.rootPath);
-        } catch (const DirectoryPublicationError& failure) {
-            if (failure.state() ==
-                DirectoryPublicationState::NotPublished) {
-                const std::exception_ptr publicationFailure =
-                    std::current_exception();
-                try {
-                    rollbackDefinitelyUnpublishedHandoff(
-                        storage, worldRoot, stagedContext);
-                } catch (const std::exception& rollbackFailure) {
-                    throw std::runtime_error(
-                        "World publication definitely failed before rename, but rollback could not remove its owned handoff: " +
-                        std::string(rollbackFailure.what()));
-                }
-                std::rethrow_exception(publicationFailure);
-            }
-            throw;
-        }
+        storage.publishDirectory(
+            stagedContext.rootPath, context.rootPath);
         static_cast<void>(validatePublicationIdentityAndFormat(
             persistence,
             context,

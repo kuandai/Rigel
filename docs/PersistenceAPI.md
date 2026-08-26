@@ -246,9 +246,10 @@ Current behavior:
   an existing save. A failure before directory publication leaves no final
   save root; an ambiguous or post-publication failure preserves a complete,
   reopenable settings/snapshot/backend identity for the next bootstrap.
-- Bootstrap removes abandoned staging siblings for the selected world before
-  inspecting its final root. A transient rollback-cleanup failure is therefore
-  retried on the next startup before another creation attempt can begin.
+- Bootstrap removes only abandoned staging siblings carrying the exact bound
+  child and cleanup ownership required by the deletion protocol. Markerless or
+  ambiguous entries are preserved in the bounded 64-slot namespace for manual
+  inspection; a transient authorized-cleanup failure is retried on startup.
 - `loadSavedWorldGeneration` requires both files, checks the distinct world
   settings, definition-schema, source-revision, and evaluator-semantics
   meanings, and supplies the saved snapshot as the only generator input.

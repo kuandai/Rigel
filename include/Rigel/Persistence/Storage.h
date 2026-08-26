@@ -117,7 +117,9 @@ public:
     virtual bool createFileExclusive(const std::string& path,
                                      const std::string& contents);
     // Serializes bootstrap recovery and initial publication for one world.
-    // The lock spans backend instances and cooperating processes.
+    // The lock spans backend instances and cooperating processes. While it is
+    // held, backend inspection/removal operations must not themselves replace
+    // a bootstrap path between ownership validation and mutation.
     virtual std::unique_ptr<WorldGenerationBootstrapLock>
     lockWorldGenerationBootstrap(const std::string& worldRoot);
     virtual void remove(const std::string& path) = 0;

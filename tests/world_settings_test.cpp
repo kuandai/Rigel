@@ -436,6 +436,55 @@ private:
     StagedMetadataCorruption m_corruption;
 };
 
+class ReplacingPayloadCleanupStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
+        const std::string& path) override {
+        auto inner = Persistence::FilesystemBackend::openWrite(path);
+        if (metadataCorrupted ||
+            std::filesystem::path(path).filename() != "world.meta") {
+            return inner;
+        }
+        return std::make_unique<AfterCommitWriteSession>(
+            std::move(inner),
+            [this, path] {
+                metadataCorrupted = true;
+                stagedRoot = std::filesystem::path(path).parent_path();
+                corruptMemoryWorldMetadataWorldId(*this, path);
+            });
+    }
+
+    void remove(const std::string& path) override {
+        const std::filesystem::path removalPath(path);
+        if (!stageReplaced && !stagedRoot.empty() &&
+            removalPath.parent_path() == stagedRoot &&
+            removalPath.filename() != kStagingOwnershipFilename) {
+            Persistence::FilesystemBackend::remove(path);
+            displacedStage = stagedRoot.string() + ".displaced";
+            std::filesystem::rename(stagedRoot, displacedStage);
+            std::filesystem::create_directory(stagedRoot);
+            replacementPayload =
+                removalPath.filename() == "generator-definition.yaml"
+                ? stagedRoot / "world-settings.yaml"
+                : stagedRoot / "generator-definition.yaml";
+            writeText(
+                *this,
+                replacementPayload,
+                "unowned replacement during cleanup");
+            stageReplaced = true;
+            return;
+        }
+        Persistence::FilesystemBackend::remove(path);
+    }
+
+    bool metadataCorrupted = false;
+    bool stageReplaced = false;
+    std::filesystem::path stagedRoot;
+    std::filesystem::path displacedStage;
+    std::filesystem::path replacementPayload;
+};
+
 class PublishCountingStorage final
     : public Persistence::FilesystemBackend {
 public:
@@ -677,6 +726,29 @@ public:
     std::filesystem::path stagedRoot;
 };
 
+class ReplacedDefinitelyFailedPublicationStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    void publishDirectory(const std::string& stagedPath,
+                          const std::string&) override {
+        stagedRoot = stagedPath;
+        displacedStage = stagedPath + ".displaced";
+        Persistence::FilesystemBackend::publishDirectory(
+            stagedPath, displacedStage.string());
+        std::filesystem::create_directory(stagedRoot);
+        writeText(
+            *this,
+            stagedRoot / "must-survive.txt",
+            "unowned replacement before NotPublished");
+        throw Persistence::DirectoryPublicationError(
+            Persistence::DirectoryPublicationState::NotPublished,
+            "injected NotPublished after path replacement");
+    }
+
+    std::filesystem::path stagedRoot;
+    std::filesystem::path displacedStage;
+};
+
 class IndeterminatePublicationStorage final
     : public Persistence::FilesystemBackend {
 public:
@@ -782,6 +854,54 @@ public:
     }
 
     std::filesystem::path failedStage;
+};
+
+class ReplacedReservationFailureStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    bool createDirectoryExclusive(const std::string& path) override {
+        const bool created = Persistence::FilesystemBackend::
+            createDirectoryExclusive(path);
+        if (!created) {
+            return false;
+        }
+
+        replacedStage = path;
+        std::filesystem::remove(replacedStage);
+        std::filesystem::create_directory(replacedStage);
+        writeText(
+            *this,
+            replacedStage / "must-survive.txt",
+            "unowned replacement after reservation");
+        throw std::runtime_error(
+            "injected reservation failure after path replacement");
+    }
+
+    std::filesystem::path replacedStage;
+};
+
+class ReplacedMarkerWriteFailureStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
+        const std::string& path) override {
+        const std::filesystem::path writePath(path);
+        if (writePath.filename() != kStagingOwnershipFilename) {
+            return Persistence::FilesystemBackend::openWrite(path);
+        }
+
+        replacedStage = writePath.parent_path();
+        std::filesystem::remove(replacedStage);
+        std::filesystem::create_directory(replacedStage);
+        writeText(
+            *this,
+            replacedStage / "must-survive.txt",
+            "unowned replacement before marker commit");
+        throw std::runtime_error(
+            "injected marker write failure after path replacement");
+    }
+
+    std::filesystem::path replacedStage;
 };
 
 class AmbiguousReservationFailureStorage final
@@ -1306,7 +1426,42 @@ TEST_CASE(WorldSettings_rejects_corrupted_staged_display_name_before_publish) {
     CHECK(stagingRoots(worldRoot).empty());
 }
 
-TEST_CASE(WorldSettings_definite_pre_rename_failure_cleans_handoff) {
+TEST_CASE(WorldSettings_cleanup_rechecks_child_ownership_for_each_payload) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_cleanup_payload_replacement";
+    auto storage =
+        std::make_shared<ReplacingPayloadCleanupStorage>();
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+    CHECK(storage->metadataCorrupted);
+    CHECK(storage->stageReplaced);
+    CHECK_EQ(
+        readText(*storage, storage->replacementPayload),
+        std::string("unowned replacement during cleanup"));
+    CHECK(std::filesystem::exists(
+        storage->displacedStage / kStagingOwnershipFilename));
+    CHECK(std::filesystem::is_regular_file(
+        cleanupOwnershipPathForTest(storage->stagedRoot)));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext =
+        contextFor(worldRoot, restartedStorage);
+    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+
+    CHECK_EQ(
+        readText(*restartedStorage, storage->replacementPayload),
+        std::string("unowned replacement during cleanup"));
+    CHECK(std::filesystem::exists(
+        storage->displacedStage / kStagingOwnershipFilename));
+    CHECK(std::filesystem::is_regular_file(
+        cleanupOwnershipPathForTest(storage->stagedRoot)));
+}
+
+TEST_CASE(WorldSettings_definite_pre_rename_failure_recovers_handoff) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_publish_failure";
     auto storage =
@@ -1318,10 +1473,89 @@ TEST_CASE(WorldSettings_definite_pre_rename_failure_cleans_handoff) {
 
     CHECK(!storage->stagedRoot.empty());
     CHECK(!std::filesystem::exists(worldRoot));
+    CHECK(std::filesystem::is_directory(storage->stagedRoot));
+    CHECK(!std::filesystem::exists(
+        storage->stagedRoot / kStagingOwnershipFilename));
+    CHECK_EQ(
+        readText(
+            *storage,
+            cleanupOwnershipPathForTest(storage->stagedRoot)),
+        handoffOwnershipMarkerForTest(worldRoot, storage->stagedRoot));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext =
+        contextFor(worldRoot, restartedStorage);
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+    const auto bootstrapped = Persistence::bootstrapWorldGeneration(
+        std::nullopt,
+        persistence,
+        blocks,
+        restartedContext);
+
+    CHECK_EQ(bootstrapped.generation.settings, savedSettings());
+    CHECK(std::filesystem::is_directory(worldRoot));
     CHECK(!std::filesystem::exists(storage->stagedRoot));
     CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(storage->stagedRoot)));
-    CHECK(stagingRoots(worldRoot).empty());
+}
+
+TEST_CASE(WorldSettings_not_published_failure_preserves_reused_stage) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_not_published_reuse";
+    auto storage =
+        std::make_shared<ReplacedDefinitelyFailedPublicationStorage>();
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+    CHECK(!std::filesystem::exists(worldRoot));
+    CHECK_EQ(
+        readText(*storage, storage->stagedRoot / "must-survive.txt"),
+        std::string("unowned replacement before NotPublished"));
+    CHECK(std::filesystem::exists(
+        storage->displacedStage / "generator-definition.yaml"));
+    CHECK_EQ(
+        readText(
+            *storage,
+            cleanupOwnershipPathForTest(storage->stagedRoot)),
+        handoffOwnershipMarkerForTest(worldRoot, storage->stagedRoot));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext =
+        contextFor(worldRoot, restartedStorage);
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+
+    CHECK_THROWS(Persistence::bootstrapWorldGeneration(
+        std::nullopt,
+        persistence,
+        blocks,
+        restartedContext));
+    CHECK_EQ(
+        readText(
+            *restartedStorage,
+            storage->stagedRoot / "must-survive.txt"),
+        std::string("unowned replacement before NotPublished"));
+    CHECK(std::filesystem::exists(
+        storage->displacedStage / "generator-definition.yaml"));
+    CHECK(std::filesystem::is_regular_file(
+        cleanupOwnershipPathForTest(storage->stagedRoot)));
 }
 
 TEST_CASE(WorldSettings_handoff_precedes_child_marker_during_recovery) {
@@ -1729,7 +1963,7 @@ TEST_CASE(WorldSettings_recovery_cannot_delete_relocated_published_world) {
     CHECK(std::filesystem::exists(relocatedRoot / "world.meta"));
 }
 
-TEST_CASE(WorldSettings_marker_write_failure_cleans_exclusive_reservation) {
+TEST_CASE(WorldSettings_marker_failure_requires_durable_cleanup_authority) {
     for (const bool failAfterCommit : {false, true}) {
         Test::TemporaryDirectory directory("rigel_world_settings");
         const auto worldRoot = directory.path() /
@@ -1743,11 +1977,49 @@ TEST_CASE(WorldSettings_marker_write_failure_cleans_exclusive_reservation) {
             savedSettings(), savedDefinition(), context));
         CHECK(!std::filesystem::exists(worldRoot));
 
-        CHECK(stagingRoots(worldRoot).empty());
+        if (failAfterCommit) {
+            CHECK(stagingRoots(worldRoot).empty());
+        } else {
+            const auto remnants = stagingDirectories(worldRoot);
+            CHECK_EQ(remnants.size(), static_cast<size_t>(1));
+            CHECK(!std::filesystem::exists(
+                remnants.front() / kStagingOwnershipFilename));
+            CHECK(!std::filesystem::exists(
+                cleanupOwnershipPathForTest(remnants.front())));
+        }
     }
 }
 
-TEST_CASE(WorldSettings_post_create_sync_failure_cleans_current_reservation) {
+TEST_CASE(WorldSettings_marker_failure_preserves_replaced_stage) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_replaced_marker_failure";
+    auto storage =
+        std::make_shared<ReplacedMarkerWriteFailureStorage>();
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+    CHECK_EQ(
+        readText(*storage, storage->replacedStage / "must-survive.txt"),
+        std::string("unowned replacement before marker commit"));
+    CHECK(!std::filesystem::exists(
+        storage->replacedStage / kStagingOwnershipFilename));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(storage->replacedStage)));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    Persistence::recoverAbandonedWorldGenerationStaging(
+        contextFor(worldRoot, restartedStorage));
+    CHECK_EQ(
+        readText(
+            *restartedStorage,
+            storage->replacedStage / "must-survive.txt"),
+        std::string("unowned replacement before marker commit"));
+}
+
+TEST_CASE(WorldSettings_post_create_sync_failure_preserves_unproven_reservation) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot =
         directory.path() / "world_post_create_sync_failure";
@@ -1758,9 +2030,44 @@ TEST_CASE(WorldSettings_post_create_sync_failure_cleans_current_reservation) {
     CHECK_THROWS(Persistence::publishNewWorldGeneration(
         savedSettings(), savedDefinition(), context));
     CHECK(!storage->failedStage.empty());
-    CHECK(!std::filesystem::exists(storage->failedStage));
+    CHECK(std::filesystem::is_directory(storage->failedStage));
     CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(storage->failedStage)));
+}
+
+TEST_CASE(WorldSettings_reservation_exception_preserves_replacement_on_restart) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_replaced_failed_reservation";
+    auto storage =
+        std::make_shared<ReplacedReservationFailureStorage>();
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+    CHECK_EQ(
+        readText(*storage, storage->replacedStage / "must-survive.txt"),
+        std::string("unowned replacement after reservation"));
+    CHECK(!std::filesystem::exists(
+        storage->replacedStage / kStagingOwnershipFilename));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(storage->replacedStage)));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext =
+        contextFor(worldRoot, restartedStorage);
+    Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
+
+    CHECK_EQ(
+        readText(
+            *restartedStorage,
+            storage->replacedStage / "must-survive.txt"),
+        std::string("unowned replacement after reservation"));
+    CHECK(!std::filesystem::exists(
+        storage->replacedStage / kStagingOwnershipFilename));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(storage->replacedStage)));
 }
 
 TEST_CASE(WorldSettings_markerless_ambiguous_remnants_are_bounded) {
@@ -1909,7 +2216,7 @@ TEST_CASE(WorldSettings_retries_preexisting_canonical_staging_symlink) {
 #endif
 }
 
-TEST_CASE(WorldSettings_retries_without_replacing_colliding_cleanup_entry) {
+TEST_CASE(WorldSettings_cleanup_collision_preserves_stage_and_sidecar) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot =
         directory.path() / "world_cleanup_entry_collision";
@@ -1917,10 +2224,10 @@ TEST_CASE(WorldSettings_retries_without_replacing_colliding_cleanup_entry) {
         std::make_shared<CollidingCleanupOwnershipStorage>();
     const auto context = contextFor(worldRoot, storage);
 
-    Persistence::publishNewWorldGeneration(
-        savedSettings(), savedDefinition(), context);
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
 
-    CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(2));
+    CHECK_EQ(storage->reservationAttempts, static_cast<size_t>(1));
     CHECK_EQ(
         readText(*storage, storage->collisionPath),
         std::string("unrelated cleanup entry"));
@@ -1932,13 +2239,28 @@ TEST_CASE(WorldSettings_retries_without_replacing_colliding_cleanup_entry) {
         collisionName.substr(
             0,
             collisionName.size() - kCleanupOwnershipSuffix.size());
-    CHECK(!std::filesystem::exists(collidingStage));
+    CHECK(std::filesystem::is_directory(collidingStage));
     CHECK_EQ(
-        Persistence::inspectSavedWorldGeneration(context),
-        Persistence::SavedWorldGenerationPresence::Published);
+        readText(
+            *storage,
+            collidingStage / kStagingOwnershipFilename),
+        stagingOwnershipMarkerForTest(worldRoot, collidingStage));
+    CHECK(!std::filesystem::exists(worldRoot));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext =
+        contextFor(worldRoot, restartedStorage);
+    CHECK_THROWS(
+        Persistence::recoverAbandonedWorldGenerationStaging(
+            restartedContext));
+    CHECK(std::filesystem::is_directory(collidingStage));
+    CHECK_EQ(
+        readText(*restartedStorage, storage->collisionPath),
+        std::string("unrelated cleanup entry"));
 }
 
-TEST_CASE(WorldSettings_post_publish_failure_preserves_reused_staging_path) {
+TEST_CASE(WorldSettings_restart_loads_valid_final_with_reused_staging_path) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot = directory.path() / "world_reused_staging_path";
     auto storage =
@@ -1978,25 +2300,29 @@ TEST_CASE(WorldSettings_post_publish_failure_preserves_reused_staging_path) {
     CHECK_EQ(reopenedFormat->descriptor().id, std::string("memory"));
     CHECK(!std::filesystem::exists(worldRoot / "worldInfo.json"));
 
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext = contextFor(worldRoot, restartedStorage);
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
-    CHECK_THROWS(Persistence::bootstrapWorldGeneration(
+    const auto bootstrapped = Persistence::bootstrapWorldGeneration(
         std::nullopt,
         persistence,
         blocks,
-        context));
+        restartedContext);
+    CHECK_EQ(bootstrapped.generation.settings, savedSettings());
+    CHECK_EQ(bootstrapped.persistenceFormat, std::string("memory"));
     CHECK(std::filesystem::exists(worldRoot / "generator-definition.yaml"));
     CHECK(std::filesystem::exists(worldRoot / "world-settings.yaml"));
     CHECK(std::filesystem::exists(worldRoot / "world.meta"));
     CHECK_EQ(
-        readText(*storage, storage->reusedPath / "must-survive.txt"),
+        readText(
+            *restartedStorage,
+            storage->reusedPath / "must-survive.txt"),
         std::string("unowned post-publish reuse"));
-    CHECK(std::filesystem::is_regular_file(
+    CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(storage->reusedPath)));
 
-    auto restartedStorage =
-        std::make_shared<Persistence::FilesystemBackend>();
-    const auto restartedContext = contextFor(worldRoot, restartedStorage);
     Persistence::recoverAbandonedWorldGenerationStaging(restartedContext);
 
     CHECK_EQ(
@@ -2004,7 +2330,7 @@ TEST_CASE(WorldSettings_post_publish_failure_preserves_reused_staging_path) {
             *restartedStorage,
             storage->reusedPath / "must-survive.txt"),
         std::string("unowned post-publish reuse"));
-    CHECK(std::filesystem::is_regular_file(
+    CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(storage->reusedPath)));
 
     const auto displacedWorldRoot = std::filesystem::path(
@@ -2018,12 +2344,60 @@ TEST_CASE(WorldSettings_post_publish_failure_preserves_reused_staging_path) {
             *restartedStorage,
             storage->reusedPath / "must-survive.txt"),
         std::string("unowned post-publish reuse"));
-    CHECK(std::filesystem::is_regular_file(
+    CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(storage->reusedPath)));
     CHECK_EQ(
         Persistence::inspectSavedWorldGeneration(
             contextFor(displacedWorldRoot, restartedStorage)),
         Persistence::SavedWorldGenerationPresence::Published);
+}
+
+TEST_CASE(WorldSettings_invalid_final_preserves_reused_stage_and_handoff) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_invalid_final_reused_stage";
+    auto storage =
+        std::make_shared<ReusingPublishedStagingPathStorage>();
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+    const std::filesystem::path stagedRoot = storage->reusedPath;
+    corruptMemoryWorldMetadataWorldId(*storage, worldRoot / "world.meta");
+    const std::string corruptedFinal =
+        readText(*storage, worldRoot / "world.meta");
+    const std::string handoff =
+        readText(*storage, cleanupOwnershipPathForTest(stagedRoot));
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    const auto restartedContext =
+        contextFor(worldRoot, restartedStorage);
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+
+    CHECK_THROWS(Persistence::bootstrapWorldGeneration(
+        std::nullopt,
+        persistence,
+        blocks,
+        restartedContext));
+    CHECK_EQ(
+        readText(*restartedStorage, worldRoot / "world.meta"),
+        corruptedFinal);
+    CHECK_EQ(
+        readText(*restartedStorage, stagedRoot / "must-survive.txt"),
+        std::string("unowned post-publish reuse"));
+    CHECK_EQ(
+        readText(
+            *restartedStorage,
+            cleanupOwnershipPathForTest(stagedRoot)),
+        handoff);
 }
 
 TEST_CASE(WorldSettings_ambiguous_publish_preserves_reused_stage_without_root) {

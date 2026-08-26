@@ -310,8 +310,10 @@ Synchronization:
 **Behavior**:
 - Synchronous on the main thread.
 - Startup locks the world, validates any still-needed creation candidate,
-  reclaims abandoned sibling staging directories from interrupted attempts,
-  and re-inspects the active save before attaching a generator. A missing save
+  completes durable publication handoffs, reclaims deletion-authorized sibling
+  staging directories, and re-inspects the active save before attaching a
+  generator. Markerless or ambiguous bounded staging entries are preserved for
+  inspection. A missing save
   validates an installed definition, publishes its settings, canonical
   snapshot, and authoritative backend identity together, and only then
   attaches the generator. A published save bypasses installed generator

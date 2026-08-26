@@ -754,7 +754,9 @@ bool FilesystemBackend::createFileExclusive(
         if (file != INVALID_HANDLE_VALUE) {
             ::CloseHandle(file);
         }
-        ::DeleteFileW(filePath.c_str());
+        // The pathname may have been replaced while this handle remained
+        // open. Without an identity-bound unlink primitive, preserve the
+        // ambiguous entry rather than deleting another owner's replacement.
         throw;
     }
 #else
@@ -811,8 +813,9 @@ bool FilesystemBackend::createFileExclusive(
         if (descriptor >= 0) {
             ::close(descriptor);
         }
-        std::error_code cleanupError;
-        std::filesystem::remove(filePath, cleanupError);
+        // The pathname may have been replaced while this descriptor remained
+        // open. Without an identity-bound unlink primitive, preserve the
+        // ambiguous entry rather than deleting another owner's replacement.
         throw;
     }
 #endif

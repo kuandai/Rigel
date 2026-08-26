@@ -309,6 +309,16 @@ void validateDensityNodeKeys(ryml::ConstNodeRef node,
                     "density_graph.nodes.spline",
                     {"x", "y"},
                     strict);
+                if (strict &&
+                    (!point.has_child("x") || !point["x"].has_val() ||
+                     point["x"].val().empty() || !point.has_child("y") ||
+                     !point["y"].has_val() || point["y"].val().empty())) {
+                    throw std::invalid_argument(
+                        "Generator definition field "
+                        "'density_graph.nodes.spline' in '" +
+                        std::string(sourceName) +
+                        "' requires mapping points with x and y values");
+                }
             }
         }
     }

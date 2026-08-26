@@ -245,12 +245,14 @@ void validateGraph(const WorldGenConfig& definition) {
     }
     for (const auto& [semantic, node] : definition.densityGraph.outputs) {
         static_cast<void>(node);
-        if (semantic != "base_density" &&
-            semantic != definition.caves.densityOutput) {
-            throw std::invalid_argument(
-                "Generator definition declares unused density output '" +
-                semantic + "'");
+        if (semantic == "base_density" ||
+            (definition.isStageEnabled("caves") &&
+             semantic == definition.caves.densityOutput)) {
+            continue;
         }
+        throw std::invalid_argument(
+            "Generator definition declares unused density output '" +
+            semantic + "'");
     }
 
     DensityGraph graph;

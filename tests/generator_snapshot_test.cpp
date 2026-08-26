@@ -111,6 +111,12 @@ TEST_CASE(GeneratorSnapshot_rejects_dangling_graph_and_content_references) {
     unusedOutput.densityGraph.outputs["unused_semantic"] =
         "dead_authoring_node";
     CHECK_THROWS(serializeGeneratorSnapshot(unusedOutput));
+
+    WorldGenConfig disabledCaveOutput = snapshotDefinition();
+    disabledCaveOutput.caves.densityOutput = "disabled_cave_semantic";
+    disabledCaveOutput.densityGraph.outputs["disabled_cave_semantic"] =
+        "dead_authoring_node";
+    CHECK_THROWS(serializeGeneratorSnapshot(disabledCaveOutput));
 }
 
 TEST_CASE(GeneratorSnapshot_validates_referenced_runtime_content) {

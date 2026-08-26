@@ -164,6 +164,13 @@ TEST_CASE(WorldConfigProvider_RejectsUnknownOrInapplicableCreationFields) {
              "    - id: duplicate\n"
              "      type: constant\n"
              "      value: 2\n",
+             "density_graph:\n"
+             "  nodes:\n"
+             "    - id: curve\n"
+             "      type: spline\n"
+             "      inputs: [source]\n"
+             "      spline:\n"
+             "        - {x: 1}\n",
              "biomes:\n  entries: {}\n"}) {
         WorldConfigProvider provider;
         provider.addSource(std::make_unique<MemoryConfigSource>(

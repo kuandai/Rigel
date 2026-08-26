@@ -100,11 +100,24 @@ void WorldSet::clear() {
     m_worlds.clear();
 }
 
+void WorldSet::setPersistenceActiveFormat(
+    WorldId id,
+    std::string formatId) {
+    auto it = m_worlds.find(id);
+    if (it == m_worlds.end() || !it->second) {
+        throw std::out_of_range("World not found");
+    }
+    it->second->persistenceFormat = std::move(formatId);
+}
+
 Persistence::PersistenceContext WorldSet::persistenceContext(WorldId id) const {
     const World& target = world(id);
+    const WorldEntry& entry = *m_worlds.at(id);
     Persistence::PersistenceContext ctx;
     ctx.rootPath = m_persistenceRoot;
-    ctx.preferredFormat = m_persistencePreferredFormat;
+    ctx.preferredFormat = entry.persistenceFormat.empty()
+        ? m_persistencePreferredFormat
+        : entry.persistenceFormat;
     ctx.storage = m_persistenceStorage;
     ctx.providers = target.persistenceProvidersHandle();
     return ctx;

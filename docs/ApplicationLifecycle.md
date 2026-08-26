@@ -62,6 +62,8 @@ Shutdown persists world state and releases resources.
    - Provider options come from `persistence.yaml`. Storage probes take
      precedence over its preferred format, which is used only when no existing
      format can be detected.
+   - After bootstrap resolves the backend, the active world retains that
+     format for lazy loads, eviction writes, and close-time persistence.
 6. Initialize world resources.
    - Block registry, texture atlas, and other shared resources.
    - Failed block definitions, an all-air registry, or an empty texture atlas

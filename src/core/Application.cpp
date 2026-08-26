@@ -347,6 +347,12 @@ void Application::initialize() {
             m_impl->world.worldSet.persistenceService();
         auto persistenceFormat = persistenceService.openFormat(
             persistenceContext);
+        persistenceContext.preferredFormat =
+            persistenceFormat->descriptor().id;
+        persistenceContext.discoverExistingFormat = false;
+        m_impl->world.worldSet.setPersistenceActiveFormat(
+            m_impl->world.activeWorldId,
+            persistenceContext.preferredFormat);
         const std::string backendMetadataPath =
             persistenceFormat->worldMetadataCodec().metadataPath(
                 persistenceContext);

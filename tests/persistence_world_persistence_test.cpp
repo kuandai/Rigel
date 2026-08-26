@@ -160,6 +160,66 @@ TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
     CHECK(!loaded.chunkManager().getChunk(loadedCoord)->isPersistDirty());
 }
 
+TEST_CASE(Persistence_WorldReloadRetainsDiscoveredFormatForCloseSave) {
+    for (const std::string persistedFormat : {
+             std::string("memory"), std::string("cr")}) {
+        const std::string configuredFormat =
+            persistedFormat == "memory" ? "cr" : "memory";
+        Test::TemporaryDirectory directory(
+            "rigel_discovered_format_" + persistedFormat);
+        auto storage =
+            std::make_shared<Persistence::FilesystemBackend>();
+
+        Voxel::WorldSet worldSet;
+        worldSet.persistenceFormats().registerFormat(
+            Persistence::Backends::Memory::descriptor(),
+            Persistence::Backends::Memory::factory(),
+            Persistence::Backends::Memory::probe());
+        worldSet.persistenceFormats().registerFormat(
+            Persistence::Backends::CR::descriptor(),
+            Persistence::Backends::CR::factory(),
+            Persistence::Backends::CR::probe());
+        worldSet.setPersistenceRoot(directory.path().string());
+        worldSet.setPersistenceStorage(storage);
+        worldSet.setPersistencePreferredFormat(configuredFormat);
+        Voxel::World& world = worldSet.createWorld(
+            Voxel::WorldSet::defaultWorldId());
+
+        Persistence::PersistenceContext creationContext =
+            worldSet.persistenceContext(world.id());
+        creationContext.preferredFormat = persistedFormat;
+        Persistence::saveWorldToDisk(
+            world,
+            testWorldSettings(),
+            worldSet.persistenceService(),
+            creationContext);
+
+        Persistence::PersistenceContext reloadContext =
+            worldSet.persistenceContext(world.id());
+        reloadContext.discoverExistingFormat = true;
+        auto resolved = worldSet.persistenceService().openFormat(
+            reloadContext);
+        CHECK_EQ(resolved->descriptor().id, persistedFormat);
+        worldSet.setPersistenceActiveFormat(
+            world.id(), resolved->descriptor().id);
+
+        Persistence::saveWorldToDisk(
+            world,
+            testWorldSettings(),
+            worldSet.persistenceService(),
+            worldSet.persistenceContext(world.id()));
+
+        CHECK(std::filesystem::exists(
+            persistedFormat == "memory"
+                ? directory.path() / "world.meta"
+                : directory.path() / "worldInfo.json"));
+        CHECK(!std::filesystem::exists(
+            persistedFormat == "memory"
+                ? directory.path() / "worldInfo.json"
+                : directory.path() / "world.meta"));
+    }
+}
+
 TEST_CASE(Persistence_EntityModelIdentifierSurvivesUnavailableAsset) {
     Persistence::FormatRegistry formats;
     formats.registerFormat(

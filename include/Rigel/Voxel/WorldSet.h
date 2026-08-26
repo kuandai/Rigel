@@ -57,6 +57,7 @@ public:
     void setPersistenceRoot(std::string rootPath) { m_persistenceRoot = std::move(rootPath); }
     void setPersistenceStorage(std::shared_ptr<Persistence::StorageBackend> storage) { m_persistenceStorage = std::move(storage); }
     void setPersistencePreferredFormat(std::string formatId) { m_persistencePreferredFormat = std::move(formatId); }
+    void setPersistenceActiveFormat(WorldId id, std::string formatId);
 
     Persistence::PersistenceContext persistenceContext(WorldId id) const;
 
@@ -66,6 +67,7 @@ private:
     struct WorldEntry {
         World world;
         std::unique_ptr<WorldView> view;
+        std::string persistenceFormat;
     };
 
     std::unordered_map<WorldId, std::unique_ptr<WorldEntry>> m_worlds;

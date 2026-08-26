@@ -33,8 +33,9 @@ destroys all views before the worlds and chunk managers to which they are
 bound. There is no per-world destruction operation.
 
 `WorldSet` also owns the shared `WorldResources`, persistence format registry,
-persistence service, storage backend, preferred format, and root
-path.
+persistence service, storage backend, configured preferred format, and root
+path. Each world entry retains its active persistence format after bootstrap
+resolves it.
 
 ### WorldResources
 
@@ -94,10 +95,11 @@ There is no runtime world switching or simultaneous multi-view rendering in
 
 ## Persistence and Configuration
 
-`WorldSet::persistenceContext(id)` uses the selected world's provider registry,
-but copies the root path, preferred format, and storage backend from
-the `WorldSet`. The application configures those shared values for its active
-default world before loading or saving it. The root used by that boot path is
+`WorldSet::persistenceContext(id)` uses the selected world's provider registry
+and active format, plus the root path and storage backend from the `WorldSet`.
+Before a format has been resolved, it uses the set-wide configured preference.
+The application configures those shared values for its active default world
+before loading or saving it. The root used by that boot path is
 `saves/world_<id>`.
 
 The subsystem bootstrap functions accept a world ID and include these optional
@@ -117,8 +119,8 @@ installed generation fields while still loading streaming policy.
 
 - `WorldSet` stores at most one `WorldView` for each world.
 - `Application` creates only the default world and view.
-- Persistence root, preferred format, and storage are set-wide even
-  though provider registries are per-world.
+- Persistence root, configured format preference, and storage are set-wide;
+  resolved active formats and provider registries are per-world.
 - GPU caches belong to each view's `ChunkRenderer`; no shared GPU cache exists
   outside a view.
 

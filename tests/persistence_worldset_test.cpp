@@ -64,4 +64,8 @@ TEST_CASE(WorldSet_PersistenceContextIncludesProviders) {
     CHECK_EQ(ctx.preferredFormat, std::string("memory"));
     CHECK(ctx.providers != nullptr);
     CHECK(ctx.providers->findAs<DummyProvider>("dummy") == provider);
+
+    worldSet.setPersistenceActiveFormat(world.id(), "cr");
+    ctx = worldSet.persistenceContext(world.id());
+    CHECK_EQ(ctx.preferredFormat, std::string("cr"));
 }

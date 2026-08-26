@@ -108,6 +108,10 @@ never chooses between conflicting persisted formats.
 For a published world, weak evidence without an authoritative marker is also
 an integrity error. A world with identity files but no backend evidence uses
 the preferred format only to create its marker before generation is attached.
+After bootstrap resolves a backend, `WorldSet` retains its ID on the world
+entry. Later persistence contexts use that active format directly, so a
+configuration preference change cannot redirect close-time writes into a
+second backend.
 
 ---
 

@@ -2,8 +2,11 @@
 
 #include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
+#include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
+#include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/UI/ImGuiLayer.h"
+#include "WorldGenerationTestFixture.h"
 
 #include <cstdlib>
 #include <memory>
@@ -166,6 +169,11 @@ public:
         return m_storage.exists(path);
     }
 
+    Rigel::Persistence::StorageEntryKind entryKind(
+        const std::string& path) override {
+        return m_storage.entryKind(path);
+    }
+
     void forEachEntry(
         const std::string& path,
         const Rigel::Persistence::StorageEntryVisitor& visitor) override {
@@ -235,6 +243,21 @@ void runFailingApplication() {
 }
 
 void runApplicationWithCloseFailure() {
+    Rigel::Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Rigel::Persistence::Backends::Memory::descriptor(),
+        Rigel::Persistence::Backends::Memory::factory(),
+        Rigel::Persistence::Backends::Memory::probe());
+    Rigel::Persistence::PersistenceService service(formats);
+    Rigel::Persistence::PersistenceContext context;
+    context.rootPath = g_calls->persistenceRoot;
+    context.preferredFormat = "memory";
+    context.storage = g_calls->persistenceStorage;
+    Rigel::Test::installSavedWorldGenerationFixture(
+        service,
+        context,
+        Rigel::Test::savedWorldSettingsFixture(
+            "Application Close Test World"));
     Rigel::ApplicationTestAccess::closeReadyWorld({
         g_calls->persistenceStorage,
         &observeCloseFailure,

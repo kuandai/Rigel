@@ -9,6 +9,7 @@
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/ChunkStreamer.h"
+#include "WorldGenerationTestFixture.h"
 
 #include <algorithm>
 #include <array>
@@ -574,6 +575,11 @@ struct MemoryContext {
         context.rootPath = directory.path().string();
         context.preferredFormat = "memory";
         context.storage = std::make_shared<FilesystemBackend>();
+        Rigel::Test::installSavedWorldGenerationFixture(
+            service,
+            context,
+            Rigel::Test::savedWorldSettingsFixture(
+                "Async Chunk Loader Test World"));
     }
 };
 
@@ -643,6 +649,10 @@ public:
         return m_delegate->exists(path);
     }
 
+    StorageEntryKind entryKind(const std::string& path) override {
+        return m_delegate->entryKind(path);
+    }
+
     void forEachEntry(
         const std::string& path,
         const StorageEntryVisitor& visitor) override {
@@ -706,6 +716,10 @@ public:
 
     bool exists(const std::string& path) override {
         return m_delegate->exists(path);
+    }
+
+    StorageEntryKind entryKind(const std::string& path) override {
+        return m_delegate->entryKind(path);
     }
 
     void forEachEntry(
@@ -781,6 +795,10 @@ public:
 
     bool exists(const std::string& path) override {
         return m_delegate->exists(path);
+    }
+
+    StorageEntryKind entryKind(const std::string& path) override {
+        return m_delegate->entryKind(path);
     }
 
     void forEachEntry(

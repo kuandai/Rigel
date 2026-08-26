@@ -82,4 +82,11 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
 SavedWorldGeneration loadSavedWorldGeneration(
     const PersistenceContext& context);
 
+// Validates an already published save-local generation identity and resolves
+// its authoritative persistence format without creating or recovering a root.
+BootstrappedWorldGeneration loadPublishedWorldGeneration(
+    PersistenceService& persistence,
+    const Voxel::BlockRegistry& registry,
+    const PersistenceContext& context);
+
 } // namespace Rigel::Persistence

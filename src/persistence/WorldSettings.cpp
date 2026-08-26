@@ -815,7 +815,7 @@ bool hasRecoverableStaging(
     return false;
 }
 
-std::string validatePublicationIdentityAndFormat(
+BootstrappedWorldGeneration validatePublicationIdentityAndFormat(
     PersistenceService& persistence,
     const Voxel::BlockRegistry& registry,
     const PersistenceContext& publicationContext,
@@ -834,10 +834,10 @@ std::string validatePublicationIdentityAndFormat(
             "World-publication identity is not stored in regular save files: " +
             publicationContext.rootPath);
     }
-    const SavedWorldGeneration generation =
-        loadSavedWorldGeneration(publicationContext);
+    BootstrappedWorldGeneration result;
+    result.generation = loadSavedWorldGeneration(publicationContext);
     Voxel::validateGeneratorSnapshotContent(
-        generation.definition, registry);
+        result.generation.definition, registry);
 
     PersistenceContext discoveryContext = publicationContext;
     discoveryContext.preferredFormat.clear();
@@ -872,11 +872,12 @@ std::string validatePublicationIdentityAndFormat(
             "Published persistence backend world ID does not match the save root");
     }
     if (requireDerivedDisplayName &&
-        metadata.displayName != generation.settings.displayName) {
+        metadata.displayName != result.generation.settings.displayName) {
         throw std::runtime_error(
             "Published persistence backend display name does not match world settings");
     }
-    return formatId;
+    result.persistenceFormat = formatId;
+    return result;
 }
 
 void recoverPublicationHandoff(
@@ -938,8 +939,10 @@ void recoverPublicationHandoff(
             "World-publication handoff paths have unsupported entry types");
     }
 
-    const std::string formatId = validatePublicationIdentityAndFormat(
-        *persistence, *registry, stagedContext, worldRoot, {}, true);
+    const std::string formatId =
+        validatePublicationIdentityAndFormat(
+            *persistence, *registry, stagedContext, worldRoot, {}, true)
+            .persistenceFormat;
     const std::string stagingMarkerPath =
         childPath(stagedContext, kStagingOwnershipFilename);
     const StorageEntryKind stagingMarkerKind =
@@ -1345,6 +1348,15 @@ SavedWorldGeneration loadSavedWorldGeneration(
     return saved;
 }
 
+BootstrappedWorldGeneration loadPublishedWorldGeneration(
+    PersistenceService& persistence,
+    const Voxel::BlockRegistry& registry,
+    const PersistenceContext& context) {
+    static_cast<void>(storageFor(context));
+    return validatePublicationIdentityAndFormat(
+        persistence, registry, context, worldRootPath(context), {}, false);
+}
+
 BootstrappedWorldGeneration bootstrapWorldGeneration(
     const std::optional<NewWorldGeneration>& creation,
     PersistenceService& persistence,
@@ -1387,13 +1399,8 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
             "the save was left unchanged");
     }
 
-    BootstrappedWorldGeneration result;
-    result.generation = loadSavedWorldGeneration(context);
-    Voxel::validateGeneratorSnapshotContent(
-        result.generation.definition, registry);
-    result.persistenceFormat = validatePublicationIdentityAndFormat(
+    return validatePublicationIdentityAndFormat(
         persistence, registry, context, worldRoot, {}, false);
-    return result;
 }
 
 } // namespace Rigel::Persistence

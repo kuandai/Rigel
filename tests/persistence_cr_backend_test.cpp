@@ -19,6 +19,7 @@
 #include "Rigel/Voxel/WorldResources.h"
 
 #include "Rigel/Persistence/Storage.h"
+#include "WorldGenerationTestFixture.h"
 #include "../src/persistence/backends/cr/MemoryByteReader.h"
 
 #include <algorithm>
@@ -36,9 +37,7 @@ constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
 constexpr size_t kMaxMetadataStringBytes = 1024 * 1024;
 
 WorldSettings testWorldSettings() {
-    WorldSettings settings;
-    settings.displayName = "CR Test World";
-    return settings;
+    return Rigel::Test::savedWorldSettingsFixture("CR Test World");
 }
 
 void checkMemoryRandomReadFailure(MemoryByteReader& reader,
@@ -320,7 +319,22 @@ public:
     }
 
     bool exists(const std::string& path) override {
-        return m_files.find(path) != m_files.end();
+        if (m_files.contains(path)) {
+            return true;
+        }
+        return std::any_of(
+            m_files.begin(), m_files.end(), [&](const auto& entry) {
+                return entry.first.starts_with(path + "/");
+            });
+    }
+
+    StorageEntryKind entryKind(const std::string& path) override {
+        if (m_files.contains(path)) {
+            return StorageEntryKind::RegularFile;
+        }
+        return exists(path)
+            ? StorageEntryKind::Directory
+            : StorageEntryKind::Missing;
     }
 
     void forEachEntry(
@@ -426,6 +440,15 @@ void saveCRWorld(const std::shared_ptr<StorageBackend>& storage,
     context.preferredFormat = "cr";
     context.storage = storage;
     context.providers = world.persistenceProvidersHandle();
+    if (!storage->exists(context.rootPath + "/world-settings.yaml")) {
+        if (storage->exists(CRPaths::worldInfoPath(context))) {
+            Rigel::Test::installSavedWorldGenerationDocumentsFixture(
+                *storage, context.rootPath, testWorldSettings());
+        } else {
+            Rigel::Test::installSavedWorldGenerationFixture(
+                service, context, testWorldSettings());
+        }
+    }
     saveWorldToDisk(world, testWorldSettings(), service, context);
 }
 
@@ -1572,6 +1595,8 @@ TEST_CASE(CRBackend_dirty_save_rejects_unknown_untouched_record) {
     context.preferredFormat = "cr";
     context.storage = storage;
     context.providers = world.persistenceProvidersHandle();
+    Rigel::Test::installSavedWorldGenerationFixture(
+        service, context, testWorldSettings());
     RegionKey regionKey{"rigel:default", 0, 0, 0};
     const std::string path = CRPaths::regionPath(regionKey, context);
     auto changedRecord = makeFixtureRecord(
@@ -1654,6 +1679,8 @@ TEST_CASE(CRBackend_modified_optional_payload_record_is_rejected) {
     context.preferredFormat = "cr";
     context.storage = storage;
     context.providers = world.persistenceProvidersHandle();
+    Rigel::Test::installSavedWorldGenerationFixture(
+        service, context, testWorldSettings());
 
     RegionKey regionKey{"rigel:default", 0, 0, 0};
     const std::string path = CRPaths::regionPath(regionKey, context);
@@ -1682,6 +1709,8 @@ TEST_CASE(CRBackend_unrepresentable_block_state_is_rejected) {
     context.preferredFormat = "cr";
     context.storage = storage;
     context.providers = world.persistenceProvidersHandle();
+    Rigel::Test::installSavedWorldGenerationFixture(
+        service, context, testWorldSettings());
 
     RegionKey regionKey{"rigel:default", 0, 0, 0};
     const std::string path = CRPaths::regionPath(regionKey, context);
@@ -2165,6 +2194,8 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
             RegionKey{"rigel:default", 0, 0, 0}, context);
         const auto entityPath = CRPaths::entityRegionPath(
             EntityRegionKey{"rigel:default", 0, 0, 0}, context);
+        Rigel::Test::installSavedWorldGenerationDocumentsFixture(
+            *storage, context.rootPath, testWorldSettings());
         writeText(*storage, worldPath, invalidDocuments[index]);
         const auto previousPayload = readAll(*storage, worldPath);
         const size_t mkdirCount = storage->mkdirCount();
@@ -2183,7 +2214,7 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
     }
 }
 
-TEST_CASE(CRBackend_invalid_save_owned_metadata_preflights_before_world_mutation) {
+TEST_CASE(CRBackend_mismatched_save_owned_settings_preflight_before_world_mutation) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
     Rigel::Voxel::WorldResources resources;
     const Rigel::Voxel::BlockID blockId = registerTestBlock(
@@ -2210,6 +2241,8 @@ TEST_CASE(CRBackend_invalid_save_owned_metadata_preflights_before_world_mutation
     context.preferredFormat = "cr";
     context.storage = storage;
     context.providers = world.persistenceProvidersHandle();
+    Rigel::Test::installSavedWorldGenerationFixture(
+        service, context, testWorldSettings());
 
     WorldSettings settings = testWorldSettings();
     settings.displayName = std::string("\xed\xa0\x80", 3);
@@ -2223,16 +2256,6 @@ TEST_CASE(CRBackend_invalid_save_owned_metadata_preflights_before_world_mutation
         EntityRegionKey{"rigel:default", 0, 0, 0}, context);
     const std::string journalPath =
         context.rootPath + "/entity-regions.journal";
-    storage->setFailRemoves(true);
-    CHECK_THROWS(saveWorldToDisk(
-        world, testWorldSettings(), service, context));
-    storage->setFailRemoves(false);
-
-    CHECK(storage->exists(regionPath));
-    CHECK(storage->exists(journalPath));
-    CHECK(storage->exists(entityPath));
-    CHECK(!storage->exists(worldPath));
-    CHECK(!storage->exists(zonePath));
     const auto filesBefore = storage->files();
     const size_t mkdirCount = storage->mkdirCount();
     const size_t writeSessionCount = storage->writeSessionCount();
@@ -2240,17 +2263,17 @@ TEST_CASE(CRBackend_invalid_save_owned_metadata_preflights_before_world_mutation
 
     checkCRMetadataError(
         [&]() { saveWorldToDisk(world, settings, service, context); },
-        "CRMetadata: invalid JSON string");
+        "World save settings do not match the published world identity");
 
     CHECK_EQ(storage->mkdirCount(), mkdirCount);
     CHECK_EQ(storage->writeSessionCount(), writeSessionCount);
     CHECK_EQ(storage->removeCount(), removeCount);
     CHECK_EQ(storage->files(), filesBefore);
-    CHECK(storage->exists(regionPath));
-    CHECK(storage->exists(journalPath));
-    CHECK(storage->exists(entityPath));
-    CHECK(!storage->exists(worldPath));
+    CHECK(storage->exists(worldPath));
     CHECK(!storage->exists(zonePath));
+    CHECK(!storage->exists(regionPath));
+    CHECK(!storage->exists(journalPath));
+    CHECK(!storage->exists(entityPath));
     CHECK(world.chunkManager().getChunk({0, 0, 0})->isPersistDirty());
     CHECK(world.entities().get(entityId) != nullptr);
 }

@@ -11,6 +11,7 @@
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
+#include "WorldGenerationTestFixture.h"
 
 #include <filesystem>
 #include <stdexcept>
@@ -22,9 +23,7 @@ using namespace Rigel;
 namespace {
 
 Persistence::WorldSettings testWorldSettings() {
-    Persistence::WorldSettings settings;
-    settings.displayName = "Persistence Test World";
-    return settings;
+    return Test::savedWorldSettingsFixture("Persistence Test World");
 }
 
 class RejectChunkRegionEnumerationStorage final
@@ -81,6 +80,8 @@ TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
     context.preferredFormat = "memory";
     context.storage = storage;
     context.providers = world.persistenceProvidersHandle();
+    Test::installSavedWorldGenerationFixture(
+        service, context, testWorldSettings());
 
     Persistence::ChunkSnapshot archivedChunk;
     archivedChunk.key = Persistence::ChunkKey{"rigel:archive", 20, 0, 0};
@@ -188,6 +189,10 @@ TEST_CASE(Persistence_WorldReloadRetainsDiscoveredFormatForCloseSave) {
         Persistence::PersistenceContext creationContext =
             worldSet.persistenceContext(world.id());
         creationContext.preferredFormat = persistedFormat;
+        Test::installSavedWorldGenerationFixture(
+            worldSet.persistenceService(),
+            creationContext,
+            testWorldSettings());
         Persistence::saveWorldToDisk(
             world,
             testWorldSettings(),
@@ -234,6 +239,8 @@ TEST_CASE(Persistence_EntityModelIdentifierSurvivesUnavailableAsset) {
     context.rootPath = directory.path().string();
     context.preferredFormat = "memory";
     context.storage = storage;
+    Test::installSavedWorldGenerationFixture(
+        service, context, testWorldSettings());
 
     const Entity::EntityId entityId{10, 20, 30};
     const std::string modelId = "entity_models/demo_cube";
@@ -353,6 +360,8 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         Voxel::World world(resources);
         world.setId(1);
         context.providers = world.persistenceProvidersHandle();
+        Test::installSavedWorldGenerationFixture(
+            service, context, testWorldSettings());
         const Voxel::ChunkCoord targetCoord{0, 0, 0};
         const Voxel::ChunkCoord siblingCoord{1, 0, 0};
         const Voxel::ChunkCoord absentRegionCoord{32, 0, 0};
@@ -428,4 +437,47 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
                 absentRegionCoord.x * Voxel::Chunk::SIZE, 0, 0),
             Voxel::BlockState(secondId));
     }
+}
+
+TEST_CASE(Persistence_SaveAPIsRejectUnpublishedWorldWithoutMutation) {
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService service(formats);
+
+    Test::TemporaryDirectory parent("rigel_unpublished_world_save");
+    const std::filesystem::path root = parent.path() / "world";
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    Persistence::PersistenceContext context;
+    context.rootPath = root.string();
+    context.preferredFormat = "memory";
+    context.storage = storage;
+
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    world.setId(1);
+    context.providers = world.persistenceProvidersHandle();
+    Voxel::Chunk& chunk =
+        world.chunkManager().getOrCreateChunk({0, 0, 0});
+    chunk.markPersistDirty();
+
+    CHECK_THROWS(Persistence::saveWorldToDisk(
+        world, testWorldSettings(), service, context));
+    CHECK(!std::filesystem::exists(root));
+    CHECK(chunk.isPersistDirty());
+
+    CHECK_THROWS(Persistence::saveChunkToDisk(
+        world, service, context, {0, 0, 0}));
+    CHECK(!std::filesystem::exists(root));
+    CHECK(chunk.isPersistDirty());
+
+    Test::installSavedWorldGenerationDocumentsFixture(
+        *storage, context.rootPath, testWorldSettings());
+    CHECK_THROWS(Persistence::saveWorldToDisk(
+        world, testWorldSettings(), service, context));
+    CHECK(!std::filesystem::exists(root / "world.meta"));
+    CHECK(!std::filesystem::exists(root / "zones"));
+    CHECK(chunk.isPersistDirty());
 }

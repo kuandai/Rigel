@@ -611,9 +611,8 @@ void ApplicationTestAccess::closeReadyWorld(ApplicationCloseHooks hooks) {
     entity->setPosition(1.0f, 2.0f, 3.0f);
     world.entities().spawn(std::move(entity));
     impl->world.world = &world;
-    Persistence::WorldSettings settings;
-    settings.displayName = "Application Close Test World";
-    impl->world.settings = std::move(settings);
+    impl->world.settings = Persistence::loadSavedWorldGeneration(
+        impl->world.worldSet.persistenceContext(world.id())).settings;
     impl->world.ready = true;
 
     Application application(

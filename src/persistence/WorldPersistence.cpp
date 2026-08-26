@@ -29,6 +29,14 @@ namespace {
 
 constexpr const char* kDefaultZoneId = "rigel:default";
 
+BootstrappedWorldGeneration requirePublishedWorldGeneration(
+    const Voxel::World& world,
+    PersistenceService& service,
+    const PersistenceContext& context) {
+    return loadPublishedWorldGeneration(
+        service, world.blockRegistry(), context);
+}
+
 void requireSupportedDefaultZone(const PersistenceFormat& format,
                                  const PersistenceContext& context) {
     if (format.descriptor().id == Backends::CR::descriptor().id) {
@@ -231,23 +239,21 @@ void saveWorldToDisk(const Voxel::World& world,
                      const WorldSettings& settings,
                      PersistenceService& service,
                      PersistenceContext context) {
+    const BootstrappedWorldGeneration published =
+        requirePublishedWorldGeneration(world, service, context);
+    if (settings != published.generation.settings) {
+        throw std::runtime_error(
+            "World save settings do not match the published world identity");
+    }
+    context.preferredFormat = published.persistenceFormat;
+    context.discoverExistingFormat = false;
+
     auto format = service.openFormat(context);
     requireSupportedDefaultZone(*format, context);
 
     std::string zoneId = kDefaultZoneId;
-    const bool worldMetadataExists = context.storage->exists(
-        format->worldMetadataCodec().metadataPath(context));
     const bool zoneMetadataExists = context.storage->exists(
         format->zoneMetadataCodec().metadataPath(ZoneKey{zoneId}, context));
-    WorldMetadata worldMetadata;
-    worldMetadata.worldId = "world_" + std::to_string(world.id());
-    worldMetadata.displayName = settings.displayName;
-    std::optional<PersistenceService::PreparedMetadata>
-        preparedWorldMetadata;
-    if (!worldMetadataExists) {
-        preparedWorldMetadata = service.prepareWorldMetadataSave(
-            worldMetadata, *format, context);
-    }
     std::optional<PersistenceService::PreparedMetadata>
         preparedZoneMetadata;
     if (!zoneMetadataExists) {
@@ -394,9 +400,6 @@ void saveWorldToDisk(const Voxel::World& world,
             *format, context, entityJournalPlan);
     }
 
-    if (preparedWorldMetadata) {
-        service.publishMetadataSave(std::move(*preparedWorldMetadata));
-    }
     if (preparedZoneMetadata) {
         service.publishMetadataSave(std::move(*preparedZoneMetadata));
     }
@@ -411,6 +414,10 @@ void saveChunkToDisk(const Voxel::World& world,
         return;
     }
 
+    const BootstrappedWorldGeneration published =
+        requirePublishedWorldGeneration(world, service, context);
+    context.preferredFormat = published.persistenceFormat;
+    context.discoverExistingFormat = false;
     auto format = service.openFormat(context);
     requireSupportedDefaultZone(*format, context);
     saveChunkRegions(world, *format, {coord});

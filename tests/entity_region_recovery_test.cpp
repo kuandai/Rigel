@@ -12,6 +12,7 @@
 #include "Rigel/Persistence/WorldPersistence.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
+#include "WorldGenerationTestFixture.h"
 #include "../src/entity/EntityPersistenceDetail.h"
 #include "../src/entity/EntityPersistenceLimits.h"
 #include "../src/persistence/DurableDirectory.h"
@@ -48,9 +49,7 @@ constexpr float kPositivePositionOverflow = 0x1p31f;
 constexpr float kNegativePositionBoundary = -0x1p31f;
 
 Persistence::WorldSettings testWorldSettings() {
-    Persistence::WorldSettings settings;
-    settings.displayName = "Entity Recovery Test World";
-    return settings;
+    return Test::savedWorldSettingsFixture("Entity Recovery Test World");
 }
 
 struct SharedFiles {
@@ -377,6 +376,16 @@ public:
             });
     }
 
+    Persistence::StorageEntryKind entryKind(
+        const std::string& path) override {
+        if (m_files->files.contains(path)) {
+            return Persistence::StorageEntryKind::RegularFile;
+        }
+        return exists(path)
+            ? Persistence::StorageEntryKind::Directory
+            : Persistence::StorageEntryKind::Missing;
+    }
+
     void forEachEntry(
         const std::string& path,
         const Persistence::StorageEntryVisitor& visitor) override {
@@ -517,6 +526,20 @@ void registerFormats(Persistence::FormatRegistry& formats) {
         Persistence::Backends::CR::probe());
 }
 
+void ensureSavedWorldGenerationFixture(
+    const std::shared_ptr<SharedFiles>& files,
+    Persistence::PersistenceService& service,
+    const std::string& preferredFormat) {
+    if (files->files.contains(
+            std::string(kRootPath) + "/world-settings.yaml")) {
+        return;
+    }
+    auto context = makeContext(files, {}, preferredFormat);
+    Test::installSavedWorldGenerationFixture(
+        service, context, testWorldSettings());
+    files->durabilityOperations.clear();
+}
+
 void populateWorld(Voxel::World& world,
                    const std::vector<EntityRecord>& records) {
     for (const auto& record : records) {
@@ -540,6 +563,7 @@ void saveRecords(const std::shared_ptr<SharedFiles>& files,
     Voxel::World world(resources);
     world.setId(1);
     populateWorld(world, records);
+    ensureSavedWorldGenerationFixture(files, service, preferredFormat);
     auto context = makeContext(
         files, control, std::move(preferredFormat));
     context.providers = world.persistenceProvidersHandle();
@@ -565,6 +589,7 @@ std::string saveFailureAfterEntityMutation(
     if (addDirtyChunk) {
         world.chunkManager().getOrCreateChunk({0, 0, 0}).markPersistDirty();
     }
+    ensureSavedWorldGenerationFixture(files, service, preferredFormat);
     auto context = makeContext(files, control, preferredFormat);
     context.providers = world.persistenceProvidersHandle();
     try {
@@ -574,28 +599,6 @@ std::string saveFailureAfterEntityMutation(
         return error.what();
     }
     throw Test::TestFailure("Expected entity save validation to fail");
-}
-
-std::string saveDirtyChunkFailure(
-    const std::shared_ptr<SharedFiles>& files,
-    const std::string& preferredFormat,
-    const std::shared_ptr<MutationControl>& control) {
-    Persistence::FormatRegistry formats;
-    registerFormats(formats);
-    Persistence::PersistenceService service(formats);
-    Voxel::WorldResources resources;
-    Voxel::World world(resources);
-    world.setId(1);
-    world.chunkManager().getOrCreateChunk({0, 0, 0}).markPersistDirty();
-    auto context = makeContext(files, control, preferredFormat);
-    context.providers = world.persistenceProvidersHandle();
-    try {
-        Persistence::saveWorldToDisk(
-            world, testWorldSettings(), service, context);
-    } catch (const std::exception& error) {
-        return error.what();
-    }
-    throw Test::TestFailure("Expected world save to reject recovery journal");
 }
 
 std::string saveWorldFailure(
@@ -1332,7 +1335,10 @@ TEST_CASE(Persistence_FirstEntitySaveDurablyOrdersDirectoryHierarchy) {
             CHECK(files->directories.contains(component));
             CHECK(files->durableDirectories.contains(component));
             const size_t creation = operationIndex(
-                operations, "mkdir new " + component);
+                operations,
+                std::string("mkdir ") +
+                    (component == kRootPath ? "existing " : "new ") +
+                    component);
             CHECK_EQ(
                 operations.at(creation + 1),
                 "sync " +
@@ -1367,87 +1373,86 @@ TEST_CASE(Persistence_FirstEntitySaveDurablyOrdersDirectoryHierarchy) {
     }
 }
 
-TEST_CASE(Persistence_FirstEntitySaveRetriesRootParentSyncBeforeJournal) {
+TEST_CASE(Persistence_FirstEntitySaveRetriesPublishedRootSyncBeforeJournal) {
     const EntityRecord record{
         Entity::EntityId{10, 11, 12},
         "rigel:root_recovery",
         glm::vec3(513.0f, 4.0f, 5.0f)};
 
     for (const std::string& preferredFormat : {"memory", "cr"}) {
-        for (bool retainFailedRoot : {false, true}) {
-            auto files = std::make_shared<SharedFiles>();
-            auto control = std::make_shared<MutationControl>();
-            control->failDirectoryChild = kRootPath;
+        auto files = std::make_shared<SharedFiles>();
+        Persistence::FormatRegistry fixtureFormats;
+        registerFormats(fixtureFormats);
+        Persistence::PersistenceService fixtureService(fixtureFormats);
+        ensureSavedWorldGenerationFixture(
+            files, fixtureService, preferredFormat);
+        const auto fixtureFiles = files->files;
+        const auto durableFixtureFiles = files->durableFiles;
+        auto control = std::make_shared<MutationControl>();
+        control->failDirectoryChild = kRootPath;
 
-            CHECK_THROWS(saveRecords(
-                files, {record}, control, preferredFormat));
+        CHECK_THROWS(saveRecords(
+            files, {record}, control, preferredFormat));
 
-            CHECK(control->directoryFailureInjected);
-            CHECK(control->attempted.empty());
-            CHECK(files->directories.contains(kRootPath));
-            CHECK(!files->durableDirectories.contains(kRootPath));
-            CHECK(files->files.empty());
-            CHECK(files->durableFiles.empty());
-            CHECK(!journalExists(files));
-            CHECK(!files->durableFiles.contains(kJournalPath));
-            CHECK(!hasEntityRegionFile(files));
-            CHECK_EQ(
-                operationCount(files->durabilityOperations, "write "),
-                static_cast<size_t>(0));
-            CHECK_EQ(
-                operationCount(
-                    files->durabilityOperations,
-                    std::string("open ") + kJournalPath),
-                static_cast<size_t>(0));
-            CHECK_EQ(
-                operationCount(
-                    files->durabilityOperations,
-                    std::string("remove ") + kJournalPath),
-                static_cast<size_t>(0));
+        CHECK(control->directoryFailureInjected);
+        CHECK(control->attempted.empty());
+        CHECK(files->directories.contains(kRootPath));
+        CHECK(files->durableDirectories.contains(kRootPath));
+        CHECK_EQ(files->files, fixtureFiles);
+        CHECK_EQ(files->durableFiles, durableFixtureFiles);
+        CHECK(!journalExists(files));
+        CHECK(!hasEntityRegionFile(files));
+        CHECK_EQ(
+            operationCount(files->durabilityOperations, "write "),
+            static_cast<size_t>(0));
+        CHECK_EQ(
+            operationCount(
+                files->durabilityOperations,
+                std::string("open ") + kJournalPath),
+            static_cast<size_t>(0));
+        CHECK_EQ(
+            operationCount(
+                files->durabilityOperations,
+                std::string("remove ") + kJournalPath),
+            static_cast<size_t>(0));
 
-            simulatePowerLoss(files, retainFailedRoot);
-            CHECK_EQ(
-                files->directories.contains(kRootPath),
-                retainFailedRoot);
-            CHECK(!journalExists(files));
-            CHECK(!hasEntityRegionFile(files));
+        simulatePowerLoss(files);
+        CHECK(files->directories.contains(kRootPath));
+        CHECK(!journalExists(files));
+        CHECK(!hasEntityRegionFile(files));
 
-            files->durabilityOperations.clear();
-            saveRecords(files, {record}, {}, preferredFormat);
+        files->durabilityOperations.clear();
+        saveRecords(files, {record}, {}, preferredFormat);
 
-            const auto& retryOperations = files->durabilityOperations;
-            const std::string rootOperation =
-                std::string("mkdir ") +
-                (retainFailedRoot ? "existing " : "new ") +
-                kRootPath;
-            const size_t rootCreation = operationIndex(
-                retryOperations, rootOperation);
-            CHECK_EQ(
-                retryOperations.at(rootCreation + 1),
-                "sync " +
-                    Persistence::detail::containingDirectory(kRootPath)
-                        .generic_string() +
-                    " for " + kRootPath);
-            const size_t journalOpen = operationIndex(
-                retryOperations, std::string("open ") + kJournalPath);
-            const size_t journalWrite = operationIndex(
-                retryOperations, std::string("write ") + kJournalPath);
-            const size_t regionWrite = operationIndexContaining(
-                retryOperations, "write ", "/entities/entityRegion_");
-            const size_t journalRemoval = operationIndex(
-                retryOperations, std::string("remove ") + kJournalPath);
-            CHECK(rootCreation + 1 < journalOpen);
-            CHECK(journalOpen < journalWrite);
-            CHECK(journalWrite < regionWrite);
-            CHECK(regionWrite < journalRemoval);
-            CHECK(!journalExists(files));
-            for (const auto& component : entityDirectoryComponents()) {
-                CHECK(files->durableDirectories.contains(component));
-            }
-
-            simulatePowerLoss(files);
-            checkExactState(files, {record}, preferredFormat);
+        const auto& retryOperations = files->durabilityOperations;
+        const size_t rootCreation = operationIndex(
+            retryOperations,
+            "mkdir existing " + std::string(kRootPath));
+        CHECK_EQ(
+            retryOperations.at(rootCreation + 1),
+            "sync " +
+                Persistence::detail::containingDirectory(kRootPath)
+                    .generic_string() +
+                " for " + kRootPath);
+        const size_t journalOpen = operationIndex(
+            retryOperations, std::string("open ") + kJournalPath);
+        const size_t journalWrite = operationIndex(
+            retryOperations, std::string("write ") + kJournalPath);
+        const size_t regionWrite = operationIndexContaining(
+            retryOperations, "write ", "/entities/entityRegion_");
+        const size_t journalRemoval = operationIndex(
+            retryOperations, std::string("remove ") + kJournalPath);
+        CHECK(rootCreation + 1 < journalOpen);
+        CHECK(journalOpen < journalWrite);
+        CHECK(journalWrite < regionWrite);
+        CHECK(regionWrite < journalRemoval);
+        CHECK(!journalExists(files));
+        for (const auto& component : entityDirectoryComponents()) {
+            CHECK(files->durableDirectories.contains(component));
         }
+
+        simulatePowerLoss(files);
+        checkExactState(files, {record}, preferredFormat);
     }
 }
 
@@ -1925,6 +1930,8 @@ TEST_CASE(Persistence_UnknownEntityPlaceholderSurvivesUntilFactoryIsAvailable) {
         Persistence::FormatRegistry formats;
         registerFormats(formats);
         Persistence::PersistenceService service(formats);
+        ensureSavedWorldGenerationFixture(
+            files, service, preferredFormat);
         auto factoryCalls = std::make_shared<size_t>(0);
         {
             Voxel::WorldResources resources;
@@ -2468,6 +2475,11 @@ TEST_CASE(Persistence_WorldSaveRejectsAggregateEntitiesBeforeChunkMutation) {
     }
 
     auto files = std::make_shared<SharedFiles>();
+    Persistence::FormatRegistry fixtureFormats;
+    registerFormats(fixtureFormats);
+    Persistence::PersistenceService fixtureService(fixtureFormats);
+    ensureSavedWorldGenerationFixture(
+        files, fixtureService, "memory");
     const auto filesBefore = files->files;
     const auto durableFilesBefore = files->durableFiles;
     const auto directoriesBefore = files->directories;
@@ -3173,7 +3185,7 @@ TEST_CASE(Persistence_EntityJournalRejectsUnexpectedZoneBeforeMutation) {
     CHECK(journalExists(files));
 }
 
-TEST_CASE(Persistence_EntityJournalRejectsDifferentPersistenceFormat) {
+TEST_CASE(Persistence_EntityJournalExplicitLoadRejectsDifferentPersistenceFormat) {
     auto files = std::make_shared<SharedFiles>();
     const EntityRecord desired{
         Entity::EntityId{80, 81, 82},
@@ -3201,16 +3213,13 @@ TEST_CASE(Persistence_EntityJournalRejectsDifferentPersistenceFormat) {
         }));
 
     auto saveControl = std::make_shared<MutationControl>();
-    const std::string saveError = saveDirtyChunkFailure(
-        files, "cr", saveControl);
-    CHECK(saveError.find("persistence format mismatch") != std::string::npos);
-    CHECK(saveControl->attempted.empty());
+    saveRecords(files, {desired}, saveControl, "cr");
     CHECK(std::none_of(
         files->files.begin(), files->files.end(),
         [](const auto& entry) {
             return entry.first.ends_with(".cosmicreach");
         }));
-    CHECK(journalExists(files));
+    CHECK(!journalExists(files));
     checkExactState(files, {desired});
 }
 

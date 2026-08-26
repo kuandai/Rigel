@@ -28,10 +28,21 @@ std::unique_ptr<PersistenceFormat> FormatRegistry::resolveFormat(const Persisten
 
     std::optional<ProbeResult> bestProbe;
     const Entry* bestEntry = nullptr;
+    const Entry* authoritativeEntry = nullptr;
+    std::string authoritativeId;
     for (const auto& [id, entry] : m_entries) {
         auto probeResult = probeFromStorage(entry, *context.storage, context);
         if (!probeResult) {
             continue;
+        }
+        if (probeResult->authoritative) {
+            if (authoritativeEntry) {
+                throw std::runtime_error(
+                    "FormatRegistry: conflicting persisted format markers for '" +
+                    authoritativeId + "' and '" + id + "'");
+            }
+            authoritativeEntry = &entry;
+            authoritativeId = id;
         }
         if (!bestProbe || probeResult->confidence > bestProbe->confidence) {
             bestProbe = probeResult;
@@ -39,9 +50,8 @@ std::unique_ptr<PersistenceFormat> FormatRegistry::resolveFormat(const Persisten
         }
     }
 
-    if (bestEntry &&
-        (context.preferredFormat.empty() || bestProbe->authoritative)) {
-        return bestEntry->factory(context);
+    if (authoritativeEntry) {
+        return authoritativeEntry->factory(context);
     }
 
     if (!context.preferredFormat.empty()) {

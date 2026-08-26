@@ -583,6 +583,33 @@ TEST_CASE(Persistence_FormatResolutionIgnoresUnusedManifestFiles) {
     CHECK_EQ(preferred->descriptor().id, std::string("cr"));
 }
 
+TEST_CASE(Persistence_FormatResolutionRejectsConflictingPersistedMarkers) {
+    auto storage = std::make_shared<InMemoryStorageBackend>();
+    FormatRegistry registry;
+    registry.registerFormat(
+        Backends::Memory::descriptor(),
+        Backends::Memory::factory(),
+        Backends::Memory::probe());
+    registry.registerFormat(
+        Backends::CR::descriptor(),
+        Backends::CR::factory(),
+        Backends::CR::probe());
+
+    PersistenceContext context;
+    context.rootPath = "root";
+    context.preferredFormat = "memory";
+    context.discoverExistingFormat = true;
+    context.storage = storage;
+    for (const std::string& path : {
+             "root/world.meta", "root/worldInfo.json"}) {
+        auto session = storage->openWrite(path);
+        session->writer().writeU8(0);
+        session->commit();
+    }
+
+    CHECK_THROWS(registry.resolveFormat(context));
+}
+
 TEST_CASE(Persistence_MaximumMemoryMetadataDocumentRoundTrip) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
 

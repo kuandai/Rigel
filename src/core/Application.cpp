@@ -324,6 +324,12 @@ void Application::initialize() {
             Persistence::publishNewWorldGeneration(
                 settings, generator->config(), persistenceContext);
             m_impl->world.settings = std::move(settings);
+            Persistence::WorldMetadata backendMetadata;
+            backendMetadata.worldId =
+                "world_" + std::to_string(m_impl->world.activeWorldId);
+            backendMetadata.displayName = m_impl->world.settings->displayName;
+            m_impl->world.worldSet.persistenceService().saveWorldMetadata(
+                backendMetadata, persistenceContext);
         } else if (savedPresence ==
                    Persistence::SavedWorldGenerationPresence::Published) {
             config.streaming = configProvider.loadStreamingConfig();

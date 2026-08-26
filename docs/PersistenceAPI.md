@@ -103,6 +103,8 @@ format using:
 Weak probes remain a fallback when no preference is supplied; they do not
 override an explicit preference when layouts share generic directory names.
 Other contexts use the explicit preferred format directly.
+Multiple authoritative format markers are an integrity error; registry order
+never chooses between conflicting persisted formats.
 
 ---
 

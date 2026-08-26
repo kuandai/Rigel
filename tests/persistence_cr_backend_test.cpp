@@ -41,6 +41,15 @@ WorldSettings testWorldSettings() {
     return Rigel::Test::savedWorldSettingsFixture("CR Test World");
 }
 
+std::string worldLoadDiagnostic(
+    const std::string& rootPath,
+    const std::string& problem) {
+    return "Cannot load world save '" + rootPath + "': " + problem +
+        ". Restore the authoritative save files from a matching backup or "
+        "choose a new world. The save was not modified; no seed or current, "
+        "installed, or default generator was substituted.";
+}
+
 void checkMemoryRandomReadFailure(MemoryByteReader& reader,
                                   size_t offset,
                                   size_t length) {
@@ -1516,6 +1525,8 @@ TEST_CASE(CRBackend_entity_validation_precedes_live_world_mutation) {
     CHECK_EQ(world.entities().spawn(std::move(existing)), existingId);
     context.providers = world.persistenceProvidersHandle();
     Rigel::Asset::AssetManager assets;
+    Rigel::Test::installSavedWorldGenerationFixture(
+        service, context, testWorldSettings());
 
     checkCRRegionError(
         [&]() { loadBootstrapEntities(
@@ -2204,7 +2215,10 @@ TEST_CASE(CRBackend_invalid_metadata_prevents_world_save_mutation) {
 
         checkCRMetadataError(
             [&]() { saveCRWorld(storage, context.rootPath, true); },
-            diagnostics[index]);
+            worldLoadDiagnostic(
+                context.rootPath,
+                "the persistence backend identity is invalid: " +
+                    diagnostics[index]));
 
         CHECK_EQ(storage->mkdirCount(), mkdirCount);
         CHECK_EQ(storage->writeSessionCount(), writeSessionCount);

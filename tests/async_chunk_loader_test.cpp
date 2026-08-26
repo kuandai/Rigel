@@ -1134,6 +1134,25 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
             context.context.rootPath + "'");
     CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
 
+    world.setGenerator(divergent);
+    CHECK_EQ(
+        exceptionMessage([&] {
+            AsyncChunkLoader loader(
+                context.service,
+                context.context,
+                world,
+                authoritative->config().world.version,
+                0,
+                0,
+                1,
+                authoritative);
+        }),
+        "World generator does not match authoritative "
+        "generator-definition.yaml for world save '" +
+            context.context.rootPath + "'");
+    CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
+    world.setGenerator(authoritative);
+
     auto wrongSeedDefinition = loaderGeneratorDefinition();
     wrongSeedDefinition.seed += 1;
     auto wrongSeed = std::make_shared<WorldGenerator>(
@@ -2154,6 +2173,7 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
     const size_t settledLoadRequests = loadRequests;
     const uint64_t settledGenerationJobs =
         streamer.workMetrics().generationJobsStarted;
+    const auto savedGenerator = generator;
     WorldGenConfig changedConfig = generator->config();
     ++changedConfig.world.version;
     generator = std::make_shared<WorldGenerator>(
@@ -2221,16 +2241,16 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
 
     World reconstructed;
     reconstructed.initialize(resources);
-    reconstructed.setGenerator(generator);
+    reconstructed.setGenerator(savedGenerator);
     AsyncChunkLoader reconstructedLoader(
         ctx.service,
         ctx.context,
         reconstructed,
-        generator->config().world.version,
+        savedGenerator->config().world.version,
         0,
         0,
         0,
-        generator);
+        savedGenerator);
     reconstructedLoader.setPrefetchRadius(0);
     CHECK_EQ(reconstructedLoader.request(makeLoadRequest(coord)),
              ChunkLoadRequestResult::Queued);

@@ -53,9 +53,21 @@ TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
     WorldGenConfig generation;
     generation.solidBlock = solid.identifier;
     generation.surfaceBlock = surface.identifier;
+    generation.waterBlock = solid.identifier;
+    generation.shoreBlock = surface.identifier;
     generation.terrain.baseHeight = 0.0f;
     generation.terrain.heightVariation = 0.0f;
     generation.terrain.surfaceDepth = 1;
+    generation.biomes.entries.clear();
+    WorldGenConfig::DensityNodeConfig density;
+    density.id = "flat_height";
+    density.type = "y";
+    density.scale = -1.0f;
+    density.offset = 0.0f;
+    generation.densityGraph.nodes.push_back(std::move(density));
+    generation.densityGraph.outputs["base_density"] = "flat_height";
+    generation.stageEnabled["caves"] = false;
+    generation.stageEnabled["structures"] = false;
     auto generator = std::make_shared<WorldGenerator>(registry, generation);
     world.setGenerator(generator);
 
@@ -71,10 +83,11 @@ TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
     context.preferredFormat = "memory";
     context.storage =
         std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    auto settings = Rigel::Test::savedWorldSettingsFixture(
+        "Diagnostics Test World");
+    settings.seed = generation.seed;
     Rigel::Test::installSavedWorldGenerationFixture(
-        service,
-        context,
-        Rigel::Test::savedWorldSettingsFixture("Diagnostics Test World"));
+        service, context, settings, generation);
     auto loader = std::make_shared<Rigel::Persistence::AsyncChunkLoader>(
         service,
         context,

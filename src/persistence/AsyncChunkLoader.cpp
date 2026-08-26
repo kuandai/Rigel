@@ -64,6 +64,14 @@ PersistenceContext validatedPublishedContext(
             "generator-definition.yaml for world save '" +
             context.rootPath + "'");
     }
+    if (world.generator() &&
+        !matchesPublishedGenerator(
+            *world.generator(), published.generation)) {
+        throw std::runtime_error(
+            "World generator does not match authoritative "
+            "generator-definition.yaml for world save '" +
+            context.rootPath + "'");
+    }
     context.preferredFormat = published.persistenceFormat;
     context.discoverExistingFormat = false;
     return context;

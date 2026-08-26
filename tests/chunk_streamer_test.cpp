@@ -853,6 +853,14 @@ struct PersistedChunkContext {
             Rigel::Test::savedWorldSettingsFixture("Streamer Test World"));
     }
 
+    std::shared_ptr<WorldGenerator> savedGenerator(
+        BlockRegistry& registry) const {
+        const auto generation =
+            Rigel::Persistence::loadSavedWorldGeneration(context);
+        return std::make_shared<WorldGenerator>(
+            registry, generation.definition);
+    }
+
     void save(ChunkCoord coord,
               const Rigel::Persistence::ChunkData& payload) {
         auto format = service.openFormat(context);
@@ -4078,15 +4086,17 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesBudgetedSourceResolution) {
     WorldMeshStore meshStore;
     PersistedChunkContext persistence;
     persistence.context.providers = world.persistenceProvidersHandle();
+    auto persistenceGenerator = persistence.savedGenerator(registry);
+    world.setGenerator(persistenceGenerator);
     auto loader = std::make_shared<Rigel::Persistence::AsyncChunkLoader>(
         persistence.service,
         persistence.context,
         world,
-        generator->config().world.version,
+        persistenceGenerator->config().world.version,
         0,
         0,
         1,
-        generator);
+        persistenceGenerator);
     loader->setPrefetchRadius(0);
 
     const ChunkCoord center{0, 0, 0};
@@ -16251,15 +16261,17 @@ TEST_CASE(ChunkStreamer_EmptyChunkIgnoresPersistedNeighborArrival) {
             false,
             std::nullopt,
             false));
+    auto persistenceGenerator = persistence.savedGenerator(registry);
+    world.setGenerator(persistenceGenerator);
     auto loader = std::make_shared<Rigel::Persistence::AsyncChunkLoader>(
         persistence.service,
         persistence.context,
         world,
-        generator->config().world.version,
+        persistenceGenerator->config().world.version,
         0,
         0,
         1,
-        generator);
+        persistenceGenerator);
     loader->setPrefetchRadius(0);
 
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
@@ -16343,15 +16355,17 @@ TEST_CASE(ChunkStreamer_EmptyPersistedArrivalKeepsSolidNeighborMesh) {
             false,
             std::nullopt,
             false));
+    auto persistenceGenerator = persistence.savedGenerator(registry);
+    world.setGenerator(persistenceGenerator);
     auto loader = std::make_shared<Rigel::Persistence::AsyncChunkLoader>(
         persistence.service,
         persistence.context,
         world,
-        generator->config().world.version,
+        persistenceGenerator->config().world.version,
         0,
         0,
         1,
-        generator);
+        persistenceGenerator);
     loader->setPrefetchRadius(0);
 
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
@@ -16450,15 +16464,17 @@ TEST_CASE(ChunkStreamer_NonEmptyChunkRemeshesAfterPersistedNeighborArrival) {
     persistence.context.providers = world.persistenceProvidersHandle();
     persistence.save(
         arrivingCoord, Rigel::Persistence::serializeChunk(arriving));
+    auto persistenceGenerator = persistence.savedGenerator(registry);
+    world.setGenerator(persistenceGenerator);
     auto loader = std::make_shared<Rigel::Persistence::AsyncChunkLoader>(
         persistence.service,
         persistence.context,
         world,
-        generator->config().world.version,
+        persistenceGenerator->config().world.version,
         0,
         0,
         1,
-        generator);
+        persistenceGenerator);
     loader->setPrefetchRadius(0);
 
     auto gate = std::make_shared<WorkerGate>();

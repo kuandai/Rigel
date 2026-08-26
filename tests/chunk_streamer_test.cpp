@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "ThreadPoolTestAccess.h"
+#include "WorldGenerationTestFixture.h"
 
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
@@ -846,6 +847,10 @@ struct PersistedChunkContext {
         context.preferredFormat = "memory";
         context.storage =
             std::make_shared<Rigel::Persistence::FilesystemBackend>();
+        Rigel::Test::installSavedWorldGenerationFixture(
+            service,
+            context,
+            Rigel::Test::savedWorldSettingsFixture("Streamer Test World"));
     }
 
     void save(ChunkCoord coord,

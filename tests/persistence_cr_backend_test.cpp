@@ -2434,6 +2434,8 @@ TEST_CASE(CRBackend_async_loader_rejects_alternate_default_zone) {
   "defaultZoneId": "base:moon"
 }
 )");
+    Rigel::Test::installSavedWorldGenerationDocumentsFixture(
+        *storage, context.rootPath, testWorldSettings());
     std::string diagnostic;
     try {
         AsyncChunkLoader loader(

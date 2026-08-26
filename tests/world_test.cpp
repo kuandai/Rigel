@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "OpenGLFixture.h"
+#include "WorldGenerationTestFixture.h"
 
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Persistence/AsyncChunkLoader.h"
@@ -70,6 +71,10 @@ TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
     context.preferredFormat = "memory";
     context.storage =
         std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    Rigel::Test::installSavedWorldGenerationFixture(
+        service,
+        context,
+        Rigel::Test::savedWorldSettingsFixture("Diagnostics Test World"));
     auto loader = std::make_shared<Rigel::Persistence::AsyncChunkLoader>(
         service,
         context,

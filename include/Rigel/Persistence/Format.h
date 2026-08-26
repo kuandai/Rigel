@@ -24,6 +24,7 @@ struct FormatDescriptor {
 
 struct ProbeResult {
     float confidence = 0.0f;
+    bool authoritative = false;
 };
 
 class PersistenceFormat {

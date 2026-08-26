@@ -294,6 +294,9 @@ void Application::initialize() {
         std::shared_ptr<const Voxel::WorldGenerator> generator;
         const auto savedPresence =
             Persistence::inspectSavedWorldGeneration(persistenceContext);
+        persistenceContext.discoverExistingFormat =
+            savedPresence ==
+            Persistence::SavedWorldGenerationPresence::Published;
         if (savedPresence ==
             Persistence::SavedWorldGenerationPresence::Missing) {
             config = configProvider.loadConfig();

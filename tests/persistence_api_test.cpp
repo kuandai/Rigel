@@ -578,6 +578,7 @@ TEST_CASE(Persistence_FormatResolutionIgnoresUnusedManifestFiles) {
         }));
 
     context.preferredFormat = "memory";
+    context.discoverExistingFormat = true;
     auto preferred = service.openFormat(context);
     CHECK_EQ(preferred->descriptor().id, std::string("cr"));
 }

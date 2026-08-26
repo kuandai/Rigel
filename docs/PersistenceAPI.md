@@ -42,6 +42,8 @@ chunk. A region file can contain multiple spans for the same chunk.
 
 - `rootPath`: base directory for saves.
 - `preferredFormat`: format ID hint (e.g. `"cr"`).
+- `discoverExistingFormat`: when true for a published save, authoritative
+  storage probes override `preferredFormat`.
 - `policies`: behavior for unsupported format features.
 - `storage`: `StorageBackend` instance (filesystem or custom).
 - `providers`: `ProviderRegistry` for passing runtime data (e.g. block registry).
@@ -92,10 +94,15 @@ Compression, metadata encoding, region indexing, and chunk-span behavior belong
 to each backend implementation and its typed settings. They are not negotiated
 through unused capability descriptors.
 
-`FormatRegistry` resolves a format using:
+For a context marked `discoverExistingFormat`, `FormatRegistry` resolves a
+format using:
 
-- storage probes for an existing format
+- authoritative storage probes for an existing format
 - the preferred format from context only when no existing format is detected
+
+Weak probes remain a fallback when no preference is supplied; they do not
+override an explicit preference when layouts share generic directory names.
+Other contexts use the explicit preferred format directly.
 
 ---
 

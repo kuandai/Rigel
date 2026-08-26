@@ -732,7 +732,11 @@ FormatFactory factory() {
 }
 
 FormatProbe probe() {
-    return [](StorageBackend&, const PersistenceContext&) -> std::optional<ProbeResult> {
+    return [](StorageBackend& storage,
+              const PersistenceContext& context) -> std::optional<ProbeResult> {
+        if (storage.exists(context.rootPath + "/world.meta")) {
+            return ProbeResult{0.8f, true};
+        }
         return std::nullopt;
     };
 }

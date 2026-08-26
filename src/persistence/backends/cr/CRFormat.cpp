@@ -2214,7 +2214,7 @@ FormatFactory factory() {
 FormatProbe probe() {
     return [](StorageBackend& storage, const PersistenceContext& context) -> std::optional<ProbeResult> {
         if (storage.exists(CRPaths::worldInfoPath(context))) {
-            return ProbeResult{0.8f};
+            return ProbeResult{0.8f, true};
         }
         auto zonesPath = context.rootPath + "/zones";
         if (storage.exists(zonesPath)) {

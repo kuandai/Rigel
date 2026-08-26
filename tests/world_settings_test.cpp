@@ -1182,6 +1182,49 @@ TEST_CASE(WorldSettings_cr_bootstrap_publishes_and_reloads) {
         savedSettings().displayName);
 }
 
+TEST_CASE(WorldSettings_creation_uses_the_published_canonical_definition) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_canonical_creation";
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    auto context = contextFor(worldRoot, storage);
+    context.preferredFormat = "memory";
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+    Persistence::NewWorldGeneration creation{
+        savedSettings(), savedDefinition()};
+    creation.definition.biomes.coastBand.enabled = true;
+    creation.definition.biomes.coastBand.biome = "land";
+    creation.definition.biomes.coastBand.minContinentalness = 0.75f;
+    creation.definition.biomes.coastBand.maxContinentalness = -0.25f;
+
+    const auto created = Persistence::bootstrapWorldGeneration(
+        creation,
+        persistence,
+        blocks,
+        context);
+    const auto reloaded = Persistence::bootstrapWorldGeneration(
+        std::nullopt,
+        persistence,
+        blocks,
+        context);
+
+    CHECK_EQ(
+        created.generation.definition.biomes.coastBand.minContinentalness,
+        -0.25f);
+    CHECK_EQ(
+        created.generation.definition.biomes.coastBand.maxContinentalness,
+        0.75f);
+    CHECK_EQ(
+        Voxel::serializeGeneratorSnapshot(created.generation.definition),
+        Voxel::serializeGeneratorSnapshot(reloaded.generation.definition));
+}
+
 TEST_CASE(WorldSettings_rejects_corrupted_staged_world_id_before_publish) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot =
@@ -1283,8 +1326,16 @@ TEST_CASE(WorldSettings_handoff_precedes_child_marker_during_recovery) {
     Persistence::PersistenceService persistence(formats);
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
+    Persistence::NewWorldGeneration unrelatedCreation{
+        savedSettings(), savedDefinition()};
+    unrelatedCreation.definition.shoreBlock = "base:missing-installed-block";
+    Persistence::recoverWorldGenerationPublication(
+        persistence, restartedContext);
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(restartedContext),
+        Persistence::SavedWorldGenerationPresence::Published);
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        unrelatedCreation,
         persistence,
         blocks,
         restartedContext);

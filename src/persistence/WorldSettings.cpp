@@ -1049,6 +1049,17 @@ void recoverAbandonedWorldGenerationStaging(
         storage, context, worldRoot, nullptr);
 }
 
+void recoverWorldGenerationPublication(
+    PersistenceService& persistence,
+    const PersistenceContext& context) {
+    StorageBackend& storage = storageFor(context);
+    const std::filesystem::path worldRoot = worldRootPath(context);
+    auto bootstrapLock =
+        storage.lockWorldGenerationBootstrap(context.rootPath);
+    recoverAbandonedWorldGenerationStagingLocked(
+        storage, context, worldRoot, &persistence);
+}
+
 static std::string publishNewWorldGenerationImpl(
     const WorldSettings& settings,
     const Voxel::WorldGenConfig& definition,
@@ -1354,22 +1365,19 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
     auto bootstrapLock =
         storage.lockWorldGenerationBootstrap(context.rootPath);
     const std::filesystem::path worldRoot = worldRootPath(context);
-    SavedWorldGenerationPresence presence =
-        inspectSavedWorldGeneration(context);
-    if (presence == SavedWorldGenerationPresence::Missing && creation) {
-        Voxel::validateGeneratorSnapshotContent(
-            creation->definition, registry);
-    }
     recoverAbandonedWorldGenerationStagingLocked(
         storage, context, worldRoot, &persistence);
 
-    presence = inspectSavedWorldGeneration(context);
+    const SavedWorldGenerationPresence presence =
+        inspectSavedWorldGeneration(context);
     if (presence == SavedWorldGenerationPresence::Missing) {
         if (!creation) {
             throw std::runtime_error(
                 "World save does not exist and no creation input was provided: " +
                 context.rootPath);
         }
+        Voxel::validateGeneratorSnapshotContent(
+            creation->definition, registry);
         BootstrappedWorldGeneration result;
         result.persistenceFormat = publishNewWorldGenerationImpl(
             creation->settings,
@@ -1377,8 +1385,11 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
             persistence,
             context,
             true);
-        result.generation.settings = creation->settings;
-        result.generation.definition = creation->definition;
+        // The save-local canonical snapshot is authoritative from the first
+        // generation-capable moment, not only after the first reload.
+        result.generation = loadSavedWorldGeneration(context);
+        Voxel::validateGeneratorSnapshotContent(
+            result.generation.definition, registry);
         return result;
     }
     if (presence == SavedWorldGenerationPresence::LegacyOrIncomplete) {
@@ -1387,57 +1398,12 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
             "the save was left unchanged");
     }
 
-    // Validate both save-owned documents before repairing any old root that
-    // predates atomic backend-identity publication.
     BootstrappedWorldGeneration result;
     result.generation = loadSavedWorldGeneration(context);
     Voxel::validateGeneratorSnapshotContent(
         result.generation.definition, registry);
-
-    PersistenceContext discoveryContext = context;
-    discoveryContext.discoverExistingFormat = true;
-    auto selectedFormat = persistence.openFormat(discoveryContext);
-    result.persistenceFormat = selectedFormat->descriptor().id;
-    const std::string metadataPath =
-        selectedFormat->worldMetadataCodec().metadataPath(discoveryContext);
-    validateBackendMetadataPath(discoveryContext, metadataPath);
-    const bool repairRequired = !storage.exists(metadataPath);
-    try {
-        if (repairRequired) {
-            PersistenceContext repairContext = context;
-            repairContext.preferredFormat = result.persistenceFormat;
-            repairContext.discoverExistingFormat = false;
-            WorldMetadata metadata;
-            metadata.worldId = worldRoot.filename().string();
-            metadata.displayName = result.generation.settings.displayName;
-            persistence.saveWorldMetadata(metadata, repairContext);
-            if (!storage.exists(metadataPath)) {
-                throw std::runtime_error(
-                    "Persistence backend identity was not committed while "
-                    "repairing saved world: " + metadataPath);
-            }
-        }
-        PersistenceContext verificationContext = discoveryContext;
-        verificationContext.preferredFormat.clear();
-        auto verifiedFormat = persistence.openFormat(verificationContext);
-        if (verifiedFormat->descriptor().id != result.persistenceFormat) {
-            throw std::runtime_error(
-                "Persistence format changed while opening saved-world identity");
-        }
-    } catch (...) {
-        const std::exception_ptr repairFailure = std::current_exception();
-        if (repairRequired) {
-            try {
-                removeEntryIfPresent(storage, metadataPath);
-            } catch (const std::exception& rollbackFailure) {
-                throw std::runtime_error(
-                    "Saved-world backend identity repair failed and rollback "
-                    "could not remove the new marker: " +
-                    std::string(rollbackFailure.what()));
-            }
-        }
-        std::rethrow_exception(repairFailure);
-    }
+    result.persistenceFormat = validatePublicationIdentityAndFormat(
+        persistence, context, worldRoot, {});
     return result;
 }
 

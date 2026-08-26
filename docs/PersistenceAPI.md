@@ -98,18 +98,17 @@ For a context marked `discoverExistingFormat`, `FormatRegistry` resolves a
 format using:
 
 - authoritative storage probes for an existing format
-- the preferred format from context only while selecting an unclaimed format
-  under the per-world bootstrap lock
+- the preferred format from context only while creating a new save under the
+  per-world bootstrap lock
 
 Outside published-world discovery, weak probes remain a fallback when no
 preference is supplied. Other contexts use the explicit preferred format
 directly.
 Multiple authoritative format markers are an integrity error; registry order
 never chooses between conflicting persisted formats.
-For a published world, weak evidence without an authoritative marker is also
-an integrity error. An older world with identity files but no backend evidence
-uses the preferred format only to create and re-probe its marker while holding
-the per-world bootstrap lock, before generation is attached.
+For a published world, weak evidence or no evidence without an authoritative
+marker is also an integrity error. Bootstrap never uses the current configured
+preference to claim or mutate such a root.
 After bootstrap resolves a backend, `WorldSet` retains its ID on the world
 entry. Later persistence contexts use that active format directly, so a
 configuration preference change cannot redirect close-time writes into a

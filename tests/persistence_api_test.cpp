@@ -610,7 +610,7 @@ TEST_CASE(Persistence_FormatResolutionRejectsConflictingPersistedMarkers) {
     CHECK_THROWS(registry.resolveFormat(context));
 }
 
-TEST_CASE(Persistence_FormatResolutionSeparatesIdentityOnlyFromWeakEvidence) {
+TEST_CASE(Persistence_FormatResolutionRequiresAuthoritativeSavedIdentity) {
     auto storage = std::make_shared<InMemoryStorageBackend>();
     FormatRegistry registry;
     registry.registerFormat(
@@ -627,9 +627,7 @@ TEST_CASE(Persistence_FormatResolutionSeparatesIdentityOnlyFromWeakEvidence) {
     context.preferredFormat = "memory";
     context.discoverExistingFormat = true;
     context.storage = storage;
-    CHECK_EQ(
-        registry.resolveFormat(context)->descriptor().id,
-        std::string("memory"));
+    CHECK_THROWS(registry.resolveFormat(context));
 
     auto weakEvidence = storage->openWrite("root/zones");
     weakEvidence->commit();

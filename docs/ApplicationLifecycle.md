@@ -59,9 +59,9 @@ Shutdown persists world state and releases resources.
 5. Register persistence formats and configure persistence root.
    - Formats are registered with `WorldSet::persistenceFormats()`.
    - Root path is resolved from the world id.
-   - Provider options come from `persistence.yaml`. Storage probes take
-     precedence over its preferred format, which is used only when no existing
-     format can be detected.
+   - Provider options come from `persistence.yaml`. Its preferred format is a
+     new-world creation input; existing worlds require an authoritative saved
+     format marker.
    - After bootstrap resolves the backend, the active world retains that
      format for lazy loads, eviction writes, and close-time persistence.
 6. Initialize world resources.
@@ -73,8 +73,8 @@ Shutdown persists world state and releases resources.
    - For a new world, Rigel stages backend world metadata with world settings
      and the generator snapshot, verifies the authoritative format probe, and
      atomically publishes the complete save while holding the per-world
-     bootstrap lock. An older identity-only save is claimed under that same
-     lock before either runtime owner receives a generator.
+     bootstrap lock. A root without the authoritative backend marker is
+     rejected unchanged before either runtime owner receives a generator.
    - `WorldGenerator` is then attached to both.
 8. Load entity data from disk (chunks are lazy-loaded).
    - `loadBootstrapEntities(...)` validates and adds persisted entities without

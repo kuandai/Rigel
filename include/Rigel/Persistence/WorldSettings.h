@@ -65,6 +65,13 @@ SavedWorldGenerationPresence inspectSavedWorldGeneration(
 void recoverAbandonedWorldGenerationStaging(
     const PersistenceContext& context);
 
+// Completes a durable publication handoff before creation inputs are resolved.
+// This never invents a missing backend identity or consults installed generator
+// content.
+void recoverWorldGenerationPublication(
+    PersistenceService& persistence,
+    const PersistenceContext& context);
+
 // Selects and durably publishes the persistence backend identity in the same
 // atomic directory publication as the save-owned settings and definition.
 // Returns the selected format ID for subsequent operations on this world.
@@ -76,8 +83,8 @@ std::string publishNewWorldGeneration(
 
 // Opens a saved generation identity and its authoritative persistence format
 // under the per-world bootstrap lock. When the root is still missing, the
-// optional creation input is published atomically. Older identity-only roots
-// are claimed by exactly one preferred backend while the same lock is held.
+// optional creation input is published atomically. Published roots without an
+// authoritative backend marker are rejected without mutation.
 BootstrappedWorldGeneration bootstrapWorldGeneration(
     const std::optional<NewWorldGeneration>& creation,
     PersistenceService& persistence,

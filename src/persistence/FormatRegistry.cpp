@@ -54,9 +54,13 @@ std::unique_ptr<PersistenceFormat> FormatRegistry::resolveFormat(const Persisten
         return authoritativeEntry->factory(context);
     }
 
-    if (context.discoverExistingFormat && bestEntry) {
+    if (context.discoverExistingFormat) {
+        if (bestEntry) {
+            throw std::runtime_error(
+                "FormatRegistry: persisted format evidence is missing an authoritative marker");
+        }
         throw std::runtime_error(
-            "FormatRegistry: persisted format evidence is missing an authoritative marker");
+            "FormatRegistry: published save is missing an authoritative format marker");
     }
 
     if (!context.preferredFormat.empty()) {

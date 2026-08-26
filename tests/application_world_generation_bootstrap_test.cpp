@@ -7,14 +7,10 @@
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/GeneratorSnapshot.h"
 
-#include <chrono>
-#include <condition_variable>
 #include <filesystem>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
-#include <thread>
 
 namespace {
 
@@ -62,6 +58,28 @@ Persistence::NewWorldGeneration creation(
     return result;
 }
 
+std::string readDocument(
+    Persistence::StorageBackend& storage,
+    const std::filesystem::path& path) {
+    auto reader = storage.openRead(path.string());
+    std::string result(reader->size(), '\0');
+    if (!result.empty()) {
+        reader->readBytes(
+            reinterpret_cast<uint8_t*>(result.data()), result.size());
+    }
+    return result;
+}
+
+void writeDocument(
+    Persistence::StorageBackend& storage,
+    const std::filesystem::path& path,
+    const std::string& contents) {
+    auto session = storage.openWrite(path.string());
+    session->writer().writeBytes(
+        reinterpret_cast<const uint8_t*>(contents.data()), contents.size());
+    session->commit();
+}
+
 void configureWorldSet(
     Voxel::WorldSet& worldSet,
     const std::filesystem::path& root,
@@ -89,120 +107,6 @@ void configureWorldSet(
         worldSet.resources().registry().registerBlock(identifier, block);
     }
 }
-
-class PausedCommitSession final : public Persistence::AtomicWriteSession {
-public:
-    PausedCommitSession(
-        std::unique_ptr<Persistence::AtomicWriteSession> inner,
-        std::mutex& mutex,
-        std::condition_variable& changed,
-        bool& ready,
-        bool& released)
-        : m_inner(std::move(inner))
-        , m_mutex(mutex)
-        , m_changed(changed)
-        , m_ready(ready)
-        , m_released(released) {
-    }
-
-    Persistence::ByteWriter& writer() override { return m_inner->writer(); }
-
-    void commit() override {
-        {
-            std::unique_lock lock(m_mutex);
-            m_ready = true;
-            m_changed.notify_all();
-            m_changed.wait(lock, [&] { return m_released; });
-        }
-        m_inner->commit();
-    }
-
-    void abort() override { m_inner->abort(); }
-
-private:
-    std::unique_ptr<Persistence::AtomicWriteSession> m_inner;
-    std::mutex& m_mutex;
-    std::condition_variable& m_changed;
-    bool& m_ready;
-    bool& m_released;
-};
-
-class PausedBackendIdentityStorage final
-    : public Persistence::FilesystemBackend {
-public:
-    std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
-        const std::string& path) override {
-        auto inner = Persistence::FilesystemBackend::openWrite(path);
-        if (std::filesystem::path(path).filename() != "world.meta") {
-            return inner;
-        }
-        std::lock_guard lock(m_mutex);
-        if (m_wrapped) {
-            return inner;
-        }
-        m_wrapped = true;
-        return std::make_unique<PausedCommitSession>(
-            std::move(inner), m_mutex, m_changed, m_ready, m_released);
-    }
-
-    void waitUntilMarkerReady() {
-        std::unique_lock lock(m_mutex);
-        m_changed.wait(lock, [&] { return m_ready; });
-    }
-
-    void releaseMarker() {
-        std::lock_guard lock(m_mutex);
-        m_released = true;
-        m_changed.notify_all();
-    }
-
-private:
-    std::mutex m_mutex;
-    std::condition_variable m_changed;
-    bool m_wrapped = false;
-    bool m_ready = false;
-    bool m_released = false;
-};
-
-class ObservedBootstrapLockStorage final
-    : public Persistence::FilesystemBackend {
-public:
-    std::unique_ptr<Persistence::WorldGenerationBootstrapLock>
-    lockWorldGenerationBootstrap(const std::string& root) override {
-        {
-            std::lock_guard lock(m_mutex);
-            m_attempting = true;
-            m_changed.notify_all();
-        }
-        auto result = Persistence::FilesystemBackend::
-            lockWorldGenerationBootstrap(root);
-        {
-            std::lock_guard lock(m_mutex);
-            m_acquired = true;
-            m_changed.notify_all();
-        }
-        return result;
-    }
-
-    void waitUntilAttempting() {
-        std::unique_lock lock(m_mutex);
-        m_changed.wait(lock, [&] { return m_attempting; });
-    }
-
-    bool acquiredBriefly() {
-        std::unique_lock lock(m_mutex);
-        return m_changed.wait_for(
-            lock,
-            std::chrono::milliseconds(100),
-            [&] { return m_acquired; });
-    }
-
-private:
-    std::mutex m_mutex;
-    std::condition_variable m_changed;
-    bool m_attempting = false;
-    bool m_acquired = false;
-};
 
 class FailingCommitSession final : public Persistence::AtomicWriteSession {
 public:
@@ -330,13 +234,14 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_reload_uses_saved_snapshot) {
     }
 }
 
-TEST_CASE(ApplicationWorldGenerationBootstrap_markerless_claim_is_serialized) {
-    Rigel::Test::TemporaryDirectory directory("rigel_application_bootstrap_claim");
+TEST_CASE(ApplicationWorldGenerationBootstrap_markerless_save_fails_unchanged) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_markerless");
     const auto root = directory.path() / "world_1";
     const auto saved = creation(333, 0.5f, "markerless world");
+    auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
 
     {
-        auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
         Rigel::Voxel::WorldSet worldSet;
         configureWorldSet(worldSet, root, storage, "memory");
         Rigel::Voxel::World& world = worldSet.createWorld(1);
@@ -346,84 +251,28 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_markerless_claim_is_serialized) {
         storage->remove((root / "world.meta").string());
     }
 
-    auto firstStorage = std::make_shared<PausedBackendIdentityStorage>();
-    auto secondStorage = std::make_shared<ObservedBootstrapLockStorage>();
-    Rigel::Voxel::WorldSet firstSet;
-    Rigel::Voxel::WorldSet secondSet;
-    configureWorldSet(firstSet, root, firstStorage, "memory");
-    configureWorldSet(secondSet, root, secondStorage, "cr");
-    Rigel::Voxel::World& firstWorld = firstSet.createWorld(1);
-    Rigel::Voxel::World& secondWorld = secondSet.createWorld(1);
-    Rigel::Voxel::WorldView firstView(firstWorld, firstSet.resources());
-    Rigel::Voxel::WorldView secondView(secondWorld, secondSet.resources());
-    std::optional<Rigel::detail::ApplicationWorldGenerationBootstrapResult>
-        firstResult;
-    std::optional<Rigel::detail::ApplicationWorldGenerationBootstrapResult>
-        secondResult;
-    std::exception_ptr firstFailure;
-    std::exception_ptr secondFailure;
+    for (const std::string preferredFormat : {"memory", "cr"}) {
+        Rigel::Voxel::WorldSet worldSet;
+        configureWorldSet(worldSet, root, storage, preferredFormat);
+        Rigel::Voxel::World& world = worldSet.createWorld(1);
+        Rigel::Voxel::WorldView view(world, worldSet.resources());
 
-    std::thread first([&] {
-        try {
-            firstResult = Rigel::detail::bootstrapApplicationWorldGeneration(
-                firstSet,
-                1,
-                firstWorld,
-                firstView,
-                std::nullopt,
-                firstSet.persistenceContext(1));
-        } catch (...) {
-            firstFailure = std::current_exception();
-        }
-    });
-    firstStorage->waitUntilMarkerReady();
-    CHECK(firstWorld.generator() == nullptr);
-    CHECK(firstView.generator() == nullptr);
-
-    std::thread second([&] {
-        try {
-            secondResult = Rigel::detail::bootstrapApplicationWorldGeneration(
-                secondSet,
-                1,
-                secondWorld,
-                secondView,
-                std::nullopt,
-                secondSet.persistenceContext(1));
-        } catch (...) {
-            secondFailure = std::current_exception();
-        }
-    });
-    secondStorage->waitUntilAttempting();
-    CHECK(!secondStorage->acquiredBriefly());
-    CHECK(!std::filesystem::exists(root / "worldInfo.json"));
-    firstStorage->releaseMarker();
-    first.join();
-    second.join();
-
-    if (firstFailure) {
-        std::rethrow_exception(firstFailure);
+        CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+            worldSet,
+            1,
+            world,
+            view,
+            std::nullopt,
+            worldSet.persistenceContext(1)));
+        CHECK(world.generator() == nullptr);
+        CHECK(view.generator() == nullptr);
+        CHECK(!std::filesystem::exists(root / "world.meta"));
+        CHECK(!std::filesystem::exists(root / "worldInfo.json"));
+        CHECK(std::filesystem::is_regular_file(
+            root / "world-settings.yaml"));
+        CHECK(std::filesystem::is_regular_file(
+            root / "generator-definition.yaml"));
     }
-    if (secondFailure) {
-        std::rethrow_exception(secondFailure);
-    }
-    CHECK(firstResult.has_value());
-    CHECK(secondResult.has_value());
-    CHECK_EQ(firstResult->persistenceFormat, std::string("memory"));
-    CHECK_EQ(secondResult->persistenceFormat, std::string("memory"));
-    CHECK_EQ(
-        firstSet.persistenceContext(1).preferredFormat,
-        std::string("memory"));
-    CHECK_EQ(
-        secondSet.persistenceContext(1).preferredFormat,
-        std::string("memory"));
-    CHECK_EQ(firstResult->generator->config().seed, 333u);
-    CHECK_EQ(secondResult->generator->config().seed, 333u);
-    CHECK(std::filesystem::exists(root / "world.meta"));
-    CHECK(!std::filesystem::exists(root / "worldInfo.json"));
-    CHECK_EQ(firstResult->generator, firstWorld.generator());
-    CHECK_EQ(firstResult->generator, firstView.generator());
-    CHECK_EQ(secondResult->generator, secondWorld.generator());
-    CHECK_EQ(secondResult->generator, secondView.generator());
 }
 
 TEST_CASE(ApplicationWorldGenerationBootstrap_weak_evidence_fails_unchanged) {
@@ -470,6 +319,51 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_weak_evidence_fails_unchanged) {
     CHECK(std::filesystem::is_directory(root / "zones"));
 }
 
+TEST_CASE(ApplicationWorldGenerationBootstrap_corrupt_backend_identity_fails_unchanged) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_corrupt_identity");
+    const auto root = directory.path() / "world_1";
+    const auto markerPath = root / "world.meta";
+    auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
+
+    {
+        Rigel::Voxel::WorldSet publishingSet;
+        configureWorldSet(publishingSet, root, storage, "memory");
+        Rigel::Voxel::World& publishingWorld = publishingSet.createWorld(1);
+        Rigel::Voxel::WorldView publishingView(
+            publishingWorld, publishingSet.resources());
+        Rigel::detail::bootstrapApplicationWorldGeneration(
+            publishingSet,
+            1,
+            publishingWorld,
+            publishingView,
+            creation(445, 0.5f, "corrupt identity world"),
+            publishingSet.persistenceContext(1));
+    }
+
+    const std::string corruptMarker = "not valid metadata";
+    writeDocument(*storage, markerPath, corruptMarker);
+
+    Rigel::Voxel::WorldSet reopeningSet;
+    configureWorldSet(reopeningSet, root, storage, "cr");
+    Rigel::Voxel::World& world = reopeningSet.createWorld(1);
+    Rigel::Voxel::WorldView view(world, reopeningSet.resources());
+    CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+        reopeningSet,
+        1,
+        world,
+        view,
+        std::nullopt,
+        reopeningSet.persistenceContext(1)));
+    CHECK(world.generator() == nullptr);
+    CHECK(view.generator() == nullptr);
+    CHECK_EQ(readDocument(*storage, markerPath), corruptMarker);
+    CHECK(!std::filesystem::exists(root / "worldInfo.json"));
+    CHECK(std::filesystem::is_regular_file(root / "world-settings.yaml"));
+    CHECK(std::filesystem::is_regular_file(
+        root / "generator-definition.yaml"));
+}
+
 TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_saved_content_is_not_claimed) {
     Rigel::Test::TemporaryDirectory directory(
         "rigel_application_bootstrap_invalid_saved_content");
@@ -490,8 +384,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_saved_content_is_not_claim
             creation(555, 0.5f, "unavailable content world"),
             publishingSet.persistenceContext(1));
     }
-    storage->remove((root / "world.meta").string());
-
     Rigel::Voxel::WorldSet reopeningSet;
     configureWorldSet(reopeningSet, root, storage, "memory", false);
     Rigel::Voxel::World& world = reopeningSet.createWorld(1);
@@ -505,6 +397,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_saved_content_is_not_claim
         reopeningSet.persistenceContext(1)));
     CHECK(world.generator() == nullptr);
     CHECK(view.generator() == nullptr);
-    CHECK(!std::filesystem::exists(root / "world.meta"));
+    CHECK(std::filesystem::is_regular_file(root / "world.meta"));
     CHECK(!std::filesystem::exists(root / "worldInfo.json"));
 }

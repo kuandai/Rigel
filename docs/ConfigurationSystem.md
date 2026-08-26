@@ -156,9 +156,11 @@ existing `saves/world_<worldId>` root:
   snapshot.
 
 Both documents are durably committed in a unique sibling staging directory,
+along with the selected persistence backend's authoritative metadata marker,
 then the complete directory is atomically published without replacing an
 existing root. Failed creation never exposes a partial final root. A root
-containing only one file is incomplete and is not loaded.
+containing only one identity file, or lacking a decodable authoritative backend
+marker, is incomplete and is not loaded or repaired from current preferences.
 Startup removes abandoned staging siblings before inspecting or creating the
 world, so a transient rollback-cleanup failure is retried before another
 publication attempt can begin.

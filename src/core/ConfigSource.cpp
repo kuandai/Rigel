@@ -65,7 +65,7 @@ std::optional<ConfigSourceResult> EmbeddedConfigSource::loadPath(
             std::string(data.begin(), data.end())
         };
     } catch (const std::exception&) {
-        throw std::runtime_error(
+        throw ConfigPathNotFound(
             "Missing configuration overlay '" + normalized +
             "' declared by '" + m_assetId + "'");
     }
@@ -94,7 +94,7 @@ std::optional<ConfigSourceResult> FileConfigSource::loadPath(
     }
     auto content = readFile(candidate);
     if (!content) {
-        throw std::runtime_error(
+        throw ConfigPathNotFound(
             "Missing configuration overlay '" + candidate.string() +
             "' declared by '" + m_path + "'");
     }

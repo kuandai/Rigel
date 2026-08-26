@@ -4,6 +4,8 @@
 #include "Rigel/Voxel/WorldConfigBootstrap.h"
 #include "Rigel/Voxel/GeneratorSnapshot.h"
 #include "Rigel/Asset/Types.h"
+#include "Rigel/Persistence/Storage.h"
+#include "Rigel/Persistence/WorldSettings.h"
 
 #include <filesystem>
 #include <fstream>
@@ -281,6 +283,86 @@ TEST_CASE(WorldConfigProvider_StreamingLoadDoesNotResolveGeneratorContent) {
 
     const StreamingConfig streaming = provider.loadStreamingConfig();
     CHECK_EQ(streaming.viewDistanceChunks, 9);
+    CHECK_THROWS(provider.loadConfig());
+}
+
+TEST_CASE(WorldConfigProvider_SavedWorldReloadToleratesRemovedFileOverlay) {
+    Rigel::Test::TemporaryDirectory directory("rigel_removed_world_overlay");
+    const auto sourcePath = directory.path() / "world_generation.yaml";
+    const auto overlayPath = directory.path() / "installed-overlay.yaml";
+    const auto worldRoot = directory.path() / "world_0";
+    {
+        std::ofstream source(sourcePath);
+        source <<
+            "seed: 90817\n"
+            "solid_block: base:stone_shale\n"
+            "surface_block: base:grass\n"
+            "world:\n"
+            "  version: 27\n"
+            "biomes:\n"
+            "  entries:\n"
+            "    - name: land\n"
+            "      surface:\n"
+            "        - block: base:grass\n"
+            "          depth: 1\n"
+            "density_graph:\n"
+            "  outputs:\n"
+            "    base_density: ground\n"
+            "  nodes:\n"
+            "    - id: ground\n"
+            "      type: constant\n"
+            "      value: 0.75\n"
+            "generation:\n"
+            "  stages:\n"
+            "    caves: false\n"
+            "    structures: false\n"
+            "flags:\n"
+            "  installed_tuning: true\n"
+            "overlays:\n"
+            "  - path: installed-overlay.yaml\n"
+            "    when: installed_tuning\n"
+            "streaming:\n"
+            "  view_distance_chunks: 9\n";
+    }
+    {
+        std::ofstream overlay(overlayPath);
+        overlay <<
+            "world:\n"
+            "  sea_level: 42\n"
+            "streaming:\n"
+            "  worker_threads: 4\n";
+    }
+
+    WorldConfigProvider provider;
+    provider.addSource(std::make_unique<FileConfigSource>(sourcePath.string()));
+    WorldConfiguration created = provider.loadConfig();
+    CHECK_EQ(created.generation.world.seaLevel, 42);
+
+    Rigel::Persistence::WorldSettings settings;
+    settings.displayName = "Removed overlay reload";
+    settings.seed = created.generation.seed;
+    settings.generator.sourceId = "rigel:test";
+    settings.generator.sourceRevision = created.generation.world.version;
+    settings.generator.definitionSchemaVersion =
+        kGeneratorDefinitionSchemaVersion;
+    settings.generator.semanticsVersion = kGeneratorSemanticsVersion;
+    created.generation.world.version = kGeneratorSemanticsVersion;
+    auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    Rigel::Persistence::PersistenceContext context;
+    context.rootPath = worldRoot.string();
+    context.storage = storage;
+    Rigel::Persistence::publishNewWorldGeneration(
+        settings, created.generation, context);
+
+    CHECK(std::filesystem::remove(overlayPath));
+    const StreamingConfig streaming = provider.loadStreamingConfig();
+    const Rigel::Persistence::SavedWorldGeneration saved =
+        Rigel::Persistence::loadSavedWorldGeneration(context);
+
+    CHECK_EQ(streaming.viewDistanceChunks, 9);
+    CHECK_EQ(saved.settings, settings);
+    CHECK_EQ(saved.definition.world.seaLevel, 42);
+    CHECK_EQ(saved.definition.seed, settings.seed);
     CHECK_THROWS(provider.loadConfig());
 }
 

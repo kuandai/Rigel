@@ -5,11 +5,17 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace Rigel::Config {
+
+class ConfigPathNotFound : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 struct ConfigSourceResult {
     std::string name;

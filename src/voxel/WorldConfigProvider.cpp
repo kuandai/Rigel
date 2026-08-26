@@ -92,7 +92,12 @@ StreamingConfig WorldConfigProvider::loadStreamingConfig() const {
                 continue;
             }
 
-            auto overlayData = source.loadPath(overlay.path);
+            std::optional<Config::ConfigSourceResult> overlayData;
+            try {
+                overlayData = source.loadPath(overlay.path);
+            } catch (const Config::ConfigPathNotFound&) {
+                continue;
+            }
             if (!overlayData) {
                 continue;
             }

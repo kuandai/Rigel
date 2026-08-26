@@ -310,12 +310,32 @@ bool buildDensityGraph(const WorldGenConfig& config, DensityGraph& graph, std::s
         node.scale = nodeConfig.scale;
         node.offset = nodeConfig.offset;
         node.splinePoints = nodeConfig.splinePoints;
-        if (!node.splinePoints.empty()) {
+        if (node.type == DensityNodeType::Spline) {
+            if (node.splinePoints.empty()) {
+                error = "Density spline node '" + node.name +
+                    "' requires at least one point";
+                return false;
+            }
+            for (const auto& [x, y] : node.splinePoints) {
+                if (!std::isfinite(x) || !std::isfinite(y)) {
+                    error = "Density spline node '" + node.name +
+                        "' requires finite point coordinates";
+                    return false;
+                }
+            }
             std::stable_sort(
                 node.splinePoints.begin(), node.splinePoints.end(),
                 [](const auto& a, const auto& b) {
                     return a.first < b.first;
                 });
+            for (size_t point = 1; point < node.splinePoints.size(); ++point) {
+                if (!(node.splinePoints[point - 1].first <
+                      node.splinePoints[point].first)) {
+                    error = "Density spline node '" + node.name +
+                        "' requires unique X coordinates";
+                    return false;
+                }
+            }
         }
         if (node.type == DensityNodeType::Climate) {
             node.climateField = parseClimateField(nodeConfig.field);

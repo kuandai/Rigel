@@ -345,6 +345,43 @@ TEST_CASE(WorldGenerator_RejectsInvalidDensityGraph) {
     CHECK(diagnostic.find("missing") != std::string::npos);
 }
 
+TEST_CASE(WorldGenerator_RejectsAmbiguousSplineCoordinates) {
+    BlockRegistry registry = makeRegistry();
+    WorldGenConfig config = makeFlatConfig();
+    config.densityGraph.outputs["base_density"] = "shaped";
+    config.densityGraph.nodes = {
+        WorldGenConfig::DensityNodeConfig{
+            .id = "base",
+            .type = "constant",
+            .value = 0.0f},
+        WorldGenConfig::DensityNodeConfig{
+            .id = "shaped",
+            .type = "spline",
+            .inputs = {"base"},
+            .splinePoints = {{0.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, -1.0f}}}};
+
+    std::string duplicateDiagnostic;
+    try {
+        WorldGenerator generator(registry, config);
+    } catch (const std::exception& error) {
+        duplicateDiagnostic = error.what();
+    }
+    CHECK(duplicateDiagnostic.find("requires unique X coordinates") !=
+          std::string::npos);
+
+    config.densityGraph.nodes.back().splinePoints = {
+        {0.0f, 0.0f},
+        {std::numeric_limits<float>::quiet_NaN(), 1.0f}};
+    std::string finiteDiagnostic;
+    try {
+        WorldGenerator generator(registry, config);
+    } catch (const std::exception& error) {
+        finiteDiagnostic = error.what();
+    }
+    CHECK(finiteDiagnostic.find("requires finite point coordinates") !=
+          std::string::npos);
+}
+
 TEST_CASE(WorldGenerator_RejectsProgrammaticDensityGraphFanout) {
     BlockRegistry registry = makeRegistry();
 

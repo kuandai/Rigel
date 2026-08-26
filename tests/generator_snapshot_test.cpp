@@ -4,6 +4,7 @@
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/BlockType.h"
 
+#include <limits>
 #include <string>
 
 using namespace Rigel::Voxel;
@@ -237,11 +238,24 @@ TEST_CASE(GeneratorSnapshot_rejects_ambiguous_spline_coordinates) {
     spline.id = "shaped";
     spline.type = "spline";
     spline.inputs = {"base"};
-    spline.splinePoints = {{-1.0f, -0.5f}, {0.0f, 0.25f}, {0.0f, 0.75f}};
+    spline.splinePoints = {{0.0f, 0.25f}, {1.0f, 0.75f}, {0.0f, -0.5f}};
     definition.densityGraph.nodes.push_back(std::move(spline));
     definition.densityGraph.outputs["base_density"] = "shaped";
 
     CHECK_THROWS(serializeGeneratorSnapshot(definition));
+
+    const float infinity = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (const std::vector<std::pair<float, float>>& invalidPoints : {
+             std::vector<std::pair<float, float>>{{-infinity, 0.0f}},
+             std::vector<std::pair<float, float>>{{infinity, 0.0f}},
+             std::vector<std::pair<float, float>>{{nan, 0.0f}},
+             std::vector<std::pair<float, float>>{{0.0f, -infinity}},
+             std::vector<std::pair<float, float>>{{0.0f, infinity}},
+             std::vector<std::pair<float, float>>{{0.0f, nan}}}) {
+        definition.densityGraph.nodes.back().splinePoints = invalidPoints;
+        CHECK_THROWS(serializeGeneratorSnapshot(definition));
+    }
 
     definition.densityGraph.nodes.back().splinePoints = {
         {1.0f, 0.75f}, {-1.0f, -0.5f}, {0.0f, 0.25f}};

@@ -311,8 +311,11 @@ bool buildDensityGraph(const WorldGenConfig& config, DensityGraph& graph, std::s
         node.offset = nodeConfig.offset;
         node.splinePoints = nodeConfig.splinePoints;
         if (!node.splinePoints.empty()) {
-            std::sort(node.splinePoints.begin(), node.splinePoints.end(),
-                      [](const auto& a, const auto& b) { return a.first < b.first; });
+            std::stable_sort(
+                node.splinePoints.begin(), node.splinePoints.end(),
+                [](const auto& a, const auto& b) {
+                    return a.first < b.first;
+                });
         }
         if (node.type == DensityNodeType::Climate) {
             node.climateField = parseClimateField(nodeConfig.field);

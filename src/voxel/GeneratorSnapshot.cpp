@@ -201,10 +201,31 @@ void validateNodeContracts(const WorldGenConfig& definition) {
                 "Generator definition density node '" + node.id +
                 "' has an invalid input count for type '" + node.type + "'");
         }
-        if (node.type == "spline" && node.splinePoints.empty()) {
-            throw std::invalid_argument(
-                "Generator definition spline node '" + node.id +
-                "' requires at least one point");
+        if (node.type == "spline") {
+            if (node.splinePoints.empty()) {
+                throw std::invalid_argument(
+                    "Generator definition spline node '" + node.id +
+                    "' requires at least one point");
+            }
+            std::vector<std::pair<float, float>> points = node.splinePoints;
+            for (const auto& [x, y] : points) {
+                if (!std::isfinite(x) || !std::isfinite(y)) {
+                    throw std::invalid_argument(
+                        "Generator definition spline node '" + node.id +
+                        "' requires finite point coordinates");
+                }
+            }
+            std::sort(points.begin(), points.end(), [](const auto& left,
+                                                       const auto& right) {
+                return left.first < right.first;
+            });
+            for (size_t point = 1; point < points.size(); ++point) {
+                if (!(points[point - 1].first < points[point].first)) {
+                    throw std::invalid_argument(
+                        "Generator definition spline node '" + node.id +
+                        "' requires unique X coordinates");
+                }
+            }
         }
         if (node.type == "noise2d" || node.type == "noise3d" ||
             node.type == "noise3d_xy") {

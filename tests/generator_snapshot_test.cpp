@@ -230,3 +230,20 @@ TEST_CASE(GeneratorSnapshot_rejects_incoherent_node_and_pipeline_contracts) {
     definition.climate.global.temperature.octaves = -1;
     CHECK_THROWS(serializeGeneratorSnapshot(definition));
 }
+
+TEST_CASE(GeneratorSnapshot_rejects_ambiguous_spline_coordinates) {
+    WorldGenConfig definition = snapshotDefinition();
+    WorldGenConfig::DensityNodeConfig spline;
+    spline.id = "shaped";
+    spline.type = "spline";
+    spline.inputs = {"base"};
+    spline.splinePoints = {{-1.0f, -0.5f}, {0.0f, 0.25f}, {0.0f, 0.75f}};
+    definition.densityGraph.nodes.push_back(std::move(spline));
+    definition.densityGraph.outputs["base_density"] = "shaped";
+
+    CHECK_THROWS(serializeGeneratorSnapshot(definition));
+
+    definition.densityGraph.nodes.back().splinePoints = {
+        {1.0f, 0.75f}, {-1.0f, -0.5f}, {0.0f, 0.25f}};
+    CHECK_NO_THROW(serializeGeneratorSnapshot(definition));
+}

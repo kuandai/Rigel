@@ -4,6 +4,11 @@ This document describes the two persistence backends currently implemented:
 Cosmic Reach (CR) and Memory. It focuses on storage layout, mapping, and
 format-specific behavior.
 
+Both formats live beneath a world root that also contains the
+format-independent `world-settings.yaml` and `generator-definition.yaml`
+identity files. Those files select and reproduce generation; they do not alter
+either backend's metadata, chunk, entity, or region byte format.
+
 ---
 
 ## 1. CR Backend

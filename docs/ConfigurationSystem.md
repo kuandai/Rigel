@@ -14,6 +14,7 @@ implementation and the on-disk configuration files shipped with the project.
   - [Rendering](#rendering)
   - [Persistence](#persistence)
 - [Config Provider and Sources](#config-provider-and-sources)
+- [Save-Owned World Identity](#save-owned-world-identity)
 - [World Generation Config](#world-generation-config)
 - [Render Config](#render-config)
 - [Persistence Config](#persistence-config)
@@ -25,9 +26,11 @@ implementation and the on-disk configuration files shipped with the project.
 
 ## Overview
 
-Rigel uses a layered configuration system. Each config type is loaded from a
-stack of sources, and later sources override earlier values. Configs are read
-once during application bootstrap.
+Rigel uses layered configuration for creation inputs and runtime policy. Each
+config type is loaded from a stack of sources, and later sources override
+earlier values. Configs are read once during application bootstrap. An existing
+world's generator is the exception: it is loaded from that save's canonical
+generator snapshot, not from the layered creation inputs.
 
 Fields merge according to their YAML shape:
 
@@ -49,7 +52,10 @@ Four config types are supported today:
 
 Typed providers load each subsystem's settings from YAML input using rapidyaml.
 `Voxel::WorldConfigProvider` loads generation and streaming settings together
-so their shared overlays have one deterministic order. Rendering is loaded by
+when creating a world so their shared overlays have one deterministic order.
+When opening a published save, it loads only `StreamingConfig`; invalid,
+changed, or absent installed generator content cannot replace the saved
+definition. Rendering is loaded by
 `Render::RenderConfigProvider`, and persistence by
 `Persistence::PersistenceConfigProvider`. Each subsystem's bootstrap function
 uses the shared standard-source builder, but the typed provider remains the
@@ -68,7 +74,7 @@ The general rule is:
 3) Project root overrides (for quick testing).
 4) Per-world overrides under `config/worlds/<worldId>/`.
 
-### World Generation and Streaming
+### World Generation Creation Input and Streaming
 
 Sources (in order):
 
@@ -76,6 +82,11 @@ Sources (in order):
 2. `config/world_generation.yaml`
 3. `world_generation.yaml`
 4. `config/worlds/<worldId>/world_generation.yaml`
+
+The generation fields in these sources are resolved only while creating a new
+world. Streaming fields remain bootstrap policy and are loaded for both new and
+existing worlds. Generator overlays are not resolved while opening an existing
+world.
 
 ### Rendering
 
@@ -125,6 +136,32 @@ resolved only by the source that declared them.
 Declaring an overlay that the source cannot load is a configuration error. The
 diagnostic names both the declaring source and the resolved file or embedded
 resource path; the source layer is not published partially.
+
+---
+
+## Save-Owned World Identity
+
+Every newly created world publishes two format-independent files under the
+existing `saves/world_<worldId>` root:
+
+- `world-settings.yaml` owns the settings schema version, display name, actual
+  seed, generator source ID and revision, definition schema version, and
+  generator semantics version.
+- `generator-definition.yaml` is the canonical resolved generator runtime
+  snapshot.
+
+The definition is written and durably committed first. `world-settings.yaml`
+is committed last and is the publication boundary; failed creation removes the
+new root. A root containing only one file is incomplete and is not loaded.
+Existing save data without both files is legacy or unknown and is rejected
+without mutation.
+
+The seed and source revision are deliberately absent from the generator
+snapshot. They are injected from `WorldSettings` when the snapshot is decoded,
+so layered config and snapshot data cannot become competing owners. Snapshot
+serialization also omits flags, overlays, aliases, comments, and inactive
+legacy scalar terrain inputs. Snapshot parsing is strict and accepts only the
+canonical representation and supported schema/semantics versions.
 
 ---
 
@@ -475,14 +512,17 @@ and used directly in the override paths:
 - `config/worlds/<worldId>/persistence.yaml`
 
 These files are optional and only override fields they define. As the last
-source layer, a per-world file and any overlays it declares have the highest
-precedence.
+source layer, they have the highest precedence. Generation fields affect only
+new-world creation; they do not override a published save's generator
+snapshot. The world-generation file's streaming fields still apply at
+bootstrap for an existing world, without resolving its generator overlays.
 
 ---
 
 ## Limitations
 
-- Configs are loaded once at startup; there is no hot reload.
+- Configs and saved world identity are loaded once at startup; there is no hot
+  reload.
 - Validation is implemented by the typed providers rather than one generic
   schema engine. Unknown fixed keys are diagnosed and ignored; invalid scalar
   shapes and types, strict booleans, numeric bounds, aggregate work limits,

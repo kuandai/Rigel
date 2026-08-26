@@ -264,6 +264,24 @@ TEST_CASE(WorldConfigProvider_ReportsInvalidFinalCrossFields) {
     );
 }
 
+TEST_CASE(WorldConfigProvider_StreamingLoadDoesNotResolveGeneratorContent) {
+    WorldConfigProvider provider;
+    provider.addSource(std::make_unique<MemoryConfigSource>(
+        "installed definition",
+        "world:\n"
+        "  min_y: 500\n"
+        "  max_y: 0\n"
+        "overlays:\n"
+        "  - path: missing-definition-overlay.yaml\n"
+        "streaming:\n"
+        "  view_distance_chunks: 9\n"
+    ));
+
+    const StreamingConfig streaming = provider.loadStreamingConfig();
+    CHECK_EQ(streaming.viewDistanceChunks, 9);
+    CHECK_THROWS(provider.loadConfig());
+}
+
 TEST_CASE(WorldConfigProvider_OverlayUsesDeclaringSource) {
     WorldConfigProvider provider;
     provider.addSource(std::make_unique<MemoryConfigSource>(

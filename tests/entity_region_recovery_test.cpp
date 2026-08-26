@@ -47,6 +47,12 @@ constexpr const char* kJournalPath =
 constexpr float kPositivePositionOverflow = 0x1p31f;
 constexpr float kNegativePositionBoundary = -0x1p31f;
 
+Persistence::WorldSettings testWorldSettings() {
+    Persistence::WorldSettings settings;
+    settings.displayName = "Entity Recovery Test World";
+    return settings;
+}
+
 struct SharedFiles {
     std::unordered_map<std::string, std::vector<uint8_t>> files;
     std::unordered_map<std::string, std::vector<uint8_t>> durableFiles;
@@ -537,7 +543,8 @@ void saveRecords(const std::shared_ptr<SharedFiles>& files,
     auto context = makeContext(
         files, control, std::move(preferredFormat));
     context.providers = world.persistenceProvidersHandle();
-    Persistence::saveWorldToDisk(world, service, context);
+    Persistence::saveWorldToDisk(
+        world, testWorldSettings(), service, context);
 }
 
 std::string saveFailureAfterEntityMutation(
@@ -561,7 +568,8 @@ std::string saveFailureAfterEntityMutation(
     auto context = makeContext(files, control, preferredFormat);
     context.providers = world.persistenceProvidersHandle();
     try {
-        Persistence::saveWorldToDisk(world, service, context);
+        Persistence::saveWorldToDisk(
+            world, testWorldSettings(), service, context);
     } catch (const std::exception& error) {
         return error.what();
     }
@@ -582,7 +590,8 @@ std::string saveDirtyChunkFailure(
     auto context = makeContext(files, control, preferredFormat);
     context.providers = world.persistenceProvidersHandle();
     try {
-        Persistence::saveWorldToDisk(world, service, context);
+        Persistence::saveWorldToDisk(
+            world, testWorldSettings(), service, context);
     } catch (const std::exception& error) {
         return error.what();
     }
@@ -594,7 +603,8 @@ std::string saveWorldFailure(
     Persistence::PersistenceService& service,
     Persistence::PersistenceContext context) {
     try {
-        Persistence::saveWorldToDisk(world, service, std::move(context));
+        Persistence::saveWorldToDisk(
+            world, testWorldSettings(), service, std::move(context));
     } catch (const std::exception& error) {
         return error.what();
     }
@@ -1949,7 +1959,8 @@ TEST_CASE(Persistence_UnknownEntityPlaceholderSurvivesUntilFactoryIsAvailable) {
             CHECK(dynamic_cast<RecoveredUnknownEntity*>(placeholder) == nullptr);
             CHECK_EQ(*factoryCalls, static_cast<size_t>(0));
 
-            Persistence::saveWorldToDisk(world, service, context);
+            Persistence::saveWorldToDisk(
+                world, testWorldSettings(), service, context);
         }
 
         Voxel::WorldResources reloadedResources;
@@ -2533,7 +2544,8 @@ TEST_CASE(Persistence_WorldSaveCommitsEntitiesAfterDirtyChunks) {
     retryControl->observeAllPaths = true;
     context = makeContext(files, retryControl);
     context.providers = world.persistenceProvidersHandle();
-    Persistence::saveWorldToDisk(world, service, context);
+    Persistence::saveWorldToDisk(
+        world, testWorldSettings(), service, context);
 
     CHECK(dirtyChunk.isPersistDirty());
     CHECK_EQ(
@@ -2623,7 +2635,8 @@ TEST_CASE(Persistence_WorldSaveReplaysOlderJournalBeforeChunkFailure) {
     retryControl->observeAllPaths = true;
     context = makeContext(files, retryControl);
     context.providers = world.persistenceProvidersHandle();
-    Persistence::saveWorldToDisk(world, service, context);
+    Persistence::saveWorldToDisk(
+        world, testWorldSettings(), service, context);
 
     CHECK_EQ(
         operationCountContaining(retryControl->attempted, "/regions/region_"),

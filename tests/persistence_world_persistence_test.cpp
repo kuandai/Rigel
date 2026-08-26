@@ -21,6 +21,12 @@ using namespace Rigel;
 
 namespace {
 
+Persistence::WorldSettings testWorldSettings() {
+    Persistence::WorldSettings settings;
+    settings.displayName = "Persistence Test World";
+    return settings;
+}
+
 class RejectChunkRegionEnumerationStorage final
     : public Persistence::FilesystemBackend {
 public:
@@ -103,7 +109,12 @@ TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
     archivedEntityRegion.chunks.push_back(archivedEntityChunk);
     service.saveEntities(archivedEntityRegion, context);
 
-    Persistence::saveWorldToDisk(world, service, context);
+    Persistence::saveWorldToDisk(
+        world, testWorldSettings(), service, context);
+
+    CHECK_EQ(
+        service.loadWorldMetadata(context).displayName,
+        "Persistence Test World");
 
     CHECK_EQ(service.loadRegion(archivedChunkRegion.key, context), archivedChunkRegion);
     CHECK_EQ(service.loadEntities(archivedEntityRegion.key, context), archivedEntityRegion);
@@ -197,7 +208,8 @@ TEST_CASE(Persistence_EntityModelIdentifierSurvivesUnavailableAsset) {
     CHECK(!unavailableEntity->model());
     CHECK_EQ(unavailableEntity->modelIdentifier(), modelId);
 
-    Persistence::saveWorldToDisk(unavailableWorld, service, context);
+    Persistence::saveWorldToDisk(
+        unavailableWorld, testWorldSettings(), service, context);
     auto unavailableRoundTrip = service.loadEntities(regionKey, context);
     CHECK_EQ(unavailableRoundTrip.chunks.size(), static_cast<size_t>(1));
     CHECK_EQ(
@@ -224,7 +236,8 @@ TEST_CASE(Persistence_EntityModelIdentifierSurvivesUnavailableAsset) {
 
     availableEntity->setModel({});
     CHECK(availableEntity->modelIdentifier().empty());
-    Persistence::saveWorldToDisk(availableWorld, service, context);
+    Persistence::saveWorldToDisk(
+        availableWorld, testWorldSettings(), service, context);
     auto clearedRoundTrip = service.loadEntities(regionKey, context);
     CHECK(clearedRoundTrip.chunks.front().entities.front().modelId.empty());
 }
@@ -286,7 +299,8 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         world.setBlock(0, 0, 0, Voxel::BlockState{firstId});
         world.setBlock(
             Voxel::Chunk::SIZE, 0, 0, Voxel::BlockState{firstId});
-        Persistence::saveWorldToDisk(world, service, context);
+        Persistence::saveWorldToDisk(
+            world, testWorldSettings(), service, context);
         world.chunkManager().getChunk(targetCoord)->clearPersistDirty();
         world.chunkManager().getChunk(siblingCoord)->clearPersistDirty();
         CHECK(!world.chunkManager().getChunk(targetCoord)->isPersistDirty());
@@ -301,7 +315,8 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
             0,
             0,
             Voxel::BlockState{secondId});
-        Persistence::saveWorldToDisk(world, service, context);
+        Persistence::saveWorldToDisk(
+            world, testWorldSettings(), service, context);
         CHECK_EQ(
             observedStorage->chunkRegionEnumerationAttempts(),
             static_cast<size_t>(0));

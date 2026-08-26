@@ -3,6 +3,7 @@
 #include <string>
 
 #include "Rigel/Persistence/Types.h"
+#include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Voxel/WorldSet.h"
 
 namespace Rigel {
@@ -20,6 +21,7 @@ void loadBootstrapEntities(Voxel::World& world,
                            PersistenceContext context);
 
 void saveWorldToDisk(const Voxel::World& world,
+                     const WorldSettings& settings,
                      PersistenceService& service,
                      PersistenceContext context);
 

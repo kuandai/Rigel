@@ -83,7 +83,8 @@ pointers to that world and view as the active pair. It then:
 
 1. Initializes the set-wide block registry and texture atlas.
 2. Creates the active `World` and its `WorldView`.
-3. Configures the world generator and persistence providers.
+3. Loads or durably publishes save-owned world settings and the generator
+   snapshot, then configures the world generator and persistence providers.
 4. Wires the view to the asynchronous chunk loader.
 5. Assigns streaming and render configuration to the view.
 6. Updates and renders only that active pair in the main loop.
@@ -108,7 +109,9 @@ highest-precedence files for that ID:
 
 Configuration values are loaded and applied by the application and subsystem
 providers; they are not stored as a general configuration object on `World` or
-`WorldSet`.
+`WorldSet`. Generation fields are creation inputs only. Each published save
+owns `world-settings.yaml` and `generator-definition.yaml`, and reload bypasses
+installed generation fields while still loading streaming policy.
 
 ## Current Limitations
 

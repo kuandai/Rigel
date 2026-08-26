@@ -70,4 +70,19 @@ WorldConfiguration WorldConfigProvider::loadConfig() const {
     return config;
 }
 
+StreamingConfig WorldConfigProvider::loadStreamingConfig() const {
+    StreamingConfig config;
+    for (const auto& source : m_sources) {
+        auto yaml = source->load();
+        if (!yaml) {
+            continue;
+        }
+        StreamingConfig candidate = config;
+        candidate.applyYaml(source->name().c_str(), *yaml);
+        config = std::move(candidate);
+    }
+    config.validate("merged streaming configuration");
+    return config;
+}
+
 } // namespace Rigel::Voxel

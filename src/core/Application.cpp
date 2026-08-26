@@ -11,11 +11,13 @@
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/PersistenceConfigBootstrap.h"
 #include "Rigel/Persistence/Storage.h"
+#include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Render/OpenGLRuntime.h"
 #include "Rigel/Render/RenderConfigBootstrap.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/ChunkTasks.h"
+#include "Rigel/Voxel/GeneratorSnapshot.h"
 #include "Rigel/Voxel/WorldSet.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 #include "Rigel/Persistence/WorldPersistence.h"
@@ -39,6 +41,7 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -91,6 +94,7 @@ struct Application::Impl {
         Voxel::World* world = nullptr;
         Voxel::WorldView* worldView = nullptr;
         std::shared_ptr<Persistence::AsyncChunkLoader> chunkLoader;
+        std::optional<Persistence::WorldSettings> settings;
         bool ready = false;
         bool streamingLifecycleLogged = false;
         Voxel::StreamingLifecycleState lastStreamingLifecycle =
@@ -261,17 +265,11 @@ void Application::initialize() {
 
         Voxel::WorldConfigProvider configProvider =
             Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
-        Voxel::WorldConfiguration config = configProvider.loadConfig();
+        Voxel::WorldConfiguration config;
         Render::RenderConfigProvider renderConfigProvider =
             Render::makeRenderConfigProvider(
                 m_impl->assets, m_impl->world.activeWorldId);
         Voxel::WorldRenderConfig renderConfig = renderConfigProvider.load();
-        if (config.generation.solidBlock.empty()) {
-            config.generation.solidBlock = "base:stone_shale";
-        }
-        if (config.generation.surfaceBlock.empty()) {
-            config.generation.surfaceBlock = "base:grass";
-        }
 
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
@@ -291,14 +289,63 @@ void Application::initialize() {
             Persistence::Backends::CR::kCRSettingsProviderId,
             crSettings);
 
-        auto generator = std::make_shared<const Voxel::WorldGenerator>(
-            m_impl->world.worldSet.resources().registry(),
-            config.generation);
+        Persistence::PersistenceContext persistenceContext =
+            m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId);
+        std::shared_ptr<const Voxel::WorldGenerator> generator;
+        const auto savedPresence =
+            Persistence::inspectSavedWorldGeneration(persistenceContext);
+        if (savedPresence ==
+            Persistence::SavedWorldGenerationPresence::Missing) {
+            config = configProvider.loadConfig();
+            if (config.generation.solidBlock.empty()) {
+                config.generation.solidBlock = "base:stone_shale";
+            }
+            if (config.generation.surfaceBlock.empty()) {
+                config.generation.surfaceBlock = "base:grass";
+            }
+
+            Voxel::validateGeneratorSnapshotContent(
+                config.generation,
+                m_impl->world.worldSet.resources().registry());
+            generator = std::make_shared<const Voxel::WorldGenerator>(
+                m_impl->world.worldSet.resources().registry(),
+                config.generation);
+            Persistence::WorldSettings settings;
+            settings.displayName =
+                "world_" + std::to_string(m_impl->world.activeWorldId);
+            settings.seed = generator->config().seed;
+            settings.generator.sourceId = "rigel:default";
+            settings.generator.sourceRevision =
+                generator->config().world.version;
+            settings.generator.definitionSchemaVersion =
+                Voxel::kGeneratorDefinitionSchemaVersion;
+            settings.generator.semanticsVersion =
+                Voxel::kGeneratorSemanticsVersion;
+            Persistence::publishNewWorldGeneration(
+                settings, generator->config(), persistenceContext);
+            m_impl->world.settings = std::move(settings);
+        } else if (savedPresence ==
+                   Persistence::SavedWorldGenerationPresence::Published) {
+            config.streaming = configProvider.loadStreamingConfig();
+            Persistence::SavedWorldGeneration saved =
+                Persistence::loadSavedWorldGeneration(persistenceContext);
+            config.generation = std::move(saved.definition);
+            Voxel::validateGeneratorSnapshotContent(
+                config.generation,
+                m_impl->world.worldSet.resources().registry());
+            generator = std::make_shared<const Voxel::WorldGenerator>(
+                m_impl->world.worldSet.resources().registry(),
+                config.generation);
+            m_impl->world.settings = std::move(saved.settings);
+        } else {
+            throw std::runtime_error(
+                "Existing world is legacy, unknown, or incompletely published; "
+                "the save was left unchanged");
+        }
+
         m_impl->world.world->setGenerator(generator);
         m_impl->world.worldView->setGenerator(generator);
 
-        Persistence::PersistenceContext persistenceContext =
-            m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId);
         Persistence::loadBootstrapEntities(
             *m_impl->world.world,
             m_impl->assets,
@@ -422,9 +469,14 @@ void Application::Impl::persistWorld() {
     if (!world.ready || !world.world) {
         return;
     }
+    if (!world.settings) {
+        throw std::logic_error(
+            "Cannot persist a world without save-owned settings");
+    }
 
     Persistence::saveWorldToDisk(
         *world.world,
+        *world.settings,
         world.worldSet.persistenceService(),
         world.worldSet.persistenceContext(world.activeWorldId));
 }
@@ -563,6 +615,9 @@ void ApplicationTestAccess::closeReadyWorld(ApplicationCloseHooks hooks) {
     entity->setPosition(1.0f, 2.0f, 3.0f);
     world.entities().spawn(std::move(entity));
     impl->world.world = &world;
+    Persistence::WorldSettings settings;
+    settings.displayName = "Application Close Test World";
+    impl->world.settings = std::move(settings);
     impl->world.ready = true;
 
     Application application(

@@ -1,6 +1,8 @@
 #include "TestFramework.h"
 
 #include "Rigel/Voxel/GeneratorSnapshot.h"
+#include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/BlockType.h"
 
 #include <string>
 
@@ -97,4 +99,19 @@ TEST_CASE(GeneratorSnapshot_rejects_dangling_graph_and_content_references) {
     danglingBiome.biomes.coastBand.enabled = true;
     danglingBiome.biomes.coastBand.biome = "missing";
     CHECK_THROWS(serializeGeneratorSnapshot(danglingBiome));
+}
+
+TEST_CASE(GeneratorSnapshot_validates_referenced_runtime_content) {
+    WorldGenConfig definition = snapshotDefinition();
+    BlockRegistry registry;
+    for (const std::string identifier : {
+             "base:stone_shale", "base:grass"}) {
+        BlockType block;
+        block.identifier = identifier;
+        registry.registerBlock(identifier, std::move(block));
+    }
+
+    CHECK_NO_THROW(validateGeneratorSnapshotContent(definition, registry));
+    definition.biomes.entries.front().surface.front().block = "base:missing";
+    CHECK_THROWS(validateGeneratorSnapshotContent(definition, registry));
 }

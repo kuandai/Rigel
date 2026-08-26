@@ -349,18 +349,28 @@ unchanged chunks when persisting data.
 
 ## 7. Configuration and Overrides
 
-World generation config is loaded from:
+New-world generator creation input is loaded from:
 
 - `assets/config/world_generation.yaml` (embedded as `raw/world_config`)
 - `config/world_generation.yaml`
 - `world_generation.yaml`
 - `config/worlds/<worldId>/world_generation.yaml`
 
+The resolved graph definition is validated and canonically stored as
+`saves/world_<worldId>/generator-definition.yaml`; actual seed and generator
+provenance are stored separately in `world-settings.yaml`. The snapshot is the
+authoritative input on reload, so later installed-definition changes or absence
+do not alter unexplored generation in that world. Saves without the complete
+supported pair are rejected without modifying their existing files.
+
 Overlays:
 
 - `overlays` is a list of `{ path, when }`.
 - `when` references a boolean flag from `flags`.
 - Overlays are resolved using the same config sources.
+
+Overlays are creation-time composition only. They are not loaded when opening
+an existing world's saved snapshot.
 
 ---
 

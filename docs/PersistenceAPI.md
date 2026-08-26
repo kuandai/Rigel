@@ -221,6 +221,16 @@ Current behavior:
 
 - The default zone ID is `rigel:default`.
 - The world root path is `saves/world_<worldId>`.
+- Before a new world can generate chunks, `publishNewWorldGeneration` commits
+  `generator-definition.yaml` and then `world-settings.yaml`. The latter is the
+  publication boundary. A failed write removes the new save root.
+- `loadSavedWorldGeneration` requires both files, checks the distinct world
+  settings, definition-schema, source-revision, and evaluator-semantics
+  meanings, and supplies the saved snapshot as the only generator input.
+  Legacy, incomplete, unsupported-version, and noncanonical saves fail without
+  writes.
+- World identity files are format-independent. CR and Memory chunk, entity,
+  region, and metadata encodings and the save-root location are unchanged.
 - `PersistenceService::saveWorldMetadata` writes one world-metadata document.
 - `PersistenceService::saveZoneMetadata` writes one zone's metadata only.
 - Metadata writes stage and validate one document, up to 4 MiB, before opening
@@ -229,6 +239,9 @@ Current behavior:
 - `PersistenceService` chunk and entity payload writes require explicit region snapshots.
 - Runtime chunk loads use region snapshots through `AsyncChunkLoader`.
 - Only chunks marked `isPersistDirty()` are saved.
+- `saveWorldToDisk` receives `WorldSettings` directly and derives the backend's
+  compatibility display-name field from it. Backend metadata is not a second
+  source for seed or generator provenance.
 - Regions are merged: existing region data is loaded, dirty spans overwrite,
   and all-air spans are skipped.
 - Save and entity load validate a pending `entity-regions.journal` schema,

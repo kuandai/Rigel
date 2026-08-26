@@ -35,6 +35,12 @@ namespace {
 constexpr size_t kMaxMetadataDocumentBytes = 4 * 1024 * 1024;
 constexpr size_t kMaxMetadataStringBytes = 1024 * 1024;
 
+WorldSettings testWorldSettings() {
+    WorldSettings settings;
+    settings.displayName = "CR Test World";
+    return settings;
+}
+
 void checkMemoryRandomReadFailure(MemoryByteReader& reader,
                                   size_t offset,
                                   size_t length) {
@@ -401,7 +407,7 @@ void saveCRWorld(const std::shared_ptr<StorageBackend>& storage,
     context.preferredFormat = "cr";
     context.storage = storage;
     context.providers = world.persistenceProvidersHandle();
-    saveWorldToDisk(world, service, context);
+    saveWorldToDisk(world, testWorldSettings(), service, context);
 }
 
 ChunkData makeMinimalChunkData(const ChunkKey& key) {

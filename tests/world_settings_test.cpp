@@ -279,3 +279,35 @@ TEST_CASE(WorldSettings_rejects_dual_seed_or_revision_authority_before_write) {
         mismatchedSettings, savedDefinition(), revisionContext));
     CHECK(!std::filesystem::exists(revisionRoot));
 }
+
+TEST_CASE(WorldSettings_rejects_each_unsupported_version_without_repairing_save) {
+    const std::vector<std::pair<std::string, std::string>> replacements = {
+        {"schema_version: 1", "schema_version: 2"},
+        {"definition_schema_version: 1", "definition_schema_version: 2"},
+        {"semantics_version: 1", "semantics_version: 2"},
+    };
+
+    for (size_t index = 0; index < replacements.size(); ++index) {
+        Test::TemporaryDirectory directory("rigel_world_settings");
+        const auto worldRoot =
+            directory.path() / ("unsupported-" + std::to_string(index));
+        auto storage = std::make_shared<Persistence::FilesystemBackend>();
+        const auto context = contextFor(worldRoot, storage);
+        Persistence::publishNewWorldGeneration(
+            savedSettings(), savedDefinition(), context);
+
+        const auto settingsPath = worldRoot / "world-settings.yaml";
+        const auto snapshotPath = worldRoot / "generator-definition.yaml";
+        std::string settingsDocument = readText(*storage, settingsPath);
+        const std::string snapshotBefore = readText(*storage, snapshotPath);
+        const auto& [supported, unsupported] = replacements[index];
+        const size_t position = settingsDocument.find(supported);
+        CHECK(position != std::string::npos);
+        settingsDocument.replace(position, supported.size(), unsupported);
+        writeText(*storage, settingsPath, settingsDocument);
+
+        CHECK_THROWS(Persistence::loadSavedWorldGeneration(context));
+        CHECK_EQ(readText(*storage, settingsPath), settingsDocument);
+        CHECK_EQ(readText(*storage, snapshotPath), snapshotBefore);
+    }
+}

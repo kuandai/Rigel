@@ -300,6 +300,12 @@ Synchronization:
 
 **Behavior**:
 - Synchronous on the main thread.
+- Startup inspects the active save before attaching a generator. A missing save
+  validates an installed definition, publishes its settings and canonical
+  snapshot, and only then attaches the generator. A published save bypasses
+  installed generator resolution and constructs from its local snapshot.
+- A save root without the complete supported identity is rejected before
+  entity loading, chunk loading, or generation is enabled.
 - Uses format containers + region layout to save chunk spans.
 - Bootstrap loads entities only when supported by the format; chunks are
   loaded through `AsyncChunkLoader`.

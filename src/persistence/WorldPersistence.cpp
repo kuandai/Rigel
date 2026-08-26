@@ -227,6 +227,7 @@ void loadBootstrapEntities(Voxel::World& world,
 }
 
 void saveWorldToDisk(const Voxel::World& world,
+                     const WorldSettings& settings,
                      PersistenceService& service,
                      PersistenceContext context) {
     auto format = service.openFormat(context);
@@ -378,7 +379,7 @@ void saveWorldToDisk(const Voxel::World& world,
 
     WorldMetadata worldMetadata;
     worldMetadata.worldId = "world_" + std::to_string(world.id());
-    worldMetadata.displayName = worldMetadata.worldId;
+    worldMetadata.displayName = settings.displayName;
     if (!worldMetadataExists) {
         service.saveWorldMetadata(worldMetadata, context);
     }

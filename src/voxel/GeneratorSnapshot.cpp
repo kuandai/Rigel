@@ -1,5 +1,6 @@
 #include "Rigel/Voxel/GeneratorSnapshot.h"
 
+#include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/DensityFunction.h"
 #include "Rigel/Voxel/WorldGenStages.h"
 
@@ -356,6 +357,47 @@ std::string serializeGeneratorSnapshot(const WorldGenConfig& definition) {
         out += definition.isStageEnabled(stage) ? "true\n" : "false\n";
     }
     return out;
+}
+
+void validateGeneratorSnapshotContent(const WorldGenConfig& definition,
+                                      const BlockRegistry& registry) {
+    validateDefinition(definition);
+    auto requireBlock = [&registry](const std::string& identifier,
+                                    std::string_view path) {
+        if (!registry.findByIdentifier(identifier)) {
+            throw std::invalid_argument(
+                "Generator definition field '" + std::string(path) +
+                "' references an unavailable block '" + identifier + "'");
+        }
+    };
+
+    if (definition.isStageEnabled("terrain_density")) {
+        requireBlock(definition.solidBlock, "solid_block");
+    }
+    if (definition.isStageEnabled("surface_rules")) {
+        requireBlock(definition.surfaceBlock, "surface_block");
+        for (size_t biomeIndex = 0;
+             biomeIndex < definition.biomes.entries.size(); ++biomeIndex) {
+            const auto& biome = definition.biomes.entries[biomeIndex];
+            for (size_t layerIndex = 0;
+                 layerIndex < biome.surface.size(); ++layerIndex) {
+                requireBlock(
+                    biome.surface[layerIndex].block,
+                    "biomes.entries[" + std::to_string(biomeIndex) +
+                        "].surface[" + std::to_string(layerIndex) + "].block");
+            }
+        }
+    }
+    if (definition.isStageEnabled("structures")) {
+        for (size_t featureIndex = 0;
+             featureIndex < definition.structures.features.size();
+             ++featureIndex) {
+            requireBlock(
+                definition.structures.features[featureIndex].block,
+                "structures.features[" + std::to_string(featureIndex) +
+                    "].block");
+        }
+    }
 }
 
 WorldGenConfig parseGeneratorSnapshot(std::string_view snapshot,

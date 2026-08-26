@@ -3428,6 +3428,29 @@ TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
             "generator-definition.yaml is invalid: Generator definition snapshot is empty",
         },
         {
+            "truncated-settings",
+            [](Persistence::StorageBackend& storage,
+               const std::filesystem::path& root) {
+                const std::filesystem::path path = root / "world-settings.yaml";
+                std::string document = readText(storage, path);
+                document.pop_back();
+                writeText(storage, path, document);
+            },
+            "world-settings.yaml is invalid: Saved world settings are not in canonical form",
+        },
+        {
+            "truncated-snapshot",
+            [](Persistence::StorageBackend& storage,
+               const std::filesystem::path& root) {
+                const std::filesystem::path path =
+                    root / "generator-definition.yaml";
+                std::string document = readText(storage, path);
+                document.pop_back();
+                writeText(storage, path, document);
+            },
+            "generator-definition.yaml is invalid: Saved generator definition is not in canonical form",
+        },
+        {
             "settings-version",
             replaceSettingsToken("schema_version: 1", "schema_version: 2"),
             "world-settings.yaml is invalid: Unsupported world settings schema version: 2",
@@ -3493,6 +3516,8 @@ TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
             currentDefaultSettings.seed = 999u;
             currentDefaultDefinition.seed = 999u;
             currentDefaultDefinition.densityGraph.nodes.front().value = -1.0f;
+            currentDefaultDefinition.shoreBlock =
+                "base:unavailable-current-default-block";
             const Persistence::NewWorldGeneration currentDefault{
                 currentDefaultSettings, currentDefaultDefinition};
 

@@ -11,9 +11,15 @@
 
 namespace Rigel::Persistence {
 
+enum class WorldIdSource {
+    Metadata,
+    RootBasename
+};
+
 struct FormatCapabilities {
     bool supportsEntityRegions = true;
     bool fillMissingChunkSpans = false;
+    WorldIdSource worldIdSource = WorldIdSource::Metadata;
 };
 
 struct FormatDescriptor {

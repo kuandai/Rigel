@@ -146,6 +146,36 @@ void corruptMemoryWorldMetadataWorldId(
     writeText(storage, path, metadata);
 }
 
+void corruptMemoryWorldMetadataDisplayName(
+    Persistence::StorageBackend& storage,
+    const std::filesystem::path& path) {
+    std::string metadata = readText(storage, path);
+    if (metadata.size() < 2 * sizeof(uint32_t)) {
+        throw std::runtime_error(
+            "Cannot corrupt truncated memory world metadata");
+    }
+    uint32_t worldIdSize = 0;
+    for (size_t i = 0; i < sizeof(uint32_t); ++i) {
+        worldIdSize = (worldIdSize << 8) |
+            static_cast<unsigned char>(metadata[i]);
+    }
+    if (worldIdSize >
+        metadata.size() - 2 * sizeof(uint32_t)) {
+        throw std::runtime_error(
+            "Cannot corrupt truncated memory world metadata");
+    }
+    const size_t displayNameOffset =
+        2 * sizeof(uint32_t) + worldIdSize;
+    if (displayNameOffset >= metadata.size()) {
+        throw std::runtime_error(
+            "Cannot corrupt empty memory world display name");
+    }
+    char& firstDisplayNameByte = metadata[displayNameOffset];
+    firstDisplayNameByte =
+        firstDisplayNameByte == 'x' ? 'y' : 'x';
+    writeText(storage, path, metadata);
+}
+
 Persistence::WorldMetadata loadMemoryWorldMetadata(
     const std::filesystem::path& root,
     const std::shared_ptr<Persistence::StorageBackend>& storage) {
@@ -357,9 +387,19 @@ private:
     std::function<void()> m_afterCommit;
 };
 
-class CorruptingStagedWorldIdStorage final
+enum class StagedMetadataCorruption {
+    WorldId,
+    DisplayName
+};
+
+class CorruptingStagedMetadataStorage final
     : public Persistence::FilesystemBackend {
 public:
+    explicit CorruptingStagedMetadataStorage(
+        StagedMetadataCorruption corruption)
+        : m_corruption(corruption) {
+    }
+
     std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
         const std::string& path) override {
         auto inner = Persistence::FilesystemBackend::openWrite(path);
@@ -372,7 +412,12 @@ public:
             [this, path] {
                 metadataCorrupted = true;
                 stagedRoot = std::filesystem::path(path).parent_path();
-                corruptMemoryWorldMetadataWorldId(*this, path);
+                if (m_corruption ==
+                    StagedMetadataCorruption::WorldId) {
+                    corruptMemoryWorldMetadataWorldId(*this, path);
+                } else {
+                    corruptMemoryWorldMetadataDisplayName(*this, path);
+                }
             });
     }
 
@@ -386,6 +431,9 @@ public:
     bool metadataCorrupted = false;
     size_t publishAttempts = 0;
     std::filesystem::path stagedRoot;
+
+private:
+    StagedMetadataCorruption m_corruption;
 };
 
 class PublishCountingStorage final
@@ -1073,12 +1121,96 @@ TEST_CASE(WorldSettings_parentless_relative_root_publishes_and_reloads) {
     CHECK_EQ(format->descriptor().id, std::string("memory"));
 }
 
+TEST_CASE(WorldSettings_cr_bootstrap_publishes_and_reloads) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot = directory.path() / "world_cr_lifecycle";
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    auto context = contextFor(worldRoot, storage);
+    context.preferredFormat = "cr";
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::CR::descriptor(),
+        Persistence::Backends::CR::factory(),
+        Persistence::Backends::CR::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+    Persistence::NewWorldGeneration creation{
+        savedSettings(), savedDefinition()};
+
+    const auto created = Persistence::bootstrapWorldGeneration(
+        creation,
+        persistence,
+        blocks,
+        context);
+
+    CHECK_EQ(created.generation.settings, savedSettings());
+    CHECK_EQ(created.persistenceFormat, std::string("cr"));
+    CHECK(std::filesystem::is_directory(worldRoot));
+    CHECK(stagingRoots(worldRoot).empty());
+    CHECK(std::filesystem::is_regular_file(
+        worldRoot / "worldInfo.json"));
+    context.discoverExistingFormat = true;
+    const auto createdMetadata = persistence.loadWorldMetadata(context);
+    CHECK_EQ(
+        createdMetadata.worldId,
+        worldRoot.filename().string());
+    CHECK_EQ(
+        createdMetadata.displayName,
+        savedSettings().displayName);
+
+    storage.reset();
+    context.storage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    context.preferredFormat.clear();
+    const auto reloaded = Persistence::bootstrapWorldGeneration(
+        std::nullopt,
+        persistence,
+        blocks,
+        context);
+
+    CHECK_EQ(reloaded.generation.settings, savedSettings());
+    CHECK_EQ(reloaded.generation.definition.seed, savedDefinition().seed);
+    CHECK_EQ(reloaded.persistenceFormat, std::string("cr"));
+    const auto reloadedMetadata =
+        persistence.loadWorldMetadata(context);
+    CHECK_EQ(
+        reloadedMetadata.worldId,
+        worldRoot.filename().string());
+    CHECK_EQ(
+        reloadedMetadata.displayName,
+        savedSettings().displayName);
+}
+
 TEST_CASE(WorldSettings_rejects_corrupted_staged_world_id_before_publish) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     const auto worldRoot =
         directory.path() / "world_corrupt_staged_identity";
     auto storage =
-        std::make_shared<CorruptingStagedWorldIdStorage>();
+        std::make_shared<CorruptingStagedMetadataStorage>(
+            StagedMetadataCorruption::WorldId);
+    const auto context = contextFor(worldRoot, storage);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(), savedDefinition(), context));
+
+    CHECK(storage->metadataCorrupted);
+    CHECK_EQ(storage->publishAttempts, static_cast<size_t>(0));
+    CHECK(!std::filesystem::exists(worldRoot));
+    CHECK(!storage->stagedRoot.empty());
+    CHECK(!std::filesystem::exists(storage->stagedRoot));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(storage->stagedRoot)));
+    CHECK(stagingRoots(worldRoot).empty());
+}
+
+TEST_CASE(WorldSettings_rejects_corrupted_staged_display_name_before_publish) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_corrupt_staged_display_name";
+    auto storage =
+        std::make_shared<CorruptingStagedMetadataStorage>(
+            StagedMetadataCorruption::DisplayName);
     const auto context = contextFor(worldRoot, storage);
 
     CHECK_THROWS(Persistence::publishNewWorldGeneration(
@@ -1362,6 +1494,74 @@ TEST_CASE(WorldSettings_recovery_resumes_moved_back_handoff_without_deletion) {
     CHECK(!std::filesystem::exists(stagedRoot));
     CHECK(!std::filesystem::exists(
         cleanupOwnershipPathForTest(stagedRoot)));
+}
+
+TEST_CASE(WorldSettings_cr_recovery_resumes_moved_back_handoff) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_cr_moved_back_handoff";
+    auto interruptedStorage =
+        std::make_shared<MovedBackPublicationStorage>();
+    auto interruptedContext =
+        contextFor(worldRoot, interruptedStorage);
+    interruptedContext.preferredFormat = "cr";
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::CR::descriptor(),
+        Persistence::Backends::CR::factory(),
+        Persistence::Backends::CR::probe());
+    Persistence::PersistenceService persistence(formats);
+
+    CHECK_THROWS(Persistence::publishNewWorldGeneration(
+        savedSettings(),
+        savedDefinition(),
+        persistence,
+        interruptedContext));
+    const std::filesystem::path stagedRoot =
+        interruptedStorage->stagedRoot;
+    CHECK(!std::filesystem::exists(worldRoot));
+    CHECK(std::filesystem::is_directory(stagedRoot));
+    CHECK(std::filesystem::is_regular_file(
+        stagedRoot / "worldInfo.json"));
+    auto stagedContext =
+        contextFor(stagedRoot, interruptedStorage);
+    stagedContext.discoverExistingFormat = true;
+    const auto stagedMetadata =
+        persistence.loadWorldMetadata(stagedContext);
+    CHECK_EQ(
+        stagedMetadata.worldId,
+        stagedRoot.filename().string());
+    CHECK_EQ(
+        stagedMetadata.displayName,
+        savedSettings().displayName);
+
+    auto restartedStorage =
+        std::make_shared<Persistence::FilesystemBackend>();
+    auto restartedContext =
+        contextFor(worldRoot, restartedStorage);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+    const auto bootstrapped = Persistence::bootstrapWorldGeneration(
+        std::nullopt,
+        persistence,
+        blocks,
+        restartedContext);
+
+    CHECK_EQ(bootstrapped.generation.settings, savedSettings());
+    CHECK_EQ(bootstrapped.persistenceFormat, std::string("cr"));
+    CHECK(std::filesystem::is_directory(worldRoot));
+    CHECK(!std::filesystem::exists(stagedRoot));
+    CHECK(!std::filesystem::exists(
+        cleanupOwnershipPathForTest(stagedRoot)));
+    restartedContext.discoverExistingFormat = true;
+    const auto finalMetadata =
+        persistence.loadWorldMetadata(restartedContext);
+    CHECK_EQ(
+        finalMetadata.worldId,
+        worldRoot.filename().string());
+    CHECK_EQ(
+        finalMetadata.displayName,
+        savedSettings().displayName);
 }
 
 TEST_CASE(WorldSettings_handoff_stage_rejects_corrupted_world_id_before_publish) {

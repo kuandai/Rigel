@@ -839,8 +839,14 @@ std::string validatePublicationIdentityAndFormat(
 
     const WorldMetadata metadata =
         persistence.loadWorldMetadata(discoveryContext);
+    std::string expectedWorldId = worldRoot.filename().string();
+    if (format->descriptor().capabilities.worldIdSource ==
+        WorldIdSource::RootBasename) {
+        expectedWorldId = std::filesystem::path(
+            publicationContext.rootPath).filename().string();
+    }
     if (metadata.displayName != generation.settings.displayName ||
-        metadata.worldId != worldRoot.filename().string()) {
+        metadata.worldId != expectedWorldId) {
         throw std::runtime_error(
             "Published persistence backend identity does not match world settings");
     }

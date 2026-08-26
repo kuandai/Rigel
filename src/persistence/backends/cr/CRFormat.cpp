@@ -2197,6 +2197,7 @@ const FormatDescriptor& descriptor() {
         init.id = "cr";
         init.version = kFileVersion;
         init.capabilities.supportsEntityRegions = true;
+        init.capabilities.worldIdSource = WorldIdSource::RootBasename;
         return init;
     }();
     return desc;

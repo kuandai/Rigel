@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 #include <spdlog/spdlog.h>
 
 namespace Rigel::Voxel {
@@ -210,6 +211,41 @@ struct NoiseGridCache final : DensitySampleContext::NoiseSampleCache {
     }
 
     std::vector<NoiseGrid> grids;
+};
+
+struct VerticalNoiseGridCache final : DensitySampleContext::NoiseSampleCache {
+    VerticalNoiseGridCache(const DensityGraph* graph,
+                           uint32_t seed,
+                           ChunkCoord horizontalCoord,
+                           int sampleStep = kDefaultNoiseSampleStep)
+        : graph(graph)
+        , seed(seed)
+        , horizontalCoord(horizontalCoord)
+        , sampleStep(sampleStep)
+    {}
+
+    bool sampleNoise3D(int nodeIndex,
+                       int worldX,
+                       int worldY,
+                       int worldZ,
+                       float& outValue) const override {
+        const int chunkY = worldToChunk(worldX, worldY, worldZ).y;
+        auto [it, inserted] = grids.try_emplace(
+            chunkY,
+            graph,
+            seed,
+            ChunkCoord{horizontalCoord.x, chunkY, horizontalCoord.z},
+            sampleStep);
+        static_cast<void>(inserted);
+        return it->second.sampleNoise3D(
+            nodeIndex, worldX, worldY, worldZ, outValue);
+    }
+
+    const DensityGraph* graph = nullptr;
+    uint32_t seed = 0;
+    ChunkCoord horizontalCoord;
+    int sampleStep = kDefaultNoiseSampleStep;
+    mutable std::unordered_map<int, NoiseGridCache> grids;
 };
 
 class ClimateGlobalStage : public WorldGenStage {
@@ -608,7 +644,7 @@ public:
     void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
         const auto& bounds = m_definition.bounds;
         DensityEvaluator evaluator(m_graph, m_seed);
-        NoiseGridCache noiseCache(m_graph, m_seed, ctx.coord);
+        VerticalNoiseGridCache noiseCache(m_graph, m_seed, ctx.coord);
 
         for (int z = 0; z < Chunk::SIZE; ++z) {
             if (ctx.shouldCancel()) {
@@ -669,7 +705,8 @@ private:
 
     int findSurfaceHeightGlobal(const WorldGenContext& ctx, int x, int z,
                                 DensityEvaluator& evaluator,
-                                const NoiseGridCache& noiseCache) const {
+                                const DensitySampleContext::NoiseSampleCache&
+                                    noiseCache) const {
         const auto& bounds = m_definition.bounds;
         int worldX = ctx.coord.x * Chunk::SIZE + x;
         int worldZ = ctx.coord.z * Chunk::SIZE + z;
@@ -687,7 +724,8 @@ private:
                    int worldY,
                    int worldZ,
                    DensityEvaluator& evaluator,
-                   const NoiseGridCache& noiseCache) const {
+                   const DensitySampleContext::NoiseSampleCache&
+                       noiseCache) const {
         const auto& bounds = m_definition.bounds;
         if (worldY < bounds.minY) {
             return false;

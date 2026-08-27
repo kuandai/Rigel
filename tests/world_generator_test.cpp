@@ -99,12 +99,49 @@ TEST_CASE(WorldGenerator_uses_explicit_coast_water_and_surface_semantics) {
         registry.findByIdentifier("rigel:coast_surface")->type);
 }
 
-TEST_CASE(WorldGenerator_continues_surface_layers_across_vertical_chunks) {
+TEST_CASE(WorldGenerator_continues_noise_driven_surface_layers_across_vertical_chunks) {
     BlockRegistry registry = makeRegistry();
     GeneratorDefinitionData definition = flatDefinition();
-    definition.bounds.maxY = Chunk::SIZE + 1;
-    definition.densityGraph.nodes.front().offset =
-        static_cast<float>(Chunk::SIZE);
+    definition.bounds.maxY = Chunk::SIZE + 4;
+
+    auto& ground = definition.densityGraph.nodes.front();
+    ground.scale = -10.0f;
+    GeneratorDefinitionData::DensityNode variation;
+    variation.id = "vertical_variation";
+    variation.type = "noise3d";
+    variation.noise = {
+        .octaves = 1,
+        .frequency = 0.1f,
+        .lacunarity = 2.0f,
+        .persistence = 0.5f,
+        .scale = 32.0f,
+        .offset = 0.0f};
+    const uint32_t variationSeed =
+        Noise::seedForChannel(7u, variation.id);
+    const float lowerBoundaryNoise = Noise::fbm3D(
+        0.0f,
+        static_cast<float>(Chunk::SIZE),
+        0.0f,
+        variationSeed,
+        variation.noise);
+    const float nextGridNoise = Noise::fbm3D(
+        0.0f,
+        static_cast<float>(Chunk::SIZE + 4),
+        0.0f,
+        variationSeed,
+        variation.noise);
+    const float upperNoise =
+        lowerBoundaryNoise + (nextGridNoise - lowerBoundaryNoise) * 0.25f;
+    ground.offset = 10.0f * static_cast<float>(Chunk::SIZE + 1) -
+        (lowerBoundaryNoise + upperNoise) * 0.5f;
+
+    GeneratorDefinitionData::DensityNode terrain;
+    terrain.id = "noise_driven_terrain";
+    terrain.type = "add";
+    terrain.inputs = {ground.id, variation.id};
+    definition.densityGraph.nodes.push_back(std::move(variation));
+    definition.densityGraph.nodes.push_back(std::move(terrain));
+    definition.densityGraph.outputs.front().node = "noise_driven_terrain";
     definition.biomes.entries.front().surface = {
         {"rigel:grass", 1},
         {"rigel:coast_surface", 2}};
@@ -119,11 +156,10 @@ TEST_CASE(WorldGenerator_continues_surface_layers_across_vertical_chunks) {
     const BlockID lowerSurface =
         *registry.findByIdentifier("rigel:coast_surface");
     const BlockID base = *registry.findByIdentifier("rigel:stone");
-    CHECK_EQ(upper.at(0, 0, 0).id.type, grass.type);
-    CHECK(upper.at(0, 1, 0).isAir());
+    CHECK_EQ(upper.at(0, 1, 0).id.type, grass.type);
+    CHECK_EQ(upper.at(0, 0, 0).id.type, lowerSurface.type);
     CHECK_EQ(lower.at(0, Chunk::SIZE - 1, 0).id.type, lowerSurface.type);
-    CHECK_EQ(lower.at(0, Chunk::SIZE - 2, 0).id.type, lowerSurface.type);
-    CHECK_EQ(lower.at(0, Chunk::SIZE - 3, 0).id.type, base.type);
+    CHECK_EQ(lower.at(0, Chunk::SIZE - 2, 0).id.type, base.type);
 }
 
 TEST_CASE(WorldGenerator_honors_enabled_cave_output) {

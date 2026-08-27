@@ -546,6 +546,9 @@ void Application::Impl::persistPendingResizeForClose() {
             "Failed to save pending window resize during application close: " +
             result->message);
     }
+    if (result->status == PreferenceApplyStatus::PersistenceBlocked) {
+        return;
+    }
     if (result->status ==
         PreferenceApplyStatus::PublishedDurabilityUncertain) {
         spdlog::warn(
@@ -568,6 +571,12 @@ void Application::Impl::persistPendingResizeForCleanup() noexcept {
             spdlog::error(
                 "Pending window resize was not saved during application "
                 "cleanup: {}",
+                result->message);
+        } else if (
+            result->status == PreferenceApplyStatus::PersistenceBlocked) {
+            spdlog::error(
+                "Pending window resize cannot be saved because preference "
+                "persistence is blocked: {}",
                 result->message);
         } else if (result->status ==
                    PreferenceApplyStatus::PublishedDurabilityUncertain) {
@@ -613,8 +622,6 @@ void Application::Impl::closeNoThrow() noexcept {
         return;
     }
 
-    persistPendingResizeForCleanup();
-
     try {
         persistWorld();
     } catch (const std::exception& e) {
@@ -630,6 +637,8 @@ void Application::Impl::shutdown() noexcept {
     if (std::exchange(shutDown, true)) {
         return;
     }
+
+    persistPendingResizeForCleanup();
 
     const bool hasContext = runtime.window() != nullptr;
     if (hasContext) {
@@ -752,17 +761,33 @@ void ApplicationTestAccess::closeReadyWorld(ApplicationCloseHooks hooks) {
 void ApplicationTestAccess::closeWithPendingResize(
     std::filesystem::path userPreferencesPath,
     int width,
-    int height,
-    double observedAt) {
+    int height) {
     auto impl = std::make_unique<Application::Impl>();
     impl->preferences = std::make_unique<ApplicationPreferences>(
         std::move(userPreferencesPath));
     impl->preferences->load();
-    impl->preferences->observeLogicalResize(
-        width, height, observedAt);
+    registerApplicationPreferenceCallbacks(
+        impl->inputCallbacks, *impl->preferences);
+    impl->inputCallbacks.logicalResize(
+        impl->inputCallbacks.logicalResizeContext, width, height);
     Application application(
         std::move(impl), Application::Initialization::Skip);
     application.close();
+}
+
+void ApplicationTestAccess::shutdownWithPendingResize(
+    std::filesystem::path userPreferencesPath,
+    int width,
+    int height) {
+    auto impl = std::make_unique<Application::Impl>();
+    impl->preferences = std::make_unique<ApplicationPreferences>(
+        std::move(userPreferencesPath));
+    impl->preferences->load();
+    registerApplicationPreferenceCallbacks(
+        impl->inputCallbacks, *impl->preferences);
+    impl->inputCallbacks.logicalResize(
+        impl->inputCallbacks.logicalResizeContext, width, height);
+    impl->shutdown();
 }
 
 bool ApplicationTestAccess::initializeOptionalUserInterface(
@@ -812,6 +837,13 @@ void Application::run() {
             if (resizeResult->status == PreferenceApplyStatus::NotPublished) {
                 spdlog::error(
                     "Window resize remains effective but was not saved: {}",
+                    resizeResult->message);
+            } else if (
+                resizeResult->status ==
+                PreferenceApplyStatus::PersistenceBlocked) {
+                spdlog::error(
+                    "Window resize remains effective but cannot be saved; "
+                    "automatic retries are disabled: {}",
                     resizeResult->message);
             } else if (
                 resizeResult->status ==

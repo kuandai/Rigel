@@ -13,6 +13,7 @@ enum class PreferenceApplyStatus {
     Rejected,
     NotPublished,
     PublishedDurabilityUncertain,
+    PersistenceBlocked,
 };
 
 struct PreferenceApplyResult {

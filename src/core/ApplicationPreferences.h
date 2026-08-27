@@ -88,6 +88,7 @@ private:
     bool m_programmaticWindowChange = false;
     std::optional<std::pair<int, int>> m_windowedPosition;
     std::optional<Preferences::WindowedSize> m_pendingResize;
+    std::optional<std::string> m_resizePersistenceBlock;
     double m_nextResizePersistenceAttempt = 0.0;
 };
 

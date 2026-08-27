@@ -42,7 +42,11 @@ struct FakeDisplay {
     int configurationFailuresRemaining = 0;
     int swapFailuresRemaining = 0;
     int createAttempts = 0;
+    int configurationAttempts = 0;
     int savePreflights = 0;
+    bool swapIntervalZeroSupported = true;
+    bool failWindowPositionQuery = false;
+    bool failMonitorPositionQuery = false;
     std::vector<int> swapIntervals;
     std::vector<double> sleepDeadlines;
     Rigel::Input::InputCallbackContext* inputCallbacks = nullptr;
@@ -85,10 +89,18 @@ const GLFWvidmode* getVideoMode(GLFWmonitor* monitor) {
 void getMonitorPos(GLFWmonitor* monitor, int* x, int* y) {
     *x = monitor == g_display->monitors[0] ? 0 : 1920;
     *y = 0;
+    if (g_display->failMonitorPositionQuery) {
+        g_display->failMonitorPositionQuery = false;
+        g_display->error = GLFW_PLATFORM_ERROR;
+    }
 }
 void getWindowPos(GLFWwindow*, int* x, int* y) {
     *x = g_display->bounds.x;
     *y = g_display->bounds.y;
+    if (g_display->failWindowPositionQuery) {
+        g_display->failWindowPositionQuery = false;
+        g_display->error = GLFW_PLATFORM_ERROR;
+    }
 }
 void getWindowSize(GLFWwindow*, int* width, int* height) {
     *width = g_display->bounds.width;
@@ -108,6 +120,7 @@ void setWindowAttrib(GLFWwindow*, int attribute, int value) {
 }
 void setWindowMonitor(
     GLFWwindow*, GLFWmonitor*, int x, int y, int width, int height, int) {
+    ++g_display->configurationAttempts;
     g_display->bounds = {x, y, width, height};
     if (g_display->inputCallbacks &&
         g_display->inputCallbacks->logicalResize) {
@@ -122,6 +135,9 @@ void setWindowMonitor(
 void setWindowPos(GLFWwindow*, int x, int y) {
     g_display->bounds.x = x;
     g_display->bounds.y = y;
+}
+bool supportsSwapInterval(int interval) {
+    return interval != 0 || g_display->swapIntervalZeroSupported;
 }
 void swapInterval(int interval) {
     g_display->swapIntervals.push_back(interval);
@@ -166,6 +182,7 @@ Rigel::GlfwRuntime::Api fakeApi() {
         &setWindowAttrib,
         &setWindowMonitor,
         &setWindowPos,
+        &supportsSwapInterval,
         &swapInterval,
         &getError,
         &setWindowSizeCallback,
@@ -184,6 +201,14 @@ std::string readDocument(const std::filesystem::path& path) {
     return std::string(
         std::istreambuf_iterator<char>(stream),
         std::istreambuf_iterator<char>());
+}
+
+void writeDocument(
+    const std::filesystem::path& path,
+    const std::string& document) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream << document;
 }
 
 void failBeforePublication() {
@@ -445,6 +470,54 @@ TEST_CASE(ApplicationPreferences_VSyncFailureRollsBackBeforeFpsPublication) {
     CHECK_EQ(fixture.display.swapIntervals.back(), 0);
 }
 
+TEST_CASE(ApplicationPreferences_UnsupportedVSyncChangeIsNotPublished) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    const std::string before = readDocument(fixture.path);
+    auto candidate = requested.display;
+    candidate.vsync = false;
+    candidate.fpsLimit = 144;
+    fixture.display.swapIntervalZeroSupported = false;
+    const size_t callsBefore = fixture.display.swapIntervals.size();
+
+    const auto rejected =
+        preferences.applyDisplay(fixture.runtime, candidate);
+
+    CHECK_EQ(rejected.status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_NE(rejected.message.find("cannot disable"), std::string::npos);
+    CHECK_EQ(fixture.display.swapIntervals.size(), callsBefore);
+    CHECK_EQ(preferences.requested(), requested);
+    CHECK_EQ(preferences.effectiveDisplay(), requested.display);
+    CHECK_EQ(readDocument(fixture.path), before);
+}
+
+TEST_CASE(ApplicationPreferences_GeometryQueryFailurePrecedesMutationAndSave) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    const std::string before = readDocument(fixture.path);
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterSavePreflightHookForTesting(&countPreflight);
+    auto candidate = requested.display;
+    candidate.mode = Rigel::Preferences::DisplayMode::Borderless;
+    fixture.display.failMonitorPositionQuery = true;
+
+    const auto rejected =
+        preferences.applyDisplay(fixture.runtime, candidate);
+
+    CHECK_EQ(rejected.status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_NE(
+        rejected.message.find("monitor position query"), std::string::npos);
+    CHECK_EQ(fixture.display.configurationAttempts, 0);
+    CHECK_EQ(fixture.display.savePreflights, 0);
+    CHECK_EQ(preferences.requested(), requested);
+    CHECK_EQ(preferences.effectiveDisplay(), requested.display);
+    CHECK_EQ(readDocument(fixture.path), before);
+}
+
 TEST_CASE(ApplicationPreferences_HardwareFailureRollsBackWithoutSaving) {
     DisplayFixture fixture;
     Rigel::Preferences::UserPreferences requested;
@@ -580,6 +653,47 @@ TEST_CASE(ApplicationPreferences_ResizeFailureRetainsBoundedRetry) {
             .load()
             .display.windowedSize,
         (Rigel::Preferences::WindowedSize{1200, 800}));
+}
+
+TEST_CASE(ApplicationPreferences_BlockedResizeIsReportedWithoutRetrying) {
+    DisplayFixture fixture;
+    const std::string newer =
+        "schema_version: 2\nfuture: preserve-until-explicit-replacement\n";
+    writeDocument(fixture.path, newer);
+    Rigel::ApplicationPreferences preferences(
+        fixture.path,
+        Rigel::Core::FramePacer::Clock{&now, &sleepUntil});
+    preferences.load();
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.manualResize(1200, 800, 1.0);
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterSavePreflightHookForTesting(&countPreflight);
+
+    const auto blocked = preferences.flushResizePersistence(1.25);
+
+    CHECK(blocked.has_value());
+    CHECK_EQ(
+        blocked->status,
+        Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK_EQ(fixture.display.savePreflights, 0);
+    CHECK_EQ(readDocument(fixture.path), newer);
+    CHECK_EQ(preferences.requested().display.windowedSize,
+             (Rigel::Preferences::WindowedSize{800, 600}));
+    CHECK_EQ(preferences.effectiveDisplay().windowedSize,
+             (Rigel::Preferences::WindowedSize{1200, 800}));
+    CHECK(!preferences.flushResizePersistence(2.25));
+    CHECK(!preferences.flushResizePersistence(100.0));
+    CHECK_EQ(fixture.display.savePreflights, 0);
+
+    const auto finalReport =
+        preferences.flushResizePersistenceForShutdown();
+    CHECK(finalReport.has_value());
+    CHECK_EQ(
+        finalReport->status,
+        Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK_EQ(fixture.display.savePreflights, 0);
+    CHECK_EQ(readDocument(fixture.path), newer);
 }
 
 TEST_CASE(ApplicationPreferences_ExplicitApplySupersedesPendingManualResize) {

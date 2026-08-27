@@ -43,6 +43,7 @@ public:
         void (*setWindowMonitor)(
             GLFWwindow*, GLFWmonitor*, int, int, int, int, int);
         void (*setWindowPos)(GLFWwindow*, int, int);
+        bool (*supportsSwapInterval)(int);
         void (*swapInterval)(int);
         int (*getError)(const char**);
         WindowSizeCallback (*setWindowSizeCallback)(
@@ -71,11 +72,14 @@ public:
     void destroyWindow() noexcept;
 
     std::optional<Rectangle> currentDesktopBounds() const;
-    Rectangle windowBounds() const;
+    std::optional<Rectangle> windowBounds() const;
     std::pair<int, int> framebufferSize() const;
-    bool windowDecorated() const;
+    std::optional<bool> windowDecorated() const;
     bool applyWindowConfiguration(const Rectangle& bounds, bool decorated);
     bool setSwapInterval(int interval);
+    bool swapIntervalUpdateMayHaveMutated() const {
+        return m_swapIntervalUpdateMayHaveMutated;
+    }
     void setWindowSizeCallback(WindowSizeCallback callback) const;
     void setFramebufferSizeCallback(WindowSizeCallback callback) const;
     const std::string& lastError() const { return m_lastError; }
@@ -89,6 +93,7 @@ private:
     Api m_api;
     GLFWwindow* m_window = nullptr;
     bool m_initialized = false;
+    bool m_swapIntervalUpdateMayHaveMutated = false;
     mutable std::string m_lastError;
 };
 

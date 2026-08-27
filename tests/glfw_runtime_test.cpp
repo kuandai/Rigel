@@ -21,6 +21,11 @@ struct RuntimeCalls {
     int decorated = GLFW_TRUE;
     int nextDecorated = GLFW_TRUE;
     int error = GLFW_NO_ERROR;
+    bool swapIntervalZeroSupported = true;
+    bool failWindowPositionQuery = false;
+    bool failMonitorPositionQuery = false;
+    bool failDecorationQuery = false;
+    std::vector<int> swapIntervals;
     Rigel::GlfwRuntime::WindowSizeCallback windowSizeCallback = nullptr;
     Rigel::GlfwRuntime::WindowSizeCallback framebufferSizeCallback = nullptr;
 };
@@ -77,11 +82,19 @@ const GLFWvidmode* getVideoMode(GLFWmonitor*) {
 void getMonitorPos(GLFWmonitor*, int* x, int* y) {
     *x = 0;
     *y = 0;
+    if (g_calls->failMonitorPositionQuery) {
+        g_calls->failMonitorPositionQuery = false;
+        g_calls->error = GLFW_PLATFORM_ERROR;
+    }
 }
 
 void getWindowPos(GLFWwindow*, int* x, int* y) {
     *x = g_calls->bounds.x;
     *y = g_calls->bounds.y;
+    if (g_calls->failWindowPositionQuery) {
+        g_calls->failWindowPositionQuery = false;
+        g_calls->error = GLFW_PLATFORM_ERROR;
+    }
 }
 
 void getWindowSize(GLFWwindow*, int* width, int* height) {
@@ -95,6 +108,10 @@ void getFramebufferSize(GLFWwindow*, int* width, int* height) {
 }
 
 int getWindowAttrib(GLFWwindow*, int attribute) {
+    if (g_calls->failDecorationQuery) {
+        g_calls->failDecorationQuery = false;
+        g_calls->error = GLFW_PLATFORM_ERROR;
+    }
     return attribute == GLFW_DECORATED ? g_calls->decorated : 0;
 }
 
@@ -114,7 +131,12 @@ void setWindowPos(GLFWwindow*, int x, int y) {
     g_calls->bounds.y = y;
 }
 
-void swapInterval(int) {
+bool supportsSwapInterval(int interval) {
+    return interval != 0 || g_calls->swapIntervalZeroSupported;
+}
+
+void swapInterval(int interval) {
+    g_calls->swapIntervals.push_back(interval);
 }
 
 int getError(const char** description) {
@@ -153,6 +175,7 @@ Rigel::GlfwRuntime::Api fakeApi() {
         &setWindowAttrib,
         &setWindowMonitor,
         &setWindowPos,
+        &supportsSwapInterval,
         &swapInterval,
         &getError,
         &setWindowSizeCallback,
@@ -207,10 +230,61 @@ TEST_CASE(GlfwRuntime_DistinguishesLogicalAndFramebufferPixels) {
         CHECK(runtime.initialize());
         CHECK(runtime.createWindow(800, 600, "Rigel"));
 
-        CHECK_EQ(runtime.windowBounds().width, 800);
-        CHECK_EQ(runtime.windowBounds().height, 600);
+        CHECK_EQ(runtime.windowBounds()->width, 800);
+        CHECK_EQ(runtime.windowBounds()->height, 600);
         CHECK_EQ(runtime.framebufferSize(), std::pair(1600, 1200));
     }
 
+    g_calls = nullptr;
+}
+
+TEST_CASE(GlfwRuntime_RejectsUnsupportedSwapIntervalWithoutCallingPlatform) {
+    RuntimeCalls calls;
+    calls.videoMode.width = 1920;
+    calls.videoMode.height = 1080;
+    calls.swapIntervalZeroSupported = false;
+    g_calls = &calls;
+    {
+        Rigel::GlfwRuntime runtime(fakeApi());
+        CHECK(runtime.initialize());
+        CHECK(runtime.createWindow(800, 600, "Rigel"));
+        CHECK(runtime.makeContextCurrent());
+
+        CHECK(!runtime.setSwapInterval(0));
+        CHECK(calls.swapIntervals.empty());
+        CHECK_NE(
+            runtime.lastError().find("cannot disable"), std::string::npos);
+    }
+    g_calls = nullptr;
+}
+
+TEST_CASE(GlfwRuntime_GeometryQueryErrorsDoNotProduceFallbackValues) {
+    RuntimeCalls calls;
+    calls.videoMode.width = 1920;
+    calls.videoMode.height = 1080;
+    g_calls = &calls;
+    {
+        Rigel::GlfwRuntime runtime(fakeApi());
+        CHECK(runtime.initialize());
+        CHECK(runtime.createWindow(800, 600, "Rigel"));
+
+        calls.failWindowPositionQuery = true;
+        CHECK(!runtime.windowBounds());
+        CHECK_NE(
+            runtime.lastError().find("window position query"),
+            std::string::npos);
+
+        calls.failDecorationQuery = true;
+        CHECK(!runtime.windowDecorated());
+        CHECK_NE(
+            runtime.lastError().find("window decoration query"),
+            std::string::npos);
+
+        calls.failMonitorPositionQuery = true;
+        CHECK(!runtime.currentDesktopBounds());
+        CHECK_NE(
+            runtime.lastError().find("monitor position query"),
+            std::string::npos);
+    }
     g_calls = nullptr;
 }

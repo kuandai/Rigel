@@ -13,6 +13,7 @@
 #include <GLFW/glfw3.h>
 
 #include <cstdlib>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <sstream>
@@ -189,6 +190,10 @@ void setWindowMonitor(
 void setWindowPos(GLFWwindow*, int x, int y) {
     g_calls->windowBounds.x = x;
     g_calls->windowBounds.y = y;
+}
+
+bool supportsSwapInterval(int) {
+    return true;
 }
 
 void swapInterval(int) {
@@ -384,6 +389,7 @@ Rigel::GlfwRuntime::Api fakeRuntimeApi() {
         &setWindowAttrib,
         &setWindowMonitor,
         &setWindowPos,
+        &supportsSwapInterval,
         &swapInterval,
         &getError,
         &setWindowSizeCallback,
@@ -512,7 +518,7 @@ TEST_CASE(Application_CloseFlushesPendingResizeBeforeDebounceExpires) {
     ScopedPreferenceSavePreflight savePreflight;
 
     Rigel::ApplicationTestAccess::closeWithPendingResize(
-        preferencesPath, 1180, 720, 10.0);
+        preferencesPath, 1180, 720);
 
     CHECK_EQ(calls.preferenceSavePreflights, static_cast<size_t>(1));
     CHECK_EQ(
@@ -536,7 +542,7 @@ TEST_CASE(Application_CloseReportsPendingResizePublicationFailure) {
     bool reported = false;
     try {
         Rigel::ApplicationTestAccess::closeWithPendingResize(
-            preferencesPath, 1180, 720, 10.0);
+            preferencesPath, 1180, 720);
     } catch (const std::exception& error) {
         reported = std::string(error.what()).find(
             "Failed to save pending window resize during application close") !=
@@ -550,6 +556,59 @@ TEST_CASE(Application_CloseReportsPendingResizePublicationFailure) {
             .load()
             .display.windowedSize,
         (Rigel::Preferences::WindowedSize{800, 600}));
+}
+
+TEST_CASE(Application_ShutdownFlushesPendingResizeBeforeDebounceExpires) {
+    LifecycleCalls calls;
+    ScopedLifecycleCalls scopedCalls(calls);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_shutdown_resize");
+    const auto preferencesPath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath).saveRequested({});
+    ScopedPreferenceSavePreflight savePreflight;
+
+    Rigel::ApplicationTestAccess::shutdownWithPendingResize(
+        preferencesPath, 1040, 780);
+
+    CHECK_EQ(calls.preferenceSavePreflights, static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(preferencesPath)
+            .load()
+            .display.windowedSize,
+        (Rigel::Preferences::WindowedSize{1040, 780}));
+}
+
+TEST_CASE(Application_BlockedResizeDoesNotRetryOrFailClose) {
+    LifecycleCalls calls;
+    ScopedLifecycleCalls scopedCalls(calls);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_blocked_resize");
+    const auto preferencesPath =
+        directory.path() / "user-preferences.yaml";
+    const std::string newer =
+        "schema_version: 2\nfuture: preserve-until-explicit-replacement\n";
+    std::filesystem::create_directories(preferencesPath.parent_path());
+    {
+        std::ofstream stream(
+            preferencesPath, std::ios::binary | std::ios::trunc);
+        stream << newer;
+    }
+    ScopedPreferenceSavePreflight savePreflight;
+    LogCapture logs;
+
+    CHECK_NO_THROW(Rigel::ApplicationTestAccess::closeWithPendingResize(
+        preferencesPath, 1160, 740));
+
+    CHECK_EQ(calls.preferenceSavePreflights, static_cast<size_t>(0));
+    CHECK_NE(
+        logs.output().find("preference persistence is blocked"),
+        std::string::npos);
+    std::ifstream stream(preferencesPath, std::ios::binary);
+    const std::string after{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+    CHECK_EQ(after, newer);
 }
 
 TEST_CASE(Application_OptionalUserInterfaceFailuresContinueOnce) {

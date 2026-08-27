@@ -7,6 +7,29 @@
 #include <utility>
 
 namespace Rigel {
+namespace {
+
+bool supportsSwapInterval(int interval) {
+#ifdef __APPLE__
+    static_cast<void>(interval);
+    return true;
+#elif defined(_WIN32)
+    static_cast<void>(interval);
+    return glfwExtensionSupported("WGL_EXT_swap_control") == GLFW_TRUE;
+#else
+    const bool ext =
+        glfwExtensionSupported("GLX_EXT_swap_control") == GLFW_TRUE;
+    const bool mesa =
+        glfwExtensionSupported("GLX_MESA_swap_control") == GLFW_TRUE;
+    if (interval == 0) {
+        return ext || mesa;
+    }
+    return ext || mesa ||
+        glfwExtensionSupported("GLX_SGI_swap_control") == GLFW_TRUE;
+#endif
+}
+
+} // namespace
 
 GlfwRuntime::GlfwRuntime()
     : GlfwRuntime(Api{
@@ -27,6 +50,7 @@ GlfwRuntime::GlfwRuntime()
           &glfwSetWindowAttrib,
           &glfwSetWindowMonitor,
           &glfwSetWindowPos,
+          &supportsSwapInterval,
           &glfwSwapInterval,
           &glfwGetError,
           &glfwSetWindowSizeCallback,
@@ -103,9 +127,17 @@ void GlfwRuntime::destroyWindow() noexcept {
 
 std::optional<GlfwRuntime::Rectangle> GlfwRuntime::currentDesktopBounds() const {
     int monitorCount = 0;
+    clearError();
     GLFWmonitor** monitors = m_api.getMonitors(&monitorCount);
+    if (captureError("monitor enumeration")) {
+        return std::nullopt;
+    }
     if (!monitors || monitorCount <= 0) {
+        clearError();
         GLFWmonitor* primary = m_api.getPrimaryMonitor();
+        if (captureError("primary monitor query")) {
+            return std::nullopt;
+        }
         if (!primary) {
             m_lastError = "no current or default monitor is available";
             return std::nullopt;
@@ -114,19 +146,38 @@ std::optional<GlfwRuntime::Rectangle> GlfwRuntime::currentDesktopBounds() const 
         monitorCount = 1;
     }
 
-    const Rectangle window = windowBounds();
+    Rectangle window;
+    if (m_window) {
+        const auto bounds = windowBounds();
+        if (!bounds) {
+            return std::nullopt;
+        }
+        window = *bounds;
+    }
+    clearError();
     GLFWmonitor* selected = m_api.getPrimaryMonitor();
+    if (captureError("primary monitor query")) {
+        return std::nullopt;
+    }
     std::int64_t selectedOverlap = -1;
     if (m_window) {
         for (int index = 0; index < monitorCount; ++index) {
             GLFWmonitor* monitor = monitors[index];
+            clearError();
             const GLFWvidmode* mode = m_api.getVideoMode(monitor);
+            if (captureError("monitor desktop mode query")) {
+                return std::nullopt;
+            }
             if (!mode) {
                 continue;
             }
             int x = 0;
             int y = 0;
+            clearError();
             m_api.getMonitorPos(monitor, &x, &y);
+            if (captureError("monitor position query")) {
+                return std::nullopt;
+            }
             const int overlapWidth = std::max(
                 0,
                 std::min(window.x + window.width, x + mode->width) -
@@ -147,25 +198,46 @@ std::optional<GlfwRuntime::Rectangle> GlfwRuntime::currentDesktopBounds() const 
     if (!selected) {
         selected = monitors[0];
     }
+    clearError();
     const GLFWvidmode* mode = m_api.getVideoMode(selected);
+    if (captureError("monitor desktop mode query")) {
+        return std::nullopt;
+    }
     if (!mode || mode->width <= 0 || mode->height <= 0) {
         m_lastError = "the current or default monitor has no desktop mode";
         return std::nullopt;
     }
     Rectangle result;
+    clearError();
     m_api.getMonitorPos(selected, &result.x, &result.y);
+    if (captureError("monitor position query")) {
+        return std::nullopt;
+    }
     result.width = mode->width;
     result.height = mode->height;
     return result;
 }
 
-GlfwRuntime::Rectangle GlfwRuntime::windowBounds() const {
+std::optional<GlfwRuntime::Rectangle> GlfwRuntime::windowBounds() const {
     Rectangle result;
     if (!m_window) {
-        return result;
+        m_lastError = "cannot query bounds without a window";
+        return std::nullopt;
     }
+    clearError();
     m_api.getWindowPos(m_window, &result.x, &result.y);
+    if (captureError("window position query")) {
+        return std::nullopt;
+    }
+    clearError();
     m_api.getWindowSize(m_window, &result.width, &result.height);
+    if (captureError("window size query")) {
+        return std::nullopt;
+    }
+    if (result.width <= 0 || result.height <= 0) {
+        m_lastError = "window size query returned empty bounds";
+        return std::nullopt;
+    }
     return result;
 }
 
@@ -178,9 +250,17 @@ std::pair<int, int> GlfwRuntime::framebufferSize() const {
     return {width, height};
 }
 
-bool GlfwRuntime::windowDecorated() const {
-    return m_window &&
-           m_api.getWindowAttrib(m_window, GLFW_DECORATED) == GLFW_TRUE;
+std::optional<bool> GlfwRuntime::windowDecorated() const {
+    if (!m_window) {
+        m_lastError = "cannot query decoration without a window";
+        return std::nullopt;
+    }
+    clearError();
+    const int decorated = m_api.getWindowAttrib(m_window, GLFW_DECORATED);
+    if (captureError("window decoration query")) {
+        return std::nullopt;
+    }
+    return decorated == GLFW_TRUE;
 }
 
 bool GlfwRuntime::applyWindowConfiguration(
@@ -204,8 +284,15 @@ bool GlfwRuntime::applyWindowConfiguration(
     if (captureError("window configuration")) {
         return false;
     }
-    const Rectangle actual = windowBounds();
-    if (actual != bounds || windowDecorated() != decorated) {
+    const auto actual = windowBounds();
+    if (!actual) {
+        return false;
+    }
+    const auto actualDecorated = windowDecorated();
+    if (!actualDecorated) {
+        return false;
+    }
+    if (*actual != bounds || *actualDecorated != decorated) {
         m_lastError = "window manager did not apply the requested bounds and decoration";
         return false;
     }
@@ -213,11 +300,28 @@ bool GlfwRuntime::applyWindowConfiguration(
 }
 
 bool GlfwRuntime::setSwapInterval(int interval) {
+    m_swapIntervalUpdateMayHaveMutated = false;
     if (!m_window) {
         m_lastError = "cannot set swap interval without a window";
         return false;
     }
+    if (interval != 0 && interval != 1) {
+        m_lastError = "only swap intervals zero and one are supported";
+        return false;
+    }
     clearError();
+    const bool supported = m_api.supportsSwapInterval(interval);
+    if (captureError("swap interval capability query")) {
+        return false;
+    }
+    if (!supported) {
+        m_lastError = interval == 0
+            ? "the current context cannot disable vertical synchronization"
+            : "the current context cannot enable vertical synchronization";
+        return false;
+    }
+    clearError();
+    m_swapIntervalUpdateMayHaveMutated = true;
     m_api.swapInterval(interval);
     return !captureError("swap interval update");
 }

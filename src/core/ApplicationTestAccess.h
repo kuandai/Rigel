@@ -48,8 +48,11 @@ public:
     static void closeWithPendingResize(
         std::filesystem::path userPreferencesPath,
         int width,
-        int height,
-        double observedAt);
+        int height);
+    static void shutdownWithPendingResize(
+        std::filesystem::path userPreferencesPath,
+        int width,
+        int height);
     static bool initializeOptionalUserInterface(
         GLFWwindow* window,
         bool (*initialize)(GLFWwindow*)) noexcept;

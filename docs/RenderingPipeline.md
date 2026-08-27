@@ -49,8 +49,10 @@ renders the ImGui profiler after `FrameRenderer` returns.
 
 ### 3.2 Culling and Ordering
 
-- Distance culling uses `renderDistance` from `WorldRenderConfig`.
-- This world-unit culling distance is independent of the chunk streaming radius.
+- Distance culling uses the effective `renderDistance` in `WorldRenderConfig`.
+- `WorldView` derives that world-unit distance from the accepted
+  `UserPreferences.graphics.view_distance_chunks` request so the outer chunk
+  boundary is included.
 - There is no frustum culling in the current pipeline.
 - Transparent chunks are sorted back-to-front by view depth.
 
@@ -70,7 +72,8 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
 ## 4. Render Configuration
 
 `Render::makeRenderConfigProvider()` assembles these sources in order, and the
-application assigns the loaded `WorldRenderConfig` to the active `WorldView`:
+application assigns the loaded `WorldRenderConfig` to the active `WorldView`.
+It then applies the player View Distance and its derived render range:
 
 - `assets/config/render.yaml` (embedded as `raw/render_config`)
 - `config/render.yaml`
@@ -79,7 +82,6 @@ application assigns the loaded `WorldRenderConfig` to the active `WorldView`:
 
 Key fields in `WorldRenderConfig`:
 
-- `renderDistance`
 - `sunDirection`
 - `transparentAlpha`
 - `shadow` (see Section 5)

@@ -2,6 +2,7 @@
 
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
+#include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldView.h"
@@ -404,7 +405,7 @@ std::optional<DebugFieldPresentation> buildDebugFieldPresentation(
     int radius = std::clamp(
         worldView->viewDistanceChunks(),
         0,
-        Voxel::StreamingConfig::MaxViewDistanceChunks);
+        Preferences::kMaximumViewDistanceChunks);
     int diameter = radius * 2 + 1;
     if (diameter <= 0) {
         return std::nullopt;

@@ -38,6 +38,7 @@ public:
         const Preferences::DisplayPreferences& preferences,
         WindowedSizeIntent windowedSizeIntent);
     PreferenceApplyResult applyVerticalFov(double verticalFovDegrees);
+    // Main-thread settings seam; call between frames while a world is active.
     PreferenceApplyResult applyViewDistance(int viewDistanceChunks);
     PreferenceApplyResult applyInputPreferences(
         const Preferences::InputPreferences& preferences);

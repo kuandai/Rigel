@@ -132,15 +132,16 @@ explicit failed state until a later streaming requeue retries them.
 ### 5.2 Desired Set and Distances
 
 - The desired set is a sphere around the camera chunk with radius
-  `streaming.view_distance_chunks`, intersected with the generator's inclusive
-  finite Y range. Chunks wholly below `bounds.min_y` or wholly above
-  `bounds.max_y` never enter source, generation, or mesh scheduling.
+  `UserPreferences.graphics.view_distance_chunks`, intersected with the
+  generator's inclusive finite Y range. Chunks wholly below `bounds.min_y` or
+  wholly above `bounds.max_y` never enter source, generation, or mesh
+  scheduling.
 - Entries use shared chunk importance: the camera-containing chunk first,
   then squared chunk distance, then lexicographic chunk coordinate. Generation
   and direct-view mesh admission therefore use the same deterministic order.
-- Unload uses `streaming.unload_distance_chunks` for hysteresis.
-- Render distance is configured separately by `render.render_distance` in world
-  units and does not change the streaming desired set.
+- Unload retention is derived one chunk beyond the requested View Distance.
+- The render range is derived in world units to include the outer boundary of
+  the requested chunk sphere.
 
 ### 5.3 Background Work and Budgets
 
@@ -190,8 +191,8 @@ explicit failed state until a later streaming requeue retries them.
 - `streaming.load_queue_limit` caps pending disk load requests (`0` means
   unlimited).
 
-The shipped streaming configuration uses `view_distance_chunks=12`,
-`gen_queue_limit=128`, `update_budget_per_frame=4096`, and
+UserPreferences default View Distance to 12 chunks. The shipped streaming
+configuration uses `gen_queue_limit=128`, `update_budget_per_frame=4096`, and
 `worker_threads=12`. The pool split assigns six threads to generation and six
 to meshing. The executor-capacity bound narrows the configured generation cap
 to twelve submitted-but-undrained jobs: at most six running and six in the
@@ -239,11 +240,11 @@ and final quiescence.
 - `streaming.max_resident_chunks` enables an LRU eviction pass (via `ChunkCache`).
   Desired chunks are protected, so the cache can remain above this limit when
   the desired set alone exceeds it.
-- Chunks outside `unload_distance_chunks` are unloaded after modified data is
+- Chunks outside the derived unload radius are unloaded after modified data is
   persisted. Failed persistence defers removal to a bounded retry update and
   remains explicit pending lifecycle work between attempts. Due retry and
-  generator-bounds reconciliation scans advance in deterministic batches of
-  at most 64 coordinates per scheduler call.
+  generator-bounds reconciliation scans advance in deterministic batches of at
+  most 64 coordinates per scheduler call.
 - Generator/config replacement owns a bounded desired rebuild and, when it
   overlaps camera movement, one bounded resident reconciliation. The owner
   stays visible in diagnostics until the latest retention/bounds snapshot has

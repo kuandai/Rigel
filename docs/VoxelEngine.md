@@ -154,7 +154,8 @@ submission.
 cache is keyed by `MeshId`; entries upload when the store revision changes and
 are pruned when the CPU mesh disappears.
 
-Available chunk meshes are culled by `render.render_distance`. Opaque and
+Available chunk meshes are culled by a world-unit range derived from the
+accepted `UserPreferences.graphics.view_distance_chunks` request. Opaque and
 cutout layers write depth, transparent chunks are sorted back-to-front with
 alpha blending, and emissive geometry uses additive blending. Cascaded shadow
 passes and entity shadow casting are part of the same world render.

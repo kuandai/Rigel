@@ -10,6 +10,7 @@
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Providers.h"
 #include "Rigel/Persistence/Storage.h"
+#include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Voxel/ChunkStreamer.h"
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/MeshBuilder.h"
@@ -6733,9 +6734,10 @@ TEST_CASE(ChunkStreamer_DebugSnapshotClampsOversizedProgrammaticRadius) {
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
 
     const ChunkCoord center{0, 0, 0};
-    const ChunkCoord edge{StreamingConfig::MaxViewDistanceChunks, 0, 0};
+    const ChunkCoord edge{
+        Rigel::Preferences::kMaximumViewDistanceChunks, 0, 0};
     const ChunkCoord outside{
-        StreamingConfig::MaxViewDistanceChunks + 1, 0, 0};
+        Rigel::Preferences::kMaximumViewDistanceChunks + 1, 0, 0};
     Rigel::Voxel::detail::ChunkStreamerTestAccess::injectLoadGenOwner(
         streamer, center);
     Rigel::Voxel::detail::ChunkStreamerTestAccess::injectLoadGenOwner(
@@ -6765,9 +6767,12 @@ TEST_CASE(ChunkStreamer_DebugSnapshotClampsOversizedProgrammaticRadius) {
             static_cast<int64_t>(state.coord.y) - center.y;
         const int64_t dz =
             static_cast<int64_t>(state.coord.z) - center.z;
-        return std::abs(dx) <= StreamingConfig::MaxViewDistanceChunks &&
-            std::abs(dy) <= StreamingConfig::MaxViewDistanceChunks &&
-            std::abs(dz) <= StreamingConfig::MaxViewDistanceChunks;
+        return std::abs(dx) <=
+                Rigel::Preferences::kMaximumViewDistanceChunks &&
+            std::abs(dy) <=
+                Rigel::Preferences::kMaximumViewDistanceChunks &&
+            std::abs(dz) <=
+                Rigel::Preferences::kMaximumViewDistanceChunks;
     }));
     CHECK_EQ(streamer.workMetrics().schedulerCoordinatesInspected,
              metricsBefore.schedulerCoordinatesInspected);

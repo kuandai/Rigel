@@ -57,6 +57,7 @@ public:
         ChunkStreamer::ChunkLoadExecutionStateCallback executionState);
     void setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback evict);
     void setStreamConfig(const StreamingConfig& config);
+    /// Applies the player radius and its derived view policy at a frame boundary.
     bool applyViewDistanceChunks(int chunks);
     void setBenchmark(ChunkBenchmarkStats* stats);
     void setVisibilityTracer(std::shared_ptr<ChunkVisibilityTracer> tracer);

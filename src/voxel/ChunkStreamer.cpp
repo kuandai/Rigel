@@ -1,6 +1,7 @@
 #include "Rigel/Voxel/ChunkStreamer.h"
 #include "Rigel/Voxel/MeshBuilder.h"
 #include "Rigel/Core/Profiler.h"
+#include "Rigel/Preferences/UserPreferences.h"
 
 #include <algorithm>
 #include <cassert>
@@ -1598,7 +1599,7 @@ void ChunkStreamer::getDebugStates(std::vector<DebugChunkState>& out,
                                    int radius) const {
     out.clear();
     radius = std::clamp(
-        radius, 0, StreamingConfig::MaxViewDistanceChunks);
+        radius, 0, Preferences::kMaximumViewDistanceChunks);
 
     std::optional<ChunkVisibilityTraceRecord> latestTrace;
     if (m_visibilityTracer) {

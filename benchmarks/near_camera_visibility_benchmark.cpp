@@ -1,5 +1,6 @@
 #include "NearCameraVisibilityBenchmark.h"
 
+#include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/ChunkManager.h"
@@ -266,7 +267,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.samplesPerWorkload = static_cast<size_t>(*parsed);
         } else if (argument == "--view-distance") {
             if (*parsed <= 0 ||
-                *parsed > Voxel::StreamingConfig::MaxViewDistanceChunks) {
+                *parsed > Preferences::kMaximumViewDistanceChunks) {
                 std::cerr << "Unsupported view distance: " << value << '\n';
                 return false;
             }

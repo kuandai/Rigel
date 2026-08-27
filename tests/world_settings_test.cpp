@@ -3622,6 +3622,30 @@ TEST_CASE(WorldSettings_rejects_each_unsupported_version_without_repairing_save)
     }
 }
 
+TEST_CASE(WorldSettings_rejects_invalid_snapshot_yaml_without_mutation) {
+    Test::TemporaryDirectory directory("rigel_world_invalid_snapshot_yaml");
+    const auto worldRoot = directory.path() / "world_7";
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    const auto context = contextFor(worldRoot, storage);
+    Persistence::bootstrapCreationForTest(
+        savedSettings(), savedDefinition(), context);
+
+    const auto snapshotPath = worldRoot / "generator-definition.yaml";
+    writeText(*storage, snapshotPath, "bounds: [\n");
+    const SaveTreeSnapshot before = snapshotSaveTree(directory.path());
+    const std::string diagnostic = exceptionMessage([&] {
+        static_cast<void>(Persistence::loadSavedWorldGeneration(context));
+    });
+
+    CHECK(diagnostic.find(
+              "generator-definition.yaml is invalid: Invalid generator "
+              "definition YAML in 'generator-definition.yaml'") !=
+          std::string::npos);
+    CHECK(diagnostic.find("The save was not modified") != std::string::npos);
+    CHECK_EQ(snapshotSaveTree(directory.path()), before);
+    CHECK_EQ(readText(*storage, snapshotPath), std::string("bounds: [\n"));
+}
+
 TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
     struct Scenario {
         std::string name;

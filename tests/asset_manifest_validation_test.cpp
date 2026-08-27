@@ -277,6 +277,41 @@ TEST_CASE(GeneratorDefinitionLoader_aggregate_failure_after_valid_prefix_is_atom
     CHECK_EQ(rawText(provisional), std::string("new provisional entry"));
 }
 
+TEST_CASE(GeneratorDefinitionLoader_reports_author_yaml_syntax_at_asset_boundary) {
+    Rigel::Asset::AssetManager assets;
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    commitInitialGeneratorSet(assets, registry);
+
+    assets.loadManifest("malformed_generator_yaml.yaml");
+    std::string assetId;
+    std::string diagnostic;
+    try {
+        static_cast<void>(
+            Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+                assets,
+                registry,
+                "test:valid",
+                GeneratorDefinitionOrigin::Shipped));
+    } catch (const Rigel::Asset::AssetLoadError& error) {
+        assetId = error.assetId();
+        diagnostic = error.what();
+    }
+
+    CHECK_EQ(assetId, std::string("generator_definitions/malformed"));
+    CHECK(diagnostic.find("Invalid generator definition YAML") !=
+          std::string::npos);
+    CHECK(diagnostic.find("generators/malformed.yaml") != std::string::npos);
+    CHECK_EQ(assets.ns(), std::string("initial"));
+    CHECK_EQ(generatorDeclarationNames(assets),
+             std::vector<std::string>{"stable"});
+    CHECK_NO_THROW(Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+        assets,
+        registry,
+        "test:valid",
+        GeneratorDefinitionOrigin::Shipped));
+}
+
 TEST_CASE(GeneratorDefinitionLoader_missing_selection_discards_complete_candidate) {
     Rigel::Asset::AssetManager assets;
     Rigel::Voxel::BlockRegistry registry;

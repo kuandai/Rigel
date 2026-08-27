@@ -50,6 +50,12 @@ public:
             "      path: generators/valid.yaml\n"
             "    z_invalid:\n"
             "      path: generators/invalid.yaml\n";
+        static constexpr char malformedGeneratorYamlManifest[] =
+            "namespace: failed-syntax\n"
+            "assets:\n"
+            "  generator_definitions:\n"
+            "    malformed:\n"
+            "      path: generators/malformed.yaml\n";
         static constexpr char malformedDeclaration[] =
             "namespace: failed-malformed\n"
             "assets:\n"
@@ -212,6 +218,8 @@ public:
             "  label: Invalid\n"
             "  description: Invalid aggregate fixture.\n"
             "  unknown_field: rejected\n";
+        static constexpr char malformedDefinition[] =
+            "generator: [\n";
         static const std::string correctedDefinition = [] {
             std::string result(
                 validDefinition, sizeof(validDefinition) - 1);
@@ -306,6 +314,10 @@ public:
             return {aggregateInvalidPayload,
                     sizeof(aggregateInvalidPayload) - 1};
         }
+        if (path == "malformed_generator_yaml.yaml") {
+            return {malformedGeneratorYamlManifest,
+                    sizeof(malformedGeneratorYamlManifest) - 1};
+        }
         if (path == "malformed_generator_declaration.yaml") {
             return {malformedDeclaration, sizeof(malformedDeclaration) - 1};
         }
@@ -332,6 +344,9 @@ public:
         }
         if (path == "generators/invalid.yaml") {
             return {invalidDefinition, sizeof(invalidDefinition) - 1};
+        }
+        if (path == "generators/malformed.yaml") {
+            return {malformedDefinition, sizeof(malformedDefinition) - 1};
         }
         if (path == "generators/corrected.yaml") {
             return {correctedDefinition.data(), correctedDefinition.size()};

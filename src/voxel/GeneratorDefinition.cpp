@@ -20,6 +20,39 @@
 namespace Rigel::Voxel {
 namespace {
 
+class GeneratorYamlParseError final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+[[noreturn]] void throwGeneratorYamlParseError(const char* message,
+                                               size_t length,
+                                               ryml::Location,
+                                               void*) {
+    throw GeneratorYamlParseError(std::string(message, length));
+}
+
+ryml::Tree parseGeneratorYaml(std::string_view yaml,
+                              std::string_view sourceName) {
+    ryml::Callbacks callbacks = ryml::get_callbacks();
+    callbacks.m_error = &throwGeneratorYamlParseError;
+    ryml::Tree tree(callbacks);
+    ryml::Parser::handler_type handler(callbacks);
+    ryml::Parser parser(&handler);
+    try {
+        ryml::parse_in_arena(
+            &parser,
+            ryml::csubstr(sourceName.data(), sourceName.size()),
+            ryml::csubstr(yaml.data(), yaml.size()),
+            &tree);
+    } catch (const GeneratorYamlParseError& error) {
+        throw std::invalid_argument(
+            "Invalid generator definition YAML in '" +
+            std::string(sourceName) + "': " + error.what());
+    }
+    return tree;
+}
+
 [[noreturn]] void fail(std::string_view sourceName,
                        std::string_view path,
                        std::string_view reason) {
@@ -1222,9 +1255,7 @@ GeneratorDefinition parseGeneratorDefinition(std::string_view yaml,
         throw std::invalid_argument(
             "Generator definition '" + std::string(sourceName) + "' is empty");
     }
-    const ryml::Tree tree = ryml::parse_in_arena(
-        ryml::csubstr(sourceName.data(), sourceName.size()),
-        ryml::csubstr(yaml.data(), yaml.size()));
+    const ryml::Tree tree = parseGeneratorYaml(yaml, sourceName);
     const ryml::ConstNodeRef root = tree.crootref();
     requireMap(root, sourceName, "document", {"generator"});
     const ryml::ConstNodeRef generator = child(root, "generator");
@@ -1322,9 +1353,7 @@ GeneratorDefinitionData parseGeneratorDefinitionSnapshot(
     if (snapshot.empty()) {
         throw std::invalid_argument("Generator definition snapshot is empty");
     }
-    const ryml::Tree tree = ryml::parse_in_arena(
-        ryml::csubstr(sourceName.data(), sourceName.size()),
-        ryml::csubstr(snapshot.data(), snapshot.size()));
+    const ryml::Tree tree = parseGeneratorYaml(snapshot, sourceName);
     GeneratorDefinitionData data =
         parseData(tree.crootref(), sourceName, "generator", true);
     validateData(data, sourceName);

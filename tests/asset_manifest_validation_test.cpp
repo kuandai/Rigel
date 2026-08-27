@@ -342,6 +342,34 @@ TEST_CASE(GeneratorDefinitionLoader_missing_selection_discards_complete_candidat
     CHECK_EQ(restored.data.densityGraph.nodes.front().value, 1.0f);
 }
 
+TEST_CASE(AssetManager_clearCache_releases_candidate_rollback_handles) {
+    Rigel::Asset::AssetManager assets;
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    commitInitialGeneratorSet(assets, registry);
+
+    auto external = assets.get<Rigel::Asset::RawAsset>("raw/stable");
+    std::weak_ptr<Rigel::Asset::RawAsset> oldAsset = external.shared();
+    assets.loadManifest("corrected.yaml");
+    assets.clearCache();
+    CHECK_EQ(rawText(external), std::string("retained"));
+
+    CHECK_THROWS(Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+        assets,
+        registry,
+        "test:missing",
+        GeneratorDefinitionOrigin::Shipped));
+    CHECK_EQ(rawText(external), std::string("retained"));
+    external = {};
+    CHECK(oldAsset.expired());
+
+    const auto reloaded = assets.get<Rigel::Asset::RawAsset>("raw/stable");
+    CHECK_EQ(rawText(reloaded), std::string("retained"));
+    CHECK_EQ(assets.ns(), std::string("initial"));
+    CHECK_EQ(generatorDeclarationNames(assets),
+             std::vector<std::string>{"stable"});
+}
+
 TEST_CASE(GeneratorDefinitionLoader_later_ordinary_entry_survives_candidate_commit) {
     Rigel::Asset::AssetManager assets;
     Rigel::Voxel::BlockRegistry registry;

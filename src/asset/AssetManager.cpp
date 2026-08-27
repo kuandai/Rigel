@@ -471,6 +471,9 @@ bool AssetManager::exists(const std::string& id) const {
 
 void AssetManager::clearCache() {
     m_cache.clear();
+    if (m_pendingGeneratorDefinitions) {
+        m_pendingGeneratorDefinitions->previousCacheEntries.clear();
+    }
     spdlog::debug("Asset cache cleared");
 }
 

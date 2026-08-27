@@ -12,7 +12,7 @@ behavior is covered by the linked subsystem documents.
 - `World` owns authoritative chunk data through `ChunkManager`, entities, a
   `WorldGenerator`, and persistence providers.
 - `WorldView` owns derived state: `ChunkStreamer`, `WorldMeshStore`,
-  `ChunkRenderer`, `EntityRenderer`, shaders, and `WorldRenderConfig`.
+  `ChunkRenderer`, `EntityRenderer`, shaders, and the internal `RenderProfile`.
 - `FrameRenderer` owns frame-level camera matrices, TAA, and debug overlays and
   delegates world drawing to the active `WorldView`.
 

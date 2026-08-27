@@ -58,7 +58,7 @@ than per-world ownership.
 - A persistence `ProviderRegistry`
 
 It provides block access and entity ticking. It does not own streaming state,
-meshes, render configuration, shaders, or GPU resources.
+meshes, render policy, shaders, or GPU resources.
 
 ### WorldView
 
@@ -69,7 +69,7 @@ derived and renderer-facing state for that world:
 - `WorldMeshStore` CPU meshes
 - `ChunkRenderer` and its GPU mesh/shadow cache
 - `EntityRenderer`
-- `WorldRenderConfig`
+- The shipped internal `RenderProfile`
 - Voxel and shadow shader handles
 
 The `World` installs its generator once from the save-owned creation inputs and
@@ -88,7 +88,7 @@ pointers to that world and view as the active pair. It then:
 3. Loads or durably publishes save-owned world settings and the generator
    snapshot, then configures the world generator and persistence providers.
 4. Wires the view to the asynchronous chunk loader.
-5. Assigns streaming and render configuration to the view.
+5. Applies automatic streaming policy; the view retains shipped render policy.
 6. Updates and renders only that active pair in the main loop.
 
 There is no runtime world switching or simultaneous multi-view rendering in
@@ -103,15 +103,10 @@ The application configures those shared values for its active default world
 before loading or saving it. The root used by that boot path is
 `saves/world_<id>`.
 
-The render and persistence bootstrap functions accept a world ID and include
-these optional highest-precedence files for that ID:
-
-- `config/worlds/<worldId>/render.yaml`
-- `config/worlds/<worldId>/persistence.yaml`
-
-Configuration values are loaded and applied by the application and subsystem
-providers; they are not stored as a general configuration object on `World` or
-`WorldSet`. Streaming scheduler policy is internal and has no per-world file.
+Persistence bootstrap accepts a world ID and includes the optional
+highest-precedence `config/worlds/<worldId>/persistence.yaml` file. Renderer and
+streaming policy are internal and have no per-world files. Configuration values
+are not stored as a general configuration object on `World` or `WorldSet`.
 Each published save owns `world-settings.yaml` and
 `generator-definition.yaml`, and reload does not enumerate installed generator
 definitions.

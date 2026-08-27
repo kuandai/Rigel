@@ -12,8 +12,8 @@ features.
 and GL debug-overlay state. It delegates world drawing to `WorldView::render`,
 which:
 
-- Builds a `WorldRenderContext` with mesh store, texture atlas, shaders, and
-  render config.
+- Builds a `WorldRenderContext` with mesh store, texture atlas, shaders, the
+  shipped render profile, and frame-derived ranges.
 - Delegates voxel rendering to `ChunkRenderer`.
 - Delegates entity rendering to `EntityRenderer`.
 
@@ -22,7 +22,8 @@ viewport, and frame time to `FrameRenderer` once per frame. The application
 renders the ImGui profiler after `FrameRenderer` returns.
 
 `UserPreferences.graphics.shadows` is the sole player shadow request. The
-renderer config supplies one internal On profile; it has no enable field.
+renderer supplies one internal On profile; it has no enable field or YAML
+source.
 
 ---
 
@@ -54,9 +55,10 @@ renderer config supplies one internal On profile; it has no enable field.
 
 - Distance culling uses the active View Distance policy's world-unit range,
   `(accepted chunks + 1) * 32`.
-- The same immutable policy supplies the projection far plane and the maximum
-  shadow distance. `WorldRenderConfig` continues to own the internal shadow
-  profile, but cannot extend it beyond that ceiling.
+- The same immutable policy supplies the projection far plane and a shadow
+  distance ceiling. The shipped profile supplies a separate 200-world-unit
+  limit; `WorldView` passes the smaller value to each frame without changing
+  either owner.
 - There is no frustum culling in the current pipeline.
 - Transparent chunks are sorted back-to-front by view depth.
 
@@ -73,26 +75,21 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
 
 ---
 
-## 4. Render Configuration
+## 4. Internal Render Policy
 
-`Render::makeRenderConfigProvider()` assembles these sources in order, and the
-application assigns the loaded `WorldRenderConfig` to the active `WorldView`.
-It then installs the accepted player View Distance policy and prepares the
-requested player shadow state. Later render-config assignments preserve the
-policy-owned render range:
+`WorldView` starts with one shipped `RenderProfile`. Cascade count and map size,
+distance limit, split blend, bias, normal bias, PCF radii, transparency scale,
+strength, and fade power are fixed renderer tuning. The same profile owns the
+static sun direction and transparent alpha. Clear color and lighting weights
+remain direct shipped constants. None of these values is loaded from player,
+world, content, working-directory, or per-world configuration.
 
-- `assets/config/render.yaml` (embedded as `raw/render_config`)
-- `config/render.yaml`
-- `render.yaml`
-- `config/worlds/<worldId>/render.yaml`
-
-Key fields in `WorldRenderConfig`:
-
-- `sunDirection`
-- `transparentAlpha`
-- `shadow` (see Section 5)
-- `taa` (see Section 6)
-- `profilingEnabled` (per-frame profiler toggle; config key `render.profiling.enabled`)
+Tests and developer diagnostics can use the explicitly named
+`WorldView::setRenderProfileForDiagnostics()` seam for exact low-level inputs.
+Normal application startup does not replace the profile. TAA is part of this
+internal profile and is shipped Off; there is no anti-aliasing player option.
+Profiler collection is separate developer tooling enabled only by
+`RIGEL_PROFILE=1` in builds that include instrumentation.
 
 ---
 
@@ -128,7 +125,8 @@ Splits are computed with a log/linear mix:
 The system uses a camera-centered cube:
 
 - Centered on the camera position.
-- Radius is `min(cascadeFar, shadow.maxDistance)` if maxDistance is set.
+- Radius is the smaller of the cascade far split and the frame's effective
+  shadow distance.
 - This is not a true camera-frustum fit.
 
 To stabilize shadows, the light-space bounds are snapped to the shadow texel
@@ -163,7 +161,8 @@ The voxel shader uses:
 - `u_shadowMatrices` (light view-projection per cascade).
 - PCF sampling with radius based on view distance.
 - Cascade blending near split boundaries.
-- Distance-based fade controlled by `shadow.fadePower` and `shadow.maxDistance`.
+- Distance-based fade controlled by the internal fade power and the frame's
+  effective shadow distance.
 
 Transparent voxels do not receive shadows (`u_renderLayer == Transparent`).
 
@@ -175,10 +174,10 @@ TAA runs as a post-process pass owned by `FrameRenderer`:
 
 - Scene renders into a color+depth FBO.
 - History uses two ping-pong textures plus depth history.
-- Jitter uses Halton (2,3) sequence scaled by `taa.jitterScale`.
-- Resolve uses `shaders/taa_resolve` and blends with `taa.blend`.
+- Jitter uses a Halton (2,3) sequence scaled by the internal jitter value.
+- Resolve uses `shaders/taa_resolve` and the internal history blend.
 
-If TAA is disabled, the history is invalidated each frame.
+The shipped profile keeps TAA disabled, so history is invalidated each frame.
 
 ---
 

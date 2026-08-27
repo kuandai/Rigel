@@ -74,7 +74,7 @@ Shutdown persists world state and releases resources.
    - Failed block definitions, an all-air registry, or an empty texture atlas
      abort world bootstrap before spawn discovery.
    - Successful initialization records loaded block and texture counts.
-7. Load world config and create `World` + `WorldView`.
+7. Load save-owned world identity and create `World` + `WorldView`.
    - For a new world, Rigel stages backend world metadata with world settings
      and the generator snapshot, verifies the authoritative format probe, and
      atomically publishes the complete save while holding the per-world
@@ -88,8 +88,9 @@ Shutdown persists world state and releases resources.
      changing live chunks or unrelated entities.
 9. Create the async chunk loader (disk IO) and wire it into `WorldView`.
    - Loader provides non-blocking requests + budgeted apply callbacks.
-10. Load and apply render config, the profiling environment override, and
-    stream config.
+10. Install automatic streaming policy, derive the accepted View Distance
+    policy, prepare the requested shadow state from the shipped internal
+    profile, and enable profiler collection only when `RIGEL_PROFILE=1`.
 11. Snap the camera to the first air block, mark spawn discovery complete, and
     initialize `FrameRenderer`.
 

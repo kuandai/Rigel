@@ -136,6 +136,9 @@ GPU upload, and the streamer's lifecycle-complete state do not imply it.
 
 - The ImGui profiler window displays a flame graph for the last frame.
 - ImGui is a required build dependency.
+- Debug builds compile profiler instrumentation, but collection remains Off
+  unless the process starts with the explicit developer input
+  `RIGEL_PROFILE=1`.
 - The window is toggled by `imgui_overlay` (F3 by default), independently of the
   GL overlays.
 

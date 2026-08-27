@@ -1,7 +1,7 @@
 # Configuration System
 
-This document describes Rigel's current preference, internal streaming,
-rendering, persistence, and generator-definition configuration paths.
+This document describes Rigel's current preference, internal engine policy,
+persistence, and generator-definition configuration paths.
 
 ---
 
@@ -11,13 +11,12 @@ rendering, persistence, and generator-definition configuration paths.
 - [Global User Preferences](#global-user-preferences)
 - [Config Sources and Precedence](#config-sources-and-precedence)
   - [Generator Definition Sources](#generator-definition-sources)
-  - [Rendering](#rendering)
   - [Persistence](#persistence)
-- [Config Provider and Sources](#config-provider-and-sources)
+- [Config Providers and Sources](#config-providers-and-sources)
 - [Save-Owned World Identity](#save-owned-world-identity)
 - [Generator Definitions](#generator-definitions)
 - [Streaming Policy](#streaming-policy)
-- [Render Config](#render-config)
+- [Render Policy](#render-policy)
 - [Persistence Config](#persistence-config)
 - [Per-World Overrides](#per-world-overrides)
 - [Limitations](#limitations)
@@ -27,12 +26,11 @@ rendering, persistence, and generator-definition configuration paths.
 
 ## Overview
 
-Rigel uses layered configuration for the remaining rendering and persistence
-policy. Each layered type is loaded from a fixed stack of sources,
-and later sources override earlier values. Configs are read once during
-application bootstrap. Generator content is separate: a new world resolves one
-strict named asset, while an existing world loads only its save-owned canonical
-snapshot.
+Rigel uses layered configuration for persistence bootstrap policy. Later
+sources override earlier values, and the result is read once during application
+bootstrap. Generator content is separate: a new world resolves one strict named
+asset, while an existing world loads only its save-owned canonical snapshot.
+Streaming and renderer tuning are internal code, not layered configuration.
 
 Fields merge according to their YAML shape:
 
@@ -43,17 +41,9 @@ Fields merge according to their YAML shape:
 
 Persistence's typed CR options merge by key.
 
-Two layered config types are supported today:
-
-- `WorldRenderConfig` (render pipeline settings)
-- `PersistenceConfig` (save/load format and provider options)
-
-Typed providers load each layered subsystem's settings from YAML input using
-rapidyaml. Rendering is loaded by `Render::RenderConfigProvider`, and
-persistence by `Persistence::PersistenceConfigProvider`. Each subsystem's bootstrap function
-uses the shared standard-source builder, but the typed provider remains the
-semantic owner of parsing and merging its settings. Unknown fixed keys produce
-a warning and are not applied.
+`PersistenceConfig` is the remaining layered type. Its typed provider loads
+YAML with rapidyaml and remains the semantic owner of parsing and merging its
+settings. Unknown fixed keys produce a warning and are not applied.
 
 `UserPreferences` is separate from these layered providers. It owns global
 player display, graphics, camera, and input requests in one platform file and
@@ -149,8 +139,8 @@ invert-Y while restoring manifest inheritance.
 
 ## Config Sources and Precedence
 
-Each config type has a fixed source order defined by its subsystem bootstrap.
-The general rule is:
+Persistence configuration has a fixed source order defined by its subsystem
+bootstrap:
 
 1) Embedded defaults (from assets).
 2) Project-level overrides under `config/`.
@@ -164,19 +154,10 @@ The shipped manifest declares `generator_definitions/default`, whose asset is
 namespaced definition only after save inspection. Published-world startup does
 not enumerate or load installed generator definitions.
 
-Installed streaming policy is internal code. Normal startup does not load a
-streaming asset or inspect project-root or per-world streaming files.
+Installed streaming and renderer policy are internal code. Normal startup does
+not load their assets or inspect project-root or per-world files for them.
 Unavailable installed generator content is irrelevant to published-world
 reload.
-
-### Rendering
-
-Sources (in order):
-
-1. `assets/config/render.yaml` (embedded as `raw/render_config`)
-2. `config/render.yaml`
-3. `render.yaml`
-4. `config/worlds/<worldId>/render.yaml`
 
 ### Persistence
 
@@ -191,16 +172,15 @@ Sources (in order):
 
 ## Config Providers and Sources
 
-Each typed provider aggregates neutral `Config::IConfigSource` instances:
+The persistence provider aggregates neutral `Config::IConfigSource` instances:
 
-- `EmbeddedConfigSource` reads an embedded raw asset (e.g.
-  `raw/render_config`).
+- `EmbeddedConfigSource` reads the embedded `raw/persistence_config` asset.
 - `FileConfigSource` reads a file from disk.
 
 Each source provides its complete YAML document and a name used in validation
-errors. Providers prepare and validate a replacement value for each available
-source before publishing it as the input to the next layer. There is no
-cross-file overlay path or conditional flag mechanism.
+errors. The provider prepares and validates a replacement value for each
+available source before publishing it as the input to the next layer. There is
+no cross-file overlay path or conditional flag mechanism.
 
 ---
 
@@ -367,76 +347,32 @@ into a partial scan.
 
 ---
 
-## Render Config
+## Render Policy
 
-`WorldRenderConfig` is loaded from YAML under the optional `render` root node.
-If `render` is absent, the root is used directly.
+Normal startup uses one code-owned `RenderProfile`. There is no render YAML,
+raw render asset, project-root override, per-world override, or saved renderer
+document. The sole player-owned renderer cost requests are View Distance and
+Shadows On/Off. `WorldView::setRenderProfileForDiagnostics()` is the explicit
+low-level replacement seam for tests and developer diagnostics; application
+startup does not call it.
 
-Defaults below reflect the code defaults from `WorldRenderConfig`. The embedded
-config (`assets/config/render.yaml`) may override them.
+The shipped Shadows On profile uses three 6,144-pixel cascades, a 200-world-unit
+internal distance limit, a 0.25 split blend, 0.001 depth bias, 0.02 normal bias,
+near/far PCF radii of 2/3, transparent scale 1, strength 3, and fade power 1.
+The active View Distance policy independently supplies a shadow-distance
+ceiling each frame. The effective distance is the smaller of that ceiling and
+the profile limit, and the derived value is never written back into the
+profile.
 
-### Quick Reference (Rendering)
+TAA remains an internal experiment, disabled in the shipped profile, with a
+0.95 history blend and 1.0 jitter scale. There is no anti-aliasing player or
+world setting. The sun direction `[0.5, 1.0, 0.3]`, transparent alpha `0.5`,
+clear color, and lighting weights are shipped art constants rather than an
+environment configuration domain.
 
-| Key | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `render.sun_direction` | vec3 | `[0.5, 1.0, 0.3]` | Directional light vector. |
-| `render.transparent_alpha` | float | `0.5` | Alpha for transparent pass. |
-| `render.shadow.cascades` | int | `3` | Cascade count (maximum `4`). |
-| `render.shadow.map_size` | int | `1024` | Shadow map resolution (maximum `6144`). |
-| `render.shadow.max_distance` | float | `200.0` | Internal profile distance, capped by the active View Distance policy. |
-| `render.shadow.split_lambda` | float | `0.5` | Log/linear split blend. |
-| `render.shadow.bias` | float | `0.0005` | Depth bias. |
-| `render.shadow.normal_bias` | float | `0.005` | Normal-based bias. |
-| `render.shadow.pcf_radius` | int | `1` | Fallback for near and far PCF radii (maximum `4`). |
-| `render.shadow.pcf_radius_near` | int | `1` | Near PCF radius override (maximum `4`). |
-| `render.shadow.pcf_radius_far` | int | `1` | Far PCF radius override (maximum `4`). |
-| `render.shadow.transparent_scale` | float | `1.0` | Transparent attenuation. |
-| `render.shadow.strength` | float | `1.0` | Shadow strength multiplier. |
-| `render.shadow.fade_power` | float | `1.0` | Shadow fade exponent. |
-| `render.taa.enabled` | bool | `false` | Toggle TAA. |
-| `render.taa.blend` | float | `0.9` | History blend factor. |
-| `render.taa.jitter_scale` | float | `1.0` | Subpixel jitter scale. |
-| `render.profiling.enabled` | bool | `false` | Enable the per-frame profiler. |
-
-`UserPreferences.graphics.view_distance_chunks` controls which chunks are
-loaded and meshed. `WorldView` derives the renderer's world-unit culling range,
-projection far plane, and shadow-distance ceiling from the accepted request.
-`render.render_distance` is not a supported render YAML key.
-`render.shadow.enabled` is also not supported: the sole player request is
-`UserPreferences.graphics.shadows`. The remaining shadow fields are the
-renderer-owned internal On profile during the current rendering migration.
-
-Key fields:
-
-- `sun_direction` (vec3)
-- `transparent_alpha` (float)
-- `shadow`:
-  - `cascades`, `map_size`, `max_distance`
-  - `split_lambda`, `bias`, `normal_bias`
-  - `pcf_radius`, `pcf_radius_near`, `pcf_radius_far`
-  - `transparent_scale`, `strength`, `fade_power`
-- `taa`:
-  - `enabled`, `blend`, `jitter_scale`
-
-Values are clamped during load:
-
-- `shadow.cascades` and `shadow.map_size` are clamped to at least `1`.
-- `pcf_radius` and related values are clamped to at least zero.
-- `taa.blend` is clamped to `[0, 1]`.
-
-Shadow cascades, map dimensions, and PCF radii above their documented maxima
-are rejected before renderer or streaming workers are created. The 6,144 map
-limit matches the largest shipped configuration while placing a fixed bound on
-both texture-array allocations. The PCF limit matches the implemented
-four-texel shader kernel instead of accepting values that would be silently
-reduced during rendering.
-
-When a near or far PCF radius is not configured, it follows `pcf_radius`.
-Specific near and far values take precedence across configuration layers, so a
-later generic radius only updates sides that have no specific value.
-
-`RIGEL_PROFILE=1` forces profiling on at runtime, regardless of config. Setting
-`RIGEL_PROFILE=0` forces profiling off.
+Profiler collection is separate developer tooling. Debug builds compile the
+instrumentation, collection defaults Off, and only the exact environment value
+`RIGEL_PROFILE=1` enables it. It is absent from render, world, and player state.
 
 ---
 
@@ -484,17 +420,16 @@ it carries objects such as the block registry and CR settings after bootstrap.
 Per-world overrides are resolved by world ID. The default world ID is numeric
 and used directly in the override paths:
 
-- `config/worlds/<worldId>/render.yaml`
 - `config/worlds/<worldId>/persistence.yaml`
 
-These files are optional and only override fields they define. As the last
-source layer, they have the highest precedence.
+This file is optional and only overrides fields it defines. As the last source
+layer, it has the highest precedence.
 
 ---
 
 ## Limitations
 
-- Layered render/persistence configs and saved world identity are loaded once at
+- Layered persistence config and saved world identity are loaded once at
   startup. Supported UserPreferences changes use their direct live apply paths;
   Shadows and View Distance require an active world session.
 - Validation is implemented by concrete owners rather than one generic schema

@@ -65,14 +65,13 @@ try {
 
 ### Common Embedded Configs
 
-The build embeds project configs under `assets/config/` so they can be loaded
-via `ResourceRegistry` (or the config provider):
+The build embeds the persistence bootstrap config and installed generator
+definition so they can be loaded through their concrete owners:
 
-- `config/render.yaml`
 - `config/persistence.yaml`
 - `generators/default.yaml`
 
-Streaming scheduler policy is internal code and is not an embedded config.
+Streaming and renderer policy are internal code and are not embedded configs.
 Production new-world generation resolves the named `generators/default.yaml`
 definition declared by the manifest.
 

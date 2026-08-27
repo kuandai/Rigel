@@ -9,11 +9,17 @@
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/WorldView.h"
 
+#include <fstream>
 #include <functional>
+#include <iterator>
 
 namespace Rigel::Preferences::detail {
 
+void setUserPreferencesAfterSavePreflightHookForTesting(
+    std::function<void()> hook);
 void setUserPreferencesBeforePublicationHookForTesting(
+    std::function<void()> hook);
+void setUserPreferencesAfterPublicationHookForTesting(
     std::function<void()> hook);
 
 } // namespace Rigel::Preferences::detail
@@ -51,6 +57,58 @@ void failBeforePublication() {
         "injected prepublication failure");
 }
 
+void failSavePreflight() {
+    throw std::runtime_error("injected save preflight failure");
+}
+
+void failAfterPublication() {
+    throw Rigel::Persistence::AtomicFilePublicationError(
+        Rigel::Persistence::AtomicFilePublicationState::
+            PublishedDurabilityUncertain,
+        "injected post-publication durability uncertainty");
+}
+
+#ifndef _WIN32
+class DirectoryWriteBlock final {
+public:
+    explicit DirectoryWriteBlock(std::filesystem::path path)
+        : m_path(std::move(path))
+        , m_original(std::filesystem::status(m_path).permissions()) {
+    }
+
+    ~DirectoryWriteBlock() { restore(); }
+
+    void block() {
+        std::filesystem::permissions(
+            m_path,
+            std::filesystem::perms::owner_read |
+                std::filesystem::perms::owner_exec,
+            std::filesystem::perm_options::replace);
+        m_blocked = true;
+    }
+
+    bool blocked() const noexcept { return m_blocked; }
+
+    void restore() noexcept {
+        if (!m_blocked) {
+            return;
+        }
+        std::error_code error;
+        std::filesystem::permissions(
+            m_path,
+            m_original,
+            std::filesystem::perm_options::replace,
+            error);
+        m_blocked = false;
+    }
+
+private:
+    std::filesystem::path m_path;
+    std::filesystem::perms m_original;
+    bool m_blocked = false;
+};
+#endif
+
 class ShadowFixture final {
 private:
     Rigel::Test::TemporaryDirectory m_directory;
@@ -73,7 +131,11 @@ public:
 
     ~ShadowFixture() {
         Rigel::Preferences::detail::
+            setUserPreferencesAfterSavePreflightHookForTesting({});
+        Rigel::Preferences::detail::
             setUserPreferencesBeforePublicationHookForTesting({});
+        Rigel::Preferences::detail::
+            setUserPreferencesAfterPublicationHookForTesting({});
         view.releaseRenderResources();
         assets.clearCache();
     }
@@ -106,6 +168,13 @@ bool persistedShadows(const std::filesystem::path& path) {
     return Rigel::Preferences::UserPreferencesStore(path)
         .load()
         .graphics.shadows;
+}
+
+std::string persistedDocument(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return {
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
 }
 
 } // namespace
@@ -197,6 +266,162 @@ TEST_CASE(ApplicationPreferences_UnpublishedShadowEnableRestoresOffState) {
     CHECK_EQ(restored.depthArray, static_cast<GLuint>(0));
     CHECK_EQ(restored.transmitArray, static_cast<GLuint>(0));
     CHECK_EQ(restored.framebuffer, static_cast<GLuint>(0));
+}
+
+TEST_CASE(ApplicationPreferences_ShadowEnablePreflightFailureRetainsOffState) {
+    ShadowFixture fixture;
+    auto preferences = fixture.owner(false);
+    CHECK_EQ(
+        preferences.initializeShadows(fixture.view).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const std::string before = persistedDocument(fixture.path);
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterSavePreflightHookForTesting(
+            &failSavePreflight);
+
+    const auto result = preferences.applyShadows(fixture.view, true);
+
+    CHECK_EQ(
+        result.status,
+        Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK(!preferences.effectiveShadowsEnabled());
+    CHECK(!preferences.requested().graphics.shadows);
+    CHECK_EQ(persistedDocument(fixture.path), before);
+    const ShadowResources resources = shadowResources(fixture.view);
+    CHECK_EQ(resources.depthArray, static_cast<GLuint>(0));
+    CHECK_EQ(resources.transmitArray, static_cast<GLuint>(0));
+    CHECK_EQ(resources.framebuffer, static_cast<GLuint>(0));
+}
+
+TEST_CASE(ApplicationPreferences_ShadowDisablePreflightFailureRetainsResources) {
+    ShadowFixture fixture;
+    auto preferences = fixture.owner(true);
+    CHECK_EQ(
+        preferences.initializeShadows(fixture.view).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const ShadowResources beforeResources = shadowResources(fixture.view);
+    const std::string beforeDocument = persistedDocument(fixture.path);
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterSavePreflightHookForTesting(
+            &failSavePreflight);
+
+    const auto result = preferences.applyShadows(fixture.view, false);
+
+    CHECK_EQ(
+        result.status,
+        Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK(preferences.effectiveShadowsEnabled());
+    CHECK(preferences.requested().graphics.shadows);
+    CHECK_EQ(persistedDocument(fixture.path), beforeDocument);
+    const ShadowResources retained = shadowResources(fixture.view);
+    CHECK_EQ(retained.depthArray, beforeResources.depthArray);
+    CHECK_EQ(retained.transmitArray, beforeResources.transmitArray);
+    CHECK_EQ(retained.framebuffer, beforeResources.framebuffer);
+    CHECK_EQ(glIsTexture(retained.depthArray), GL_TRUE);
+    CHECK_EQ(glIsTexture(retained.transmitArray), GL_TRUE);
+    CHECK_EQ(glIsFramebuffer(retained.framebuffer), GL_TRUE);
+}
+
+TEST_CASE(ApplicationPreferences_ShadowStorageFailureRestoresResources) {
+#ifdef _WIN32
+    throw Rigel::Test::TestSkip(
+        "Directory write permission behavior is platform-specific");
+#else
+    ShadowFixture fixture;
+    auto preferences = fixture.owner(true);
+    CHECK_EQ(
+        preferences.initializeShadows(fixture.view).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const ShadowResources beforeResources = shadowResources(fixture.view);
+    const std::string beforeDocument = persistedDocument(fixture.path);
+    DirectoryWriteBlock writeBlock(fixture.path.parent_path());
+    bool observedInstalledOffState = false;
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting(
+            [&]() {
+                const ShadowResources installed =
+                    shadowResources(fixture.view);
+                observedInstalledOffState = installed.depthArray == 0 &&
+                    installed.transmitArray == 0 &&
+                    installed.framebuffer == 0;
+                writeBlock.block();
+            });
+
+    const auto result = preferences.applyShadows(fixture.view, false);
+
+    const bool physicalWriteWasBlocked = writeBlock.blocked();
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting({});
+    writeBlock.restore();
+    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK(observedInstalledOffState);
+    CHECK(physicalWriteWasBlocked);
+    CHECK(preferences.effectiveShadowsEnabled());
+    CHECK(preferences.requested().graphics.shadows);
+    CHECK_EQ(persistedDocument(fixture.path), beforeDocument);
+    const ShadowResources restored = shadowResources(fixture.view);
+    CHECK_EQ(restored.depthArray, beforeResources.depthArray);
+    CHECK_EQ(restored.transmitArray, beforeResources.transmitArray);
+    CHECK_EQ(restored.framebuffer, beforeResources.framebuffer);
+    CHECK_EQ(glIsTexture(restored.depthArray), GL_TRUE);
+    CHECK_EQ(glIsTexture(restored.transmitArray), GL_TRUE);
+    CHECK_EQ(glIsFramebuffer(restored.framebuffer), GL_TRUE);
+#endif
+}
+
+TEST_CASE(ApplicationPreferences_UncertainShadowEnableKeepsPublishedResources) {
+    ShadowFixture fixture;
+    auto preferences = fixture.owner(false);
+    CHECK_EQ(
+        preferences.initializeShadows(fixture.view).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterPublicationHookForTesting(
+            &failAfterPublication);
+
+    const auto result = preferences.applyShadows(fixture.view, true);
+
+    CHECK_EQ(
+        result.status,
+        Rigel::PreferenceApplyStatus::PublishedDurabilityUncertain);
+    CHECK(preferences.effectiveShadowsEnabled());
+    CHECK(preferences.requested().graphics.shadows);
+    CHECK(persistedShadows(fixture.path));
+    const ShadowResources installed = shadowResources(fixture.view);
+    CHECK(installed.depthArray != 0);
+    CHECK(installed.transmitArray != 0);
+    CHECK(installed.framebuffer != 0);
+    CHECK_EQ(glIsTexture(installed.depthArray), GL_TRUE);
+    CHECK_EQ(glIsTexture(installed.transmitArray), GL_TRUE);
+    CHECK_EQ(glIsFramebuffer(installed.framebuffer), GL_TRUE);
+}
+
+TEST_CASE(ApplicationPreferences_UncertainShadowDisableKeepsPublishedOffState) {
+    ShadowFixture fixture;
+    auto preferences = fixture.owner(true);
+    CHECK_EQ(
+        preferences.initializeShadows(fixture.view).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const ShadowResources retired = shadowResources(fixture.view);
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterPublicationHookForTesting(
+            &failAfterPublication);
+
+    const auto result = preferences.applyShadows(fixture.view, false);
+
+    CHECK_EQ(
+        result.status,
+        Rigel::PreferenceApplyStatus::PublishedDurabilityUncertain);
+    CHECK(!preferences.effectiveShadowsEnabled());
+    CHECK(!preferences.requested().graphics.shadows);
+    CHECK(!persistedShadows(fixture.path));
+    const ShadowResources installed = shadowResources(fixture.view);
+    CHECK_EQ(installed.depthArray, static_cast<GLuint>(0));
+    CHECK_EQ(installed.transmitArray, static_cast<GLuint>(0));
+    CHECK_EQ(installed.framebuffer, static_cast<GLuint>(0));
+    CHECK_EQ(glIsTexture(retired.depthArray), GL_FALSE);
+    CHECK_EQ(glIsTexture(retired.transmitArray), GL_FALSE);
+    CHECK_EQ(glIsFramebuffer(retired.framebuffer), GL_FALSE);
 }
 
 TEST_CASE(ApplicationPreferences_InvalidShadowProfileRetainsOffState) {

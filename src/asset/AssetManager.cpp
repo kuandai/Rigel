@@ -56,14 +56,19 @@ void AssetManager::loadManifest(const std::string& path) {
     );
     ryml::ConstNodeRef root = tree.rootref();
 
-    // Extract namespace
+    // Parse the namespace without publishing it until exact declarations pass.
+    std::optional<std::string> manifestNamespace;
     if (root.has_child("namespace")) {
-        root["namespace"] >> m_namespace;
-        spdlog::debug("Manifest namespace: {}", m_namespace);
+        manifestNamespace.emplace();
+        root["namespace"] >> *manifestNamespace;
     }
 
     // Parse assets
     if (!root.has_child("assets")) {
+        if (manifestNamespace) {
+            m_namespace = std::move(*manifestNamespace);
+            spdlog::debug("Manifest namespace: {}", m_namespace);
+        }
         spdlog::warn("Manifest has no 'assets' section");
         return;
     }
@@ -98,6 +103,11 @@ void AssetManager::loadManifest(const std::string& path) {
                 }
             }
         }
+    }
+
+    if (manifestNamespace) {
+        m_namespace = std::move(*manifestNamespace);
+        spdlog::debug("Manifest namespace: {}", m_namespace);
     }
 
     // Iterate categories (raw, textures, shaders, etc.)

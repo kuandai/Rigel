@@ -61,7 +61,7 @@ inline Voxel::GeneratorDefinitionData generatorDefinitionFixture(
     data.climate.localBlend = 0.0f;
     data.biomes.blendPower = 2.0f;
     data.biomes.epsilon = 0.0001f;
-    data.biomes.coast = {"land", -100.0f, 100.0f};
+    data.biomes.coast = {"coast", -100.0f, -99.0f};
     Voxel::GeneratorDefinitionData::Biome biome;
     biome.id = "land";
     biome.weight = 1.0f;
@@ -70,6 +70,12 @@ inline Voxel::GeneratorDefinitionData generatorDefinitionFixture(
         biome.surface.front().material = std::move(surfaceMaterial);
     }
     data.biomes.entries.push_back(std::move(biome));
+    Voxel::GeneratorDefinitionData::Biome coast;
+    coast.id = "coast";
+    coast.weight = 1.0f;
+    coast.surface.push_back(
+        {data.biomes.entries.front().surface.front().material, 1});
+    data.biomes.entries.push_back(std::move(coast));
     Voxel::GeneratorDefinitionData::DensityNode density;
     density.id = "ground";
     density.type = "constant";

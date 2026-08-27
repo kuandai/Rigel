@@ -11,6 +11,10 @@
 #include "Rigel/Voxel/TextureAtlas.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -215,6 +219,17 @@ Rigel::Voxel::PreparedGeneratorDefinitionSnapshot prepareSnapshot(
         definition, registry, GeneratorDefinitionOrigin::ThirdParty);
 }
 
+uint64_t appendGoldenBytes(uint64_t hash, std::string_view value) {
+    constexpr uint64_t Prime = 1099511628211ull;
+    for (const unsigned char byte : value) {
+        hash ^= byte;
+        hash *= Prime;
+    }
+    hash ^= 0xffu;
+    hash *= Prime;
+    return hash;
+}
+
 } // namespace
 
 TEST_CASE(GeneratorDefinition_parses_complete_graph_only_author_contract) {
@@ -308,6 +323,28 @@ TEST_CASE(GeneratorDefinition_rejects_invalid_ranges_and_dependencies) {
     CHECK(rejectsMutation(
         "  structures:\n    enabled: true\n    features:\n",
         "  structures:\n    enabled: false\n    features:\n"));
+}
+
+TEST_CASE(GeneratorDefinition_rejects_coast_only_biome_selection) {
+    GeneratorDefinition definition =
+        parseGeneratorDefinition(validDefinitionYaml(), "coast-only.yaml");
+    const auto coast = std::find_if(
+        definition.data.biomes.entries.begin(),
+        definition.data.biomes.entries.end(),
+        [&](const auto& biome) {
+            return biome.id == definition.data.biomes.coast.biome;
+        });
+    CHECK(coast != definition.data.biomes.entries.end());
+    definition.data.biomes.entries = {*coast};
+
+    std::string diagnostic;
+    try {
+        static_cast<void>(prepareSnapshot(definition));
+    } catch (const std::invalid_argument& error) {
+        diagnostic = error.what();
+    }
+    CHECK(diagnostic.find("generator.biomes.entries") != std::string::npos);
+    CHECK(diagnostic.find("outside the coast band") != std::string::npos);
 }
 
 TEST_CASE(GeneratorDefinition_validates_unreachable_nodes_before_pruning) {
@@ -613,4 +650,47 @@ TEST_CASE(GeneratorDefinition_shipped_default_bootstraps_strict_runtime) {
         assetBoundary = true;
     }
     CHECK(assetBoundary);
+}
+
+TEST_CASE(GeneratorDefinition_shipped_default_generation_is_repeatable_and_golden) {
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    Rigel::Voxel::BlockRegistry registry;
+    Rigel::Voxel::TextureAtlas atlas;
+    Rigel::Voxel::BlockLoader blocks;
+    CHECK_EQ(blocks.loadFromManifest(assets, registry, atlas).failed,
+             size_t{0});
+    const auto prepared =
+        Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets,
+            registry,
+            "rigel:default",
+            GeneratorDefinitionOrigin::Shipped);
+    Rigel::Voxel::WorldGenerator first(registry, prepared.data, 1337u);
+    Rigel::Voxel::WorldGenerator second(registry, prepared.data, 1337u);
+    constexpr std::array<Rigel::Voxel::ChunkCoord, 4> Coordinates = {{
+        {0, 3, 0},
+        {4, 3, -3},
+        {-5, 4, 6},
+        {9, 2, 7},
+    }};
+
+    uint64_t signature = 1469598103934665603ull;
+    std::set<std::string> sampledMaterials;
+    for (const auto coord : Coordinates) {
+        Rigel::Voxel::ChunkBuffer firstBuffer;
+        Rigel::Voxel::ChunkBuffer secondBuffer;
+        first.generate(coord, firstBuffer);
+        second.generate(coord, secondBuffer);
+        CHECK(firstBuffer.blocks == secondBuffer.blocks);
+        for (const auto state : firstBuffer.blocks) {
+            const std::string& identifier =
+                registry.getType(state.id).identifier;
+            sampledMaterials.insert(identifier);
+            signature = appendGoldenBytes(signature, identifier);
+        }
+    }
+
+    CHECK(sampledMaterials.size() >= size_t{3});
+    CHECK_EQ(signature, uint64_t{11943161365773689889ull});
 }

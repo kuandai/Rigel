@@ -675,6 +675,15 @@ void validateData(const GeneratorDefinitionData& data,
         fail(sourceName, "generator.biomes.coast.biome",
              "references an unknown biome '" + data.biomes.coast.biome + "'");
     }
+    const bool hasNonCoastBiome = std::any_of(
+        data.biomes.entries.begin(), data.biomes.entries.end(),
+        [&](const auto& biome) {
+            return biome.id != data.biomes.coast.biome;
+        });
+    if (!hasNonCoastBiome) {
+        fail(sourceName, "generator.biomes.entries",
+             "requires at least one biome selectable outside the coast band");
+    }
 
     if (data.densityGraph.nodes.empty()) {
         fail(sourceName, "generator.density_graph.nodes",

@@ -51,7 +51,7 @@ public:
         return m_effectiveDisplay;
     }
     double effectiveVerticalFovDegrees() const {
-        return m_effectiveVerticalFovDegrees;
+        return m_effectiveVerticalFovDegrees.value();
     }
 
 private:
@@ -73,7 +73,7 @@ private:
     Preferences::UserPreferencesStore m_store;
     Preferences::UserPreferences m_requested;
     Preferences::DisplayPreferences m_effectiveDisplay;
-    double m_effectiveVerticalFovDegrees = 60.0;
+    std::optional<double> m_effectiveVerticalFovDegrees;
     Core::FramePacer m_framePacer;
     bool m_benchmarkMode = false;
     bool m_programmaticWindowChange = false;

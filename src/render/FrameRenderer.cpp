@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <array>
 #include <exception>
+#include <optional>
+#include <stdexcept>
 
 #include <GL/glew.h>
 #include <glm/mat4x4.hpp>
@@ -55,7 +57,7 @@ struct FrameRenderer::Impl {
     Asset::AssetManager* assets = nullptr;
     DebugState debug;
     TemporalAA taa;
-    double verticalFovDegrees = 60.0;
+    std::optional<double> verticalFovDegrees;
     std::uint64_t temporalHistoryGeneration = 0;
 
     void clearTarget(GLuint framebuffer, int width, int height) {
@@ -356,7 +358,8 @@ void FrameRenderer::recordFrameTime(float seconds) {
 }
 
 void FrameRenderer::setVerticalFovDegrees(double verticalFovDegrees) {
-    if (m_impl->verticalFovDegrees == verticalFovDegrees) {
+    if (m_impl->verticalFovDegrees &&
+        *m_impl->verticalFovDegrees == verticalFovDegrees) {
         return;
     }
     m_impl->verticalFovDegrees = verticalFovDegrees;
@@ -366,6 +369,10 @@ void FrameRenderer::setVerticalFovDegrees(double verticalFovDegrees) {
 }
 
 void FrameRenderer::render(const FrameRenderContext& context) {
+    if (!m_impl->verticalFovDegrees) {
+        throw std::logic_error(
+            "FrameRenderer requires an effective vertical FOV before rendering");
+    }
     const auto& config = context.worldView.renderConfig();
     float aspect = context.viewportHeight > 0
         ? static_cast<float>(context.viewportWidth) /
@@ -376,7 +383,7 @@ void FrameRenderer::render(const FrameRenderContext& context) {
         500.0f, config.renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
 
     glm::mat4 projection = makeCameraProjection(
-        static_cast<float>(m_impl->verticalFovDegrees),
+        static_cast<float>(*m_impl->verticalFovDegrees),
         aspect,
         nearPlane,
         farPlane);
@@ -431,7 +438,7 @@ void FrameRenderer::render(const FrameRenderContext& context) {
         context.cameraForward,
         context.viewportWidth,
         context.viewportHeight,
-        static_cast<float>(m_impl->verticalFovDegrees));
+        static_cast<float>(*m_impl->verticalFovDegrees));
     renderFrameGraph(m_impl->debug);
 }
 
@@ -457,7 +464,7 @@ const ChunkDebugDetailPresentation* FrameRenderer::chunkDebugDetail() const {
 
 double FrameRendererTestAccess::verticalFovDegrees(
     const FrameRenderer& renderer) {
-    return renderer.m_impl->verticalFovDegrees;
+    return renderer.m_impl->verticalFovDegrees.value();
 }
 
 std::uint64_t FrameRendererTestAccess::temporalHistoryGeneration(

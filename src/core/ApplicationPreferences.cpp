@@ -352,7 +352,7 @@ PreferenceApplyResult ApplicationPreferences::applyVerticalFov(
         return {};
     }
 
-    const double previousEffective = m_effectiveVerticalFovDegrees;
+    const double previousEffective = m_effectiveVerticalFovDegrees.value();
     Preferences::UserPreferences nextRequested = m_requested;
     nextRequested.camera.verticalFovDegrees = candidateDegrees;
     renderer.setVerticalFovDegrees(candidateDegrees);

@@ -132,7 +132,7 @@ TEST_CASE(WorldConfigBootstrap_uses_dedicated_shipped_streaming_asset) {
         Rigel::Voxel::makeWorldConfigProvider(assets, 17)
             .loadStreamingConfig();
     CHECK_EQ(streaming.viewDistanceChunks, 6);
-    CHECK_EQ(streaming.unloadDistanceChunks, 13);
+    CHECK_EQ(streaming.unloadDistanceChunks, 8);
 }
 
 TEST_CASE(WorldConfigBootstrap_reads_streaming_paths_only) {
@@ -159,6 +159,6 @@ TEST_CASE(WorldConfigBootstrap_reads_streaming_paths_only) {
             .loadStreamingConfig();
 
     CHECK_EQ(streaming.viewDistanceChunks, 6);
-    CHECK_EQ(streaming.unloadDistanceChunks, 13);
+    CHECK_EQ(streaming.unloadDistanceChunks, 8);
     CHECK_EQ(streaming.workerThreads, 9);
 }

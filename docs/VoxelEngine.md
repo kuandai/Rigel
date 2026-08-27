@@ -69,9 +69,9 @@ streaming distance changes. The sphere is clipped to chunks intersecting the
 generator's inclusive finite Y bounds, and desired coordinates are ordered
 nearest first.
 Chunks beyond the effective unload radius are removed, and an optional
-`ChunkCache` limit evicts non-desired residents. The effective unload radius is
-never smaller than the view radius, so unload hysteresis exists only when the
-configured unload distance is greater than the configured view distance.
+`ChunkCache` limit evicts non-desired residents. The active-world View Distance
+policy derives the unload radius as exactly one chunk beyond the accepted view
+radius.
 
 For a missing desired chunk, the normal path is:
 
@@ -89,12 +89,13 @@ departure, or reset. Dirty mesh requests, capacity waiters, and retry deadlines
 are event-driven; stationary updates do not rescan the desired volume or loaded
 chunk set to rediscover them.
 
-Generator/config replacement owns an explicit desired-rebuild diagnostic and a
-deterministic resident reconciliation that advances at most 64 coordinates per
-scheduler call. A concurrent camera move updates the target retention snapshot
-without triggering an all-resident scan. Meshing samples resident in-world
-neighbors across the unload fringe, but masks every voxel row outside current
-finite bounds to air without erasing persisted data.
+Generator replacement and a live View Distance transition own an explicit
+desired-rebuild diagnostic and a deterministic resident reconciliation that
+advances at most 64 coordinates per scheduler call. A newer distance request or
+concurrent camera move replaces the target retention snapshot without
+triggering an all-resident scan. Meshing samples resident in-world neighbors
+across the unload fringe, but masks every voxel row outside current finite
+bounds to air without erasing persisted data.
 
 ## Asynchronous Validity
 

@@ -1,5 +1,4 @@
 streaming:
-  unload_distance_chunks: 13
   gen_queue_limit: 128
   mesh_queue_limit: 128
   update_budget_per_frame: 4096
@@ -12,6 +11,4 @@ streaming:
   load_queue_limit: 0
   load_max_cached_regions: 16
   load_max_inflight_regions: 16
-  load_prefetch_radius: 1
-  load_prefetch_per_request: 12
   max_resident_chunks: 0

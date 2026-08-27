@@ -119,7 +119,15 @@ requests to window, renderer, streaming, or input consumers.
 
 `ApplicationPreferences` is the direct runtime owner for applying input and
 View Distance requests. `Application` exposes the sole public View Distance
-session seam, which applies at a main-thread boundary between frames.
+session seam. A request only replaces the pending candidate; it does not change
+requested preferences, active streaming, or rendering synchronously. After
+events are collected for the next application frame, the owner derives and
+validates one complete active-world policy, prepares the preference save,
+applies that same immutable policy to the world and loader, and publishes the
+save. Repeated requests before that boundary supersede the pending candidate.
+A definite preparation or publication failure restores the prior complete
+policy and requested value.
+
 Sensitivity and invert-Y update the cursor callback immediately. A binding
 candidate is compiled against the required nine-action manifest asset without
 mutating the cached asset, then queued for `InputState::beginFrame()`. A
@@ -271,12 +279,11 @@ sections; there is no author-facing pipeline or simple terrain mode.
 `StreamingConfig` owns the remaining runtime chunk loading, generation, and
 meshing schedule inputs under the `streaming` key. It uses the dedicated
 streaming source order above. Player View Distance is absent from this YAML
-domain. Unload distance and loader prefetch radius remain transitional engine
-policy inputs.
+domain. Unload distance and loader prefetch are derived active-world policy,
+not streaming YAML inputs.
 
 | Key | Type | Code fallback | Notes |
 | --- | --- | --- | --- |
-| `streaming.unload_distance_chunks` | int | `8` | Retention radius (maximum `24`); the player View Distance is its effective minimum. |
 | `streaming.gen_queue_limit` | int | `0` | Generation dispatch cap before executor-capacity bounds (0 = no configured cap; maximum explicit cap `32768`). |
 | `streaming.mesh_queue_limit` | int | `0` | Mesh dispatch cap before executor-capacity bounds (0 = no configured cap; maximum explicit cap `32768`). |
 | `streaming.update_budget_per_frame` | int | `0` | Load/generation/missing-mesh requests advanced per update (0 = unlimited). |
@@ -289,8 +296,6 @@ policy inputs.
 | `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited; maximum explicit cap `32768`). |
 | `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = unlimited, maximum `256`). |
 | `streaming.load_max_inflight_regions` | int | `8` | Configured physical region-read cap (0 = no configured physical-read cap; maximum explicit cap `64`). The zero-cap fallback retains at most 64 speculative owners in the loader-owned queue; dispatched or pool-pending work is bounded separately by IO executor capacity, including one inline result when `io_threads` is 0. |
-| `streaming.load_prefetch_radius` | int | `1` | Region prefetch radius (maximum `4`). |
-| `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request (0 = all candidates; maximum `728`). |
 | `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited, maximum explicit cap `65536`). |
 
 Region worker submission is also capped by the physical IO thread count.
@@ -304,11 +309,22 @@ concurrency rather than rejecting direct chunk demand.
 
 The sole player request is
 `UserPreferences.graphics.view_distance_chunks`, with a default of 12 and an
-inclusive range of 2 through 16. The active `WorldView` applies that radius to
-streaming and derives the renderer culling range needed to cover the outer
-boundary of the requested chunk sphere. Live changes do not replace the
-configured unload or loader-prefetch policies. The shipped values are 13 chunks
-and one region, respectively.
+inclusive range of 2 through 16. For an accepted radius `N`, one immutable
+active-world policy owns all dependent values:
+
+- desired/load radius: `N` chunks;
+- unload radius: `N + 1` chunks;
+- renderer culling distance and shadow-distance ceiling: `(N + 1) * 32`
+  world units;
+- projection far plane: the greater of 500 world units and the culling
+  distance plus one 32-unit chunk;
+- loader preload radius: `clamp(N / persistence-region-span, 1, 2)` regions,
+  with at most 12 speculative regions admitted for one request.
+
+Only `N` is persisted. The derived values and policy generation are runtime
+state. The world view, chunk streamer, asynchronous loader, frame projection,
+and shadow submission consume the same policy instance. A later streaming or
+render-config assignment cannot replace its distances.
 
 The one-chunk hysteresis is covered by a deterministic lifecycle regression.
 It preloads a sparse radius-12 sphere with one solid boundary probe, settles to
@@ -334,22 +350,27 @@ asynchronous copies, and currently unmetered CPU and GPU mesh memory. They are
 block-storage bounds, not measurements of total resident memory.
 
 The player view limit bounds a synchronous desired-set rebuild to 35,937 cube
-candidates and 17,077 selected sphere coordinates. The unload limit bounds its
-distance-retention sphere to 57,777 coordinates. Prefetch scans at most 728
-neighbors; the maximum explicit per-request cap equals that radius-four
-candidate count. Per-frame budgets are limited to 32,768. These are operational
-ceilings for Rigel's fixed 32-cubed chunks rather than integer or address-space
-maxima. Tests and benchmarks may still construct `StreamingConfig` with exact
-view distances as explicit developer injection; normal application bootstrap
-overwrites the view value from `UserPreferences`.
+candidates and 17,077 selected sphere coordinates. Its derived one-chunk
+retention radius contains at most 20,479 sphere coordinates. Normal preload
+scans at most 124 radius-two neighboring region coordinates and admits at most
+12. Per-frame budgets are limited to 32,768. These are operational ceilings for
+Rigel's fixed 32-cubed chunks rather than integer or address-space maxima.
+Tests and benchmarks may still construct `StreamingConfig` with exact view and
+unload radii or set exact loader preload inputs as explicit developer
+injection; an active application world replaces those values from its policy.
 
-Negative queue, budget, thread, cache, and prefetch values are clamped to zero.
+Negative queue, budget, thread, and cache values are clamped to zero.
 The desired set is rebuilt only when the camera enters a different chunk, a
 distance changes, or the internal streamer generator assignment changes its
-vertical clip. The assignment path synchronously reconciles only the bounded
-current and prospective desired coordinates. Retained residents are reconciled
-in deterministic batches of at most 64 during assignment and each subsequent
-update. Save-owned generator definitions are not live-replaceable.
+vertical clip. Increasing View Distance publishes the new policy immediately
+at the application boundary and bounded scheduler work fills the larger set.
+Decreasing it changes render culling at that boundary; load/generation
+cancellation, desired-set reconciliation, persistence-gated eviction, and
+neighbor remeshing advance during streaming updates. Retained residents are
+reconciled in deterministic batches of at most 64 per update. A newer live
+edit replaces the same pending policy transition instead of adding another
+reconciliation queue. Save-owned generator definitions are not
+live-replaceable.
 `update_budget_per_frame` does not turn the desired-set rebuild into a partial
 scan.
 
@@ -372,7 +393,7 @@ config (`assets/config/render.yaml`) may override them.
 | `render.shadow.enabled` | bool | `false` | Toggle cascaded shadows. |
 | `render.shadow.cascades` | int | `3` | Cascade count (maximum `4`). |
 | `render.shadow.map_size` | int | `1024` | Shadow map resolution (maximum `6144`). |
-| `render.shadow.max_distance` | float | `200.0` | Shadow max distance. |
+| `render.shadow.max_distance` | float | `200.0` | Internal profile distance, capped by the active View Distance policy. |
 | `render.shadow.split_lambda` | float | `0.5` | Log/linear split blend. |
 | `render.shadow.bias` | float | `0.0005` | Depth bias. |
 | `render.shadow.normal_bias` | float | `0.005` | Normal-based bias. |
@@ -389,7 +410,7 @@ config (`assets/config/render.yaml`) may override them.
 
 `UserPreferences.graphics.view_distance_chunks` controls which chunks are
 loaded and meshed. `WorldView` derives the renderer's world-unit culling range,
-including projection distance, from the accepted request.
+projection far plane, and shadow-distance ceiling from the accepted request.
 `render.render_distance` is not a supported render YAML key.
 
 Key fields:

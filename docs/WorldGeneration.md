@@ -139,10 +139,10 @@ explicit failed state until a later streaming requeue retries them.
 - Entries use shared chunk importance: the camera-containing chunk first,
   then squared chunk distance, then lexicographic chunk coordinate. Generation
   and direct-view mesh admission therefore use the same deterministic order.
-- Unload retention continues to use the internal streaming policy, with the
-  requested View Distance as its effective minimum.
-- The render range is derived in world units to include the outer boundary of
-  the requested chunk sphere.
+- The active-world policy derives unload retention as one chunk beyond the
+  accepted View Distance.
+- The same policy derives the world-unit render range, projection far plane,
+  loader preload, and shadow-distance ceiling.
 
 ### 5.3 Background Work and Budgets
 
@@ -246,12 +246,13 @@ and final quiescence.
   remains explicit pending lifecycle work between attempts. Due retry and
   generator-bounds reconciliation scans advance in deterministic batches of at
   most 64 coordinates per scheduler call.
-- Generator/config replacement owns a bounded desired rebuild and, when it
-  overlaps camera movement, one bounded resident reconciliation. The owner
-  stays visible in diagnostics until the latest retention/bounds snapshot has
-  completed a full pass. Replacement also cancels newly exterior load owners
-  synchronously so a stale persisted payload cannot be admitted before that
-  rebuild.
+- Generator replacement and live View Distance changes own a desired rebuild
+  and one bounded resident reconciliation. The owner stays visible in
+  diagnostics until the latest retention/bounds snapshot has completed a full
+  pass. A newer distance change replaces that snapshot. Generator replacement
+  also cancels newly exterior load owners synchronously so a stale persisted
+  payload cannot be admitted before its rebuild; a distance decrease retires
+  those owners in the following bounded streaming update.
 - If a loaded chunk’s `worldGenVersion` does not match the generator, modified
   data is persisted through the same removal gate before the chunk is discarded
   and regenerated. A deferred replacement remains unresolved until replacement

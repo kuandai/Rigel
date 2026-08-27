@@ -6,16 +6,15 @@
 namespace Rigel::Voxel {
 
 struct StreamingConfig {
-    static constexpr int MaxUnloadDistanceChunks = 24;
     static constexpr int MaxQueueLimit = 32768;
     static constexpr int MaxTotalWorkerThreads = 64;
     static constexpr int MaxBudgetPerFrame = 32768;
     static constexpr int MaxCachedRegions = 256;
     static constexpr int MaxInFlightRegions = 64;
-    static constexpr int MaxPrefetchRadius = 4;
-    static constexpr int MaxPrefetchPerRequest = 728;
     static constexpr int MaxResidentChunks = 65536;
 
+    // Exact radii remain available to benchmark and test inputs. Normal
+    // active worlds replace both from their effective View Distance policy.
     int viewDistanceChunks = 6;
     int unloadDistanceChunks = 8;
     size_t genQueueLimit = 0;
@@ -30,8 +29,6 @@ struct StreamingConfig {
     int loadQueueLimit = 0;
     int loadMaxCachedRegions = 8;
     int loadMaxInFlightRegions = 8;
-    int loadPrefetchRadius = 1;
-    int loadPrefetchPerRequest = 12;
     size_t maxResidentChunks = 0;
 
     void applyYaml(const char* sourceName, const std::string& yaml);

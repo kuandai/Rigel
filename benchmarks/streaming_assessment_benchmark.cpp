@@ -1,4 +1,5 @@
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Render/DebugOverlay.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Render/OpenGLRuntime.h"
@@ -114,9 +115,13 @@ ShippedBootstrapConfiguration loadShippedBootstrapConfiguration(
             assets,
             registry,
             "rigel:default");
-    return {
-        prepared.data,
-        Voxel::makeWorldConfigProvider(assets, 0).loadStreamingConfig()};
+    auto streaming =
+        Voxel::makeWorldConfigProvider(assets, 0).loadStreamingConfig();
+    // Benchmarks inject an explicit player request without a live application.
+    streaming.viewDistanceChunks = Preferences::kDefaultViewDistanceChunks;
+    streaming.unloadDistanceChunks =
+        Preferences::kDefaultViewDistanceChunks + 1;
+    return {prepared.data, std::move(streaming)};
 }
 
 size_t nonAirBlocks(const Voxel::ChunkBuffer& buffer) {

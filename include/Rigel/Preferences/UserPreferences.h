@@ -21,6 +21,7 @@ inline constexpr int kMaximumWindowDimension = 16384;
 inline constexpr int kMinimumFpsLimit = 30;
 inline constexpr int kMaximumFpsLimit = 1000;
 inline constexpr int kMinimumViewDistanceChunks = 2;
+inline constexpr int kDefaultViewDistanceChunks = 12;
 inline constexpr int kMaximumViewDistanceChunks = 16;
 inline constexpr double kMinimumVerticalFovDegrees = 50.0;
 inline constexpr double kMaximumVerticalFovDegrees = 110.0;
@@ -78,7 +79,7 @@ struct DisplayPreferences {
 };
 
 struct GraphicsPreferences {
-    int viewDistanceChunks = 12;
+    int viewDistanceChunks = kDefaultViewDistanceChunks;
     bool shadows = true;
 
     bool operator==(const GraphicsPreferences&) const = default;

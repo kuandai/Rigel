@@ -1,6 +1,6 @@
 #pragma once
 
-#include "WorldGenConfig.h"
+#include "GeneratorDefinition.h"
 
 #include <cstdint>
 #include <string>
@@ -38,7 +38,7 @@ enum class ClimateField {
 struct DensityNode {
     DensityNodeType type = DensityNodeType::Constant;
     std::vector<int> inputs;
-    WorldGenConfig::NoiseConfig noise;
+    GeneratorDefinitionData::Noise noise;
     ClimateField climateField = ClimateField::Temperature;
     float value = 0.0f;
     float minValue = 0.0f;
@@ -89,7 +89,7 @@ private:
     mutable int m_stampValue = 1;
 };
 
-bool buildDensityGraph(const WorldGenConfig& config,
+bool buildDensityGraph(const GeneratorDefinitionData& definition,
                        DensityGraph& graph,
                        std::string& error);
 

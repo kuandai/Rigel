@@ -6,7 +6,6 @@
 #include "Rigel/Persistence/RegionLayout.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/WorldPersistence.h"
-#include "Rigel/Voxel/GeneratorSnapshot.h"
 #include "WorldPersistenceDetail.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
@@ -30,16 +29,10 @@ constexpr size_t kMaxRegionLoadAttempts = 3;
 bool matchesPublishedGenerator(
     const Voxel::WorldGenerator& generator,
     const SavedWorldGeneration& published) {
-    if (generator.config().seed != published.settings.seed ||
-        generator.config().world.version != published.definition.world.version) {
-        return false;
-    }
-    try {
-        return Voxel::serializeGeneratorSnapshot(generator.config()) ==
-            Voxel::serializeGeneratorSnapshot(published.definition);
-    } catch (const std::exception&) {
-        return false;
-    }
+    return generator.seed() == published.settings.seed &&
+        generator.semanticsVersion() ==
+            published.settings.generator.semanticsVersion &&
+        generator.definition() == published.definition;
 }
 
 PersistenceContext validatedPublishedContext(
@@ -51,7 +44,8 @@ PersistenceContext validatedPublishedContext(
     const BootstrappedWorldGeneration published =
         loadPublishedWorldGeneration(
             service, world.blockRegistry(), context);
-    if (worldGenVersion != published.generation.definition.world.version) {
+    if (worldGenVersion !=
+        published.generation.settings.generator.semanticsVersion) {
         throw std::runtime_error(
             "Runtime generation semantics version does not match authoritative "
             "generator-definition.yaml for world save '" +
@@ -1443,7 +1437,7 @@ void AsyncChunkLoader::queuePayloadBuild(
         payload.regionKey = regionKey;
         payload.regionRevision = regionRevision;
         payload.job = payloadJob;
-        payload.worldGenVersion = generator ? generator->config().world.version : 0;
+        payload.worldGenVersion = generator ? generator->semanticsVersion() : 0;
         payload.loadedFromDisk = true;
         try {
             if (payloadBuildStartCallback) {

@@ -5,7 +5,7 @@
 #include "Chunk.h"
 #include "ChunkCoord.h"
 #include "DensityFunction.h"
-#include "WorldGenConfig.h"
+#include "GeneratorDefinition.h"
 
 #include <array>
 #include <atomic>
@@ -40,12 +40,9 @@ struct BiomeSample {
 
 struct WorldGenContext {
     ChunkCoord coord;
-    const WorldGenConfig* config = nullptr;
-    const BlockRegistry* registry = nullptr;
+    const GeneratorDefinitionData* definition = nullptr;
     BlockID solidBlock = BlockRegistry::airId();
-    BlockID surfaceBlock = BlockRegistry::airId();
     BlockID waterBlock = BlockRegistry::airId();
-    BlockID sandBlock = BlockRegistry::airId();
     std::array<int, Chunk::SIZE * Chunk::SIZE> heightMap{};
     std::array<ClimateSample, Chunk::SIZE * Chunk::SIZE> climate{};
     std::array<BiomeSample, Chunk::SIZE * Chunk::SIZE> biomes{};
@@ -66,16 +63,25 @@ public:
 
 class WorldGenerator {
 public:
-    WorldGenerator(const BlockRegistry& registry, WorldGenConfig config);
+    WorldGenerator(const BlockRegistry& registry,
+                   GeneratorDefinitionData definition,
+                   uint32_t seed,
+                   uint32_t semanticsVersion = kGeneratorSemanticsVersion);
 
-    const WorldGenConfig& config() const { return m_config; }
+    const GeneratorDefinitionData& definition() const { return m_definition; }
+    uint32_t seed() const { return m_seed; }
+    uint32_t semanticsVersion() const { return m_semanticsVersion; }
 
     void generate(ChunkCoord coord, ChunkBuffer& out,
                   const std::atomic_bool* cancel = nullptr) const;
 
 private:
     const BlockRegistry& m_registry;
-    const WorldGenConfig m_config;
+    const GeneratorDefinitionData m_definition;
+    const uint32_t m_seed;
+    const uint32_t m_semanticsVersion;
+    const BlockID m_solidBlock;
+    const BlockID m_waterBlock;
     const DensityGraph m_densityGraph;
     const std::vector<std::unique_ptr<const WorldGenStage>> m_stages;
 };

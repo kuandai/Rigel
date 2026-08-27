@@ -30,7 +30,7 @@ struct LocalWorldYRange {
 
 LocalWorldYRange localWorldYRange(
     ChunkCoord coord,
-    const WorldGenConfig::WorldConfig& world) {
+    const GeneratorDefinitionData::Bounds& world) {
     const int64_t chunkMinY =
         static_cast<int64_t>(coord.y) * Chunk::SIZE;
     const int64_t first = std::clamp<int64_t>(
@@ -85,7 +85,7 @@ struct NoiseGrid {
     std::vector<float> values;
 
     void build(int originXIn, int originYIn, int originZIn, uint32_t seed, int sampleStep,
-               const WorldGenConfig::NoiseConfig& config) {
+               const GeneratorDefinitionData::Noise& config) {
         originX = originXIn;
         originY = originYIn;
         originZ = originZIn;
@@ -198,17 +198,17 @@ struct NoiseGridCache final : DensitySampleContext::NoiseSampleCache {
 
 class ClimateGlobalStage : public WorldGenStage {
 public:
-    explicit ClimateGlobalStage(const WorldGenConfig& config)
-        : m_config(config)
-        , m_temperatureSeed(Noise::seedForChannel(config.seed, "climate_global/temperature"))
-        , m_humiditySeed(Noise::seedForChannel(config.seed, "climate_global/humidity"))
-        , m_continentalnessSeed(Noise::seedForChannel(config.seed, "climate_global/continentalness"))
+    ClimateGlobalStage(const GeneratorDefinitionData& config, uint32_t seed)
+        : m_definition(config)
+        , m_temperatureSeed(Noise::seedForChannel(seed, "climate_global/temperature"))
+        , m_humiditySeed(Noise::seedForChannel(seed, "climate_global/humidity"))
+        , m_continentalnessSeed(Noise::seedForChannel(seed, "climate_global/continentalness"))
     {}
 
     const char* name() const override { return "climate_global"; }
 
     void apply(WorldGenContext& ctx, ChunkBuffer&) const override {
-        const auto& climate = m_config.climate;
+        const auto& climate = m_definition.climate;
         for (int z = 0; z < Chunk::SIZE; ++z) {
             if (ctx.shouldCancel()) {
                 return;
@@ -254,7 +254,7 @@ public:
     }
 
 private:
-    const WorldGenConfig& m_config;
+    const GeneratorDefinitionData& m_definition;
     uint32_t m_temperatureSeed = 0;
     uint32_t m_humiditySeed = 0;
     uint32_t m_continentalnessSeed = 0;
@@ -262,17 +262,17 @@ private:
 
 class ClimateLocalStage : public WorldGenStage {
 public:
-    explicit ClimateLocalStage(const WorldGenConfig& config)
-        : m_config(config)
-        , m_temperatureSeed(Noise::seedForChannel(config.seed, "climate_local/temperature"))
-        , m_humiditySeed(Noise::seedForChannel(config.seed, "climate_local/humidity"))
-        , m_continentalnessSeed(Noise::seedForChannel(config.seed, "climate_local/continentalness"))
+    ClimateLocalStage(const GeneratorDefinitionData& config, uint32_t seed)
+        : m_definition(config)
+        , m_temperatureSeed(Noise::seedForChannel(seed, "climate_local/temperature"))
+        , m_humiditySeed(Noise::seedForChannel(seed, "climate_local/humidity"))
+        , m_continentalnessSeed(Noise::seedForChannel(seed, "climate_local/continentalness"))
     {}
 
     const char* name() const override { return "climate_local"; }
 
     void apply(WorldGenContext& ctx, ChunkBuffer&) const override {
-        const auto& climate = m_config.climate;
+        const auto& climate = m_definition.climate;
         if (climate.localBlend == 0.0f) {
             return;
         }
@@ -315,7 +315,7 @@ public:
     }
 
 private:
-    const WorldGenConfig& m_config;
+    const GeneratorDefinitionData& m_definition;
     uint32_t m_temperatureSeed = 0;
     uint32_t m_humiditySeed = 0;
     uint32_t m_continentalnessSeed = 0;
@@ -323,23 +323,20 @@ private:
 
 class BiomeResolveStage : public WorldGenStage {
 public:
-    explicit BiomeResolveStage(const WorldGenConfig& config)
-        : m_config(config)
+    explicit BiomeResolveStage(const GeneratorDefinitionData& config)
+        : m_definition(config)
     {
-        const auto& band = m_config.biomes.coastBand;
-        if (band.enabled && !band.biome.empty()) {
-            m_coastMin = band.minContinentalness;
-            m_coastMax = band.maxContinentalness;
-            if (m_coastMin > m_coastMax) {
-                std::swap(m_coastMin, m_coastMax);
+        const auto& coast = m_definition.biomes.coast;
+        m_coastMin = coast.minContinentalness;
+        m_coastMax = coast.maxContinentalness;
+        for (size_t i = 0; i < m_definition.biomes.entries.size(); ++i) {
+            if (m_definition.biomes.entries[i].id == coast.biome) {
+                m_coastBiomeIndex = static_cast<int>(i);
+                break;
             }
-            for (size_t i = 0; i < m_config.biomes.entries.size(); ++i) {
-                if (m_config.biomes.entries[i].name == band.biome) {
-                    m_coastBiomeIndex = static_cast<int>(i);
-                    break;
-                }
-            }
-            m_coastBandEnabled = (m_coastBiomeIndex >= 0);
+        }
+        if (m_coastBiomeIndex < 0) {
+            throw std::logic_error("Validated coast biome is unavailable");
         }
     }
 
@@ -347,14 +344,7 @@ public:
 
     void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
         (void)buffer;
-        const auto& biomes = m_config.biomes;
-        if (biomes.entries.empty()) {
-            for (int i = 0; i < kClimateColumnCount; ++i) {
-                ctx.biomes[static_cast<size_t>(i)] = {};
-            }
-            return;
-        }
-
+        const auto& biomes = m_definition.biomes;
         for (int z = 0; z < Chunk::SIZE; ++z) {
             if (ctx.shouldCancel()) {
                 return;
@@ -370,12 +360,11 @@ public:
                 int secondIndex = -1;
                 float bestWeight = 0.0f;
                 float secondWeight = 0.0f;
-                bool coastActive = m_coastBandEnabled
-                    && sample.continentalness >= m_coastMin
+                bool coastActive = sample.continentalness >= m_coastMin
                     && sample.continentalness <= m_coastMax;
 
                 for (size_t i = 0; i < biomes.entries.size(); ++i) {
-                    if (!coastActive && m_coastBandEnabled &&
+                    if (!coastActive &&
                         static_cast<int>(i) == m_coastBiomeIndex) {
                         continue;
                     }
@@ -385,7 +374,7 @@ public:
                     float dc = sample.continentalness - biome.target.continentalness;
                     float dist = std::sqrt(dt * dt + dh * dh + dc * dc);
                     float weight = biome.weight
-                        / std::pow(dist + biomes.blend.epsilon, biomes.blend.blendPower);
+                        / std::pow(dist + biomes.epsilon, biomes.blendPower);
                     if (weight > bestWeight) {
                         secondWeight = bestWeight;
                         secondIndex = bestIndex;
@@ -397,7 +386,7 @@ public:
                     }
                 }
 
-                if (coastActive && m_coastBiomeIndex >= 0) {
+                if (coastActive) {
                     secondIndex = bestIndex;
                     bestIndex = m_coastBiomeIndex;
                     bestWeight = 1.0f;
@@ -415,49 +404,31 @@ public:
     }
 
 private:
-    const WorldGenConfig& m_config;
+    const GeneratorDefinitionData& m_definition;
     int m_coastBiomeIndex = -1;
     float m_coastMin = 0.0f;
     float m_coastMax = 0.0f;
-    bool m_coastBandEnabled = false;
 };
 
 class TerrainDensityStage : public WorldGenStage {
 public:
-    TerrainDensityStage(const WorldGenConfig& config,
+    TerrainDensityStage(const GeneratorDefinitionData& config,
+                        uint32_t seed,
                         const DensityGraph* graph)
-        : m_config(config)
+        : m_definition(config)
+        , m_seed(seed)
         , m_graph(graph)
-    {
-        for (size_t i = 0; i < m_config.biomes.entries.size(); ++i) {
-            const auto& biome = m_config.biomes.entries[i];
-            if (biome.name == "sea") {
-                m_seaBiomeIndex = static_cast<int>(i);
-            } else if (biome.name == "beach") {
-                m_beachBiomeIndex = static_cast<int>(i);
-            }
-        }
-    }
+    {}
 
     const char* name() const override { return "terrain_density"; }
 
     void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
-        const auto& terrain = m_config.terrain;
-        const auto& world = m_config.world;
+        const auto& terrain = m_definition.terrain;
+        const auto& bounds = m_definition.bounds;
 
         buffer.blocks.fill(BlockState{});
-        DensityEvaluator evaluator(m_graph, m_config.seed);
-        NoiseGridCache noiseCache(m_graph, m_config.seed, ctx.coord);
-        NoiseGrid fallbackNoise;
-        if (!m_graph || m_graph->empty()) {
-            int originX = ctx.coord.x * Chunk::SIZE;
-            int originY = ctx.coord.y * Chunk::SIZE;
-            int originZ = ctx.coord.z * Chunk::SIZE;
-            fallbackNoise.build(originX, originY, originZ,
-                                m_config.seed ^ 0x9e3779b9u,
-                                kDefaultNoiseSampleStep,
-                                terrain.densityNoise);
-        }
+        DensityEvaluator evaluator(m_graph, m_seed);
+        NoiseGridCache noiseCache(m_graph, m_seed, ctx.coord);
 
         for (int z = 0; z < Chunk::SIZE; ++z) {
             if (ctx.shouldCancel()) {
@@ -471,44 +442,26 @@ public:
                 int worldZ = ctx.coord.z * Chunk::SIZE + z;
                 int index = columnIndex(x, z);
                 int biomeIndex = ctx.biomes[static_cast<size_t>(index)].primary;
-                bool allowWater = (biomeIndex == m_seaBiomeIndex) || (biomeIndex == m_beachBiomeIndex);
-                int maxSolid = world.minY - 1;
+                if (biomeIndex < 0 ||
+                    biomeIndex >= static_cast<int>(m_definition.biomes.entries.size())) {
+                    throw std::logic_error("Validated biome selection is unavailable");
+                }
+                const bool allowWater = m_definition.biomes.entries[
+                    static_cast<size_t>(biomeIndex)].waterFill;
+                int maxSolid = bounds.minY - 1;
 
                 for (int y = 0; y < Chunk::SIZE; ++y) {
                     int worldY = ctx.coord.y * Chunk::SIZE + y;
-                    bool solid = false;
-                    if (m_graph && !m_graph->empty()) {
-                        DensitySampleContext sampleCtx{
-                            .worldX = worldX,
-                            .worldY = worldY,
-                            .worldZ = worldZ,
-                            .climate = &ctx.climate[static_cast<size_t>(index)],
-                            .noiseCache = &noiseCache
-                        };
-                        evaluator.beginSample();
-                        float density = evaluator.evaluateOutput("base_density", sampleCtx);
-                        solid = density >= 0.0f;
-                    } else {
-                        float noise = Noise::fbm2D(
-                            static_cast<float>(worldX),
-                            static_cast<float>(worldZ),
-                            m_config.seed,
-                            terrain.heightNoise
-                        );
-                        float heightF = terrain.baseHeight + noise * terrain.heightVariation;
-                        float densityNoise = fallbackNoise.valid
-                            ? fallbackNoise.sample(worldX, worldY, worldZ)
-                            : Noise::fbm3D(
-                                static_cast<float>(worldX),
-                                static_cast<float>(worldY),
-                                static_cast<float>(worldZ),
-                                m_config.seed ^ 0x9e3779b9u,
-                                terrain.densityNoise
-                            );
-                        float gradient = (heightF - static_cast<float>(worldY)) * terrain.gradientStrength;
-                        float density = densityNoise * terrain.densityStrength + gradient;
-                        solid = density >= 0.0f;
-                    }
+                    DensitySampleContext sampleCtx{
+                        .worldX = worldX,
+                        .worldY = worldY,
+                        .worldZ = worldZ,
+                        .climate = &ctx.climate[static_cast<size_t>(index)],
+                        .noiseCache = &noiseCache
+                    };
+                    evaluator.beginSample();
+                    const bool solid = evaluator.evaluateOutput(
+                        terrain.densityOutput, sampleCtx) >= 0.0f;
 
                     if (solid) {
                         BlockState state;
@@ -517,7 +470,7 @@ public:
                         if (worldY > maxSolid) {
                             maxSolid = worldY;
                         }
-                    } else if (allowWater && worldY <= world.seaLevel && !ctx.waterBlock.isAir()) {
+                    } else if (allowWater && worldY <= terrain.seaLevel) {
                         BlockState state;
                         state.id = ctx.waterBlock;
                         buffer.at(x, y, z) = state;
@@ -530,31 +483,27 @@ public:
     }
 
 private:
-    const WorldGenConfig& m_config;
+    const GeneratorDefinitionData& m_definition;
+    uint32_t m_seed = 0;
     const DensityGraph* m_graph = nullptr;
-    int m_seaBiomeIndex = -1;
-    int m_beachBiomeIndex = -1;
 };
 
 class CavesStage : public WorldGenStage {
 public:
-    CavesStage(const WorldGenConfig& config,
+    CavesStage(const GeneratorDefinitionData& config,
+               uint32_t seed,
                const DensityGraph* graph)
-        : m_config(config)
+        : m_definition(config)
+        , m_seed(seed)
         , m_graph(graph)
     {}
 
     const char* name() const override { return "caves"; }
 
     void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
-        const auto& caves = m_config.caves;
-        if (!m_graph || m_graph->empty()) {
-            return;
-        }
-        const auto& world = m_config.world;
-
-        DensityEvaluator evaluator(m_graph, m_config.seed);
-        NoiseGridCache noiseCache(m_graph, m_config.seed, ctx.coord);
+        const auto& caves = m_definition.caves;
+        DensityEvaluator evaluator(m_graph, m_seed);
+        NoiseGridCache noiseCache(m_graph, m_seed, ctx.coord);
 
         for (int z = 0; z < Chunk::SIZE; ++z) {
             if (ctx.shouldCancel()) {
@@ -591,25 +540,31 @@ public:
     }
 
 private:
-    const WorldGenConfig& m_config;
+    const GeneratorDefinitionData& m_definition;
+    uint32_t m_seed = 0;
     const DensityGraph* m_graph = nullptr;
 };
 
 class SurfaceRulesStage : public WorldGenStage {
 public:
-    SurfaceRulesStage(const WorldGenConfig& config,
+    SurfaceRulesStage(const GeneratorDefinitionData& config,
+                      uint32_t seed,
                       const BlockRegistry& registry,
                       const DensityGraph* graph)
-        : m_config(config)
+        : m_definition(config)
+        , m_seed(seed)
         , m_graph(graph) {
         m_surfaceByBiome.reserve(config.biomes.entries.size());
         for (const auto& biome : config.biomes.entries) {
             std::vector<ResolvedLayer> layers;
             for (const auto& layer : biome.surface) {
-                auto blockId = registry.findByIdentifier(layer.block);
-                if (blockId) {
-                    layers.push_back({*blockId, layer.depth});
+                auto blockId = registry.findByIdentifier(layer.material);
+                if (!blockId) {
+                    throw std::logic_error(
+                        "Validated biome surface material is unavailable: " +
+                        layer.material);
                 }
+                layers.push_back({*blockId, layer.depth});
             }
             m_surfaceByBiome.push_back(std::move(layers));
         }
@@ -618,25 +573,9 @@ public:
     const char* name() const override { return "surface_rules"; }
 
     void apply(WorldGenContext& ctx, ChunkBuffer& buffer) const override {
-        const auto& terrain = m_config.terrain;
-        const auto& world = m_config.world;
-        if (ctx.surfaceBlock.isAir() && ctx.sandBlock.isAir() && m_surfaceByBiome.empty()) {
-            return;
-        }
-
-        DensityEvaluator evaluator(m_graph, m_config.seed);
-        NoiseGridCache noiseCache(m_graph, m_config.seed, ctx.coord);
-        NoiseGrid fallbackNoise;
-        bool useGraph = (m_graph && !m_graph->empty());
-        if (!useGraph) {
-            int originX = ctx.coord.x * Chunk::SIZE;
-            int originY = ctx.coord.y * Chunk::SIZE;
-            int originZ = ctx.coord.z * Chunk::SIZE;
-            fallbackNoise.build(originX, originY, originZ,
-                                m_config.seed ^ 0x9e3779b9u,
-                                kDefaultNoiseSampleStep,
-                                terrain.densityNoise);
-        }
+        const auto& bounds = m_definition.bounds;
+        DensityEvaluator evaluator(m_graph, m_seed);
+        NoiseGridCache noiseCache(m_graph, m_seed, ctx.coord);
 
         for (int z = 0; z < Chunk::SIZE; ++z) {
             if (ctx.shouldCancel()) {
@@ -648,10 +587,10 @@ public:
                 }
                 int index = columnIndex(x, z);
                 int height = findSurfaceHeightGlobal(
-                    ctx, x, z, useGraph, evaluator, noiseCache, fallbackNoise
+                    ctx, x, z, evaluator, noiseCache
                 );
                 ctx.heightMap[index] = height;
-                if (height < world.minY) {
+                if (height < bounds.minY) {
                     continue;
                 }
                 int localY = height - ctx.coord.y * Chunk::SIZE;
@@ -665,13 +604,9 @@ public:
                     layers = &m_surfaceByBiome[static_cast<size_t>(biomeIndex)];
                 }
 
-                if (!layers || layers->empty()) {
-                    BlockID surfaceId = ctx.surfaceBlock;
-                    if (height <= world.seaLevel + 4 && !ctx.sandBlock.isAir()) {
-                        surfaceId = ctx.sandBlock;
-                    }
-                    applyLayer(buffer, ctx, x, z, height, surfaceId, terrain.surfaceDepth);
-                    continue;
+                if (!layers) {
+                    throw std::logic_error(
+                        "Validated biome surface selection is unavailable");
                 }
 
                 int depthOffset = 0;
@@ -681,7 +616,7 @@ public:
                     }
                     for (int d = 0; d < layer.depth; ++d) {
                         int worldY = height - depthOffset;
-                        if (worldY < world.minY) {
+                        if (worldY < bounds.minY) {
                             break;
                         }
                         int localY = worldY - ctx.coord.y * Chunk::SIZE;
@@ -703,123 +638,81 @@ private:
         int depth = 1;
     };
 
-    void applyLayer(ChunkBuffer& buffer, WorldGenContext& ctx, int x, int z,
-                    int height, BlockID block, int depth) const {
-        if (depth <= 0 || block.isAir()) {
-            return;
-        }
-        for (int d = 0; d < depth; ++d) {
-            int worldY = height - d;
-            int localY = worldY - ctx.coord.y * Chunk::SIZE;
-            if (localY < 0 || localY >= Chunk::SIZE) {
-                continue;
-            }
-            BlockState state;
-            state.id = block;
-            buffer.at(x, localY, z) = state;
-        }
-    }
-
     int findSurfaceHeightGlobal(const WorldGenContext& ctx, int x, int z,
-                                bool useGraph,
                                 DensityEvaluator& evaluator,
-                                const NoiseGridCache& noiseCache,
-                                const NoiseGrid& fallbackNoise) const {
-        const auto& world = m_config.world;
+                                const NoiseGridCache& noiseCache) const {
+        const auto& bounds = m_definition.bounds;
         int worldX = ctx.coord.x * Chunk::SIZE + x;
         int worldZ = ctx.coord.z * Chunk::SIZE + z;
-        for (int worldY = world.maxY; worldY >= world.minY; --worldY) {
-            if (isSolidAt(ctx, worldX, worldY, worldZ,
-                          useGraph, evaluator, noiseCache, fallbackNoise)) {
+        for (int worldY = bounds.maxY; worldY >= bounds.minY; --worldY) {
+            if (isSolidAt(
+                    ctx, worldX, worldY, worldZ, evaluator, noiseCache)) {
                 return worldY;
             }
         }
-        return world.minY - 1;
+        return bounds.minY - 1;
     }
 
     bool isSolidAt(const WorldGenContext& ctx,
                    int worldX,
                    int worldY,
                    int worldZ,
-                   bool useGraph,
                    DensityEvaluator& evaluator,
-                   const NoiseGridCache& noiseCache,
-                   const NoiseGrid& fallbackNoise) const {
-        const auto& world = m_config.world;
-        if (worldY < world.minY) {
+                   const NoiseGridCache& noiseCache) const {
+        const auto& bounds = m_definition.bounds;
+        if (worldY < bounds.minY) {
             return false;
         }
-        if (useGraph) {
-            int index = columnIndex(worldX - ctx.coord.x * Chunk::SIZE,
-                                    worldZ - ctx.coord.z * Chunk::SIZE);
-            DensitySampleContext sampleCtx{
-                .worldX = worldX,
-                .worldY = worldY,
-                .worldZ = worldZ,
-                .climate = &ctx.climate[static_cast<size_t>(index)],
-                .noiseCache = &noiseCache
-            };
-            evaluator.beginSample();
-            float density = evaluator.evaluateOutput("base_density", sampleCtx);
-            if (density < 0.0f) {
-                return false;
-            }
-            if (m_config.isStageEnabled("caves")) {
-                float caveDensity = evaluator.evaluateOutput(m_config.caves.densityOutput, sampleCtx);
-                if (caveDensity > m_config.caves.threshold) {
-                    return false;
-                }
-            }
-            return true;
+        int index = columnIndex(worldX - ctx.coord.x * Chunk::SIZE,
+                                worldZ - ctx.coord.z * Chunk::SIZE);
+        DensitySampleContext sampleCtx{
+            .worldX = worldX,
+            .worldY = worldY,
+            .worldZ = worldZ,
+            .climate = &ctx.climate[static_cast<size_t>(index)],
+            .noiseCache = &noiseCache
+        };
+        evaluator.beginSample();
+        if (evaluator.evaluateOutput(
+                m_definition.terrain.densityOutput, sampleCtx) < 0.0f) {
+            return false;
         }
-
-        const auto& terrain = m_config.terrain;
-        float noise = Noise::fbm2D(
-            static_cast<float>(worldX),
-            static_cast<float>(worldZ),
-            m_config.seed,
-            terrain.heightNoise
-        );
-        float heightF = terrain.baseHeight + noise * terrain.heightVariation;
-        float densityNoise = fallbackNoise.valid
-            ? fallbackNoise.sample(worldX, worldY, worldZ)
-            : Noise::fbm3D(
-                static_cast<float>(worldX),
-                static_cast<float>(worldY),
-                static_cast<float>(worldZ),
-                m_config.seed ^ 0x9e3779b9u,
-                terrain.densityNoise
-            );
-        float gradient = (heightF - static_cast<float>(worldY)) * terrain.gradientStrength;
-        float density = densityNoise * terrain.densityStrength + gradient;
-        return density >= 0.0f;
+        return !m_definition.caves.enabled ||
+            evaluator.evaluateOutput(
+                m_definition.caves.densityOutput, sampleCtx) <=
+                m_definition.caves.threshold;
     }
 
-    const WorldGenConfig& m_config;
+    const GeneratorDefinitionData& m_definition;
+    uint32_t m_seed = 0;
     const DensityGraph* m_graph = nullptr;
     std::vector<std::vector<ResolvedLayer>> m_surfaceByBiome;
 };
 
 class StructuresStage : public WorldGenStage {
 public:
-    StructuresStage(const WorldGenConfig& config, const BlockRegistry& registry)
-        : m_config(config) {
+    StructuresStage(const GeneratorDefinitionData& config,
+                    uint32_t seed,
+                    const BlockRegistry& registry)
+        : m_definition(config) {
         for (const auto& feature : config.structures.features) {
-            auto blockId = registry.findByIdentifier(feature.block);
+            auto blockId = registry.findByIdentifier(feature.material);
             if (!blockId) {
-                continue;
+                throw std::logic_error(
+                    "Validated structure material is unavailable: " +
+                    feature.material);
             }
             FeatureResolved resolved;
-            resolved.name = feature.name;
+            resolved.name = feature.id;
             resolved.block = *blockId;
             resolved.chance = feature.chance;
             resolved.minHeight = feature.minHeight;
-            resolved.maxHeight = std::max(feature.minHeight, feature.maxHeight);
-            resolved.seed = Noise::seedForChannel(config.seed, "feature/" + feature.name);
+            resolved.maxHeight = feature.maxHeight;
+            resolved.seed = Noise::seedForChannel(seed, "feature/" + feature.id);
             if (!feature.biomes.empty()) {
                 for (const auto& biomeName : feature.biomes) {
                     for (size_t i = 0; i < config.biomes.entries.size(); ++i) {
-                        if (config.biomes.entries[i].name == biomeName) {
+                        if (config.biomes.entries[i].id == biomeName) {
                             resolved.biomeIndices.push_back(static_cast<int>(i));
                             break;
                         }
@@ -836,7 +729,7 @@ public:
         if (m_features.empty()) {
             return;
         }
-        const auto& world = m_config.world;
+        const auto& bounds = m_definition.bounds;
 
         for (int z = 0; z < Chunk::SIZE; ++z) {
             if (ctx.shouldCancel()) {
@@ -848,7 +741,7 @@ public:
                 }
                 int index = columnIndex(x, z);
                 int height = ctx.heightMap[index];
-                if (height < world.minY) {
+                if (height < bounds.minY) {
                     continue;
                 }
                 int biomeIndex = ctx.biomes[index].primary;
@@ -933,26 +826,14 @@ private:
         std::vector<int> biomeIndices;
     };
 
-    const WorldGenConfig& m_config;
+    const GeneratorDefinitionData& m_definition;
     std::vector<FeatureResolved> m_features;
 };
 
 DensityGraph validateAndBuildDensityGraph(const BlockRegistry& registry,
-                                          const WorldGenConfig& config) {
-    auto requireBlock = [&registry](const std::string& identifier, const char* role) {
-        if (!registry.findByIdentifier(identifier)) {
-            throw std::runtime_error(
-                "WorldGenerator: required " + std::string(role) + " block '" +
-                identifier + "' is not registered");
-        }
-    };
-    if (config.isStageEnabled("terrain_density")) {
-        requireBlock(config.solidBlock, "solid");
-    }
-    if (config.isStageEnabled("surface_rules")) {
-        requireBlock(config.surfaceBlock, "surface");
-    }
-
+                                          const GeneratorDefinitionData& config) {
+    validateGeneratorDefinitionContent(
+        config, registry, "WorldGenerator definition");
     DensityGraph densityGraph;
     std::string graphError;
     if (!buildDensityGraph(config, densityGraph, graphError)) {
@@ -963,39 +844,26 @@ DensityGraph validateAndBuildDensityGraph(const BlockRegistry& registry,
 }
 
 std::vector<std::unique_ptr<const WorldGenStage>> buildStages(
-    const WorldGenConfig& config,
+    const GeneratorDefinitionData& config,
+    uint32_t seed,
     const BlockRegistry& registry,
     const DensityGraph& densityGraph) {
     std::vector<std::unique_ptr<const WorldGenStage>> stages;
     stages.reserve(kWorldGenPipelineStages.size());
-    for (const char* stageName : kWorldGenPipelineStages) {
-        if (!config.isStageEnabled(stageName)) {
-            continue;
-        }
-
-        std::unique_ptr<const WorldGenStage> stage;
-        const std::string_view name(stageName);
-        if (name == "climate_global") {
-            stage = std::make_unique<ClimateGlobalStage>(config);
-        } else if (name == "climate_local") {
-            stage = std::make_unique<ClimateLocalStage>(config);
-        } else if (name == "biome_resolve") {
-            stage = std::make_unique<BiomeResolveStage>(config);
-        } else if (name == "terrain_density") {
-            stage = std::make_unique<TerrainDensityStage>(config, &densityGraph);
-        } else if (name == "caves") {
-            stage = std::make_unique<CavesStage>(config, &densityGraph);
-        } else if (name == "surface_rules") {
-            stage = std::make_unique<SurfaceRulesStage>(config, registry, &densityGraph);
-        } else if (name == "structures") {
-            stage = std::make_unique<StructuresStage>(config, registry);
-        }
-
-        if (!stage) {
-            spdlog::error("WorldGenerator: no stage implementation for '{}'", stageName);
-            continue;
-        }
-        stages.push_back(std::move(stage));
+    stages.push_back(std::make_unique<ClimateGlobalStage>(config, seed));
+    stages.push_back(std::make_unique<ClimateLocalStage>(config, seed));
+    stages.push_back(std::make_unique<BiomeResolveStage>(config));
+    stages.push_back(std::make_unique<TerrainDensityStage>(
+        config, seed, &densityGraph));
+    if (config.caves.enabled) {
+        stages.push_back(std::make_unique<CavesStage>(
+            config, seed, &densityGraph));
+    }
+    stages.push_back(std::make_unique<SurfaceRulesStage>(
+        config, seed, registry, &densityGraph));
+    if (config.structures.enabled) {
+        stages.push_back(std::make_unique<StructuresStage>(
+            config, seed, registry));
     }
     spdlog::debug("WorldGenerator built {} stages", stages.size());
     return stages;
@@ -1003,21 +871,55 @@ std::vector<std::unique_ptr<const WorldGenStage>> buildStages(
 
 } // namespace
 
-static WorldGenConfig validateGeneratorConfig(WorldGenConfig config) {
-    config.validate("WorldGenerator configuration");
-    return config;
+GeneratorDefinitionData validateGeneratorDefinitionData(
+    const BlockRegistry& registry,
+    GeneratorDefinitionData definition) {
+    validateGeneratorDefinitionContent(
+        definition, registry, "WorldGenerator definition");
+    return definition;
 }
 
-WorldGenerator::WorldGenerator(const BlockRegistry& registry, WorldGenConfig config)
+uint32_t validateSemanticsVersion(uint32_t semanticsVersion) {
+    if (semanticsVersion == 0) {
+        throw std::invalid_argument(
+            "WorldGenerator requires a non-zero generator semantics version");
+    }
+    return semanticsVersion;
+}
+
+BlockID resolveRequiredBlock(const BlockRegistry& registry,
+                             const std::string& identifier,
+                             std::string_view role) {
+    const auto block = registry.findByIdentifier(identifier);
+    if (!block) {
+        throw std::invalid_argument(
+            "WorldGenerator required " + std::string(role) + " material '" +
+            identifier + "' is unavailable");
+    }
+    return *block;
+}
+
+WorldGenerator::WorldGenerator(const BlockRegistry& registry,
+                               GeneratorDefinitionData definition,
+                               uint32_t seed,
+                               uint32_t semanticsVersion)
     : m_registry(registry),
-      m_config(validateGeneratorConfig(std::move(config))),
-      m_densityGraph(validateAndBuildDensityGraph(m_registry, m_config)),
-      m_stages(buildStages(m_config, m_registry, m_densityGraph)) {}
+      m_definition(validateGeneratorDefinitionData(
+          registry, std::move(definition))),
+      m_seed(seed),
+      m_semanticsVersion(validateSemanticsVersion(semanticsVersion)),
+      m_solidBlock(resolveRequiredBlock(
+          registry, m_definition.terrain.solidMaterial, "solid")),
+      m_waterBlock(resolveRequiredBlock(
+          registry, m_definition.terrain.waterMaterial, "water")),
+      m_densityGraph(validateAndBuildDensityGraph(m_registry, m_definition)),
+      m_stages(buildStages(
+          m_definition, m_seed, m_registry, m_densityGraph)) {}
 
 void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
                               const std::atomic_bool* cancel) const {
     const LocalWorldYRange worldYRange =
-        localWorldYRange(coord, m_config.world);
+        localWorldYRange(coord, m_definition.bounds);
     if (worldYRange.empty()) {
         out.blocks.fill(BlockState{});
         return;
@@ -1026,40 +928,10 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
 
     WorldGenContext ctx;
     ctx.coord = coord;
-    ctx.config = &m_config;
-    ctx.registry = &m_registry;
+    ctx.definition = &m_definition;
     ctx.cancel = cancel;
-
-    auto solidId = m_registry.findByIdentifier(m_config.solidBlock);
-    ctx.solidBlock = solidId.value_or(BlockRegistry::airId());
-
-    auto surfaceId = m_registry.findByIdentifier(m_config.surfaceBlock);
-    ctx.surfaceBlock = surfaceId.value_or(BlockRegistry::airId());
-
-    auto waterId = m_registry.findByIdentifier(m_config.waterBlock);
-    ctx.waterBlock = waterId.value_or(BlockRegistry::airId());
-
-    auto sandId = m_registry.findByIdentifier(m_config.shoreBlock);
-    ctx.sandBlock = sandId.value_or(BlockRegistry::airId());
-
-    if (ctx.solidBlock.isAir() || ctx.surfaceBlock.isAir() ||
-        ctx.waterBlock.isAir() || ctx.sandBlock.isAir()) {
-        static std::atomic_bool warned = false;
-        if (!warned.exchange(true, std::memory_order_relaxed)) {
-            if (ctx.solidBlock.isAir()) {
-                spdlog::warn("WorldGenerator: solid block '{}' not found, using air", m_config.solidBlock);
-            }
-            if (ctx.surfaceBlock.isAir()) {
-                spdlog::warn("WorldGenerator: surface block '{}' not found, using air", m_config.surfaceBlock);
-            }
-            if (ctx.waterBlock.isAir()) {
-                spdlog::warn("WorldGenerator: water block '{}' not found, using air", m_config.waterBlock);
-            }
-            if (ctx.sandBlock.isAir()) {
-                spdlog::warn("WorldGenerator: shore block '{}' not found, using air", m_config.shoreBlock);
-            }
-        }
-    }
+    ctx.solidBlock = m_solidBlock;
+    ctx.waterBlock = m_waterBlock;
 
     for (const auto& stage : m_stages) {
         if (ctx.shouldCancel()) {

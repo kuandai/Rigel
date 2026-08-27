@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Rigel/Persistence/Types.h"
-#include "Rigel/Voxel/WorldGenConfig.h"
+#include "Rigel/Voxel/GeneratorDefinition.h"
 
 #include <cstdint>
 #include <optional>
@@ -15,7 +15,7 @@ namespace Rigel::Persistence {
 
 class PersistenceService;
 
-inline constexpr uint32_t kWorldSettingsSchemaVersion = 1;
+inline constexpr uint32_t kWorldSettingsSchemaVersion = 2;
 
 struct GeneratorProvenance {
     std::string sourceId;
@@ -37,12 +37,14 @@ struct WorldSettings {
 
 struct SavedWorldGeneration {
     WorldSettings settings;
-    Voxel::WorldGenConfig definition;
+    Voxel::GeneratorDefinitionData definition;
+    std::string canonicalDefinitionSnapshot;
 };
 
 struct NewWorldGeneration {
-    WorldSettings settings;
-    Voxel::WorldGenConfig definition;
+    std::string displayName;
+    uint32_t seed = 0;
+    Voxel::PreparedGeneratorDefinitionSnapshot definition;
 };
 
 struct BootstrappedWorldGeneration {

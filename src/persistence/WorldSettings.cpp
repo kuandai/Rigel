@@ -5,7 +5,8 @@
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Util/Ryml.h"
-#include "Rigel/Voxel/GeneratorSnapshot.h"
+#include "Rigel/Voxel/GeneratorDefinition.h"
+#include "Rigel/Voxel/WorldGenerator.h"
 
 #include <ryml.hpp>
 #include <ryml_std.hpp>
@@ -188,7 +189,7 @@ void validateSettings(const WorldSettings& settings) {
             "World generator source revision must be greater than zero");
     }
     if (settings.generator.definitionSchemaVersion !=
-        Voxel::kWorldGenConfigSnapshotSchemaVersion) {
+        Voxel::kGeneratorDefinitionSchemaVersion) {
         throw std::invalid_argument(
             "Unsupported generator definition schema version: " +
             std::to_string(settings.generator.definitionSchemaVersion));
@@ -381,11 +382,11 @@ SavedWorldGeneration loadSavedWorldGenerationDocuments(
     SavedWorldGeneration saved;
     saved.settings = settings;
     try {
-        saved.definition = Voxel::parseGeneratorSnapshot(
+        saved.definition = Voxel::parseGeneratorDefinitionSnapshot(
             snapshot,
             settings.generator.definitionSchemaVersion,
-            settings.seed,
-            settings.generator.semanticsVersion);
+            "generator-definition.yaml");
+        saved.canonicalDefinitionSnapshot = snapshot;
     } catch (const WorldGenerationLoadError&) {
         throw;
     } catch (const std::exception& error) {
@@ -942,8 +943,10 @@ BootstrappedWorldGeneration validatePublicationIdentityAndFormat(
     BootstrappedWorldGeneration result;
     result.generation = loadSavedWorldGeneration(publicationContext);
     try {
-        Voxel::validateGeneratorSnapshotContent(
-            result.generation.definition, registry);
+        Voxel::validateGeneratorDefinitionContent(
+            result.generation.definition,
+            registry,
+            result.generation.settings.generator.sourceId);
     } catch (const WorldGenerationLoadError&) {
         throw;
     } catch (const std::exception& error) {
@@ -1233,23 +1236,26 @@ void recoverWorldGenerationPublication(
 // Requires the per-world bootstrap lock and staging recovery performed by
 // bootstrapWorldGeneration.
 static std::string publishValidatedWorldGenerationLocked(
-    const WorldSettings& settings,
-    const Voxel::WorldGenConfig& definition,
+    const NewWorldGeneration& creation,
     PersistenceService& persistence,
     const Voxel::BlockRegistry& registry,
     const PersistenceContext& context) {
     StorageBackend& storage = storageFor(context);
+    WorldSettings settings;
+    settings.displayName = creation.displayName;
+    settings.seed = creation.seed;
+    settings.generator.sourceId = creation.definition.sourceId;
+    settings.generator.sourceRevision = creation.definition.sourceRevision;
+    settings.generator.definitionSchemaVersion =
+        creation.definition.definitionSchemaVersion;
+    settings.generator.semanticsVersion = Voxel::kGeneratorSemanticsVersion;
     validateSettings(settings);
-    if (settings.seed != definition.seed) {
+    const std::string& snapshot = creation.definition.canonicalSnapshot;
+    if (snapshot != Voxel::serializeGeneratorDefinitionSnapshot(
+                        creation.definition.data)) {
         throw std::invalid_argument(
-            "World settings seed does not match the resolved generator input");
+            "Prepared generator definition data does not match its canonical snapshot");
     }
-    if (settings.generator.semanticsVersion != definition.world.version) {
-        throw std::invalid_argument(
-            "World settings generator semantics version does not match the "
-            "resolved generator input");
-    }
-    const std::string snapshot = Voxel::serializeGeneratorSnapshot(definition);
     const std::string settingsDocument = serializeSettings(settings);
     if (settingsDocument.size() > kMaxWorldSettingsBytes) {
         throw std::length_error(
@@ -1259,11 +1265,15 @@ static std::string publishValidatedWorldGenerationLocked(
         throw std::length_error(
             "Generator definition snapshot exceeds the supported size limit");
     }
-    static_cast<void>(Voxel::parseGeneratorSnapshot(
+    const Voxel::GeneratorDefinitionData reparsed =
+        Voxel::parseGeneratorDefinitionSnapshot(
         snapshot,
         settings.generator.definitionSchemaVersion,
-        settings.seed,
-        settings.generator.semanticsVersion));
+        "prepared generator definition");
+    if (reparsed != creation.definition.data) {
+        throw std::invalid_argument(
+            "Prepared generator definition is not canonical-equivalent");
+    }
 
     const std::filesystem::path worldRoot = worldRootPath(context);
     WorldMetadata backendMetadata;
@@ -1498,20 +1508,27 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
                 "World save does not exist and no creation input was provided: " +
                 context.rootPath);
         }
-        Voxel::validateGeneratorSnapshotContent(
-            creation->definition, registry);
+        Voxel::validateGeneratorDefinitionContent(
+            creation->definition.data, registry,
+            creation->definition.sourceId);
+        const Voxel::WorldGenerator preparedRuntime(
+            registry,
+            creation->definition.data,
+            creation->seed,
+            Voxel::kGeneratorSemanticsVersion);
+        static_cast<void>(preparedRuntime);
         BootstrappedWorldGeneration result;
         result.persistenceFormat = publishValidatedWorldGenerationLocked(
-            creation->settings,
-            creation->definition,
+            *creation,
             persistence,
             registry,
             context);
         // The save-local canonical snapshot is authoritative from the first
         // generation-capable moment, not only after the first reload.
         result.generation = loadSavedWorldGeneration(context);
-        Voxel::validateGeneratorSnapshotContent(
-            result.generation.definition, registry);
+        Voxel::validateGeneratorDefinitionContent(
+            result.generation.definition, registry,
+            result.generation.settings.generator.sourceId);
         return result;
     }
     if (presence == SavedWorldGenerationPresence::LegacyOrIncomplete) {

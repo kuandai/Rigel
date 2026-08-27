@@ -12,9 +12,10 @@ namespace Rigel::Voxel {
 class WorldConfigProvider;
 
 /**
- * @brief Configuration values for world generation.
+ * @brief Legacy routing data retained by the streaming configuration parser.
  *
- * Loaded via a layered config provider and applied to WorldGenerator.
+ * Production world generation consumes save-owned GeneratorDefinitionData.
+ * This shape remains temporarily for the streaming-only configuration shell.
  */
 struct WorldGenConfig {
     static constexpr int MinWorldY = -4096;

@@ -19,7 +19,7 @@
 #include "Rigel/Render/RenderConfigBootstrap.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/ChunkTasks.h"
-#include "Rigel/Voxel/GeneratorSnapshot.h"
+#include "Rigel/Voxel/GeneratorDefinitionLoader.h"
 #include "Rigel/Voxel/WorldSet.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 #include "Rigel/Persistence/WorldPersistence.h"
@@ -57,6 +57,8 @@ namespace Rigel {
 namespace {
 
 constexpr float kMaxFrameTime = 0.05f;
+constexpr uint32_t kDefaultWorldSeed = 1337;
+constexpr std::string_view kDefaultGeneratorDefinitionId = "rigel:default";
 
 bool initializeOptionalUserInterface(
     GLFWwindow* window,
@@ -333,7 +335,8 @@ void Application::initialize() {
         }
         Voxel::WorldConfigProvider configProvider =
             Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
-        Voxel::WorldConfiguration config;
+        Voxel::StreamingConfig streamingConfig =
+            configProvider.loadStreamingConfig();
         Render::RenderConfigProvider renderConfigProvider =
             Render::makeRenderConfigProvider(
                 m_impl->assets, m_impl->world.activeWorldId);
@@ -372,27 +375,16 @@ void Application::initialize() {
             Persistence::inspectSavedWorldGeneration(persistenceContext);
         if (savedPresence ==
             Persistence::SavedWorldGenerationPresence::Missing) {
-            config = configProvider.loadConfig();
-            config.generation.world.version =
-                Voxel::kGeneratorSemanticsVersion;
-            Persistence::WorldSettings settings;
-            settings.displayName =
-                "world_" + std::to_string(m_impl->world.activeWorldId);
-            settings.seed = config.generation.seed;
-            settings.generator.sourceId = config.generatorSource.id;
-            settings.generator.sourceRevision =
-                config.generatorSource.revision;
-            settings.generator.definitionSchemaVersion =
-                Voxel::kWorldGenConfigSnapshotSchemaVersion;
-            settings.generator.semanticsVersion =
-                Voxel::kGeneratorSemanticsVersion;
             creation = Persistence::NewWorldGeneration{
-                std::move(settings),
-                config.generation};
-        } else if (savedPresence ==
+                "world_" + std::to_string(m_impl->world.activeWorldId),
+                kDefaultWorldSeed,
+                Voxel::loadPreparedGeneratorDefinitionSnapshot(
+                    m_impl->assets,
+                    m_impl->world.worldSet.resources().registry(),
+                    kDefaultGeneratorDefinitionId,
+                    Voxel::GeneratorDefinitionOrigin::Shipped)};
+        } else if (savedPresence !=
                    Persistence::SavedWorldGenerationPresence::Published) {
-            config.streaming = configProvider.loadStreamingConfig();
-        } else {
             static_cast<void>(
                 Persistence::loadSavedWorldGeneration(persistenceContext));
             throw std::logic_error(
@@ -408,7 +400,6 @@ void Application::initialize() {
                 creation,
                 persistenceContext);
         auto generator = std::move(bootstrapped.generator);
-        config.generation = generator->config();
         m_impl->world.settings = std::move(bootstrapped.settings);
         persistenceContext.preferredFormat =
             bootstrapped.persistenceFormat;
@@ -420,11 +411,11 @@ void Application::initialize() {
             m_impl->world.worldSet.persistenceService(),
             persistenceContext);
 
-        uint32_t worldGenVersion = generator->config().world.version;
+        uint32_t worldGenVersion = generator->semanticsVersion();
         size_t ioThreads = static_cast<size_t>(
-            std::max(0, config.streaming.ioThreads));
+            std::max(0, streamingConfig.ioThreads));
         size_t loadWorkerThreads = static_cast<size_t>(
-            std::max(0, config.streaming.loadWorkerThreads));
+            std::max(0, streamingConfig.loadWorkerThreads));
         m_impl->world.chunkLoader = std::make_shared<Persistence::AsyncChunkLoader>(
             m_impl->world.worldSet.persistenceService(),
             std::move(persistenceContext),
@@ -432,26 +423,26 @@ void Application::initialize() {
             worldGenVersion,
             ioThreads,
             loadWorkerThreads,
-            config.streaming.viewDistanceChunks,
+            streamingConfig.viewDistanceChunks,
             generator);
-        if (config.streaming.loadQueueLimit >= 0) {
+        if (streamingConfig.loadQueueLimit >= 0) {
             m_impl->world.chunkLoader->setLoadQueueLimit(
-                static_cast<size_t>(config.streaming.loadQueueLimit));
+                static_cast<size_t>(streamingConfig.loadQueueLimit));
         }
         m_impl->world.chunkLoader->setRegionDrainBudget(
             static_cast<size_t>(
-                std::max(0, config.streaming.loadRegionDrainBudget)));
+                std::max(0, streamingConfig.loadRegionDrainBudget)));
         m_impl->world.chunkLoader->setMaxCachedRegions(
             static_cast<size_t>(
-                std::max(0, config.streaming.loadMaxCachedRegions)));
+                std::max(0, streamingConfig.loadMaxCachedRegions)));
         m_impl->world.chunkLoader->setMaxInFlightRegions(
             static_cast<size_t>(
-                std::max(0, config.streaming.loadMaxInFlightRegions)));
+                std::max(0, streamingConfig.loadMaxInFlightRegions)));
         m_impl->world.chunkLoader->setPrefetchRadius(
-            std::max(0, config.streaming.loadPrefetchRadius));
+            std::max(0, streamingConfig.loadPrefetchRadius));
         m_impl->world.chunkLoader->setPrefetchPerRequest(
             static_cast<size_t>(
-                std::max(0, config.streaming.loadPrefetchPerRequest)));
+                std::max(0, streamingConfig.loadPrefetchPerRequest)));
         m_impl->world.worldView->setChunkLoader(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkLoadRequest request) {
                 return loader
@@ -498,13 +489,13 @@ void Application::initialize() {
         }
         m_impl->world.worldView->renderConfig() = renderConfig;
         Core::Profiler::setEnabled(renderConfig.profilingEnabled);
-        m_impl->world.worldView->setStreamConfig(config.streaming);
+        m_impl->world.worldView->setStreamConfig(streamingConfig);
         if (m_impl->timing.benchmarkEnabled) {
             m_impl->world.worldView->setBenchmark(&m_impl->timing.benchmark);
         }
 
         auto placeId = m_impl->world.world->blockRegistry().findByIdentifier(
-            config.generation.solidBlock);
+            generator->definition().terrain.solidMaterial);
         if (!placeId) {
             placeId = m_impl->world.world->blockRegistry().findByIdentifier("base:stone_shale");
         }
@@ -517,7 +508,7 @@ void Application::initialize() {
         int spawnX = static_cast<int>(std::floor(m_impl->camera.position.x));
         int spawnZ = static_cast<int>(std::floor(m_impl->camera.position.z));
         int spawnY = Voxel::findFirstAirY(
-            *generator, config.generation, spawnX, spawnZ);
+            *generator, spawnX, spawnZ);
         m_impl->camera.position.y = static_cast<float>(spawnY) + 0.5f;
         m_impl->world.worldView->markSpawnDiscoveryComplete();
 

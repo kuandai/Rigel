@@ -287,8 +287,9 @@ private:
     };
 
     struct PendingWorldBoundsReconciliation {
-        WorldGenConfig::WorldConfig replacement;
-        std::optional<WorldGenConfig::WorldConfig> previous;
+        GeneratorDefinitionData::Bounds replacement;
+        uint32_t replacementSemanticsVersion = 0;
+        std::optional<GeneratorDefinitionData::Bounds> previous;
         std::optional<ChunkCoord> deferredCursor;
         std::optional<ChunkCoord> retentionCenter;
         int retentionRadiusSquared = 0;

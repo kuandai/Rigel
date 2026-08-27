@@ -123,7 +123,8 @@ float noise3D(float x, float y, float z, uint32_t seed) {
     return perlinNoise3D(x, y, z, seed);
 }
 
-float fbm2D(float x, float z, uint32_t seed, const WorldGenConfig::NoiseConfig& config) {
+float fbm2D(float x, float z, uint32_t seed,
+            const GeneratorDefinitionData::Noise& config) {
     float total = 0.0f;
     float amplitude = 1.0f;
     float frequency = config.frequency;
@@ -143,7 +144,8 @@ float fbm2D(float x, float z, uint32_t seed, const WorldGenConfig::NoiseConfig& 
     return total * config.scale + config.offset;
 }
 
-float fbm3D(float x, float y, float z, uint32_t seed, const WorldGenConfig::NoiseConfig& config) {
+float fbm3D(float x, float y, float z, uint32_t seed,
+            const GeneratorDefinitionData::Noise& config) {
     float total = 0.0f;
     float amplitude = 1.0f;
     float frequency = config.frequency;

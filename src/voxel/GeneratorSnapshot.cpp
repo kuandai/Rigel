@@ -1,7 +1,6 @@
 #include "Rigel/Voxel/GeneratorSnapshot.h"
 
 #include "Rigel/Voxel/BlockRegistry.h"
-#include "Rigel/Voxel/DensityFunction.h"
 #include "Rigel/Voxel/WorldGenStages.h"
 
 #include <algorithm>
@@ -205,6 +204,31 @@ void validateNodeContracts(const WorldGenConfig& definition) {
             node.type == "noise3d_xy") {
             requireNonnegativeOctaves(
                 node.noise, "density_graph.nodes." + node.id + ".noise");
+        } else if (node.type == "spline") {
+            if (node.splinePoints.empty()) {
+                throw std::invalid_argument(
+                    "Generator definition spline node '" + node.id +
+                    "' requires at least one point");
+            }
+            if (node.splinePoints.size() >
+                WorldGenConfig::MaxDensitySplinePoints) {
+                throw std::invalid_argument(
+                    "Generator definition spline node '" + node.id +
+                    "' contains too many points");
+            }
+            std::unordered_set<float> coordinates;
+            for (const auto& [x, y] : node.splinePoints) {
+                if (!std::isfinite(x) || !std::isfinite(y)) {
+                    throw std::invalid_argument(
+                        "Generator definition spline node '" + node.id +
+                        "' requires finite point coordinates");
+                }
+                if (!coordinates.insert(x).second) {
+                    throw std::invalid_argument(
+                        "Generator definition spline node '" + node.id +
+                        "' requires unique X coordinates");
+                }
+            }
         }
     }
 }
@@ -260,11 +284,46 @@ void validateGraph(const WorldGenConfig& definition) {
             semantic + "'");
     }
 
-    DensityGraph graph;
-    std::string error;
-    if (!buildDensityGraph(definition, graph, error)) {
-        throw std::invalid_argument(
-            "Generator definition has an invalid density graph: " + error);
+    std::unordered_map<std::string, const WorldGenConfig::DensityNodeConfig*>
+        nodes;
+    for (const auto& node : definition.densityGraph.nodes) {
+        nodes.emplace(node.id, &node);
+    }
+    for (const auto& node : definition.densityGraph.nodes) {
+        for (const auto& input : node.inputs) {
+            if (!nodes.contains(input)) {
+                throw std::invalid_argument(
+                    "Generator definition has a dangling density input '" +
+                    input + "'");
+            }
+        }
+    }
+    for (const auto& [semantic, node] : definition.densityGraph.outputs) {
+        if (!nodes.contains(node)) {
+            throw std::invalid_argument(
+                "Generator definition output '" + semantic +
+                "' references a missing density node '" + node + "'");
+        }
+    }
+    std::unordered_map<std::string, uint8_t> visitState;
+    std::function<void(const std::string&)> visit = [&](const std::string& id) {
+        if (visitState[id] == 1) {
+            throw std::invalid_argument(
+                "Generator definition density graph contains a cycle at '" +
+                id + "'");
+        }
+        if (visitState[id] == 2) {
+            return;
+        }
+        visitState[id] = 1;
+        for (const auto& input : nodes.at(id)->inputs) {
+            visit(input);
+        }
+        visitState[id] = 2;
+    };
+    for (const auto& [id, node] : nodes) {
+        static_cast<void>(node);
+        visit(id);
     }
 }
 

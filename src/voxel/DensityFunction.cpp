@@ -7,11 +7,13 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <optional>
+#include <stdexcept>
 
 namespace Rigel::Voxel {
 
 namespace {
-DensityNodeType parseNodeType(std::string_view type) {
+std::optional<DensityNodeType> parseNodeType(std::string_view type) {
     if (type == "constant") {
         return DensityNodeType::Constant;
     }
@@ -54,10 +56,10 @@ DensityNodeType parseNodeType(std::string_view type) {
     if (type == "y") {
         return DensityNodeType::Y;
     }
-    return DensityNodeType::Constant;
+    return std::nullopt;
 }
 
-ClimateField parseClimateField(std::string_view field) {
+std::optional<ClimateField> parseClimateField(std::string_view field) {
     if (field == "temperature") {
         return ClimateField::Temperature;
     }
@@ -67,7 +69,7 @@ ClimateField parseClimateField(std::string_view field) {
     if (field == "continentalness") {
         return ClimateField::Continentalness;
     }
-    return ClimateField::Temperature;
+    return std::nullopt;
 }
 
 float sampleSpline(const std::vector<std::pair<float, float>>& points, float x) {
@@ -125,18 +127,19 @@ void DensityEvaluator::beginSample() const {
 
 float DensityEvaluator::evaluateOutput(std::string_view output, const DensitySampleContext& ctx) const {
     if (!m_graph) {
-        return 0.0f;
+        throw std::logic_error("Density evaluator has no graph");
     }
     auto it = m_graph->outputs.find(std::string(output));
     if (it == m_graph->outputs.end()) {
-        return 0.0f;
+        throw std::logic_error(
+            "Density evaluator output is unavailable: " + std::string(output));
     }
     return evaluateNode(it->second, ctx);
 }
 
 float DensityEvaluator::evaluateNode(int index, const DensitySampleContext& ctx) const {
     if (!m_graph || index < 0 || index >= static_cast<int>(m_graph->nodes.size())) {
-        return 0.0f;
+        throw std::logic_error("Density evaluator node index is invalid");
     }
     if (m_stamp[index] == m_stampValue) {
         return m_cache[static_cast<size_t>(index)];
@@ -158,7 +161,7 @@ float DensityEvaluator::evaluateNode(int index, const DensitySampleContext& ctx)
                 seed,
                 node.noise
             );
-            result = value * node.scale + node.offset;
+            result = value;
             break;
         }
         case DensityNodeType::Noise3D: {
@@ -178,7 +181,7 @@ float DensityEvaluator::evaluateNode(int index, const DensitySampleContext& ctx)
                     node.noise
                 );
             }
-            result = value * node.scale + node.offset;
+            result = value;
             break;
         }
         case DensityNodeType::Noise3DXY: {
@@ -190,80 +193,65 @@ float DensityEvaluator::evaluateNode(int index, const DensitySampleContext& ctx)
                 seed,
                 node.noise
             );
-            result = value * node.scale + node.offset;
+            result = value;
             break;
         }
         case DensityNodeType::Add: {
             float sum = 0.0f;
             for (int input : node.inputs) {
-                if (input >= 0) {
-                    sum += evaluateNode(input, ctx);
-                }
+                sum += evaluateNode(input, ctx);
             }
             result = sum;
             break;
         }
         case DensityNodeType::Mul: {
             float product = 1.0f;
-            bool hasInput = false;
             for (int input : node.inputs) {
-                if (input >= 0) {
-                    product *= evaluateNode(input, ctx);
-                    hasInput = true;
-                }
+                product *= evaluateNode(input, ctx);
             }
-            result = hasInput ? product : 0.0f;
+            result = product;
             break;
         }
         case DensityNodeType::Clamp: {
-            float value = node.inputs.empty() ? 0.0f : evaluateNode(node.inputs.front(), ctx);
-            float minValue = node.minValue;
-            float maxValue = node.maxValue;
-            if (minValue > maxValue) {
-                std::swap(minValue, maxValue);
-            }
-            result = std::clamp(value, minValue, maxValue);
+            result = std::clamp(
+                evaluateNode(node.inputs.front(), ctx),
+                node.minValue,
+                node.maxValue);
             break;
         }
         case DensityNodeType::Max: {
             float current = -std::numeric_limits<float>::infinity();
             for (int input : node.inputs) {
-                if (input >= 0) {
-                    current = std::max(current, evaluateNode(input, ctx));
-                }
+                current = std::max(current, evaluateNode(input, ctx));
             }
-            result = (current == -std::numeric_limits<float>::infinity()) ? 0.0f : current;
+            result = current;
             break;
         }
         case DensityNodeType::Min: {
             float current = std::numeric_limits<float>::infinity();
             for (int input : node.inputs) {
-                if (input >= 0) {
-                    current = std::min(current, evaluateNode(input, ctx));
-                }
+                current = std::min(current, evaluateNode(input, ctx));
             }
-            result = (current == std::numeric_limits<float>::infinity()) ? 0.0f : current;
+            result = current;
             break;
         }
         case DensityNodeType::Abs: {
-            float value = node.inputs.empty() ? 0.0f : evaluateNode(node.inputs.front(), ctx);
-            result = std::abs(value);
+            result = std::abs(evaluateNode(node.inputs.front(), ctx));
             break;
         }
         case DensityNodeType::Invert: {
-            float value = node.inputs.empty() ? 0.0f : evaluateNode(node.inputs.front(), ctx);
-            result = -value;
+            result = -evaluateNode(node.inputs.front(), ctx);
             break;
         }
         case DensityNodeType::Spline: {
-            float value = node.inputs.empty() ? 0.0f : evaluateNode(node.inputs.front(), ctx);
-            result = sampleSpline(node.splinePoints, value);
+            result = sampleSpline(
+                node.splinePoints, evaluateNode(node.inputs.front(), ctx));
             break;
         }
         case DensityNodeType::Climate: {
             if (!ctx.climate) {
-                result = 0.0f;
-                break;
+                throw std::logic_error(
+                    "Density climate node requires a climate sample");
             }
             switch (node.climateField) {
                 case ClimateField::Temperature:
@@ -287,13 +275,15 @@ float DensityEvaluator::evaluateNode(int index, const DensitySampleContext& ctx)
     return result;
 }
 
-bool buildDensityGraph(const WorldGenConfig& config, DensityGraph& graph, std::string& error) {
+bool buildDensityGraph(const GeneratorDefinitionData& definition,
+                       DensityGraph& graph,
+                       std::string& error) {
     graph.nodes.clear();
     graph.nodeIndex.clear();
     graph.outputs.clear();
     error.clear();
 
-    const auto& graphConfig = config.densityGraph;
+    const auto& graphConfig = definition.densityGraph;
     graph.nodes.reserve(graphConfig.nodes.size());
 
     std::vector<std::vector<std::string>> pendingInputs;
@@ -302,7 +292,12 @@ bool buildDensityGraph(const WorldGenConfig& config, DensityGraph& graph, std::s
     for (const auto& nodeConfig : graphConfig.nodes) {
         DensityNode node;
         node.name = nodeConfig.id;
-        node.type = parseNodeType(nodeConfig.type);
+        const auto type = parseNodeType(nodeConfig.type);
+        if (!type) {
+            error = "Unknown density node type: " + nodeConfig.type;
+            return false;
+        }
+        node.type = *type;
         node.noise = nodeConfig.noise;
         node.value = nodeConfig.value;
         node.minValue = nodeConfig.minValue;
@@ -338,9 +333,18 @@ bool buildDensityGraph(const WorldGenConfig& config, DensityGraph& graph, std::s
             }
         }
         if (node.type == DensityNodeType::Climate) {
-            node.climateField = parseClimateField(nodeConfig.field);
+            const auto field = parseClimateField(nodeConfig.field);
+            if (!field) {
+                error = "Unknown density climate field: " + nodeConfig.field;
+                return false;
+            }
+            node.climateField = *field;
         }
-        graph.nodeIndex[nodeConfig.id] = static_cast<int>(graph.nodes.size());
+        if (!graph.nodeIndex.emplace(
+                 nodeConfig.id, static_cast<int>(graph.nodes.size())).second) {
+            error = "Duplicate density node ID: " + nodeConfig.id;
+            return false;
+        }
         graph.nodes.push_back(std::move(node));
         pendingInputs.push_back(nodeConfig.inputs);
     }
@@ -349,10 +353,8 @@ bool buildDensityGraph(const WorldGenConfig& config, DensityGraph& graph, std::s
         for (const auto& input : pendingInputs[i]) {
             auto it = graph.nodeIndex.find(input);
             if (it == graph.nodeIndex.end()) {
-                graph.nodes[i].inputs.push_back(-1);
-                if (error.empty()) {
-                    error = "Missing density node input: " + input;
-                }
+                error = "Missing density node input: " + input;
+                return false;
             } else {
                 graph.nodes[i].inputs.push_back(it->second);
             }
@@ -374,7 +376,7 @@ bool buildDensityGraph(const WorldGenConfig& config, DensityGraph& graph, std::s
             }
             state = VisitState::Visiting;
             for (int input : graph.nodes[static_cast<size_t>(index)].inputs) {
-                if (input >= 0 && !visit(input)) {
+                if (!visit(input)) {
                     return false;
                 }
             }
@@ -389,11 +391,15 @@ bool buildDensityGraph(const WorldGenConfig& config, DensityGraph& graph, std::s
     }
 
     for (const auto& output : graphConfig.outputs) {
-        auto it = graph.nodeIndex.find(output.second);
+        auto it = graph.nodeIndex.find(output.node);
         if (it != graph.nodeIndex.end()) {
-            graph.outputs[output.first] = it->second;
-        } else if (error.empty()) {
-            error = "Missing density output node: " + output.second;
+            if (!graph.outputs.emplace(output.semantic, it->second).second) {
+                error = "Duplicate density output semantic: " + output.semantic;
+                return false;
+            }
+        } else {
+            error = "Missing density output node: " + output.node;
+            return false;
         }
     }
 

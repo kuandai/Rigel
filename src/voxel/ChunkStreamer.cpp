@@ -85,7 +85,7 @@ size_t visibilityKindIndex(ChunkVisibilityLifecycleKind kind) {
 
 bool intersectsWorldBounds(
     ChunkCoord coord,
-    const WorldGenConfig::WorldConfig& world) {
+    const GeneratorDefinitionData::Bounds& world) {
     const int64_t chunkMinY =
         static_cast<int64_t>(coord.y) * Chunk::SIZE;
     const int64_t chunkMaxY = chunkMinY + Chunk::SIZE - 1;
@@ -94,7 +94,7 @@ bool intersectsWorldBounds(
 
 std::pair<int, int> visibleLocalYRange(
     ChunkCoord coord,
-    const WorldGenConfig::WorldConfig& world) {
+    const GeneratorDefinitionData::Bounds& world) {
     const int64_t chunkMinY =
         static_cast<int64_t>(coord.y) * Chunk::SIZE;
     const int first = static_cast<int>(std::clamp<int64_t>(
@@ -180,7 +180,9 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
             if (!m_worldBoundsReconciliation) {
                 m_worldBoundsReconciliation =
                     PendingWorldBoundsReconciliation{
-                        .replacement = m_generator->config().world
+                        .replacement = m_generator->definition().bounds,
+                        .replacementSemanticsVersion =
+                            m_generator->semanticsVersion()
                     };
             }
             m_worldBoundsReconciliation->retentionCenter = *m_lastCenter;
@@ -384,10 +386,10 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
 
     std::vector<ChunkCoord> enteringWorldBounds;
     const bool boundsChanged = m_generator && generator &&
-        (m_generator->config().world.minY != generator->config().world.minY ||
-         m_generator->config().world.maxY != generator->config().world.maxY);
+        (m_generator->definition().bounds.minY != generator->definition().bounds.minY ||
+         m_generator->definition().bounds.maxY != generator->definition().bounds.maxY);
     if (m_chunkManager && generator && (boundsChanged || !m_generator)) {
-        const auto& replacementWorld = generator->config().world;
+        const auto& replacementWorld = generator->definition().bounds;
         const bool supersedesPendingReconciliation =
             boundsChanged && m_worldBoundsReconciliation &&
             m_worldBoundsReconciliation->remeshIntersectingRows;
@@ -396,15 +398,18 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
             m_worldBoundsReconciliation->deferredCursor.has_value();
         if (!m_worldBoundsReconciliation) {
             m_worldBoundsReconciliation = PendingWorldBoundsReconciliation{
-                .replacement = replacementWorld
+                .replacement = replacementWorld,
+                .replacementSemanticsVersion = generator->semanticsVersion()
             };
         } else {
             m_worldBoundsReconciliation->replacement = replacementWorld;
+            m_worldBoundsReconciliation->replacementSemanticsVersion =
+                generator->semanticsVersion();
         }
         if (boundsChanged &&
             !m_worldBoundsReconciliation->previous.has_value()) {
             m_worldBoundsReconciliation->previous =
-                m_generator->config().world;
+                m_generator->definition().bounds;
         }
         m_worldBoundsReconciliation->remeshIntersectingRows =
             m_worldBoundsReconciliation->remeshIntersectingRows ||
@@ -468,7 +473,7 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
                                            Chunk& chunk,
                                            bool forceRemesh) {
             const bool replacementVersion =
-                chunk.worldGenVersion() == replacementWorld.version;
+                chunk.worldGenVersion() == generator->semanticsVersion();
             if (chunk.isEmpty() || !replacementVersion) {
                 m_worldBoundsSuppressedMeshes.erase(coord);
                 if (!chunk.isEmpty()) {
@@ -485,8 +490,8 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
             }
         };
 
-        const WorldGenConfig::WorldConfig* previousWorld = boundsChanged
-            ? &m_generator->config().world
+        const GeneratorDefinitionData::Bounds* previousWorld = boundsChanged
+            ? &m_generator->definition().bounds
             : nullptr;
         for (const ChunkCoord& coord : reconciliationCoordinates) {
             ++m_workMetrics.schedulerCoordinatesInspected;
@@ -538,7 +543,9 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
         // A same-bounds generator replacement can supersede an unfinished
         // transition. Restart against the current generator so deferred work
         // always converges from installed physical state to the final bounds.
-        m_worldBoundsReconciliation->replacement = generator->config().world;
+        m_worldBoundsReconciliation->replacement = generator->definition().bounds;
+        m_worldBoundsReconciliation->replacementSemanticsVersion =
+            generator->semanticsVersion();
         m_worldBoundsReconciliation->revisitFromStart =
             m_worldBoundsReconciliation->revisitFromStart ||
             m_worldBoundsReconciliation->deferredCursor.has_value();
@@ -665,7 +672,7 @@ void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator
         }
         if (chunk && !chunk->isEmpty() && m_generator &&
             chunk->worldGenVersion() ==
-                m_generator->config().world.version) {
+                m_generator->semanticsVersion()) {
             chunk->markDirty();
             if (hasEligibleMeshWork(coord)) {
                 setReplacementPending(coord, flight, true);
@@ -797,7 +804,8 @@ uint64_t ChunkStreamer::reconcileDeferredWorldBounds() {
         }
 
         const bool replacementVersion =
-            chunk->worldGenVersion() == reconciliation.replacement.version;
+            chunk->worldGenVersion() ==
+                reconciliation.replacementSemanticsVersion;
         if (chunk->isEmpty() || !replacementVersion) {
             m_worldBoundsSuppressedMeshes.erase(coord);
             if (!chunk->isEmpty()) {
@@ -978,7 +986,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             m_worldBoundsReconciliation->deferredCursor.has_value();
         if (!m_worldBoundsReconciliation) {
             m_worldBoundsReconciliation = PendingWorldBoundsReconciliation{
-                .replacement = m_generator->config().world
+                .replacement = m_generator->definition().bounds,
+                .replacementSemanticsVersion =
+                    m_generator->semanticsVersion()
             };
         }
         m_worldBoundsReconciliation->retentionCenter = center;
@@ -996,9 +1006,9 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_loadGenQueued.clear();
 
         const int minWorldChunkY = worldToChunk(
-            0, m_generator->config().world.minY, 0).y;
+            0, m_generator->definition().bounds.minY, 0).y;
         const int maxWorldChunkY = worldToChunk(
-            0, m_generator->config().world.maxY, 0).y;
+            0, m_generator->definition().bounds.maxY, 0).y;
         const int64_t requestedMinChunkY =
             static_cast<int64_t>(center.y) - viewDistance;
         const int64_t requestedMaxChunkY =
@@ -1248,11 +1258,15 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     if (!m_worldBoundsReconciliation) {
                         m_worldBoundsReconciliation =
                             PendingWorldBoundsReconciliation{
-                                .replacement = m_generator->config().world
+                                .replacement = m_generator->definition().bounds,
+                                .replacementSemanticsVersion =
+                                    m_generator->semanticsVersion()
                             };
                     } else {
                         m_worldBoundsReconciliation->replacement =
-                            m_generator->config().world;
+                            m_generator->definition().bounds;
+                        m_worldBoundsReconciliation->replacementSemanticsVersion =
+                            m_generator->semanticsVersion();
                     }
                     m_worldBoundsReconciliation->retentionCenter = m_lastCenter;
                     m_worldBoundsReconciliation->retentionRadiusSquared =
@@ -1321,7 +1335,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             if (chunk) {
                 cancelPendingLoad(coord);
                 if (m_generator &&
-                    chunk->worldGenVersion() != m_generator->config().world.version) {
+                    chunk->worldGenVersion() != m_generator->semanticsVersion()) {
                     if (!evictChunk(coord, true)) {
                         continue;
                     }
@@ -2265,7 +2279,7 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
             continue;
         }
         if (!m_generator ||
-            genResult.worldGenVersion != m_generator->config().world.version) {
+            genResult.worldGenVersion != m_generator->semanticsVersion()) {
             handOffReplacement();
             continue;
         }
@@ -2752,7 +2766,7 @@ bool ChunkStreamer::chunkIntersectsWorldBounds(ChunkCoord coord) const {
     if (!m_generator) {
         return false;
     }
-    return intersectsWorldBounds(coord, m_generator->config().world);
+    return intersectsWorldBounds(coord, m_generator->definition().bounds);
 }
 
 std::optional<size_t> ChunkStreamer::dirtyMeshPriority(ChunkCoord coord) const {
@@ -2898,7 +2912,7 @@ void ChunkStreamer::rememberConfigRetiredWork(
             ? m_chunkManager->getChunk(coord)
             : nullptr;
         if (chunk && !chunk->isEmpty() && m_generator &&
-            chunk->worldGenVersion() == m_generator->config().world.version) {
+            chunk->worldGenVersion() == m_generator->semanticsVersion()) {
             chunk->markDirty();
         }
     }
@@ -2937,7 +2951,7 @@ bool ChunkStreamer::hasMeshReconciliationWork(ChunkCoord coord) const {
         ? m_chunkManager->getChunk(coord)
         : nullptr;
     if (!chunk || !m_generator ||
-        chunk->worldGenVersion() != m_generator->config().world.version) {
+        chunk->worldGenVersion() != m_generator->semanticsVersion()) {
         return false;
     }
     if (chunk->isEmpty()) {
@@ -2952,7 +2966,7 @@ ChunkStreamer::PendingWorkKind ChunkStreamer::classifyPendingWork(
         ? m_chunkManager->getChunk(coord)
         : nullptr;
     if (!chunk || !m_generator ||
-        chunk->worldGenVersion() != m_generator->config().world.version) {
+        chunk->worldGenVersion() != m_generator->semanticsVersion()) {
         return PendingWorkKind::Generation;
     }
     if (chunk->isEmpty()) {
@@ -3098,7 +3112,7 @@ void ChunkStreamer::reconcileConfigRetiredWork(
             Chunk* chunk = m_chunkManager->getChunk(coord);
             const bool currentVersion = chunk && m_generator &&
                 chunk->worldGenVersion() ==
-                    m_generator->config().world.version;
+                    m_generator->semanticsVersion();
             if (!currentVersion) {
                 if (directlyDesired) {
                     queueLoadGen(coord);
@@ -3124,7 +3138,7 @@ bool ChunkStreamer::hasEligibleMeshWork(ChunkCoord coord) const {
         ? m_chunkManager->getChunk(coord)
         : nullptr;
     if (!chunk || !m_generator || chunk->isEmpty() ||
-        chunk->worldGenVersion() != m_generator->config().world.version) {
+        chunk->worldGenVersion() != m_generator->semanticsVersion()) {
         return false;
     }
 
@@ -3181,7 +3195,7 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
         const bool currentVersion = chunk &&
             (!m_generator ||
              chunk->worldGenVersion() ==
-                 m_generator->config().world.version);
+                 m_generator->semanticsVersion());
         if (currentVersion && chunk->isEmpty()) {
             m_worldBoundsSuppressedMeshes.erase(coord);
         }
@@ -3264,7 +3278,7 @@ void ChunkStreamer::queueDirtyMesh(ChunkCoord coord, bool prioritize) {
         return;
     }
     if (m_generator &&
-        chunk->worldGenVersion() != m_generator->config().world.version) {
+        chunk->worldGenVersion() != m_generator->semanticsVersion()) {
         retirePendingMesh(coord);
         retireReplacementPending(coord);
         m_priorityMeshRequests.erase(coord);
@@ -4016,7 +4030,7 @@ void ChunkStreamer::dispatchPendingMeshes(
             continue;
         }
         if (m_generator &&
-            chunk->worldGenVersion() != m_generator->config().world.version) {
+            chunk->worldGenVersion() != m_generator->semanticsVersion()) {
             erasePendingMesh(request.coord);
             m_priorityMeshRequests.erase(request.coord);
             if (m_desiredSet.find(request.coord) != m_desiredSet.end()) {
@@ -4121,7 +4135,7 @@ void ChunkStreamer::enqueueGeneration(ChunkCoord coord) {
     m_generationFlights[coord] = flight;
     auto generator = m_generator;
     const uint32_t worldGenVersion = generator
-        ? generator->config().world.version
+        ? generator->semanticsVersion()
         : 0;
     uint64_t workEpoch = m_workEpoch.load(std::memory_order_relaxed);
     auto generationStartCallback = m_generationStartCallback;
@@ -4304,7 +4318,7 @@ void ChunkStreamer::enqueueMesh(ChunkCoord coord,
     task.chunkInstanceId = chunk.m_instanceId;
     task.revision = chunk.meshRevision();
     chunk.copyBlocks(task.blocks);
-    const auto& meshWorld = m_generator->config().world;
+    const auto& meshWorld = m_generator->definition().bounds;
     const int64_t chunkMinWorldY =
         static_cast<int64_t>(coord.y) * Chunk::SIZE;
     auto sampleInsideWorld = [&](int localY) {

@@ -6,11 +6,11 @@
 namespace Rigel::Voxel {
 
 int findFirstAirY(const WorldGenerator& generator,
-                  const WorldGenConfig& config,
                   int worldX,
                   int worldZ) {
-    int minY = config.world.minY;
-    int maxY = config.world.maxY;
+    const auto& bounds = generator.definition().bounds;
+    int minY = bounds.minY;
+    int maxY = bounds.maxY;
 
     Voxel::ChunkCoord baseCoord = Voxel::worldToChunk(worldX, 0, worldZ);
     int localX = 0;

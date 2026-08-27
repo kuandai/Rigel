@@ -15,7 +15,9 @@ bool supportsSwapInterval(int interval) {
     return true;
 #elif defined(_WIN32)
     static_cast<void>(interval);
-    return glfwExtensionSupported("WGL_EXT_swap_control") == GLFW_TRUE;
+    // Both supported display modes remain DWM-managed windowed windows. GLFW
+    // implements their interval through DwmFlush even without WGL swap control.
+    return true;
 #else
     const bool ext =
         glfwExtensionSupported("GLX_EXT_swap_control") == GLFW_TRUE;
@@ -241,13 +243,19 @@ std::optional<GlfwRuntime::Rectangle> GlfwRuntime::windowBounds() const {
     return result;
 }
 
-std::pair<int, int> GlfwRuntime::framebufferSize() const {
+std::optional<std::pair<int, int>> GlfwRuntime::framebufferSize() const {
     int width = 0;
     int height = 0;
-    if (m_window) {
-        m_api.getFramebufferSize(m_window, &width, &height);
+    if (!m_window) {
+        m_lastError = "cannot query framebuffer size without a window";
+        return std::nullopt;
     }
-    return {width, height};
+    clearError();
+    m_api.getFramebufferSize(m_window, &width, &height);
+    if (captureError("framebuffer size query")) {
+        return std::nullopt;
+    }
+    return std::pair{width, height};
 }
 
 std::optional<bool> GlfwRuntime::windowDecorated() const {

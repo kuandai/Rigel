@@ -3,6 +3,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ struct RuntimeCalls {
     bool failWindowPositionQuery = false;
     bool failMonitorPositionQuery = false;
     bool failDecorationQuery = false;
+    bool failFramebufferSizeQuery = false;
     std::vector<int> swapIntervals;
     Rigel::GlfwRuntime::WindowSizeCallback windowSizeCallback = nullptr;
     Rigel::GlfwRuntime::WindowSizeCallback framebufferSizeCallback = nullptr;
@@ -105,6 +107,10 @@ void getWindowSize(GLFWwindow*, int* width, int* height) {
 void getFramebufferSize(GLFWwindow*, int* width, int* height) {
     *width = g_calls->framebufferSize.first;
     *height = g_calls->framebufferSize.second;
+    if (g_calls->failFramebufferSizeQuery) {
+        g_calls->failFramebufferSizeQuery = false;
+        g_calls->error = GLFW_PLATFORM_ERROR;
+    }
 }
 
 int getWindowAttrib(GLFWwindow*, int attribute) {
@@ -232,7 +238,9 @@ TEST_CASE(GlfwRuntime_DistinguishesLogicalAndFramebufferPixels) {
 
         CHECK_EQ(runtime.windowBounds()->width, 800);
         CHECK_EQ(runtime.windowBounds()->height, 600);
-        CHECK_EQ(runtime.framebufferSize(), std::pair(1600, 1200));
+        CHECK_EQ(
+            runtime.framebufferSize(),
+            std::optional(std::pair(1600, 1200)));
     }
 
     g_calls = nullptr;
@@ -278,6 +286,12 @@ TEST_CASE(GlfwRuntime_GeometryQueryErrorsDoNotProduceFallbackValues) {
         CHECK(!runtime.windowDecorated());
         CHECK_NE(
             runtime.lastError().find("window decoration query"),
+            std::string::npos);
+
+        calls.failFramebufferSizeQuery = true;
+        CHECK(!runtime.framebufferSize());
+        CHECK_NE(
+            runtime.lastError().find("framebuffer size query"),
             std::string::npos);
 
         calls.failMonitorPositionQuery = true;

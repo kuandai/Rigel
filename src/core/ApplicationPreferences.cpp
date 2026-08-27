@@ -245,23 +245,25 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
         m_resizePersistenceBlock.reset();
         return {};
     }
-    const auto previousBoundsResult = runtime.windowBounds();
-    if (!previousBoundsResult) {
-        return {PreferenceApplyStatus::Rejected, runtime.lastError()};
-    }
-    const auto previousDecoratedResult = runtime.windowDecorated();
-    if (!previousDecoratedResult) {
-        return {PreferenceApplyStatus::Rejected, runtime.lastError()};
-    }
-    const GlfwRuntime::Rectangle previousBounds = *previousBoundsResult;
-    const bool previousDecorated = *previousDecoratedResult;
     const auto previousWindowedPosition = m_windowedPosition;
 
-    bool physicalChange =
+    const bool physicalChange =
         nextEffective.mode != previousEffective.mode ||
         (nextEffective.mode == Preferences::DisplayMode::Windowed &&
          nextEffective.windowedSize != previousEffective.windowedSize);
+    GlfwRuntime::Rectangle previousBounds;
+    bool previousDecorated = false;
     if (physicalChange) {
+        const auto previousBoundsResult = runtime.windowBounds();
+        if (!previousBoundsResult) {
+            return {PreferenceApplyStatus::Rejected, runtime.lastError()};
+        }
+        const auto previousDecoratedResult = runtime.windowDecorated();
+        if (!previousDecoratedResult) {
+            return {PreferenceApplyStatus::Rejected, runtime.lastError()};
+        }
+        previousBounds = *previousBoundsResult;
+        previousDecorated = *previousDecoratedResult;
         GlfwRuntime::Rectangle nextBounds = previousBounds;
         if (nextEffective.mode == Preferences::DisplayMode::Borderless) {
             if (previousEffective.mode == Preferences::DisplayMode::Windowed) {

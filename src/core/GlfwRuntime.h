@@ -73,7 +73,7 @@ public:
 
     std::optional<Rectangle> currentDesktopBounds() const;
     std::optional<Rectangle> windowBounds() const;
-    std::pair<int, int> framebufferSize() const;
+    std::optional<std::pair<int, int>> framebufferSize() const;
     std::optional<bool> windowDecorated() const;
     bool applyWindowConfiguration(const Rectangle& bounds, bool decorated);
     bool setSwapInterval(int interval);

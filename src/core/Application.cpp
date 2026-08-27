@@ -80,6 +80,15 @@ bool initializeOptionalUserInterface(
     return false;
 }
 
+std::pair<int, int> requireFramebufferSize(const GlfwRuntime& runtime) {
+    const auto size = runtime.framebufferSize();
+    if (!size) {
+        throw std::runtime_error(
+            "Failed to query framebuffer size: " + runtime.lastError());
+    }
+    return *size;
+}
+
 } // namespace
 
 struct Application::Impl {
@@ -266,7 +275,7 @@ void Application::initialize() {
         m_impl->preferences->effectiveVerticalFovDegrees());
 
     const auto [framebufferWidth, framebufferHeight] =
-        m_impl->runtime.framebufferSize();
+        requireFramebufferSize(m_impl->runtime);
     glViewport(0, 0, framebufferWidth, framebufferHeight);
 
     // Set Callbacks
@@ -895,7 +904,7 @@ void Application::run() {
                 }
 
                 const auto [width, height] =
-                    m_impl->runtime.framebufferSize();
+                    requireFramebufferSize(m_impl->runtime);
 
                 {
                     PROFILE_SCOPE("Streaming");
@@ -1048,7 +1057,7 @@ void Application::run() {
                 }
             } else {
                 const auto [width, height] =
-                    m_impl->runtime.framebufferSize();
+                    requireFramebufferSize(m_impl->runtime);
                 m_impl->renderer.clear(width, height);
             }
         }

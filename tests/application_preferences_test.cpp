@@ -518,6 +518,26 @@ TEST_CASE(ApplicationPreferences_GeometryQueryFailurePrecedesMutationAndSave) {
     CHECK_EQ(readDocument(fixture.path), before);
 }
 
+TEST_CASE(ApplicationPreferences_FpsOnlyChangeDoesNotQueryWindowGeometry) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    auto candidate = requested.display;
+    candidate.fpsLimit = 100;
+    fixture.display.failWindowPositionQuery = true;
+
+    const auto applied =
+        preferences.applyDisplay(fixture.runtime, candidate);
+
+    CHECK_EQ(applied.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.requested().display, candidate);
+    CHECK_EQ(preferences.effectiveDisplay(), candidate);
+    preferences.waitForNextFrame();
+    CHECK_EQ(fixture.display.sleepDeadlines.size(), static_cast<size_t>(1));
+    CHECK_NEAR(fixture.display.sleepDeadlines.back(), 0.01, 0.000001);
+}
+
 TEST_CASE(ApplicationPreferences_HardwareFailureRollsBackWithoutSaving) {
     DisplayFixture fixture;
     Rigel::Preferences::UserPreferences requested;

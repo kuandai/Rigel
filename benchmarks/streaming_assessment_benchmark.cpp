@@ -1,13 +1,16 @@
 #include "Rigel/Asset/AssetManager.h"
-#include "Rigel/Config/ConfigSource.h"
 #include "Rigel/Render/DebugOverlay.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Render/OpenGLRuntime.h"
 #include "Rigel/UI/ImGuiLayer.h"
+#include "Rigel/Voxel/BlockLoader.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/ChunkManager.h"
 #include "Rigel/Voxel/ChunkStreamer.h"
+#include "Rigel/Voxel/GeneratorDefinitionLoader.h"
+#include "Rigel/Voxel/TextureAtlas.h"
 #include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldConfigBootstrap.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldMeshStore.h"
@@ -28,7 +31,6 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
-#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -88,36 +90,34 @@ void printPercentiles(std::string_view prefix, const Percentiles& values) {
               << ' ' << prefix << "_p99_ms=" << values.p99;
 }
 
-Voxel::WorldConfiguration loadShippedWorldConfiguration(
-    Asset::AssetManager& assets) {
-    Voxel::WorldConfigProvider provider;
-    provider.addSource(std::make_unique<Config::EmbeddedConfigSource>(
-        assets, "raw/world_config"));
-    return provider.loadConfig();
-}
+struct ShippedWorldConfiguration {
+    Voxel::GeneratorDefinitionData generation;
+    Voxel::StreamingConfig streaming;
+};
 
-void registerGenerationBlocks(Voxel::BlockRegistry& registry,
-                              const Voxel::WorldGenConfig& config) {
-    std::set<std::string> identifiers{
-        config.solidBlock,
-        config.surfaceBlock,
-        "base:water[type=source]",
-        "base:sand"};
-    for (const auto& biome : config.biomes.entries) {
-        for (const auto& layer : biome.surface) {
-            identifiers.insert(layer.block);
+ShippedWorldConfiguration loadShippedWorldConfiguration(
+    Asset::AssetManager& assets,
+    Voxel::BlockRegistry& registry,
+    bool loadBlockAssets) {
+    if (loadBlockAssets) {
+        Voxel::TextureAtlas atlas;
+        Voxel::BlockLoader blocks;
+        const Voxel::BlockLoadReport report =
+            blocks.loadFromManifest(assets, registry, atlas);
+        if (report.failed != 0) {
+            throw std::runtime_error(
+                "Shipped block assets failed benchmark bootstrap");
         }
     }
-    for (const auto& feature : config.structures.features) {
-        identifiers.insert(feature.block);
-    }
-    for (const std::string& identifier : identifiers) {
-        Voxel::BlockType block;
-        block.identifier = identifier;
-        block.isOpaque = identifier != "base:water[type=source]";
-        block.isSolid = block.isOpaque;
-        registry.registerBlock(identifier, std::move(block));
-    }
+    const auto prepared =
+        Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets,
+            registry,
+            "rigel:default",
+            Voxel::GeneratorDefinitionOrigin::Shipped);
+    return {
+        prepared.data,
+        Voxel::makeWorldConfigProvider(assets, 0).loadStreamingConfig()};
 }
 
 size_t nonAirBlocks(const Voxel::ChunkBuffer& buffer) {
@@ -298,16 +298,16 @@ bool overlayStartupClassified(const OverlayStartupSnapshot& startup) {
 }
 
 bool runVerticalAssessment(Asset::AssetManager& assets) {
-    const auto configuration = loadShippedWorldConfiguration(assets);
     Voxel::BlockRegistry registry;
-    registerGenerationBlocks(registry, configuration.generation);
+    const auto configuration =
+        loadShippedWorldConfiguration(assets, registry, true);
     const auto generator = std::make_shared<const Voxel::WorldGenerator>(
-        registry, configuration.generation);
+        registry, configuration.generation, 1337u);
 
     const int belowY = Voxel::worldToChunk(
-        0, configuration.generation.world.minY, 0).y - 1;
+        0, configuration.generation.bounds.minY, 0).y - 1;
     const int aboveY = Voxel::worldToChunk(
-        0, configuration.generation.world.maxY, 0).y + 1;
+        0, configuration.generation.bounds.maxY, 0).y + 1;
     const std::array<std::pair<int, int>, 9> columns{{
         {0, 0}, {4, 0}, {-4, 0}, {0, 4}, {0, -4},
         {8, 8}, {-8, 8}, {8, -8}, {-8, -8}}};
@@ -726,13 +726,13 @@ void printStartupBacklog(const OverlayStartupSnapshot& startup) {
 }
 
 bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
-    const auto configuration = loadShippedWorldConfiguration(assets);
     Voxel::WorldResources resources;
+    const auto configuration = loadShippedWorldConfiguration(
+        assets, resources.registry(), true);
     Voxel::World world(resources);
     Voxel::WorldView view(world, resources);
-    registerGenerationBlocks(resources.registry(), configuration.generation);
     const auto generator = std::make_shared<const Voxel::WorldGenerator>(
-        resources.registry(), configuration.generation);
+        resources.registry(), configuration.generation, 1337u);
     world.setGenerator(generator);
     view.setGenerator(generator);
     view.setStreamConfig(configuration.streaming);
@@ -853,16 +853,17 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
     }
     ScopeExit assetCacheGuard([&assets]() { assets.clearCache(); });
 
-    const auto configuration = loadShippedWorldConfiguration(assets);
     Voxel::WorldResources resources;
     ScopeExit resourcesGuard(
         [&resources]() { resources.releaseRenderResources(); });
     resources.initialize(assets);
+    const auto configuration = loadShippedWorldConfiguration(
+        assets, resources.registry(), false);
     Voxel::World world(resources);
     Voxel::WorldView view(world, resources);
     ScopeExit viewGuard([&view]() { view.releaseRenderResources(); });
     const auto generator = std::make_shared<const Voxel::WorldGenerator>(
-        resources.registry(), configuration.generation);
+        resources.registry(), configuration.generation, 1337u);
     world.setGenerator(generator);
     view.setGenerator(generator);
     view.initialize(assets);

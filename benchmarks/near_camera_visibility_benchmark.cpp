@@ -335,15 +335,38 @@ std::shared_ptr<Voxel::WorldGenerator> makeGenerator(
     surface.identifier = "rigel:grass";
     registry.registerBlock(surface.identifier, surface);
 
-    Voxel::WorldGenConfig config;
-    config.seed = 1;
-    config.solidBlock = solid.identifier;
-    config.surfaceBlock = surface.identifier;
-    config.terrain.baseHeight = 0.0f;
-    config.terrain.heightVariation = 0.0f;
-    config.terrain.surfaceDepth = 1;
+    Voxel::GeneratorDefinitionData definition;
+    definition.bounds = {-64, 320};
+    definition.terrain = {
+        .seaLevel = 0,
+        .solidMaterial = solid.identifier,
+        .waterMaterial = solid.identifier,
+        .densityOutput = "terrain"};
+    const Voxel::GeneratorDefinitionData::Noise noise{
+        .octaves = 1,
+        .frequency = 0.01f,
+        .lacunarity = 2.0f,
+        .persistence = 0.5f,
+        .scale = 1.0f};
+    definition.climate.global = {noise, noise, noise};
+    definition.climate.local = {noise, noise, noise};
+    definition.biomes.blendPower = 2.0f;
+    definition.biomes.epsilon = 0.0001f;
+    definition.biomes.coast = {"land", -100.0f, 100.0f};
+    Voxel::GeneratorDefinitionData::Biome biome;
+    biome.id = "land";
+    biome.weight = 1.0f;
+    biome.surface.push_back({surface.identifier, 1});
+    definition.biomes.entries.push_back(std::move(biome));
+    Voxel::GeneratorDefinitionData::DensityNode density;
+    density.id = "flat_height";
+    density.type = "y";
+    density.scale = -1.0f;
+    definition.densityGraph.nodes.push_back(std::move(density));
+    definition.densityGraph.outputs.push_back(
+        {"terrain", "flat_height"});
     return std::make_shared<Voxel::WorldGenerator>(
-        registry, std::move(config));
+        registry, std::move(definition), 1u);
 }
 
 Voxel::StreamingConfig makeStreamingConfig(const Options& options) {

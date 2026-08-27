@@ -181,11 +181,11 @@ TEST_CASE(WorldSet_ClearDestroysAllWorldsAndCanRepeatDuringTeardown) {
         worldSet.resources().registry().registerBlock(solid.identifier, solid);
 
     World& world = worldSet.createWorld(1);
-    WorldGenConfig generation;
-    generation.solidBlock = solid.identifier;
-    generation.surfaceBlock = solid.identifier;
+    GeneratorDefinitionData generation =
+        Rigel::Test::generatorDefinitionFixture(
+            solid.identifier, solid.identifier, solid.identifier);
     auto generator = Rigel::Test::makeWorldGeneratorFixture(
-        worldSet.resources().registry(), generation);
+        worldSet.resources().registry(), generation, 1u);
     world.setGenerator(generator);
 
     WorldView& view = worldSet.createView(1, assets);

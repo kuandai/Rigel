@@ -466,27 +466,25 @@ bool waitForPayloadCompletions(const AsyncChunkLoader& loader, size_t count) {
         payloadCompletionCount(loader) >= count;
 }
 
-WorldGenConfig loaderGeneratorDefinition() {
-    WorldGenConfig config;
-    config.seed = 1;
-    config.solidBlock = "rigel:test_solid";
-    config.surfaceBlock = "rigel:test_surface";
-    config.waterBlock = config.solidBlock;
-    config.shoreBlock = config.surfaceBlock;
-    config.terrain.baseHeight = 64.0f;
-    config.terrain.heightVariation = 0.0f;
-    config.terrain.surfaceDepth = 1;
-    config.biomes.entries.clear();
+constexpr uint32_t kLoaderGeneratorSeed = 1;
 
-    WorldGenConfig::DensityNodeConfig density;
+GeneratorDefinitionData loaderGeneratorDefinition() {
+    GeneratorDefinitionData config =
+        Rigel::Test::generatorDefinitionFixture(
+            "rigel:test_solid",
+            "rigel:test_surface",
+            "rigel:test_solid");
+    config.terrain.densityOutput = "base_density";
+    config.densityGraph.nodes.clear();
+    config.densityGraph.outputs.clear();
+    GeneratorDefinitionData::DensityNode density;
     density.id = "flat_height";
     density.type = "y";
     density.scale = -1.0f;
     density.offset = 64.0f;
     config.densityGraph.nodes.push_back(std::move(density));
-    config.densityGraph.outputs["base_density"] = "flat_height";
-    config.stageEnabled["caves"] = false;
-    config.stageEnabled["structures"] = false;
+    config.densityGraph.outputs.push_back(
+        {"base_density", "flat_height"});
     return config;
 }
 
@@ -504,7 +502,7 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     registry.registerBlock(surface.identifier, surface);
 
     return Rigel::Test::makeWorldGeneratorFixture(
-        registry, loaderGeneratorDefinition());
+        registry, loaderGeneratorDefinition(), kLoaderGeneratorSeed);
 }
 
 BlockID registerTestBlock(BlockRegistry& registry, const std::string& identifier) {
@@ -604,13 +602,12 @@ struct MemoryContext {
         context.storage = std::make_shared<FilesystemBackend>();
         auto settings = Rigel::Test::savedWorldSettingsFixture(
             "Async Chunk Loader Test World");
-        settings.seed = loaderGeneratorDefinition().seed;
+        settings.seed = kLoaderGeneratorSeed;
         Rigel::Test::installSavedWorldGenerationFixture(
             service,
             context,
             settings,
-            Rigel::Test::strictGeneratorDefinitionFixture(
-                loaderGeneratorDefinition()));
+            loaderGeneratorDefinition());
     }
 };
 
@@ -1116,7 +1113,9 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
     auto divergentDefinition = loaderGeneratorDefinition();
     divergentDefinition.densityGraph.nodes.front().offset = 32.0f;
     auto divergent = Rigel::Test::makeWorldGeneratorFixture(
-        resources.registry(), std::move(divergentDefinition));
+        resources.registry(),
+        std::move(divergentDefinition),
+        kLoaderGeneratorSeed);
 
     CHECK_EQ(
         exceptionMessage([&] {
@@ -1154,10 +1153,10 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
     CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
     world.setGenerator(authoritative);
 
-    auto wrongSeedDefinition = loaderGeneratorDefinition();
-    wrongSeedDefinition.seed += 1;
     auto wrongSeed = Rigel::Test::makeWorldGeneratorFixture(
-        resources.registry(), std::move(wrongSeedDefinition));
+        resources.registry(),
+        loaderGeneratorDefinition(),
+        kLoaderGeneratorSeed + 1);
     CHECK_EQ(
         exceptionMessage([&] {
             AsyncChunkLoader loader(
@@ -2175,10 +2174,12 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
     const uint64_t settledGenerationJobs =
         streamer.workMetrics().generationJobsStarted;
     const auto savedGenerator = generator;
-    WorldGenConfig changedConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*generator);
-    ++changedConfig.world.version;
+    GeneratorDefinitionData changedDefinition = generator->definition();
     generator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, std::move(changedConfig));
+        registry,
+        std::move(changedDefinition),
+        generator->seed(),
+        generator->semanticsVersion() + 1);
     world.setGenerator(generator);
     streamer.setGenerator(generator);
 
@@ -6274,13 +6275,12 @@ TEST_CASE(AsyncChunkLoader_PartialSpan_RespectsDisabledBaseFillCapability) {
     context.storage = std::make_shared<FilesystemBackend>();
     auto settings = Rigel::Test::savedWorldSettingsFixture(
         "Disabled Base Fill Test World");
-    settings.seed = loaderGeneratorDefinition().seed;
+    settings.seed = kLoaderGeneratorSeed;
     Rigel::Test::installSavedWorldGenerationFixture(
         service,
         context,
         settings,
-        Rigel::Test::strictGeneratorDefinitionFixture(
-            loaderGeneratorDefinition()));
+        loaderGeneratorDefinition());
     saveRegionForPayload(service, context, "rigel:default", coord, payload);
 
     AsyncChunkLoader loader(

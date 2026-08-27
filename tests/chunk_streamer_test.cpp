@@ -693,14 +693,22 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     surface.identifier = "rigel:grass";
     registry.registerBlock(surface.identifier, surface);
 
-    WorldGenConfig config;
-    config.seed = 1;
-    config.solidBlock = solid.identifier;
-    config.surfaceBlock = surface.identifier;
-    config.terrain.baseHeight = 0.0f;
-    config.terrain.heightVariation = 0.0f;
-    config.terrain.surfaceDepth = 1;
-    return Rigel::Test::makeWorldGeneratorFixture(registry, std::move(config));
+    GeneratorDefinitionData definition =
+        Rigel::Test::generatorDefinitionFixture(
+            solid.identifier, surface.identifier, solid.identifier);
+    definition.terrain.densityOutput = "base_density";
+    definition.densityGraph.nodes.clear();
+    definition.densityGraph.outputs.clear();
+    GeneratorDefinitionData::DensityNode density;
+    density.id = "flat_height";
+    density.type = "y";
+    density.scale = -1.0f;
+    density.offset = 0.0f;
+    definition.densityGraph.nodes.push_back(std::move(density));
+    definition.densityGraph.outputs.push_back(
+        {"base_density", "flat_height"});
+    return Rigel::Test::makeWorldGeneratorFixture(
+        registry, std::move(definition), 1u);
 }
 
 std::shared_ptr<WorldGenerator> makeBoundedSolidGenerator(
@@ -717,22 +725,19 @@ std::shared_ptr<WorldGenerator> makeBoundedSolidGenerator(
         registry.registerBlock(solid.identifier, solid);
     }
 
-    WorldGenConfig config;
-    config.seed = 1;
-    config.solidBlock = solidIdentifier;
-    config.world.minY = minY;
-    config.world.maxY = maxY;
-    config.world.version = version;
-    config.densityGraph.outputs["base_density"] = "solid";
-    config.densityGraph.nodes = {{
+    GeneratorDefinitionData definition =
+        Rigel::Test::generatorDefinitionFixture(
+            solidIdentifier, solidIdentifier, solidIdentifier);
+    definition.bounds = {minY, maxY};
+    definition.terrain.densityOutput = "base_density";
+    definition.densityGraph.outputs = {{"base_density", "solid"}};
+    definition.densityGraph.nodes = {{
         .id = "solid",
         .type = "constant",
         .value = 1.0f
     }};
-    config.stageEnabled["caves"] = false;
-    config.stageEnabled["surface_rules"] = false;
-    config.stageEnabled["structures"] = false;
-    return Rigel::Test::makeWorldGeneratorFixture(registry, std::move(config));
+    return Rigel::Test::makeWorldGeneratorFixture(
+        registry, std::move(definition), 1u, version);
 }
 
 BlockID registerTestBlock(BlockRegistry& registry, const std::string& identifier) {
@@ -1449,10 +1454,14 @@ TEST_CASE(ChunkStreamer_VersionReplacementDefersUntilCoordinateReturns) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
     BlockID edited =
         registerTestBlock(registry, "rigel:replacement_persistence_edit");
 
@@ -1544,10 +1553,14 @@ TEST_CASE(ChunkStreamer_DepartedVersionReplacementPersistsBeforeUnload) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
     const BlockID edited = registerTestBlock(
         registry, "rigel:departed_replacement_durable_edit");
     const ChunkCoord coord{0, 4, 0};
@@ -1599,7 +1612,8 @@ TEST_CASE(ChunkStreamer_DepartedVersionReplacementPersistsBeforeUnload) {
              static_cast<size_t>(1));
 
     Chunk& offCameraChunk = manager.getOrCreateChunk(offCamera);
-    offCameraChunk.setWorldGenVersion(replacementConfig.world.version);
+    offCameraChunk.setWorldGenVersion(
+        replacementGenerator->semanticsVersion());
     offCameraChunk.setLoadedFromDisk(true);
     offCameraChunk.clearPersistDirty();
     offCameraChunk.clearDirty();
@@ -1621,7 +1635,8 @@ TEST_CASE(ChunkStreamer_DepartedVersionReplacementPersistsBeforeUnload) {
     CHECK(manager.getChunk(coord)->isPersistDirty());
 
     Chunk& outsideCamera = manager.getOrCreateChunk(outsideUnload);
-    outsideCamera.setWorldGenVersion(replacementConfig.world.version);
+    outsideCamera.setWorldGenVersion(
+        replacementGenerator->semanticsVersion());
     outsideCamera.setLoadedFromDisk(true);
     outsideCamera.clearPersistDirty();
     outsideCamera.clearDirty();
@@ -1653,10 +1668,14 @@ TEST_CASE(ChunkStreamer_DepartureRetiresVersionReplacementWait) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
     BlockID edited =
         registerTestBlock(registry, "rigel:replacement_distance_eviction_edit");
 
@@ -1728,7 +1747,8 @@ TEST_CASE(ChunkStreamer_DepartureRetiresVersionReplacementWait) {
     if (!replacement) {
         return;
     }
-    CHECK_EQ(replacement->worldGenVersion(), replacementConfig.world.version);
+    CHECK_EQ(replacement->worldGenVersion(),
+             replacementGenerator->semanticsVersion());
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
     CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(0));
 }
@@ -1786,7 +1806,11 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDeferredEviction) {
     CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
 
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            generator->definition(),
+            generator->seed(),
+            generator->semanticsVersion());
     streamer.setGenerator(replacementGenerator);
 
     for (int update = 0; update < 59; ++update) {
@@ -4536,7 +4560,10 @@ TEST_CASE(ChunkStreamer_LateGenerationCannotMutateTerminalVisibilityLifecycle) {
                 expectedOutcome = ChunkVisibilityOutcome::GeneratorReplaced;
                 auto replacementGenerator =
                     Rigel::Test::makeWorldGeneratorFixture(
-                        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
+                        registry,
+                        generator->definition(),
+                        generator->seed(),
+                        generator->semanticsVersion());
                 streamer.setGenerator(std::move(replacementGenerator));
                 break;
             }
@@ -4705,7 +4732,10 @@ TEST_CASE(ChunkStreamer_GenerationFailureRetriesAfterGeneratorReplacement) {
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
     auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+        registry,
+        originalGenerator->definition(),
+        originalGenerator->seed(),
+        originalGenerator->semanticsVersion());
     std::atomic<size_t> generationAttempts{0};
 
     ChunkStreamer streamer(
@@ -4906,16 +4936,19 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     BlockID replacementBlock =
         registerTestBlock(registry, "rigel:replacement_generation_solid");
 
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
-    replacementConfig.solidBlock = "rigel:replacement_generation_solid";
-    replacementConfig.surfaceBlock = "rigel:replacement_generation_solid";
-    replacementConfig.biomes.entries.front().surface.front().block =
-        replacementConfig.surfaceBlock;
-    replacementConfig.terrain.baseHeight = 64.0f;
-    replacementConfig.densityGraph.nodes.front().offset = 64.0f;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
+    replacementDefinition.terrain.solidMaterial =
+        "rigel:replacement_generation_solid";
+    replacementDefinition.biomes.entries.front().surface.front().material =
+        replacementDefinition.terrain.solidMaterial;
+    replacementDefinition.densityGraph.nodes.front().offset = 64.0f;
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
 
     auto originalGate = std::make_shared<WorkerGate>();
     auto replacementGate = std::make_shared<WorkerGate>();
@@ -5011,7 +5044,8 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     if (!accepted) {
         return;
     }
-    CHECK_EQ(accepted->worldGenVersion(), replacementConfig.world.version);
+    CHECK_EQ(accepted->worldGenVersion(),
+             replacementGenerator->semanticsVersion());
     CHECK_EQ(accepted->getBlock(0, 0, 0).id, replacementBlock);
 }
 
@@ -5153,26 +5187,41 @@ TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGene
         registerTexturedTestBlock(
             registry, "rigel:original_generator_solid", originalTexture);
 
-    WorldGenConfig originalConfig;
-    originalConfig.solidBlock = "rigel:original_generator_solid";
-    originalConfig.surfaceBlock = "rigel:original_generator_solid";
-    originalConfig.terrain.baseHeight = 64.0f;
-    originalConfig.terrain.heightVariation = 0.0f;
+    GeneratorDefinitionData originalDefinition =
+        Rigel::Test::generatorDefinitionFixture(
+            "rigel:original_generator_solid",
+            "rigel:original_generator_solid",
+            "rigel:original_generator_solid");
+    originalDefinition.terrain.densityOutput = "base_density";
+    originalDefinition.densityGraph.nodes = {{
+        .id = "flat_height",
+        .type = "y",
+        .scale = -1.0f,
+        .offset = 64.0f}};
+    originalDefinition.densityGraph.outputs = {{
+        "base_density", "flat_height"}};
     auto originalGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, originalConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry, originalDefinition, 1u);
 
     BlockID replacementBlock =
         registerTexturedTestBlock(
             registry, "rigel:replacement_generator_solid", replacementTexture);
 
-    WorldGenConfig replacementConfig = originalConfig;
-    replacementConfig.solidBlock = "rigel:replacement_generator_solid";
-    replacementConfig.surfaceBlock = "rigel:replacement_generator_solid";
-    replacementConfig.terrain.baseHeight = 0.0f;
+    GeneratorDefinitionData replacementDefinition = originalDefinition;
+    replacementDefinition.terrain.solidMaterial =
+        "rigel:replacement_generator_solid";
+    replacementDefinition.terrain.waterMaterial =
+        "rigel:replacement_generator_solid";
+    replacementDefinition.biomes.entries.front().surface.front().material =
+        "rigel:replacement_generator_solid";
+    replacementDefinition.densityGraph.nodes.front().offset = 0.0f;
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry, replacementDefinition, 1u);
     CHECK(originalGenerator != replacementGenerator);
-    CHECK_EQ(originalConfig.world.version, replacementConfig.world.version);
+    CHECK_EQ(originalGenerator->semanticsVersion(),
+             replacementGenerator->semanticsVersion());
 
     const ChunkCoord coord{0, 0, 0};
     ChunkBuffer originalBlocks;
@@ -5252,7 +5301,7 @@ TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGene
         int dz = 0;
         directionOffset(static_cast<Direction>(index), dx, dy, dz);
         Chunk& neighbor = manager.getOrCreateChunk(coord.offset(dx, dy, dz));
-        neighbor.setWorldGenVersion(replacementConfig.world.version);
+        neighbor.setWorldGenVersion(replacementGenerator->semanticsVersion());
         neighbor.clearDirty();
     }
     streamer.update(coord.toWorldCenter());
@@ -5329,7 +5378,8 @@ TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGene
     if (!accepted) {
         return;
     }
-    CHECK_EQ(accepted->worldGenVersion(), replacementConfig.world.version);
+    CHECK_EQ(accepted->worldGenVersion(),
+             replacementGenerator->semanticsVersion());
     ChunkBuffer acceptedBlocks;
     accepted->copyBlocks(acceptedBlocks.blocks);
     CHECK_EQ(acceptedBlocks.blocks, replacementBlocks.blocks);
@@ -5391,10 +5441,14 @@ TEST_CASE(ChunkStreamer_RecreatedGenerationPoolRejectsRetiredJobIdentity) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
     auto replacementGate = std::make_shared<WorkerGate>();
 
     ChunkStreamer streamer(
@@ -5495,7 +5549,8 @@ TEST_CASE(ChunkStreamer_RecreatedGenerationPoolRejectsRetiredJobIdentity) {
     Chunk* accepted = manager.getChunk(coord);
     CHECK(accepted != nullptr);
     if (accepted) {
-        CHECK_EQ(accepted->worldGenVersion(), replacementConfig.world.version);
+        CHECK_EQ(accepted->worldGenVersion(),
+                 replacementGenerator->semanticsVersion());
     }
     CHECK_EQ(streamer.workMetrics().generationJobsStarted,
              static_cast<uint64_t>(2));
@@ -5516,10 +5571,14 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementCancelsQueuedGeneration) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
     auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> generationsEntered{0};
 
@@ -5646,7 +5705,8 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementCancelsQueuedGeneration) {
             pendingGenerationIndexCount(streamer),
         static_cast<size_t>(0));
     manager.forEachChunk([&](ChunkCoord, const Chunk& chunk) {
-        CHECK_EQ(chunk.worldGenVersion(), replacementConfig.world.version);
+        CHECK_EQ(chunk.worldGenVersion(),
+                 replacementGenerator->semanticsVersion());
     });
     CHECK(streamer.diagnostics().workEmpty());
     checkGenerationAccounting(streamer);
@@ -7718,7 +7778,10 @@ TEST_CASE(ChunkStreamer_ConfigRetiredMeshTransfersToCanonicalWakeOwner) {
         WorldMeshStore meshStore;
         auto generator = makeGenerator(registry);
         auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-            registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
+            registry,
+            generator->definition(),
+            generator->seed(),
+            generator->semanticsVersion());
         const BlockID solid = registerTestBlock(
             registry,
             wake == WakeKind::GeneratorReplacement
@@ -9526,10 +9589,14 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRetiresVersionReplacementWait) {
         BlockRegistry registry;
         WorldMeshStore meshStore;
         auto originalGenerator = makeGenerator(registry);
-        WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-        ++replacementConfig.world.version;
+        GeneratorDefinitionData replacementDefinition =
+            originalGenerator->definition();
         auto replacementGenerator =
-            Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+            Rigel::Test::makeWorldGeneratorFixture(
+                registry,
+                replacementDefinition,
+                originalGenerator->seed(),
+                originalGenerator->semanticsVersion() + 1);
 
         const ChunkCoord cameraCoord{0, 4, 0};
         const ChunkCoord retiringCoord{1, 4, 0};
@@ -12157,7 +12224,10 @@ TEST_CASE(ChunkStreamer_LateVisibilityOptInObservesExistingGenerationFlight) {
     const auto publishedBlockers =
         refreshed.records.front().blockingDesiredCardinalNeighbors;
     auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
+        registry,
+        generator->definition(),
+        generator->seed(),
+        generator->semanticsVersion());
     streamer.setGenerator(replacementGenerator);
     auto replacedRecords = tracer->snapshot();
     const auto replaced = std::find_if(
@@ -14907,7 +14977,11 @@ TEST_CASE(ChunkStreamer_VisibilityTraceCompletesOnGeneratorReplacement) {
     streamer.update(coord.toWorldCenter());
 
     auto replacement =
-        Rigel::Test::makeWorldGeneratorFixture(registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            generator->definition(),
+            generator->seed(),
+            generator->semanticsVersion());
     streamer.setGenerator(replacement);
 
     const auto records = tracer->snapshot();
@@ -15696,7 +15770,11 @@ TEST_CASE(ChunkStreamer_MeshFailureCompletesJob) {
             streamer,
             {});
         auto replacementGenerator =
-            Rigel::Test::makeWorldGeneratorFixture(registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
+            Rigel::Test::makeWorldGeneratorFixture(
+                registry,
+                generator->definition(),
+                generator->seed(),
+                generator->semanticsVersion());
         streamer.setGenerator(replacementGenerator);
         streamer.update(coord.toWorldCenter());
         CHECK(waitForMeshCompletions(streamer, 2));
@@ -15834,7 +15912,11 @@ TEST_CASE(ChunkStreamer_DirtyMeshFailureSurvivesResidentDesiredReentry) {
         streamer,
         {});
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            generator->definition(),
+            generator->seed(),
+            generator->semanticsVersion());
     streamer.setGenerator(replacementGenerator);
     streamer.update(coord.toWorldCenter());
     streamer.processCompletions();
@@ -17241,7 +17323,10 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDirtyMeshCapacity) {
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
     auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+        registry,
+        originalGenerator->definition(),
+        originalGenerator->seed(),
+        originalGenerator->semanticsVersion());
     BlockID solid =
         registerTestBlock(registry, "rigel:generator_replacement_mesh_solid");
     const ChunkCoord coord{0, 0, 0};
@@ -17358,7 +17443,10 @@ TEST_CASE(ChunkStreamer_ObsoleteReplacementPreservesExplicitPriority) {
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
     auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+        registry,
+        originalGenerator->definition(),
+        originalGenerator->seed(),
+        originalGenerator->semanticsVersion());
     const BlockID solid = registerTestBlock(
         registry, "rigel:replacement_priority_solid");
     const ChunkCoord replacementCoord{0, 0, 0};
@@ -17460,7 +17548,10 @@ TEST_CASE(ChunkStreamer_ConfigShrinkCannotRecreateObsoleteReplacement) {
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
     auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+        registry,
+        originalGenerator->definition(),
+        originalGenerator->seed(),
+        originalGenerator->semanticsVersion());
     const BlockID solid = registerTestBlock(
         registry, "rigel:shrink_obsolete_replacement_solid");
     const ChunkCoord cameraCoord{0, 0, 0};
@@ -17681,7 +17772,10 @@ TEST_CASE(ChunkStreamer_ReplacementRetirementPreventsLateWake) {
         WorldMeshStore meshStore;
         auto originalGenerator = makeGenerator(registry);
         auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-            registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+            registry,
+            originalGenerator->definition(),
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion());
         const BlockID solid = registerTestBlock(
             registry, "rigel:replacement_retirement_solid");
         const ChunkCoord cameraCoord{0, 0, 0};
@@ -17775,7 +17869,10 @@ TEST_CASE(ChunkStreamer_CameraDepartureRetiresObsoleteReplacementIdentity) {
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
     auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+        registry,
+        originalGenerator->definition(),
+        originalGenerator->seed(),
+        originalGenerator->semanticsVersion());
     const BlockID solid = registerTestBlock(
         registry, "rigel:departed_replacement_identity_solid");
     const ChunkCoord coord{0, 4, 0};
@@ -17920,12 +18017,15 @@ TEST_CASE(ChunkStreamer_VersionRegenerationDoesNotRecoverOldMeshPriority) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
-    replacementConfig.terrain.baseHeight = 64.0f;
-    replacementConfig.densityGraph.nodes.front().offset = 64.0f;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
+    replacementDefinition.densityGraph.nodes.front().offset = 64.0f;
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
     const BlockID solid = registerTestBlock(
         registry, "rigel:version_priority_retirement_solid");
     const ChunkCoord regeneratedCoord{0, 0, 0};
@@ -17981,7 +18081,8 @@ TEST_CASE(ChunkStreamer_VersionRegenerationDoesNotRecoverOldMeshPriority) {
     Chunk& explicitCurrent =
         manager.getOrCreateChunk(explicitCurrentCoord);
     explicitCurrent.setBlock(0, 0, 0, BlockState{solid}, registry);
-    explicitCurrent.setWorldGenVersion(replacementConfig.world.version);
+    explicitCurrent.setWorldGenVersion(
+        replacementGenerator->semanticsVersion());
     explicitCurrent.setLoadedFromDisk(true);
     explicitCurrent.clearPersistDirty();
     explicitCurrent.clearDirty();
@@ -17999,7 +18100,8 @@ TEST_CASE(ChunkStreamer_VersionRegenerationDoesNotRecoverOldMeshPriority) {
     if (!regenerated) {
         return;
     }
-    CHECK_EQ(regenerated->worldGenVersion(), replacementConfig.world.version);
+    CHECK_EQ(regenerated->worldGenVersion(),
+             replacementGenerator->semanticsVersion());
     CHECK(!regenerated->isEmpty());
     CHECK_EQ(streamer.workMetrics().generationJobsStarted,
              static_cast<uint64_t>(1));
@@ -18094,7 +18196,10 @@ TEST_CASE(ChunkStreamer_SameVersionReplacementRebuildsRetainedOwnersOnce) {
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
     auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+        registry,
+        originalGenerator->definition(),
+        originalGenerator->seed(),
+        originalGenerator->semanticsVersion());
     const BlockID solid = registerTestBlock(
         registry, "rigel:retained_replacement_owner_solid");
     const ChunkCoord blockerCoord{-1, 0, 0};
@@ -18267,7 +18372,10 @@ TEST_CASE(ChunkStreamer_InlineGeneratorReplacementSettlesExactlyOnce) {
         WorldMeshStore meshStore;
         auto originalGenerator = makeGenerator(registry);
         auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-            registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+            registry,
+            originalGenerator->definition(),
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion());
         const BlockID solid = registerTestBlock(
             registry,
             workerThreads == 0
@@ -18342,7 +18450,10 @@ TEST_CASE(ChunkStreamer_VoxelEmptyRetiresObsoleteReplacementImmediately) {
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
     auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+        registry,
+        originalGenerator->definition(),
+        originalGenerator->seed(),
+        originalGenerator->semanticsVersion());
     const BlockID solid = registerTestBlock(
         registry, "rigel:empty_obsolete_replacement_solid");
     const ChunkCoord coord{0, 0, 0};
@@ -18404,12 +18515,15 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
-    replacementConfig.terrain.baseHeight = 64.0f;
-    replacementConfig.densityGraph.nodes.front().offset = 64.0f;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
+    replacementDefinition.densityGraph.nodes.front().offset = 64.0f;
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
     const BlockID solid = registerTestBlock(
         registry, "rigel:pending_generator_replacement_solid");
     const ChunkCoord cameraCoord{0, 0, 0};
@@ -18544,7 +18658,10 @@ TEST_CASE(ChunkStreamer_ObsoleteDirtyFlightDoesNotBlockUnrelatedDirtyMesh) {
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
     auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
+        registry,
+        originalGenerator->definition(),
+        originalGenerator->seed(),
+        originalGenerator->semanticsVersion());
     const BlockID solid = registerTestBlock(
         registry, "rigel:obsolete_head_unrelated_solid");
     const ChunkCoord obsoleteCoord{0, 0, 0};
@@ -18689,16 +18806,19 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementInstallsOnlyCurrentMesh) {
         registerTexturedTestBlock(
             registry, "rigel:overlap_replacement_solid", replacementTexture);
 
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
-    replacementConfig.solidBlock = "rigel:overlap_replacement_solid";
-    replacementConfig.surfaceBlock = "rigel:overlap_replacement_solid";
-    replacementConfig.biomes.entries.front().surface.front().block =
-        replacementConfig.surfaceBlock;
-    replacementConfig.terrain.baseHeight = 64.0f;
-    replacementConfig.densityGraph.nodes.front().offset = 64.0f;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
+    replacementDefinition.terrain.solidMaterial =
+        "rigel:overlap_replacement_solid";
+    replacementDefinition.biomes.entries.front().surface.front().material =
+        replacementDefinition.terrain.solidMaterial;
+    replacementDefinition.densityGraph.nodes.front().offset = 64.0f;
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
 
     const ChunkCoord coord{0, 0, 0};
     Chunk& original = manager.getOrCreateChunk(coord);
@@ -18747,7 +18867,8 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementInstallsOnlyCurrentMesh) {
     if (!replacement) {
         return;
     }
-    CHECK_EQ(replacement->worldGenVersion(), replacementConfig.world.version);
+    CHECK_EQ(replacement->worldGenVersion(),
+             replacementGenerator->semanticsVersion());
     CHECK_EQ(replacement->getBlock(0, 0, 0).id, replacementSolid);
     CHECK_EQ(replacement->getBlock(
                  Chunk::SIZE - 1, Chunk::SIZE - 1, Chunk::SIZE - 1).id,
@@ -18813,10 +18934,14 @@ TEST_CASE(ChunkStreamer_MeshRetirementPreservesReplacementGenerationFailure) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
-    ++replacementConfig.world.version;
+    GeneratorDefinitionData replacementDefinition =
+        originalGenerator->definition();
     auto replacementGenerator =
-        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            replacementDefinition,
+            originalGenerator->seed(),
+            originalGenerator->semanticsVersion() + 1);
     BlockID solid =
         registerTestBlock(registry, "rigel:failed_replacement_original_solid");
     const ChunkCoord coord{0, 0, 0};
@@ -19518,11 +19643,14 @@ TEST_CASE(ChunkStreamer_UnloadHysteresisAvoidsOneChunkReversalChurn) {
         BlockRegistry registry;
         WorldMeshStore meshStore;
         auto generator = makeGenerator(registry);
-        WorldGenConfig wideWorld = Rigel::Test::legacyWorldGeneratorConfigFixture(*generator);
-        wideWorld.world.minY = -512;
-        wideWorld.world.maxY = 511;
+        GeneratorDefinitionData wideWorld = generator->definition();
+        wideWorld.bounds.minY = -512;
+        wideWorld.bounds.maxY = 511;
         generator = Rigel::Test::makeWorldGeneratorFixture(
-            registry, std::move(wideWorld));
+            registry,
+            std::move(wideWorld),
+            generator->seed(),
+            generator->semanticsVersion());
         const BlockID solid =
             registerTestBlock(registry, "rigel:hysteresis_boundary_solid");
 
@@ -19702,10 +19830,12 @@ TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
     const ChunkStreamer::WorkMetrics settled = streamer.workMetrics();
     CHECK_EQ(settled.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(0));
 
-    WorldGenConfig changedConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*generator);
-    ++changedConfig.world.version;
+    GeneratorDefinitionData changedDefinition = generator->definition();
     generator = Rigel::Test::makeWorldGeneratorFixture(
-        registry, std::move(changedConfig));
+        registry,
+        std::move(changedDefinition),
+        generator->seed(),
+        generator->semanticsVersion() + 1);
     streamer.setGenerator(generator);
 
     streamer.update(glm::vec3(0.0f));

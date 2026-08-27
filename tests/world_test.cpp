@@ -37,6 +37,16 @@ static_assert(std::is_same_v<
 static_assert(!PubliclyClearable<ChunkManager>);
 static_assert(!PubliclyClearable<World>);
 
+namespace {
+
+GeneratorDefinitionData testDefinition(
+    const std::string& solid,
+    const std::string& surface) {
+    return Rigel::Test::generatorDefinitionFixture(solid, surface, solid);
+}
+
+} // namespace
+
 TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
     WorldResources resources;
     World world(resources);
@@ -50,25 +60,21 @@ TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
     surface.identifier = "rigel:diagnostic_surface";
     registry.registerBlock(surface.identifier, surface);
 
-    WorldGenConfig generation;
-    generation.solidBlock = solid.identifier;
-    generation.surfaceBlock = surface.identifier;
-    generation.waterBlock = solid.identifier;
-    generation.shoreBlock = surface.identifier;
-    generation.terrain.baseHeight = 0.0f;
-    generation.terrain.heightVariation = 0.0f;
-    generation.terrain.surfaceDepth = 1;
-    generation.biomes.entries.clear();
-    WorldGenConfig::DensityNodeConfig density;
+    GeneratorDefinitionData generation =
+        testDefinition(solid.identifier, surface.identifier);
+    generation.terrain.densityOutput = "base_density";
+    generation.densityGraph.nodes.clear();
+    generation.densityGraph.outputs.clear();
+    GeneratorDefinitionData::DensityNode density;
     density.id = "flat_height";
     density.type = "y";
     density.scale = -1.0f;
     density.offset = 0.0f;
     generation.densityGraph.nodes.push_back(std::move(density));
-    generation.densityGraph.outputs["base_density"] = "flat_height";
-    generation.stageEnabled["caves"] = false;
-    generation.stageEnabled["structures"] = false;
-    auto generator = Rigel::Test::makeWorldGeneratorFixture(registry, generation);
+    generation.densityGraph.outputs.push_back(
+        {"base_density", "flat_height"});
+    auto generator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, generation, 1u);
     world.setGenerator(generator);
 
     Rigel::Test::TemporaryDirectory directory("rigel_world_diagnostics");
@@ -85,12 +91,12 @@ TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
         std::make_shared<Rigel::Persistence::FilesystemBackend>();
     auto settings = Rigel::Test::savedWorldSettingsFixture(
         "Diagnostics Test World");
-    settings.seed = generation.seed;
+    settings.seed = generator->seed();
     Rigel::Test::installSavedWorldGenerationFixture(
         service,
         context,
         settings,
-        Rigel::Test::strictGeneratorDefinitionFixture(generation));
+        generation);
     auto loader = std::make_shared<Rigel::Persistence::AsyncChunkLoader>(
         service,
         context,
@@ -174,12 +180,8 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     surface.identifier = "rigel:grass";
     resources.registry().registerBlock(surface.identifier, surface);
 
-    WorldGenConfig config;
-    config.solidBlock = solid.identifier;
-    config.surfaceBlock = surface.identifier;
-    config.terrain.baseHeight = 0.0f;
-    config.terrain.heightVariation = 0.0f;
-    config.terrain.surfaceDepth = 1;
+    GeneratorDefinitionData config =
+        testDefinition(solid.identifier, surface.identifier);
     StreamingConfig streaming;
     streaming.viewDistanceChunks = 0;
     streaming.unloadDistanceChunks = 0;
@@ -189,7 +191,8 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     streaming.workerThreads = 0;
 
     auto generator =
-        Rigel::Test::makeWorldGeneratorFixture(resources.registry(), config);
+        Rigel::Test::makeWorldGeneratorFixture(
+            resources.registry(), config, 1u);
     world.setGenerator(generator);
     view.setGenerator(generator);
     view.setStreamConfig(streaming);
@@ -211,11 +214,10 @@ TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
     const BlockID solidId =
         resources.registry().registerBlock(solid.identifier, solid);
 
-    WorldGenConfig generation;
-    generation.solidBlock = solid.identifier;
-    generation.surfaceBlock = solid.identifier;
+    GeneratorDefinitionData generation =
+        testDefinition(solid.identifier, solid.identifier);
     auto generator = Rigel::Test::makeWorldGeneratorFixture(
-        resources.registry(), generation);
+        resources.registry(), generation, 1u);
     world.setGenerator(generator);
     view.setGenerator(generator);
 
@@ -286,11 +288,10 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
     const BlockID solidId =
         resources.registry().registerBlock(solid.identifier, solid);
 
-    WorldGenConfig generation;
-    generation.solidBlock = solid.identifier;
-    generation.surfaceBlock = solid.identifier;
+    GeneratorDefinitionData generation =
+        testDefinition(solid.identifier, solid.identifier);
     auto generator = Rigel::Test::makeWorldGeneratorFixture(
-        resources.registry(), generation);
+        resources.registry(), generation, 1u);
     world.setGenerator(generator);
     view.setGenerator(generator);
 
@@ -406,11 +407,10 @@ TEST_CASE(WorldView_EditDrivenMeshingMatchesInitialStreaming) {
         solid.identifier = "rigel:world_view_mesh_solid";
         BlockID solidId = resources.registry().registerBlock(solid.identifier, solid);
 
-        WorldGenConfig generation;
-        generation.solidBlock = solid.identifier;
-        generation.surfaceBlock = solid.identifier;
+        GeneratorDefinitionData generation =
+            testDefinition(solid.identifier, solid.identifier);
         auto generator = Rigel::Test::makeWorldGeneratorFixture(
-            resources.registry(), std::move(generation));
+            resources.registry(), std::move(generation), 1u);
         world.setGenerator(generator);
         view.setGenerator(generator);
 

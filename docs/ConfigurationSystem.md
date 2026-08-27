@@ -9,6 +9,7 @@ implementation and the on-disk configuration files shipped with the project.
 ## Index
 
 - [Overview](#overview)
+- [Global User Preferences](#global-user-preferences)
 - [Config Sources and Precedence](#config-sources-and-precedence)
   - [World Generation](#world-generation)
   - [Rendering](#rendering)
@@ -43,14 +44,14 @@ World generation has one keyed sequence exception: `density_graph.nodes`
 merges entries by `id`, replacing a matching node as a whole. Persistence's
 typed CR options merge by key.
 
-Four config types are supported today:
+Four layered config types are supported today:
 
 - `WorldGenConfig` (world generation)
 - `StreamingConfig` (runtime chunk loading, generation, and meshing schedules)
 - `WorldRenderConfig` (render pipeline settings)
 - `PersistenceConfig` (save/load format and provider options)
 
-Typed providers load each subsystem's settings from YAML input using rapidyaml.
+Typed providers load each layered subsystem's settings from YAML input using rapidyaml.
 `Voxel::WorldConfigProvider` loads generation and streaming settings together
 when creating a world so their shared overlays have one deterministic order.
 When opening a published save, it loads only `StreamingConfig`; invalid,
@@ -62,6 +63,58 @@ precedence and does not apply generation fields. Rendering is loaded by
 uses the shared standard-source builder, but the typed provider remains the
 semantic owner of parsing and merging its settings. Unknown fixed keys produce
 a warning and are not applied.
+
+`UserPreferences` is separate from these layered providers. It owns global
+player display, graphics, camera, and input requests in one platform file and
+does not consult assets, saves, the working directory, or per-world overrides.
+
+---
+
+## Global User Preferences
+
+`Preferences::UserPreferences` is a schema-version-1 typed value with these
+shipped defaults:
+
+| Request | Default | Accepted values |
+| --- | --- | --- |
+| Display mode | `windowed` | `windowed`, `borderless` |
+| Remembered window size | `[800, 600]` | two dimensions from 1 through 16384 |
+| VSync | `true` | boolean |
+| FPS limit | `unlimited` | `unlimited`, or 30 through 1000 |
+| View distance | `12` chunks | 2 through 16 |
+| Shadows | `true` | boolean |
+| Vertical FOV | `60` degrees | finite value from 50 through 110 |
+| Mouse sensitivity | `0.12` | finite value from 0.01 through 1.00 |
+| Invert Y | `false` | boolean |
+| Binding overrides | none | sparse lists for supported gameplay actions |
+
+On Linux, the sole production path is
+`$XDG_CONFIG_HOME/rigel/user-preferences.yaml` when `XDG_CONFIG_HOME` is
+absolute, otherwise `$HOME/.config/rigel/user-preferences.yaml`. Tests and
+tools construct `UserPreferencesStore` with one explicit absolute path. A
+missing file returns defaults without creating the file.
+
+Supported schema-1 documents are parsed independently per field. An invalid
+leaf or section warns and uses the shipped default for only that leaf or
+section; valid siblings remain usable. Unknown fields and binding actions warn
+and are ignored. Unknown schema-1 nodes are retained when known requests are
+later saved. Binding overrides distinguish an absent action from an explicit
+empty list.
+
+Malformed, missing-schema, unsupported-schema, unreadable, oversized, and
+nonregular files return safe defaults without changing the existing path.
+Ordinary saves remain blocked after such a load, and also recheck the current
+file before publication so an externally installed newer schema is not
+overwritten. `replaceWithRequested()` is the explicit operation for replacing
+an unsupported document.
+
+Writes stage complete replacement bytes and publish them atomically. Commit
+errors distinguish a definite prepublication failure from a replacement that
+was published before parent-directory durability became uncertain. Requested
+and effective preferences are separate values: hardware recovery may select a
+safe effective value, while persistence always writes the requested value.
+The store does not itself apply requests to window, renderer, streaming, or
+input consumers.
 
 ---
 

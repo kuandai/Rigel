@@ -55,6 +55,61 @@ Persistence::NewWorldGenerationFactory deferredCreation(
     return deferredCreation(*value);
 }
 
+void checkStreamingMetricsEqual(
+    const Voxel::ChunkStreamer::WorkMetrics& actual,
+    const Voxel::ChunkStreamer::WorkMetrics& expected) {
+    CHECK_EQ(actual.generationJobsStarted, expected.generationJobsStarted);
+    CHECK_EQ(actual.generationJobsCompleted, expected.generationJobsCompleted);
+    CHECK_EQ(actual.generationJobsCancelled, expected.generationJobsCancelled);
+    CHECK_EQ(actual.generationJobsFailed, expected.generationJobsFailed);
+    CHECK_EQ(
+        actual.chunkLoadRequestsStarted,
+        expected.chunkLoadRequestsStarted);
+    CHECK_EQ(actual.meshJobsStarted, expected.meshJobsStarted);
+    CHECK_EQ(actual.meshJobsCompleted, expected.meshJobsCompleted);
+    CHECK_EQ(actual.meshJobsAccepted, expected.meshJobsAccepted);
+    CHECK_EQ(actual.meshJobsRejectedStale, expected.meshJobsRejectedStale);
+    CHECK_EQ(actual.meshJobsFailed, expected.meshJobsFailed);
+    CHECK_EQ(actual.meshInvalidations, expected.meshInvalidations);
+    CHECK_EQ(actual.meshRequestsCoalesced, expected.meshRequestsCoalesced);
+    CHECK_EQ(
+        actual.desiredBuildCoordinatesInspected,
+        expected.desiredBuildCoordinatesInspected);
+    CHECK_EQ(
+        actual.desiredBuildCoordinatesSkippedByWorldBounds,
+        expected.desiredBuildCoordinatesSkippedByWorldBounds);
+    CHECK_EQ(
+        actual.schedulerCoordinatesInspected,
+        expected.schedulerCoordinatesInspected);
+    CHECK_EQ(
+        actual.cacheEvictionCoordinatesInspected,
+        expected.cacheEvictionCoordinatesInspected);
+    CHECK_EQ(
+        actual.residentEvictionCoordinatesInspected,
+        expected.residentEvictionCoordinatesInspected);
+    CHECK_EQ(
+        actual.deferredEvictionCoordinatesInspected,
+        expected.deferredEvictionCoordinatesInspected);
+    CHECK_EQ(
+        actual.lastUpdateDesiredBuildCoordinatesInspected,
+        expected.lastUpdateDesiredBuildCoordinatesInspected);
+    CHECK_EQ(
+        actual.lastUpdateDesiredBuildCoordinatesSkippedByWorldBounds,
+        expected.lastUpdateDesiredBuildCoordinatesSkippedByWorldBounds);
+    CHECK_EQ(
+        actual.lastUpdateSchedulerCoordinatesInspected,
+        expected.lastUpdateSchedulerCoordinatesInspected);
+    CHECK_EQ(
+        actual.lastUpdateCacheEvictionCoordinatesInspected,
+        expected.lastUpdateCacheEvictionCoordinatesInspected);
+    CHECK_EQ(
+        actual.lastUpdateResidentEvictionCoordinatesInspected,
+        expected.lastUpdateResidentEvictionCoordinatesInspected);
+    CHECK_EQ(
+        actual.lastUpdateDeferredEvictionCoordinatesInspected,
+        expected.lastUpdateDeferredEvictionCoordinatesInspected);
+}
+
 std::string readDocument(
     Persistence::StorageBackend& storage,
     const std::filesystem::path& path) {
@@ -178,6 +233,123 @@ private:
 };
 
 } // namespace
+
+TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_world_id_rejects_before_publication) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_invalid_world_id");
+    const auto root = directory.path() / "world_1";
+    auto storage =
+        std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    Rigel::Voxel::WorldSet worldSet;
+    configureWorldSet(worldSet, root, storage, "memory");
+    Rigel::Voxel::World& world = worldSet.createWorld(1);
+    Rigel::Voxel::WorldView view(world, worldSet.resources());
+    const auto context = worldSet.persistenceContext(1);
+    worldSet.setPersistenceActiveFormat(1, "cr");
+    const auto before = view.streamingMetrics();
+    size_t resolverCalls = 0;
+    Rigel::Persistence::NewWorldGenerationFactory resolver = [&] {
+        ++resolverCalls;
+        return creation(101u, 0.25f, "must not publish");
+    };
+
+    CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+        worldSet,
+        2,
+        world,
+        view,
+        resolver,
+        context));
+
+    CHECK_EQ(resolverCalls, size_t{0});
+    CHECK(!std::filesystem::exists(root));
+    CHECK_EQ(
+        worldSet.persistenceContext(1).preferredFormat,
+        std::string("cr"));
+    CHECK(world.generator() == nullptr);
+    CHECK(view.generator() == nullptr);
+    checkStreamingMetricsEqual(view.streamingMetrics(), before);
+}
+
+TEST_CASE(ApplicationWorldGenerationBootstrap_preowned_world_rejects_before_publication) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_preowned_world");
+    const auto root = directory.path() / "world_1";
+    auto storage =
+        std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    Rigel::Voxel::WorldSet worldSet;
+    configureWorldSet(worldSet, root, storage, "memory");
+    Rigel::Voxel::World& world = worldSet.createWorld(1);
+    auto owned = Rigel::Test::makeWorldGeneratorFixture(
+        worldSet.resources().registry(), definition(-0.5f), 202u);
+    world.setGenerator(owned);
+    Rigel::Voxel::WorldView view(world, worldSet.resources());
+    const auto context = worldSet.persistenceContext(1);
+    worldSet.setPersistenceActiveFormat(1, "cr");
+    const auto before = view.streamingMetrics();
+    size_t resolverCalls = 0;
+    Rigel::Persistence::NewWorldGenerationFactory resolver = [&] {
+        ++resolverCalls;
+        return creation(303u, 0.25f, "must not replace ownership");
+    };
+
+    CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+        worldSet,
+        1,
+        world,
+        view,
+        resolver,
+        context));
+
+    CHECK_EQ(resolverCalls, size_t{0});
+    CHECK(!std::filesystem::exists(root));
+    CHECK_EQ(
+        worldSet.persistenceContext(1).preferredFormat,
+        std::string("cr"));
+    CHECK_EQ(world.generator(), owned);
+    CHECK_EQ(view.generator(), owned);
+    checkStreamingMetricsEqual(view.streamingMetrics(), before);
+}
+
+TEST_CASE(ApplicationWorldGenerationBootstrap_mismatched_view_rejects_before_publication) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_mismatched_view");
+    const auto root = directory.path() / "world_1";
+    auto storage =
+        std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    Rigel::Voxel::WorldSet worldSet;
+    configureWorldSet(worldSet, root, storage, "memory");
+    Rigel::Voxel::World& world = worldSet.createWorld(1);
+    Rigel::Voxel::World unrelatedWorld(worldSet.resources());
+    Rigel::Voxel::WorldView view(
+        unrelatedWorld, worldSet.resources());
+    const auto context = worldSet.persistenceContext(1);
+    worldSet.setPersistenceActiveFormat(1, "cr");
+    const auto before = view.streamingMetrics();
+    size_t resolverCalls = 0;
+    Rigel::Persistence::NewWorldGenerationFactory resolver = [&] {
+        ++resolverCalls;
+        return creation(404u, 0.25f, "must not split ownership");
+    };
+
+    CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+        worldSet,
+        1,
+        world,
+        view,
+        resolver,
+        context));
+
+    CHECK_EQ(resolverCalls, size_t{0});
+    CHECK(!std::filesystem::exists(root));
+    CHECK_EQ(
+        worldSet.persistenceContext(1).preferredFormat,
+        std::string("cr"));
+    CHECK(world.generator() == nullptr);
+    CHECK(unrelatedWorld.generator() == nullptr);
+    CHECK(view.generator() == nullptr);
+    checkStreamingMetricsEqual(view.streamingMetrics(), before);
+}
 
 TEST_CASE(ApplicationWorldGenerationBootstrap_published_save_never_resolves_install) {
     Rigel::Test::TemporaryDirectory directory(

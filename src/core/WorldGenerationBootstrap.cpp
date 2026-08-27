@@ -1,8 +1,33 @@
 #include "WorldGenerationBootstrap.h"
 
+#include <stdexcept>
 #include <utility>
 
 namespace Rigel::detail {
+namespace {
+
+void validateRuntimeTargets(
+    Voxel::WorldSet& worldSet,
+    Voxel::WorldId worldId,
+    Voxel::World& world,
+    Voxel::WorldView& worldView) {
+    if (!worldSet.hasWorld(worldId)
+        || &worldSet.world(worldId) != &world
+        || world.id() != worldId) {
+        throw std::invalid_argument(
+            "World generation target is not owned by the world set");
+    }
+    if (world.generator()) {
+        throw std::invalid_argument(
+            "World generation target already owns a generator");
+    }
+    if (&worldView.world() != &world || worldView.generator()) {
+        throw std::invalid_argument(
+            "World generation view target does not match the world");
+    }
+}
+
+} // namespace
 
 ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     Voxel::WorldSet& worldSet,
@@ -11,6 +36,8 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     Voxel::WorldView& worldView,
     const Persistence::NewWorldGenerationFactory& creationFactory,
     const Persistence::PersistenceContext& context) {
+    validateRuntimeTargets(worldSet, worldId, world, worldView);
+
     const Voxel::BlockRegistry& registry = worldSet.resources().registry();
     Persistence::BootstrappedWorldGeneration bootstrapped =
         Persistence::bootstrapWorldGeneration(

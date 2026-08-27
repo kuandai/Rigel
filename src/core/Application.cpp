@@ -786,9 +786,8 @@ void Application::run() {
                     m_impl->world.world->tickEntities(deltaTime);
                 }
 
-                int width = 0;
-                int height = 0;
-                glfwGetFramebufferSize(m_impl->window.window, &width, &height);
+                const auto [width, height] =
+                    m_impl->runtime.framebufferSize();
 
                 {
                     PROFILE_SCOPE("Streaming");
@@ -940,9 +939,8 @@ void Application::run() {
 #endif
                 }
             } else {
-                int width = 0;
-                int height = 0;
-                glfwGetFramebufferSize(m_impl->window.window, &width, &height);
+                const auto [width, height] =
+                    m_impl->runtime.framebufferSize();
                 m_impl->renderer.clear(width, height);
             }
         }

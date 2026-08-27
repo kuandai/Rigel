@@ -418,7 +418,6 @@ SavedWorldGeneration loadSavedWorldGenerationDocuments(
             snapshot,
             settings.generator.definitionSchemaVersion,
             "generator-definition.yaml");
-        saved.canonicalDefinitionSnapshot = snapshot;
     } catch (const WorldGenerationLoadError&) {
         throw;
     } catch (const std::exception& error) {

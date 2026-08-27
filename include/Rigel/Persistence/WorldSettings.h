@@ -38,7 +38,6 @@ struct WorldSettings {
 struct SavedWorldGeneration {
     WorldSettings settings;
     Voxel::GeneratorDefinitionData definition;
-    std::string canonicalDefinitionSnapshot;
 };
 
 struct NewWorldGeneration {

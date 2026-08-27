@@ -14,14 +14,13 @@
 #include "Rigel/Voxel/WorldGenerator.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace {
-
-using Rigel::Voxel::GeneratorDefinitionOrigin;
 
 void registerDefinitionMaterials(Rigel::Voxel::BlockRegistry& registry) {
     for (const std::string& id : {
@@ -49,15 +48,18 @@ std::vector<std::string> generatorDeclarationNames(
 bool loadFailsAtAssetBoundary(
     Rigel::Asset::AssetManager& assets,
     const Rigel::Voxel::BlockRegistry& registry,
-    std::string* failedAssetId = nullptr) {
+    std::string* failedAssetId = nullptr,
+    std::string* diagnostic = nullptr) {
     try {
         static_cast<void>(
             Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-                assets, registry, "test:valid",
-                GeneratorDefinitionOrigin::Shipped));
+                assets, registry, "test:valid"));
     } catch (const Rigel::Asset::AssetLoadError& error) {
         if (failedAssetId) {
             *failedAssetId = error.assetId();
+        }
+        if (diagnostic) {
+            *diagnostic = error.what();
         }
         return true;
     }
@@ -69,14 +71,20 @@ std::string rawText(
     return std::string(asset->str());
 }
 
+std::string storedText(Rigel::Persistence::StorageBackend& storage,
+                       const std::string& path) {
+    auto reader = storage.openRead(path);
+    const std::vector<uint8_t> bytes = reader->readAt(0, reader->size());
+    return std::string(bytes.begin(), bytes.end());
+}
+
 void commitInitialGeneratorSet(
     Rigel::Asset::AssetManager& assets,
     const Rigel::Voxel::BlockRegistry& registry) {
     assets.loadManifest("initial.yaml");
     const auto prepared =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:valid",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:valid");
     CHECK_EQ(prepared.sourceId, std::string("test:valid"));
     CHECK_EQ(assets.ns(), std::string("initial"));
     CHECK(assets.exists("generator_definitions/stable"));
@@ -100,8 +108,7 @@ TEST_CASE(AssetManager_DefersDuplicateGeneratorDeclarationFields) {
     try {
         static_cast<void>(
             Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-                assets, registry, "test:valid",
-                GeneratorDefinitionOrigin::Shipped));
+                assets, registry, "test:valid"));
     } catch (const Rigel::Asset::AssetLoadError& error) {
         assetId = error.assetId();
         diagnostic = error.what();
@@ -126,8 +133,7 @@ TEST_CASE(AssetManager_DefersDuplicateGeneratorDeclarationNames) {
     try {
         static_cast<void>(
             Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-                assets, registry, "test:valid",
-                GeneratorDefinitionOrigin::Shipped));
+                assets, registry, "test:valid"));
     } catch (const Rigel::Asset::AssetLoadError& error) {
         assetId = error.assetId();
         diagnostic = error.what();
@@ -136,6 +142,44 @@ TEST_CASE(AssetManager_DefersDuplicateGeneratorDeclarationNames) {
     CHECK(diagnostic.find("duplicate generator definition asset declaration") !=
           std::string::npos);
     CHECK(assets.ns().empty());
+}
+
+TEST_CASE(GeneratorDefinitionLoader_rejects_duplicate_definition_ids_atomically) {
+    Rigel::Asset::AssetManager assets;
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    commitInitialGeneratorSet(assets, registry);
+
+    assets.loadManifest("duplicate_generator_identity.yaml");
+    std::string failedAssetId;
+    std::string diagnostic;
+    CHECK(loadFailsAtAssetBoundary(
+        assets, registry, &failedAssetId, &diagnostic));
+    CHECK_EQ(failedAssetId, std::string("generator_definitions"));
+    CHECK(diagnostic.find("Duplicate generator definition ID 'test:valid'") !=
+          std::string::npos);
+    CHECK_EQ(assets.ns(), std::string("initial"));
+    CHECK_EQ(generatorDeclarationNames(assets),
+             std::vector<std::string>{"stable"});
+}
+
+TEST_CASE(GeneratorDefinitionLoader_rejects_unreachable_nodes_atomically) {
+    Rigel::Asset::AssetManager assets;
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    commitInitialGeneratorSet(assets, registry);
+
+    assets.loadManifest("unreachable_generator.yaml");
+    std::string failedAssetId;
+    std::string diagnostic;
+    CHECK(loadFailsAtAssetBoundary(
+        assets, registry, &failedAssetId, &diagnostic));
+    CHECK_EQ(failedAssetId, std::string("generator_definitions"));
+    CHECK(diagnostic.find("unreachable density node 'unused'") !=
+          std::string::npos);
+    CHECK_EQ(assets.ns(), std::string("initial"));
+    CHECK_EQ(generatorDeclarationNames(assets),
+             std::vector<std::string>{"stable"});
 }
 
 TEST_CASE(GeneratorDefinitionLoader_manifest_failure_preserves_prior_complete_set) {
@@ -194,8 +238,7 @@ TEST_CASE(AssetManager_DoesNotDeferUnrelatedMalformedManifestYaml) {
 
     const auto corrected =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:corrected",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:corrected");
     CHECK_EQ(corrected.sourceRevision, uint32_t{9});
 }
 
@@ -221,7 +264,7 @@ TEST_CASE(GeneratorDefinitionLoader_recovery_commit_preserves_current_asset_iden
     CHECK_EQ(generatorDeclarationNames(assets),
              std::vector<std::string>{"stable"});
     CHECK_NO_THROW(Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-        assets, registry, "test:valid", GeneratorDefinitionOrigin::Shipped));
+        assets, registry, "test:valid"));
 
     assets.loadManifest("corrected.yaml");
     CHECK_EQ(assets.get<Rigel::Asset::RawAsset>("raw/stable"), retained);
@@ -233,8 +276,7 @@ TEST_CASE(GeneratorDefinitionLoader_recovery_commit_preserves_current_asset_iden
     CHECK(!assets.exists("generator_definitions/corrected"));
     const auto corrected =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:corrected",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:corrected");
     CHECK_EQ(corrected.sourceId, std::string("test:corrected"));
     CHECK_EQ(corrected.sourceRevision, uint32_t{9});
     CHECK_EQ(corrected.data.densityGraph.nodes.front().value, 0.5f);
@@ -293,8 +335,7 @@ TEST_CASE(GeneratorDefinitionLoader_reports_author_yaml_syntax_at_asset_boundary
             Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
                 assets,
                 registry,
-                "test:valid",
-                GeneratorDefinitionOrigin::Shipped));
+                "test:valid"));
     } catch (const Rigel::Asset::AssetLoadError& error) {
         assetId = error.assetId();
         diagnostic = error.what();
@@ -310,8 +351,7 @@ TEST_CASE(GeneratorDefinitionLoader_reports_author_yaml_syntax_at_asset_boundary
     CHECK_NO_THROW(Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
         assets,
         registry,
-        "test:valid",
-        GeneratorDefinitionOrigin::Shipped));
+        "test:valid"));
 }
 
 TEST_CASE(GeneratorDefinitionLoader_missing_selection_discards_complete_candidate) {
@@ -325,7 +365,7 @@ TEST_CASE(GeneratorDefinitionLoader_missing_selection_discards_complete_candidat
     const auto provisional =
         assets.get<Rigel::Asset::RawAsset>("raw/committed");
     CHECK_THROWS(Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-        assets, registry, "test:missing", GeneratorDefinitionOrigin::Shipped));
+        assets, registry, "test:missing"));
 
     CHECK_EQ(assets.ns(), std::string("initial"));
     CHECK_EQ(generatorDeclarationNames(assets),
@@ -337,8 +377,7 @@ TEST_CASE(GeneratorDefinitionLoader_missing_selection_discards_complete_candidat
     CHECK_EQ(rawText(provisional), std::string("new committed entry"));
     const auto restored =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:valid",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:valid");
     CHECK_EQ(restored.sourceId, std::string("test:valid"));
     CHECK_EQ(restored.sourceRevision, uint32_t{1});
     CHECK_EQ(restored.data.densityGraph.nodes.front().value, 1.0f);
@@ -359,8 +398,7 @@ TEST_CASE(AssetManager_clearCache_releases_candidate_rollback_handles) {
     CHECK_THROWS(Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
         assets,
         registry,
-        "test:missing",
-        GeneratorDefinitionOrigin::Shipped));
+        "test:missing"));
     CHECK_EQ(rawText(external), std::string("retained"));
     external = {};
     CHECK(oldAsset.expired());
@@ -388,8 +426,7 @@ TEST_CASE(GeneratorDefinitionLoader_later_ordinary_entry_survives_candidate_comm
 
     const auto corrected =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:corrected",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:corrected");
     CHECK_EQ(corrected.sourceRevision, uint32_t{9});
     CHECK_EQ(assets.ns(), std::string("later-ordinary"));
     CHECK_EQ(assets.get<Rigel::Asset::RawAsset>("raw/stable"), later);
@@ -412,16 +449,14 @@ TEST_CASE(GeneratorDefinitionLoader_later_ordinary_entry_survives_selection_fail
     CHECK_EQ(rawText(later), std::string("later ordinary entry"));
 
     CHECK_THROWS(Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-        assets, registry, "test:missing",
-        GeneratorDefinitionOrigin::Shipped));
+        assets, registry, "test:missing"));
     CHECK_EQ(assets.ns(), std::string("later-ordinary"));
     CHECK_EQ(assets.get<Rigel::Asset::RawAsset>("raw/stable"), later);
     CHECK_EQ(rawText(assets.get<Rigel::Asset::RawAsset>("raw/stable")),
              std::string("later ordinary entry"));
     const auto restored =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:valid",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:valid");
     CHECK_EQ(restored.sourceRevision, uint32_t{1});
 }
 
@@ -449,8 +484,7 @@ TEST_CASE(GeneratorDefinitionLoader_later_ordinary_entry_survives_aggregate_fail
     CHECK(!assets.exists("raw/provisional"));
     const auto restored =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:valid",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:valid");
     CHECK_EQ(restored.sourceRevision, uint32_t{1});
 }
 
@@ -469,8 +503,7 @@ TEST_CASE(GeneratorDefinitionLoader_corrected_manifest_replaces_deferred_error) 
     CHECK(!assets.exists("raw/required"));
     const auto corrected =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:corrected",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:corrected");
     CHECK_EQ(corrected.sourceId, std::string("test:corrected"));
     CHECK_EQ(corrected.sourceRevision, uint32_t{9});
     CHECK_EQ(assets.ns(), std::string("corrected"));
@@ -494,8 +527,7 @@ TEST_CASE(GeneratorDefinitionLoader_published_bootstrap_bypasses_deferred_instal
     assets.loadManifest("corrected.yaml");
     const auto initialDefinition =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:corrected",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:corrected");
     Rigel::Persistence::PersistenceContext publishedContext;
     publishedContext.rootPath =
         (directory.path() / "world_published").string();
@@ -521,8 +553,7 @@ TEST_CASE(GeneratorDefinitionLoader_published_bootstrap_bypasses_deferred_instal
             "Missing",
             18u,
             Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-                assets, registry, "test:corrected",
-                GeneratorDefinitionOrigin::Shipped)};
+                assets, registry, "test:corrected")};
     };
 
     const auto published = Rigel::Persistence::bootstrapWorldGeneration(
@@ -571,8 +602,7 @@ TEST_CASE(GeneratorDefinitionLoader_extreme_biomes_generate_before_and_after_pub
     assets.loadManifest("extreme_biome.yaml");
     const auto installed =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:extreme",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:extreme");
     CHECK_EQ(installed.sourceRevision, uint32_t{11});
     CHECK_EQ(installed.canonicalSnapshot,
              Rigel::Voxel::serializeGeneratorDefinitionSnapshot(
@@ -621,8 +651,9 @@ TEST_CASE(GeneratorDefinitionLoader_extreme_biomes_generate_before_and_after_pub
              Rigel::Persistence::kWorldSettingsSchemaVersion);
     CHECK_EQ(created.generation.settings.generator.sourceId,
              std::string("test:extreme"));
-    CHECK_EQ(created.generation.canonicalDefinitionSnapshot,
-             installed.canonicalSnapshot);
+    const std::string savedSnapshot = storedText(
+        *storage, context.rootPath + "/generator-definition.yaml");
+    CHECK_EQ(savedSnapshot, installed.canonicalSnapshot);
     CHECK(storage->exists(context.rootPath));
     Rigel::Voxel::WorldGenerator createdGenerator(
         registry,
@@ -639,8 +670,7 @@ TEST_CASE(GeneratorDefinitionLoader_extreme_biomes_generate_before_and_after_pub
     assets.loadManifest("corrected.yaml");
     const auto replacement =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
-            assets, registry, "test:corrected",
-            GeneratorDefinitionOrigin::Shipped);
+            assets, registry, "test:corrected");
     size_t installedResolverCalls = 0;
     const auto reloaded = Rigel::Persistence::bootstrapWorldGeneration(
         [&] {
@@ -654,8 +684,10 @@ TEST_CASE(GeneratorDefinitionLoader_extreme_biomes_generate_before_and_after_pub
     CHECK_EQ(installedResolverCalls, size_t{0});
     CHECK_EQ(reloaded.generation.settings.generator.sourceId,
              std::string("test:extreme"));
-    CHECK_EQ(reloaded.generation.canonicalDefinitionSnapshot,
-             installed.canonicalSnapshot);
+    CHECK_EQ(storedText(
+                 *storage,
+                 context.rootPath + "/generator-definition.yaml"),
+             savedSnapshot);
     Rigel::Voxel::WorldGenerator reloadedGenerator(
         registry,
         reloaded.generation.definition,

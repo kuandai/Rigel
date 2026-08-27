@@ -373,8 +373,7 @@ void Application::initialize() {
                 Voxel::loadPreparedGeneratorDefinitionSnapshot(
                     m_impl->assets,
                     m_impl->world.worldSet.resources().registry(),
-                    kDefaultGeneratorDefinitionId,
-                    Voxel::GeneratorDefinitionOrigin::Shipped)};
+                    kDefaultGeneratorDefinitionId)};
         };
 
         detail::ApplicationWorldGenerationBootstrapResult bootstrapped =

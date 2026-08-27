@@ -47,6 +47,10 @@ struct GeneratorDefinitionAsset final : Asset::AssetBase {
     GeneratorDefinition definition;
 };
 
+std::vector<GeneratorDefinition> validateAndOrderGeneratorDefinitions(
+    std::vector<GeneratorDefinition> definitions,
+    const BlockRegistry& registry);
+
 std::string readDefinitionPath(const Asset::LoadContext& context) {
     if (!context.config.readable() || !context.config.is_map()) {
         throw Asset::AssetLoadError(
@@ -108,8 +112,7 @@ public:
 
 std::vector<GeneratorDefinition> loadAndValidateGeneratorDefinitionCandidate(
     Asset::AssetManager& assets,
-    const BlockRegistry& registry,
-    GeneratorDefinitionOrigin origin) {
+    const BlockRegistry& registry) {
     GeneratorDefinitionAssetTransactionAccess::rethrowDeclarationError(
         assets);
     std::vector<std::pair<
@@ -142,15 +145,12 @@ std::vector<GeneratorDefinition> loadAndValidateGeneratorDefinitionCandidate(
         definitions.push_back(loaded->definition);
     }
     return validateAndOrderGeneratorDefinitions(
-        std::move(definitions), registry, origin);
+        std::move(definitions), registry);
 }
-
-} // namespace
 
 std::vector<GeneratorDefinition> validateAndOrderGeneratorDefinitions(
     std::vector<GeneratorDefinition> definitions,
-    const BlockRegistry& registry,
-    GeneratorDefinitionOrigin origin) {
+    const BlockRegistry& registry) {
     if (definitions.empty()) {
         throw std::invalid_argument(
             "At least one generator definition must be declared");
@@ -178,48 +178,23 @@ std::vector<GeneratorDefinition> validateAndOrderGeneratorDefinitions(
     }
     for (const auto& definition : definitions) {
         static_cast<void>(prepareGeneratorDefinitionSnapshot(
-            definition, registry, origin));
+            definition, registry));
     }
     return definitions;
 }
 
-std::vector<GeneratorDefinition> loadDeclaredGeneratorDefinitions(
-    Asset::AssetManager& assets,
-    const BlockRegistry& registry,
-    GeneratorDefinitionOrigin origin) {
-    const bool candidatePending =
-        GeneratorDefinitionAssetTransactionAccess::hasPending(assets);
-    try {
-        auto validated = loadAndValidateGeneratorDefinitionCandidate(
-            assets, registry, origin);
-        if (candidatePending) {
-            GeneratorDefinitionAssetTransactionAccess::commit(assets);
-        }
-        return validated;
-    } catch (const Asset::AssetLoadError&) {
-        if (candidatePending) {
-            GeneratorDefinitionAssetTransactionAccess::discard(assets);
-        }
-        throw;
-    } catch (const std::exception& error) {
-        if (candidatePending) {
-            GeneratorDefinitionAssetTransactionAccess::discard(assets);
-        }
-        throw Asset::AssetLoadError("generator_definitions", error.what());
-    }
-}
+} // namespace
 
 PreparedGeneratorDefinitionSnapshot loadPreparedGeneratorDefinitionSnapshot(
     Asset::AssetManager& assets,
     const BlockRegistry& registry,
-    std::string_view selectedId,
-    GeneratorDefinitionOrigin origin) {
+    std::string_view selectedId) {
     const bool candidatePending =
         GeneratorDefinitionAssetTransactionAccess::hasPending(assets);
     try {
         const std::vector<GeneratorDefinition> definitions =
             loadAndValidateGeneratorDefinitionCandidate(
-                assets, registry, origin);
+                assets, registry);
         const auto selected = std::find_if(
             definitions.begin(), definitions.end(),
             [&](const auto& definition) {
@@ -232,7 +207,7 @@ PreparedGeneratorDefinitionSnapshot loadPreparedGeneratorDefinitionSnapshot(
                     std::string(selectedId));
         }
         auto prepared = prepareGeneratorDefinitionSnapshot(
-            *selected, registry, origin);
+            *selected, registry);
         if (candidatePending) {
             GeneratorDefinitionAssetTransactionAccess::commit(assets);
         }

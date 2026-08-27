@@ -4,8 +4,6 @@
 #include "Rigel/Voxel/BlockRegistry.h"
 
 #include <ryml.hpp>
-#include <spdlog/spdlog.h>
-
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -1503,8 +1501,7 @@ std::string serializeGeneratorDefinition(
 
 PreparedGeneratorDefinitionSnapshot prepareGeneratorDefinitionSnapshot(
     const GeneratorDefinition& definition,
-    const BlockRegistry& registry,
-    GeneratorDefinitionOrigin origin) {
+    const BlockRegistry& registry) {
     validateGeneratorDefinition(definition, definition.id);
     validateGeneratorDefinitionContent(
         definition.data, registry, definition.id);
@@ -1516,19 +1513,12 @@ PreparedGeneratorDefinitionSnapshot prepareGeneratorDefinitionSnapshot(
         }
     }
     std::sort(unreachable.begin(), unreachable.end());
-    if (!unreachable.empty() && origin == GeneratorDefinitionOrigin::Shipped) {
+    if (!unreachable.empty()) {
         throw std::invalid_argument(
-            "Shipped generator definition '" + definition.id + "@" +
+            "Generator definition '" + definition.id + "@" +
             std::to_string(definition.sourceRevision) +
             "' contains unreachable density node '" + unreachable.front() +
             "'");
-    }
-    for (const auto& nodeId : unreachable) {
-        spdlog::warn(
-            "Generator definition '{}@{}' contains unreachable density node '{}'",
-            definition.id,
-            definition.sourceRevision,
-            nodeId);
     }
     const std::string canonical = serializeSnapshotData(definition.data);
     GeneratorDefinitionData effective = parseGeneratorDefinitionSnapshot(

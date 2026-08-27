@@ -24,6 +24,20 @@ public:
             "      path: generators/first.yaml\n"
             "    default:\n"
             "      path: generators/second.yaml\n";
+        static constexpr char duplicateDefinitionIdentity[] =
+            "namespace: failed-duplicate-identity\n"
+            "assets:\n"
+            "  generator_definitions:\n"
+            "    first:\n"
+            "      path: generators/valid.yaml\n"
+            "    second:\n"
+            "      path: generators/valid.yaml\n";
+        static constexpr char unreachableNodeManifest[] =
+            "namespace: failed-unreachable\n"
+            "assets:\n"
+            "  generator_definitions:\n"
+            "    unreachable:\n"
+            "      path: generators/unreachable.yaml\n";
         static constexpr char aggregateMissingResource[] =
             "namespace: failed-missing\n"
             "assets:\n"
@@ -220,6 +234,21 @@ public:
             "  unknown_field: rejected\n";
         static constexpr char malformedDefinition[] =
             "generator: [\n";
+        static const std::string unreachableDefinition = [] {
+            std::string result(
+                validDefinition, sizeof(validDefinition) - 1);
+            const size_t caves = result.find("  caves:\n");
+            if (caves == std::string::npos) {
+                throw std::runtime_error(
+                    "Unreachable-node fixture mutation source is unavailable");
+            }
+            result.insert(
+                caves,
+                "      - id: unused\n"
+                "        type: constant\n"
+                "        value: 0\n");
+            return result;
+        }();
         static const std::string correctedDefinition = [] {
             std::string result(
                 validDefinition, sizeof(validDefinition) - 1);
@@ -306,6 +335,14 @@ public:
         if (path == "duplicate_generator_name.yaml") {
             return {duplicateName, sizeof(duplicateName) - 1};
         }
+        if (path == "duplicate_generator_identity.yaml") {
+            return {duplicateDefinitionIdentity,
+                    sizeof(duplicateDefinitionIdentity) - 1};
+        }
+        if (path == "unreachable_generator.yaml") {
+            return {unreachableNodeManifest,
+                    sizeof(unreachableNodeManifest) - 1};
+        }
         if (path == "aggregate_missing_resource.yaml") {
             return {aggregateMissingResource,
                     sizeof(aggregateMissingResource) - 1};
@@ -344,6 +381,10 @@ public:
         }
         if (path == "generators/invalid.yaml") {
             return {invalidDefinition, sizeof(invalidDefinition) - 1};
+        }
+        if (path == "generators/unreachable.yaml") {
+            return {unreachableDefinition.data(),
+                    unreachableDefinition.size()};
         }
         if (path == "generators/malformed.yaml") {
             return {malformedDefinition, sizeof(malformedDefinition) - 1};

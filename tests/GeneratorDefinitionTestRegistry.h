@@ -101,9 +101,7 @@ inline Voxel::PreparedGeneratorDefinitionSnapshot preparedGeneratorFixture(
     definition.description = "Generator fixture for focused tests.";
     definition.data = data;
     return Voxel::prepareGeneratorDefinitionSnapshot(
-        definition,
-        registry,
-        Voxel::GeneratorDefinitionOrigin::Shipped);
+        definition, registry);
 }
 
 inline std::shared_ptr<Voxel::WorldGenerator> makeWorldGeneratorFixture(

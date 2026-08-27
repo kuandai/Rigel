@@ -14,11 +14,6 @@ class BlockRegistry;
 inline constexpr uint32_t kGeneratorDefinitionSchemaVersion = 2;
 inline constexpr uint32_t kGeneratorSemanticsVersion = 1;
 
-enum class GeneratorDefinitionOrigin {
-    Shipped,
-    ThirdParty
-};
-
 struct GeneratorDefinitionData {
     static constexpr int MinWorldY = -4096;
     static constexpr int MaxWorldY = 4096;
@@ -213,8 +208,7 @@ std::string serializeGeneratorDefinition(
 
 PreparedGeneratorDefinitionSnapshot prepareGeneratorDefinitionSnapshot(
     const GeneratorDefinition& definition,
-    const BlockRegistry& registry,
-    GeneratorDefinitionOrigin origin);
+    const BlockRegistry& registry);
 
 std::string serializeGeneratorDefinitionSnapshot(
     const GeneratorDefinitionData& data);

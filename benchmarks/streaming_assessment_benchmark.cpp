@@ -113,8 +113,7 @@ ShippedBootstrapConfiguration loadShippedBootstrapConfiguration(
         Voxel::loadPreparedGeneratorDefinitionSnapshot(
             assets,
             registry,
-            "rigel:default",
-            Voxel::GeneratorDefinitionOrigin::Shipped);
+            "rigel:default");
     return {
         prepared.data,
         Voxel::makeWorldConfigProvider(assets, 0).loadStreamingConfig()};

@@ -1,5 +1,4 @@
 #include "TestFramework.h"
-#include "LogCapture.h"
 
 #include "Rigel/Asset/AssetLoader.h"
 #include "Rigel/Asset/AssetManager.h"
@@ -23,12 +22,10 @@ namespace {
 
 using Rigel::Voxel::GeneratorDefinition;
 using Rigel::Voxel::GeneratorDefinitionData;
-using Rigel::Voxel::GeneratorDefinitionOrigin;
 using Rigel::Voxel::parseGeneratorDefinition;
 using Rigel::Voxel::parseGeneratorDefinitionSnapshot;
 using Rigel::Voxel::prepareGeneratorDefinitionSnapshot;
 using Rigel::Voxel::serializeGeneratorDefinition;
-using Rigel::Voxel::validateAndOrderGeneratorDefinitions;
 
 std::string validDefinitionYaml() {
     return R"yaml(generator:
@@ -234,8 +231,7 @@ Rigel::Voxel::PreparedGeneratorDefinitionSnapshot prepareSnapshot(
     const GeneratorDefinition& definition) {
     Rigel::Voxel::BlockRegistry registry;
     registerDefinitionMaterials(registry);
-    return prepareGeneratorDefinitionSnapshot(
-        definition, registry, GeneratorDefinitionOrigin::ThirdParty);
+    return prepareGeneratorDefinitionSnapshot(definition, registry);
 }
 
 uint64_t appendGoldenBytes(uint64_t hash, std::string_view value) {
@@ -311,6 +307,11 @@ TEST_CASE(GeneratorDefinition_rejects_duplicates_and_dangling_references) {
                           "        biomes: [missing]\n"));
     CHECK(rejectsMutation("    density_output: cave_density\n",
                           "    density_output: missing\n"));
+
+    GeneratorDefinition duplicateFeature = definitionWithoutUnusedNodes();
+    duplicateFeature.data.structures.features.push_back(
+        duplicateFeature.data.structures.features.front());
+    CHECK_THROWS(prepareSnapshot(duplicateFeature));
 }
 
 TEST_CASE(GeneratorDefinition_rejects_invalid_ranges_and_dependencies) {
@@ -362,7 +363,7 @@ TEST_CASE(GeneratorDefinition_rejects_unsafe_evaluator_arithmetic) {
         "        offset: 3.40282347e+38\n"));
 
     GeneratorDefinition derived =
-        parseGeneratorDefinition(validDefinitionYaml(), "derived.yaml");
+        definitionWithoutUnusedNodes();
     derived.data.climate.global.temperature.scale = 0.0f;
     derived.data.climate.global.temperature.offset = 2.9e38f;
     derived.data.climate.local.temperature.scale = 0.0f;
@@ -551,8 +552,12 @@ TEST_CASE(GeneratorDefinition_authoring_serialization_is_normalized_and_stable) 
 }
 
 TEST_CASE(GeneratorDefinition_snapshot_is_metadata_free_effective_data) {
-    GeneratorDefinition definition =
+    const GeneratorDefinition authoring =
         parseGeneratorDefinition(validDefinitionYaml(), "snapshot-source.yaml");
+    CHECK(Rigel::Voxel::serializeGeneratorDefinitionSnapshot(authoring.data)
+              .find("author_note") == std::string::npos);
+
+    GeneratorDefinition definition = definitionWithoutUnusedNodes();
     definition.data.structures.features.front().biomes = {"ocean", "land"};
     const auto prepared = prepareSnapshot(definition);
     const std::string& snapshot = prepared.canonicalSnapshot;
@@ -565,7 +570,6 @@ TEST_CASE(GeneratorDefinition_snapshot_is_metadata_free_effective_data) {
     CHECK(snapshot.find("source_revision") == std::string::npos);
     CHECK(snapshot.find("label:") == std::string::npos);
     CHECK(snapshot.find("description:") == std::string::npos);
-    CHECK(snapshot.find("author_note") == std::string::npos);
     CHECK(snapshot.find("density_output: \"terrain_density\"") !=
           std::string::npos);
     CHECK(snapshot.find("water_fill: true") != std::string::npos);
@@ -582,8 +586,7 @@ TEST_CASE(GeneratorDefinition_snapshot_is_metadata_free_effective_data) {
 }
 
 TEST_CASE(GeneratorDefinition_snapshot_parser_requires_canonical_content) {
-    const GeneratorDefinition definition =
-        parseGeneratorDefinition(validDefinitionYaml(), "snapshot-source.yaml");
+    const GeneratorDefinition definition = definitionWithoutUnusedNodes();
     const std::string canonical =
         prepareSnapshot(definition).canonicalSnapshot;
 
@@ -614,8 +617,7 @@ TEST_CASE(GeneratorDefinition_snapshot_parser_requires_canonical_content) {
 }
 
 TEST_CASE(GeneratorDefinition_snapshot_normalizes_splines_and_disabled_features) {
-    GeneratorDefinition definition =
-        parseGeneratorDefinition(validDefinitionYaml(), "normalization.yaml");
+    GeneratorDefinition definition = definitionWithoutUnusedNodes();
     Rigel::Voxel::GeneratorDefinitionData::DensityNode spline;
     spline.id = "shaped";
     spline.type = "spline";
@@ -626,6 +628,9 @@ TEST_CASE(GeneratorDefinition_snapshot_normalizes_splines_and_disabled_features)
     definition.data.caves = {};
     definition.data.densityGraph.outputs.erase(
         definition.data.densityGraph.outputs.begin() + 1);
+    std::erase_if(
+        definition.data.densityGraph.nodes,
+        [](const auto& node) { return node.id == "cave"; });
     definition.data.structures = {};
 
     const std::string snapshot =
@@ -642,82 +647,35 @@ TEST_CASE(GeneratorDefinition_snapshot_normalizes_splines_and_disabled_features)
         "normalized-snapshot.yaml"));
 }
 
-TEST_CASE(GeneratorDefinition_declared_set_is_complete_validated_and_ordered) {
-    GeneratorDefinition later = definitionWithoutUnusedNodes();
-    later.id = "test:zeta";
-    later.sourceRevision = 2;
-    GeneratorDefinition earlier = later;
-    earlier.id = "test:alpha";
-    earlier.sourceRevision = 9;
-    Rigel::Voxel::BlockRegistry registry;
-    registerDefinitionMaterials(registry);
-
-    const auto definitions = validateAndOrderGeneratorDefinitions(
-        {later, earlier}, registry, GeneratorDefinitionOrigin::Shipped);
-    CHECK_EQ(definitions.size(), size_t{2});
-    CHECK_EQ(definitions[0].id, std::string("test:alpha"));
-    CHECK_EQ(definitions[1].id, std::string("test:zeta"));
-
-    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {}, registry, GeneratorDefinitionOrigin::Shipped));
-    later.label = "Same identity, different declaration";
-    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {earlier, later, later}, registry,
-        GeneratorDefinitionOrigin::Shipped));
-    GeneratorDefinition conflictingRevision = earlier;
-    conflictingRevision.sourceRevision += 1;
-    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {earlier, conflictingRevision}, registry,
-        GeneratorDefinitionOrigin::Shipped));
-
-    GeneratorDefinition duplicateFeature = earlier;
-    duplicateFeature.data.structures.features.push_back(
-        duplicateFeature.data.structures.features.front());
-    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {duplicateFeature}, registry, GeneratorDefinitionOrigin::Shipped));
-}
-
-TEST_CASE(GeneratorDefinition_declared_set_requires_every_material) {
+TEST_CASE(GeneratorDefinition_preparation_requires_every_material) {
     const GeneratorDefinition definition = definitionWithoutUnusedNodes();
     Rigel::Voxel::BlockRegistry incomplete;
     registerDefinitionMaterials(incomplete, false);
-    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {definition}, incomplete, GeneratorDefinitionOrigin::Shipped));
+    CHECK_THROWS(prepareGeneratorDefinitionSnapshot(definition, incomplete));
 
     Rigel::Voxel::BlockRegistry complete;
     registerDefinitionMaterials(complete);
-    CHECK_NO_THROW(validateAndOrderGeneratorDefinitions(
-        {definition}, complete, GeneratorDefinitionOrigin::Shipped));
+    CHECK_NO_THROW(prepareGeneratorDefinitionSnapshot(definition, complete));
 
     GeneratorDefinition missingSurface = definition;
     missingSurface.data.biomes.entries.front().surface.front().material =
         "test:missing";
-    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {missingSurface}, complete, GeneratorDefinitionOrigin::Shipped));
+    CHECK_THROWS(prepareGeneratorDefinitionSnapshot(missingSurface, complete));
 
     GeneratorDefinition missingFeature = definition;
     missingFeature.data.structures.features.front().material = "test:missing";
-    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {missingFeature}, complete, GeneratorDefinitionOrigin::Shipped));
+    CHECK_THROWS(prepareGeneratorDefinitionSnapshot(missingFeature, complete));
 }
 
-TEST_CASE(GeneratorDefinition_declared_set_warns_but_accepts_unreachable_nodes) {
+TEST_CASE(GeneratorDefinition_preparation_rejects_unreachable_nodes) {
     const GeneratorDefinition definition =
         parseGeneratorDefinition(validDefinitionYaml(), "dead-node.yaml");
     Rigel::Voxel::BlockRegistry registry;
     registerDefinitionMaterials(registry);
 
-    Rigel::Test::LogCapture log("generator-definition-warning");
-    CHECK_NO_THROW(validateAndOrderGeneratorDefinitions(
-        {definition}, registry, GeneratorDefinitionOrigin::ThirdParty));
-    const std::string warning = log.output();
-    CHECK(warning.find("test:continental@7") != std::string::npos);
-    CHECK(warning.find("author_note") != std::string::npos);
-    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {definition}, registry, GeneratorDefinitionOrigin::Shipped));
-    CHECK_NO_THROW(validateAndOrderGeneratorDefinitions(
-        {definitionWithoutUnusedNodes()}, registry,
-        GeneratorDefinitionOrigin::Shipped));
+    CHECK_THROWS(prepareGeneratorDefinitionSnapshot(definition, registry));
+    CHECK_NO_THROW(prepareGeneratorDefinitionSnapshot(
+        definitionWithoutUnusedNodes(), registry));
 }
 
 TEST_CASE(GeneratorDefinition_shipped_default_bootstraps_strict_runtime) {
@@ -734,8 +692,7 @@ TEST_CASE(GeneratorDefinition_shipped_default_bootstraps_strict_runtime) {
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
             assets,
             registry,
-            "rigel:default",
-            GeneratorDefinitionOrigin::Shipped);
+            "rigel:default");
     CHECK_EQ(prepared.sourceId, std::string("rigel:default"));
     CHECK_EQ(prepared.sourceRevision, uint32_t{1});
     CHECK_EQ(
@@ -759,8 +716,7 @@ TEST_CASE(GeneratorDefinition_shipped_default_bootstraps_strict_runtime) {
             Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
                 assets,
                 registry,
-                "rigel:missing",
-                GeneratorDefinitionOrigin::Shipped));
+                "rigel:missing"));
     } catch (const Rigel::Asset::AssetLoadError&) {
         assetBoundary = true;
     }
@@ -779,8 +735,7 @@ TEST_CASE(GeneratorDefinition_shipped_default_generation_is_repeatable_and_golde
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
             assets,
             registry,
-            "rigel:default",
-            GeneratorDefinitionOrigin::Shipped);
+            "rigel:default");
     Rigel::Voxel::WorldGenerator first(registry, prepared.data, 1337u);
     Rigel::Voxel::WorldGenerator second(registry, prepared.data, 1337u);
     constexpr std::array<Rigel::Voxel::ChunkCoord, 4> Coordinates = {{

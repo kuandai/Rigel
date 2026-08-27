@@ -37,7 +37,14 @@ public:
 
     PreferenceApplyResult applyDisplay(
         GlfwRuntime& runtime,
-        const Preferences::DisplayPreferences& candidate);
+        const Preferences::DisplayPreferences& candidate,
+        WindowedSizeIntent windowedSizeIntent);
+    PreferenceApplyResult applyDisplay(
+        GlfwRuntime& runtime,
+        const Preferences::DisplayPreferences& candidate) {
+        return applyDisplay(
+            runtime, candidate, WindowedSizeIntent::Changed);
+    }
     PreferenceApplyResult applyVerticalFov(
         Render::FrameRenderer& renderer,
         double candidateDegrees);

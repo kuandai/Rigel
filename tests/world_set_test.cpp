@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "LogCapture.h"
+#include "GeneratorDefinitionTestRegistry.h"
 
 #include "Rigel/Asset/AssetLoader.h"
 #include "Rigel/Voxel/BlockType.h"
@@ -183,7 +184,7 @@ TEST_CASE(WorldSet_ClearDestroysAllWorldsAndCanRepeatDuringTeardown) {
     WorldGenConfig generation;
     generation.solidBlock = solid.identifier;
     generation.surfaceBlock = solid.identifier;
-    auto generator = std::make_shared<WorldGenerator>(
+    auto generator = Rigel::Test::makeWorldGeneratorFixture(
         worldSet.resources().registry(), generation);
     world.setGenerator(generator);
 
@@ -202,7 +203,7 @@ TEST_CASE(WorldSet_ClearDestroysAllWorldsAndCanRepeatDuringTeardown) {
     const ChunkCoord coord{0, 0, 0};
     Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solidId}, worldSet.resources().registry());
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     view.updateStreaming(coord.toWorldCenter());
     view.updateMeshes();

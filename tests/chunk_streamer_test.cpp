@@ -700,7 +700,7 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     config.terrain.baseHeight = 0.0f;
     config.terrain.heightVariation = 0.0f;
     config.terrain.surfaceDepth = 1;
-    return std::make_shared<WorldGenerator>(registry, std::move(config));
+    return Rigel::Test::makeWorldGeneratorFixture(registry, std::move(config));
 }
 
 std::shared_ptr<WorldGenerator> makeBoundedSolidGenerator(
@@ -732,7 +732,7 @@ std::shared_ptr<WorldGenerator> makeBoundedSolidGenerator(
     config.stageEnabled["caves"] = false;
     config.stageEnabled["surface_rules"] = false;
     config.stageEnabled["structures"] = false;
-    return std::make_shared<WorldGenerator>(registry, std::move(config));
+    return Rigel::Test::makeWorldGeneratorFixture(registry, std::move(config));
 }
 
 BlockID registerTestBlock(BlockRegistry& registry, const std::string& identifier) {
@@ -857,8 +857,11 @@ struct PersistedChunkContext {
         BlockRegistry& registry) const {
         const auto generation =
             Rigel::Persistence::loadSavedWorldGeneration(context);
-        return std::make_shared<WorldGenerator>(
-            registry, generation.definition);
+        return Rigel::Test::makeWorldGeneratorFixture(
+            registry,
+            generation.definition,
+            generation.settings.seed,
+            generation.settings.generator.semanticsVersion);
     }
 
     void save(ChunkCoord coord,
@@ -1446,17 +1449,17 @@ TEST_CASE(ChunkStreamer_VersionReplacementDefersUntilCoordinateReturns) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
     BlockID edited =
         registerTestBlock(registry, "rigel:replacement_persistence_edit");
 
     const ChunkCoord coord{0, 4, 0};
     Chunk& original = manager.getOrCreateChunk(coord);
     original.setBlock(0, 0, 0, BlockState{edited}, registry);
-    original.setWorldGenVersion(originalGenerator->config().world.version);
+    original.setWorldGenVersion(originalGenerator->semanticsVersion());
     original.setLoadedFromDisk(true);
 
     ChunkStreamer streamer(
@@ -1531,7 +1534,7 @@ TEST_CASE(ChunkStreamer_VersionReplacementDefersUntilCoordinateReturns) {
     streamer.processCompletions();
     CHECK(manager.hasChunk(coord));
     CHECK_EQ(manager.getChunk(coord)->worldGenVersion(),
-             replacementGenerator->config().world.version);
+             replacementGenerator->semanticsVersion());
     CHECK_EQ(streamer.diagnostics().generation.inFlight, static_cast<size_t>(0));
     CHECK_EQ(streamer.diagnostics().eviction.pending, static_cast<size_t>(0));
 }
@@ -1541,10 +1544,10 @@ TEST_CASE(ChunkStreamer_DepartedVersionReplacementPersistsBeforeUnload) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
     const BlockID edited = registerTestBlock(
         registry, "rigel:departed_replacement_durable_edit");
     const ChunkCoord coord{0, 4, 0};
@@ -1553,7 +1556,7 @@ TEST_CASE(ChunkStreamer_DepartedVersionReplacementPersistsBeforeUnload) {
 
     Chunk& original = manager.getOrCreateChunk(coord);
     original.setBlock(0, 0, 0, BlockState{edited}, registry);
-    original.setWorldGenVersion(originalGenerator->config().world.version);
+    original.setWorldGenVersion(originalGenerator->semanticsVersion());
     original.setLoadedFromDisk(true);
 
     ChunkStreamer streamer(
@@ -1650,17 +1653,17 @@ TEST_CASE(ChunkStreamer_DepartureRetiresVersionReplacementWait) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
     BlockID edited =
         registerTestBlock(registry, "rigel:replacement_distance_eviction_edit");
 
     const ChunkCoord coord{0, 0, 0};
     Chunk& original = manager.getOrCreateChunk(coord);
     original.setBlock(0, 0, 0, BlockState{edited}, registry);
-    original.setWorldGenVersion(originalGenerator->config().world.version);
+    original.setWorldGenVersion(originalGenerator->semanticsVersion());
     original.setLoadedFromDisk(true);
 
     ChunkStreamer streamer(
@@ -1783,7 +1786,7 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDeferredEviction) {
     CHECK_EQ(persistenceAttempts, static_cast<size_t>(1));
 
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, generator->config());
+        Rigel::Test::makeWorldGeneratorFixture(registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
     streamer.setGenerator(replacementGenerator);
 
     for (int update = 0; update < 59; ++update) {
@@ -1827,7 +1830,7 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Deterministic) {
         }
         Chunk& target = manager.getOrCreateChunk(request);
         Rigel::Persistence::applyChunkData(payload, target, registry);
-        target.setWorldGenVersion(generator->config().world.version);
+        target.setWorldGenVersion(generator->semanticsVersion());
         target.clearPersistDirty();
         return ChunkLoadRequestResult::Queued;
     });
@@ -1873,7 +1876,7 @@ TEST_CASE(ChunkStreamer_LoadsChunkPayload_Random) {
         }
         Chunk& target = manager.getOrCreateChunk(request);
         Rigel::Persistence::applyChunkData(payload, target, registry);
-        target.setWorldGenVersion(generator->config().world.version);
+        target.setWorldGenVersion(generator->semanticsVersion());
         target.clearPersistDirty();
         return ChunkLoadRequestResult::Queued;
     });
@@ -1948,7 +1951,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Deterministic) {
                 chunk.key.z == request.z) {
                 Chunk& target = manager.getOrCreateChunk(request);
                 Rigel::Persistence::applyChunkData(chunk.data, target, registry);
-                target.setWorldGenVersion(generator->config().world.version);
+                target.setWorldGenVersion(generator->semanticsVersion());
                 target.clearPersistDirty();
                 return ChunkLoadRequestResult::Queued;
             }
@@ -2026,7 +2029,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_Random) {
                 chunk.key.z == request.z) {
                 Chunk& target = manager.getOrCreateChunk(request);
                 Rigel::Persistence::applyChunkData(chunk.data, target, registry);
-                target.setWorldGenVersion(generator->config().world.version);
+                target.setWorldGenVersion(generator->semanticsVersion());
                 target.clearPersistDirty();
                 return ChunkLoadRequestResult::Queued;
             }
@@ -2127,7 +2130,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Deterministic) {
         }
         Chunk& target = manager.getOrCreateChunk(request);
         Rigel::Persistence::applyChunkData(payload, target, registry);
-        target.setWorldGenVersion(generator->config().world.version);
+        target.setWorldGenVersion(generator->semanticsVersion());
         target.clearPersistDirty();
         return ChunkLoadRequestResult::Queued;
     });
@@ -2225,7 +2228,7 @@ TEST_CASE(ChunkStreamer_LoadsEncodedChunkPayload_CR_Random) {
         }
         Chunk& target = manager.getOrCreateChunk(request);
         Rigel::Persistence::applyChunkData(payload, target, registry);
-        target.setWorldGenVersion(generator->config().world.version);
+        target.setWorldGenVersion(generator->semanticsVersion());
         target.clearPersistDirty();
         return ChunkLoadRequestResult::Queued;
     });
@@ -2563,7 +2566,7 @@ TEST_CASE(ChunkStreamer_BoundsReplacementCancelsExteriorLoadBeforeUpdate) {
 
     Chunk& local = manager.getOrCreateChunk(exterior);
     local.setBlock(2, 2, 2, BlockState{solid}, registry);
-    local.setWorldGenVersion(generator->config().world.version);
+    local.setWorldGenVersion(generator->semanticsVersion());
     local.setLoadedFromDisk(false);
     Chunk* const localIdentity = &local;
     CHECK(local.isDirty());
@@ -2597,7 +2600,7 @@ TEST_CASE(ChunkStreamer_BoundsReplacementPersistsBeforeExteriorEviction) {
           ChunkCoord{1, 0, 0}, ChunkCoord{0, 0, -1},
           ChunkCoord{0, 0, 1}, exterior}) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
         chunk.clearPersistDirty();
@@ -2941,7 +2944,7 @@ TEST_CASE(ChunkStreamer_SameVersionBoundsMaskPersistedPartialRowsInMeshes) {
         Chunk& chunk = manager.getOrCreateChunk(request.coord);
         chunk.setBlock(0, 30, 0, BlockState{solid}, registry);
         chunk.setBlock(0, 31, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
         chunk.clearPersistDirty();
@@ -3247,7 +3250,7 @@ TEST_CASE(ChunkStreamer_PublicDirtyNotificationReopensBoundsReconciliation) {
     if (!lateResident) {
         return;
     }
-    lateResident->setWorldGenVersion(generator->config().world.version);
+    lateResident->setWorldGenVersion(generator->semanticsVersion());
     ChunkMesh installed;
     installed.vertices.resize(3);
     installed.indices = {0, 1, 2};
@@ -3353,7 +3356,7 @@ TEST_CASE(ChunkStreamer_ConfigPlannerDoesNotForceBoundsRemeshAndRevisitsLateResi
             const ChunkCoord coord{x, 0, z};
             Chunk& chunk = manager.getOrCreateChunk(coord);
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-            chunk.setWorldGenVersion(generator->config().world.version);
+            chunk.setWorldGenVersion(generator->semanticsVersion());
             chunk.setLoadedFromDisk(true);
             chunk.clearDirty();
             chunk.clearPersistDirty();
@@ -3399,7 +3402,7 @@ TEST_CASE(ChunkStreamer_ConfigPlannerDoesNotForceBoundsRemeshAndRevisitsLateResi
     const ChunkCoord lateExterior{-7, 1, -6};
     Chunk& late = manager.getOrCreateChunk(lateExterior);
     late.setBlock(0, 0, 0, BlockState{solid}, registry);
-    late.setWorldGenVersion(generator->config().world.version);
+    late.setWorldGenVersion(generator->semanticsVersion());
     late.setLoadedFromDisk(true);
     installGeometry(lateExterior);
     CHECK(late.isPersistDirty());
@@ -3550,7 +3553,7 @@ TEST_CASE(ChunkStreamer_BoundsReplacementReconcilesResidentsInFixedBatches) {
     });
     streamer.setChunkLoader([&](ChunkLoadRequest request) {
         Chunk& chunk = manager.getOrCreateChunk(request.coord);
-        chunk.setWorldGenVersion(wideGenerator->config().world.version);
+        chunk.setWorldGenVersion(wideGenerator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
         chunk.markPersistDirty();
@@ -3691,7 +3694,7 @@ TEST_CASE(ChunkStreamer_SupersededBoundsReconciliationEnforcesFinalBounds) {
     streamer.setChunkLoader([&](ChunkLoadRequest request) {
         Chunk& chunk = manager.getOrCreateChunk(request.coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(wideGenerator->config().world.version);
+        chunk.setWorldGenVersion(wideGenerator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
         installGeometry(request.coord);
@@ -3711,7 +3714,7 @@ TEST_CASE(ChunkStreamer_SupersededBoundsReconciliationEnforcesFinalBounds) {
     const ChunkCoord dependentBoundary{70, 0, 0};
     Chunk& boundary = manager.getOrCreateChunk(dependentBoundary);
     boundary.setBlock(0, Chunk::SIZE - 1, 0, BlockState{solid}, registry);
-    boundary.setWorldGenVersion(wideGenerator->config().world.version);
+    boundary.setWorldGenVersion(wideGenerator->semanticsVersion());
     boundary.setLoadedFromDisk(true);
     boundary.clearPersistDirty();
     boundary.clearDirty();
@@ -3936,7 +3939,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesGenerationLifecycleDelay) {
             continue;
         }
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
     }
@@ -4092,7 +4095,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesBudgetedSourceResolution) {
         persistence.service,
         persistence.context,
         world,
-        persistenceGenerator->config().world.version,
+        persistenceGenerator->semanticsVersion(),
         0,
         0,
         1,
@@ -4104,7 +4107,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesBudgetedSourceResolution) {
         registerTestBlock(registry, "rigel:source_resolution_center");
     Chunk& centerChunk = manager.getOrCreateChunk(center);
     centerChunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    centerChunk.setWorldGenVersion(generator->config().world.version);
+    centerChunk.setWorldGenVersion(generator->semanticsVersion());
     centerChunk.setLoadedFromDisk(true);
     centerChunk.clearPersistDirty();
     centerChunk.clearDirty();
@@ -4118,7 +4121,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesBudgetedSourceResolution) {
         const ChunkCoord neighbor = center.offset(dx, dy, dz);
         faceNeighbors[static_cast<size_t>(index)] = neighbor;
         Chunk& chunk = manager.getOrCreateChunk(neighbor);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -4532,8 +4535,8 @@ TEST_CASE(ChunkStreamer_LateGenerationCannotMutateTerminalVisibilityLifecycle) {
             case TerminalAction::GeneratorReplacement: {
                 expectedOutcome = ChunkVisibilityOutcome::GeneratorReplaced;
                 auto replacementGenerator =
-                    std::make_shared<WorldGenerator>(
-                        registry, generator->config());
+                    Rigel::Test::makeWorldGeneratorFixture(
+                        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
                 streamer.setGenerator(std::move(replacementGenerator));
                 break;
             }
@@ -4701,8 +4704,8 @@ TEST_CASE(ChunkStreamer_GenerationFailureRetriesAfterGeneratorReplacement) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(
-        registry, originalGenerator->config());
+    auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
     std::atomic<size_t> generationAttempts{0};
 
     ChunkStreamer streamer(
@@ -4903,13 +4906,16 @@ TEST_CASE(ChunkStreamer_ResetRetainsPreviousGenerationCapacity) {
     BlockID replacementBlock =
         registerTestBlock(registry, "rigel:replacement_generation_solid");
 
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     replacementConfig.solidBlock = "rigel:replacement_generation_solid";
     replacementConfig.surfaceBlock = "rigel:replacement_generation_solid";
+    replacementConfig.biomes.entries.front().surface.front().block =
+        replacementConfig.surfaceBlock;
     replacementConfig.terrain.baseHeight = 64.0f;
+    replacementConfig.densityGraph.nodes.front().offset = 64.0f;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
 
     auto originalGate = std::make_shared<WorkerGate>();
     auto replacementGate = std::make_shared<WorkerGate>();
@@ -5153,7 +5159,7 @@ TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGene
     originalConfig.terrain.baseHeight = 64.0f;
     originalConfig.terrain.heightVariation = 0.0f;
     auto originalGenerator =
-        std::make_shared<WorldGenerator>(registry, originalConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, originalConfig);
 
     BlockID replacementBlock =
         registerTexturedTestBlock(
@@ -5164,7 +5170,7 @@ TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGene
     replacementConfig.surfaceBlock = "rigel:replacement_generator_solid";
     replacementConfig.terrain.baseHeight = 0.0f;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
     CHECK(originalGenerator != replacementGenerator);
     CHECK_EQ(originalConfig.world.version, replacementConfig.world.version);
 
@@ -5385,10 +5391,10 @@ TEST_CASE(ChunkStreamer_RecreatedGenerationPoolRejectsRetiredJobIdentity) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
     auto replacementGate = std::make_shared<WorkerGate>();
 
     ChunkStreamer streamer(
@@ -5510,10 +5516,10 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementCancelsQueuedGeneration) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
     auto gate = std::make_shared<WorkerGate>();
     std::atomic<size_t> generationsEntered{0};
 
@@ -5665,7 +5671,7 @@ TEST_CASE(ChunkStreamer_MissingMeshCapacityWaitsForCompletion) {
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
     }
 
@@ -5742,7 +5748,7 @@ TEST_CASE(ChunkStreamer_NearMissingMeshWinsAfterDependencyReadiness) {
                     continue;
                 }
                 Chunk& chunk = manager.getOrCreateChunk(coord);
-                chunk.setWorldGenVersion(generator->config().world.version);
+                chunk.setWorldGenVersion(generator->semanticsVersion());
                 chunk.setLoadedFromDisk(true);
                 chunk.clearDirty();
             }
@@ -5803,7 +5809,7 @@ TEST_CASE(ChunkStreamer_NearMissingMeshWinsAfterDependencyReadiness) {
     CHECK_NE(initialDispatch.front(), nearCoord);
 
     Chunk& dependency = manager.getOrCreateChunk(missingDependency);
-    dependency.setWorldGenVersion(generator->config().world.version);
+    dependency.setWorldGenVersion(generator->semanticsVersion());
     dependency.setLoadedFromDisk(true);
     dependency.clearDirty();
     streamer.update(nearCoord.toWorldCenter());
@@ -5853,7 +5859,7 @@ TEST_CASE(ChunkStreamer_SingleMeshSlotAlternatesMissingAndDirtyWork) {
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
         if (coord != firstMissing && coord != secondMissing) {
@@ -5945,7 +5951,7 @@ TEST_CASE(ChunkStreamer_DirtyMeshCapacityPreservesNearestFirstPriority) {
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
         meshStore.set(coord, {});
@@ -6038,7 +6044,7 @@ TEST_CASE(ChunkStreamer_CameraMovementReprioritizesPendingMeshes) {
                     continue;
                 }
                 Chunk& chunk = manager.getOrCreateChunk(coord);
-                chunk.setWorldGenVersion(generator->config().world.version);
+                chunk.setWorldGenVersion(generator->semanticsVersion());
                 chunk.setLoadedFromDisk(true);
                 chunk.clearPersistDirty();
                 chunk.clearDirty();
@@ -6236,7 +6242,7 @@ TEST_CASE(ChunkStreamer_MeshSubmissionDoesNotExceedWorkerCount) {
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
     }
@@ -6296,7 +6302,7 @@ TEST_CASE(ChunkStreamer_InlineMeshSubmissionUsesOnePhysicalSlot) {
                         }
                         Chunk& chunk = manager.getOrCreateChunk({x, y, z});
                         chunk.setWorldGenVersion(
-                            generator->config().world.version);
+                            generator->semanticsVersion());
                         chunk.setLoadedFromDisk(true);
                         chunk.clearPersistDirty();
                         chunk.clearDirty();
@@ -6417,7 +6423,7 @@ TEST_CASE(ChunkStreamer_PendingMeshesSettleAfterInlineWorkerTransition) {
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
     }
@@ -6479,7 +6485,7 @@ TEST_CASE(ChunkStreamer_DependencyLossMovesReadyPendingOwnership) {
     };
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         if (coord == blockerCoord || coord == pendingCoord) {
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
@@ -6560,7 +6566,7 @@ TEST_CASE(ChunkStreamer_DebugSnapshotDistinguishesMeshOwnership) {
     };
     for (const ChunkCoord coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -6722,7 +6728,7 @@ TEST_CASE(ChunkStreamer_DebugSnapshotKeepsSettledReconciliationComplete) {
         auto generator = makeGenerator(registry);
         const ChunkCoord coord{0, 0, 0};
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         if (nonempty) {
             const BlockID solid = registerTestBlock(
@@ -6778,7 +6784,7 @@ TEST_CASE(ChunkStreamer_VoxelEmptyRemovesInstalledMeshWithoutDependencies) {
 
     Chunk& blocker = manager.getOrCreateChunk(blockerCoord);
     blocker.setBlock(0, 0, 0, BlockState{solid}, registry);
-    blocker.setWorldGenVersion(generator->config().world.version);
+    blocker.setWorldGenVersion(generator->semanticsVersion());
     blocker.setLoadedFromDisk(true);
     blocker.clearDirty();
     for (int i = 0; i < DirectionCount; ++i) {
@@ -6788,13 +6794,13 @@ TEST_CASE(ChunkStreamer_VoxelEmptyRemovesInstalledMeshWithoutDependencies) {
         directionOffset(static_cast<Direction>(i), dx, dy, dz);
         Chunk& neighbor = manager.getOrCreateChunk(
             blockerCoord.offset(dx, dy, dz));
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
         neighbor.clearDirty();
     }
 
     Chunk& emptied = manager.getOrCreateChunk(emptyCoord);
-    emptied.setWorldGenVersion(generator->config().world.version);
+    emptied.setWorldGenVersion(generator->semanticsVersion());
     emptied.setLoadedFromDisk(true);
     emptied.setBlock(0, 0, 0, BlockState{solid}, registry);
     emptied.clearDirty();
@@ -6851,7 +6857,7 @@ TEST_CASE(ChunkStreamer_PendingMeshHeapStorageFollowsCanonicalOwnership) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     chunk.clearDirty();
     chunk.invalidateMesh();
@@ -6919,7 +6925,7 @@ TEST_CASE(ChunkStreamer_MeshInspectionMetricsCountEveryCandidateVisit) {
     const ChunkCoord dirtyCoord{10, 0, 0};
 
     Chunk& missing = manager.getOrCreateChunk(missingCoord);
-    missing.setWorldGenVersion(generator->config().world.version);
+    missing.setWorldGenVersion(generator->semanticsVersion());
     missing.setLoadedFromDisk(true);
     missing.clearDirty();
     for (int i = 0; i < DirectionCount; ++i) {
@@ -6929,7 +6935,7 @@ TEST_CASE(ChunkStreamer_MeshInspectionMetricsCountEveryCandidateVisit) {
         directionOffset(static_cast<Direction>(i), dx, dy, dz);
         Chunk& neighbor = manager.getOrCreateChunk(
             missingCoord.offset(dx, dy, dz));
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
         neighbor.clearDirty();
     }
@@ -6950,7 +6956,7 @@ TEST_CASE(ChunkStreamer_MeshInspectionMetricsCountEveryCandidateVisit) {
 
     Chunk& dirty = manager.getOrCreateChunk(dirtyCoord);
     dirty.setBlock(0, 0, 0, BlockState{solid}, registry);
-    dirty.setWorldGenVersion(generator->config().world.version);
+    dirty.setWorldGenVersion(generator->semanticsVersion());
     dirty.setLoadedFromDisk(true);
     dirty.clearDirty();
     meshStore.set(dirtyCoord, {});
@@ -6991,14 +6997,14 @@ TEST_CASE(ChunkStreamer_UpdateMetricsIncludePendingMeshCompactionVisits) {
     }};
 
     Chunk& centerChunk = manager.getOrCreateChunk(center);
-    centerChunk.setWorldGenVersion(generator->config().world.version);
+    centerChunk.setWorldGenVersion(generator->semanticsVersion());
     centerChunk.setLoadedFromDisk(true);
     centerChunk.clearDirty();
 
     for (const ChunkCoord& coord : pendingCoords) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
     }
 
@@ -7066,7 +7072,7 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRetiresPendingMeshImmediately) {
                     continue;
                 }
                 Chunk& chunk = manager.getOrCreateChunk({x, y, z});
-                chunk.setWorldGenVersion(generator->config().world.version);
+                chunk.setWorldGenVersion(generator->semanticsVersion());
                 chunk.setLoadedFromDisk(true);
                 chunk.clearDirty();
             }
@@ -7152,7 +7158,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredDirtyMeshRebuildsAfterDemandReturns) {
                 manager,
                 remeshCoord,
                 std::nullopt,
-                generator->config().world.version);
+                generator->semanticsVersion());
             for (const ChunkCoord& coord : {
                      cameraCoord,
                      cameraCoord.offset(-1, 0, 0),
@@ -7162,14 +7168,14 @@ TEST_CASE(ChunkStreamer_ConfigRetiredDirtyMeshRebuildsAfterDemandReturns) {
                      cameraCoord.offset(0, 0, -1)}) {
                 Chunk& resident = manager.getOrCreateChunk(coord);
                 resident.setWorldGenVersion(
-                    generator->config().world.version);
+                    generator->semanticsVersion());
                 resident.setLoadedFromDisk(true);
                 resident.clearPersistDirty();
                 resident.clearDirty();
             }
             Chunk& chunk = manager.getOrCreateChunk(remeshCoord);
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-            chunk.setWorldGenVersion(generator->config().world.version);
+            chunk.setWorldGenVersion(generator->semanticsVersion());
             chunk.setLoadedFromDisk(true);
             chunk.clearPersistDirty();
             chunk.clearDirty();
@@ -7311,7 +7317,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredDebugSnapshotsTransferOnce) {
                     continue;
                 }
                 Chunk& chunk = manager.getOrCreateChunk({x, y, z});
-                chunk.setWorldGenVersion(generator->config().world.version);
+                chunk.setWorldGenVersion(generator->semanticsVersion());
                 chunk.setLoadedFromDisk(true);
                 chunk.clearPersistDirty();
                 chunk.clearDirty();
@@ -7322,12 +7328,12 @@ TEST_CASE(ChunkStreamer_ConfigRetiredDebugSnapshotsTransferOnce) {
         manager,
         missingMesh,
         std::nullopt,
-        generator->config().world.version);
+        generator->semanticsVersion());
     addLoadedNeighborShell(
         manager,
         dirtyMesh,
         std::nullopt,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     auto installDirtyMesh = [&](ChunkCoord coord) {
         Chunk& chunk = *manager.getChunk(coord);
@@ -7492,7 +7498,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredDebugSnapshotsTransferOnce) {
     snapshot(SnapshotPhase::Canonical);
 
     Chunk& loadedEmpty = manager.getOrCreateChunk(loadGen);
-    loadedEmpty.setWorldGenVersion(generator->config().world.version);
+    loadedEmpty.setWorldGenVersion(generator->semanticsVersion());
     loadedEmpty.setLoadedFromDisk(true);
     loadedEmpty.clearPersistDirty();
     loadedEmpty.clearDirty();
@@ -7538,7 +7544,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredRetentionMeshHandsOffOnDeferredEviction) {
         const ChunkCoord remeshCoord{3, 0, 0};
 
         Chunk& camera = manager.getOrCreateChunk(cameraCoord);
-        camera.setWorldGenVersion(generator->config().world.version);
+        camera.setWorldGenVersion(generator->semanticsVersion());
         camera.setLoadedFromDisk(true);
         camera.clearPersistDirty();
         camera.clearDirty();
@@ -7546,7 +7552,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredRetentionMeshHandsOffOnDeferredEviction) {
             manager,
             remeshCoord,
             std::nullopt,
-            generator->config().world.version);
+            generator->semanticsVersion());
         manager.forEachChunk([&](ChunkCoord coord, Chunk& chunk) {
             if (coord != cameraCoord) {
                 chunk.markPersistDirty();
@@ -7555,7 +7561,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredRetentionMeshHandsOffOnDeferredEviction) {
 
         Chunk& chunk = manager.getOrCreateChunk(remeshCoord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(false);
         chunk.clearDirty();
         ChunkMesh installedGeometry;
@@ -7711,8 +7717,8 @@ TEST_CASE(ChunkStreamer_ConfigRetiredMeshTransfersToCanonicalWakeOwner) {
         BlockRegistry registry;
         WorldMeshStore meshStore;
         auto generator = makeGenerator(registry);
-        auto replacementGenerator = std::make_shared<WorldGenerator>(
-            registry, generator->config());
+        auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+            registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
         const BlockID solid = registerTestBlock(
             registry,
             wake == WakeKind::GeneratorReplacement
@@ -7732,7 +7738,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredMeshTransfersToCanonicalWakeOwner) {
         };
         for (const ChunkCoord& coord : desired) {
             Chunk& resident = manager.getOrCreateChunk(coord);
-            resident.setWorldGenVersion(generator->config().world.version);
+            resident.setWorldGenVersion(generator->semanticsVersion());
             resident.setLoadedFromDisk(true);
             resident.clearPersistDirty();
             resident.clearDirty();
@@ -7874,7 +7880,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredDirtyWakeTransfersToDependencyOwner) {
         manager,
         remeshCoord,
         missingDependency,
-        generator->config().world.version);
+        generator->semanticsVersion());
     for (const ChunkCoord& coord : {
              remeshCoord,
              ChunkCoord{-1, 0, 0},
@@ -7883,7 +7889,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredDirtyWakeTransfersToDependencyOwner) {
              ChunkCoord{0, 0, 1},
              ChunkCoord{0, 0, -1}}) {
         Chunk& resident = manager.getOrCreateChunk(coord);
-        resident.setWorldGenVersion(generator->config().world.version);
+        resident.setWorldGenVersion(generator->semanticsVersion());
         resident.setLoadedFromDisk(true);
         resident.clearPersistDirty();
         resident.clearDirty();
@@ -7967,7 +7973,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredDirtyWakeTransfersToDependencyOwner) {
 
     dependencyPending = false;
     Chunk& dependency = manager.getOrCreateChunk(missingDependency);
-    dependency.setWorldGenVersion(generator->config().world.version);
+    dependency.setWorldGenVersion(generator->semanticsVersion());
     dependency.setLoadedFromDisk(true);
     dependency.clearPersistDirty();
     dependency.clearDirty();
@@ -8028,7 +8034,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredLoadTransfersToReplacementLoader) {
     };
     for (const ChunkCoord& coord : residentCoords) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -8135,7 +8141,7 @@ TEST_CASE(ChunkStreamer_PendingDiagnosticsClassifyResidentMutationOnce) {
     const ChunkCoord coord{0, 0, 0};
 
     Chunk& initial = manager.getOrCreateChunk(coord);
-    initial.setWorldGenVersion(generator->config().world.version);
+    initial.setWorldGenVersion(generator->semanticsVersion());
     initial.setLoadedFromDisk(true);
     initial.clearPersistDirty();
     initial.clearDirty();
@@ -8166,7 +8172,7 @@ TEST_CASE(ChunkStreamer_PendingDiagnosticsClassifyResidentMutationOnce) {
              static_cast<size_t>(0));
 
     Chunk& replacement = manager.getOrCreateChunk(coord);
-    replacement.setWorldGenVersion(generator->config().world.version + 1);
+    replacement.setWorldGenVersion(generator->semanticsVersion() + 1);
     replacement.setLoadedFromDisk(true);
     replacement.clearPersistDirty();
     replacement.clearDirty();
@@ -8177,7 +8183,7 @@ TEST_CASE(ChunkStreamer_PendingDiagnosticsClassifyResidentMutationOnce) {
     CHECK_EQ(streamer.diagnostics().mesh.pending,
              static_cast<size_t>(0));
 
-    replacement.setWorldGenVersion(generator->config().world.version);
+    replacement.setWorldGenVersion(generator->semanticsVersion());
     Rigel::Voxel::detail::ChunkStreamerTestAccess::refreshDiagnostics(
         streamer);
     CHECK_EQ(streamer.diagnostics().generation.pending,
@@ -8257,7 +8263,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredVoxelEmptyMeshCleansUpAfterRestore) {
         const ChunkCoord cleanupCoord{3, 0, 0};
 
         Chunk& camera = manager.getOrCreateChunk(cameraCoord);
-        camera.setWorldGenVersion(generator->config().world.version);
+        camera.setWorldGenVersion(generator->semanticsVersion());
         camera.setLoadedFromDisk(true);
         camera.clearPersistDirty();
         camera.clearDirty();
@@ -8265,11 +8271,11 @@ TEST_CASE(ChunkStreamer_ConfigRetiredVoxelEmptyMeshCleansUpAfterRestore) {
             manager,
             cleanupCoord,
             std::nullopt,
-            generator->config().world.version);
+            generator->semanticsVersion());
 
         Chunk& chunk = manager.getOrCreateChunk(cleanupCoord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -8451,7 +8457,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredWorkBoundedForInlineMeshExecution) {
                         chunk.setBlock(
                             1, 1, 1, BlockState{solid}, registry);
                         chunk.setWorldGenVersion(
-                            generator->config().world.version);
+                            generator->semanticsVersion());
                         chunk.setLoadedFromDisk(true);
                         chunk.clearPersistDirty();
                         chunk.clearDirty();
@@ -8624,7 +8630,7 @@ TEST_CASE(ChunkStreamer_ConfigRetiredMissingMeshesRecoverInCameraOrder) {
         for (int y = -3; y <= 3; ++y) {
             for (int x = -3; x <= 3; ++x) {
                 Chunk& chunk = manager.getOrCreateChunk({x, y, z});
-                chunk.setWorldGenVersion(generator->config().world.version);
+                chunk.setWorldGenVersion(generator->semanticsVersion());
                 chunk.setLoadedFromDisk(true);
                 chunk.clearPersistDirty();
                 chunk.clearDirty();
@@ -8776,7 +8782,7 @@ TEST_CASE(ChunkStreamer_ReadyPendingMeshSurvivesNeighborWake) {
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -8856,7 +8862,7 @@ TEST_CASE(ChunkStreamer_UnloadShrinkRetiresFringeMeshImmediately) {
     for (const ChunkCoord& coord : {cameraCoord, fringeCoord}) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -9063,7 +9069,7 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
                     continue;
                 }
                 Chunk& chunk = manager.getOrCreateChunk(coord);
-                chunk.setWorldGenVersion(generator->config().world.version);
+                chunk.setWorldGenVersion(generator->semanticsVersion());
                 chunk.setLoadedFromDisk(true);
                 chunk.clearPersistDirty();
                 chunk.clearDirty();
@@ -9078,7 +9084,7 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
                     manager,
                     retiringCoord,
                     std::nullopt,
-                    generator->config().world.version);
+                    generator->semanticsVersion());
             }
 
             auto gate = std::make_shared<WorkerGate>();
@@ -9128,7 +9134,7 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRejectsCompletionsBeforeStreamingUpdate) {
                         loaded.setBlock(
                             0, 0, 0, BlockState{solid}, registry);
                         loaded.setWorldGenVersion(
-                            generator->config().world.version);
+                            generator->semanticsVersion());
                         loaded.setLoadedFromDisk(true);
                         loaded.clearPersistDirty();
                         loaded.clearDirty();
@@ -9428,13 +9434,13 @@ TEST_CASE(ChunkStreamer_UnloadShrinkRejectsDirtyMeshCompletionBeforeUpdate) {
         const ChunkCoord fringeCoord{1, 4, 0};
 
         Chunk& camera = manager.getOrCreateChunk(cameraCoord);
-        camera.setWorldGenVersion(generator->config().world.version);
+        camera.setWorldGenVersion(generator->semanticsVersion());
         camera.setLoadedFromDisk(true);
         camera.clearPersistDirty();
         camera.clearDirty();
         Chunk& fringe = manager.getOrCreateChunk(fringeCoord);
         fringe.setBlock(0, 0, 0, BlockState{solid}, registry);
-        fringe.setWorldGenVersion(generator->config().world.version);
+        fringe.setWorldGenVersion(generator->semanticsVersion());
         fringe.setLoadedFromDisk(true);
         fringe.clearPersistDirty();
         fringe.clearDirty();
@@ -9520,10 +9526,10 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRetiresVersionReplacementWait) {
         BlockRegistry registry;
         WorldMeshStore meshStore;
         auto originalGenerator = makeGenerator(registry);
-        WorldGenConfig replacementConfig = originalGenerator->config();
+        WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
         ++replacementConfig.world.version;
         auto replacementGenerator =
-            std::make_shared<WorldGenerator>(registry, replacementConfig);
+            Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
 
         const ChunkCoord cameraCoord{0, 4, 0};
         const ChunkCoord retiringCoord{1, 4, 0};
@@ -9544,8 +9550,8 @@ TEST_CASE(ChunkStreamer_ConfigShrinkRetiresVersionReplacementWait) {
             Chunk& chunk = manager.getOrCreateChunk(coord);
             chunk.setWorldGenVersion(
                 coord == retiringCoord
-                    ? originalGenerator->config().world.version
-                    : replacementGenerator->config().world.version);
+                    ? originalGenerator->semanticsVersion()
+                    : replacementGenerator->semanticsVersion());
             chunk.setLoadedFromDisk(true);
             chunk.clearPersistDirty();
             chunk.clearDirty();
@@ -9681,7 +9687,7 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPrecedesDistancePriority) {
     };
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         if (coord == nearestCoord || coord == prioritizedCoord) {
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
@@ -9750,7 +9756,7 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPromotesPendingInitialMesh) {
             continue;
         }
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         if (coord == ordinaryCoord || coord == initialMeshCoord) {
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
@@ -9782,7 +9788,7 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPriorityPromotesPendingInitialMesh) {
 
     streamer.prioritizeMesh(pendingCoord);
     Chunk& pending = manager.getOrCreateChunk(pendingCoord);
-    pending.setWorldGenVersion(generator->config().world.version);
+    pending.setWorldGenVersion(generator->semanticsVersion());
     pending.setLoadedFromDisk(true);
     pending.setBlock(0, 0, 0, BlockState{solid}, registry);
     Chunk& ordinary = *manager.getChunk(ordinaryCoord);
@@ -9822,7 +9828,7 @@ TEST_CASE(ChunkStreamer_PendingMeshPromotionKeepsOneDispatchableRequest) {
     };
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         if (coord == blockerCoord || coord == promotedCoord) {
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
@@ -9905,7 +9911,7 @@ TEST_CASE(ChunkStreamer_ExplicitMeshPrioritySurvivesDependencyWait) {
                     continue;
                 }
                 Chunk& chunk = manager.getOrCreateChunk(coord);
-                chunk.setWorldGenVersion(generator->config().world.version);
+                chunk.setWorldGenVersion(generator->semanticsVersion());
                 chunk.setLoadedFromDisk(true);
                 if (coord == ordinaryCoord || coord == prioritizedCoord) {
                     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
@@ -10141,7 +10147,7 @@ TEST_CASE(ChunkStreamer_FailedLoadResolutionDoesNotStartGeneration) {
     streamer.setChunkLoader([&](ChunkLoadRequest request) {
         CHECK_EQ(request.coord, coord);
         Chunk& loaded = manager.getOrCreateChunk(coord);
-        loaded.setWorldGenVersion(generator->config().world.version);
+        loaded.setWorldGenVersion(generator->semanticsVersion());
         loaded.setLoadedFromDisk(true);
         return ChunkLoadRequestResult::Queued;
     });
@@ -10240,7 +10246,7 @@ TEST_CASE(ChunkStreamer_LateFailedLoadCannotReplaceActiveRequest) {
     }
 
     Chunk& loaded = manager.getOrCreateChunk(coord);
-    loaded.setWorldGenVersion(generator->config().world.version);
+    loaded.setWorldGenVersion(generator->semanticsVersion());
     loaded.setLoadedFromDisk(true);
     completions.push_back({replacementRequest.coord,
                            replacementRequest.requestId,
@@ -11707,10 +11713,10 @@ TEST_CASE(ChunkStreamer_DepartedFrontierReleasesWaitingMesh) {
     const ChunkCoord secondCenter{1, 0, 0};
     Chunk& waiting = manager.getOrCreateChunk(firstCenter);
     waiting.setBlock(0, 0, 0, BlockState{solid}, registry);
-    waiting.setWorldGenVersion(generator->config().world.version);
+    waiting.setWorldGenVersion(generator->semanticsVersion());
     waiting.setLoadedFromDisk(true);
     Chunk& sharedNeighbor = manager.getOrCreateChunk(secondCenter);
-    sharedNeighbor.setWorldGenVersion(generator->config().world.version);
+    sharedNeighbor.setWorldGenVersion(generator->semanticsVersion());
     sharedNeighbor.setLoadedFromDisk(true);
 
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
@@ -11751,7 +11757,7 @@ TEST_CASE(ChunkStreamer_WorkMetrics_TrackMeshLifecycleAndInvalidation) {
 
     Chunk& chunk = manager.getOrCreateChunk({0, 0, 0});
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
@@ -11814,7 +11820,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesSchedulerPoolAndWorkerTime) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     auto clock = std::make_shared<IncrementingTraceClock>();
@@ -11941,7 +11947,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIdentifiesRunningGenerationBlocker) {
             continue;
         }
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
     }
@@ -11989,7 +11995,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIdentifiesRunningGenerationBlocker) {
 
     Chunk& chunk = manager.getOrCreateChunk(traced);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     loadReady = true;
     streamer.processCompletions();
@@ -12073,13 +12079,13 @@ TEST_CASE(ChunkStreamer_LateVisibilityOptInObservesExistingGenerationFlight) {
     const ChunkCoord blocker{1, 0, 0};
     Chunk& tracedChunk = manager.getOrCreateChunk(traced);
     tracedChunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    tracedChunk.setWorldGenVersion(generator->config().world.version);
+    tracedChunk.setWorldGenVersion(generator->semanticsVersion());
     tracedChunk.setLoadedFromDisk(true);
     addLoadedNeighborShell(
         manager,
         traced,
         blocker,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{traced, 2});
@@ -12150,8 +12156,8 @@ TEST_CASE(ChunkStreamer_LateVisibilityOptInObservesExistingGenerationFlight) {
         ChunkVisibilityBlockerState::GenerationResultPublished);
     const auto publishedBlockers =
         refreshed.records.front().blockingDesiredCardinalNeighbors;
-    auto replacementGenerator = std::make_shared<WorldGenerator>(
-        registry, generator->config());
+    auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
     streamer.setGenerator(replacementGenerator);
     auto replacedRecords = tracer->snapshot();
     const auto replaced = std::find_if(
@@ -12211,7 +12217,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
 
     Chunk& tracedChunk = manager.getOrCreateChunk(traced);
     tracedChunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    tracedChunk.setWorldGenVersion(generator->config().world.version);
+    tracedChunk.setWorldGenVersion(generator->semanticsVersion());
     tracedChunk.setLoadedFromDisk(true);
     for (int direction = 1; direction < DirectionCount; ++direction) {
         int dx = 0;
@@ -12221,7 +12227,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesLoadBlockerState) {
             static_cast<Direction>(direction), dx, dy, dz);
         Chunk& neighbor = manager.getOrCreateChunk(
             traced.offset(dx, dy, dz));
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
         neighbor.clearDirty();
     }
@@ -12311,7 +12317,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceDoesNotInventOpaqueLoadOwner) {
 
     Chunk& tracedChunk = manager.getOrCreateChunk(traced);
     tracedChunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    tracedChunk.setWorldGenVersion(generator->config().world.version);
+    tracedChunk.setWorldGenVersion(generator->semanticsVersion());
     tracedChunk.setLoadedFromDisk(true);
     for (int direction = 1; direction < DirectionCount; ++direction) {
         int dx = 0;
@@ -12321,7 +12327,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceDoesNotInventOpaqueLoadOwner) {
             static_cast<Direction>(direction), dx, dy, dz);
         Chunk& neighbor = manager.getOrCreateChunk(
             traced.offset(dx, dy, dz));
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
         neighbor.clearDirty();
     }
@@ -12402,7 +12408,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSnapshotsEveryBlockingFace) {
     const ChunkCoord traced{0, 0, 0};
     Chunk& tracedChunk = manager.getOrCreateChunk(traced);
     tracedChunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    tracedChunk.setWorldGenVersion(generator->config().world.version);
+    tracedChunk.setWorldGenVersion(generator->semanticsVersion());
     tracedChunk.setLoadedFromDisk(true);
 
     const std::array executionStates{
@@ -12504,7 +12510,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSnapshotsEveryBlockingFace) {
         directionOffset(static_cast<Direction>(index), dx, dy, dz);
         Chunk& neighbor = manager.getOrCreateChunk(
             traced.offset(dx, dy, dz));
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
         neighbor.clearDirty();
     }
@@ -12528,7 +12534,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSnapshotsEveryBlockingFace) {
 
     const ChunkCoord posX = traced.offset(1, 0, 0);
     Chunk& posXChunk = manager.getOrCreateChunk(posX);
-    posXChunk.setWorldGenVersion(generator->config().world.version);
+    posXChunk.setWorldGenVersion(generator->semanticsVersion());
     posXChunk.setLoadedFromDisk(true);
     posXChunk.clearDirty();
     streamer.update(traced.toWorldCenter());
@@ -12587,7 +12593,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRecordsSynchronousLoadReadiness) {
     streamer.setChunkLoader([&](ChunkLoadRequest) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         return ChunkLoadRequestResult::Queued;
@@ -12644,7 +12650,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRecordsPolledLoadReadiness) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     chunk.clearPersistDirty();
     pending = false;
@@ -12672,7 +12678,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRecordsCallbackRepollReadinessOnce) {
         manager,
         coord,
         std::nullopt,
-        generator->config().world.version);
+        generator->semanticsVersion());
     auto clock = std::make_shared<IncrementingTraceClock>();
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{coord, 2},
@@ -12694,7 +12700,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRecordsCallbackRepollReadinessOnce) {
         if (requestIds.size() == 2) {
             Chunk& chunk = manager.getOrCreateChunk(coord);
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-            chunk.setWorldGenVersion(generator->config().world.version);
+            chunk.setWorldGenVersion(generator->semanticsVersion());
             chunk.setLoadedFromDisk(true);
             chunk.clearPersistDirty();
         }
@@ -12831,7 +12837,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceBatchedLoadsPreserveOwnReadinessOrder) {
         manager,
         coord,
         finalNeighbor,
-        generator->config().world.version);
+        generator->semanticsVersion());
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{coord, 2});
     std::unordered_map<ChunkCoord, ChunkLoadRequestId, ChunkCoordHash> requests;
@@ -12859,7 +12865,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceBatchedLoadsPreserveOwnReadinessOrder) {
     for (const ChunkCoord ready : {finalNeighbor, coord}) {
         Chunk& chunk = manager.getOrCreateChunk(ready);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -12907,7 +12913,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceIncludesDirtyMeshCapacityWait) {
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearDirty();
         meshStore.set(coord, {});
@@ -13007,7 +13013,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) 
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     const std::array loadedNeighbors{
         ChunkCoord{-1, 0, 0},
@@ -13017,7 +13023,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) 
     };
     for (const ChunkCoord loadedNeighbor : loadedNeighbors) {
         Chunk& neighbor = manager.getOrCreateChunk(loadedNeighbor);
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
         neighbor.clearPersistDirty();
         neighbor.clearDirty();
@@ -13061,7 +13067,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) 
 
     clock->advance(std::chrono::milliseconds(5));
     Chunk& partial = manager.getOrCreateChunk(partialNeighbor);
-    partial.setWorldGenVersion(generator->config().world.version);
+    partial.setWorldGenVersion(generator->semanticsVersion());
     partial.setLoadedFromDisk(true);
     partial.clearDirty();
     completions.push_back({
@@ -13081,7 +13087,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStopsDependencyWaitAtFinalNeighborEvent) 
 
     clock->advance(std::chrono::milliseconds(5));
     Chunk& final = manager.getOrCreateChunk(finalNeighbor);
-    final.setWorldGenVersion(generator->config().world.version);
+    final.setWorldGenVersion(generator->semanticsVersion());
     final.setLoadedFromDisk(true);
     final.clearDirty();
     completions.push_back({
@@ -13143,7 +13149,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceOwnDataReadyIsNotNeighborReady) {
         manager,
         coord,
         std::nullopt,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     auto clock = std::make_shared<ManualTraceClock>();
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
@@ -13180,7 +13186,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceOwnDataReadyIsNotNeighborReady) {
     clock->advance(std::chrono::milliseconds(10));
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     chunk.clearPersistDirty();
     chunk.clearDirty();
@@ -13233,7 +13239,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceClockFailureCannotStrandMeshWork) {
 
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
 
         auto clock = std::make_shared<ThrowingTraceClock>(throwOnRead);
@@ -13295,7 +13301,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceKeepsStaleAndReplacementSeparate) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
@@ -13391,13 +13397,13 @@ TEST_CASE(ChunkStreamer_VisibilityTraceDoesNotHandLateResultToCameraReentry) {
                     coord.offset(dx, dy, dz));
                 neighbor.fill(BlockState{solid}, registry);
                 neighbor.setWorldGenVersion(
-                    generator->config().world.version);
+                    generator->semanticsVersion());
                 neighbor.setLoadedFromDisk(true);
             }
         } else {
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
         }
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
 
         auto tracer = std::make_shared<ChunkVisibilityTracer>(
@@ -13600,7 +13606,7 @@ TEST_CASE(ChunkStreamer_EvictedDepartureTraceIgnoresLateWorkerResult) {
     const ChunkCoord away{0, 2, 0};
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
@@ -13687,16 +13693,16 @@ TEST_CASE(ChunkStreamer_LateVisibilityResultPreservesStayAwaySchedulerState) {
                     coord.offset(dx, dy, dz));
                 neighbor.fill(BlockState{solid}, registry);
                 neighbor.setWorldGenVersion(
-                    generator->config().world.version);
+                    generator->semanticsVersion());
                 neighbor.setLoadedFromDisk(true);
             }
         } else {
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
         }
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         Chunk& awayChunk = manager.getOrCreateChunk(away);
-        awayChunk.setWorldGenVersion(generator->config().world.version);
+        awayChunk.setWorldGenVersion(generator->semanticsVersion());
         awayChunk.setLoadedFromDisk(true);
         awayChunk.clearDirty();
 
@@ -13829,10 +13835,10 @@ TEST_CASE(ChunkStreamer_DepartureTraceModesPreserveStaleScheduling) {
 
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         Chunk& awayChunk = manager.getOrCreateChunk(away);
-        awayChunk.setWorldGenVersion(generator->config().world.version);
+        awayChunk.setWorldGenVersion(generator->semanticsVersion());
         awayChunk.setLoadedFromDisk(true);
         awayChunk.clearDirty();
 
@@ -14128,7 +14134,7 @@ TEST_CASE(ChunkStreamer_LateResultDoesNotAdoptReplacementTracerLifecycle) {
     const ChunkCoord away{0, 2, 0};
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     auto originalTracer = std::make_shared<ChunkVisibilityTracer>(
@@ -14259,13 +14265,13 @@ TEST_CASE(ChunkStreamer_VisibilityTracerReplacementDoesNotSynthesizeStages) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     addLoadedNeighborShell(
         manager,
         coord,
         finalNeighbor,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     auto originalTracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{coord, 2});
@@ -14310,7 +14316,7 @@ TEST_CASE(ChunkStreamer_VisibilityTracerReplacementDoesNotSynthesizeStages) {
         beforeReplacement.schedulerCoordinatesInspected);
 
     Chunk& neighbor = manager.getOrCreateChunk(finalNeighbor);
-    neighbor.setWorldGenVersion(generator->config().world.version);
+    neighbor.setWorldGenVersion(generator->semanticsVersion());
     neighbor.setLoadedFromDisk(true);
     neighbor.clearDirty();
     completions.push_back({
@@ -14371,7 +14377,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceStartsAtDispatchAfterLateInstallation) {
     for (const ChunkCoord coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
     }
     auto gate = std::make_shared<WorkerGate>();
@@ -14441,7 +14447,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesFringeRemeshAndCameraReentry) {
     const ChunkCoord away{0, 2, 0};
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     chunk.clearDirty();
     ChunkMesh cachedMesh;
@@ -14516,17 +14522,17 @@ TEST_CASE(ChunkStreamer_VisibilityTraceSeparatesBlockedRemeshAndCachedReentry) {
         manager,
         tracedCoord,
         std::nullopt,
-        generator->config().world.version);
+        generator->semanticsVersion());
     addLoadedNeighborShell(
         manager,
         blockerCoord,
         std::nullopt,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     for (const ChunkCoord coord : {tracedCoord, blockerCoord}) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -14705,7 +14711,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceTeardownStalesPendingAndLateResults) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
@@ -14781,13 +14787,13 @@ TEST_CASE(ChunkStreamer_VisibilityTraceCompletesOnStreamerDestruction) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     addLoadedNeighborShell(
         manager,
         coord,
         missingNeighbor,
-        generator->config().world.version);
+        generator->semanticsVersion());
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{coord, 1});
 
@@ -14833,7 +14839,7 @@ TEST_CASE(ChunkStreamer_VisibilityTracerIsReusableByReplacementStreamer) {
         WorldMeshStore meshStore;
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
 
         ChunkStreamer streamer(
@@ -14877,13 +14883,13 @@ TEST_CASE(ChunkStreamer_VisibilityTraceCompletesOnGeneratorReplacement) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     addLoadedNeighborShell(
         manager,
         coord,
         missingNeighbor,
-        generator->config().world.version);
+        generator->semanticsVersion());
     auto tracer = std::make_shared<ChunkVisibilityTracer>(
         ChunkVisibilityTracer::Config{coord, 1});
 
@@ -14901,7 +14907,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceCompletesOnGeneratorReplacement) {
     streamer.update(coord.toWorldCenter());
 
     auto replacement =
-        std::make_shared<WorldGenerator>(registry, generator->config());
+        Rigel::Test::makeWorldGeneratorFixture(registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
     streamer.setGenerator(replacement);
 
     const auto records = tracer->snapshot();
@@ -14924,7 +14930,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceTracksCachedCameraLifecycle) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     chunk.clearDirty();
     ChunkMesh cachedMesh;
@@ -15000,7 +15006,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceDistinguishesVoxelAndGeometryEmpty) {
         WorldMeshStore meshStore;
         auto generator = makeGenerator(registry);
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
 
         auto tracer = std::make_shared<ChunkVisibilityTracer>(
@@ -15071,7 +15077,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceDistinguishesVoxelAndGeometryEmpty) {
 
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.fill(BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         for (int index = 0; index < DirectionCount; ++index) {
             int dx = 0;
@@ -15081,7 +15087,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceDistinguishesVoxelAndGeometryEmpty) {
             Chunk& neighbor = manager.getOrCreateChunk(
                 coord.offset(dx, dy, dz));
             neighbor.fill(BlockState{solid}, registry);
-            neighbor.setWorldGenVersion(generator->config().world.version);
+            neighbor.setWorldGenVersion(generator->semanticsVersion());
             neighbor.setLoadedFromDisk(true);
         }
 
@@ -15137,7 +15143,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRemeshesResidentVoxelEmptyChunk) {
         registry, "rigel:trace_voxel_empty_remesh_solid");
     const ChunkCoord coord{0, 0, 0};
     Chunk& chunk = manager.getOrCreateChunk(coord);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     chunk.clearPersistDirty();
     chunk.clearDirty();
@@ -15145,7 +15151,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRemeshesResidentVoxelEmptyChunk) {
         manager,
         coord,
         std::nullopt,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, generator);
@@ -15221,7 +15227,7 @@ TEST_CASE(ChunkStreamer_DisabledVisibilityTracePreservesStationaryWork) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
@@ -15312,7 +15318,7 @@ TEST_CASE(ChunkStreamer_VisibilityTraceModesPreserveSchedulingAndQuiescence) {
             }
             Chunk& chunk = manager.getOrCreateChunk(coord);
             chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-            chunk.setWorldGenVersion(generator->config().world.version);
+            chunk.setWorldGenVersion(generator->semanticsVersion());
             chunk.setLoadedFromDisk(true);
         }
 
@@ -15427,7 +15433,7 @@ TEST_CASE(ChunkStreamer_ExternalLoadTraceModesPreserveSchedulerState) {
             manager,
             coord,
             std::nullopt,
-            generator->config().world.version);
+            generator->semanticsVersion());
 
         auto clock = std::make_shared<IncrementingTraceClock>();
         std::optional<ChunkLoadRequest> request;
@@ -15494,7 +15500,7 @@ TEST_CASE(ChunkStreamer_ExternalLoadTraceModesPreserveSchedulerState) {
         CHECK(request.has_value());
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         completions.push_back({
@@ -15611,7 +15617,7 @@ TEST_CASE(ChunkStreamer_MeshFailureCompletesJob) {
         const ChunkCoord coord{0, 0, 0};
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
 
         ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
@@ -15690,7 +15696,7 @@ TEST_CASE(ChunkStreamer_MeshFailureCompletesJob) {
             streamer,
             {});
         auto replacementGenerator =
-            std::make_shared<WorldGenerator>(registry, generator->config());
+            Rigel::Test::makeWorldGeneratorFixture(registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
         streamer.setGenerator(replacementGenerator);
         streamer.update(coord.toWorldCenter());
         CHECK(waitForMeshCompletions(streamer, 2));
@@ -15711,12 +15717,12 @@ TEST_CASE(ChunkStreamer_DirtyMeshFailureSurvivesResidentDesiredReentry) {
     const ChunkCoord coord{0, 0, 0};
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     const ChunkCoord departureCoord{1, 0, 0};
     Chunk& departure = manager.getOrCreateChunk(departureCoord);
-    departure.setWorldGenVersion(generator->config().world.version);
+    departure.setWorldGenVersion(generator->semanticsVersion());
     departure.setLoadedFromDisk(true);
     departure.clearDirty();
 
@@ -15828,7 +15834,7 @@ TEST_CASE(ChunkStreamer_DirtyMeshFailureSurvivesResidentDesiredReentry) {
         streamer,
         {});
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, generator->config());
+        Rigel::Test::makeWorldGeneratorFixture(registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*generator));
     streamer.setGenerator(replacementGenerator);
     streamer.update(coord.toWorldCenter());
     streamer.processCompletions();
@@ -15908,7 +15914,7 @@ TEST_CASE(ChunkStreamer_StaleMeshFailureRetriesLatestRevision) {
     const ChunkCoord coord{0, 0, 0};
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     auto gate = std::make_shared<WorkerGate>();
@@ -16001,7 +16007,7 @@ TEST_CASE(ChunkStreamer_DependencyChangesDuringInFlightMeshCoalesceFollowUp) {
 
     Chunk& chunk = manager.getOrCreateChunk({0, 0, 0});
     chunk.setBlock(Chunk::SIZE - 1, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     auto gate = std::make_shared<WorkerGate>();
@@ -16084,7 +16090,7 @@ TEST_CASE(ChunkStreamer_EmptyChunkIgnoresGeneratedNeighborArrival) {
     const ChunkCoord arrivingCoord{1, 2, 0};
 
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
     surviving.clearDirty();
 
@@ -16099,7 +16105,7 @@ TEST_CASE(ChunkStreamer_EmptyChunkIgnoresGeneratedNeighborArrival) {
             continue;
         }
         Chunk& neighbor = manager.getOrCreateChunk(neighborCoord);
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
         neighbor.clearDirty();
     }
@@ -16156,14 +16162,14 @@ TEST_CASE(ChunkStreamer_EmptyGeneratedArrivalKeepsSolidNeighborMesh) {
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
     surviving.setBlock(
         Chunk::SIZE - 1, 1, 1, BlockState{solid}, registry);
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
     surviving.clearPersistDirty();
     addLoadedNeighborShell(
         manager,
         survivingCoord,
         arrivingCoord,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
     StreamingConfig stream;
@@ -16240,7 +16246,7 @@ TEST_CASE(ChunkStreamer_EmptyChunkIgnoresPersistedNeighborArrival) {
     const ChunkCoord arrivingCoord{1, 2, 0};
 
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
     surviving.clearPersistDirty();
     surviving.clearDirty();
@@ -16248,7 +16254,7 @@ TEST_CASE(ChunkStreamer_EmptyChunkIgnoresPersistedNeighborArrival) {
         manager,
         survivingCoord,
         arrivingCoord,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     PersistedChunkContext persistence;
     persistence.context.providers = world.persistenceProvidersHandle();
@@ -16267,7 +16273,7 @@ TEST_CASE(ChunkStreamer_EmptyChunkIgnoresPersistedNeighborArrival) {
         persistence.service,
         persistence.context,
         world,
-        persistenceGenerator->config().world.version,
+        persistenceGenerator->semanticsVersion(),
         0,
         0,
         1,
@@ -16335,14 +16341,14 @@ TEST_CASE(ChunkStreamer_EmptyPersistedArrivalKeepsSolidNeighborMesh) {
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
     surviving.setBlock(
         Chunk::SIZE - 1, 1, 1, BlockState{solid}, registry);
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
     surviving.clearPersistDirty();
     addLoadedNeighborShell(
         manager,
         survivingCoord,
         arrivingCoord,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     PersistedChunkContext persistence;
     persistence.context.providers = world.persistenceProvidersHandle();
@@ -16361,7 +16367,7 @@ TEST_CASE(ChunkStreamer_EmptyPersistedArrivalKeepsSolidNeighborMesh) {
         persistence.service,
         persistence.context,
         world,
-        persistenceGenerator->config().world.version,
+        persistenceGenerator->semanticsVersion(),
         0,
         0,
         1,
@@ -16449,14 +16455,14 @@ TEST_CASE(ChunkStreamer_NonEmptyChunkRemeshesAfterPersistedNeighborArrival) {
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
     surviving.setBlock(
         Chunk::SIZE - 1, 1, 1, BlockState{solid}, registry);
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
     surviving.clearPersistDirty();
     addLoadedNeighborShell(
         manager,
         survivingCoord,
         arrivingCoord,
-        generator->config().world.version);
+        generator->semanticsVersion());
 
     Chunk arriving(arrivingCoord);
     arriving.setBlock(0, 1, 1, BlockState{solid}, registry);
@@ -16470,7 +16476,7 @@ TEST_CASE(ChunkStreamer_NonEmptyChunkRemeshesAfterPersistedNeighborArrival) {
         persistence.service,
         persistence.context,
         world,
-        persistenceGenerator->config().world.version,
+        persistenceGenerator->semanticsVersion(),
         0,
         0,
         1,
@@ -16578,7 +16584,7 @@ TEST_CASE(ChunkStreamer_NonEmptyChunkRemeshesAfterGeneratedNeighborArrival) {
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
     surviving.setBlock(
         Chunk::SIZE - 1, 1, 1, BlockState{solid}, registry);
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
 
     for (int i = 0; i < DirectionCount; ++i) {
@@ -16592,7 +16598,7 @@ TEST_CASE(ChunkStreamer_NonEmptyChunkRemeshesAfterGeneratedNeighborArrival) {
             continue;
         }
         Chunk& neighbor = manager.getOrCreateChunk(neighborCoord);
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
         neighbor.clearDirty();
     }
@@ -16682,11 +16688,11 @@ TEST_CASE(ChunkStreamer_EmptyChunkIgnoresNeighborDeparture) {
     const ChunkCoord removedCoord{1, 2, 0};
 
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
     surviving.clearDirty();
     Chunk& removed = manager.getOrCreateChunk(removedCoord);
-    removed.setWorldGenVersion(generator->config().world.version);
+    removed.setWorldGenVersion(generator->semanticsVersion());
     removed.setLoadedFromDisk(true);
     removed.clearDirty();
 
@@ -16736,12 +16742,12 @@ TEST_CASE(ChunkStreamer_RemeshesRetainedNeighborAfterDistanceEviction) {
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
     surviving.setBlock(
         Chunk::SIZE - 1, 1, 1, BlockState{solid}, registry);
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
 
     Chunk& removed = manager.getOrCreateChunk(removedCoord);
     removed.setBlock(0, 1, 1, BlockState{solid}, registry);
-    removed.setWorldGenVersion(generator->config().world.version);
+    removed.setWorldGenVersion(generator->semanticsVersion());
     removed.setLoadedFromDisk(true);
     removed.clearPersistDirty();
 
@@ -16769,7 +16775,7 @@ TEST_CASE(ChunkStreamer_RemeshesRetainedNeighborAfterDistanceEviction) {
         installedMeshRevision(meshStore, survivingCoord);
 
     Chunk& cameraChunk = manager.getOrCreateChunk(cameraCoord);
-    cameraChunk.setWorldGenVersion(generator->config().world.version);
+    cameraChunk.setWorldGenVersion(generator->semanticsVersion());
     cameraChunk.setLoadedFromDisk(true);
     cameraChunk.clearPersistDirty();
     cameraChunk.clearDirty();
@@ -16845,7 +16851,7 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
         surviving.setBlock(
             local.x, local.y, local.z, BlockState{hidden}, registry);
     }
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
     surviving.clearPersistDirty();
 
@@ -16861,7 +16867,7 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
         if (neighborCoord == removedCoord) {
             neighbor.setBlock(0, 16, 16, BlockState{hidden}, registry);
         }
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
         neighbor.clearPersistDirty();
         neighbor.clearDirty();
@@ -16898,7 +16904,7 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
              StreamingLifecycleState::Quiescent);
 
     Chunk& cameraChunk = manager.getOrCreateChunk(cameraCoord);
-    cameraChunk.setWorldGenVersion(generator->config().world.version);
+    cameraChunk.setWorldGenVersion(generator->semanticsVersion());
     cameraChunk.setLoadedFromDisk(true);
     cameraChunk.clearPersistDirty();
     cameraChunk.clearDirty();
@@ -16950,12 +16956,12 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
     surviving.setBlock(
         Chunk::SIZE - 1, 1, 1, BlockState{solid}, registry);
-    surviving.setWorldGenVersion(generator->config().world.version);
+    surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
 
     Chunk& removed = manager.getOrCreateChunk(removedCoord);
     removed.setBlock(0, 1, 1, BlockState{solid}, registry);
-    removed.setWorldGenVersion(generator->config().world.version);
+    removed.setWorldGenVersion(generator->semanticsVersion());
     removed.setLoadedFromDisk(true);
     removed.clearPersistDirty();
 
@@ -17042,7 +17048,7 @@ TEST_CASE(ChunkStreamer_RemeshesSurvivingNeighborAfterDistanceEviction) {
     const uint64_t installedRevision =
         installedMeshRevision(meshStore, survivingCoord);
     Chunk& cameraChunk = manager.getOrCreateChunk(cameraCoord);
-    cameraChunk.setWorldGenVersion(generator->config().world.version);
+    cameraChunk.setWorldGenVersion(generator->semanticsVersion());
     cameraChunk.setLoadedFromDisk(true);
     cameraChunk.clearPersistDirty();
     cameraChunk.clearDirty();
@@ -17129,7 +17135,7 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
 
     Chunk& original = manager.getOrCreateChunk(coord);
     original.setBlock(0, 0, 0, BlockState{solid}, registry);
-    original.setWorldGenVersion(generator->config().world.version);
+    original.setWorldGenVersion(generator->semanticsVersion());
     original.setLoadedFromDisk(true);
 
     auto gate = std::make_shared<WorkerGate>();
@@ -17195,7 +17201,7 @@ TEST_CASE(ChunkStreamer_ResetSupersedesOutstandingMeshRequest) {
     replacementBlocks[1] = BlockState{solid};
     replacementBlocks[2] = BlockState{solid};
     replacement.copyFrom(replacementBlocks, registry);
-    replacement.setWorldGenVersion(generator->config().world.version);
+    replacement.setWorldGenVersion(generator->semanticsVersion());
     replacement.setLoadedFromDisk(true);
     CHECK_EQ(replacement.meshRevision(), queuedRevision);
 
@@ -17234,8 +17240,8 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDirtyMeshCapacity) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(
-        registry, originalGenerator->config());
+    auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
     BlockID solid =
         registerTestBlock(registry, "rigel:generator_replacement_mesh_solid");
     const ChunkCoord coord{0, 0, 0};
@@ -17243,11 +17249,11 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetainsDirtyMeshCapacity) {
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(originalGenerator->config().world.version);
+    chunk.setWorldGenVersion(originalGenerator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     meshStore.set(coord, {});
     Chunk& cameraChunk = manager.getOrCreateChunk(cameraCoord);
-    cameraChunk.setWorldGenVersion(originalGenerator->config().world.version);
+    cameraChunk.setWorldGenVersion(originalGenerator->semanticsVersion());
     cameraChunk.setLoadedFromDisk(true);
     cameraChunk.clearPersistDirty();
     cameraChunk.clearDirty();
@@ -17351,8 +17357,8 @@ TEST_CASE(ChunkStreamer_ObsoleteReplacementPreservesExplicitPriority) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(
-        registry, originalGenerator->config());
+    auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
     const BlockID solid = registerTestBlock(
         registry, "rigel:replacement_priority_solid");
     const ChunkCoord replacementCoord{0, 0, 0};
@@ -17363,7 +17369,7 @@ TEST_CASE(ChunkStreamer_ObsoleteReplacementPreservesExplicitPriority) {
          {replacementCoord, cameraCoord, ordinaryCoord}) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(originalGenerator->config().world.version);
+        chunk.setWorldGenVersion(originalGenerator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -17453,8 +17459,8 @@ TEST_CASE(ChunkStreamer_ConfigShrinkCannotRecreateObsoleteReplacement) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(
-        registry, originalGenerator->config());
+    auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
     const BlockID solid = registerTestBlock(
         registry, "rigel:shrink_obsolete_replacement_solid");
     const ChunkCoord cameraCoord{0, 0, 0};
@@ -17470,7 +17476,7 @@ TEST_CASE(ChunkStreamer_ConfigShrinkCannotRecreateObsoleteReplacement) {
     };
     for (const ChunkCoord& coord : desired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(originalGenerator->config().world.version);
+        chunk.setWorldGenVersion(originalGenerator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -17617,13 +17623,13 @@ TEST_CASE(ChunkStreamer_TerminalDataFailureRetiresExplicitMeshPriority) {
             setGenerationStartCallback(streamer, {});
         Chunk& recovered = manager.getOrCreateChunk(failedCoord);
         recovered.setBlock(0, 0, 0, BlockState{solid}, registry);
-        recovered.setWorldGenVersion(generator->config().world.version);
+        recovered.setWorldGenVersion(generator->semanticsVersion());
         recovered.setLoadedFromDisk(true);
         recovered.clearPersistDirty();
 
         Chunk& genuine = manager.getOrCreateChunk(genuinePriorityCoord);
         genuine.setBlock(0, 0, 0, BlockState{solid}, registry);
-        genuine.setWorldGenVersion(generator->config().world.version);
+        genuine.setWorldGenVersion(generator->semanticsVersion());
         genuine.setLoadedFromDisk(true);
         genuine.clearPersistDirty();
         genuine.clearDirty();
@@ -17674,8 +17680,8 @@ TEST_CASE(ChunkStreamer_ReplacementRetirementPreventsLateWake) {
         BlockRegistry registry;
         WorldMeshStore meshStore;
         auto originalGenerator = makeGenerator(registry);
-        auto replacementGenerator = std::make_shared<WorldGenerator>(
-            registry, originalGenerator->config());
+        auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+            registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
         const BlockID solid = registerTestBlock(
             registry, "rigel:replacement_retirement_solid");
         const ChunkCoord cameraCoord{0, 0, 0};
@@ -17685,7 +17691,7 @@ TEST_CASE(ChunkStreamer_ReplacementRetirementPreventsLateWake) {
 
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(originalGenerator->config().world.version);
+        chunk.setWorldGenVersion(originalGenerator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -17694,7 +17700,7 @@ TEST_CASE(ChunkStreamer_ReplacementRetirementPreventsLateWake) {
         if (coord != cameraCoord) {
             Chunk& camera = manager.getOrCreateChunk(cameraCoord);
             camera.setWorldGenVersion(
-                originalGenerator->config().world.version);
+                originalGenerator->semanticsVersion());
             camera.setLoadedFromDisk(true);
             camera.clearPersistDirty();
             camera.clearDirty();
@@ -17768,8 +17774,8 @@ TEST_CASE(ChunkStreamer_CameraDepartureRetiresObsoleteReplacementIdentity) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(
-        registry, originalGenerator->config());
+    auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
     const BlockID solid = registerTestBlock(
         registry, "rigel:departed_replacement_identity_solid");
     const ChunkCoord coord{0, 4, 0};
@@ -17777,7 +17783,7 @@ TEST_CASE(ChunkStreamer_CameraDepartureRetiresObsoleteReplacementIdentity) {
 
     Chunk& original = manager.getOrCreateChunk(coord);
     original.setBlock(0, 0, 0, BlockState{solid}, registry);
-    original.setWorldGenVersion(originalGenerator->config().world.version);
+    original.setWorldGenVersion(originalGenerator->semanticsVersion());
     original.setLoadedFromDisk(true);
     original.clearPersistDirty();
     original.clearDirty();
@@ -17824,7 +17830,7 @@ TEST_CASE(ChunkStreamer_CameraDepartureRetiresObsoleteReplacementIdentity) {
         static_cast<size_t>(1));
 
     Chunk& camera = manager.getOrCreateChunk(departedCamera);
-    camera.setWorldGenVersion(replacementGenerator->config().world.version);
+    camera.setWorldGenVersion(replacementGenerator->semanticsVersion());
     camera.setLoadedFromDisk(true);
     camera.clearPersistDirty();
     camera.clearDirty();
@@ -17871,7 +17877,7 @@ TEST_CASE(ChunkStreamer_CameraDepartureRetiresObsoleteReplacementIdentity) {
     Chunk& incarnation = manager.getOrCreateChunk(coord);
     incarnation.setBlock(0, 0, 0, BlockState{solid}, registry);
     incarnation.setWorldGenVersion(
-        replacementGenerator->config().world.version);
+        replacementGenerator->semanticsVersion());
     incarnation.setLoadedFromDisk(true);
     incarnation.clearPersistDirty();
     incarnation.clearDirty();
@@ -17914,11 +17920,12 @@ TEST_CASE(ChunkStreamer_VersionRegenerationDoesNotRecoverOldMeshPriority) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     replacementConfig.terrain.baseHeight = 64.0f;
+    replacementConfig.densityGraph.nodes.front().offset = 64.0f;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
     const BlockID solid = registerTestBlock(
         registry, "rigel:version_priority_retirement_solid");
     const ChunkCoord regeneratedCoord{0, 0, 0};
@@ -17926,7 +17933,7 @@ TEST_CASE(ChunkStreamer_VersionRegenerationDoesNotRecoverOldMeshPriority) {
 
     Chunk& oldData = manager.getOrCreateChunk(regeneratedCoord);
     oldData.setBlock(0, 0, 0, BlockState{solid}, registry);
-    oldData.setWorldGenVersion(originalGenerator->config().world.version);
+    oldData.setWorldGenVersion(originalGenerator->semanticsVersion());
     oldData.setLoadedFromDisk(true);
     oldData.clearPersistDirty();
     oldData.clearDirty();
@@ -18086,8 +18093,8 @@ TEST_CASE(ChunkStreamer_SameVersionReplacementRebuildsRetainedOwnersOnce) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(
-        registry, originalGenerator->config());
+    auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
     const BlockID solid = registerTestBlock(
         registry, "rigel:retained_replacement_owner_solid");
     const ChunkCoord blockerCoord{-1, 0, 0};
@@ -18105,7 +18112,7 @@ TEST_CASE(ChunkStreamer_SameVersionReplacementRebuildsRetainedOwnersOnce) {
     };
     for (const ChunkCoord& coord : loadedDesired) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
-        chunk.setWorldGenVersion(originalGenerator->config().world.version);
+        chunk.setWorldGenVersion(originalGenerator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -18120,7 +18127,7 @@ TEST_CASE(ChunkStreamer_SameVersionReplacementRebuildsRetainedOwnersOnce) {
     for (const ChunkCoord& coord : {dependencyCoord, readyCoord}) {
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(originalGenerator->config().world.version);
+        chunk.setWorldGenVersion(originalGenerator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
         chunk.clearDirty();
@@ -18192,7 +18199,7 @@ TEST_CASE(ChunkStreamer_SameVersionReplacementRebuildsRetainedOwnersOnce) {
 
     Chunk& resolvedDependency = manager.getOrCreateChunk(missingDependency);
     resolvedDependency.setWorldGenVersion(
-        replacementGenerator->config().world.version);
+        replacementGenerator->semanticsVersion());
     resolvedDependency.setLoadedFromDisk(true);
     resolvedDependency.clearPersistDirty();
     resolvedDependency.clearDirty();
@@ -18259,8 +18266,8 @@ TEST_CASE(ChunkStreamer_InlineGeneratorReplacementSettlesExactlyOnce) {
         BlockRegistry registry;
         WorldMeshStore meshStore;
         auto originalGenerator = makeGenerator(registry);
-        auto replacementGenerator = std::make_shared<WorldGenerator>(
-            registry, originalGenerator->config());
+        auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+            registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
         const BlockID solid = registerTestBlock(
             registry,
             workerThreads == 0
@@ -18270,7 +18277,7 @@ TEST_CASE(ChunkStreamer_InlineGeneratorReplacementSettlesExactlyOnce) {
 
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(originalGenerator->config().world.version);
+        chunk.setWorldGenVersion(originalGenerator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         chunk.clearPersistDirty();
 
@@ -18334,15 +18341,15 @@ TEST_CASE(ChunkStreamer_VoxelEmptyRetiresObsoleteReplacementImmediately) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(
-        registry, originalGenerator->config());
+    auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
     const BlockID solid = registerTestBlock(
         registry, "rigel:empty_obsolete_replacement_solid");
     const ChunkCoord coord{0, 0, 0};
 
     Chunk& chunk = manager.getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(originalGenerator->config().world.version);
+    chunk.setWorldGenVersion(originalGenerator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     chunk.clearPersistDirty();
 
@@ -18397,11 +18404,12 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     replacementConfig.terrain.baseHeight = 64.0f;
+    replacementConfig.densityGraph.nodes.front().offset = 64.0f;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
     const BlockID solid = registerTestBlock(
         registry, "rigel:pending_generator_replacement_solid");
     const ChunkCoord cameraCoord{0, 0, 0};
@@ -18410,7 +18418,7 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
     auto loadFaceNeighborhood = [&](ChunkCoord center) {
         Chunk& centerChunk = manager.getOrCreateChunk(center);
         centerChunk.setWorldGenVersion(
-            originalGenerator->config().world.version);
+            originalGenerator->semanticsVersion());
         centerChunk.setLoadedFromDisk(true);
         centerChunk.clearPersistDirty();
         centerChunk.clearDirty();
@@ -18422,7 +18430,7 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
             Chunk& neighbor = manager.getOrCreateChunk(
                 center.offset(dx, dy, dz));
             neighbor.setWorldGenVersion(
-                originalGenerator->config().world.version);
+                originalGenerator->semanticsVersion());
             neighbor.setLoadedFromDisk(true);
             neighbor.clearPersistDirty();
             neighbor.clearDirty();
@@ -18504,7 +18512,7 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementRetiresPendingMeshesBeforeDispatch) 
     CHECK(replacementChunk != nullptr);
     if (replacementChunk) {
         CHECK_EQ(replacementChunk->worldGenVersion(),
-                 replacementGenerator->config().world.version);
+                 replacementGenerator->semanticsVersion());
     }
 
     streamer.update(cameraCoord.toWorldCenter());
@@ -18535,8 +18543,8 @@ TEST_CASE(ChunkStreamer_ObsoleteDirtyFlightDoesNotBlockUnrelatedDirtyMesh) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    auto replacementGenerator = std::make_shared<WorldGenerator>(
-        registry, originalGenerator->config());
+    auto replacementGenerator = Rigel::Test::makeWorldGeneratorFixture(
+        registry, Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator));
     const BlockID solid = registerTestBlock(
         registry, "rigel:obsolete_head_unrelated_solid");
     const ChunkCoord obsoleteCoord{0, 0, 0};
@@ -18544,7 +18552,7 @@ TEST_CASE(ChunkStreamer_ObsoleteDirtyFlightDoesNotBlockUnrelatedDirtyMesh) {
 
     Chunk& obsolete = manager.getOrCreateChunk(obsoleteCoord);
     obsolete.setBlock(0, 0, 0, BlockState{solid}, registry);
-    obsolete.setWorldGenVersion(originalGenerator->config().world.version);
+    obsolete.setWorldGenVersion(originalGenerator->semanticsVersion());
     obsolete.setLoadedFromDisk(true);
     obsolete.clearPersistDirty();
     meshStore.set(obsoleteCoord, {});
@@ -18595,7 +18603,7 @@ TEST_CASE(ChunkStreamer_ObsoleteDirtyFlightDoesNotBlockUnrelatedDirtyMesh) {
     streamer.setGenerator(replacementGenerator);
     Chunk& unrelated = manager.getOrCreateChunk(unrelatedCoord);
     unrelated.setBlock(0, 0, 0, BlockState{solid}, registry);
-    unrelated.setWorldGenVersion(replacementGenerator->config().world.version);
+    unrelated.setWorldGenVersion(replacementGenerator->semanticsVersion());
     unrelated.setLoadedFromDisk(true);
     unrelated.clearPersistDirty();
     meshStore.set(unrelatedCoord, {});
@@ -18681,18 +18689,21 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementInstallsOnlyCurrentMesh) {
         registerTexturedTestBlock(
             registry, "rigel:overlap_replacement_solid", replacementTexture);
 
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     replacementConfig.solidBlock = "rigel:overlap_replacement_solid";
     replacementConfig.surfaceBlock = "rigel:overlap_replacement_solid";
+    replacementConfig.biomes.entries.front().surface.front().block =
+        replacementConfig.surfaceBlock;
     replacementConfig.terrain.baseHeight = 64.0f;
+    replacementConfig.densityGraph.nodes.front().offset = 64.0f;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
 
     const ChunkCoord coord{0, 0, 0};
     Chunk& original = manager.getOrCreateChunk(coord);
     original.setBlock(0, 0, 0, BlockState{originalSolid}, registry);
-    original.setWorldGenVersion(originalGenerator->config().world.version);
+    original.setWorldGenVersion(originalGenerator->semanticsVersion());
     original.setLoadedFromDisk(true);
     original.clearPersistDirty();
 
@@ -18802,17 +18813,17 @@ TEST_CASE(ChunkStreamer_MeshRetirementPreservesReplacementGenerationFailure) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto originalGenerator = makeGenerator(registry);
-    WorldGenConfig replacementConfig = originalGenerator->config();
+    WorldGenConfig replacementConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*originalGenerator);
     ++replacementConfig.world.version;
     auto replacementGenerator =
-        std::make_shared<WorldGenerator>(registry, replacementConfig);
+        Rigel::Test::makeWorldGeneratorFixture(registry, replacementConfig);
     BlockID solid =
         registerTestBlock(registry, "rigel:failed_replacement_original_solid");
     const ChunkCoord coord{0, 0, 0};
 
     Chunk& original = manager.getOrCreateChunk(coord);
     original.setBlock(0, 0, 0, BlockState{solid}, registry);
-    original.setWorldGenVersion(originalGenerator->config().world.version);
+    original.setWorldGenVersion(originalGenerator->semanticsVersion());
     original.setLoadedFromDisk(true);
     original.clearPersistDirty();
 
@@ -18914,7 +18925,7 @@ TEST_CASE(ChunkStreamer_DirtyNotificationCoalescesWithInFlightMesh) {
 
     Chunk& chunk = manager.getOrCreateChunk({0, 0, 0});
     chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
@@ -18972,7 +18983,7 @@ TEST_CASE(ChunkStreamer_DiskLoadedChunksWaitForNeighborFrontierAcrossArrivalOrde
                 BlockState{solid},
                 registry);
         }
-        center.setWorldGenVersion(generator->config().world.version);
+        center.setWorldGenVersion(generator->semanticsVersion());
         center.setLoadedFromDisk(true);
         center.clearDirty();
 
@@ -19009,7 +19020,7 @@ TEST_CASE(ChunkStreamer_DiskLoadedChunksWaitForNeighborFrontierAcrossArrivalOrde
                 dz < 0 ? Chunk::SIZE - 1 : (dz > 0 ? 0 : middle),
                 BlockState{solid},
                 registry);
-            neighbor.setWorldGenVersion(generator->config().world.version);
+            neighbor.setWorldGenVersion(generator->semanticsVersion());
             neighbor.setLoadedFromDisk(true);
             neighbor.clearDirty();
             center.invalidateMesh();
@@ -19101,7 +19112,7 @@ TEST_CASE(ChunkStreamer_SettledWorld_RemainsQuiescent) {
         }
         Chunk& chunk = manager.getOrCreateChunk(coord);
         chunk.setBlock(0, 0, 0, BlockState{solid}, registry);
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
         return ChunkLoadRequestResult::Queued;
     });
@@ -19169,7 +19180,7 @@ TEST_CASE(ChunkStreamer_QuiescenceRequiresStableIdleUpdates) {
 
     Chunk& center = manager.getOrCreateChunk({0, 0, 0});
     center.setBlock(0, 0, 0, BlockState{solid}, registry);
-    center.setWorldGenVersion(generator->config().world.version);
+    center.setWorldGenVersion(generator->semanticsVersion());
     center.setLoadedFromDisk(true);
 
     ChunkStreamer streamer(manager, meshStore, registry, nullptr, generator);
@@ -19440,7 +19451,7 @@ TEST_CASE(ChunkStreamer_SteadyStateSchedulerWorkDoesNotScaleWithViewVolume) {
             ++loadAttempts;
             ChunkCoord coord = request.coord;
             Chunk& chunk = manager.getOrCreateChunk(coord);
-            chunk.setWorldGenVersion(generator->config().world.version);
+            chunk.setWorldGenVersion(generator->semanticsVersion());
             chunk.setLoadedFromDisk(true);
             return ChunkLoadRequestResult::Queued;
         });
@@ -19507,10 +19518,10 @@ TEST_CASE(ChunkStreamer_UnloadHysteresisAvoidsOneChunkReversalChurn) {
         BlockRegistry registry;
         WorldMeshStore meshStore;
         auto generator = makeGenerator(registry);
-        WorldGenConfig wideWorld = generator->config();
+        WorldGenConfig wideWorld = Rigel::Test::legacyWorldGeneratorConfigFixture(*generator);
         wideWorld.world.minY = -512;
         wideWorld.world.maxY = 511;
-        generator = std::make_shared<WorldGenerator>(
+        generator = Rigel::Test::makeWorldGeneratorFixture(
             registry, std::move(wideWorld));
         const BlockID solid =
             registerTestBlock(registry, "rigel:hysteresis_boundary_solid");
@@ -19527,7 +19538,7 @@ TEST_CASE(ChunkStreamer_UnloadHysteresisAvoidsOneChunkReversalChurn) {
                     }
                     const ChunkCoord coord{x, y, z};
                     Chunk& chunk = manager.getOrCreateChunk(coord);
-                    chunk.setWorldGenVersion(generator->config().world.version);
+                    chunk.setWorldGenVersion(generator->semanticsVersion());
                     chunk.setLoadedFromDisk(true);
                     chunk.clearDirty();
                 }
@@ -19555,7 +19566,7 @@ TEST_CASE(ChunkStreamer_UnloadHysteresisAvoidsOneChunkReversalChurn) {
 
         streamer.setChunkLoader([&](ChunkLoadRequest request) {
             Chunk& chunk = manager.getOrCreateChunk(request.coord);
-            chunk.setWorldGenVersion(generator->config().world.version);
+            chunk.setWorldGenVersion(generator->semanticsVersion());
             chunk.setLoadedFromDisk(true);
             chunk.clearDirty();
             return ChunkLoadRequestResult::Queued;
@@ -19691,9 +19702,9 @@ TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
     const ChunkStreamer::WorkMetrics settled = streamer.workMetrics();
     CHECK_EQ(settled.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(0));
 
-    WorldGenConfig changedConfig = generator->config();
+    WorldGenConfig changedConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*generator);
     ++changedConfig.world.version;
-    generator = std::make_shared<WorldGenerator>(
+    generator = Rigel::Test::makeWorldGeneratorFixture(
         registry, std::move(changedConfig));
     streamer.setGenerator(generator);
 
@@ -19713,7 +19724,7 @@ TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
     if (!regenerated) {
         return;
     }
-    CHECK_EQ(regenerated->worldGenVersion(), generator->config().world.version);
+    CHECK_EQ(regenerated->worldGenVersion(), generator->semanticsVersion());
 
     const uint64_t generationJobsStarted = changed.generationJobsStarted;
     const uint64_t meshJobsStarted = changed.meshJobsStarted;

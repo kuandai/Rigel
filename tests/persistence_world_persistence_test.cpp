@@ -136,14 +136,17 @@ TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
 
     const auto savedGeneration =
         Persistence::loadSavedWorldGeneration(context);
-    auto generator = std::make_shared<Voxel::WorldGenerator>(
-        resources.registry(), savedGeneration.definition);
+    auto generator = Test::makeWorldGeneratorFixture(
+        resources.registry(),
+        savedGeneration.definition,
+        savedGeneration.settings.seed,
+        savedGeneration.settings.generator.semanticsVersion);
     loaded.setGenerator(generator);
     Persistence::AsyncChunkLoader loader(
         service,
         context,
         loaded,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         0,
@@ -187,12 +190,12 @@ TEST_CASE(Persistence_CRReloadPreservesContentAndGeneratesFromSavedSnapshot) {
 
     Persistence::WorldSettings settings = testWorldSettings();
     settings.displayName = "CR Snapshot Continuity";
-    Voxel::WorldGenConfig definition =
+    Voxel::GeneratorDefinitionData definition =
         Test::savedGeneratorDefinitionFixture(settings);
-    definition.solidBlock = generatedIdentifier;
-    definition.surfaceBlock = generatedIdentifier;
-    definition.waterBlock = generatedIdentifier;
-    definition.shoreBlock = generatedIdentifier;
+    definition.terrain.solidMaterial = generatedIdentifier;
+    definition.terrain.waterMaterial = generatedIdentifier;
+    definition.biomes.entries.front().surface.front().material =
+        generatedIdentifier;
     definition.densityGraph.nodes.front().value = 1.0f;
 
     Persistence::FormatRegistry formats;
@@ -217,13 +220,23 @@ TEST_CASE(Persistence_CRReloadPreservesContentAndGeneratesFromSavedSnapshot) {
     context.providers = source.persistenceProvidersHandle();
     const Persistence::BootstrappedWorldGeneration created =
         Persistence::bootstrapWorldGeneration(
-            Persistence::NewWorldGeneration{settings, definition},
+            Persistence::NewWorldGeneration{
+                settings.displayName,
+                settings.seed,
+                Test::preparedGeneratorFixture(
+                    definition,
+                    resources.registry(),
+                    settings.generator.sourceId,
+                    settings.generator.sourceRevision)},
             service,
             resources.registry(),
             context);
     CHECK_EQ(created.persistenceFormat, std::string("cr"));
-    source.setGenerator(std::make_shared<Voxel::WorldGenerator>(
-        resources.registry(), created.generation.definition));
+    source.setGenerator(Test::makeWorldGeneratorFixture(
+        resources.registry(),
+        created.generation.definition,
+        created.generation.settings.seed,
+        created.generation.settings.generator.semanticsVersion));
 
     const Voxel::ChunkCoord existingCoord{0, 0, 0};
     source.setBlock(0, 0, 0, Voxel::BlockState{existingId});
@@ -243,8 +256,11 @@ TEST_CASE(Persistence_CRReloadPreservesContentAndGeneratesFromSavedSnapshot) {
             resources.registry(),
             context);
     CHECK_EQ(reopened.persistenceFormat, std::string("cr"));
-    auto savedGenerator = std::make_shared<Voxel::WorldGenerator>(
-        resources.registry(), reopened.generation.definition);
+    auto savedGenerator = Test::makeWorldGeneratorFixture(
+        resources.registry(),
+        reopened.generation.definition,
+        reopened.generation.settings.seed,
+        reopened.generation.settings.generator.semanticsVersion);
     loaded.setGenerator(savedGenerator);
     Asset::AssetManager assets;
     Persistence::loadBootstrapEntities(
@@ -255,7 +271,7 @@ TEST_CASE(Persistence_CRReloadPreservesContentAndGeneratesFromSavedSnapshot) {
         service,
         context,
         loaded,
-        reopened.generation.definition.world.version,
+        reopened.generation.settings.generator.semanticsVersion,
         0,
         0,
         2,
@@ -540,14 +556,17 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         context.providers = loaded.persistenceProvidersHandle();
         const auto savedGeneration =
             Persistence::loadSavedWorldGeneration(context);
-        auto generator = std::make_shared<Voxel::WorldGenerator>(
-            resources.registry(), savedGeneration.definition);
+        auto generator = Test::makeWorldGeneratorFixture(
+            resources.registry(),
+            savedGeneration.definition,
+            savedGeneration.settings.seed,
+            savedGeneration.settings.generator.semanticsVersion);
         loaded.setGenerator(generator);
         Persistence::AsyncChunkLoader loader(
             service,
             context,
             loaded,
-            generator->config().world.version,
+            generator->semanticsVersion(),
             0,
             0,
             0,

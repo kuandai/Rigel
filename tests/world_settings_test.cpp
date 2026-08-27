@@ -7,7 +7,7 @@
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Voxel/BlockRegistry.h"
-#include "Rigel/Voxel/GeneratorSnapshot.h"
+#include "Rigel/Voxel/GeneratorDefinition.h"
 #include "WorldSettingsDetail.h"
 
 #include <algorithm>
@@ -39,12 +39,19 @@ namespace Rigel::Persistence {
 // supplies a registry to exercise missing-content rejection.
 static std::string bootstrapCreationForTest(
     const WorldSettings& settings,
-    const Voxel::WorldGenConfig& definition,
+    const Voxel::GeneratorDefinitionData& definition,
     PersistenceService& persistence,
     const PersistenceContext& context) {
     Voxel::BlockRegistry registry;
     Test::registerGeneratorDefinitionBlocks(definition, registry);
-    const NewWorldGeneration creation{settings, definition};
+    const NewWorldGeneration creation{
+        settings.displayName,
+        settings.seed,
+        Test::preparedGeneratorFixture(
+            definition,
+            registry,
+            settings.generator.sourceId,
+            settings.generator.sourceRevision)};
     return bootstrapWorldGeneration(
                creation, persistence, registry, context)
         .persistenceFormat;
@@ -52,7 +59,7 @@ static std::string bootstrapCreationForTest(
 
 static std::string bootstrapCreationForTest(
     const WorldSettings& settings,
-    const Voxel::WorldGenConfig& definition,
+    const Voxel::GeneratorDefinitionData& definition,
     const PersistenceContext& context) {
     FormatRegistry formats;
     formats.registerFormat(
@@ -78,26 +85,13 @@ constexpr std::string_view kStagingOwnershipFilename =
 constexpr std::string_view kCleanupOwnershipSuffix = ".rigel-cleanup";
 constexpr size_t kStagingSlotCount = 64;
 
-Voxel::WorldGenConfig savedDefinition() {
-    Voxel::WorldGenConfig definition;
-    definition.seed = 424242u;
-    definition.world.version = Voxel::kGeneratorSemanticsVersion;
-    definition.solidBlock = "base:stone_shale";
-    definition.surfaceBlock = "base:grass";
-
-    Voxel::WorldGenConfig::BiomeConfig biome;
-    biome.name = "land";
-    biome.surface.push_back({"base:grass", 1});
-    definition.biomes.entries.push_back(std::move(biome));
-
-    Voxel::WorldGenConfig::DensityNodeConfig node;
-    node.id = "ground";
-    node.type = "constant";
-    node.value = 0.75f;
-    definition.densityGraph.nodes.push_back(std::move(node));
-    definition.densityGraph.outputs["base_density"] = "ground";
-    definition.stageEnabled["caves"] = false;
-    definition.stageEnabled["structures"] = false;
+Voxel::GeneratorDefinitionData savedDefinition() {
+    Voxel::GeneratorDefinitionData definition =
+        Test::generatorDefinitionFixture(
+            "base:stone_shale",
+            "base:grass",
+            "base:water[type=source]");
+    definition.densityGraph.nodes.front().value = 0.75f;
     return definition;
 }
 
@@ -108,21 +102,35 @@ Persistence::WorldSettings savedSettings() {
     settings.generator.sourceId = "rigel:default";
     settings.generator.sourceRevision = 19u;
     settings.generator.definitionSchemaVersion =
-        Voxel::kWorldGenConfigSnapshotSchemaVersion;
+        Voxel::kGeneratorDefinitionSchemaVersion;
     settings.generator.semanticsVersion = Voxel::kGeneratorSemanticsVersion;
     return settings;
+}
+
+Persistence::NewWorldGeneration creationForTest(
+    const Persistence::WorldSettings& settings,
+    const Voxel::GeneratorDefinitionData& definition) {
+    Voxel::BlockRegistry registry;
+    return {
+        settings.displayName,
+        settings.seed,
+        Test::preparedGeneratorFixture(
+            definition,
+            registry,
+            settings.generator.sourceId,
+            settings.generator.sourceRevision)};
 }
 
 std::string savedSettingsDocument() {
     return
         "world:\n"
-        "  schema_version: 1\n"
+        "  schema_version: 2\n"
         "  display_name: \"Close and Reload\"\n"
         "  seed: 424242\n"
         "  generator:\n"
         "    id: \"rigel:default\"\n"
         "    source_revision: 19\n"
-        "    definition_schema_version: 1\n"
+        "    definition_schema_version: 2\n"
         "    semantics_version: 1\n";
 }
 
@@ -1239,7 +1247,7 @@ TEST_CASE(WorldSettings_close_reload_uses_only_saved_generator_snapshot) {
     const auto worldRoot = directory.path() / "world_7";
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
     auto context = contextFor(worldRoot, storage);
-    Voxel::WorldGenConfig installed = savedDefinition();
+    Voxel::GeneratorDefinitionData installed = savedDefinition();
     const Persistence::WorldSettings settings = savedSettings();
 
     Persistence::bootstrapCreationForTest(settings, installed, context);
@@ -1247,9 +1255,7 @@ TEST_CASE(WorldSettings_close_reload_uses_only_saved_generator_snapshot) {
         Persistence::inspectSavedWorldGeneration(context),
         Persistence::SavedWorldGenerationPresence::Published);
 
-    installed.seed = 1u;
-    installed.world.version = 999u;
-    installed.world.seaLevel = -100;
+    installed.terrain.seaLevel = -20;
     installed.densityGraph.nodes.front().value = -0.5f;
     storage.reset();
 
@@ -1258,20 +1264,16 @@ TEST_CASE(WorldSettings_close_reload_uses_only_saved_generator_snapshot) {
     const Persistence::SavedWorldGeneration loaded =
         Persistence::loadSavedWorldGeneration(context);
     CHECK_EQ(loaded.settings, settings);
-    CHECK_EQ(loaded.definition.seed, settings.seed);
-    CHECK_EQ(
-        loaded.definition.world.version,
-        settings.generator.semanticsVersion);
-    CHECK_EQ(loaded.definition.world.seaLevel, 0);
+    CHECK_EQ(loaded.definition.terrain.seaLevel, 60);
     CHECK_EQ(loaded.definition.densityGraph.nodes.front().value, 0.75f);
 
     const std::string settingsYaml = readText(
         *reopenedStorage, worldRoot / "world-settings.yaml");
     CHECK(settingsYaml.starts_with("world:\n"));
-    CHECK(settingsYaml.find("schema_version: 1") != std::string::npos);
+    CHECK(settingsYaml.find("schema_version: 2") != std::string::npos);
     CHECK(settingsYaml.find("seed: 424242") != std::string::npos);
     CHECK(settingsYaml.find("source_revision: 19") != std::string::npos);
-    CHECK(settingsYaml.find("definition_schema_version: 1") !=
+    CHECK(settingsYaml.find("definition_schema_version: 2") !=
           std::string::npos);
     CHECK(settingsYaml.find("semantics_version: 1") != std::string::npos);
 }
@@ -1370,7 +1372,7 @@ TEST_CASE(WorldSettings_parentless_relative_root_publishes_and_reloads) {
     context.storage = reopenedStorage;
     const auto loaded = Persistence::loadSavedWorldGeneration(context);
     CHECK_EQ(loaded.settings, savedSettings());
-    CHECK_EQ(loaded.definition.seed, savedDefinition().seed);
+    CHECK_EQ(loaded.definition, savedDefinition());
 
     Persistence::FormatRegistry formats;
     formats.registerFormat(
@@ -1397,8 +1399,8 @@ TEST_CASE(WorldSettings_cr_bootstrap_publishes_and_reloads) {
     Persistence::PersistenceService persistence(formats);
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
-    Persistence::NewWorldGeneration creation{
-        savedSettings(), savedDefinition()};
+    Persistence::NewWorldGeneration creation =
+        creationForTest(savedSettings(), savedDefinition());
 
     const auto created = Persistence::bootstrapWorldGeneration(
         creation,
@@ -1432,7 +1434,7 @@ TEST_CASE(WorldSettings_cr_bootstrap_publishes_and_reloads) {
         context);
 
     CHECK_EQ(reloaded.generation.settings, savedSettings());
-    CHECK_EQ(reloaded.generation.definition.seed, savedDefinition().seed);
+    CHECK_EQ(reloaded.generation.definition, savedDefinition());
     CHECK_EQ(reloaded.persistenceFormat, std::string("cr"));
     const auto reloadedMetadata =
         persistence.loadWorldMetadata(context);
@@ -1458,12 +1460,8 @@ TEST_CASE(WorldSettings_creation_uses_the_published_canonical_definition) {
     Persistence::PersistenceService persistence(formats);
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
-    Persistence::NewWorldGeneration creation{
-        savedSettings(), savedDefinition()};
-    creation.definition.biomes.coastBand.enabled = true;
-    creation.definition.biomes.coastBand.biome = "land";
-    creation.definition.biomes.coastBand.minContinentalness = 0.75f;
-    creation.definition.biomes.coastBand.maxContinentalness = -0.25f;
+    Persistence::NewWorldGeneration creation =
+        creationForTest(savedSettings(), savedDefinition());
 
     const auto created = Persistence::bootstrapWorldGeneration(
         creation,
@@ -1477,14 +1475,16 @@ TEST_CASE(WorldSettings_creation_uses_the_published_canonical_definition) {
         context);
 
     CHECK_EQ(
-        created.generation.definition.biomes.coastBand.minContinentalness,
-        -0.25f);
+        created.generation.definition.biomes.coast.minContinentalness,
+        savedDefinition().biomes.coast.minContinentalness);
     CHECK_EQ(
-        created.generation.definition.biomes.coastBand.maxContinentalness,
-        0.75f);
+        created.generation.definition.biomes.coast.maxContinentalness,
+        savedDefinition().biomes.coast.maxContinentalness);
     CHECK_EQ(
-        Voxel::serializeGeneratorSnapshot(created.generation.definition),
-        Voxel::serializeGeneratorSnapshot(reloaded.generation.definition));
+        Voxel::serializeGeneratorDefinitionSnapshot(
+            created.generation.definition),
+        Voxel::serializeGeneratorDefinitionSnapshot(
+            reloaded.generation.definition));
 }
 
 TEST_CASE(WorldSettings_bootstrap_rejects_unavailable_blocks_before_publication) {
@@ -1501,9 +1501,11 @@ TEST_CASE(WorldSettings_bootstrap_rejects_unavailable_blocks_before_publication)
     Persistence::PersistenceService persistence(formats);
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
-    Persistence::NewWorldGeneration creation{
-        savedSettings(), savedDefinition()};
-    creation.definition.shoreBlock = "base:unavailable-shore";
+    auto unavailableDefinition = savedDefinition();
+    unavailableDefinition.biomes.entries.front().surface.front().material =
+        "base:unavailable-shore";
+    Persistence::NewWorldGeneration creation =
+        creationForTest(savedSettings(), unavailableDefinition);
 
     std::string failureMessage;
     try {
@@ -1737,9 +1739,10 @@ TEST_CASE(WorldSettings_handoff_precedes_child_marker_during_recovery) {
     Persistence::PersistenceService persistence(formats);
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
-    Persistence::NewWorldGeneration unrelatedCreation{
-        savedSettings(), savedDefinition()};
-    unrelatedCreation.definition.shoreBlock = "base:missing-installed-block";
+    Persistence::NewWorldGeneration unrelatedCreation =
+        creationForTest(savedSettings(), savedDefinition());
+    unrelatedCreation.definition.data.terrain.solidMaterial =
+        "base:missing-installed-block";
     Persistence::recoverWorldGenerationPublication(
         persistence, blocks, restartedContext);
     CHECK_EQ(
@@ -1965,7 +1968,8 @@ TEST_CASE(WorldSettings_recovery_rejects_unavailable_saved_blocks_before_publish
         std::make_shared<MovedBackPublicationStorage>();
     const auto interruptedContext = contextFor(worldRoot, interruptedStorage);
     auto definition = savedDefinition();
-    definition.shoreBlock = "base:retired-shore";
+    definition.biomes.entries.front().surface.front().material =
+        "base:retired-shore";
 
     CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), definition, interruptedContext));
@@ -2004,9 +2008,10 @@ TEST_CASE(WorldSettings_recovery_rejects_unavailable_saved_blocks_before_publish
     CHECK_EQ(readText(*restartedStorage, handoffMarker), handoffBefore);
 
     Voxel::BlockType restoredBlock;
-    restoredBlock.identifier = definition.shoreBlock;
-    blocks.registerBlock(
-        definition.shoreBlock, std::move(restoredBlock));
+    restoredBlock.identifier =
+        definition.biomes.entries.front().surface.front().material;
+    const std::string restoredIdentifier = restoredBlock.identifier;
+    blocks.registerBlock(restoredIdentifier, std::move(restoredBlock));
     Persistence::recoverWorldGenerationPublication(
         persistence, blocks, restartedContext);
     CHECK_EQ(restartedStorage->publishAttempts, static_cast<size_t>(1));
@@ -2015,8 +2020,9 @@ TEST_CASE(WorldSettings_recovery_rejects_unavailable_saved_blocks_before_publish
 
     CHECK_EQ(bootstrapped.generation.settings, savedSettings());
     CHECK_EQ(
-        bootstrapped.generation.definition.shoreBlock,
-        definition.shoreBlock);
+        bootstrapped.generation.definition.biomes.entries.front()
+            .surface.front().material,
+        definition.biomes.entries.front().surface.front().material);
     CHECK(std::filesystem::is_directory(worldRoot));
     CHECK(!std::filesystem::exists(stagedRoot));
     CHECK(!std::filesystem::exists(handoffMarker));
@@ -3081,7 +3087,7 @@ TEST_CASE(WorldSettings_recovery_waits_for_live_publication) {
     const auto loaded =
         Persistence::loadSavedWorldGeneration(recoveryContext);
     CHECK_EQ(loaded.settings, savedSettings());
-    CHECK_EQ(loaded.definition.seed, savedDefinition().seed);
+    CHECK_EQ(loaded.definition, savedDefinition());
     CHECK_EQ(
         readText(*recoveryStorage, unrelated / "must-survive.txt"),
         std::string("unrelated data"));
@@ -3160,14 +3166,12 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
     auto definitionA = savedDefinition();
     settingsA.displayName = "Publisher A";
     settingsA.seed = 101;
-    definitionA.seed = 101;
     definitionA.densityGraph.nodes.front().value = 0.25f;
 
     auto settingsB = savedSettings();
     auto definitionB = savedDefinition();
     settingsB.displayName = "Publisher B";
     settingsB.seed = 202;
-    definitionB.seed = 202;
     definitionB.densityGraph.nodes.front().value = 0.5f;
 
     std::atomic<size_t> successes = 0;
@@ -3180,7 +3184,7 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
     auto publish = [&](
         std::optional<Persistence::BootstrappedWorldGeneration>& result,
         const Persistence::WorldSettings& settings,
-        const Voxel::WorldGenConfig& definition,
+        const Voxel::GeneratorDefinitionData& definition,
         const Persistence::PersistenceContext& context) {
         {
             std::unique_lock lock(startMutex);
@@ -3197,8 +3201,8 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
             Persistence::PersistenceService persistence(formats);
             Voxel::BlockRegistry blocks;
             Test::registerGeneratorDefinitionBlocks(definition, blocks);
-            const Persistence::NewWorldGeneration creation{
-                settings, definition};
+            const Persistence::NewWorldGeneration creation =
+                creationForTest(settings, definition);
             result = Persistence::bootstrapWorldGeneration(
                 creation, persistence, blocks, context);
             ++successes;
@@ -3232,11 +3236,11 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
     CHECK_EQ(resultA->generation.settings, loaded.settings);
     CHECK_EQ(resultB->generation.settings, loaded.settings);
     CHECK_EQ(
-        Voxel::serializeGeneratorSnapshot(resultA->generation.definition),
-        Voxel::serializeGeneratorSnapshot(loaded.definition));
+        Voxel::serializeGeneratorDefinitionSnapshot(resultA->generation.definition),
+        Voxel::serializeGeneratorDefinitionSnapshot(loaded.definition));
     CHECK_EQ(
-        Voxel::serializeGeneratorSnapshot(resultB->generation.definition),
-        Voxel::serializeGeneratorSnapshot(loaded.definition));
+        Voxel::serializeGeneratorDefinitionSnapshot(resultB->generation.definition),
+        Voxel::serializeGeneratorDefinitionSnapshot(loaded.definition));
     CHECK_EQ(resultA->persistenceFormat, std::string("memory"));
     CHECK_EQ(resultB->persistenceFormat, std::string("memory"));
     if (loaded.settings.displayName == settingsA.displayName) {
@@ -3329,7 +3333,7 @@ TEST_CASE(WorldSettings_inspection_rejects_invalid_regular_documents) {
         {
             "unsupported-settings-version",
             [replace](std::string& settings, std::string&) {
-                replace(settings, "schema_version: 1", "schema_version: 2");
+                replace(settings, "schema_version: 2", "schema_version: 3");
             },
         },
         {
@@ -3337,8 +3341,8 @@ TEST_CASE(WorldSettings_inspection_rejects_invalid_regular_documents) {
             [replace](std::string& settings, std::string&) {
                 replace(
                     settings,
-                    "definition_schema_version: 1",
-                    "definition_schema_version: 2");
+                    "definition_schema_version: 2",
+                    "definition_schema_version: 3");
             },
         },
         {
@@ -3355,8 +3359,8 @@ TEST_CASE(WorldSettings_inspection_rejects_invalid_regular_documents) {
             [replace](std::string&, std::string& snapshot) {
                 replace(
                     snapshot,
-                    "\"base_density\": \"ground\"",
-                    "\"base_density\": \"missing\"");
+                    "\"terrain\": \"ground\"",
+                    "\"terrain\": \"missing\"");
             },
         },
     };
@@ -3370,7 +3374,7 @@ TEST_CASE(WorldSettings_inspection_rejects_invalid_regular_documents) {
         const auto context = contextFor(worldRoot, storage);
         std::string settings = savedSettingsDocument();
         std::string snapshot =
-            Voxel::serializeGeneratorSnapshot(savedDefinition());
+            Voxel::serializeGeneratorDefinitionSnapshot(savedDefinition());
         scenario.corrupt(settings, snapshot);
         writeText(*storage, worldRoot / "world-settings.yaml", settings);
         writeText(
@@ -3416,8 +3420,8 @@ TEST_CASE(WorldSettings_first_legacy_rejection_preserves_parent_tree) {
     Persistence::PersistenceService persistence(formats);
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
-    const Persistence::NewWorldGeneration currentDefault{
-        savedSettings(), savedDefinition()};
+    const Persistence::NewWorldGeneration currentDefault =
+        creationForTest(savedSettings(), savedDefinition());
     const SaveTreeSnapshot before = snapshotSaveTree(directory.path());
     const std::string expected = rejectionDiagnostic(
         worldRoot,
@@ -3470,7 +3474,7 @@ TEST_CASE(WorldSettings_revalidates_existing_root_before_recovery_cleanup) {
         writeText(
             *storage,
             worldRoot / "generator-definition.yaml",
-            Voxel::serializeGeneratorSnapshot(savedDefinition()));
+            Voxel::serializeGeneratorDefinitionSnapshot(savedDefinition()));
         persistence.saveWorldMetadata(
             Persistence::WorldMetadata{
                 worldRoot.filename().string(),
@@ -3492,8 +3496,8 @@ TEST_CASE(WorldSettings_revalidates_existing_root_before_recovery_cleanup) {
 
         const auto operation = [&] {
             if (bootstrap) {
-                const Persistence::NewWorldGeneration currentDefault{
-                    savedSettings(), savedDefinition()};
+                const Persistence::NewWorldGeneration currentDefault =
+                    creationForTest(savedSettings(), savedDefinition());
                 static_cast<void>(Persistence::bootstrapWorldGeneration(
                     currentDefault,
                     persistence,
@@ -3521,25 +3525,25 @@ TEST_CASE(WorldSettings_revalidates_existing_root_before_recovery_cleanup) {
     }
 }
 
-TEST_CASE(WorldSettings_rejects_dual_runtime_identity_before_write) {
+TEST_CASE(WorldSettings_rejects_incoherent_prepared_snapshot_before_write) {
     Test::TemporaryDirectory directory("rigel_world_settings");
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    const auto worldRoot = directory.path() / "snapshot-mismatch";
+    const auto context = contextFor(worldRoot, storage);
+    auto creation = creationForTest(savedSettings(), savedDefinition());
+    creation.definition.data.densityGraph.nodes.front().value = -1.0f;
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
 
-    auto mismatchedSettings = savedSettings();
-    mismatchedSettings.seed += 1;
-    const auto seedRoot = directory.path() / "seed-mismatch";
-    const auto seedContext = contextFor(seedRoot, storage);
-    CHECK_THROWS(Persistence::bootstrapCreationForTest(
-        mismatchedSettings, savedDefinition(), seedContext));
-    CHECK(!std::filesystem::exists(seedRoot));
-
-    auto mismatchedDefinition = savedDefinition();
-    mismatchedDefinition.world.version += 1;
-    const auto semanticsRoot = directory.path() / "semantics-mismatch";
-    const auto semanticsContext = contextFor(semanticsRoot, storage);
-    CHECK_THROWS(Persistence::bootstrapCreationForTest(
-        savedSettings(), mismatchedDefinition, semanticsContext));
-    CHECK(!std::filesystem::exists(semanticsRoot));
+    CHECK_THROWS(Persistence::bootstrapWorldGeneration(
+        creation, persistence, blocks, context));
+    CHECK(!std::filesystem::exists(worldRoot));
 }
 
 TEST_CASE(WorldSettings_rejects_documents_larger_than_reload_limits) {
@@ -3557,7 +3561,7 @@ TEST_CASE(WorldSettings_rejects_documents_larger_than_reload_limits) {
     const auto snapshotRoot = directory.path() / "oversized-snapshot";
     const auto snapshotContext = contextFor(snapshotRoot, storage);
     auto definition = savedDefinition();
-    definition.solidBlock = std::string(4 * 1024 * 1024, 's');
+    definition.terrain.solidMaterial = std::string(4 * 1024 * 1024, 's');
     CHECK_THROWS(Persistence::bootstrapCreationForTest(
         savedSettings(), definition, snapshotContext));
     CHECK(!std::filesystem::exists(snapshotRoot));
@@ -3565,8 +3569,8 @@ TEST_CASE(WorldSettings_rejects_documents_larger_than_reload_limits) {
 
 TEST_CASE(WorldSettings_rejects_each_unsupported_version_without_repairing_save) {
     const std::vector<std::pair<std::string, std::string>> replacements = {
-        {"schema_version: 1", "schema_version: 2"},
-        {"definition_schema_version: 1", "definition_schema_version: 2"},
+        {"schema_version: 2", "schema_version: 3"},
+        {"definition_schema_version: 2", "definition_schema_version: 3"},
         {"semantics_version: 1", "semantics_version: 2"},
     };
 
@@ -3744,15 +3748,15 @@ TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
         },
         {
             "settings-version",
-            replaceSettingsToken("schema_version: 1", "schema_version: 2"),
-            "world-settings.yaml is invalid: Unsupported world settings schema version: 2",
+            replaceSettingsToken("schema_version: 2", "schema_version: 3"),
+            "world-settings.yaml is invalid: Unsupported world settings schema version: 3",
         },
         {
             "definition-version",
             replaceSettingsToken(
-                "definition_schema_version: 1",
-                "definition_schema_version: 2"),
-            "world-settings.yaml is invalid: Unsupported generator definition schema version: 2",
+                "definition_schema_version: 2",
+                "definition_schema_version: 3"),
+            "world-settings.yaml is invalid: Unsupported generator definition schema version: 3",
         },
         {
             "semantics-version",
@@ -3785,8 +3789,8 @@ TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
             Persistence::PersistenceService persistence(formats);
             Voxel::BlockRegistry blocks;
             registerSavedDefinitionBlocks(blocks);
-            const Persistence::NewWorldGeneration original{
-                savedSettings(), savedDefinition()};
+            const Persistence::NewWorldGeneration original =
+                creationForTest(savedSettings(), savedDefinition());
             Persistence::bootstrapWorldGeneration(
                 original, persistence, blocks, context);
 
@@ -3806,12 +3810,12 @@ TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
             auto currentDefaultDefinition = savedDefinition();
             currentDefaultSettings.displayName = "Current installed default";
             currentDefaultSettings.seed = 999u;
-            currentDefaultDefinition.seed = 999u;
             currentDefaultDefinition.densityGraph.nodes.front().value = -1.0f;
-            currentDefaultDefinition.shoreBlock =
+            currentDefaultDefinition.terrain.solidMaterial =
                 "base:unavailable-current-default-block";
-            const Persistence::NewWorldGeneration currentDefault{
-                currentDefaultSettings, currentDefaultDefinition};
+            const Persistence::NewWorldGeneration currentDefault =
+                creationForTest(
+                    currentDefaultSettings, currentDefaultDefinition);
 
             const SaveTreeSnapshot before =
                 snapshotSaveTree(directory.path());

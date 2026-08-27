@@ -3,7 +3,8 @@
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/WorldSettings.h"
-#include "Rigel/Voxel/GeneratorSnapshot.h"
+#include "Rigel/Voxel/GeneratorDefinition.h"
+#include "GeneratorDefinitionTestRegistry.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -26,31 +27,17 @@ inline Persistence::WorldSettings savedWorldSettingsFixture(
     settings.generator.sourceId = "rigel:test_generator";
     settings.generator.sourceRevision = 1;
     settings.generator.definitionSchemaVersion =
-        Voxel::kWorldGenConfigSnapshotSchemaVersion;
+        Voxel::kGeneratorDefinitionSchemaVersion;
     settings.generator.semanticsVersion =
         Voxel::kGeneratorSemanticsVersion;
     return settings;
 }
 
-inline Voxel::WorldGenConfig savedGeneratorDefinitionFixture(
+inline Voxel::GeneratorDefinitionData savedGeneratorDefinitionFixture(
     const Persistence::WorldSettings& settings) {
-    Voxel::WorldGenConfig definition;
-    definition.seed = settings.seed;
-    definition.world.version = settings.generator.semanticsVersion;
-    definition.solidBlock = "base:air";
-    definition.surfaceBlock = "base:air";
-    definition.waterBlock = "base:air";
-    definition.shoreBlock = "base:air";
-    definition.biomes.entries.clear();
-
-    Voxel::WorldGenConfig::DensityNodeConfig density;
-    density.id = "base";
-    density.type = "constant";
-    density.value = 0.0f;
-    definition.densityGraph.nodes.push_back(std::move(density));
-    definition.densityGraph.outputs["base_density"] = "base";
-    definition.stageEnabled["caves"] = false;
-    definition.stageEnabled["structures"] = false;
+    static_cast<void>(settings);
+    Voxel::GeneratorDefinitionData definition = generatorDefinitionFixture();
+    definition.densityGraph.nodes.front().value = 0.0f;
     return definition;
 }
 
@@ -86,7 +73,7 @@ inline std::string quoteWorldSettingsFixtureString(std::string_view value) {
 
 inline SavedWorldGenerationFixtureDocuments savedWorldGenerationFixtureDocuments(
     const Persistence::WorldSettings& settings,
-    const Voxel::WorldGenConfig& definition) {
+    const Voxel::GeneratorDefinitionData& definition) {
     SavedWorldGenerationFixtureDocuments documents;
     documents.settings =
         "world:\n"
@@ -103,7 +90,8 @@ inline SavedWorldGenerationFixtureDocuments savedWorldGenerationFixtureDocuments
         std::to_string(settings.generator.definitionSchemaVersion) + "\n" +
         "    semantics_version: " +
         std::to_string(settings.generator.semanticsVersion) + "\n";
-    documents.definition = Voxel::serializeGeneratorSnapshot(definition);
+    documents.definition =
+        Voxel::serializeGeneratorDefinitionSnapshot(definition);
     return documents;
 }
 
@@ -128,7 +116,7 @@ inline void installSavedWorldGenerationDocumentsFixture(
     Persistence::StorageBackend& storage,
     const std::string& rootPath,
     const Persistence::WorldSettings& settings,
-    const Voxel::WorldGenConfig& definition) {
+    const Voxel::GeneratorDefinitionData& definition) {
     const SavedWorldGenerationFixtureDocuments documents =
         savedWorldGenerationFixtureDocuments(settings, definition);
     writeWorldGenerationFixtureDocument(
@@ -156,7 +144,7 @@ inline void installSavedWorldGenerationFixture(
     Persistence::PersistenceService& persistence,
     const Persistence::PersistenceContext& context,
     const Persistence::WorldSettings& settings,
-    const Voxel::WorldGenConfig& definition) {
+    const Voxel::GeneratorDefinitionData& definition) {
     installSavedWorldGenerationDocumentsFixture(
         *context.storage, context.rootPath, settings, definition);
     persistence.saveWorldMetadata(

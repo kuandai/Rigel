@@ -502,10 +502,10 @@ TEST_CASE(WorldConfigProvider_SavedWorldReloadToleratesRemovedFileOverlay) {
     Rigel::Persistence::WorldSettings settings;
     settings.displayName = "Removed overlay reload";
     settings.seed = created.generation.seed;
-    settings.generator.sourceId = created.generatorSource.id;
-    settings.generator.sourceRevision = created.generatorSource.revision;
+    settings.generator.sourceId = "test:removed_overlay";
+    settings.generator.sourceRevision = 1;
     settings.generator.definitionSchemaVersion =
-        kWorldGenConfigSnapshotSchemaVersion;
+        kGeneratorDefinitionSchemaVersion;
     settings.generator.semanticsVersion = kGeneratorSemanticsVersion;
     created.generation.world.version = kGeneratorSemanticsVersion;
     auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
@@ -520,10 +520,18 @@ TEST_CASE(WorldConfigProvider_SavedWorldReloadToleratesRemovedFileOverlay) {
         Rigel::Persistence::Backends::Memory::probe());
     Rigel::Persistence::PersistenceService persistence(formats);
     Rigel::Voxel::BlockRegistry registry;
+    const Rigel::Voxel::GeneratorDefinitionData strictDefinition =
+        Rigel::Test::strictGeneratorDefinitionFixture(created.generation);
     Rigel::Test::registerGeneratorDefinitionBlocks(
-        created.generation, registry);
+        strictDefinition, registry);
     const Rigel::Persistence::NewWorldGeneration creation{
-        settings, created.generation};
+        settings.displayName,
+        settings.seed,
+        Rigel::Test::preparedGeneratorFixture(
+            strictDefinition,
+            registry,
+            settings.generator.sourceId,
+            settings.generator.sourceRevision)};
     Rigel::Persistence::bootstrapWorldGeneration(
         creation, persistence, registry, context);
 
@@ -534,8 +542,8 @@ TEST_CASE(WorldConfigProvider_SavedWorldReloadToleratesRemovedFileOverlay) {
 
     CHECK_EQ(streaming.viewDistanceChunks, 9);
     CHECK_EQ(saved.settings, settings);
-    CHECK_EQ(saved.definition.world.seaLevel, 42);
-    CHECK_EQ(saved.definition.seed, settings.seed);
+    CHECK_EQ(saved.definition.terrain.seaLevel, 42);
+    CHECK_EQ(saved.settings.seed, settings.seed);
     CHECK_THROWS(provider.loadConfig());
 }
 

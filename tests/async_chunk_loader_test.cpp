@@ -503,7 +503,7 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     surface.isSolid = true;
     registry.registerBlock(surface.identifier, surface);
 
-    return std::make_shared<WorldGenerator>(
+    return Rigel::Test::makeWorldGeneratorFixture(
         registry, loaderGeneratorDefinition());
 }
 
@@ -609,7 +609,8 @@ struct MemoryContext {
             service,
             context,
             settings,
-            loaderGeneratorDefinition());
+            Rigel::Test::strictGeneratorDefinitionFixture(
+                loaderGeneratorDefinition()));
     }
 };
 
@@ -1059,7 +1060,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -1114,7 +1115,7 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
 
     auto divergentDefinition = loaderGeneratorDefinition();
     divergentDefinition.densityGraph.nodes.front().offset = 32.0f;
-    auto divergent = std::make_shared<WorldGenerator>(
+    auto divergent = Rigel::Test::makeWorldGeneratorFixture(
         resources.registry(), std::move(divergentDefinition));
 
     CHECK_EQ(
@@ -1123,7 +1124,7 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
                 context.service,
                 context.context,
                 world,
-                authoritative->config().world.version,
+                authoritative->semanticsVersion(),
                 0,
                 0,
                 1,
@@ -1141,7 +1142,7 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
                 context.service,
                 context.context,
                 world,
-                authoritative->config().world.version,
+                authoritative->semanticsVersion(),
                 0,
                 0,
                 1,
@@ -1155,7 +1156,7 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
 
     auto wrongSeedDefinition = loaderGeneratorDefinition();
     wrongSeedDefinition.seed += 1;
-    auto wrongSeed = std::make_shared<WorldGenerator>(
+    auto wrongSeed = Rigel::Test::makeWorldGeneratorFixture(
         resources.registry(), std::move(wrongSeedDefinition));
     CHECK_EQ(
         exceptionMessage([&] {
@@ -1163,7 +1164,7 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
                 context.service,
                 context.context,
                 world,
-                authoritative->config().world.version,
+                authoritative->semanticsVersion(),
                 0,
                 0,
                 1,
@@ -1180,7 +1181,7 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
                 context.service,
                 context.context,
                 world,
-                authoritative->config().world.version + 1,
+                authoritative->semanticsVersion() + 1,
                 0,
                 0,
                 1,
@@ -1228,7 +1229,7 @@ TEST_CASE(AsyncChunkLoader_ExecutionStateTracksPhysicalRegionAndPayloadOwners) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         1,
         1,
@@ -1339,7 +1340,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Random) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -1382,7 +1383,7 @@ TEST_CASE(AsyncChunkLoader_ApplyBudget) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -1426,7 +1427,7 @@ TEST_CASE(ChunkStreamer_EvictionPersistenceSurvivesLoaderAndWorldReload) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         0,
@@ -1478,7 +1479,7 @@ TEST_CASE(ChunkStreamer_EvictionPersistenceSurvivesLoaderAndWorldReload) {
         ctx.service,
         ctx.context,
         reconstructed,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         0,
@@ -1524,7 +1525,7 @@ TEST_CASE(AsyncChunkLoader_PersistenceInvalidatesInFlightRegionSnapshot) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         0,
@@ -1545,7 +1546,7 @@ TEST_CASE(AsyncChunkLoader_PersistenceInvalidatesInFlightRegionSnapshot) {
 
     Chunk& dirty = world.chunkManager().getOrCreateChunk(coord);
     dirty.fill(BlockState{edited}, registry);
-    dirty.setWorldGenVersion(generator->config().world.version);
+    dirty.setWorldGenVersion(generator->semanticsVersion());
     CHECK(loader.persistChunk(coord));
     CHECK(!dirty.isPersistDirty());
     evictCleanChunk(world, registry, generator, coord);
@@ -1599,7 +1600,7 @@ TEST_CASE(AsyncChunkLoader_StalePayloadRestartsFromReplacementRegionCache) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         1,
         0,
@@ -1625,7 +1626,7 @@ TEST_CASE(AsyncChunkLoader_StalePayloadRestartsFromReplacementRegionCache) {
 
     Chunk& dirty = world.chunkManager().getOrCreateChunk(persistedCoord);
     dirty.fill(BlockState{edited}, registry);
-    dirty.setWorldGenVersion(generator->config().world.version);
+    dirty.setWorldGenVersion(generator->semanticsVersion());
     CHECK(loader.persistChunk(persistedCoord));
     evictCleanChunk(world, registry, generator, persistedCoord);
 
@@ -1689,7 +1690,7 @@ void checkCancelledPayloadCannotCompleteReplacement(
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         1,
         0,
@@ -1801,7 +1802,7 @@ TEST_CASE(AsyncChunkLoader_CancelledActiveRequestWakesDeferredCapacity) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         1,
         0,
@@ -1868,7 +1869,7 @@ TEST_CASE(ChunkStreamer_ResidentReplacementCancelsPendingPayload) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         1,
         0,
@@ -1907,7 +1908,7 @@ TEST_CASE(ChunkStreamer_ResidentReplacementCancelsPendingPayload) {
 
     Chunk& replacement = world.chunkManager().getOrCreateChunk(coord);
     replacement.fill(BlockState{generated}, registry);
-    replacement.setWorldGenVersion(generator->config().world.version);
+    replacement.setWorldGenVersion(generator->semanticsVersion());
     replacement.setLoadedFromDisk(false);
     Chunk* const replacementIdentity = &replacement;
 
@@ -2019,7 +2020,7 @@ TEST_CASE(ChunkStreamer_FailedEvictionPersistenceRetainsDirtyChunkUntilRetry) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         0,
@@ -2110,7 +2111,7 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         0,
@@ -2156,7 +2157,7 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
         directionOffset(static_cast<Direction>(index), dx, dy, dz);
         Chunk& neighbor = world.chunkManager().getOrCreateChunk(
             coord.offset(dx, dy, dz));
-        neighbor.setWorldGenVersion(generator->config().world.version);
+        neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.clearDirty();
     }
 
@@ -2174,9 +2175,9 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
     const uint64_t settledGenerationJobs =
         streamer.workMetrics().generationJobsStarted;
     const auto savedGenerator = generator;
-    WorldGenConfig changedConfig = generator->config();
+    WorldGenConfig changedConfig = Rigel::Test::legacyWorldGeneratorConfigFixture(*generator);
     ++changedConfig.world.version;
-    generator = std::make_shared<WorldGenerator>(
+    generator = Rigel::Test::makeWorldGeneratorFixture(
         registry, std::move(changedConfig));
     world.setGenerator(generator);
     streamer.setGenerator(generator);
@@ -2232,7 +2233,7 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
     Chunk* replacement = world.chunkManager().getChunk(coord);
     CHECK(replacement != nullptr);
     if (replacement) {
-        CHECK_EQ(replacement->worldGenVersion(), generator->config().world.version);
+        CHECK_EQ(replacement->worldGenVersion(), generator->semanticsVersion());
         CHECK_NE(replacement->getBlock(0, 0, 0).id, edited);
         CHECK(!replacement->loadedFromDisk());
     }
@@ -2246,7 +2247,7 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
         ctx.service,
         ctx.context,
         reconstructed,
-        savedGenerator->config().world.version,
+        savedGenerator->semanticsVersion(),
         0,
         0,
         0,
@@ -2292,7 +2293,7 @@ TEST_CASE(ChunkStreamer_SaturatedLoaderPreservesPersistedChunk) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -2391,7 +2392,7 @@ TEST_CASE(ChunkStreamer_TransientRegionFailurePreservesPersistedChunk) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -2471,7 +2472,7 @@ TEST_CASE(ChunkStreamer_ExhaustedRegionReadsRecoverWithoutCameraMovement) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -2564,7 +2565,7 @@ TEST_CASE(AsyncChunkLoader_ExhaustedMidReadFailuresRecoverWithoutNewRequest) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -2637,7 +2638,7 @@ TEST_CASE(AsyncChunkLoader_CancelledRetryCannotAffectReplacementRequest) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -2716,7 +2717,7 @@ TEST_CASE(AsyncChunkLoader_RegionRetryWaitUsesLoadCapacity) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -2794,7 +2795,7 @@ TEST_CASE(AsyncChunkLoader_PayloadFailureReportsPayloadTerminalOwner) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -2868,7 +2869,7 @@ TEST_CASE(AsyncChunkLoader_MalformedPayloadFailsOnBackgroundWorker) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         1,
         1,
@@ -2988,7 +2989,7 @@ TEST_CASE(AsyncChunkLoader_FailureSignatureTracksTerminalSetMutation) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -3047,7 +3048,7 @@ TEST_CASE(AsyncChunkLoader_RegionCapacityStartsDeferredRequests) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -3100,7 +3101,7 @@ TEST_CASE(AsyncChunkLoader_RegionMetricsAccountDirectAndSpeculativeJobs) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         2,
@@ -3173,7 +3174,7 @@ TEST_CASE(AsyncChunkLoader_InlineZeroCapBoundsMaximalPrefetchDispatch) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         12,
@@ -3238,7 +3239,7 @@ TEST_CASE(AsyncChunkLoader_PublishesRegionResultAndAccountingTogether) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         0,
@@ -3302,7 +3303,7 @@ TEST_CASE(AsyncChunkLoader_InlineRegionTimingUsesScriptedMetricClock) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -3388,7 +3389,7 @@ TEST_CASE(AsyncChunkLoader_PoolYieldResubmissionRetainsAdmissionTiming) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         1,
@@ -3568,7 +3569,7 @@ TEST_CASE(AsyncChunkLoader_InitialPoolSubmissionPrecedesObservableStart) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         0,
@@ -3656,7 +3657,7 @@ TEST_CASE(AsyncChunkLoader_ResubmissionPrecedesObservableStart) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         0,
@@ -3794,7 +3795,7 @@ TEST_CASE(AsyncChunkLoader_PromotionRetainsOriginTimingAndConsumesNoPrefetchHit)
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         1,
@@ -3879,7 +3880,7 @@ TEST_CASE(AsyncChunkLoader_PrefetchMetricsTrackCacheUseAndUnusedEviction) {
         cacheHitContext.service,
         cacheHitContext.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -3958,7 +3959,7 @@ TEST_CASE(AsyncChunkLoader_PrefetchMetricsTrackCacheUseAndUnusedEviction) {
         evictionContext.service,
         evictionContext.context,
         evictionWorld,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -4001,7 +4002,7 @@ TEST_CASE(AsyncChunkLoader_LaterDirectRegionOutranksUnstartedPrefetch) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         2,
         0,
         12,
@@ -4135,7 +4136,7 @@ TEST_CASE(AsyncChunkLoader_DirectDemandDisplacesBoundedQueuedPrefetch) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         12,
@@ -4212,7 +4213,7 @@ TEST_CASE(AsyncChunkLoader_UnlimitedCapacityBoundsQueuedPrefetch) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         12,
@@ -4287,7 +4288,7 @@ TEST_CASE(AsyncChunkLoader_ZeroCapYieldKeepsQueuedPrefetchBounded) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         2,
         0,
         12,
@@ -4456,7 +4457,7 @@ TEST_CASE(AsyncChunkLoader_ZeroCapCancelsPoolPendingPromotionIntoFullQueue) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         2,
         0,
         12,
@@ -4645,7 +4646,7 @@ TEST_CASE(AsyncChunkLoader_CancelRemovesPoolPendingDirectRegionJob) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         2,
         0,
         12,
@@ -4734,7 +4735,7 @@ TEST_CASE(AsyncChunkLoader_RunningDirectRegionOwnerSurvivesDemandChurn) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         0,
@@ -4900,7 +4901,7 @@ TEST_CASE(AsyncChunkLoader_RunningDirectCancellationCachesAsPrefetch) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         0,
@@ -5036,7 +5037,7 @@ TEST_CASE(AsyncChunkLoader_CancelRemovesLoaderQueuedDirectRegionJob) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         12,
@@ -5144,7 +5145,7 @@ TEST_CASE(AsyncChunkLoader_LoaderQueuedPrefetchKeepsOwnerAcrossDemandChurn) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         12,
@@ -5290,7 +5291,7 @@ TEST_CASE(AsyncChunkLoader_PromotesPoolPendingSpeculationAheadOfNormalWork) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         2,
         0,
         12,
@@ -5430,7 +5431,7 @@ TEST_CASE(AsyncChunkLoader_SameRegionDemandPromotesAndCoalescesPrefetch) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         2,
         0,
         12,
@@ -5627,7 +5628,7 @@ TEST_CASE(AsyncChunkLoader_RunningSpeculativeDemandCompletesOnce) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         2,
         0,
         12,
@@ -5745,7 +5746,7 @@ TEST_CASE(AsyncChunkLoader_SubmittedJobSnapshotsStartObserver) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         2,
         0,
         12,
@@ -5805,7 +5806,7 @@ TEST_CASE(AsyncChunkLoader_GatedFixtureUnwindsAfterExpectedException) {
             ctx.service,
             ctx.context,
             world,
-            generator->config().world.version,
+            generator->semanticsVersion(),
             1,
             0,
             12,
@@ -5860,7 +5861,7 @@ TEST_CASE(AsyncChunkLoader_DirectDemandChurnBoundsSubmittedSpeculation) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         2,
         0,
         12,
@@ -5989,7 +5990,7 @@ TEST_CASE(AsyncChunkLoader_CancelDeferredDemandRestoresPrefetchPriority) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         0,
         12,
@@ -6099,7 +6100,7 @@ TEST_CASE(AsyncChunkLoader_Cancel) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -6143,7 +6144,7 @@ TEST_CASE(AsyncChunkLoader_CancelDeferredRequest) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -6201,7 +6202,7 @@ TEST_CASE(AsyncChunkLoader_PartialSpan_BaseFill) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -6278,14 +6279,15 @@ TEST_CASE(AsyncChunkLoader_PartialSpan_RespectsDisabledBaseFillCapability) {
         service,
         context,
         settings,
-        loaderGeneratorDefinition());
+        Rigel::Test::strictGeneratorDefinitionFixture(
+            loaderGeneratorDefinition()));
     saveRegionForPayload(service, context, "rigel:default", coord, payload);
 
     AsyncChunkLoader loader(
         service,
         context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         1,
@@ -6323,7 +6325,7 @@ TEST_CASE(AsyncChunkLoader_MissingRegion_UsesNegativeCache) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         2,
@@ -6372,7 +6374,7 @@ TEST_CASE(AsyncChunkLoader_DestroyWithInFlightJobs) {
         ctx.service,
         ctx.context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         1,
         1,
         4,

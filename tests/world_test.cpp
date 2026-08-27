@@ -68,7 +68,7 @@ TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
     generation.densityGraph.outputs["base_density"] = "flat_height";
     generation.stageEnabled["caves"] = false;
     generation.stageEnabled["structures"] = false;
-    auto generator = std::make_shared<WorldGenerator>(registry, generation);
+    auto generator = Rigel::Test::makeWorldGeneratorFixture(registry, generation);
     world.setGenerator(generator);
 
     Rigel::Test::TemporaryDirectory directory("rigel_world_diagnostics");
@@ -87,12 +87,15 @@ TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
         "Diagnostics Test World");
     settings.seed = generation.seed;
     Rigel::Test::installSavedWorldGenerationFixture(
-        service, context, settings, generation);
+        service,
+        context,
+        settings,
+        Rigel::Test::strictGeneratorDefinitionFixture(generation));
     auto loader = std::make_shared<Rigel::Persistence::AsyncChunkLoader>(
         service,
         context,
         world,
-        generator->config().world.version,
+        generator->semanticsVersion(),
         0,
         0,
         0,
@@ -186,7 +189,7 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     streaming.workerThreads = 0;
 
     auto generator =
-        std::make_shared<WorldGenerator>(resources.registry(), config);
+        Rigel::Test::makeWorldGeneratorFixture(resources.registry(), config);
     world.setGenerator(generator);
     view.setGenerator(generator);
     view.setStreamConfig(streaming);
@@ -211,7 +214,7 @@ TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
     WorldGenConfig generation;
     generation.solidBlock = solid.identifier;
     generation.surfaceBlock = solid.identifier;
-    auto generator = std::make_shared<WorldGenerator>(
+    auto generator = Rigel::Test::makeWorldGeneratorFixture(
         resources.registry(), generation);
     world.setGenerator(generator);
     view.setGenerator(generator);
@@ -230,7 +233,7 @@ TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
     const ChunkCoord coord{0, 0, 0};
     Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solidId}, resources.registry());
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     view.updateStreaming(coord.toWorldCenter());
@@ -286,7 +289,7 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
     WorldGenConfig generation;
     generation.solidBlock = solid.identifier;
     generation.surfaceBlock = solid.identifier;
-    auto generator = std::make_shared<WorldGenerator>(
+    auto generator = Rigel::Test::makeWorldGeneratorFixture(
         resources.registry(), generation);
     world.setGenerator(generator);
     view.setGenerator(generator);
@@ -305,7 +308,7 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
     const ChunkCoord coord{0, 0, 0};
     Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solidId}, resources.registry());
-    chunk.setWorldGenVersion(generator->config().world.version);
+    chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
 
     view.updateStreaming(coord.toWorldCenter());
@@ -406,7 +409,7 @@ TEST_CASE(WorldView_EditDrivenMeshingMatchesInitialStreaming) {
         WorldGenConfig generation;
         generation.solidBlock = solid.identifier;
         generation.surfaceBlock = solid.identifier;
-        auto generator = std::make_shared<WorldGenerator>(
+        auto generator = Rigel::Test::makeWorldGeneratorFixture(
             resources.registry(), std::move(generation));
         world.setGenerator(generator);
         view.setGenerator(generator);
@@ -428,7 +431,7 @@ TEST_CASE(WorldView_EditDrivenMeshingMatchesInitialStreaming) {
         if (!editAfterInitialMesh) {
             chunk.setBlock(1, 0, 0, BlockState{solidId}, resources.registry());
         }
-        chunk.setWorldGenVersion(generator->config().world.version);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
         chunk.setLoadedFromDisk(true);
 
         view.updateStreaming(glm::vec3(0.0f));

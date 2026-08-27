@@ -1,11 +1,12 @@
 #include "TestFramework.h"
+#include "GeneratorDefinitionTestRegistry.h"
 
 #include "WorldGenerationBootstrap.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Voxel/BlockType.h"
-#include "Rigel/Voxel/GeneratorSnapshot.h"
+#include "Rigel/Voxel/GeneratorDefinition.h"
 
 #include <filesystem>
 #include <memory>
@@ -16,28 +17,11 @@ namespace {
 
 using namespace Rigel;
 
-Voxel::WorldGenConfig definition(uint32_t seed, float density) {
-    Voxel::WorldGenConfig result;
-    result.seed = seed;
-    result.world.version = Voxel::kGeneratorSemanticsVersion;
-    result.solidBlock = "test:stone";
-    result.surfaceBlock = "test:grass";
-    result.waterBlock = "test:water";
-    result.shoreBlock = "test:sand";
-
-    Voxel::WorldGenConfig::BiomeConfig biome;
-    biome.name = "land";
-    biome.surface.push_back({"test:grass", 1});
-    result.biomes.entries.push_back(std::move(biome));
-
-    Voxel::WorldGenConfig::DensityNodeConfig node;
-    node.id = "ground";
-    node.type = "constant";
-    node.value = density;
-    result.densityGraph.nodes.push_back(std::move(node));
-    result.densityGraph.outputs["base_density"] = "ground";
-    result.stageEnabled["caves"] = false;
-    result.stageEnabled["structures"] = false;
+Voxel::GeneratorDefinitionData definition(float density) {
+    Voxel::GeneratorDefinitionData result =
+        Test::generatorDefinitionFixture(
+            "test:stone", "test:grass", "test:water");
+    result.densityGraph.nodes.front().value = density;
     return result;
 }
 
@@ -46,37 +30,12 @@ Persistence::NewWorldGeneration creation(
     float density,
     std::string displayName) {
     Persistence::NewWorldGeneration result;
-    result.settings.displayName = std::move(displayName);
-    result.settings.seed = seed;
-    result.settings.generator.sourceId = "test:installed";
-    result.settings.generator.sourceRevision = 1;
-    result.settings.generator.definitionSchemaVersion =
-        Voxel::kWorldGenConfigSnapshotSchemaVersion;
-    result.settings.generator.semanticsVersion =
-        Voxel::kGeneratorSemanticsVersion;
-    result.definition = definition(seed, density);
+    result.displayName = std::move(displayName);
+    result.seed = seed;
+    Voxel::BlockRegistry registry;
+    result.definition = Test::preparedGeneratorFixture(
+        definition(density), registry, "test:installed");
     return result;
-}
-
-std::string configureEmptySequenceCase(
-    Persistence::NewWorldGeneration& input,
-    int scenario) {
-    if (scenario == 0) {
-        input.definition.biomes.entries.clear();
-        return "  entries: []\n";
-    }
-    if (scenario == 1) {
-        input.definition.biomes.entries.front().surface.clear();
-        return "      surface: []\n";
-    }
-
-    input.definition.stageEnabled["structures"] = true;
-    Voxel::WorldGenConfig::FeatureConfig feature;
-    feature.name = "unrestricted";
-    feature.block = "test:grass";
-    feature.chance = 0.25f;
-    input.definition.structures.features.push_back(std::move(feature));
-    return "      biomes: []\n";
 }
 
 std::string readDocument(
@@ -106,7 +65,7 @@ void configureWorldSet(
     const std::filesystem::path& root,
     std::shared_ptr<Persistence::StorageBackend> storage,
     const std::string& preferredFormat,
-    bool includeShoreBlock = true) {
+    bool includeSurfaceBlock = true) {
     worldSet.persistenceFormats().registerFormat(
         Persistence::Backends::Memory::descriptor(),
         Persistence::Backends::Memory::factory(),
@@ -120,7 +79,7 @@ void configureWorldSet(
     worldSet.setPersistencePreferredFormat(preferredFormat);
     for (const std::string& identifier : {
              "test:stone", "test:grass", "test:water", "test:sand"}) {
-        if (!includeShoreBlock && identifier == "test:sand") {
+        if (!includeSurfaceBlock && identifier == "test:grass") {
             continue;
         }
         Voxel::BlockType block;
@@ -217,8 +176,8 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_malformed_save_starts_no_generatio
     writeDocument(
         *storage,
         root / "generator-definition.yaml",
-        Rigel::Voxel::serializeGeneratorSnapshot(
-            definition(101u, 0.25f)));
+        Rigel::Voxel::serializeGeneratorDefinitionSnapshot(
+            definition(0.25f)));
 
     Rigel::Voxel::WorldSet worldSet;
     configureWorldSet(worldSet, root, storage, "memory");
@@ -261,13 +220,14 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_reload_uses_saved_snapshot) {
             view,
             installedAtCreation,
             worldSet.persistenceContext(1));
-        CHECK_EQ(result.generator->config().seed, 111u);
+        CHECK_EQ(result.generator->seed(), 111u);
         CHECK_EQ(result.generator, world.generator());
         CHECK_EQ(result.generator, view.generator());
     }
 
     auto changedInstall = creation(222, 0.75f, "changed install");
-    changedInstall.definition.shoreBlock = "test:missing-from-install";
+    changedInstall.definition.data.terrain.solidMaterial =
+        "test:missing-from-install";
     for (const auto& installed : {
              std::optional<Rigel::Persistence::NewWorldGeneration>(
                  changedInstall),
@@ -285,96 +245,38 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_reload_uses_saved_snapshot) {
             installed,
             worldSet.persistenceContext(1));
         CHECK_EQ(result.persistenceFormat, std::string("memory"));
-        CHECK_EQ(result.generator->config().seed, 111u);
+        CHECK_EQ(result.generator->seed(), 111u);
         CHECK_EQ(
-            result.generator->config().densityGraph.nodes.front().value,
+            result.generator->definition().densityGraph.nodes.front().value,
             0.25f);
         CHECK_EQ(result.generator, world.generator());
         CHECK_EQ(result.generator, view.generator());
     }
 }
 
-TEST_CASE(ApplicationWorldGenerationBootstrap_publishes_and_reloads_empty_sequences) {
+TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_creation_starts_no_generation) {
     Rigel::Test::TemporaryDirectory directory(
-        "rigel_application_bootstrap_empty_sequences");
+        "rigel_application_bootstrap_invalid_creation");
+    const auto root = directory.path() / "world_1";
+    auto input = creation(600u, 0.25f, "invalid world");
+    input.definition.data.biomes.entries.clear();
+    auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    Rigel::Voxel::WorldSet worldSet;
+    configureWorldSet(worldSet, root, storage, "memory");
+    Rigel::Voxel::World& world = worldSet.createWorld(1);
+    Rigel::Voxel::WorldView view(world, worldSet.resources());
 
-    for (int scenario = 0; scenario < 3; ++scenario) {
-        const auto root =
-            directory.path() / ("world_" + std::to_string(scenario));
-        auto input = creation(
-            600u + static_cast<uint32_t>(scenario),
-            0.25f,
-            "empty sequence world");
-        const std::string emptySequenceToken =
-            configureEmptySequenceCase(input, scenario);
-        input.definition.terrain.baseHeight = 999.0f;
-        const std::string expectedSnapshot =
-            Rigel::Voxel::serializeGeneratorSnapshot(input.definition);
-        std::string publishedSnapshot;
-
-        {
-            auto storage =
-                std::make_shared<Rigel::Persistence::FilesystemBackend>();
-            Rigel::Voxel::WorldSet worldSet;
-            configureWorldSet(worldSet, root, storage, "memory");
-            Rigel::Voxel::World& world = worldSet.createWorld(1);
-            Rigel::Voxel::WorldView view(world, worldSet.resources());
-            const auto result =
-                Rigel::detail::bootstrapApplicationWorldGeneration(
-                    worldSet,
-                    1,
-                    world,
-                    view,
-                    input,
-                    worldSet.persistenceContext(1));
-
-            publishedSnapshot = readDocument(
-                *storage, root / "generator-definition.yaml");
-            CHECK_EQ(publishedSnapshot, expectedSnapshot);
-            CHECK(
-                publishedSnapshot.find(emptySequenceToken) !=
-                std::string::npos);
-            CHECK_EQ(
-                Rigel::Voxel::serializeGeneratorSnapshot(
-                    result.generator->config()),
-                publishedSnapshot);
-            CHECK_EQ(
-                result.generator->config().terrain.baseHeight,
-                Rigel::Voxel::WorldGenConfig{}.terrain.baseHeight);
-        }
-
-        {
-            auto storage =
-                std::make_shared<Rigel::Persistence::FilesystemBackend>();
-            Rigel::Voxel::WorldSet worldSet;
-            configureWorldSet(worldSet, root, storage, "cr");
-            Rigel::Voxel::World& world = worldSet.createWorld(1);
-            Rigel::Voxel::WorldView view(world, worldSet.resources());
-            const auto result =
-                Rigel::detail::bootstrapApplicationWorldGeneration(
-                    worldSet,
-                    1,
-                    world,
-                    view,
-                    std::nullopt,
-                    worldSet.persistenceContext(1));
-
-            CHECK_EQ(result.persistenceFormat, std::string("memory"));
-            CHECK_EQ(
-                Rigel::Voxel::serializeGeneratorSnapshot(
-                    result.generator->config()),
-                publishedSnapshot);
-            if (scenario == 0) {
-                CHECK(result.generator->config().biomes.entries.empty());
-            } else if (scenario == 1) {
-                CHECK(result.generator->config()
-                          .biomes.entries.front().surface.empty());
-            } else {
-                CHECK(result.generator->config()
-                          .structures.features.front().biomes.empty());
-            }
-        }
-    }
+    CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+        worldSet,
+        1,
+        world,
+        view,
+        input,
+        worldSet.persistenceContext(1)));
+    CHECK(world.generator() == nullptr);
+    CHECK(view.generator() == nullptr);
+    CHECK(!std::filesystem::exists(root));
+    CHECK_EQ(view.streamingMetrics().generationJobsStarted, uint64_t{0});
 }
 
 TEST_CASE(ApplicationWorldGenerationBootstrap_markerless_save_fails_unchanged) {

@@ -125,10 +125,7 @@ TEST_CASE(UserPreferences_missing_file_uses_shipped_defaults_without_creation) {
     const auto path = directory.path() / "profile" / "user-preferences.yaml";
     UserPreferencesStore store(path);
 
-    const UserPreferencesState state = store.load();
-
-    CHECK_EQ(state.requested, UserPreferences{});
-    CHECK_EQ(state.effective, UserPreferences{});
+    CHECK_EQ(store.load(), UserPreferences{});
     CHECK(!std::filesystem::exists(path));
     CHECK_THROWS(UserPreferencesStore("relative/user-preferences.yaml"));
 }
@@ -150,7 +147,7 @@ TEST_CASE(UserPreferences_path_is_explicit_and_uses_platform_config_policy) {
     {
         ScopedCurrentPath cwd(directory.path());
         UserPreferencesStore store(explicitPath);
-        CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 12);
+        CHECK_EQ(store.load().graphics.viewDistanceChunks, 12);
         CHECK(!std::filesystem::exists(explicitPath));
     }
 
@@ -191,7 +188,7 @@ TEST_CASE(UserPreferences_boundary_values_and_sparse_bindings_round_trip) {
     requested.input.bindings[UserAction::PlaceBlock] = {};
 
     store.saveRequested(requested);
-    CHECK_EQ(store.load().requested, requested);
+    CHECK_EQ(store.load(), requested);
     CHECK(stagingFiles(path).empty());
 
     requested.display.fpsLimit = 1000;
@@ -199,7 +196,7 @@ TEST_CASE(UserPreferences_boundary_values_and_sparse_bindings_round_trip) {
     requested.camera.verticalFovDegrees = 110.0;
     requested.input.mouseSensitivity = 1.0;
     store.saveRequested(requested);
-    CHECK_EQ(store.load().requested, requested);
+    CHECK_EQ(store.load(), requested);
 }
 
 TEST_CASE(UserPreferences_invalid_leaves_and_sections_preserve_valid_siblings) {
@@ -227,7 +224,7 @@ TEST_CASE(UserPreferences_invalid_leaves_and_sections_preserve_valid_siblings) {
     UserPreferencesStore store(path);
     Rigel::Test::LogCapture logs("user-preferences-tolerant");
 
-    const UserPreferences requested = store.load().requested;
+    const UserPreferences requested = store.load();
 
     CHECK_EQ(requested.display.mode, DisplayMode::Borderless);
     CHECK_EQ(requested.display.windowedSize, WindowedSize{});
@@ -278,7 +275,7 @@ TEST_CASE(UserPreferences_unknown_supported_nodes_survive_known_edits) {
     UserPreferences requested;
     {
         Rigel::Test::LogCapture logs("user-preferences-unknown-load");
-        requested = store.load().requested;
+        requested = store.load();
         CHECK_EQ(Rigel::Test::countOccurrences(logs.output(), "ignored"), 3u);
     }
     requested.graphics.viewDistanceChunks = 9;
@@ -292,7 +289,7 @@ TEST_CASE(UserPreferences_unknown_supported_nodes_survive_known_edits) {
     CHECK_NE(saved.find("future_root:"), std::string::npos);
     CHECK_NE(saved.find("future_quality: ultra"), std::string::npos);
     CHECK_NE(saved.find("future_action:"), std::string::npos);
-    CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 9);
+    CHECK_EQ(store.load().graphics.viewDistanceChunks, 9);
 }
 
 TEST_CASE(UserPreferences_duplicate_unknown_keys_are_tolerated_and_preserved) {
@@ -344,7 +341,7 @@ TEST_CASE(UserPreferences_duplicate_unknown_keys_are_tolerated_and_preserved) {
             Rigel::Test::LogCapture logs(
                 "user-preferences-unknown-duplicate-load-" +
                 duplicateCase.name);
-            requested = store.load().requested;
+            requested = store.load();
             CHECK_EQ(
                 Rigel::Test::countOccurrences(
                     logs.output(), duplicateCase.warning),
@@ -375,7 +372,7 @@ TEST_CASE(UserPreferences_duplicate_unknown_keys_are_tolerated_and_preserved) {
             Rigel::Test::LogCapture logs(
                 "user-preferences-unknown-duplicate-reload-" +
                 duplicateCase.name);
-            CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 9);
+            CHECK_EQ(store.load().graphics.viewDistanceChunks, 9);
         }
     }
 }
@@ -401,7 +398,7 @@ TEST_CASE(UserPreferences_serialized_size_limit_preserves_exact_limit_input) {
     UserPreferences requested;
     {
         Rigel::Test::LogCapture logs("user-preferences-size-load");
-        requested = store.load().requested;
+        requested = store.load();
         CHECK_EQ(
             Rigel::Test::countOccurrences(
                 logs.output(), "Unknown user preference 'retained'"),
@@ -441,7 +438,7 @@ TEST_CASE(UserPreferences_unsafe_documents_preserve_bytes_and_block_normal_save)
         writeDocument(path, original);
         UserPreferencesStore store(path);
         Rigel::Test::LogCapture logs("user-preferences-unsafe-" + name);
-        CHECK_EQ(store.load(), UserPreferencesState{});
+        CHECK_EQ(store.load(), UserPreferences{});
         CHECK_NE(logs.output().find("preserving the file"), std::string::npos);
         CHECK_THROWS(store.saveRequested(UserPreferences{}));
         CHECK_EQ(readDocument(path), original);
@@ -452,7 +449,7 @@ TEST_CASE(UserPreferences_unsafe_documents_preserve_bytes_and_block_normal_save)
         directory.path() / "oversized" / "user-preferences.yaml";
     writeDocument(oversized, std::string(262145, 'x'));
     UserPreferencesStore oversizedStore(oversized);
-    CHECK_EQ(oversizedStore.load(), UserPreferencesState{});
+    CHECK_EQ(oversizedStore.load(), UserPreferences{});
     CHECK_THROWS(oversizedStore.saveRequested(UserPreferences{}));
     CHECK_EQ(std::filesystem::file_size(oversized), 262145u);
 
@@ -465,7 +462,7 @@ TEST_CASE(UserPreferences_unsafe_documents_preserve_bytes_and_block_normal_save)
         std::filesystem::perms::none,
         std::filesystem::perm_options::replace);
     UserPreferencesStore unreadableStore(unreadable);
-    CHECK_EQ(unreadableStore.load(), UserPreferencesState{});
+    CHECK_EQ(unreadableStore.load(), UserPreferences{});
     CHECK_THROWS(unreadableStore.saveRequested(UserPreferences{}));
     std::filesystem::permissions(
         unreadable,
@@ -478,7 +475,7 @@ TEST_CASE(UserPreferences_unsafe_documents_preserve_bytes_and_block_normal_save)
         directory.path() / "nonregular" / "user-preferences.yaml";
     std::filesystem::create_directories(nonregular);
     UserPreferencesStore nonregularStore(nonregular);
-    CHECK_EQ(nonregularStore.load(), UserPreferencesState{});
+    CHECK_EQ(nonregularStore.load(), UserPreferences{});
     CHECK_THROWS(nonregularStore.saveRequested(UserPreferences{}));
 
     const auto replacePath =
@@ -490,7 +487,7 @@ TEST_CASE(UserPreferences_unsafe_documents_preserve_bytes_and_block_normal_save)
     replaceStore.replaceWithRequested(replacement);
     replacement.graphics.viewDistanceChunks = 7;
     CHECK_NO_THROW(replaceStore.saveRequested(replacement));
-    CHECK_EQ(replaceStore.load().requested, replacement);
+    CHECK_EQ(replaceStore.load(), replacement);
 }
 
 TEST_CASE(UserPreferences_duplicate_mapping_keys_require_explicit_replacement) {
@@ -546,7 +543,7 @@ TEST_CASE(UserPreferences_duplicate_mapping_keys_require_explicit_replacement) {
         {
             Rigel::Test::LogCapture logs(
                 "user-preferences-duplicate-" + duplicateCase.name);
-            CHECK_EQ(store.load(), UserPreferencesState{});
+            CHECK_EQ(store.load(), UserPreferences{});
             CHECK_EQ(
                 logs.output(),
                 "User preferences file '" + path.string() +
@@ -568,10 +565,10 @@ TEST_CASE(UserPreferences_duplicate_mapping_keys_require_explicit_replacement) {
         UserPreferences replacement;
         replacement.graphics.viewDistanceChunks = 6;
         store.replaceWithRequested(replacement);
-        CHECK_EQ(store.load().requested, replacement);
+        CHECK_EQ(store.load(), replacement);
         replacement.graphics.viewDistanceChunks = 7;
         CHECK_NO_THROW(store.saveRequested(replacement));
-        CHECK_EQ(store.load().requested, replacement);
+        CHECK_EQ(store.load(), replacement);
     }
 }
 
@@ -668,7 +665,7 @@ TEST_CASE(UserPreferences_rechecks_external_replacement_before_saving) {
         "schema_version: 2\nfuture: must-survive\n";
     writeDocument(path, supported);
     UserPreferencesStore store(path);
-    UserPreferences requested = store.load().requested;
+    UserPreferences requested = store.load();
     requested.graphics.viewDistanceChunks = 10;
     writeDocument(path, newer);
 
@@ -692,26 +689,26 @@ TEST_CASE(UserPreferences_reload_unblocks_normal_save_after_external_recovery) {
         directory.path() / "replaced" / "user-preferences.yaml";
     writeDocument(replacedPath, unsafe);
     UserPreferencesStore replacedStore(replacedPath);
-    CHECK_EQ(replacedStore.load(), UserPreferencesState{});
+    CHECK_EQ(replacedStore.load(), UserPreferences{});
     CHECK_THROWS(replacedStore.saveRequested(UserPreferences{}));
     writeDocument(replacedPath, supported);
-    UserPreferences replacedRequest = replacedStore.load().requested;
+    UserPreferences replacedRequest = replacedStore.load();
     replacedRequest.graphics.viewDistanceChunks = 9;
     CHECK_NO_THROW(replacedStore.saveRequested(replacedRequest));
-    CHECK_EQ(replacedStore.load().requested, replacedRequest);
+    CHECK_EQ(replacedStore.load(), replacedRequest);
 
     const auto removedPath =
         directory.path() / "removed" / "user-preferences.yaml";
     writeDocument(removedPath, unsafe);
     UserPreferencesStore removedStore(removedPath);
-    CHECK_EQ(removedStore.load(), UserPreferencesState{});
+    CHECK_EQ(removedStore.load(), UserPreferences{});
     CHECK_THROWS(removedStore.saveRequested(UserPreferences{}));
     CHECK(std::filesystem::remove(removedPath));
-    CHECK_EQ(removedStore.load(), UserPreferencesState{});
+    CHECK_EQ(removedStore.load(), UserPreferences{});
     UserPreferences removedRequest;
     removedRequest.graphics.viewDistanceChunks = 10;
     CHECK_NO_THROW(removedStore.saveRequested(removedRequest));
-    CHECK_EQ(removedStore.load().requested, removedRequest);
+    CHECK_EQ(removedStore.load(), removedRequest);
 }
 
 TEST_CASE(UserPreferences_save_lock_excludes_newer_writer_after_preflight) {
@@ -721,7 +718,7 @@ TEST_CASE(UserPreferences_save_lock_excludes_newer_writer_after_preflight) {
         path,
         "schema_version: 1\ngraphics: {view_distance_chunks: 8}\n");
     UserPreferencesStore store(path);
-    UserPreferences requested = store.load().requested;
+    UserPreferences requested = store.load();
     requested.graphics.viewDistanceChunks = 10;
 
     std::mutex mutex;
@@ -770,30 +767,11 @@ TEST_CASE(UserPreferences_save_lock_excludes_newer_writer_after_preflight) {
     CHECK_NE(
         documentWhileSaveWasLocked.find("schema_version: 1"),
         std::string::npos);
-    CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 10);
+    CHECK_EQ(store.load().graphics.viewDistanceChunks, 10);
 
     CHECK(detail::tryPublishCooperatingUserPreferencesDocumentForTesting(
         path, newer));
     CHECK_EQ(readDocument(path), newer);
-}
-
-TEST_CASE(UserPreferences_serializes_requested_not_hardware_effective_values) {
-    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_state");
-    const auto path = directory.path() / "user-preferences.yaml";
-    UserPreferencesStore store(path);
-    UserPreferencesState state;
-    state.requested.display.mode = DisplayMode::Borderless;
-    state.requested.display.windowedSize = {3840, 2160};
-    state.requested.graphics.shadows = true;
-    state.effective = state.requested;
-    state.effective.display.mode = DisplayMode::Windowed;
-    state.effective.display.windowedSize = {800, 600};
-    state.effective.graphics.shadows = false;
-
-    store.saveRequested(state);
-
-    CHECK_EQ(store.load().requested, state.requested);
-    CHECK_NE(store.load().requested, state.effective);
 }
 
 TEST_CASE(UserPreferences_prepublication_failure_preserves_last_valid_file) {
@@ -833,7 +811,7 @@ TEST_CASE(UserPreferences_prepublication_failure_preserves_last_valid_file) {
     CHECK_EQ(readDocument(path), previous);
     CHECK(stagingFiles(path).empty());
     CHECK_NO_THROW(store.saveRequested(requested));
-    CHECK_EQ(store.load().requested, requested);
+    CHECK_EQ(store.load(), requested);
 #endif
 }
 
@@ -852,7 +830,7 @@ TEST_CASE(UserPreferences_failed_explicit_replace_keeps_unsafe_save_block) {
     UserPreferencesStore store(path);
     {
         Rigel::Test::LogCapture logs("user-preferences-failed-replace-load");
-        CHECK_EQ(store.load(), UserPreferencesState{});
+        CHECK_EQ(store.load(), UserPreferences{});
     }
 
     UserPreferences replacement;
@@ -891,7 +869,7 @@ TEST_CASE(UserPreferences_failed_explicit_replace_keeps_unsafe_save_block) {
     store.replaceWithRequested(replacement);
     replacement.graphics.viewDistanceChunks = 7;
     CHECK_NO_THROW(store.saveRequested(replacement));
-    CHECK_EQ(store.load().requested, replacement);
+    CHECK_EQ(store.load(), replacement);
 #endif
 }
 
@@ -901,7 +879,7 @@ TEST_CASE(UserPreferences_replace_published_uncertainty_clears_save_block) {
     const auto path = directory.path() / "user-preferences.yaml";
     writeDocument(path, "schema_version: 2\nfuture: preserved-until-replace\n");
     UserPreferencesStore store(path);
-    CHECK_EQ(store.load(), UserPreferencesState{});
+    CHECK_EQ(store.load(), UserPreferences{});
     CHECK_THROWS(store.saveRequested(UserPreferences{}));
 
     UserPreferences replacement;
@@ -925,9 +903,9 @@ TEST_CASE(UserPreferences_replace_published_uncertainty_clears_save_block) {
     detail::setUserPreferencesAfterPublicationHookForTesting({});
 
     CHECK(reportedUncertainty);
-    CHECK_EQ(UserPreferencesStore(path).load().requested, replacement);
+    CHECK_EQ(UserPreferencesStore(path).load(), replacement);
     CHECK(stagingFiles(path).empty());
     replacement.graphics.viewDistanceChunks = 7;
     CHECK_NO_THROW(store.saveRequested(replacement));
-    CHECK_EQ(store.load().requested, replacement);
+    CHECK_EQ(store.load(), replacement);
 }

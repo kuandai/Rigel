@@ -1145,7 +1145,7 @@ UserPreferencesStore UserPreferencesStore::forCurrentUser() {
     return UserPreferencesStore(currentUserPreferencesPath());
 }
 
-UserPreferencesState UserPreferencesStore::load() {
+UserPreferences UserPreferencesStore::load() {
     DocumentInspection inspection = inspectDocument(m_path);
     if (inspection.kind == DocumentKind::Missing) {
         m_normalSaveBlocked = false;
@@ -1161,7 +1161,7 @@ UserPreferencesState UserPreferencesStore::load() {
     }
 
     m_normalSaveBlocked = false;
-    return {inspection.preferences, inspection.preferences};
+    return inspection.preferences;
 }
 
 void UserPreferencesStore::saveRequested(const UserPreferences& requested) {
@@ -1195,10 +1195,6 @@ void UserPreferencesStore::saveRequested(const UserPreferences& requested) {
         }
         throw;
     }
-}
-
-void UserPreferencesStore::saveRequested(const UserPreferencesState& state) {
-    saveRequested(state.requested);
 }
 
 void UserPreferencesStore::replaceWithRequested(

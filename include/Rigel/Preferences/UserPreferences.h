@@ -86,15 +86,6 @@ struct UserPreferences {
     bool operator==(const UserPreferences&) const = default;
 };
 
-// Effective values may contain safe hardware fallbacks. Persistence always
-// serializes requested values so recovery never silently changes user intent.
-struct UserPreferencesState {
-    UserPreferences requested;
-    UserPreferences effective;
-
-    bool operator==(const UserPreferencesState&) const = default;
-};
-
 class UserPreferencesWriteBlocked final : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -108,10 +99,9 @@ public:
 
     static UserPreferencesStore forCurrentUser();
 
-    UserPreferencesState load();
+    UserPreferences load();
 
     void saveRequested(const UserPreferences& requested);
-    void saveRequested(const UserPreferencesState& state);
 
     // Explicitly discards an unreadable, malformed, or unsupported document
     // and its unknown fields. This is the only operation that clears a normal

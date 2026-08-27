@@ -407,17 +407,14 @@ TEST_CASE(UserPreferences_serialized_size_limit_preserves_exact_limit_input) {
     CHECK_EQ(requested.graphics.viewDistanceChunks, 8);
     requested.graphics.viewDistanceChunks = 9;
 
-    bool failedBeforePublication = false;
+    bool failedDuringPreparation = false;
     try {
         Rigel::Test::LogCapture logs("user-preferences-size-save");
         store.saveRequested(requested);
-    } catch (const Rigel::Persistence::AtomicFilePublicationError& error) {
-        CHECK_EQ(
-            error.state(),
-            Rigel::Persistence::AtomicFilePublicationState::NotPublished);
-        failedBeforePublication = true;
+    } catch (const UserPreferencesPreparationError&) {
+        failedDuringPreparation = true;
     }
-    CHECK(failedBeforePublication);
+    CHECK(failedDuringPreparation);
     CHECK_EQ(readDocument(path), original);
     CHECK_EQ(std::filesystem::file_size(path), maximumDocumentBytes);
     CHECK(stagingFiles(path).empty());
@@ -709,6 +706,59 @@ TEST_CASE(UserPreferences_reload_unblocks_normal_save_after_external_recovery) {
     removedRequest.graphics.viewDistanceChunks = 10;
     CHECK_NO_THROW(removedStore.saveRequested(removedRequest));
     CHECK_EQ(removedStore.load(), removedRequest);
+}
+
+TEST_CASE(UserPreferences_prepared_save_retains_lock_and_exact_document) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_user_preferences_prepared_lock");
+    const auto path = directory.path() / "user-preferences.yaml";
+    writeDocument(
+        path,
+        "schema_version: 1\n"
+        "graphics: {view_distance_chunks: 8}\n"
+        "future_root: retained\n");
+    UserPreferencesStore store(path);
+    UserPreferences requested = store.load();
+    requested.graphics.viewDistanceChunks = 10;
+
+    {
+        auto prepared = store.prepareSave(requested);
+        requested.graphics.viewDistanceChunks = 11;
+        CHECK(!detail::tryPublishCooperatingUserPreferencesDocumentForTesting(
+            path,
+            "schema_version: 2\nfuture: must-not-replace-prepared-save\n"));
+        store.publishPrepared(std::move(prepared));
+    }
+
+    CHECK_EQ(store.load().graphics.viewDistanceChunks, 10);
+    CHECK_NE(readDocument(path).find("future_root: retained"),
+             std::string::npos);
+}
+
+TEST_CASE(UserPreferences_abandoned_prepared_save_releases_lock_without_writing) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_user_preferences_prepared_abandon");
+    const auto path = directory.path() / "user-preferences.yaml";
+    const std::string original =
+        "schema_version: 1\ngraphics: {view_distance_chunks: 8}\n";
+    writeDocument(path, original);
+    UserPreferencesStore store(path);
+    UserPreferences requested = store.load();
+    requested.graphics.viewDistanceChunks = 10;
+
+    {
+        auto abandoned = store.prepareSave(requested);
+        CHECK(!detail::tryPublishCooperatingUserPreferencesDocumentForTesting(
+            path,
+            "schema_version: 2\nfuture: blocked-while-prepared\n"));
+    }
+
+    CHECK_EQ(readDocument(path), original);
+    const std::string replacement =
+        "schema_version: 2\nfuture: published-after-abandonment\n";
+    CHECK(detail::tryPublishCooperatingUserPreferencesDocumentForTesting(
+        path, replacement));
+    CHECK_EQ(readDocument(path), replacement);
 }
 
 TEST_CASE(UserPreferences_save_lock_excludes_newer_writer_after_preflight) {

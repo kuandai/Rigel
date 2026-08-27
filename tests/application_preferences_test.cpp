@@ -20,6 +20,8 @@ namespace Rigel::Preferences::detail {
 
 void setUserPreferencesAfterSavePreflightHookForTesting(
     std::function<void()> hook);
+void setUserPreferencesBeforePublicationHookForTesting(
+    std::function<void()> hook);
 void setUserPreferencesAfterPublicationHookForTesting(
     std::function<void()> hook);
 
@@ -47,6 +49,8 @@ struct FakeDisplay {
     bool swapIntervalZeroSupported = true;
     bool failWindowPositionQuery = false;
     bool failMonitorPositionQuery = false;
+    bool deferConfigurationResizeCallbacks = false;
+    std::vector<std::pair<int, int>> deferredLogicalResizes;
     std::vector<int> swapIntervals;
     std::vector<double> sleepDeadlines;
     Rigel::Input::InputCallbackContext* inputCallbacks = nullptr;
@@ -124,8 +128,14 @@ void setWindowMonitor(
     g_display->bounds = {x, y, width, height};
     if (g_display->inputCallbacks &&
         g_display->inputCallbacks->logicalResize) {
-        g_display->inputCallbacks->logicalResize(
-            g_display->inputCallbacks->logicalResizeContext, width, height);
+        if (g_display->deferConfigurationResizeCallbacks) {
+            g_display->deferredLogicalResizes.emplace_back(width, height);
+        } else {
+            g_display->inputCallbacks->logicalResize(
+                g_display->inputCallbacks->logicalResizeContext,
+                width,
+                height);
+        }
     }
     if (g_display->configurationFailuresRemaining > 0) {
         --g_display->configurationFailuresRemaining;
@@ -211,6 +221,17 @@ void writeDocument(
     stream << document;
 }
 
+std::string maximumRetainedDocument() {
+    constexpr size_t maximumDocumentBytes = 262144;
+    const std::string prefix = "schema_version: 1\nretained: ";
+    const std::string suffix = "\n";
+    return prefix +
+        std::string(
+               maximumDocumentBytes - prefix.size() - suffix.size(),
+               'x') +
+        suffix;
+}
+
 void failBeforePublication() {
     throw Rigel::Persistence::AtomicFilePublicationError(
         Rigel::Persistence::AtomicFilePublicationState::NotPublished,
@@ -226,6 +247,11 @@ void failAfterPublication() {
 
 void countPreflight() {
     ++g_display->savePreflights;
+}
+
+void countAndFailBeforePublication() {
+    ++g_display->savePreflights;
+    failBeforePublication();
 }
 
 class DisplayFixture {
@@ -251,6 +277,8 @@ public:
         Rigel::Preferences::detail::
             setUserPreferencesAfterSavePreflightHookForTesting({});
         Rigel::Preferences::detail::
+            setUserPreferencesBeforePublicationHookForTesting({});
+        Rigel::Preferences::detail::
             setUserPreferencesAfterPublicationHookForTesting({});
         g_display = nullptr;
     }
@@ -269,6 +297,7 @@ public:
         Rigel::registerApplicationPreferenceCallbacks(
             inputCallbacks, preferences);
         display.inputCallbacks = &inputCallbacks;
+        preferenceOwner = &preferences;
     }
 
     void manualResize(int width, int height, double observedAt) {
@@ -276,6 +305,7 @@ public:
         display.bounds.width = width;
         display.bounds.height = height;
         emitResizeCallback(width, height);
+        CHECK(!finishEventBatch(observedAt));
     }
 
     void emitResizeCallback(int width, int height) {
@@ -284,8 +314,25 @@ public:
             inputCallbacks.logicalResizeContext, width, height);
     }
 
+    std::optional<Rigel::PreferenceApplyResult> finishEventBatch(
+        double observedAt) {
+        CHECK(preferenceOwner != nullptr);
+        g_now = observedAt;
+        return preferenceOwner->consumeLogicalResize(runtime, observedAt);
+    }
+
+    void dispatchDeferredResizeCallbacks() {
+        const auto deferred = std::exchange(
+            display.deferredLogicalResizes,
+            std::vector<std::pair<int, int>>{});
+        for (const auto [width, height] : deferred) {
+            emitResizeCallback(width, height);
+        }
+    }
+
     FakeDisplay display;
     Rigel::Input::InputCallbackContext inputCallbacks;
+    Rigel::ApplicationPreferences* preferenceOwner = nullptr;
     std::filesystem::path path;
     Rigel::GlfwRuntime runtime;
 };
@@ -431,6 +478,7 @@ TEST_CASE(ApplicationPreferences_BorderlessRoundTripRemembersWindowedSize) {
 
     g_now = 10.0;
     fixture.emitResizeCallback(400, 300);
+    CHECK(!fixture.finishEventBatch(10.0));
     CHECK(!preferences.flushResizePersistence(11.0));
 
     auto windowed = borderless;
@@ -583,7 +631,7 @@ TEST_CASE(ApplicationPreferences_PublicationOutcomesMatchPhysicalState) {
     auto candidate = requested.display;
     candidate.windowedSize = {1280, 720};
     Rigel::Preferences::detail::
-        setUserPreferencesAfterSavePreflightHookForTesting(
+        setUserPreferencesBeforePublicationHookForTesting(
             &failBeforePublication);
 
     const auto notPublished =
@@ -596,7 +644,7 @@ TEST_CASE(ApplicationPreferences_PublicationOutcomesMatchPhysicalState) {
     CHECK_EQ(preferences.effectiveDisplay(), requested.display);
 
     Rigel::Preferences::detail::
-        setUserPreferencesAfterSavePreflightHookForTesting({});
+        setUserPreferencesBeforePublicationHookForTesting({});
     Rigel::Preferences::detail::
         setUserPreferencesAfterPublicationHookForTesting(
             &failAfterPublication);
@@ -614,6 +662,177 @@ TEST_CASE(ApplicationPreferences_PublicationOutcomesMatchPhysicalState) {
             .load()
             .display,
         candidate);
+}
+
+TEST_CASE(ApplicationPreferences_OversizedRetainedSavePreventsDisplayMutation) {
+    DisplayFixture fixture;
+    const std::string original = maximumRetainedDocument();
+    writeDocument(fixture.path, original);
+    Rigel::ApplicationPreferences preferences(
+        fixture.path,
+        Rigel::Core::FramePacer::Clock{&now, &sleepUntil});
+    preferences.load();
+    preferences.initializeDisplay(fixture.runtime, false);
+    const auto oldBounds = fixture.display.bounds;
+    const int oldDecoration = fixture.display.decorated;
+    const size_t oldSwapAttempts = fixture.display.swapIntervals.size();
+    const int oldConfigurationAttempts =
+        fixture.display.configurationAttempts;
+    auto candidate = preferences.requested().display;
+    candidate.windowedSize = {1280, 720};
+    candidate.vsync = false;
+
+    const auto result = preferences.applyDisplay(fixture.runtime, candidate);
+
+    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK_NE(result.message.find("262144-byte limit"), std::string::npos);
+    CHECK_EQ(fixture.display.bounds, oldBounds);
+    CHECK_EQ(fixture.display.decorated, oldDecoration);
+    CHECK_EQ(fixture.display.swapIntervals.size(), oldSwapAttempts);
+    CHECK_EQ(
+        fixture.display.configurationAttempts, oldConfigurationAttempts);
+    CHECK_EQ(preferences.requested().display,
+             Rigel::Preferences::DisplayPreferences{});
+    CHECK_EQ(preferences.effectiveDisplay(),
+             Rigel::Preferences::DisplayPreferences{});
+    CHECK_EQ(readDocument(fixture.path), original);
+}
+
+TEST_CASE(ApplicationPreferences_OversizedRetainedSavePreservesFovHistory) {
+    DisplayFixture fixture;
+    const std::string original = maximumRetainedDocument();
+    writeDocument(fixture.path, original);
+    Rigel::ApplicationPreferences preferences(
+        fixture.path,
+        Rigel::Core::FramePacer::Clock{&now, &sleepUntil});
+    preferences.load();
+    Rigel::Render::FrameRenderer renderer;
+    renderer.setVerticalFovDegrees(
+        preferences.effectiveVerticalFovDegrees());
+    Rigel::Render::FrameRendererTestAccess::markTemporalHistoryValid(renderer);
+
+    const auto result = preferences.applyVerticalFov(renderer, 90.0);
+
+    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK_EQ(preferences.requested().camera.verticalFovDegrees, 60.0);
+    CHECK_EQ(preferences.effectiveVerticalFovDegrees(), 60.0);
+    CHECK_EQ(
+        Rigel::Render::FrameRendererTestAccess::verticalFovDegrees(renderer),
+        60.0);
+    CHECK(Rigel::Render::FrameRendererTestAccess::temporalHistoryValid(
+        renderer));
+    CHECK_EQ(readDocument(fixture.path), original);
+}
+
+TEST_CASE(ApplicationPreferences_DeferredAppliedResizeCallbackIsDiscarded) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.display.deferConfigurationResizeCallbacks = true;
+    auto candidate = requested.display;
+    candidate.windowedSize = {1280, 720};
+
+    CHECK_EQ(
+        preferences.applyDisplay(fixture.runtime, candidate).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(fixture.display.deferredLogicalResizes.size(),
+             static_cast<size_t>(1));
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterSavePreflightHookForTesting(&countPreflight);
+    fixture.dispatchDeferredResizeCallbacks();
+
+    CHECK(!fixture.finishEventBatch(1.0));
+    CHECK(!preferences.flushResizePersistence(10.0));
+    CHECK_EQ(fixture.display.savePreflights, 0);
+    CHECK_EQ(preferences.requested().display, candidate);
+    CHECK_EQ(preferences.effectiveDisplay(), candidate);
+}
+
+TEST_CASE(ApplicationPreferences_DeferredRollbackCallbacksAreDiscarded) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.display.deferConfigurationResizeCallbacks = true;
+    auto candidate = requested.display;
+    candidate.windowedSize = {1280, 720};
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting(
+            &failBeforePublication);
+
+    CHECK_EQ(
+        preferences.applyDisplay(fixture.runtime, candidate).status,
+        Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(fixture.display.deferredLogicalResizes.size(),
+             static_cast<size_t>(2));
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting({});
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterSavePreflightHookForTesting(&countPreflight);
+    fixture.dispatchDeferredResizeCallbacks();
+
+    CHECK(!fixture.finishEventBatch(1.0));
+    CHECK(!preferences.flushResizePersistence(10.0));
+    CHECK_EQ(fixture.display.savePreflights, 0);
+    CHECK_EQ(preferences.requested(), requested);
+    CHECK_EQ(preferences.effectiveDisplay(), requested.display);
+}
+
+TEST_CASE(ApplicationPreferences_SameBatchManualResizeSupersedesDeferredApply) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.display.deferConfigurationResizeCallbacks = true;
+    auto candidate = requested.display;
+    candidate.windowedSize = {1280, 720};
+    CHECK_EQ(
+        preferences.applyDisplay(fixture.runtime, candidate).status,
+        Rigel::PreferenceApplyStatus::Applied);
+
+    fixture.dispatchDeferredResizeCallbacks();
+    fixture.display.bounds.width = 1400;
+    fixture.display.bounds.height = 900;
+    fixture.emitResizeCallback(1400, 900);
+    CHECK(!fixture.finishEventBatch(1.0));
+    CHECK_EQ(preferences.effectiveDisplay().windowedSize,
+             (Rigel::Preferences::WindowedSize{1400, 900}));
+    CHECK(!preferences.flushResizePersistence(1.24));
+
+    const auto saved = preferences.flushResizePersistence(1.25);
+    CHECK(saved.has_value());
+    CHECK_EQ(saved->status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.requested().display.windowedSize,
+             (Rigel::Preferences::WindowedSize{1400, 900}));
+}
+
+TEST_CASE(ApplicationPreferences_ResizeQueryFailureIsConsumedOnce) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.display.bounds.width = 1200;
+    fixture.display.bounds.height = 800;
+    fixture.display.failWindowPositionQuery = true;
+    fixture.emitResizeCallback(1200, 800);
+
+    const auto failed = fixture.finishEventBatch(1.0);
+
+    CHECK(failed.has_value());
+    CHECK_EQ(failed->status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_NE(failed->message.find("window position query"),
+             std::string::npos);
+    fixture.display.failWindowPositionQuery = true;
+    CHECK(!fixture.finishEventBatch(2.0));
+    CHECK(fixture.display.failWindowPositionQuery);
+    CHECK(!preferences.flushResizePersistence(10.0));
+    CHECK_EQ(preferences.effectiveDisplay().windowedSize,
+             requested.display.windowedSize);
 }
 
 TEST_CASE(ApplicationPreferences_ResizeDebouncesAndCoalescesOneSave) {
@@ -646,7 +865,7 @@ TEST_CASE(ApplicationPreferences_ResizeFailureRetainsBoundedRetry) {
     fixture.connectResizeCallback(preferences);
     fixture.manualResize(1200, 800, 1.0);
     Rigel::Preferences::detail::
-        setUserPreferencesAfterSavePreflightHookForTesting(
+        setUserPreferencesBeforePublicationHookForTesting(
             &failBeforePublication);
 
     const auto result = preferences.flushResizePersistence(1.25);
@@ -661,6 +880,8 @@ TEST_CASE(ApplicationPreferences_ResizeFailureRetainsBoundedRetry) {
     CHECK(!preferences.flushResizePersistence(2.24));
 
     Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting({});
+    Rigel::Preferences::detail::
         setUserPreferencesAfterSavePreflightHookForTesting(&countPreflight);
     const auto retried = preferences.flushResizePersistence(2.25);
     CHECK(retried.has_value());
@@ -673,6 +894,79 @@ TEST_CASE(ApplicationPreferences_ResizeFailureRetainsBoundedRetry) {
             .load()
             .display.windowedSize,
         (Rigel::Preferences::WindowedSize{1200, 800}));
+}
+
+TEST_CASE(ApplicationPreferences_ResizePublicationRetriesExactlyOnce) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.manualResize(1200, 800, 1.0);
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting(
+            &countAndFailBeforePublication);
+
+    const auto first = preferences.flushResizePersistence(1.25);
+    CHECK(first.has_value());
+    CHECK_EQ(first->status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(fixture.display.savePreflights, 1);
+
+    fixture.emitResizeCallback(1200, 800);
+    CHECK(!fixture.finishEventBatch(1.5));
+    CHECK(!preferences.flushResizePersistence(2.24));
+    const auto retry = preferences.flushResizePersistence(2.25);
+    CHECK(retry.has_value());
+    CHECK_EQ(retry->status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(fixture.display.savePreflights, 2);
+
+    fixture.emitResizeCallback(1200, 800);
+    CHECK(!fixture.finishEventBatch(3.0));
+    CHECK(!preferences.flushResizePersistence(100.0));
+    const auto shutdown = preferences.flushResizePersistenceForShutdown();
+    CHECK(shutdown.has_value());
+    CHECK_EQ(shutdown->status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(fixture.display.savePreflights, 2);
+
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting({});
+    fixture.manualResize(1300, 850, 101.0);
+    const auto distinct = preferences.flushResizePersistence(101.25);
+    CHECK(distinct.has_value());
+    CHECK_EQ(distinct->status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.requested().display.windowedSize,
+             (Rigel::Preferences::WindowedSize{1300, 850}));
+}
+
+TEST_CASE(ApplicationPreferences_ResizePreparationFailureIsTerminalForSize) {
+    DisplayFixture fixture;
+    const std::string original = maximumRetainedDocument();
+    writeDocument(fixture.path, original);
+    Rigel::ApplicationPreferences preferences(
+        fixture.path,
+        Rigel::Core::FramePacer::Clock{&now, &sleepUntil});
+    preferences.load();
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterSavePreflightHookForTesting(&countPreflight);
+    fixture.manualResize(1200, 800, 1.0);
+
+    const auto failed = preferences.flushResizePersistence(1.25);
+
+    CHECK(failed.has_value());
+    CHECK_EQ(
+        failed->status, Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK_EQ(fixture.display.savePreflights, 0);
+    fixture.emitResizeCallback(1200, 800);
+    CHECK(!fixture.finishEventBatch(2.0));
+    CHECK(!preferences.flushResizePersistence(100.0));
+    const auto shutdown = preferences.flushResizePersistenceForShutdown();
+    CHECK(shutdown.has_value());
+    CHECK_EQ(
+        shutdown->status, Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK_EQ(fixture.display.savePreflights, 0);
+    CHECK_EQ(readDocument(fixture.path), original);
 }
 
 TEST_CASE(ApplicationPreferences_BlockedResizeIsReportedWithoutRetrying) {
@@ -765,7 +1059,7 @@ TEST_CASE(ApplicationPreferences_FovPublicationFailureRestoresProjection) {
     Rigel::Render::FrameRenderer renderer;
     renderer.setVerticalFovDegrees(requested.camera.verticalFovDegrees);
     Rigel::Preferences::detail::
-        setUserPreferencesAfterSavePreflightHookForTesting(
+        setUserPreferencesBeforePublicationHookForTesting(
             &failBeforePublication);
 
     const auto result = preferences.applyVerticalFov(renderer, 90.0);

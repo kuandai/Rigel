@@ -27,7 +27,7 @@
 
 namespace Rigel::Preferences::detail {
 
-void setUserPreferencesAfterSavePreflightHookForTesting(
+void setUserPreferencesBeforePublicationHookForTesting(
     std::function<void()> hook);
 
 } // namespace Rigel::Preferences::detail
@@ -245,13 +245,13 @@ class ScopedPreferenceSavePreflight {
 public:
     ScopedPreferenceSavePreflight() {
         Rigel::Preferences::detail::
-            setUserPreferencesAfterSavePreflightHookForTesting(
+            setUserPreferencesBeforePublicationHookForTesting(
                 &preferenceSavePreflight);
     }
 
     ~ScopedPreferenceSavePreflight() {
         Rigel::Preferences::detail::
-            setUserPreferencesAfterSavePreflightHookForTesting({});
+            setUserPreferencesBeforePublicationHookForTesting({});
     }
 };
 

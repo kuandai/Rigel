@@ -775,10 +775,7 @@ void ApplicationTestAccess::closeWithPendingResize(
     impl->preferences = std::make_unique<ApplicationPreferences>(
         std::move(userPreferencesPath));
     impl->preferences->load();
-    registerApplicationPreferenceCallbacks(
-        impl->inputCallbacks, *impl->preferences);
-    impl->inputCallbacks.logicalResize(
-        impl->inputCallbacks.logicalResizeContext, width, height);
+    impl->preferences->acceptLogicalResize({width, height}, 0.0);
     Application application(
         std::move(impl), Application::Initialization::Skip);
     application.close();
@@ -792,10 +789,7 @@ void ApplicationTestAccess::shutdownWithPendingResize(
     impl->preferences = std::make_unique<ApplicationPreferences>(
         std::move(userPreferencesPath));
     impl->preferences->load();
-    registerApplicationPreferenceCallbacks(
-        impl->inputCallbacks, *impl->preferences);
-    impl->inputCallbacks.logicalResize(
-        impl->inputCallbacks.logicalResizeContext, width, height);
+    impl->preferences->acceptLogicalResize({width, height}, 0.0);
     impl->shutdown();
 }
 
@@ -840,6 +834,14 @@ void Application::run() {
 
         // Flush event queue
         glfwPollEvents();
+        if (auto resizeObservation =
+                m_impl->preferences->consumeLogicalResize(
+                    m_impl->runtime,
+                    m_impl->preferences->now())) {
+            spdlog::error(
+                "Window resize could not be observed: {}",
+                resizeObservation->message);
+        }
         if (auto resizeResult =
                 m_impl->preferences->flushResizePersistence(
                     m_impl->preferences->now())) {

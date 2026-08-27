@@ -232,6 +232,7 @@ private:
 };
 
 thread_local std::function<void()> g_afterSavePreflightHook;
+thread_local std::function<void()> g_beforePublicationHook;
 thread_local std::function<void()> g_afterPublicationHook;
 
 std::unique_ptr<UserPreferencesFileLock> lockUserPreferencesPublication(
@@ -239,10 +240,9 @@ std::unique_ptr<UserPreferencesFileLock> lockUserPreferencesPublication(
     try {
         return std::make_unique<UserPreferencesFileLock>(path);
     } catch (const std::exception& error) {
-        throw Persistence::AtomicFilePublicationError(
-            Persistence::AtomicFilePublicationState::NotPublished,
-            "Failed to lock user preferences file '" + path.string() +
-                "' before publication: " + error.what());
+        throw UserPreferencesPreparationError(
+            "Cannot prepare user preferences for '" + path.string() +
+            "': failed to lock the file: " + error.what());
     }
 }
 
@@ -1068,20 +1068,24 @@ void requireValidSerializedSize(const std::filesystem::path& path,
     if (document.size() <= kMaximumUserPreferencesBytes) {
         return;
     }
-    throw Persistence::AtomicFilePublicationError(
-        Persistence::AtomicFilePublicationState::NotPublished,
-        "Cannot save user preferences to '" + sourceName(path) +
+    throw UserPreferencesPreparationError(
+        "Cannot prepare user preferences for '" + sourceName(path) +
             "': serialized document exceeds the 262144-byte limit");
 }
 
 void writeAtomically(const std::filesystem::path& path,
                      const std::string& document) {
+    bool publicationCompleted = false;
     try {
+        if (g_beforePublicationHook) {
+            g_beforePublicationHook();
+        }
         Persistence::FilesystemBackend storage;
         auto session = storage.openWrite(path.string());
         session->writer().writeBytes(
             reinterpret_cast<const uint8_t*>(document.data()), document.size());
         session->commit();
+        publicationCompleted = true;
         if (g_afterPublicationHook) {
             g_afterPublicationHook();
         }
@@ -1089,8 +1093,11 @@ void writeAtomically(const std::filesystem::path& path,
         throw;
     } catch (const std::exception& error) {
         throw Persistence::AtomicFilePublicationError(
-            Persistence::AtomicFilePublicationState::NotPublished,
-            "Failed to stage atomic write to " + path.string() + ": " +
+            publicationCompleted
+                ? Persistence::AtomicFilePublicationState::
+                      PublishedDurabilityUncertain
+                : Persistence::AtomicFilePublicationState::NotPublished,
+            "Failed to publish atomic write to " + path.string() + ": " +
                 error.what());
     }
 }
@@ -1104,6 +1111,26 @@ void writeAtomically(const std::filesystem::path& path,
 }
 
 } // namespace
+
+struct UserPreferencesStore::PreparedSave::Impl {
+    std::filesystem::path path;
+    std::string document;
+    std::unique_ptr<UserPreferencesFileLock> publicationLock;
+};
+
+UserPreferencesStore::PreparedSave::PreparedSave(
+    std::unique_ptr<Impl> impl)
+    : m_impl(std::move(impl)) {
+}
+
+UserPreferencesStore::PreparedSave::PreparedSave(PreparedSave&&) noexcept =
+    default;
+
+UserPreferencesStore::PreparedSave&
+UserPreferencesStore::PreparedSave::operator=(PreparedSave&&) noexcept =
+    default;
+
+UserPreferencesStore::PreparedSave::~PreparedSave() = default;
 
 std::filesystem::path currentUserPreferencesPath() {
 #ifdef _WIN32
@@ -1164,30 +1191,64 @@ UserPreferences UserPreferencesStore::load() {
     return inspection.preferences;
 }
 
-void UserPreferencesStore::saveRequested(const UserPreferences& requested) {
-    std::string document = serializePreferences(requested, nullptr);
-    requireValidSerializedSize(m_path, document);
+UserPreferencesStore::PreparedSave UserPreferencesStore::prepareSave(
+    const UserPreferences& requested) {
+    try {
+        validatePreferences(requested);
+    } catch (const std::exception& error) {
+        throw UserPreferencesPreparationError(
+            "Cannot prepare user preferences for '" + sourceName(m_path) +
+            "': " + error.what());
+    }
     if (m_normalSaveBlocked) {
         throwWriteBlocked(m_path, "normal saves are blocked after an unsafe load");
     }
 
-    const auto publicationLock = lockUserPreferencesPublication(m_path);
+    auto publicationLock = lockUserPreferencesPublication(m_path);
     DocumentInspection current = inspectDocument(m_path);
     if (current.kind == DocumentKind::Unsafe) {
         m_normalSaveBlocked = true;
         throwWriteBlocked(m_path, current.problem);
     }
 
-    if (g_afterSavePreflightHook) {
-        g_afterSavePreflightHook();
+    std::string document;
+    try {
+        document = serializePreferences(
+            requested,
+            current.kind == DocumentKind::Supported
+                ? std::move(current.tree)
+                : nullptr);
+        requireValidSerializedSize(m_path, document);
+        if (g_afterSavePreflightHook) {
+            g_afterSavePreflightHook();
+        }
+    } catch (const UserPreferencesPreparationError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw UserPreferencesPreparationError(
+            "Cannot prepare user preferences for '" + sourceName(m_path) +
+            "': " + error.what());
     }
 
-    if (current.kind == DocumentKind::Supported) {
-        document = serializePreferences(requested, std::move(current.tree));
-        requireValidSerializedSize(m_path, document);
+    auto impl = std::make_unique<PreparedSave::Impl>();
+    impl->path = m_path;
+    impl->document = std::move(document);
+    impl->publicationLock = std::move(publicationLock);
+    return PreparedSave(std::move(impl));
+}
+
+void UserPreferencesStore::publishPrepared(PreparedSave prepared) {
+    if (!prepared.m_impl) {
+        throw UserPreferencesPreparationError(
+            "Cannot publish an empty prepared user preferences save");
+    }
+    auto impl = std::move(prepared.m_impl);
+    if (impl->path != m_path) {
+        throw UserPreferencesPreparationError(
+            "Cannot publish user preferences through a different store");
     }
     try {
-        writeAtomically(m_path, document);
+        writeAtomically(m_path, impl->document);
     } catch (const Persistence::AtomicFilePublicationError& error) {
         if (error.state() ==
             Persistence::AtomicFilePublicationState::PublishedDurabilityUncertain) {
@@ -1197,11 +1258,33 @@ void UserPreferencesStore::saveRequested(const UserPreferences& requested) {
     }
 }
 
+void UserPreferencesStore::saveRequested(const UserPreferences& requested) {
+    publishPrepared(prepareSave(requested));
+}
+
 void UserPreferencesStore::replaceWithRequested(
     const UserPreferences& requested) {
-    const std::string document = serializePreferences(requested, nullptr);
-    requireValidSerializedSize(m_path, document);
+    std::string document;
+    try {
+        document = serializePreferences(requested, nullptr);
+        requireValidSerializedSize(m_path, document);
+    } catch (const UserPreferencesPreparationError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw UserPreferencesPreparationError(
+            "Cannot prepare replacement user preferences for '" +
+            sourceName(m_path) + "': " + error.what());
+    }
     const auto publicationLock = lockUserPreferencesPublication(m_path);
+    if (g_afterSavePreflightHook) {
+        try {
+            g_afterSavePreflightHook();
+        } catch (const std::exception& error) {
+            throw UserPreferencesPreparationError(
+                "Cannot prepare replacement user preferences for '" +
+                sourceName(m_path) + "': " + error.what());
+        }
+    }
     try {
         writeAtomically(m_path, document);
         m_normalSaveBlocked = false;
@@ -1219,6 +1302,11 @@ namespace detail {
 void setUserPreferencesAfterSavePreflightHookForTesting(
     std::function<void()> hook) {
     g_afterSavePreflightHook = std::move(hook);
+}
+
+void setUserPreferencesBeforePublicationHookForTesting(
+    std::function<void()> hook) {
+    g_beforePublicationHook = std::move(hook);
 }
 
 void setUserPreferencesAfterPublicationHookForTesting(

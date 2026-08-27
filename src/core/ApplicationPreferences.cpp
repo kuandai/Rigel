@@ -36,6 +36,8 @@ bool validFpsLimit(const std::optional<int>& limit) {
 
 PreferenceApplyResult publicationFailure(const std::exception& error) {
     if (dynamic_cast<const Preferences::UserPreferencesWriteBlocked*>(
+            &error) ||
+        dynamic_cast<const Preferences::UserPreferencesPreparationError*>(
             &error)) {
         return {PreferenceApplyStatus::PersistenceBlocked, error.what()};
     }
@@ -70,8 +72,10 @@ void ApplicationPreferences::load() {
     m_effectiveDisplay = m_requested.display;
     m_effectiveVerticalFovDegrees =
         m_requested.camera.verticalFovDegrees;
+    m_logicalResizeDirty = false;
     m_pendingResize.reset();
-    m_resizePersistenceBlock.reset();
+    m_resizePersistenceTerminal.reset();
+    m_resizePublicationRetriesRemaining = 0;
 }
 
 Preferences::DisplayPreferences ApplicationPreferences::effectiveDisplayFor(
@@ -196,9 +200,7 @@ bool ApplicationPreferences::restorePhysicalDisplay(
     bool windowRestored = true;
     std::string windowFailure;
     if (restoreWindow) {
-        m_programmaticWindowChange = true;
         windowRestored = runtime.applyWindowConfiguration(bounds, decorated);
-        m_programmaticWindowChange = false;
         if (!windowRestored) {
             windowFailure = runtime.lastError();
         }
@@ -242,16 +244,19 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
     if (candidate == m_requested.display &&
         nextEffective == previousEffective) {
         m_pendingResize.reset();
-        m_resizePersistenceBlock.reset();
+        m_resizePersistenceTerminal.reset();
+        m_resizePublicationRetriesRemaining = 0;
         return {};
     }
     const auto previousWindowedPosition = m_windowedPosition;
+    auto nextWindowedPosition = m_windowedPosition;
 
     const bool physicalChange =
         nextEffective.mode != previousEffective.mode ||
         (nextEffective.mode == Preferences::DisplayMode::Windowed &&
          nextEffective.windowedSize != previousEffective.windowedSize);
     GlfwRuntime::Rectangle previousBounds;
+    GlfwRuntime::Rectangle nextBounds;
     bool previousDecorated = false;
     if (physicalChange) {
         const auto previousBoundsResult = runtime.windowBounds();
@@ -264,28 +269,26 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
         }
         previousBounds = *previousBoundsResult;
         previousDecorated = *previousDecoratedResult;
-        GlfwRuntime::Rectangle nextBounds = previousBounds;
+        nextBounds = previousBounds;
         if (nextEffective.mode == Preferences::DisplayMode::Borderless) {
             if (previousEffective.mode == Preferences::DisplayMode::Windowed) {
-                m_windowedPosition =
+                nextWindowedPosition =
                     std::pair{previousBounds.x, previousBounds.y};
             }
             const auto desktop = runtime.currentDesktopBounds();
             if (!desktop) {
-                m_windowedPosition = previousWindowedPosition;
                 return {PreferenceApplyStatus::Rejected, runtime.lastError()};
             }
             nextBounds = *desktop;
         } else {
             nextBounds.width = nextEffective.windowedSize.width;
             nextBounds.height = nextEffective.windowedSize.height;
-            if (m_windowedPosition) {
-                nextBounds.x = m_windowedPosition->first;
-                nextBounds.y = m_windowedPosition->second;
+            if (nextWindowedPosition) {
+                nextBounds.x = nextWindowedPosition->first;
+                nextBounds.y = nextWindowedPosition->second;
             } else {
                 const auto desktop = runtime.currentDesktopBounds();
                 if (!desktop) {
-                    m_windowedPosition = previousWindowedPosition;
                     return {
                         PreferenceApplyStatus::Rejected,
                         runtime.lastError()};
@@ -296,12 +299,21 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
                     desktop->y + (desktop->height - nextBounds.height) / 2;
             }
         }
+    }
 
-        m_programmaticWindowChange = true;
+    Preferences::UserPreferences nextRequested = m_requested;
+    nextRequested.display = candidate;
+    std::optional<Preferences::UserPreferencesStore::PreparedSave> prepared;
+    try {
+        prepared.emplace(m_store.prepareSave(nextRequested));
+    } catch (const std::exception& error) {
+        return publicationFailure(error);
+    }
+
+    if (physicalChange) {
         const bool applied = runtime.applyWindowConfiguration(
             nextBounds,
             nextEffective.mode == Preferences::DisplayMode::Windowed);
-        m_programmaticWindowChange = false;
         if (!applied) {
             std::string failure = runtime.lastError();
             std::string rollbackFailure;
@@ -320,6 +332,7 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
             m_windowedPosition = previousWindowedPosition;
             return {PreferenceApplyStatus::Rejected, std::move(failure)};
         }
+        m_windowedPosition = nextWindowedPosition;
     }
 
     if (nextEffective.vsync != previousEffective.vsync &&
@@ -344,15 +357,14 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
         return {PreferenceApplyStatus::Rejected, std::move(failure)};
     }
 
-    Preferences::UserPreferences nextRequested = m_requested;
-    nextRequested.display = candidate;
     m_effectiveDisplay = nextEffective;
     m_framePacer.setLimit(nextEffective.fpsLimit);
     try {
-        m_store.saveRequested(nextRequested);
+        m_store.publishPrepared(std::move(*prepared));
         m_requested = std::move(nextRequested);
         m_pendingResize.reset();
-        m_resizePersistenceBlock.reset();
+        m_resizePersistenceTerminal.reset();
+        m_resizePublicationRetriesRemaining = 0;
         return {};
     } catch (const std::exception& error) {
         PreferenceApplyResult result = publicationFailure(error);
@@ -360,7 +372,8 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
             PreferenceApplyStatus::PublishedDurabilityUncertain) {
             m_requested = std::move(nextRequested);
             m_pendingResize.reset();
-            m_resizePersistenceBlock.reset();
+            m_resizePersistenceTerminal.reset();
+            m_resizePublicationRetriesRemaining = 0;
             return result;
         }
 
@@ -401,10 +414,16 @@ PreferenceApplyResult ApplicationPreferences::applyVerticalFov(
     const double previousEffective = m_effectiveVerticalFovDegrees.value();
     Preferences::UserPreferences nextRequested = m_requested;
     nextRequested.camera.verticalFovDegrees = candidateDegrees;
+    std::optional<Preferences::UserPreferencesStore::PreparedSave> prepared;
+    try {
+        prepared.emplace(m_store.prepareSave(nextRequested));
+    } catch (const std::exception& error) {
+        return publicationFailure(error);
+    }
     renderer.setVerticalFovDegrees(candidateDegrees);
     m_effectiveVerticalFovDegrees = candidateDegrees;
     try {
-        m_store.saveRequested(nextRequested);
+        m_store.publishPrepared(std::move(*prepared));
         m_requested = std::move(nextRequested);
         return {};
     } catch (const std::exception& error) {
@@ -420,18 +439,47 @@ PreferenceApplyResult ApplicationPreferences::applyVerticalFov(
     }
 }
 
-void ApplicationPreferences::observeLogicalResize(
-    int width,
-    int height,
+void ApplicationPreferences::markLogicalResize() {
+    m_logicalResizeDirty = true;
+}
+
+std::optional<PreferenceApplyResult>
+ApplicationPreferences::consumeLogicalResize(
+    GlfwRuntime& runtime,
     double observedAt) {
-    const Preferences::WindowedSize observed{width, height};
-    if (m_programmaticWindowChange ||
-        m_effectiveDisplay.mode != Preferences::DisplayMode::Windowed ||
-        !validWindowedSize(observed)) {
+    if (!std::exchange(m_logicalResizeDirty, false) ||
+        m_effectiveDisplay.mode != Preferences::DisplayMode::Windowed) {
+        return std::nullopt;
+    }
+
+    const auto bounds = runtime.windowBounds();
+    if (!bounds) {
+        return PreferenceApplyResult{
+            PreferenceApplyStatus::Rejected,
+            "Failed to observe the resized window: " + runtime.lastError()};
+    }
+    const Preferences::WindowedSize observed{bounds->width, bounds->height};
+    if (!validWindowedSize(observed)) {
+        return PreferenceApplyResult{
+            PreferenceApplyStatus::Rejected,
+            "Resized window dimensions are outside the supported range"};
+    }
+    acceptLogicalResize(observed, observedAt);
+    return std::nullopt;
+}
+
+void ApplicationPreferences::acceptLogicalResize(
+    Preferences::WindowedSize observed,
+    double observedAt) {
+    if (m_effectiveDisplay.mode != Preferences::DisplayMode::Windowed ||
+        !validWindowedSize(observed) ||
+        observed == m_effectiveDisplay.windowedSize) {
         return;
     }
     m_effectiveDisplay.windowedSize = observed;
     m_pendingResize = observed;
+    m_resizePersistenceTerminal.reset();
+    m_resizePublicationRetriesRemaining = 1;
     m_nextResizePersistenceAttempt =
         observedAt + kResizePersistenceDelaySeconds;
 }
@@ -452,23 +500,31 @@ ApplicationPreferences::persistPendingResize(double now, bool ignoreDelay) {
         (!ignoreDelay && now < m_nextResizePersistenceAttempt)) {
         return std::nullopt;
     }
-    if (m_resizePersistenceBlock) {
+    if (m_resizePersistenceTerminal) {
         if (!ignoreDelay) {
             return std::nullopt;
         }
-        return PreferenceApplyResult{
-            PreferenceApplyStatus::PersistenceBlocked,
-            *m_resizePersistenceBlock};
+        return m_resizePersistenceTerminal;
     }
 
     const Preferences::WindowedSize observed = *m_pendingResize;
     Preferences::UserPreferences nextRequested = m_requested;
     nextRequested.display.windowedSize = observed;
+    std::optional<Preferences::UserPreferencesStore::PreparedSave> prepared;
     try {
-        m_store.saveRequested(nextRequested);
+        prepared.emplace(m_store.prepareSave(nextRequested));
+    } catch (const std::exception& error) {
+        PreferenceApplyResult result = publicationFailure(error);
+        m_resizePersistenceTerminal = result;
+        return result;
+    }
+
+    try {
+        m_store.publishPrepared(std::move(*prepared));
         m_requested = std::move(nextRequested);
         m_pendingResize.reset();
-        m_resizePersistenceBlock.reset();
+        m_resizePersistenceTerminal.reset();
+        m_resizePublicationRetriesRemaining = 0;
         return PreferenceApplyResult{};
     } catch (const std::exception& error) {
         PreferenceApplyResult result = publicationFailure(error);
@@ -476,13 +532,18 @@ ApplicationPreferences::persistPendingResize(double now, bool ignoreDelay) {
             PreferenceApplyStatus::PublishedDurabilityUncertain) {
             m_requested = std::move(nextRequested);
             m_pendingResize.reset();
-            m_resizePersistenceBlock.reset();
+            m_resizePersistenceTerminal.reset();
+            m_resizePublicationRetriesRemaining = 0;
         } else if (result.status == PreferenceApplyStatus::NotPublished) {
-            m_nextResizePersistenceAttempt =
-                now + kResizePersistenceRetrySeconds;
-        } else if (
-            result.status == PreferenceApplyStatus::PersistenceBlocked) {
-            m_resizePersistenceBlock = result.message;
+            if (m_resizePublicationRetriesRemaining > 0) {
+                --m_resizePublicationRetriesRemaining;
+                m_nextResizePersistenceAttempt =
+                    now + kResizePersistenceRetrySeconds;
+            } else {
+                m_resizePersistenceTerminal = result;
+            }
+        } else {
+            m_resizePersistenceTerminal = result;
         }
         return result;
     }
@@ -492,9 +553,9 @@ void registerApplicationPreferenceCallbacks(
     Input::InputCallbackContext& callbacks,
     ApplicationPreferences& preferences) {
     callbacks.logicalResizeContext = &preferences;
-    callbacks.logicalResize = [](void* context, int width, int height) {
+    callbacks.logicalResize = [](void* context, int, int) {
         auto& owner = *static_cast<ApplicationPreferences*>(context);
-        owner.observeLogicalResize(width, height, owner.now());
+        owner.markLogicalResize();
     };
 }
 

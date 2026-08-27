@@ -42,7 +42,10 @@ public:
         Render::FrameRenderer& renderer,
         double candidateDegrees);
 
-    void observeLogicalResize(int width, int height, double observedAt);
+    void markLogicalResize();
+    std::optional<PreferenceApplyResult> consumeLogicalResize(
+        GlfwRuntime& runtime,
+        double observedAt);
     std::optional<PreferenceApplyResult> flushResizePersistence(double now);
     std::optional<PreferenceApplyResult> flushResizePersistenceForShutdown();
 
@@ -78,6 +81,9 @@ private:
     std::optional<PreferenceApplyResult> persistPendingResize(
         double now,
         bool ignoreDelay);
+    void acceptLogicalResize(
+        Preferences::WindowedSize observed,
+        double observedAt);
 
     Preferences::UserPreferencesStore m_store;
     Preferences::UserPreferences m_requested;
@@ -85,11 +91,14 @@ private:
     std::optional<double> m_effectiveVerticalFovDegrees;
     Core::FramePacer m_framePacer;
     bool m_benchmarkMode = false;
-    bool m_programmaticWindowChange = false;
+    bool m_logicalResizeDirty = false;
     std::optional<std::pair<int, int>> m_windowedPosition;
     std::optional<Preferences::WindowedSize> m_pendingResize;
-    std::optional<std::string> m_resizePersistenceBlock;
+    std::optional<PreferenceApplyResult> m_resizePersistenceTerminal;
+    unsigned int m_resizePublicationRetriesRemaining = 0;
     double m_nextResizePersistenceAttempt = 0.0;
+
+    friend class ApplicationTestAccess;
 };
 
 void registerApplicationPreferenceCallbacks(

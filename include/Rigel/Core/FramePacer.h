@@ -15,7 +15,6 @@ public:
     explicit FramePacer(Clock clock);
 
     void setLimit(std::optional<int> framesPerSecond);
-    std::optional<int> limit() const { return m_limit; }
 
     void wait();
     void reset();

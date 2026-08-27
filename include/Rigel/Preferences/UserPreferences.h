@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -91,16 +92,42 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+class UserPreferencesPreparationError final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 std::filesystem::path currentUserPreferencesPath();
 
 class UserPreferencesStore final {
 public:
+    class PreparedSave final {
+    public:
+        PreparedSave(PreparedSave&&) noexcept;
+        PreparedSave& operator=(PreparedSave&&) noexcept;
+        ~PreparedSave();
+
+        PreparedSave(const PreparedSave&) = delete;
+        PreparedSave& operator=(const PreparedSave&) = delete;
+
+    private:
+        struct Impl;
+
+        explicit PreparedSave(std::unique_ptr<Impl> impl);
+
+        std::unique_ptr<Impl> m_impl;
+
+        friend class UserPreferencesStore;
+    };
+
     explicit UserPreferencesStore(std::filesystem::path path);
 
     static UserPreferencesStore forCurrentUser();
 
     UserPreferences load();
 
+    PreparedSave prepareSave(const UserPreferences& requested);
+    void publishPrepared(PreparedSave prepared);
     void saveRequested(const UserPreferences& requested);
 
     // Explicitly discards an unreadable, malformed, or unsupported document

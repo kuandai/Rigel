@@ -507,6 +507,7 @@ struct ChunkStreamerTestAccess {
         ChunkStreamer& streamer,
         ChunkCoord coord) {
         streamer.m_states[coord] = ChunkStreamer::ChunkState::ReadyMesh;
+        streamer.m_cache.touch(coord);
         return !streamer.evictChunk(coord);
     }
 
@@ -617,6 +618,7 @@ TEST_CASE(ChunkStreamer_ViewPolicyShrinkBoundsAggregateRetainedStateWork) {
     streaming.unloadDistanceChunks = 4;
     streaming.updateBudgetPerFrame = 0;
     streaming.workerThreads = 0;
+    streaming.maxResidentChunks = 1;
     streamer.setConfig(streaming);
     Rigel::Voxel::detail::ChunkStreamerTestAccess::applyViewDistancePolicy(
         streamer, 3);
@@ -625,7 +627,11 @@ TEST_CASE(ChunkStreamer_ViewPolicyShrinkBoundsAggregateRetainedStateWork) {
     });
     streamer.update(glm::vec3(0.0f));
 
-    streamer.setChunkEvictionCallback([](ChunkCoord) { return false; });
+    size_t persistenceAttempts = 0;
+    streamer.setChunkEvictionCallback([&](ChunkCoord) {
+        ++persistenceAttempts;
+        return false;
+    });
     constexpr int retainedStateCount = 256;
     for (int index = 0; index < retainedStateCount; ++index) {
         const ChunkCoord coord{1000 + index, 0, 0};
@@ -641,32 +647,50 @@ TEST_CASE(ChunkStreamer_ViewPolicyShrinkBoundsAggregateRetainedStateWork) {
         Rigel::Voxel::detail::ChunkStreamerTestAccess::
             evictionRetryCount(streamer),
         static_cast<size_t>(retainedStateCount));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(retainedStateCount));
 
     Rigel::Voxel::detail::ChunkStreamerTestAccess::applyViewDistancePolicy(
         streamer, 2, 2);
-    streamer.update(glm::vec3(0.0f));
-
-    const auto& work = streamer.workMetrics();
     constexpr uint64_t maximumDesiredBuildCoordinates = 125;
     constexpr uint64_t maximumTransitionSchedulerCoordinates = 128;
     constexpr uint64_t maximumResidentReconciliationCoordinates = 64;
     constexpr uint64_t maximumDeferredEvictionCoordinates = 64;
-    const uint64_t aggregateTransitionCoordinates =
-        work.lastUpdateDesiredBuildCoordinatesInspected +
-        work.lastUpdateSchedulerCoordinatesInspected +
-        work.lastUpdateResidentEvictionCoordinatesInspected +
-        work.lastUpdateDeferredEvictionCoordinatesInspected;
-    CHECK(work.lastUpdateSchedulerCoordinatesInspected <=
-          maximumTransitionSchedulerCoordinates);
-    CHECK(work.lastUpdateResidentEvictionCoordinatesInspected <=
-          maximumResidentReconciliationCoordinates);
-    CHECK(work.lastUpdateDeferredEvictionCoordinatesInspected <=
-          maximumDeferredEvictionCoordinates);
-    CHECK(aggregateTransitionCoordinates <=
-          maximumDesiredBuildCoordinates +
-              maximumTransitionSchedulerCoordinates +
-              maximumResidentReconciliationCoordinates +
+    constexpr uint64_t maximumCacheEvictionCoordinates = 64;
+    const uint64_t cacheInspectionsBeforeTransition =
+        streamer.workMetrics().cacheEvictionCoordinatesInspected;
+    uint64_t previousCacheInspections = cacheInspectionsBeforeTransition;
+    for (int batch = 0; batch < 4; ++batch) {
+        streamer.update(glm::vec3(0.0f));
+
+        const auto& work = streamer.workMetrics();
+        const uint64_t aggregateTransitionCoordinates =
+            work.lastUpdateDesiredBuildCoordinatesInspected +
+            work.lastUpdateSchedulerCoordinatesInspected +
+            work.lastUpdateResidentEvictionCoordinatesInspected +
+            work.lastUpdateDeferredEvictionCoordinatesInspected +
+            work.lastUpdateCacheEvictionCoordinatesInspected;
+        CHECK(work.lastUpdateSchedulerCoordinatesInspected <=
+              maximumTransitionSchedulerCoordinates);
+        CHECK(work.lastUpdateResidentEvictionCoordinatesInspected <=
+              maximumResidentReconciliationCoordinates);
+        CHECK(work.lastUpdateDeferredEvictionCoordinatesInspected <=
               maximumDeferredEvictionCoordinates);
+        CHECK(work.lastUpdateCacheEvictionCoordinatesInspected <=
+              maximumCacheEvictionCoordinates);
+        CHECK(aggregateTransitionCoordinates <=
+              maximumDesiredBuildCoordinates +
+                  maximumTransitionSchedulerCoordinates +
+                  maximumResidentReconciliationCoordinates +
+                  maximumDeferredEvictionCoordinates +
+                  maximumCacheEvictionCoordinates);
+        CHECK(work.cacheEvictionCoordinatesInspected >
+              previousCacheInspections);
+        previousCacheInspections =
+            work.cacheEvictionCoordinatesInspected;
+    }
+    CHECK_EQ(previousCacheInspections - cacheInspectionsBeforeTransition,
+             static_cast<uint64_t>(retainedStateCount));
+    CHECK_EQ(persistenceAttempts, static_cast<size_t>(retainedStateCount));
     CHECK_EQ(manager.loadedChunkCount(),
              static_cast<size_t>(retainedStateCount));
 }

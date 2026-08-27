@@ -17,6 +17,7 @@ namespace Rigel::Voxel {
 
 namespace {
 constexpr uint64_t kEvictionRetryDelayUpdates = 60;
+constexpr size_t kCacheEvictionBudget = 64;
 constexpr size_t kWorldBoundsReconciliationBudget = 64;
 using FailureMap = std::map<ChunkCoord, std::string>;
 
@@ -1529,10 +1530,14 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     }
 
     if (cacheEvictionNeeded) {
+        m_cache.requestEviction();
+    }
+    if (m_cache.evictionPending()) {
         PROFILE_SCOPE("Streaming/Update/CacheEvict");
         m_cache.evict(
             m_desiredSet,
-            [this](ChunkCoord coord) { return evictChunk(coord); });
+            [this](ChunkCoord coord) { return evictChunk(coord); },
+            kCacheEvictionBudget);
         cacheEvictionCoordinatesInspected = m_cache.lastEvictionInspections();
     }
     consumeDirtyMeshNotifications();
@@ -2298,7 +2303,8 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
     snapshot.chunkLoad.failureVersion = m_chunkLoadFailureVersion;
     snapshot.eviction = StreamingWorkCount{
         .pending = m_evictionRetryAfter.size() +
-            m_versionReplacementWaiting.size(),
+            m_versionReplacementWaiting.size() +
+            (m_cache.evictionPending() ? 1 : 0),
         .terminalErrors = m_evictionErrors.size(),
         .lastError = diagnosticForLowestCoordinate(m_evictionErrors),
         .failureVersion = m_evictionFailureVersion

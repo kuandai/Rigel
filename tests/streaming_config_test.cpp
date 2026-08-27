@@ -148,6 +148,19 @@ streaming:
 }
 
 TEST_CASE(StreamingConfig_RejectsValuesAboveOperationalMaxima) {
+    const std::string unloadError = exceptionMessage([] {
+        StreamingConfig config;
+        config.applyYaml(
+            "limits.yaml",
+            "streaming:\n  unload_distance_chunks: 25\n"
+        );
+    });
+    CHECK_EQ(
+        unloadError,
+        "Invalid configuration value 'streaming.unload_distance_chunks' in "
+        "'limits.yaml': expected integer no greater than 24, got '25'"
+    );
+
     const std::string workerError = exceptionMessage([] {
         StreamingConfig config;
         config.applyYaml(

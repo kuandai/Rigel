@@ -20,7 +20,15 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     Voxel::WorldId worldId,
     Voxel::World& world,
     Voxel::WorldView& worldView,
-    const std::optional<Persistence::NewWorldGeneration>& creation,
+    const Persistence::NewWorldGenerationFactory& creationFactory,
+    const Persistence::PersistenceContext& context);
+
+ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
+    Voxel::WorldSet& worldSet,
+    Voxel::WorldId worldId,
+    Voxel::World& world,
+    Voxel::WorldView& worldView,
+    const std::optional<Persistence::NewWorldGeneration>& preparedCreation,
     const Persistence::PersistenceContext& context);
 
 } // namespace Rigel::detail

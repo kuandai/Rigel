@@ -4,6 +4,7 @@
 #include "Rigel/Voxel/GeneratorDefinition.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -47,6 +48,8 @@ struct NewWorldGeneration {
     Voxel::PreparedGeneratorDefinitionSnapshot definition;
 };
 
+using NewWorldGenerationFactory = std::function<NewWorldGeneration()>;
+
 struct BootstrappedWorldGeneration {
     SavedWorldGeneration generation;
     std::string persistenceFormat;
@@ -75,11 +78,19 @@ void recoverWorldGenerationPublication(
 
 // Opens a saved generation identity and its authoritative persistence format
 // under the per-world bootstrap lock. When the root is still missing, the
-// optional creation input is block-registry validated and published atomically.
-// This is the only supported world-generation creation lifecycle. Published
-// roots without an authoritative backend marker are rejected without mutation.
+// creation factory is invoked exactly once under that lock, then its result is
+// block-registry validated and published atomically. The factory is never
+// invoked for a published or invalid existing root. This is the only supported
+// world-generation creation lifecycle. Published roots without an
+// authoritative backend marker are rejected without mutation.
 BootstrappedWorldGeneration bootstrapWorldGeneration(
-    const std::optional<NewWorldGeneration>& creation,
+    const NewWorldGenerationFactory& creationFactory,
+    PersistenceService& persistence,
+    const Voxel::BlockRegistry& registry,
+    const PersistenceContext& context);
+
+BootstrappedWorldGeneration bootstrapWorldGeneration(
+    const std::optional<NewWorldGeneration>& preparedCreation,
     PersistenceService& persistence,
     const Voxel::BlockRegistry& registry,
     const PersistenceContext& context);

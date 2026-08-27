@@ -8,10 +8,14 @@
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/GeneratorDefinition.h"
 
+#include <condition_variable>
+#include <exception>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -135,7 +139,200 @@ private:
     bool m_failAfterCommit = false;
 };
 
+class LockObservingStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    std::unique_ptr<Persistence::WorldGenerationBootstrapLock>
+    lockWorldGenerationBootstrap(const std::string& worldRoot) override {
+        {
+            std::lock_guard lock(m_mutex);
+            ++m_lockAttempts;
+            m_changed.notify_all();
+        }
+        return Persistence::FilesystemBackend::lockWorldGenerationBootstrap(
+            worldRoot);
+    }
+
+    void waitForLockAttempts(size_t count) {
+        std::unique_lock lock(m_mutex);
+        m_changed.wait(lock, [&] { return m_lockAttempts >= count; });
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_changed;
+    size_t m_lockAttempts = 0;
+};
+
 } // namespace
+
+TEST_CASE(ApplicationWorldGenerationBootstrap_published_save_never_resolves_install) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_published_lazy");
+    const auto root = directory.path() / "world_1";
+    auto storage =
+        std::make_shared<Rigel::Persistence::FilesystemBackend>();
+
+    {
+        Rigel::Voxel::WorldSet publishingSet;
+        configureWorldSet(publishingSet, root, storage, "memory");
+        Rigel::Voxel::World& world = publishingSet.createWorld(1);
+        Rigel::Voxel::WorldView view(world, publishingSet.resources());
+        Rigel::detail::bootstrapApplicationWorldGeneration(
+            publishingSet,
+            1,
+            world,
+            view,
+            creation(101u, 0.25f, "published"),
+            publishingSet.persistenceContext(1));
+    }
+
+    Rigel::Voxel::WorldSet reopeningSet;
+    configureWorldSet(reopeningSet, root, storage, "cr");
+    Rigel::Voxel::World& world = reopeningSet.createWorld(1);
+    Rigel::Voxel::WorldView view(world, reopeningSet.resources());
+    size_t resolverCalls = 0;
+    Rigel::Persistence::NewWorldGenerationFactory resolver = [&] {
+        ++resolverCalls;
+        return creation(999u, -1.0f, "must not resolve");
+    };
+
+    const auto result =
+        Rigel::detail::bootstrapApplicationWorldGeneration(
+            reopeningSet,
+            1,
+            world,
+            view,
+            resolver,
+            reopeningSet.persistenceContext(1));
+
+    CHECK_EQ(resolverCalls, size_t{0});
+    CHECK_EQ(result.generator->seed(), 101u);
+    CHECK_EQ(result.generator->definition().densityGraph.nodes.front().value,
+             0.25f);
+}
+
+TEST_CASE(ApplicationWorldGenerationBootstrap_missing_save_resolves_once_without_partial_failure) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_missing_lazy_failure");
+    const auto root = directory.path() / "world_1";
+    auto storage =
+        std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    Rigel::Voxel::WorldSet worldSet;
+    configureWorldSet(worldSet, root, storage, "memory");
+    Rigel::Voxel::World& world = worldSet.createWorld(1);
+    Rigel::Voxel::WorldView view(world, worldSet.resources());
+    size_t resolverCalls = 0;
+    Rigel::Persistence::NewWorldGenerationFactory resolver = [&]()
+        -> Rigel::Persistence::NewWorldGeneration {
+        ++resolverCalls;
+        throw std::runtime_error("injected installed definition failure");
+    };
+
+    CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+        worldSet,
+        1,
+        world,
+        view,
+        resolver,
+        worldSet.persistenceContext(1)));
+    CHECK_EQ(resolverCalls, size_t{1});
+    CHECK(world.generator() == nullptr);
+    CHECK(view.generator() == nullptr);
+    CHECK(!std::filesystem::exists(root));
+    CHECK_EQ(view.streamingMetrics().generationJobsStarted, uint64_t{0});
+    CHECK_EQ(view.streamingMetrics().chunkLoadRequestsStarted, uint64_t{0});
+    CHECK_EQ(view.streamingMetrics().meshJobsStarted, uint64_t{0});
+}
+
+TEST_CASE(ApplicationWorldGenerationBootstrap_publish_while_waiting_skips_resolver) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_publish_while_waiting");
+    const auto root = directory.path() / "world_1";
+    auto storage = std::make_shared<LockObservingStorage>();
+
+    Rigel::Voxel::WorldSet firstSet;
+    configureWorldSet(firstSet, root, storage, "memory");
+    Rigel::Voxel::World& firstWorld = firstSet.createWorld(1);
+    Rigel::Voxel::WorldView firstView(firstWorld, firstSet.resources());
+    Rigel::Voxel::WorldSet waitingSet;
+    configureWorldSet(waitingSet, root, storage, "memory");
+    Rigel::Voxel::World& waitingWorld = waitingSet.createWorld(1);
+    Rigel::Voxel::WorldView waitingView(
+        waitingWorld, waitingSet.resources());
+
+    std::mutex gateMutex;
+    std::condition_variable gateChanged;
+    bool firstResolverEntered = false;
+    bool releaseFirstResolver = false;
+    size_t firstResolverCalls = 0;
+    size_t waitingResolverCalls = 0;
+    std::exception_ptr firstFailure;
+    std::exception_ptr waitingFailure;
+
+    Rigel::Persistence::NewWorldGenerationFactory firstResolver = [&] {
+        std::unique_lock lock(gateMutex);
+        ++firstResolverCalls;
+        firstResolverEntered = true;
+        gateChanged.notify_all();
+        gateChanged.wait(lock, [&] { return releaseFirstResolver; });
+        return creation(707u, 0.25f, "published under lock");
+    };
+    Rigel::Persistence::NewWorldGenerationFactory waitingResolver = [&] {
+        ++waitingResolverCalls;
+        return creation(909u, -1.0f, "must remain unused");
+    };
+
+    std::thread publisher([&] {
+        try {
+            static_cast<void>(
+                Rigel::detail::bootstrapApplicationWorldGeneration(
+                    firstSet,
+                    1,
+                    firstWorld,
+                    firstView,
+                    firstResolver,
+                    firstSet.persistenceContext(1)));
+        } catch (...) {
+            firstFailure = std::current_exception();
+        }
+    });
+    {
+        std::unique_lock lock(gateMutex);
+        gateChanged.wait(lock, [&] { return firstResolverEntered; });
+    }
+    std::thread waiter([&] {
+        try {
+            static_cast<void>(
+                Rigel::detail::bootstrapApplicationWorldGeneration(
+                    waitingSet,
+                    1,
+                    waitingWorld,
+                    waitingView,
+                    waitingResolver,
+                    waitingSet.persistenceContext(1)));
+        } catch (...) {
+            waitingFailure = std::current_exception();
+        }
+    });
+    storage->waitForLockAttempts(2);
+    {
+        std::lock_guard lock(gateMutex);
+        releaseFirstResolver = true;
+        gateChanged.notify_all();
+    }
+    publisher.join();
+    waiter.join();
+
+    CHECK(firstFailure == nullptr);
+    CHECK(waitingFailure == nullptr);
+    CHECK_EQ(firstResolverCalls, size_t{1});
+    CHECK_EQ(waitingResolverCalls, size_t{0});
+    CHECK_EQ(waitingWorld.generator()->seed(), 707u);
+    CHECK_EQ(
+        waitingWorld.generator()->definition().densityGraph.nodes.front().value,
+        0.25f);
+}
 
 TEST_CASE(ApplicationWorldGenerationBootstrap_failure_never_installs_generator) {
     for (const bool failAfterCommit : {false, true}) {

@@ -366,16 +366,8 @@ void Application::initialize() {
 
         Persistence::PersistenceContext persistenceContext =
             m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId);
-        Persistence::recoverWorldGenerationPublication(
-            m_impl->world.worldSet.persistenceService(),
-            m_impl->world.worldSet.resources().registry(),
-            persistenceContext);
-        std::optional<Persistence::NewWorldGeneration> creation;
-        const auto savedPresence =
-            Persistence::inspectSavedWorldGeneration(persistenceContext);
-        if (savedPresence ==
-            Persistence::SavedWorldGenerationPresence::Missing) {
-            creation = Persistence::NewWorldGeneration{
+        Persistence::NewWorldGenerationFactory creationFactory = [&] {
+            return Persistence::NewWorldGeneration{
                 "world_" + std::to_string(m_impl->world.activeWorldId),
                 kDefaultWorldSeed,
                 Voxel::loadPreparedGeneratorDefinitionSnapshot(
@@ -383,13 +375,7 @@ void Application::initialize() {
                     m_impl->world.worldSet.resources().registry(),
                     kDefaultGeneratorDefinitionId,
                     Voxel::GeneratorDefinitionOrigin::Shipped)};
-        } else if (savedPresence !=
-                   Persistence::SavedWorldGenerationPresence::Published) {
-            static_cast<void>(
-                Persistence::loadSavedWorldGeneration(persistenceContext));
-            throw std::logic_error(
-                "World generation inspection disagrees with document validation");
-        }
+        };
 
         detail::ApplicationWorldGenerationBootstrapResult bootstrapped =
             detail::bootstrapApplicationWorldGeneration(
@@ -397,7 +383,7 @@ void Application::initialize() {
                 m_impl->world.activeWorldId,
                 *m_impl->world.world,
                 *m_impl->world.worldView,
-                creation,
+                creationFactory,
                 persistenceContext);
         auto generator = std::move(bootstrapped.generator);
         m_impl->world.settings = std::move(bootstrapped.settings);

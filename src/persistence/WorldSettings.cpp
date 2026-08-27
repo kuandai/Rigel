@@ -1478,7 +1478,7 @@ BootstrappedWorldGeneration loadPublishedWorldGeneration(
 }
 
 BootstrappedWorldGeneration bootstrapWorldGeneration(
-    const std::optional<NewWorldGeneration>& creation,
+    const NewWorldGenerationFactory& creationFactory,
     PersistenceService& persistence,
     const Voxel::BlockRegistry& registry,
     const PersistenceContext& context) {
@@ -1503,23 +1503,24 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
     const SavedWorldGenerationPresence presence =
         inspectSavedWorldGeneration(context);
     if (presence == SavedWorldGenerationPresence::Missing) {
-        if (!creation) {
+        if (!creationFactory) {
             throw std::runtime_error(
                 "World save does not exist and no creation input was provided: " +
                 context.rootPath);
         }
+        NewWorldGeneration creation = creationFactory();
         Voxel::validateGeneratorDefinitionContent(
-            creation->definition.data, registry,
-            creation->definition.sourceId);
+            creation.definition.data, registry,
+            creation.definition.sourceId);
         const Voxel::WorldGenerator preparedRuntime(
             registry,
-            creation->definition.data,
-            creation->seed,
+            creation.definition.data,
+            creation.seed,
             Voxel::kGeneratorSemanticsVersion);
         static_cast<void>(preparedRuntime);
         BootstrappedWorldGeneration result;
         result.persistenceFormat = publishValidatedWorldGenerationLocked(
-            *creation,
+            creation,
             persistence,
             registry,
             context);
@@ -1539,6 +1540,19 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
 
     return validatePublicationIdentityAndFormat(
         persistence, registry, context, worldRoot, {}, false);
+}
+
+BootstrappedWorldGeneration bootstrapWorldGeneration(
+    const std::optional<NewWorldGeneration>& preparedCreation,
+    PersistenceService& persistence,
+    const Voxel::BlockRegistry& registry,
+    const PersistenceContext& context) {
+    NewWorldGenerationFactory factory;
+    if (preparedCreation) {
+        factory = [creation = *preparedCreation] { return creation; };
+    }
+    return bootstrapWorldGeneration(
+        factory, persistence, registry, context);
 }
 
 } // namespace Rigel::Persistence

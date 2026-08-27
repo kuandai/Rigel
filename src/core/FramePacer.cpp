@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <stdexcept>
 #include <thread>
 
 namespace Rigel::Core {
@@ -33,6 +34,9 @@ FramePacer::FramePacer(Clock clock)
 }
 
 void FramePacer::setLimit(std::optional<int> framesPerSecond) {
+    if (framesPerSecond && *framesPerSecond <= 0) {
+        throw std::invalid_argument("Frame limit must be positive");
+    }
     if (m_limit == framesPerSecond) {
         return;
     }

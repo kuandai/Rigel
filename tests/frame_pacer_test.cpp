@@ -77,4 +77,5 @@ TEST_CASE(FramePacer_LimitChangesAndUnlimitedResetTheSchedule) {
     pacer.wait();
     CHECK_EQ(clock.deadlines.size(), static_cast<size_t>(2));
     CHECK_NEAR(clock.deadlines.back(), 1.0 + 1.0 / 30.0, 0.000001);
+    CHECK_THROWS(pacer.setLimit(0));
 }

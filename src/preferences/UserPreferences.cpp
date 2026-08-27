@@ -12,11 +12,25 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string_view>
 #include <system_error>
 #include <utility>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace Rigel::Preferences {
 namespace {
@@ -55,6 +69,180 @@ class YamlParseError final : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
+
+std::filesystem::path userPreferencesLockPath(
+    const std::filesystem::path& preferencesPath) {
+    return std::filesystem::path(preferencesPath.string() + ".lock");
+}
+
+class UserPreferencesFileLock final {
+public:
+    explicit UserPreferencesFileLock(
+        const std::filesystem::path& preferencesPath) {
+        if (!acquire(preferencesPath, true)) {
+            throw std::runtime_error(
+                "Failed to acquire user preferences lock");
+        }
+    }
+
+    ~UserPreferencesFileLock() {
+#ifdef _WIN32
+        if (m_file == INVALID_HANDLE_VALUE) {
+            return;
+        }
+        OVERLAPPED overlapped{};
+        ::UnlockFileEx(m_file, 0, 1, 0, &overlapped);
+        ::CloseHandle(m_file);
+#else
+        if (m_descriptor < 0) {
+            return;
+        }
+        ::flock(m_descriptor, LOCK_UN);
+        ::close(m_descriptor);
+#endif
+    }
+
+    UserPreferencesFileLock(const UserPreferencesFileLock&) = delete;
+    UserPreferencesFileLock& operator=(const UserPreferencesFileLock&) = delete;
+
+    static std::unique_ptr<UserPreferencesFileLock> tryAcquire(
+        const std::filesystem::path& preferencesPath) {
+        auto lock = std::unique_ptr<UserPreferencesFileLock>(
+            new UserPreferencesFileLock());
+        if (!lock->acquire(preferencesPath, false)) {
+            return nullptr;
+        }
+        return lock;
+    }
+
+private:
+    UserPreferencesFileLock() = default;
+
+    bool acquire(const std::filesystem::path& preferencesPath, bool wait) {
+        const std::filesystem::path lockPath =
+            userPreferencesLockPath(preferencesPath);
+        std::filesystem::create_directories(lockPath.parent_path());
+#ifdef _WIN32
+        m_file = ::CreateFileW(
+            lockPath.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+        if (m_file == INVALID_HANDLE_VALUE) {
+            throw std::system_error(
+                static_cast<int>(::GetLastError()),
+                std::system_category(),
+                "Failed to open user preferences lock: " +
+                    lockPath.string());
+        }
+
+        BY_HANDLE_FILE_INFORMATION information{};
+        const bool informationRead =
+            ::GetFileInformationByHandle(m_file, &information) != 0;
+        if (!informationRead ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) !=
+                0 ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            const int error = informationRead
+                ? ERROR_INVALID_DATA
+                : static_cast<int>(::GetLastError());
+            ::CloseHandle(m_file);
+            m_file = INVALID_HANDLE_VALUE;
+            throw std::system_error(
+                error,
+                std::system_category(),
+                "User preferences lock is not a regular file: " +
+                    lockPath.string());
+        }
+
+        OVERLAPPED overlapped{};
+        const DWORD flags = LOCKFILE_EXCLUSIVE_LOCK |
+            (wait ? 0 : LOCKFILE_FAIL_IMMEDIATELY);
+        if (::LockFileEx(m_file, flags, 0, 1, 0, &overlapped) == 0) {
+            const int error = static_cast<int>(::GetLastError());
+            ::CloseHandle(m_file);
+            m_file = INVALID_HANDLE_VALUE;
+            if (!wait &&
+                (error == ERROR_LOCK_VIOLATION || error == ERROR_IO_PENDING)) {
+                return false;
+            }
+            throw std::system_error(
+                error,
+                std::system_category(),
+                "Failed to acquire user preferences lock: " +
+                    lockPath.string());
+        }
+        return true;
+#else
+        m_descriptor = ::open(
+            lockPath.c_str(),
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+            0600);
+        if (m_descriptor < 0) {
+            throw std::system_error(
+                errno,
+                std::generic_category(),
+                "Failed to open user preferences lock: " +
+                    lockPath.string());
+        }
+
+        struct stat status {};
+        const bool statusRead = ::fstat(m_descriptor, &status) == 0;
+        if (!statusRead || !S_ISREG(status.st_mode)) {
+            const int error = statusRead ? EINVAL : errno;
+            ::close(m_descriptor);
+            m_descriptor = -1;
+            throw std::system_error(
+                error,
+                std::generic_category(),
+                "User preferences lock is not a regular file: " +
+                    lockPath.string());
+        }
+
+        const int operation = LOCK_EX | (wait ? 0 : LOCK_NB);
+        while (::flock(m_descriptor, operation) != 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            const int error = errno;
+            ::close(m_descriptor);
+            m_descriptor = -1;
+            if (!wait && (error == EWOULDBLOCK || error == EAGAIN)) {
+                return false;
+            }
+            throw std::system_error(
+                error,
+                std::generic_category(),
+                "Failed to acquire user preferences lock: " +
+                    lockPath.string());
+        }
+        return true;
+#endif
+    }
+
+#ifdef _WIN32
+    HANDLE m_file = INVALID_HANDLE_VALUE;
+#else
+    int m_descriptor = -1;
+#endif
+};
+
+thread_local std::function<void()> g_afterSavePreflightHook;
+
+std::unique_ptr<UserPreferencesFileLock> lockUserPreferencesPublication(
+    const std::filesystem::path& path) {
+    try {
+        return std::make_unique<UserPreferencesFileLock>(path);
+    } catch (const std::exception& error) {
+        throw Persistence::AtomicFilePublicationError(
+            Persistence::AtomicFilePublicationState::NotPublished,
+            "Failed to lock user preferences file '" + path.string() +
+                "' before publication: " + error.what());
+    }
+}
 
 [[noreturn]] void throwYamlParseError(const char* message,
                                       size_t length,
@@ -868,10 +1056,15 @@ void UserPreferencesStore::saveRequested(const UserPreferences& requested) {
         throwWriteBlocked(m_path, "normal saves are blocked after an unsafe load");
     }
 
+    const auto publicationLock = lockUserPreferencesPublication(m_path);
     DocumentInspection current = inspectDocument(m_path);
     if (current.kind == DocumentKind::Unsafe) {
         m_normalSaveBlocked = true;
         throwWriteBlocked(m_path, current.problem);
+    }
+
+    if (g_afterSavePreflightHook) {
+        g_afterSavePreflightHook();
     }
 
     const std::string document = serializePreferences(
@@ -896,6 +1089,7 @@ void UserPreferencesStore::saveRequested(const UserPreferencesState& state) {
 
 void UserPreferencesStore::replaceWithRequested(
     const UserPreferences& requested) {
+    const auto publicationLock = lockUserPreferencesPublication(m_path);
     const std::string document = serializePreferences(requested, nullptr);
     try {
         writeAtomically(m_path, document);
@@ -908,5 +1102,25 @@ void UserPreferencesStore::replaceWithRequested(
         throw;
     }
 }
+
+namespace detail {
+
+void setUserPreferencesAfterSavePreflightHookForTesting(
+    std::function<void()> hook) {
+    g_afterSavePreflightHook = std::move(hook);
+}
+
+bool tryPublishCooperatingUserPreferencesDocumentForTesting(
+    const std::filesystem::path& path,
+    const std::string& document) {
+    auto lock = UserPreferencesFileLock::tryAcquire(path);
+    if (!lock) {
+        return false;
+    }
+    writeAtomically(path, document);
+    return true;
+}
+
+} // namespace detail
 
 } // namespace Rigel::Preferences

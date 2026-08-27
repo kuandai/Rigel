@@ -104,9 +104,13 @@ empty list.
 Malformed, missing-schema, unsupported-schema, unreadable, oversized, and
 nonregular files return safe defaults without changing the existing path.
 Ordinary saves remain blocked after such a load, and also recheck the current
-file before publication so an externally installed newer schema is not
-overwritten. `replaceWithRequested()` is the explicit operation for replacing
-an unsupported document.
+file while holding a sibling `user-preferences.yaml.lock` advisory lock through
+atomic publication, so a newer schema installed by another cooperating Rigel
+writer is not overwritten. The lock file contains no preferences and is never
+read as a configuration source. It serializes cooperating writers only;
+external editors and processes that ignore the lock must not write the file
+concurrently. `replaceWithRequested()` is the explicit operation for replacing
+an unsupported document and uses the same lock.
 
 Writes stage complete replacement bytes and publish them atomically. Commit
 errors distinguish a definite prepublication failure from a replacement that

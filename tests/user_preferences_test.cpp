@@ -4,15 +4,30 @@
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Preferences/UserPreferences.h"
 
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 using namespace Rigel::Preferences;
+
+namespace Rigel::Preferences::detail {
+
+void setUserPreferencesAfterSavePreflightHookForTesting(
+    std::function<void()> hook);
+
+bool tryPublishCooperatingUserPreferencesDocumentForTesting(
+    const std::filesystem::path& path,
+    const std::string& document);
+
+} // namespace Rigel::Preferences::detail
 
 namespace {
 
@@ -363,6 +378,69 @@ TEST_CASE(UserPreferences_rechecks_external_replacement_before_saving) {
     writeDocument(path, supported);
     CHECK_THROWS(store.saveRequested(requested));
     CHECK_EQ(readDocument(path), supported);
+}
+
+TEST_CASE(UserPreferences_save_lock_excludes_newer_writer_after_preflight) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_lock");
+    const auto path = directory.path() / "user-preferences.yaml";
+    writeDocument(
+        path,
+        "schema_version: 1\ngraphics: {view_distance_chunks: 8}\n");
+    UserPreferencesStore store(path);
+    UserPreferences requested = store.load().requested;
+    requested.graphics.viewDistanceChunks = 10;
+
+    std::mutex mutex;
+    std::condition_variable preflightReached;
+    std::condition_variable continueSave;
+    bool isAfterPreflight = false;
+    bool mayContinue = false;
+    std::exception_ptr saveFailure;
+    std::thread saver([&]() {
+        detail::setUserPreferencesAfterSavePreflightHookForTesting([&]() {
+            std::unique_lock lock(mutex);
+            isAfterPreflight = true;
+            preflightReached.notify_one();
+            continueSave.wait(lock, [&]() { return mayContinue; });
+        });
+        try {
+            store.saveRequested(requested);
+        } catch (...) {
+            saveFailure = std::current_exception();
+        }
+        detail::setUserPreferencesAfterSavePreflightHookForTesting({});
+    });
+
+    {
+        std::unique_lock lock(mutex);
+        preflightReached.wait(lock, [&]() { return isAfterPreflight; });
+    }
+
+    const std::string newer =
+        "schema_version: 2\nfuture: installed-by-newer-rigel\n";
+    const bool publishedWhileSaveWasLocked =
+        detail::tryPublishCooperatingUserPreferencesDocumentForTesting(
+            path, newer);
+    const std::string documentWhileSaveWasLocked = readDocument(path);
+
+    {
+        std::lock_guard lock(mutex);
+        mayContinue = true;
+    }
+    continueSave.notify_one();
+    saver.join();
+    if (saveFailure) {
+        std::rethrow_exception(saveFailure);
+    }
+    CHECK(!publishedWhileSaveWasLocked);
+    CHECK_NE(
+        documentWhileSaveWasLocked.find("schema_version: 1"),
+        std::string::npos);
+    CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 10);
+
+    CHECK(detail::tryPublishCooperatingUserPreferencesDocumentForTesting(
+        path, newer));
+    CHECK_EQ(readDocument(path), newer);
 }
 
 TEST_CASE(UserPreferences_serializes_requested_not_hardware_effective_values) {

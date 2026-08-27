@@ -5,12 +5,38 @@
 #include "Rigel/Voxel/WorldConfigBootstrap.h"
 #include "Rigel/Voxel/WorldConfigProvider.h"
 
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 
 namespace {
+
+class CurrentPathGuard final {
+public:
+    explicit CurrentPathGuard(const std::filesystem::path& path)
+        : m_original(std::filesystem::current_path()) {
+        std::filesystem::current_path(path);
+    }
+
+    ~CurrentPathGuard() {
+        std::error_code error;
+        std::filesystem::current_path(m_original, error);
+    }
+
+private:
+    std::filesystem::path m_original;
+};
+
+void writeConfig(const std::filesystem::path& path, std::string_view content) {
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    std::ofstream output(path);
+    output << content;
+}
 
 class TrackingConfigSource final : public Rigel::Config::IConfigSource {
 public:
@@ -86,5 +112,31 @@ TEST_CASE(WorldConfigBootstrap_uses_dedicated_shipped_streaming_asset) {
         Rigel::Voxel::makeWorldConfigProvider(assets, 17)
             .loadStreamingConfig();
     CHECK_EQ(streaming.viewDistanceChunks, 12);
+    CHECK_EQ(streaming.unloadDistanceChunks, 13);
+}
+
+TEST_CASE(WorldConfigBootstrap_reads_streaming_paths_only) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_streaming_source_names");
+    CurrentPathGuard currentPath(directory.path());
+    writeConfig("world_generation.yaml", "generation: [unterminated\n");
+    writeConfig(
+        "config/world_generation.yaml",
+        "flags: [unterminated\n");
+    writeConfig(
+        "config/worlds/17/world_generation.yaml",
+        "overlays: [unterminated\n");
+    writeConfig(
+        "streaming.yaml",
+        "streaming:\n"
+        "  view_distance_chunks: 9\n");
+
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    const Rigel::Voxel::StreamingConfig streaming =
+        Rigel::Voxel::makeWorldConfigProvider(assets, 17)
+            .loadStreamingConfig();
+
+    CHECK_EQ(streaming.viewDistanceChunks, 9);
     CHECK_EQ(streaming.unloadDistanceChunks, 13);
 }

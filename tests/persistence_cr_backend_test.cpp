@@ -14,7 +14,6 @@
 #include "Rigel/Entity/EntityPersistence.h"
 #include "Rigel/Voxel/Block.h"
 #include "Rigel/Voxel/BlockType.h"
-#include "Rigel/Voxel/GeneratorSnapshot.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldResources.h"

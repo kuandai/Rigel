@@ -1,6 +1,9 @@
 #include "TestFramework.h"
 
 #include "Rigel/Voxel/GeneratorDefinition.h"
+#include "Rigel/Voxel/GeneratorDefinitionLoader.h"
+#include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/BlockType.h"
 
 #include <string>
 #include <string_view>
@@ -12,6 +15,7 @@ using Rigel::Voxel::parseGeneratorDefinition;
 using Rigel::Voxel::parseGeneratorDefinitionSnapshot;
 using Rigel::Voxel::serializeGeneratorDefinition;
 using Rigel::Voxel::serializeGeneratorDefinitionSnapshot;
+using Rigel::Voxel::validateAndOrderGeneratorDefinitions;
 
 std::string validDefinitionYaml() {
     return R"yaml(generator:
@@ -176,6 +180,20 @@ bool rejectsMutation(std::string_view before, std::string_view after) {
     }
 }
 
+void registerDefinitionMaterials(Rigel::Voxel::BlockRegistry& registry,
+                                 bool includeWater = true) {
+    for (const std::string identifier : {
+             "test:stone", "test:water", "test:grass", "test:dirt",
+             "test:sand"}) {
+        if (!includeWater && identifier == "test:water") {
+            continue;
+        }
+        Rigel::Voxel::BlockType block;
+        block.identifier = identifier;
+        registry.registerBlock(identifier, std::move(block));
+    }
+}
+
 } // namespace
 
 TEST_CASE(GeneratorDefinition_parses_complete_graph_only_author_contract) {
@@ -206,6 +224,10 @@ TEST_CASE(GeneratorDefinition_rejects_unknown_missing_and_inapplicable_fields) {
         "        type: constant\n        value: 0.25\n        scale: 2\n"));
     CHECK(rejectsMutation("        type: noise3d\n",
                           "        type: mystery\n"));
+    CHECK(rejectsMutation(
+        "      - id: author_note\n        type: constant\n        value: 99\n",
+        "      - id: author_note\n        type: climate\n"
+        "        field: wind\n"));
     CHECK(rejectsMutation("    local_blend: 0.3\n",
                           "    local_blend: unrestricted\n"));
     CHECK(rejectsMutation("  structures:\n    enabled: true\n",
@@ -217,6 +239,9 @@ TEST_CASE(GeneratorDefinition_rejects_duplicates_and_dangling_references) {
     CHECK(rejectsMutation("      - id: cave\n", "      - id: terrain\n"));
     CHECK(rejectsMutation("      terrain_density: terrain\n",
                           "      terrain_density: missing\n"));
+    CHECK(rejectsMutation(
+        "      terrain_density: terrain\n",
+        "      terrain_density: terrain\n      terrain_density: terrain\n"));
     CHECK(rejectsMutation("      biome: beach\n", "      biome: missing\n"));
     CHECK(rejectsMutation("        biomes: []\n",
                           "        biomes: [missing]\n"));
@@ -251,6 +276,10 @@ TEST_CASE(GeneratorDefinition_validates_unreachable_nodes_before_pruning) {
         "      - id: author_note\n        type: constant\n        value: 99\n",
         "      - id: author_note\n        type: add\n"
         "        inputs: [missing]\n"));
+    CHECK(rejectsMutation(
+        "      - id: author_note\n        type: constant\n        value: 99\n",
+        "      - id: author_note\n        type: add\n"
+        "        inputs: [author_note]\n"));
 }
 
 TEST_CASE(GeneratorDefinition_authoring_serialization_is_normalized_and_stable) {
@@ -337,4 +366,58 @@ TEST_CASE(GeneratorDefinition_snapshot_normalizes_splines_and_disabled_features)
     CHECK(snapshot.find("- [0, 0.5]") < snapshot.find("- [1, 2]"));
     CHECK_NO_THROW(parseGeneratorDefinitionSnapshot(
         snapshot, 1u, "normalized-snapshot.yaml"));
+}
+
+TEST_CASE(GeneratorDefinition_declared_set_is_complete_validated_and_ordered) {
+    GeneratorDefinition later =
+        parseGeneratorDefinition(validDefinitionYaml(), "later.yaml");
+    later.id = "test:zeta";
+    later.sourceRevision = 2;
+    GeneratorDefinition earlier = later;
+    earlier.id = "test:alpha";
+    earlier.sourceRevision = 9;
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+
+    const auto definitions = validateAndOrderGeneratorDefinitions(
+        {later, earlier}, registry);
+    CHECK_EQ(definitions.size(), size_t{2});
+    CHECK_EQ(definitions[0].id, std::string("test:alpha"));
+    CHECK_EQ(definitions[1].id, std::string("test:zeta"));
+
+    CHECK_THROWS(validateAndOrderGeneratorDefinitions({}, registry));
+    later.label = "Same identity, different declaration";
+    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
+        {earlier, later, later}, registry));
+
+    GeneratorDefinition duplicateFeature = earlier;
+    duplicateFeature.data.structures.features.push_back(
+        duplicateFeature.data.structures.features.front());
+    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
+        {duplicateFeature}, registry));
+}
+
+TEST_CASE(GeneratorDefinition_declared_set_requires_every_material) {
+    const GeneratorDefinition definition =
+        parseGeneratorDefinition(validDefinitionYaml(), "materials.yaml");
+    Rigel::Voxel::BlockRegistry incomplete;
+    registerDefinitionMaterials(incomplete, false);
+    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
+        {definition}, incomplete));
+
+    Rigel::Voxel::BlockRegistry complete;
+    registerDefinitionMaterials(complete);
+    CHECK_NO_THROW(validateAndOrderGeneratorDefinitions(
+        {definition}, complete));
+
+    GeneratorDefinition missingSurface = definition;
+    missingSurface.data.biomes.entries.front().surface.front().material =
+        "test:missing";
+    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
+        {missingSurface}, complete));
+
+    GeneratorDefinition missingFeature = definition;
+    missingFeature.data.structures.features.front().material = "test:missing";
+    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
+        {missingFeature}, complete));
 }

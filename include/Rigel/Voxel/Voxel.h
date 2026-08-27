@@ -19,6 +19,8 @@
 #include "BlockType.h"
 #include "BlockRegistry.h"
 #include "BlockLoader.h"
+#include "GeneratorDefinition.h"
+#include "GeneratorDefinitionLoader.h"
 #include "Chunk.h"
 #include "ChunkCoord.h"
 #include "ChunkManager.h"

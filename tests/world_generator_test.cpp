@@ -206,6 +206,10 @@ TEST_CASE(WorldGenerator_honors_enabled_structure_data) {
     CHECK_EQ(
         buffer.at(0, 1, 0).id.type,
         registry.findByIdentifier("rigel:tree")->type);
+
+    const int lastWorldChunk =
+        std::numeric_limits<int>::max() / Chunk::SIZE;
+    CHECK_THROWS(generator.generate({lastWorldChunk, 0, 0}, buffer));
 }
 
 TEST_CASE(WorldGenerator_clips_exact_unaligned_bounds) {
@@ -273,6 +277,10 @@ TEST_CASE(WorldGenerator_generates_at_supported_noise_frequency_boundary) {
     WorldGenerator generator(registry, definition, 19u);
     ChunkBuffer buffer;
     CHECK_NO_THROW(generator.generate({0, 0, 0}, buffer));
+    const int lastWorldChunk =
+        std::numeric_limits<int>::max() / Chunk::SIZE;
+    CHECK_NO_THROW(generator.generate({lastWorldChunk, 0, 0}, buffer));
+    CHECK_THROWS(generator.generate({lastWorldChunk + 1, 0, 0}, buffer));
 }
 
 TEST_CASE(Noise_checks_lattice_coordinate_range_before_integer_conversion) {

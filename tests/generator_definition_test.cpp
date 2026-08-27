@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <set>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@
 namespace {
 
 using Rigel::Voxel::GeneratorDefinition;
+using Rigel::Voxel::GeneratorDefinitionData;
 using Rigel::Voxel::GeneratorDefinitionOrigin;
 using Rigel::Voxel::parseGeneratorDefinition;
 using Rigel::Voxel::parseGeneratorDefinitionSnapshot;
@@ -366,6 +368,31 @@ TEST_CASE(GeneratorDefinition_rejects_unsafe_evaluator_arithmetic) {
     derived.data.climate.local.temperature.scale = 0.0f;
     derived.data.climate.local.temperature.offset = 2.9e38f;
     CHECK_THROWS(prepareSnapshot(derived));
+
+    GeneratorDefinition composition = definitionWithoutUnusedNodes();
+    auto& terrain = composition.data.densityGraph.nodes.front();
+    terrain.type = "add";
+    terrain.value = 0.0f;
+    terrain.inputs = {"extreme_a", "extreme_b"};
+    GeneratorDefinitionData::DensityNode extremeA;
+    extremeA.id = "extreme_a";
+    extremeA.type = "constant";
+    extremeA.value = std::numeric_limits<float>::max();
+    GeneratorDefinitionData::DensityNode extremeB = extremeA;
+    extremeB.id = "extreme_b";
+    composition.data.densityGraph.nodes.push_back(std::move(extremeA));
+    composition.data.densityGraph.nodes.push_back(std::move(extremeB));
+    CHECK_THROWS(prepareSnapshot(composition));
+    composition.data.densityGraph.nodes.front().type = "mul";
+    CHECK_THROWS(prepareSnapshot(composition));
+
+    GeneratorDefinition yTransform = definitionWithoutUnusedNodes();
+    auto& y = yTransform.data.densityGraph.nodes.front();
+    y.type = "y";
+    y.value = 0.0f;
+    y.scale = std::numeric_limits<float>::max();
+    y.offset = std::numeric_limits<float>::max();
+    CHECK_THROWS(prepareSnapshot(yTransform));
 }
 
 TEST_CASE(GeneratorDefinition_snapshot_rejects_unsafe_evaluator_arithmetic) {
@@ -387,6 +414,30 @@ TEST_CASE(GeneratorDefinition_snapshot_rejects_unsafe_evaluator_arithmetic) {
         transform,
         Rigel::Voxel::kGeneratorDefinitionSchemaVersion,
         "extreme-transform-snapshot.yaml"));
+
+    GeneratorDefinition composition = definitionWithoutUnusedNodes();
+    auto& terrain = composition.data.densityGraph.nodes.front();
+    terrain.type = "add";
+    terrain.value = 0.0f;
+    terrain.inputs = {"snapshot_a", "snapshot_b"};
+    GeneratorDefinitionData::DensityNode snapshotA;
+    snapshotA.id = "snapshot_a";
+    snapshotA.type = "constant";
+    snapshotA.value = 1.0f;
+    GeneratorDefinitionData::DensityNode snapshotB = snapshotA;
+    snapshotB.id = "snapshot_b";
+    composition.data.densityGraph.nodes.push_back(std::move(snapshotA));
+    composition.data.densityGraph.nodes.push_back(std::move(snapshotB));
+    std::string densityComposition =
+        prepareSnapshot(composition).canonicalSnapshot;
+    replaceOnce(
+        densityComposition, "value: 1\n", "value: 3.40282347e+38\n");
+    replaceOnce(
+        densityComposition, "value: 1\n", "value: 3.40282347e+38\n");
+    CHECK_THROWS(parseGeneratorDefinitionSnapshot(
+        densityComposition,
+        Rigel::Voxel::kGeneratorDefinitionSchemaVersion,
+        "extreme-density-snapshot.yaml"));
 }
 
 TEST_CASE(GeneratorDefinition_rejects_coast_only_biome_selection) {

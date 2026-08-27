@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
@@ -46,6 +47,44 @@ LocalWorldYRange localWorldYRange(
         static_cast<int>(first),
         static_cast<int>(onePastLast)
     };
+}
+
+struct ChunkWorldAxisRange {
+    int64_t first = 0;
+    int64_t last = 0;
+};
+
+ChunkWorldAxisRange chunkWorldAxisRange(int chunkCoordinate) {
+    const int64_t first =
+        static_cast<int64_t>(chunkCoordinate) * Chunk::SIZE;
+    return {first, first + Chunk::SIZE - 1};
+}
+
+void requireSupportedChunkCoordinates(ChunkCoord coord,
+                                      bool structuresEnabled) {
+    const auto requireAxis = [](ChunkWorldAxisRange range,
+                                std::string_view axis) {
+        if (range.first < std::numeric_limits<int>::min() ||
+            range.last > std::numeric_limits<int>::max()) {
+            throw std::out_of_range(
+                "Chunk " + std::string(axis) +
+                " coordinate is outside the supported world-coordinate "
+                "range");
+        }
+    };
+    const ChunkWorldAxisRange x = chunkWorldAxisRange(coord.x);
+    const ChunkWorldAxisRange y = chunkWorldAxisRange(coord.y);
+    const ChunkWorldAxisRange z = chunkWorldAxisRange(coord.z);
+    requireAxis(x, "X");
+    requireAxis(y, "Y");
+    requireAxis(z, "Z");
+    if (structuresEnabled &&
+        (x.last + 11 > std::numeric_limits<int>::max() ||
+         z.first - 7 < std::numeric_limits<int>::min())) {
+        throw std::out_of_range(
+            "Chunk coordinate is outside the supported structure-sampling "
+            "range");
+    }
 }
 
 void clearOutsideWorldYRange(
@@ -182,9 +221,23 @@ struct NoiseGridCache final : DensitySampleContext::NoiseSampleCache {
         if (!graph || graph->nodes.empty()) {
             return;
         }
-        int originX = coord.x * Chunk::SIZE;
-        int originY = coord.y * Chunk::SIZE;
-        int originZ = coord.z * Chunk::SIZE;
+        const int64_t originXWide =
+            static_cast<int64_t>(coord.x) * Chunk::SIZE;
+        const int64_t originYWide =
+            static_cast<int64_t>(coord.y) * Chunk::SIZE;
+        const int64_t originZWide =
+            static_cast<int64_t>(coord.z) * Chunk::SIZE;
+        if (originXWide < std::numeric_limits<int>::min() ||
+            originYWide < std::numeric_limits<int>::min() ||
+            originZWide < std::numeric_limits<int>::min() ||
+            originXWide + Chunk::SIZE > std::numeric_limits<int>::max() ||
+            originYWide + Chunk::SIZE > std::numeric_limits<int>::max() ||
+            originZWide + Chunk::SIZE > std::numeric_limits<int>::max()) {
+            return;
+        }
+        const int originX = static_cast<int>(originXWide);
+        const int originY = static_cast<int>(originYWide);
+        const int originZ = static_cast<int>(originZWide);
         int step = normalizeSampleStep(sampleStep);
         grids.resize(graph->nodes.size());
         for (size_t i = 0; i < graph->nodes.size(); ++i) {
@@ -991,6 +1044,8 @@ void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
         out.blocks.fill(BlockState{});
         return;
     }
+    requireSupportedChunkCoordinates(
+        coord, m_definition.structures.enabled);
     clearOutsideWorldYRange(out, worldYRange);
 
     WorldGenContext ctx;

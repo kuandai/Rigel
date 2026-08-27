@@ -709,27 +709,29 @@ void validateData(const GeneratorDefinitionData& data,
                                           std::string_view path) {
         const long double magnitude = global + latitude +
             local * static_cast<long double>(data.climate.localBlend);
-        if (magnitude > maxFiniteFloat) {
+        if (!std::isfinite(magnitude) || magnitude > maxFiniteFloat) {
             fail(sourceName, path,
                  "global, latitude, and local arithmetic can exceed the "
                  "finite evaluator range");
         }
+        return magnitude;
     };
-    validateClimateComposition(
-        globalMagnitude.temperature,
-        localMagnitude.temperature,
-        std::abs(static_cast<long double>(data.climate.latitudeStrength)),
-        "generator.climate.temperature");
-    validateClimateComposition(
-        globalMagnitude.humidity,
-        localMagnitude.humidity,
-        0.0L,
-        "generator.climate.humidity");
-    validateClimateComposition(
-        globalMagnitude.continentalness,
-        localMagnitude.continentalness,
-        0.0L,
-        "generator.climate.continentalness");
+    const ClimateMagnitude effectiveClimateMagnitude{
+        validateClimateComposition(
+            globalMagnitude.temperature,
+            localMagnitude.temperature,
+            std::abs(static_cast<long double>(data.climate.latitudeStrength)),
+            "generator.climate.temperature"),
+        validateClimateComposition(
+            globalMagnitude.humidity,
+            localMagnitude.humidity,
+            0.0L,
+            "generator.climate.humidity"),
+        validateClimateComposition(
+            globalMagnitude.continentalness,
+            localMagnitude.continentalness,
+            0.0L,
+            "generator.climate.continentalness")};
 
     requireFinite(data.biomes.blendPower, sourceName,
                   "generator.biomes.blend_power");
@@ -919,6 +921,22 @@ void validateData(const GeneratorDefinitionData& data,
                          "contains duplicate x coordinates");
                 }
             }
+            auto sortedPoints = node.splinePoints;
+            std::sort(sortedPoints.begin(), sortedPoints.end());
+            for (size_t point = 1; point < sortedPoints.size(); ++point) {
+                const auto& previous = sortedPoints[point - 1];
+                const auto& current = sortedPoints[point];
+                const long double xSpan =
+                    static_cast<long double>(current.first) - previous.first;
+                const long double ySpan = std::abs(
+                    static_cast<long double>(current.second) -
+                    previous.second);
+                if (xSpan > maxFiniteFloat || ySpan > maxFiniteFloat) {
+                    fail(sourceName, path + ".spline",
+                         "interpolation arithmetic can exceed the finite "
+                         "evaluator range");
+                }
+            }
         } else if (node.type == "climate") {
             if (node.field != "temperature" && node.field != "humidity" &&
                 node.field != "continentalness") {
@@ -963,6 +981,90 @@ void validateData(const GeneratorDefinitionData& data,
     for (const auto& [id, node] : nodes) {
         static_cast<void>(node);
         visit(id);
+    }
+
+    std::unordered_map<std::string, long double> densityMagnitudes;
+    std::function<long double(const std::string&)> densityMagnitude =
+        [&](const std::string& id) -> long double {
+        const auto cached = densityMagnitudes.find(id);
+        if (cached != densityMagnitudes.end()) {
+            return cached->second;
+        }
+
+        const auto& node = *nodes.at(id);
+        const std::string path =
+            "generator.density_graph.nodes." + id;
+        long double magnitude = 0.0L;
+        if (node.type == "noise2d" || node.type == "noise3d" ||
+            node.type == "noise3d_xy") {
+            magnitude = validateNoise(
+                node.noise,
+                sourceName,
+                path + ".noise",
+                node.type == "noise2d"
+                    ? kNoise2DEvaluatorMagnitude
+                    : kNoise3DEvaluatorMagnitude);
+        } else if (node.type == "constant") {
+            magnitude = std::abs(static_cast<long double>(node.value));
+        } else if (node.type == "y") {
+            magnitude = maxWorldCoordinateMagnitude *
+                    std::abs(static_cast<long double>(node.scale)) +
+                std::abs(static_cast<long double>(node.offset));
+        } else if (node.type == "climate") {
+            if (node.field == "temperature") {
+                magnitude = effectiveClimateMagnitude.temperature;
+            } else if (node.field == "humidity") {
+                magnitude = effectiveClimateMagnitude.humidity;
+            } else {
+                magnitude = effectiveClimateMagnitude.continentalness;
+            }
+        } else if (node.type == "add") {
+            for (const auto& input : node.inputs) {
+                magnitude += densityMagnitude(input);
+                if (!std::isfinite(magnitude) ||
+                    magnitude > maxFiniteFloat) {
+                    break;
+                }
+            }
+        } else if (node.type == "mul") {
+            magnitude = 1.0L;
+            for (const auto& input : node.inputs) {
+                magnitude *= densityMagnitude(input);
+                if (!std::isfinite(magnitude) ||
+                    magnitude > maxFiniteFloat) {
+                    break;
+                }
+            }
+        } else if (node.type == "max" || node.type == "min") {
+            for (const auto& input : node.inputs) {
+                magnitude = std::max(magnitude, densityMagnitude(input));
+            }
+        } else if (node.type == "abs" || node.type == "invert") {
+            magnitude = densityMagnitude(node.inputs.front());
+        } else if (node.type == "clamp") {
+            static_cast<void>(densityMagnitude(node.inputs.front()));
+            magnitude = std::max(
+                std::abs(static_cast<long double>(node.minValue)),
+                std::abs(static_cast<long double>(node.maxValue)));
+        } else if (node.type == "spline") {
+            static_cast<void>(densityMagnitude(node.inputs.front()));
+            for (const auto& point : node.splinePoints) {
+                magnitude = std::max(
+                    magnitude,
+                    std::abs(static_cast<long double>(point.second)));
+            }
+        }
+
+        if (!std::isfinite(magnitude) || magnitude > maxFiniteFloat) {
+            fail(sourceName, path,
+                 "arithmetic can exceed the finite evaluator range");
+        }
+        densityMagnitudes.emplace(id, magnitude);
+        return magnitude;
+    };
+    for (const auto& [id, node] : nodes) {
+        static_cast<void>(node);
+        static_cast<void>(densityMagnitude(id));
     }
 
     if (data.densityGraph.outputs.empty()) {

@@ -199,7 +199,7 @@ TEST_CASE(AssetManager_DoesNotDeferUnrelatedMalformedManifestYaml) {
     CHECK_EQ(corrected.sourceRevision, uint32_t{9});
 }
 
-TEST_CASE(GeneratorDefinitionLoader_missing_resource_preserves_prior_set_and_recovers) {
+TEST_CASE(GeneratorDefinitionLoader_recovery_commit_preserves_current_asset_identity) {
     Rigel::Asset::AssetManager assets;
     Rigel::Voxel::BlockRegistry registry;
     registerDefinitionMaterials(registry);
@@ -225,7 +225,9 @@ TEST_CASE(GeneratorDefinitionLoader_missing_resource_preserves_prior_set_and_rec
 
     assets.loadManifest("corrected.yaml");
     CHECK_EQ(assets.get<Rigel::Asset::RawAsset>("raw/stable"), retained);
-    const auto committedBeforeCommit =
+    // Production initializes ordinary assets before lazily resolving the
+    // generator definition candidate. Commit must retain those exact objects.
+    const auto currentCandidateBeforeCommit =
         assets.get<Rigel::Asset::RawAsset>("raw/committed");
     CHECK(assets.exists("generator_definitions/stable"));
     CHECK(!assets.exists("generator_definitions/corrected"));
@@ -243,13 +245,13 @@ TEST_CASE(GeneratorDefinitionLoader_missing_resource_preserves_prior_set_and_rec
              std::vector<std::string>{"corrected"});
     const auto correctedStable =
         assets.get<Rigel::Asset::RawAsset>("raw/stable");
-    const auto committedAfterCommit =
+    const auto currentCandidateAfterCommit =
         assets.get<Rigel::Asset::RawAsset>("raw/committed");
     CHECK_NE(correctedStable, retained);
     CHECK_EQ(rawText(correctedStable),
              std::string("corrected committed entry"));
-    CHECK_NE(committedAfterCommit, committedBeforeCommit);
-    CHECK_EQ(rawText(committedAfterCommit),
+    CHECK_EQ(currentCandidateAfterCommit, currentCandidateBeforeCommit);
+    CHECK_EQ(rawText(currentCandidateAfterCommit),
              std::string("new committed entry"));
 }
 

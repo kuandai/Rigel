@@ -537,10 +537,15 @@ void AssetManager::commitPendingGeneratorDefinitions() {
     std::erase_if(m_cache, [](const auto& item) {
         return item.first.second.starts_with("generator_definitions/");
     });
-    std::erase_if(m_cache, [&](const auto& item) {
-        return m_pendingGeneratorDefinitions->touchedEntryIds.contains(
-            item.first.second);
-    });
+    // Ordinary assets first loaded from the candidate manifest may already be
+    // in use. Invalidate only cache objects retained from before publication.
+    for (const auto& [key, previousAsset] :
+         m_pendingGeneratorDefinitions->previousCacheEntries) {
+        const auto found = m_cache.find(key);
+        if (found != m_cache.end() && found->second == previousAsset) {
+            m_cache.erase(found);
+        }
+    }
     m_pendingGeneratorDefinitions.reset();
 }
 

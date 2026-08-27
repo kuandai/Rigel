@@ -28,6 +28,7 @@ struct ApplicationConstructionHooks {
     void (*afterContextAcquired)() = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
     std::filesystem::path userPreferencesPath;
+    void (*afterDisplayInitialized)(Application&) = nullptr;
 };
 
 struct ApplicationCloseHooks {
@@ -44,6 +45,11 @@ public:
         ApplicationConstructionHooks hooks,
         void (*runLoop)(Application&));
     static void closeReadyWorld(ApplicationCloseHooks hooks);
+    static void closeWithPendingResize(
+        std::filesystem::path userPreferencesPath,
+        int width,
+        int height,
+        double observedAt);
     static bool initializeOptionalUserInterface(
         GLFWwindow* window,
         bool (*initialize)(GLFWwindow*)) noexcept;

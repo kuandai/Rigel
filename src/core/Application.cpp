@@ -122,16 +122,20 @@ struct Application::Impl {
     bool shutDown = false;
     void (*afterContextAcquired)() = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
+    void (*afterDisplayInitialized)(Application&) = nullptr;
 
     Impl() = default;
     explicit Impl(ApplicationConstructionHooks hooks)
         : runtime(hooks.runtimeApi)
         , preferencesPath(std::move(hooks.userPreferencesPath))
         , afterContextAcquired(hooks.afterContextAcquired)
-        , shutdownStageCompleted(hooks.shutdownStageCompleted) {
+        , shutdownStageCompleted(hooks.shutdownStageCompleted)
+        , afterDisplayInitialized(hooks.afterDisplayInitialized) {
     }
     ~Impl();
     void persistWorld();
+    void persistPendingResizeForClose();
+    void persistPendingResizeForCleanup() noexcept;
     void close();
     void closeNoThrow() noexcept;
     void shutdown() noexcept;
@@ -214,6 +218,9 @@ void Application::initialize() {
     if (m_impl->afterContextAcquired) {
         m_impl->afterContextAcquired();
     }
+    if (m_impl->afterDisplayInitialized) {
+        m_impl->afterDisplayInitialized(*this);
+    }
     const auto& requestedDisplay =
         m_impl->preferences->requested().display;
     const auto& effectiveDisplay =
@@ -270,14 +277,8 @@ void Application::initialize() {
     m_impl->inputCallbacks.input = &m_impl->input;
     m_impl->inputCallbacks.window = &m_impl->window;
     m_impl->inputCallbacks.camera = &m_impl->camera;
-    m_impl->inputCallbacks.logicalResizeContext = m_impl->preferences.get();
-    m_impl->inputCallbacks.logicalResize = [](void* context,
-                                              int width,
-                                              int height) {
-        auto& preferences =
-            *static_cast<ApplicationPreferences*>(context);
-        preferences.observeLogicalResize(width, height, preferences.now());
-    };
+    registerApplicationPreferenceCallbacks(
+        m_impl->inputCallbacks, *m_impl->preferences);
     Input::registerWindowCallbacks(m_impl->window.window, m_impl->inputCallbacks);
     m_impl->runtime.setWindowSizeCallback([](
         GLFWwindow* window, int width, int height) {
@@ -532,10 +533,66 @@ void Application::Impl::persistWorld() {
         world.worldSet.persistenceContext(world.activeWorldId));
 }
 
+void Application::Impl::persistPendingResizeForClose() {
+    if (!preferences) {
+        return;
+    }
+    const auto result = preferences->flushResizePersistenceForShutdown();
+    if (!result) {
+        return;
+    }
+    if (result->status == PreferenceApplyStatus::NotPublished) {
+        throw std::runtime_error(
+            "Failed to save pending window resize during application close: " +
+            result->message);
+    }
+    if (result->status ==
+        PreferenceApplyStatus::PublishedDurabilityUncertain) {
+        spdlog::warn(
+            "Pending window resize was published during application close, "
+            "but durability is uncertain: {}",
+            result->message);
+    }
+}
+
+void Application::Impl::persistPendingResizeForCleanup() noexcept {
+    if (!preferences) {
+        return;
+    }
+    try {
+        const auto result = preferences->flushResizePersistenceForShutdown();
+        if (!result) {
+            return;
+        }
+        if (result->status == PreferenceApplyStatus::NotPublished) {
+            spdlog::error(
+                "Pending window resize was not saved during application "
+                "cleanup: {}",
+                result->message);
+        } else if (result->status ==
+                   PreferenceApplyStatus::PublishedDurabilityUncertain) {
+            spdlog::warn(
+                "Pending window resize was published during application "
+                "cleanup, but durability is uncertain: {}",
+                result->message);
+        }
+    } catch (const std::exception& error) {
+        spdlog::error(
+            "Pending window resize save failed during application cleanup: {}",
+            error.what());
+    } catch (...) {
+        spdlog::error(
+            "Pending window resize save failed during application cleanup: "
+            "unknown failure");
+    }
+}
+
 void Application::Impl::close() {
     if (shutDown) {
         return;
     }
+
+    persistPendingResizeForClose();
 
     try {
         persistWorld();
@@ -555,6 +612,8 @@ void Application::Impl::closeNoThrow() noexcept {
     if (shutDown) {
         return;
     }
+
+    persistPendingResizeForCleanup();
 
     try {
         persistWorld();
@@ -690,6 +749,22 @@ void ApplicationTestAccess::closeReadyWorld(ApplicationCloseHooks hooks) {
     }
 }
 
+void ApplicationTestAccess::closeWithPendingResize(
+    std::filesystem::path userPreferencesPath,
+    int width,
+    int height,
+    double observedAt) {
+    auto impl = std::make_unique<Application::Impl>();
+    impl->preferences = std::make_unique<ApplicationPreferences>(
+        std::move(userPreferencesPath));
+    impl->preferences->load();
+    impl->preferences->observeLogicalResize(
+        width, height, observedAt);
+    Application application(
+        std::move(impl), Application::Initialization::Skip);
+    application.close();
+}
+
 bool ApplicationTestAccess::initializeOptionalUserInterface(
     GLFWwindow* window,
     bool (*initialize)(GLFWwindow*)) noexcept {
@@ -750,6 +825,7 @@ void Application::run() {
             m_impl->timing.lastTime = glfwGetTime();
             deltaTime = 0.0f;
             m_impl->window.pendingTimeReset = false;
+            m_impl->preferences->resetFramePacingSchedule();
         }
         if (deltaTime > kMaxFrameTime) {
             deltaTime = kMaxFrameTime;

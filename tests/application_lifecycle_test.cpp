@@ -2,6 +2,8 @@
 
 #include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
+#include "Rigel/Application.h"
+#include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
@@ -11,6 +13,7 @@
 #include <GLFW/glfw3.h>
 
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -20,6 +23,13 @@
 #include <spdlog/logger.h>
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
+
+namespace Rigel::Preferences::detail {
+
+void setUserPreferencesAfterSavePreflightHookForTesting(
+    std::function<void()> hook);
+
+} // namespace Rigel::Preferences::detail
 
 namespace {
 
@@ -38,6 +48,14 @@ struct LifecycleCalls {
     int error = GLFW_NO_ERROR;
     bool runLoopEntered = false;
     size_t persistenceAttempts = 0;
+    size_t preferenceSavePreflights = 0;
+    size_t windowConfigurationAttempts = 0;
+    size_t swapIntervalAttempts = 0;
+    Rigel::PreferenceApplyStatus invalidDisplayStatus =
+        Rigel::PreferenceApplyStatus::Applied;
+    Rigel::PreferenceApplyStatus invalidFovStatus =
+        Rigel::PreferenceApplyStatus::Applied;
+    bool failPreferencePublication = false;
     bool closeFailureObserved = false;
     bool dirtyAtCloseFailure = false;
     bool shutdownStartedAtCloseFailure = false;
@@ -164,6 +182,7 @@ void setWindowAttrib(GLFWwindow*, int attribute, int value) {
 
 void setWindowMonitor(
     GLFWwindow*, GLFWmonitor*, int x, int y, int width, int height, int) {
+    ++g_calls->windowConfigurationAttempts;
     g_calls->windowBounds = {x, y, width, height};
 }
 
@@ -173,6 +192,7 @@ void setWindowPos(GLFWwindow*, int x, int y) {
 }
 
 void swapInterval(int) {
+    ++g_calls->swapIntervalAttempts;
 }
 
 int getError(const char** description) {
@@ -195,6 +215,40 @@ Rigel::GlfwRuntime::WindowSizeCallback setFramebufferSizeCallback(
 void failAfterContextAcquired() {
     throw std::runtime_error("required bootstrap data unavailable");
 }
+
+void validateInvalidApplicationPreferences(Rigel::Application& application) {
+    auto invalidDisplay = application.requestedPreferences().display;
+    invalidDisplay.windowedSize.width =
+        Rigel::Preferences::kMinimumWindowDimension - 1;
+    g_calls->invalidDisplayStatus =
+        application.applyDisplayPreferences(invalidDisplay).status;
+    g_calls->invalidFovStatus = application.applyVerticalFov(
+        Rigel::Preferences::kMaximumVerticalFovDegrees + 1.0).status;
+    throw std::runtime_error("application preference validation completed");
+}
+
+void preferenceSavePreflight() {
+    ++g_calls->preferenceSavePreflights;
+    if (g_calls->failPreferencePublication) {
+        throw Rigel::Persistence::AtomicFilePublicationError(
+            Rigel::Persistence::AtomicFilePublicationState::NotPublished,
+            "injected preference publication failure");
+    }
+}
+
+class ScopedPreferenceSavePreflight {
+public:
+    ScopedPreferenceSavePreflight() {
+        Rigel::Preferences::detail::
+            setUserPreferencesAfterSavePreflightHookForTesting(
+                &preferenceSavePreflight);
+    }
+
+    ~ScopedPreferenceSavePreflight() {
+        Rigel::Preferences::detail::
+            setUserPreferencesAfterSavePreflightHookForTesting({});
+    }
+};
 
 void recordRunLoopEntry(Rigel::Application&) {
     g_calls->runLoopEntered = true;
@@ -418,6 +472,84 @@ TEST_CASE(Application_BootstrapFailureReturnsFailureBeforeRunLoop) {
     CHECK(!calls.runLoopEntered);
     CHECK(logs.output().find("required bootstrap data unavailable") !=
           std::string::npos);
+}
+
+TEST_CASE(Application_InvalidPreferencesRejectBeforeMutationOrPublication) {
+    LifecycleCalls calls;
+    calls.videoMode.width = 1920;
+    calls.videoMode.height = 1080;
+    ScopedLifecycleCalls scopedCalls(calls);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_invalid_preferences");
+    const auto preferencesPath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath).saveRequested({});
+    ScopedPreferenceSavePreflight savePreflight;
+
+    Rigel::ApplicationConstructionHooks hooks;
+    hooks.runtimeApi = fakeRuntimeApi();
+    hooks.userPreferencesPath = preferencesPath;
+    hooks.afterDisplayInitialized = &validateInvalidApplicationPreferences;
+    CHECK_THROWS(Rigel::ApplicationTestAccess::construct(std::move(hooks)));
+
+    CHECK_EQ(
+        calls.invalidDisplayStatus,
+        Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_EQ(calls.invalidFovStatus, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_EQ(calls.windowConfigurationAttempts, static_cast<size_t>(0));
+    CHECK_EQ(calls.swapIntervalAttempts, static_cast<size_t>(1));
+    CHECK_EQ(calls.preferenceSavePreflights, static_cast<size_t>(0));
+}
+
+TEST_CASE(Application_CloseFlushesPendingResizeBeforeDebounceExpires) {
+    LifecycleCalls calls;
+    ScopedLifecycleCalls scopedCalls(calls);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_close_resize");
+    const auto preferencesPath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath).saveRequested({});
+    ScopedPreferenceSavePreflight savePreflight;
+
+    Rigel::ApplicationTestAccess::closeWithPendingResize(
+        preferencesPath, 1180, 720, 10.0);
+
+    CHECK_EQ(calls.preferenceSavePreflights, static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(preferencesPath)
+            .load()
+            .display.windowedSize,
+        (Rigel::Preferences::WindowedSize{1180, 720}));
+}
+
+TEST_CASE(Application_CloseReportsPendingResizePublicationFailure) {
+    LifecycleCalls calls;
+    calls.failPreferencePublication = true;
+    ScopedLifecycleCalls scopedCalls(calls);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_close_resize_failure");
+    const auto preferencesPath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath).saveRequested({});
+    ScopedPreferenceSavePreflight savePreflight;
+
+    bool reported = false;
+    try {
+        Rigel::ApplicationTestAccess::closeWithPendingResize(
+            preferencesPath, 1180, 720, 10.0);
+    } catch (const std::exception& error) {
+        reported = std::string(error.what()).find(
+            "Failed to save pending window resize during application close") !=
+            std::string::npos;
+    }
+
+    CHECK(reported);
+    CHECK_EQ(calls.preferenceSavePreflights, static_cast<size_t>(2));
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(preferencesPath)
+            .load()
+            .display.windowedSize,
+        (Rigel::Preferences::WindowedSize{800, 600}));
 }
 
 TEST_CASE(Application_OptionalUserInterfaceFailuresContinueOnce) {

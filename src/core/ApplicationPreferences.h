@@ -12,6 +12,10 @@
 
 namespace Rigel {
 
+namespace Input {
+struct InputCallbackContext;
+}
+
 namespace Render {
 class FrameRenderer;
 }
@@ -40,8 +44,10 @@ public:
 
     void observeLogicalResize(int width, int height, double observedAt);
     std::optional<PreferenceApplyResult> flushResizePersistence(double now);
+    std::optional<PreferenceApplyResult> flushResizePersistenceForShutdown();
 
     void waitForNextFrame() { m_framePacer.wait(); }
+    void resetFramePacingSchedule() { m_framePacer.reset(); }
     double now() const { return m_framePacer.now(); }
 
     const Preferences::UserPreferences& requested() const {
@@ -69,6 +75,9 @@ private:
         std::string& failure);
     Preferences::DisplayPreferences effectiveDisplayFor(
         const Preferences::DisplayPreferences& requested) const;
+    std::optional<PreferenceApplyResult> persistPendingResize(
+        double now,
+        bool ignoreDelay);
 
     Preferences::UserPreferencesStore m_store;
     Preferences::UserPreferences m_requested;
@@ -79,7 +88,11 @@ private:
     bool m_programmaticWindowChange = false;
     std::optional<std::pair<int, int>> m_windowedPosition;
     std::optional<Preferences::WindowedSize> m_pendingResize;
-    double m_lastResizeObservation = 0.0;
+    double m_nextResizePersistenceAttempt = 0.0;
 };
+
+void registerApplicationPreferenceCallbacks(
+    Input::InputCallbackContext& callbacks,
+    ApplicationPreferences& preferences);
 
 } // namespace Rigel

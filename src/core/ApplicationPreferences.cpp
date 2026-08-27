@@ -2,6 +2,7 @@
 
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/FrameRenderer.h"
+#include "Rigel/input/GameplayInput.h"
 
 #include <cmath>
 #include <exception>
@@ -12,6 +13,7 @@ namespace Rigel {
 namespace {
 
 constexpr double kResizePersistenceDelaySeconds = 0.25;
+constexpr double kResizePersistenceRetrySeconds = 1.0;
 constexpr Preferences::WindowedSize kSafeWindowedSize{800, 600};
 
 bool validWindowedSize(const Preferences::WindowedSize& size) {
@@ -223,6 +225,7 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
         effectiveDisplayFor(candidate);
     if (candidate == m_requested.display &&
         nextEffective == previousEffective) {
+        m_pendingResize.reset();
         return {};
     }
     const auto previousWindowedPosition = m_windowedPosition;
@@ -310,12 +313,14 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
     try {
         m_store.saveRequested(nextRequested);
         m_requested = std::move(nextRequested);
+        m_pendingResize.reset();
         return {};
     } catch (const std::exception& error) {
         PreferenceApplyResult result = publicationFailure(error);
         if (result.status ==
             PreferenceApplyStatus::PublishedDurabilityUncertain) {
             m_requested = std::move(nextRequested);
+            m_pendingResize.reset();
             return result;
         }
 
@@ -387,32 +392,57 @@ void ApplicationPreferences::observeLogicalResize(
     }
     m_effectiveDisplay.windowedSize = observed;
     m_pendingResize = observed;
-    m_lastResizeObservation = observedAt;
+    m_nextResizePersistenceAttempt =
+        observedAt + kResizePersistenceDelaySeconds;
 }
 
 std::optional<PreferenceApplyResult>
 ApplicationPreferences::flushResizePersistence(double now) {
+    return persistPendingResize(now, false);
+}
+
+std::optional<PreferenceApplyResult>
+ApplicationPreferences::flushResizePersistenceForShutdown() {
+    return persistPendingResize(now(), true);
+}
+
+std::optional<PreferenceApplyResult>
+ApplicationPreferences::persistPendingResize(double now, bool ignoreDelay) {
     if (!m_pendingResize ||
-        now - m_lastResizeObservation < kResizePersistenceDelaySeconds) {
+        (!ignoreDelay && now < m_nextResizePersistenceAttempt)) {
         return std::nullopt;
     }
 
     const Preferences::WindowedSize observed = *m_pendingResize;
-    m_pendingResize.reset();
     Preferences::UserPreferences nextRequested = m_requested;
     nextRequested.display.windowedSize = observed;
     try {
         m_store.saveRequested(nextRequested);
         m_requested = std::move(nextRequested);
+        m_pendingResize.reset();
         return PreferenceApplyResult{};
     } catch (const std::exception& error) {
         PreferenceApplyResult result = publicationFailure(error);
         if (result.status ==
             PreferenceApplyStatus::PublishedDurabilityUncertain) {
             m_requested = std::move(nextRequested);
+            m_pendingResize.reset();
+        } else {
+            m_nextResizePersistenceAttempt =
+                now + kResizePersistenceRetrySeconds;
         }
         return result;
     }
+}
+
+void registerApplicationPreferenceCallbacks(
+    Input::InputCallbackContext& callbacks,
+    ApplicationPreferences& preferences) {
+    callbacks.logicalResizeContext = &preferences;
+    callbacks.logicalResize = [](void* context, int width, int height) {
+        auto& owner = *static_cast<ApplicationPreferences*>(context);
+        owner.observeLogicalResize(width, height, owner.now());
+    };
 }
 
 } // namespace Rigel

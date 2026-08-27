@@ -6,6 +6,13 @@
 #include <cstdint>
 #include <utility>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace Rigel {
 namespace {
 
@@ -15,9 +22,26 @@ bool supportsSwapInterval(int interval) {
     return true;
 #elif defined(_WIN32)
     static_cast<void>(interval);
-    // Both supported display modes remain DWM-managed windowed windows. GLFW
-    // implements their interval through DwmFlush even without WGL swap control.
-    return true;
+    if (glfwExtensionSupported("WGL_EXT_swap_control") == GLFW_TRUE) {
+        return true;
+    }
+
+    // Both supported display modes remain windowed. GLFW implements their
+    // interval through DwmFlush when desktop composition is active.
+    const HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+    if (!dwm) {
+        return false;
+    }
+    using DwmIsCompositionEnabled = HRESULT(WINAPI*)(BOOL*);
+    const auto isCompositionEnabled =
+        reinterpret_cast<DwmIsCompositionEnabled>(
+            GetProcAddress(dwm, "DwmIsCompositionEnabled"));
+    BOOL enabled = FALSE;
+    const bool supported =
+        isCompositionEnabled &&
+        SUCCEEDED(isCompositionEnabled(&enabled)) && enabled;
+    FreeLibrary(dwm);
+    return supported;
 #else
     const bool ext =
         glfwExtensionSupported("GLX_EXT_swap_control") == GLFW_TRUE;

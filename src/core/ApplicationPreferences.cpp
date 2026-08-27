@@ -12,6 +12,7 @@ namespace Rigel {
 namespace {
 
 constexpr double kResizePersistenceDelaySeconds = 0.25;
+constexpr Preferences::WindowedSize kSafeWindowedSize{800, 600};
 
 bool validWindowedSize(const Preferences::WindowedSize& size) {
     return size.width >= Preferences::kMinimumWindowDimension &&
@@ -145,7 +146,7 @@ ApplicationPreferences::initializeDisplay(
     runtime.destroyWindow();
     Preferences::DisplayPreferences safe;
     safe.mode = Preferences::DisplayMode::Windowed;
-    safe.windowedSize = {};
+    safe.windowedSize = kSafeWindowedSize;
     safe.vsync = false;
     safe.fpsLimit.reset();
     std::string fallbackFailure;

@@ -4,7 +4,6 @@
 #include "Rigel/Voxel/WorldSet.h"
 
 #include <memory>
-#include <optional>
 #include <string>
 
 namespace Rigel::detail {
@@ -21,14 +20,6 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     Voxel::World& world,
     Voxel::WorldView& worldView,
     const Persistence::NewWorldGenerationFactory& creationFactory,
-    const Persistence::PersistenceContext& context);
-
-ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
-    Voxel::WorldSet& worldSet,
-    Voxel::WorldId worldId,
-    Voxel::World& world,
-    Voxel::WorldView& worldView,
-    const std::optional<Persistence::NewWorldGeneration>& preparedCreation,
     const Persistence::PersistenceContext& context);
 
 } // namespace Rigel::detail

@@ -218,16 +218,20 @@ TEST_CASE(Persistence_CRReloadPreservesContentAndGeneratesFromSavedSnapshot) {
     Voxel::World source(resources);
     source.setId(8);
     context.providers = source.persistenceProvidersHandle();
+    const Persistence::NewWorldGenerationFactory creationFactory = [creation =
+        Persistence::NewWorldGeneration{
+            settings.displayName,
+            settings.seed,
+            Test::preparedGeneratorFixture(
+                definition,
+                resources.registry(),
+                settings.generator.sourceId,
+                settings.generator.sourceRevision)}] {
+        return creation;
+    };
     const Persistence::BootstrappedWorldGeneration created =
         Persistence::bootstrapWorldGeneration(
-            Persistence::NewWorldGeneration{
-                settings.displayName,
-                settings.seed,
-                Test::preparedGeneratorFixture(
-                    definition,
-                    resources.registry(),
-                    settings.generator.sourceId,
-                    settings.generator.sourceRevision)},
+            creationFactory,
             service,
             resources.registry(),
             context);
@@ -251,7 +255,7 @@ TEST_CASE(Persistence_CRReloadPreservesContentAndGeneratesFromSavedSnapshot) {
     context.providers = loaded.persistenceProvidersHandle();
     const Persistence::BootstrappedWorldGeneration reopened =
         Persistence::bootstrapWorldGeneration(
-            std::nullopt,
+            Persistence::NewWorldGenerationFactory{},
             service,
             resources.registry(),
             context);

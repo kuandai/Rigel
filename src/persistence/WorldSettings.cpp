@@ -1542,17 +1542,4 @@ BootstrappedWorldGeneration bootstrapWorldGeneration(
         persistence, registry, context, worldRoot, {}, false);
 }
 
-BootstrappedWorldGeneration bootstrapWorldGeneration(
-    const std::optional<NewWorldGeneration>& preparedCreation,
-    PersistenceService& persistence,
-    const Voxel::BlockRegistry& registry,
-    const PersistenceContext& context) {
-    NewWorldGenerationFactory factory;
-    if (preparedCreation) {
-        factory = [creation = *preparedCreation] { return creation; };
-    }
-    return bootstrapWorldGeneration(
-        factory, persistence, registry, context);
-}
-
 } // namespace Rigel::Persistence

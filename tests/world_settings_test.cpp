@@ -34,6 +34,11 @@ using namespace Rigel;
 
 namespace Rigel::Persistence {
 
+static NewWorldGenerationFactory deferredCreationForTest(
+    NewWorldGeneration creation) {
+    return [creation = std::move(creation)] { return creation; };
+}
+
 // Publication fault tests still enter through the supported lifecycle. Their
 // fixture registry contains every referenced block unless a test explicitly
 // supplies a registry to exercise missing-content rejection.
@@ -53,7 +58,10 @@ static std::string bootstrapCreationForTest(
             settings.generator.sourceId,
             settings.generator.sourceRevision)};
     return bootstrapWorldGeneration(
-               creation, persistence, registry, context)
+               deferredCreationForTest(creation),
+               persistence,
+               registry,
+               context)
         .persistenceFormat;
 }
 
@@ -1302,7 +1310,7 @@ TEST_CASE(WorldSettings_reload_uses_save_owned_display_name) {
     registerSavedDefinitionBlocks(blocks);
     context.discoverExistingFormat = false;
     const auto reopened = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         context);
@@ -1403,7 +1411,7 @@ TEST_CASE(WorldSettings_cr_bootstrap_publishes_and_reloads) {
         creationForTest(savedSettings(), savedDefinition());
 
     const auto created = Persistence::bootstrapWorldGeneration(
-        creation,
+        Persistence::deferredCreationForTest(creation),
         persistence,
         blocks,
         context);
@@ -1428,7 +1436,7 @@ TEST_CASE(WorldSettings_cr_bootstrap_publishes_and_reloads) {
         std::make_shared<Persistence::FilesystemBackend>();
     context.preferredFormat.clear();
     const auto reloaded = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         context);
@@ -1464,12 +1472,12 @@ TEST_CASE(WorldSettings_creation_uses_the_published_canonical_definition) {
         creationForTest(savedSettings(), savedDefinition());
 
     const auto created = Persistence::bootstrapWorldGeneration(
-        creation,
+        Persistence::deferredCreationForTest(creation),
         persistence,
         blocks,
         context);
     const auto reloaded = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         context);
@@ -1510,7 +1518,10 @@ TEST_CASE(WorldSettings_bootstrap_rejects_unavailable_blocks_before_publication)
     std::string failureMessage;
     try {
         static_cast<void>(Persistence::bootstrapWorldGeneration(
-            creation, persistence, blocks, context));
+            Persistence::deferredCreationForTest(creation),
+            persistence,
+            blocks,
+            context));
     } catch (const std::invalid_argument& failure) {
         failureMessage = failure.what();
     }
@@ -1637,7 +1648,7 @@ TEST_CASE(WorldSettings_definite_pre_rename_failure_recovers_handoff) {
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext);
@@ -1685,7 +1696,7 @@ TEST_CASE(WorldSettings_not_published_failure_preserves_reused_stage) {
     registerSavedDefinitionBlocks(blocks);
 
     CHECK_THROWS(Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext));
@@ -1749,7 +1760,7 @@ TEST_CASE(WorldSettings_handoff_precedes_child_marker_during_recovery) {
         Persistence::inspectSavedWorldGeneration(restartedContext),
         Persistence::SavedWorldGenerationPresence::Published);
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
-        unrelatedCreation,
+        Persistence::deferredCreationForTest(unrelatedCreation),
         persistence,
         blocks,
         restartedContext);
@@ -1800,7 +1811,7 @@ TEST_CASE(WorldSettings_restart_finishes_indeterminate_published_handoff) {
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext);
@@ -1849,7 +1860,7 @@ TEST_CASE(WorldSettings_handoff_final_rejects_corrupted_world_id_without_deletio
     registerSavedDefinitionBlocks(blocks);
 
     CHECK_THROWS(Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext));
@@ -1900,7 +1911,7 @@ TEST_CASE(WorldSettings_restart_retires_interrupted_external_handoff) {
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext);
@@ -1949,7 +1960,7 @@ TEST_CASE(WorldSettings_recovery_resumes_moved_back_handoff_without_deletion) {
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext);
@@ -1998,7 +2009,10 @@ TEST_CASE(WorldSettings_recovery_rejects_unavailable_saved_blocks_before_publish
     CHECK_THROWS(Persistence::recoverWorldGenerationPublication(
         persistence, blocks, restartedContext));
     CHECK_THROWS(Persistence::bootstrapWorldGeneration(
-        std::nullopt, persistence, blocks, restartedContext));
+        Persistence::NewWorldGenerationFactory{},
+        persistence,
+        blocks,
+        restartedContext));
     CHECK_EQ(restartedStorage->publishAttempts, static_cast<size_t>(0));
     CHECK(!std::filesystem::exists(worldRoot));
     CHECK(std::filesystem::is_directory(stagedRoot));
@@ -2016,7 +2030,10 @@ TEST_CASE(WorldSettings_recovery_rejects_unavailable_saved_blocks_before_publish
         persistence, blocks, restartedContext);
     CHECK_EQ(restartedStorage->publishAttempts, static_cast<size_t>(1));
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
-        std::nullopt, persistence, blocks, restartedContext);
+        Persistence::NewWorldGenerationFactory{},
+        persistence,
+        blocks,
+        restartedContext);
 
     CHECK_EQ(bootstrapped.generation.settings, savedSettings());
     CHECK_EQ(
@@ -2074,7 +2091,7 @@ TEST_CASE(WorldSettings_cr_recovery_resumes_moved_back_handoff) {
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext);
@@ -2133,7 +2150,7 @@ TEST_CASE(WorldSettings_handoff_stage_rejects_corrupted_world_id_before_publish)
     registerSavedDefinitionBlocks(blocks);
 
     CHECK_THROWS(Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext));
@@ -2516,7 +2533,7 @@ TEST_CASE(WorldSettings_restart_loads_valid_final_with_reused_staging_path) {
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext);
@@ -2593,7 +2610,7 @@ TEST_CASE(WorldSettings_invalid_final_preserves_reused_stage_and_handoff) {
     registerSavedDefinitionBlocks(blocks);
 
     CHECK_THROWS(Persistence::bootstrapWorldGeneration(
-        std::nullopt,
+        Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext));
@@ -3204,7 +3221,10 @@ TEST_CASE(WorldSettings_concurrent_creation_publishes_one_consistent_world) {
             const Persistence::NewWorldGeneration creation =
                 creationForTest(settings, definition);
             result = Persistence::bootstrapWorldGeneration(
-                creation, persistence, blocks, context);
+                Persistence::deferredCreationForTest(creation),
+                persistence,
+                blocks,
+                context);
             ++successes;
         } catch (...) {
             ++failures;
@@ -3438,7 +3458,7 @@ TEST_CASE(WorldSettings_first_legacy_rejection_preserves_parent_tree) {
     CHECK_EQ(
         exceptionMessage([&] {
             static_cast<void>(Persistence::bootstrapWorldGeneration(
-                currentDefault,
+                Persistence::deferredCreationForTest(currentDefault),
                 persistence,
                 blocks,
                 context));
@@ -3499,7 +3519,7 @@ TEST_CASE(WorldSettings_revalidates_existing_root_before_recovery_cleanup) {
                 const Persistence::NewWorldGeneration currentDefault =
                     creationForTest(savedSettings(), savedDefinition());
                 static_cast<void>(Persistence::bootstrapWorldGeneration(
-                    currentDefault,
+                    Persistence::deferredCreationForTest(currentDefault),
                     persistence,
                     blocks,
                     context));
@@ -3542,7 +3562,10 @@ TEST_CASE(WorldSettings_rejects_incoherent_prepared_snapshot_before_write) {
     registerSavedDefinitionBlocks(blocks);
 
     CHECK_THROWS(Persistence::bootstrapWorldGeneration(
-        creation, persistence, blocks, context));
+        Persistence::deferredCreationForTest(creation),
+        persistence,
+        blocks,
+        context));
     CHECK(!std::filesystem::exists(worldRoot));
 }
 
@@ -3792,7 +3815,10 @@ TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
             const Persistence::NewWorldGeneration original =
                 creationForTest(savedSettings(), savedDefinition());
             Persistence::bootstrapWorldGeneration(
-                original, persistence, blocks, context);
+                Persistence::deferredCreationForTest(original),
+                persistence,
+                blocks,
+                context);
 
             scenario.corrupt(*storage, worldRoot);
             const std::filesystem::path stagedRoot =
@@ -3834,7 +3860,7 @@ TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
                 exceptionMessage([&] {
                     static_cast<void>(
                         Persistence::bootstrapWorldGeneration(
-                            currentDefault,
+                            Persistence::deferredCreationForTest(currentDefault),
                             persistence,
                             blocks,
                             context));

@@ -5,7 +5,6 @@
 
 #include <cstdint>
 #include <functional>
-#include <optional>
 #include <string>
 
 namespace Rigel::Voxel {
@@ -85,12 +84,6 @@ void recoverWorldGenerationPublication(
 // authoritative backend marker are rejected without mutation.
 BootstrappedWorldGeneration bootstrapWorldGeneration(
     const NewWorldGenerationFactory& creationFactory,
-    PersistenceService& persistence,
-    const Voxel::BlockRegistry& registry,
-    const PersistenceContext& context);
-
-BootstrappedWorldGeneration bootstrapWorldGeneration(
-    const std::optional<NewWorldGeneration>& preparedCreation,
     PersistenceService& persistence,
     const Voxel::BlockRegistry& registry,
     const PersistenceContext& context);

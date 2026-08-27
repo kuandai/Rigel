@@ -40,19 +40,4 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     return result;
 }
 
-ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
-    Voxel::WorldSet& worldSet,
-    Voxel::WorldId worldId,
-    Voxel::World& world,
-    Voxel::WorldView& worldView,
-    const std::optional<Persistence::NewWorldGeneration>& preparedCreation,
-    const Persistence::PersistenceContext& context) {
-    Persistence::NewWorldGenerationFactory factory;
-    if (preparedCreation) {
-        factory = [creation = *preparedCreation] { return creation; };
-    }
-    return bootstrapApplicationWorldGeneration(
-        worldSet, worldId, world, worldView, factory, context);
-}
-
 } // namespace Rigel::detail

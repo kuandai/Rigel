@@ -102,6 +102,26 @@ TEST_CASE(WorldConfigProvider_streaming_layers_publish_only_valid_replacements) 
     CHECK_THROWS(provider.loadStreamingConfig());
 }
 
+TEST_CASE(WorldConfigProvider_streaming_validates_after_all_layers_merge) {
+    Rigel::Voxel::WorldConfigProvider provider;
+    provider.addSource(std::make_unique<TrackingConfigSource>(
+        "base-streaming.yaml",
+        "streaming:\n"
+        "  worker_threads: 64\n"));
+    provider.addSource(std::make_unique<TrackingConfigSource>(
+        "override-streaming.yaml",
+        "streaming:\n"
+        "  io_threads: 0\n"
+        "  load_worker_threads: 0\n"));
+
+    const Rigel::Voxel::StreamingConfig streaming =
+        provider.loadStreamingConfig();
+
+    CHECK_EQ(streaming.workerThreads, 64);
+    CHECK_EQ(streaming.ioThreads, 0);
+    CHECK_EQ(streaming.loadWorkerThreads, 0);
+}
+
 TEST_CASE(WorldConfigBootstrap_uses_dedicated_shipped_streaming_asset) {
     Rigel::Asset::AssetManager assets;
     assets.loadManifest("manifest.yaml");

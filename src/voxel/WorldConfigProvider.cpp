@@ -16,7 +16,6 @@ StreamingConfig WorldConfigProvider::loadStreamingConfig() const {
         }
         StreamingConfig candidate = config;
         candidate.applyYaml(source->name().c_str(), *yaml);
-        candidate.validate(source->name().c_str());
         config = std::move(candidate);
     }
     config.validate("merged streaming configuration");

@@ -8,6 +8,7 @@
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/UI/ImGuiLayer.h"
+#include "Rigel/Voxel/Chunk.h"
 #include "WorldGenerationTestFixture.h"
 
 #include <GLFW/glfw3.h>
@@ -508,6 +509,81 @@ TEST_CASE(Application_InvalidPreferencesRejectBeforeMutationOrPublication) {
     CHECK_EQ(calls.windowConfigurationAttempts, static_cast<size_t>(0));
     CHECK_EQ(calls.swapIntervalAttempts, static_cast<size_t>(1));
     CHECK_EQ(calls.preferenceSavePreflights, static_cast<size_t>(0));
+}
+
+TEST_CASE(Application_ViewDistanceUsesTheActiveFrameBoundarySessionSeam) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_view_distance");
+    const auto activePath =
+        directory.path() / "active-user-preferences.yaml";
+
+    const auto active =
+        Rigel::ApplicationTestAccess::applyViewDistanceAtFrameBoundary(
+            activePath, 7, 15, true);
+
+    CHECK_EQ(active.result.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(active.requestedChunks, 15);
+    CHECK_EQ(active.effectiveChunks, 15);
+    CHECK_EQ(active.streamedChunks, 15);
+    CHECK_NEAR(
+        active.renderDistance,
+        static_cast<float>(16 * Rigel::Voxel::Chunk::SIZE),
+        0.0001f);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(activePath)
+            .load()
+            .graphics.viewDistanceChunks,
+        15);
+
+    const auto inactivePath =
+        directory.path() / "inactive-user-preferences.yaml";
+    const auto inactive =
+        Rigel::ApplicationTestAccess::applyViewDistanceAtFrameBoundary(
+            inactivePath, 7, 15, false);
+
+    CHECK_EQ(inactive.result.status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_EQ(inactive.requestedChunks, 7);
+    CHECK_EQ(inactive.effectiveChunks, 7);
+    CHECK_EQ(inactive.streamedChunks, 7);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(inactivePath)
+            .load()
+            .graphics.viewDistanceChunks,
+        7);
+}
+
+TEST_CASE(Application_ViewDistancePublicationFailureRestoresActiveSession) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_view_distance_publication_failure");
+    const auto path = directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 7;
+    Rigel::Preferences::UserPreferencesStore(path).saveRequested(requested);
+
+    LifecycleCalls calls;
+    calls.failPreferencePublication = true;
+    ScopedLifecycleCalls scopedCalls(calls);
+    ScopedPreferenceSavePreflight savePreflight;
+
+    const auto observed =
+        Rigel::ApplicationTestAccess::applyViewDistanceAtFrameBoundary(
+            path, 7, 15, true);
+
+    CHECK_EQ(
+        observed.result.status,
+        Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(observed.requestedChunks, 7);
+    CHECK_EQ(observed.effectiveChunks, 7);
+    CHECK_EQ(observed.streamedChunks, 7);
+    CHECK_NEAR(
+        observed.renderDistance,
+        static_cast<float>(8 * Rigel::Voxel::Chunk::SIZE),
+        0.0001f);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(path)
+            .load()
+            .graphics.viewDistanceChunks,
+        7);
 }
 
 TEST_CASE(Application_CloseFlushesPendingResizeBeforeDebounceExpires) {

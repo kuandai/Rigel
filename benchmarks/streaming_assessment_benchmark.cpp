@@ -119,8 +119,6 @@ ShippedBootstrapConfiguration loadShippedBootstrapConfiguration(
         Voxel::makeWorldConfigProvider(assets, 0).loadStreamingConfig();
     // Benchmarks inject an explicit player request without a live application.
     streaming.viewDistanceChunks = Preferences::kDefaultViewDistanceChunks;
-    streaming.unloadDistanceChunks =
-        Preferences::kDefaultViewDistanceChunks + 1;
     return {prepared.data, std::move(streaming)};
 }
 

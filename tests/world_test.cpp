@@ -22,6 +22,11 @@ concept PubliclyClearable = requires(T& value) {
     value.clear();
 };
 
+template<typename T>
+concept PubliclyAppliesViewDistance = requires(T& value) {
+    value.applyViewDistanceChunks(7);
+};
+
 static_assert(!std::is_move_constructible_v<ChunkManager>);
 static_assert(!std::is_move_assignable_v<ChunkManager>);
 static_assert(!std::is_move_constructible_v<World>);
@@ -36,6 +41,7 @@ static_assert(std::is_same_v<
               const WorldMeshStore&>);
 static_assert(!PubliclyClearable<ChunkManager>);
 static_assert(!PubliclyClearable<World>);
+static_assert(!PubliclyAppliesViewDistance<WorldView>);
 
 namespace {
 
@@ -435,39 +441,6 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
              beforeReplacementDraw.installedGeometryRevision);
     CHECK_EQ(afterReplacementDraw.drawEvidence,
              ChunkStreamer::DebugDrawEvidence::Drawn);
-}
-
-TEST_CASE(WorldView_ViewDistanceAppliesOneDerivedStreamingAndRenderPolicy) {
-    WorldResources resources;
-    World world(resources);
-    WorldView view(world, resources);
-
-    view.renderConfig().renderDistance = 300.0f;
-
-    StreamingConfig streamConfig;
-    streamConfig.viewDistanceChunks = 3;
-    streamConfig.unloadDistanceChunks = 20;
-    view.setStreamConfig(streamConfig);
-
-    CHECK(view.applyViewDistanceChunks(7));
-    CHECK_EQ(view.viewDistanceChunks(), 7);
-    CHECK_NEAR(
-        view.renderConfig().renderDistance,
-        static_cast<float>(8 * Chunk::SIZE),
-        0.0001f);
-
-    streamConfig.viewDistanceChunks = 2;
-    streamConfig.unloadDistanceChunks = 24;
-    view.setStreamConfig(streamConfig);
-    CHECK_EQ(view.viewDistanceChunks(), 7);
-
-    CHECK(!view.applyViewDistanceChunks(1));
-    CHECK(!view.applyViewDistanceChunks(17));
-    CHECK_EQ(view.viewDistanceChunks(), 7);
-    CHECK_NEAR(
-        view.renderConfig().renderDistance,
-        static_cast<float>(8 * Chunk::SIZE),
-        0.0001f);
 }
 
 TEST_CASE(WorldView_EditDrivenMeshingMatchesInitialStreaming) {

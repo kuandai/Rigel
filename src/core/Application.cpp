@@ -408,7 +408,7 @@ void Application::initialize() {
             worldGenVersion,
             ioThreads,
             loadWorkerThreads,
-            m_impl->preferences->requested().graphics.viewDistanceChunks,
+            streamingConfig.viewDistanceChunks,
             generator);
         if (streamingConfig.loadQueueLimit >= 0) {
             m_impl->world.chunkLoader->setLoadQueueLimit(
@@ -423,6 +423,8 @@ void Application::initialize() {
         m_impl->world.chunkLoader->setMaxInFlightRegions(
             static_cast<size_t>(
                 std::max(0, streamingConfig.loadMaxInFlightRegions)));
+        m_impl->world.chunkLoader->setPrefetchRadius(
+            std::max(0, streamingConfig.loadPrefetchRadius));
         m_impl->world.chunkLoader->setPrefetchPerRequest(
             static_cast<size_t>(
                 std::max(0, streamingConfig.loadPrefetchPerRequest)));
@@ -474,8 +476,7 @@ void Application::initialize() {
         Core::Profiler::setEnabled(renderConfig.profilingEnabled);
         m_impl->world.worldView->setStreamConfig(streamingConfig);
         m_impl->preferences->initializeViewDistance(
-            *m_impl->world.worldView,
-            *m_impl->world.chunkLoader);
+            *m_impl->world.worldView);
         if (m_impl->timing.benchmarkEnabled) {
             m_impl->world.worldView->setBenchmark(&m_impl->timing.benchmark);
         }
@@ -775,6 +776,52 @@ void ApplicationTestAccess::shutdownWithPendingResize(
     impl->preferences->load();
     impl->preferences->acceptLogicalResize({width, height}, 0.0);
     impl->shutdown();
+}
+
+ApplicationViewDistanceState
+ApplicationTestAccess::applyViewDistanceAtFrameBoundary(
+    std::filesystem::path userPreferencesPath,
+    int initialChunks,
+    int candidateChunks,
+    bool activeSession) {
+    Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = initialChunks;
+    if (!std::filesystem::exists(userPreferencesPath)) {
+        Preferences::UserPreferencesStore(userPreferencesPath)
+            .saveRequested(requested);
+    }
+
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    Voxel::WorldView view(world, resources);
+    Voxel::StreamingConfig streaming;
+    streaming.viewDistanceChunks = 3;
+    streaming.unloadDistanceChunks = 20;
+    streaming.workerThreads = 0;
+    view.setStreamConfig(streaming);
+
+    auto impl = std::make_unique<Application::Impl>();
+    impl->preferences = std::make_unique<ApplicationPreferences>(
+        std::move(userPreferencesPath));
+    impl->preferences->load();
+    impl->preferences->initializeViewDistance(view);
+    impl->world.worldView = &view;
+    impl->world.ready = activeSession;
+    Application::Impl* state = impl.get();
+
+    Application application(
+        std::move(impl), Application::Initialization::Skip);
+    ApplicationViewDistanceState observed;
+    observed.result = application.applyViewDistance(candidateChunks);
+    observed.requestedChunks =
+        application.requestedPreferences().graphics.viewDistanceChunks;
+    observed.effectiveChunks = application.effectiveViewDistanceChunks();
+    observed.streamedChunks = view.viewDistanceChunks();
+    observed.renderDistance = view.renderConfig().renderDistance;
+
+    state->world.ready = false;
+    state->world.worldView = nullptr;
+    return observed;
 }
 
 bool ApplicationTestAccess::initializeOptionalUserInterface(
@@ -1101,14 +1148,13 @@ PreferenceApplyResult Application::applyVerticalFov(double verticalFovDegrees) {
 
 PreferenceApplyResult Application::applyViewDistance(int viewDistanceChunks) {
     if (!m_impl->preferences || !m_impl->world.ready ||
-        !m_impl->world.worldView || !m_impl->world.chunkLoader) {
+        !m_impl->world.worldView) {
         return {
             PreferenceApplyStatus::Rejected,
             "view distance requires an active world session"};
     }
     return m_impl->preferences->applyViewDistance(
         *m_impl->world.worldView,
-        *m_impl->world.chunkLoader,
         viewDistanceChunks);
 }
 

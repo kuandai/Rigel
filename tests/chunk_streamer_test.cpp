@@ -516,7 +516,7 @@ concept HasPublicReset = requires(T& streamer) {
 
 static_assert(!HasPublicReset<ChunkStreamer>);
 
-TEST_CASE(ChunkStreamer_ViewDistanceDerivesUnloadHysteresis) {
+TEST_CASE(ChunkStreamer_ViewDistancePreservesUnloadPolicy) {
     ChunkManager manager;
     BlockRegistry registry;
     WorldMeshStore meshStore;
@@ -532,7 +532,7 @@ TEST_CASE(ChunkStreamer_ViewDistanceDerivesUnloadHysteresis) {
             applyViewDistanceChunks(streamer, 7);
 
     CHECK_EQ(effective.viewDistanceChunks, 7);
-    CHECK_EQ(effective.unloadDistanceChunks, 8);
+    CHECK_EQ(effective.unloadDistanceChunks, 20);
 }
 
 class WorkerGate {

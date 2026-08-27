@@ -23,10 +23,6 @@ namespace Render {
 class FrameRenderer;
 }
 
-namespace Persistence {
-class AsyncChunkLoader;
-}
-
 namespace Voxel {
 class WorldView;
 }
@@ -59,12 +55,9 @@ public:
     PreferenceApplyResult applyVerticalFov(
         Render::FrameRenderer& renderer,
         double candidateDegrees);
-    void initializeViewDistance(
-        Voxel::WorldView& view,
-        Persistence::AsyncChunkLoader& loader);
+    void initializeViewDistance(Voxel::WorldView& view);
     PreferenceApplyResult applyViewDistance(
         Voxel::WorldView& view,
-        Persistence::AsyncChunkLoader& loader,
         int candidateChunks);
     void initializeInput(
         Input::InputState& input,

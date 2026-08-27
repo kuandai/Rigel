@@ -184,7 +184,18 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
         Backends::CR::requireSupportedDefaultZone(m_context, m_zoneId);
     }
 
-    applyViewDistanceChunks(viewDistanceChunks);
+    int regionSpan = estimateRegionSpan();
+    if (regionSpan < 1) {
+        regionSpan = 1;
+    }
+    int radius = viewDistanceChunks / regionSpan;
+    if (radius < 1) {
+        radius = 1;
+    }
+    if (radius > 2) {
+        radius = 2;
+    }
+    m_prefetchRadius = radius;
 }
 
 AsyncChunkLoader::~AsyncChunkLoader() {
@@ -217,10 +228,6 @@ void AsyncChunkLoader::setRegionDrainBudget(size_t budget) {
 void AsyncChunkLoader::setLoadQueueLimit(size_t maxPending) {
     m_loadQueueLimit = maxPending;
     startDeferredChunkLoads();
-}
-
-void AsyncChunkLoader::applyViewDistanceChunks(int chunks) {
-    m_prefetchRadius = prefetchRadiusForViewDistance(chunks);
 }
 
 Voxel::ChunkLoadRequestResult AsyncChunkLoader::request(
@@ -1699,11 +1706,6 @@ Voxel::RegionSchedulerOriginDiagnostics AsyncChunkLoader::regionJobMetrics(
             counters.maxWorkerExecutionNanoseconds.load(
                 std::memory_order_relaxed)
     };
-}
-
-int AsyncChunkLoader::prefetchRadiusForViewDistance(int chunks) const {
-    const int regionSpan = std::max(1, estimateRegionSpan());
-    return std::clamp(chunks / regionSpan, 1, 2);
 }
 
 int AsyncChunkLoader::estimateRegionSpan() const {

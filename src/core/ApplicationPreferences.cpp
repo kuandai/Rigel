@@ -1,6 +1,5 @@
 #include "ApplicationPreferences.h"
 
-#include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Voxel/WorldView.h"
@@ -486,21 +485,14 @@ PreferenceApplyResult ApplicationPreferences::applyVerticalFov(
     }
 }
 
-void ApplicationPreferences::initializeViewDistance(
-    Voxel::WorldView& view,
-    Persistence::AsyncChunkLoader& loader) {
+void ApplicationPreferences::initializeViewDistance(Voxel::WorldView& view) {
     const int requestedChunks = m_requested.graphics.viewDistanceChunks;
-    if (!view.applyViewDistanceChunks(requestedChunks)) {
-        throw std::logic_error(
-            "Loaded view distance is outside the supported range");
-    }
-    loader.applyViewDistanceChunks(requestedChunks);
+    view.applyViewDistanceChunks(requestedChunks);
     m_effectiveViewDistanceChunks = requestedChunks;
 }
 
 PreferenceApplyResult ApplicationPreferences::applyViewDistance(
     Voxel::WorldView& view,
-    Persistence::AsyncChunkLoader& loader,
     int candidateChunks) {
     if (candidateChunks < Preferences::kMinimumViewDistanceChunks ||
         candidateChunks > Preferences::kMaximumViewDistanceChunks) {
@@ -523,12 +515,7 @@ PreferenceApplyResult ApplicationPreferences::applyViewDistance(
     }
 
     const int previousEffective = m_effectiveViewDistanceChunks;
-    if (!view.applyViewDistanceChunks(candidateChunks)) {
-        return {
-            PreferenceApplyStatus::Rejected,
-            "active world rejected the view distance request"};
-    }
-    loader.applyViewDistanceChunks(candidateChunks);
+    view.applyViewDistanceChunks(candidateChunks);
     m_effectiveViewDistanceChunks = candidateChunks;
 
     try {
@@ -542,11 +529,7 @@ PreferenceApplyResult ApplicationPreferences::applyViewDistance(
             m_requested = std::move(nextRequested);
             return result;
         }
-        if (!view.applyViewDistanceChunks(previousEffective)) {
-            throw std::logic_error(
-                "Active world rejected its previous view distance");
-        }
-        loader.applyViewDistanceChunks(previousEffective);
+        view.applyViewDistanceChunks(previousEffective);
         m_effectiveViewDistanceChunks = previousEffective;
         return result;
     }

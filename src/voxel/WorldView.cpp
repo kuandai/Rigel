@@ -1,7 +1,5 @@
 #include "Rigel/Voxel/WorldView.h"
 
-#include "Rigel/Preferences/UserPreferences.h"
-
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <stdexcept>
@@ -110,26 +108,13 @@ void WorldView::setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback ev
 }
 
 void WorldView::setStreamConfig(const StreamingConfig& config) {
-    StreamingConfig effective = config;
-    if (m_playerViewDistanceChunks) {
-        effective.viewDistanceChunks = *m_playerViewDistanceChunks;
-        effective.unloadDistanceChunks = std::min(
-            *m_playerViewDistanceChunks + 1,
-            StreamingConfig::MaxUnloadDistanceChunks);
-    }
-    m_streamer.setConfig(effective);
+    m_streamer.setConfig(config);
 }
 
-bool WorldView::applyViewDistanceChunks(int chunks) {
-    if (chunks < Preferences::kMinimumViewDistanceChunks ||
-        chunks > Preferences::kMaximumViewDistanceChunks) {
-        return false;
-    }
+void WorldView::applyViewDistanceChunks(int chunks) {
     m_streamer.applyViewDistanceChunks(chunks);
     m_renderConfig.renderDistance =
         static_cast<float>((chunks + 1) * Chunk::SIZE);
-    m_playerViewDistanceChunks = chunks;
-    return true;
 }
 
 void WorldView::setBenchmark(ChunkBenchmarkStats* stats) {
@@ -194,10 +179,6 @@ void WorldView::render(const glm::mat4& view,
     ctx.shadowTransmitShader = m_shadowTransmitShader;
     ctx.shadowCaster = m_world ? &shadowCaster : nullptr;
     ctx.config = m_renderConfig;
-    if (ctx.config.shadow.maxDistance <= 0.0f ||
-        ctx.config.shadow.maxDistance > ctx.config.renderDistance) {
-        ctx.config.shadow.maxDistance = ctx.config.renderDistance;
-    }
     ctx.view = view;
     ctx.projection = projection;
     ctx.viewProjection = projection * view;

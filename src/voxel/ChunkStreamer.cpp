@@ -383,8 +383,6 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
 void ChunkStreamer::applyViewDistanceChunks(int chunks) {
     StreamingConfig updated = m_config;
     updated.viewDistanceChunks = chunks;
-    updated.unloadDistanceChunks = std::min(
-        chunks + 1, StreamingConfig::MaxUnloadDistanceChunks);
     setConfig(updated);
 }
 

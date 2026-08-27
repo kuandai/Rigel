@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GlfwRuntime.h"
+#include "Rigel/Application.h"
 
 #include <filesystem>
 #include <memory>
@@ -38,6 +39,14 @@ struct ApplicationCloseHooks {
     std::string persistenceRoot = "application-close-test";
 };
 
+struct ApplicationViewDistanceState {
+    PreferenceApplyResult result;
+    int requestedChunks = 0;
+    int effectiveChunks = 0;
+    int streamedChunks = 0;
+    float renderDistance = 0.0f;
+};
+
 class ApplicationTestAccess {
 public:
     static void construct(ApplicationConstructionHooks hooks);
@@ -53,6 +62,11 @@ public:
         std::filesystem::path userPreferencesPath,
         int width,
         int height);
+    static ApplicationViewDistanceState applyViewDistanceAtFrameBoundary(
+        std::filesystem::path userPreferencesPath,
+        int initialChunks,
+        int candidateChunks,
+        bool activeSession);
     static bool initializeOptionalUserInterface(
         GLFWwindow* window,
         bool (*initialize)(GLFWwindow*)) noexcept;

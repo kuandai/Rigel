@@ -29,12 +29,15 @@
 using namespace Rigel::Voxel;
 using namespace Rigel::Persistence;
 
+template<typename T>
+concept PubliclyAppliesViewDistance = requires(T& value) {
+    value.applyViewDistanceChunks(7);
+};
+
+static_assert(!PubliclyAppliesViewDistance<AsyncChunkLoader>);
+
 namespace Rigel::Persistence::detail {
 struct AsyncChunkLoaderTestAccess {
-    static int prefetchRadius(const AsyncChunkLoader& loader) {
-        return loader.m_prefetchRadius;
-    }
-
     static void setRegionLoadStartCallback(AsyncChunkLoader& loader,
                                            std::function<void()> callback) {
         loader.m_regionLoadStartCallback = std::move(callback);
@@ -1104,32 +1107,6 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK_EQ(resolved.front().coord, coord);
     CHECK_EQ(resolved.front().requestId, request.requestId);
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
-}
-
-TEST_CASE(AsyncChunkLoader_ViewDistanceRestoresDerivedPrefetchPolicy) {
-    WorldResources resources;
-    World world;
-    world.initialize(resources);
-    auto generator = makeGenerator(resources.registry());
-    world.setGenerator(generator);
-    MemoryContext context;
-    AsyncChunkLoader loader(
-        context.service,
-        context.context,
-        world,
-        generator->semanticsVersion(),
-        0,
-        0,
-        2,
-        generator);
-    loader.setPrefetchRadius(0);
-
-    loader.applyViewDistanceChunks(12);
-
-    CHECK_EQ(
-        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
-            prefetchRadius(loader),
-        1);
 }
 
 TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {

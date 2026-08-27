@@ -12,6 +12,7 @@ struct StreamingConfig {
     static constexpr int MaxBudgetPerFrame = 32768;
     static constexpr int MaxCachedRegions = 256;
     static constexpr int MaxInFlightRegions = 64;
+    static constexpr int MaxPrefetchRadius = 4;
     static constexpr int MaxPrefetchPerRequest = 728;
     static constexpr int MaxResidentChunks = 65536;
 
@@ -29,6 +30,7 @@ struct StreamingConfig {
     int loadQueueLimit = 0;
     int loadMaxCachedRegions = 8;
     int loadMaxInFlightRegions = 8;
+    int loadPrefetchRadius = 1;
     int loadPrefetchPerRequest = 12;
     size_t maxResidentChunks = 0;
 

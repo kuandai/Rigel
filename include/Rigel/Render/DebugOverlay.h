@@ -103,7 +103,8 @@ void renderDebugField(DebugState& debug,
                       const glm::vec3& cameraTarget,
                       const glm::vec3& viewForward,
                       int viewportWidth,
-                      int viewportHeight);
+                      int viewportHeight,
+                      float verticalFovDegrees);
 
 void renderEntityDebugBoxes(DebugState& debug,
                             const Voxel::World* world,

@@ -11,6 +11,7 @@ namespace Voxel { class World; class WorldView; }
 namespace Render {
 
 struct ChunkDebugDetailPresentation;
+class FrameRendererTestAccess;
 
 struct FrameRenderContext {
     Voxel::World& world;
@@ -35,6 +36,7 @@ public:
     void release();
 
     void recordFrameTime(float seconds);
+    void setVerticalFovDegrees(double verticalFovDegrees);
     void render(const FrameRenderContext& context);
     void clear(int viewportWidth, int viewportHeight);
 
@@ -43,6 +45,7 @@ public:
     const ChunkDebugDetailPresentation* chunkDebugDetail() const;
 
 private:
+    friend class FrameRendererTestAccess;
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };

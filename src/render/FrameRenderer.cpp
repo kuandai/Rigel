@@ -2,8 +2,10 @@
 
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Core/Profiler.h"
+#include "Rigel/Render/CameraProjection.h"
 #include "Rigel/Render/DebugOverlay.h"
 #include "Rigel/Render/TemporalJitter.h"
+#include "FrameRendererTestAccess.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldView.h"
@@ -53,6 +55,8 @@ struct FrameRenderer::Impl {
     Asset::AssetManager* assets = nullptr;
     DebugState debug;
     TemporalAA taa;
+    double verticalFovDegrees = 60.0;
+    std::uint64_t temporalHistoryGeneration = 0;
 
     void clearTarget(GLuint framebuffer, int width, int height) {
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
@@ -351,6 +355,16 @@ void FrameRenderer::recordFrameTime(float seconds) {
     Render::recordFrameTime(m_impl->debug, seconds);
 }
 
+void FrameRenderer::setVerticalFovDegrees(double verticalFovDegrees) {
+    if (m_impl->verticalFovDegrees == verticalFovDegrees) {
+        return;
+    }
+    m_impl->verticalFovDegrees = verticalFovDegrees;
+    m_impl->taa.historyValid = false;
+    m_impl->taa.jitter.reset();
+    ++m_impl->temporalHistoryGeneration;
+}
+
 void FrameRenderer::render(const FrameRenderContext& context) {
     const auto& config = context.worldView.renderConfig();
     float aspect = context.viewportHeight > 0
@@ -361,8 +375,11 @@ void FrameRenderer::render(const FrameRenderContext& context) {
     float farPlane = std::max(
         500.0f, config.renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
 
-    glm::mat4 projection = glm::perspective(
-        glm::radians(60.0f), aspect, nearPlane, farPlane);
+    glm::mat4 projection = makeCameraProjection(
+        static_cast<float>(m_impl->verticalFovDegrees),
+        aspect,
+        nearPlane,
+        farPlane);
     glm::mat4 projectionNoJitter = projection;
     glm::mat4 view = glm::lookAt(
         context.cameraPosition,
@@ -413,7 +430,8 @@ void FrameRenderer::render(const FrameRenderContext& context) {
         context.cameraTarget,
         context.cameraForward,
         context.viewportWidth,
-        context.viewportHeight);
+        context.viewportHeight,
+        static_cast<float>(m_impl->verticalFovDegrees));
     renderFrameGraph(m_impl->debug);
 }
 
@@ -435,6 +453,26 @@ const ChunkDebugDetailPresentation* FrameRenderer::chunkDebugDetail() const {
     return m_impl->debug.chunkDetail
         ? &*m_impl->debug.chunkDetail
         : nullptr;
+}
+
+double FrameRendererTestAccess::verticalFovDegrees(
+    const FrameRenderer& renderer) {
+    return renderer.m_impl->verticalFovDegrees;
+}
+
+std::uint64_t FrameRendererTestAccess::temporalHistoryGeneration(
+    const FrameRenderer& renderer) {
+    return renderer.m_impl->temporalHistoryGeneration;
+}
+
+bool FrameRendererTestAccess::temporalHistoryValid(
+    const FrameRenderer& renderer) {
+    return renderer.m_impl->taa.historyValid;
+}
+
+void FrameRendererTestAccess::markTemporalHistoryValid(
+    FrameRenderer& renderer) {
+    renderer.m_impl->taa.historyValid = true;
 }
 
 } // namespace Rigel::Render

@@ -35,6 +35,40 @@ constexpr size_t kMaxWorldSettingsBytes = 16 * 1024;
 constexpr size_t kMaxGeneratorSnapshotBytes = 4 * 1024 * 1024;
 constexpr size_t kWorldGenerationStagingSlotCount = 64;
 
+class WorldSettingsYamlParseError final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+[[noreturn]] void throwWorldSettingsYamlParseError(const char* message,
+                                                   size_t length,
+                                                   ryml::Location,
+                                                   void*) {
+    throw WorldSettingsYamlParseError(std::string(message, length));
+}
+
+ryml::Tree parseWorldSettingsYaml(std::string_view document) {
+    ryml::Callbacks callbacks = ryml::get_callbacks();
+    callbacks.m_error = &throwWorldSettingsYamlParseError;
+    ryml::Tree tree(callbacks);
+    ryml::Parser::handler_type handler(callbacks);
+    ryml::Parser parser(&handler);
+    try {
+        ryml::parse_in_arena(
+            &parser,
+            ryml::csubstr(
+                kWorldSettingsFilename.data(),
+                kWorldSettingsFilename.size()),
+            ryml::csubstr(document.data(), document.size()),
+            &tree);
+    } catch (const WorldSettingsYamlParseError& error) {
+        throw std::invalid_argument(
+            "Invalid saved world settings YAML: " +
+            std::string(error.what()));
+    }
+    return tree;
+}
+
 class WorldGenerationLoadError final : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -285,9 +319,7 @@ WorldSettings parseSettings(std::string_view yaml) {
     if (yaml.empty()) {
         throw std::invalid_argument("Saved world settings are empty");
     }
-    ryml::Tree tree = ryml::parse_in_arena(
-        "world-settings.yaml",
-        ryml::csubstr(yaml.data(), yaml.size()));
+    ryml::Tree tree = parseWorldSettingsYaml(yaml);
     const ryml::ConstNodeRef root = tree.rootref();
     requireMapKeys(root, "document", {"world"});
     const ryml::ConstNodeRef world = root["world"];

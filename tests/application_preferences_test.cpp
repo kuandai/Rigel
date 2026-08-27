@@ -469,16 +469,12 @@ TEST_CASE(ApplicationPreferences_StartupViewDistanceUsesLoadedGlobalRequest) {
     requested.graphics.viewDistanceChunks = 7;
     auto preferences = fixture.owner(requested);
     const std::string before = readDocument(fixture.path);
-    Rigel::Voxel::WorldRenderConfig renderConfig;
-    renderConfig.renderDistance = 123.0f;
-    fixture.view.setRenderConfig(renderConfig);
-
     preferences.initializeViewDistance(fixture.view);
 
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
     CHECK_NEAR(
-        fixture.view.renderConfig().renderDistance,
+        fixture.view.renderDistanceWorldUnits(),
         static_cast<float>(8 * Rigel::Voxel::Chunk::SIZE),
         0.0001f);
     CHECK_EQ(fixture.view.viewDistancePolicy()->unloadRadiusChunks(), 8);
@@ -495,11 +491,8 @@ TEST_CASE(ApplicationPreferences_StartupViewDistanceUsesLoadedGlobalRequest) {
     fixture.view.setStreamConfig(attemptedStreamingOverride);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
 
-    Rigel::Voxel::WorldRenderConfig attemptedRenderOverride;
-    attemptedRenderOverride.renderDistance = 9999.0f;
-    fixture.view.setRenderConfig(attemptedRenderOverride);
     CHECK_NEAR(
-        fixture.view.renderConfig().renderDistance,
+        fixture.view.renderDistanceWorldUnits(),
         fixture.view.viewDistancePolicy()->renderDistanceWorldUnits(),
         0.0001f);
     CHECK_EQ(readDocument(fixture.path), before);
@@ -568,7 +561,7 @@ TEST_CASE(ApplicationPreferences_ViewDistancePublicationOutcomesMatchSession) {
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
     CHECK_NEAR(
-        fixture.view.renderConfig().renderDistance,
+        fixture.view.renderDistanceWorldUnits(),
         static_cast<float>(8 * Rigel::Voxel::Chunk::SIZE),
         0.0001f);
     CHECK_EQ(

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "RenderProfile.h"
-#include "RenderConfig.h"
 #include "TextureAtlas.h"
 #include "WorldMeshStore.h"
 
@@ -32,7 +31,6 @@ struct WorldRenderContext {
     Asset::Handle<Asset::ShaderAsset> shadowTransmitShader;
     IShadowCaster* shadowCaster = nullptr;
     RenderProfile profile;
-    WorldRenderConfig config;
     float renderDistanceWorldUnits = 0.0f;
     float shadowDistanceWorldUnits = 0.0f;
     glm::mat4 view{1.0f};

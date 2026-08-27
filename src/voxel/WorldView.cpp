@@ -123,29 +123,6 @@ void WorldView::setRenderProfileForDiagnostics(
     m_renderProfile = profile;
 }
 
-void WorldView::setRenderConfig(const WorldRenderConfig& config) {
-    RenderProfile profile;
-    profile.sunDirection = config.sunDirection;
-    profile.transparentAlpha = config.transparentAlpha;
-    profile.shadow = config.shadow;
-    profile.shadow.maximumDistanceWorldUnits = config.shadow.maxDistance;
-    profile.temporalAA = config.taa;
-    setRenderProfileForDiagnostics(profile);
-}
-
-WorldRenderConfig WorldView::renderConfig() const {
-    WorldRenderConfig config;
-    config.renderDistance = renderDistanceWorldUnits();
-    config.sunDirection = m_renderProfile.sunDirection;
-    config.transparentAlpha = m_renderProfile.transparentAlpha;
-    static_cast<ShadowProfile&>(config.shadow) = m_renderProfile.shadow;
-    config.shadow.maxDistance =
-        m_renderProfile.shadow.maximumDistanceWorldUnits;
-    static_cast<TemporalAAProfile&>(config.taa) =
-        m_renderProfile.temporalAA;
-    return config;
-}
-
 WorldView::PreparedShadowChange WorldView::prepareShadowPreference(
     bool enabled) const {
     if (enabled && !m_initialized) {

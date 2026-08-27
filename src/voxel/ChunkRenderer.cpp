@@ -283,10 +283,7 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         m_storeVersions[storeId] = version;
     }
 
-    const float effectiveRenderDistance = ctx.renderDistanceWorldUnits > 0.0f
-        ? ctx.renderDistanceWorldUnits
-        : ctx.config.renderDistance;
-    float renderDistance = std::max(0.0f, effectiveRenderDistance);
+    float renderDistance = std::max(0.0f, ctx.renderDistanceWorldUnits);
     float renderDistanceSq = renderDistance * renderDistance;
 
     glm::vec3 viewDir(-ctx.view[0][2], -ctx.view[1][2], -ctx.view[2][2]);

@@ -570,7 +570,9 @@ TEST_CASE(ChunkRenderer_ViewPolicyBoundaryShrinkCullsRetainedGeometryImmediately
     renderContext.meshes = &store;
     renderContext.shader = makeShader();
     renderContext.cameraPos = glm::vec3(0.0f);
-    renderContext.config = view.renderConfig();
+    renderContext.profile = view.renderProfile();
+    renderContext.renderDistanceWorldUnits = view.renderDistanceWorldUnits();
+    renderContext.shadowDistanceWorldUnits = view.shadowDistanceWorldUnits();
 
     ChunkRenderer renderer;
     renderer.render(renderContext);
@@ -585,7 +587,9 @@ TEST_CASE(ChunkRenderer_ViewPolicyBoundaryShrinkCullsRetainedGeometryImmediately
     store.set(outsideReducedView, makeMesh(3, 3));
     const auto queuedButNotConsumed = store.snapshot(outsideReducedView);
     CHECK(queuedButNotConsumed.has_value());
-    renderContext.config = view.renderConfig();
+    renderContext.profile = view.renderProfile();
+    renderContext.renderDistanceWorldUnits = view.renderDistanceWorldUnits();
+    renderContext.shadowDistanceWorldUnits = view.shadowDistanceWorldUnits();
     renderer.render(renderContext);
     CHECK(renderer.hasDrawnMesh(
         store.storeId(), outsideReducedView, queuedButNotConsumed->revision));
@@ -598,7 +602,9 @@ TEST_CASE(ChunkRenderer_ViewPolicyBoundaryShrinkCullsRetainedGeometryImmediately
     store.set(outsideReducedView, makeMesh(3, 3));
     const auto retainedAfterBoundary = store.snapshot(outsideReducedView);
     CHECK(retainedAfterBoundary.has_value());
-    renderContext.config = view.renderConfig();
+    renderContext.profile = view.renderProfile();
+    renderContext.renderDistanceWorldUnits = view.renderDistanceWorldUnits();
+    renderContext.shadowDistanceWorldUnits = view.shadowDistanceWorldUnits();
 
     renderer.render(renderContext);
 

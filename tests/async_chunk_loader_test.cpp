@@ -1284,7 +1284,7 @@ TEST_CASE(AsyncChunkLoader_ViewPolicyPublicationFailureRestoresEveryConsumer) {
         previousLoaderPolicy);
     CHECK_EQ(view.viewDistancePolicy()->generation(), static_cast<uint64_t>(1));
     CHECK_NEAR(
-        view.renderConfig().renderDistance,
+        view.renderDistanceWorldUnits(),
         previousPolicy->renderDistanceWorldUnits(),
         0.0001f);
     CHECK_EQ(
@@ -1368,7 +1368,7 @@ TEST_CASE(AsyncChunkLoader_ViewPolicyInstallFailureRestoresEveryConsumer) {
             viewDistancePolicy(loader),
         previousLoaderPolicy);
     CHECK_NEAR(
-        view.renderConfig().renderDistance,
+        view.renderDistanceWorldUnits(),
         previousPolicy->renderDistanceWorldUnits(),
         0.0001f);
     CHECK_EQ(

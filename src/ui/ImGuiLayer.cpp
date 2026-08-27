@@ -152,7 +152,7 @@ void renderProfilerWindow(bool enabled) {
     ImGui::Begin("Profiler", nullptr, flags);
     if (!Core::Profiler::enabled()) {
         ImGui::TextUnformatted("Profiler disabled.");
-        ImGui::TextUnformatted("Enable via config render.profiling.enabled.");
+        ImGui::TextUnformatted("Restart with RIGEL_PROFILE=1 to collect data.");
         ImGui::End();
         return;
     }

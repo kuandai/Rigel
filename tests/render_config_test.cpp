@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "ApplicationPreferences.h"
+#include "DeveloperDiagnostics.h"
 #include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Voxel/RenderProfile.h"
 #include "Rigel/Voxel/World.h"
@@ -104,4 +105,14 @@ TEST_CASE(RenderProfile_InternalDistanceCapsLargerViewDistance) {
 
     CHECK_NEAR(fixture.view.renderDistanceWorldUnits(), 416.0f, 0.0001f);
     CHECK_NEAR(fixture.view.shadowDistanceWorldUnits(), 200.0f, 0.0001f);
+}
+
+TEST_CASE(DeveloperDiagnostics_ProfilerRequiresExplicitEnableValue) {
+    using Rigel::detail::profilerEnabledFromEnvironmentValue;
+
+    CHECK(!profilerEnabledFromEnvironmentValue(nullptr));
+    CHECK(!profilerEnabledFromEnvironmentValue(""));
+    CHECK(!profilerEnabledFromEnvironmentValue("0"));
+    CHECK(!profilerEnabledFromEnvironmentValue("true"));
+    CHECK(profilerEnabledFromEnvironmentValue("1"));
 }

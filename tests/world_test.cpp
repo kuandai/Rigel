@@ -409,11 +409,11 @@ TEST_CASE(WorldView_ViewPolicyDrivesFrameProjectionAndShadowCeiling) {
     CHECK_NE(view.viewDistancePolicy(), startupPolicy);
     CHECK_EQ(view.viewDistancePolicy()->generation(), static_cast<uint64_t>(2));
 
-    WorldRenderConfig renderConfig = view.renderConfig();
-    renderConfig.shadow.cascades = 1;
-    renderConfig.shadow.mapSize = 16;
-    renderConfig.shadow.maxDistance = 10000.0f;
-    view.setRenderConfig(renderConfig);
+    RenderProfile renderProfile = view.renderProfile();
+    renderProfile.shadow.cascades = 1;
+    renderProfile.shadow.mapSize = 16;
+    renderProfile.shadow.maximumDistanceWorldUnits = 10000.0f;
+    view.setRenderProfileForDiagnostics(renderProfile);
     const auto shadowsInitialized = preferences.initializeShadows(view);
     CHECK_EQ(
         shadowsInitialized.status,
@@ -567,7 +567,7 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
 
     const glm::vec3 outsideRenderDistance =
         coord.toWorldCenter() + glm::vec3(
-            view.renderConfig().renderDistance +
+            view.renderDistanceWorldUnits() +
                 static_cast<float>(Chunk::SIZE),
             0.0f,
             0.0f);

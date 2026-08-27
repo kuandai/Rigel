@@ -151,10 +151,10 @@ public:
         assets.loadManifest("manifest.yaml");
         view.initialize(assets);
 
-        Rigel::Voxel::WorldRenderConfig profile;
+        Rigel::Voxel::RenderProfile profile;
         profile.shadow.cascades = 2;
         profile.shadow.mapSize = 32;
-        view.setRenderConfig(profile);
+        view.setRenderProfileForDiagnostics(profile);
     }
 
     ~ShadowFixture() {
@@ -731,9 +731,9 @@ TEST_CASE(ApplicationPreferences_InvalidShadowProfileRetainsOffState) {
     CHECK_EQ(
         preferences.initializeShadows(fixture.view).status,
         Rigel::PreferenceApplyStatus::Applied);
-    Rigel::Voxel::WorldRenderConfig invalid = fixture.view.renderConfig();
-    invalid.shadow.mapSize = Rigel::Voxel::ShadowConfig::MaxMapSize + 1;
-    fixture.view.setRenderConfig(invalid);
+    Rigel::Voxel::RenderProfile invalid = fixture.view.renderProfile();
+    invalid.shadow.mapSize = Rigel::Voxel::ShadowProfile::MaxMapSize + 1;
+    fixture.view.setRenderProfileForDiagnostics(invalid);
 
     const auto result = preferences.applyShadows(fixture.view, true);
 

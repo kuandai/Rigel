@@ -2,6 +2,7 @@
 #include "ApplicationPreferences.h"
 #include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
+#include "DeveloperDiagnostics.h"
 #include "GlfwRuntime.h"
 #include "StreamingPolicy.h"
 #include "WorldGenerationBootstrap.h"
@@ -530,10 +531,8 @@ void Application::initialize() {
                 return loader ? loader->persistChunk(coord) : false;
             });
 
-        const char* profilerInput = std::getenv("RIGEL_PROFILE");
         Core::Profiler::setEnabled(
-            profilerInput != nullptr &&
-            std::string_view(profilerInput) == "1");
+            detail::profilerEnabledFromEnvironment());
         m_impl->world.worldView->setStreamConfig(streamingConfig);
         m_impl->preferences->initializeViewDistance(
             *m_impl->world.worldView,

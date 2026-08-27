@@ -52,8 +52,6 @@ public:
     // application startup uses the shipped profile.
     void setRenderProfileForDiagnostics(const RenderProfile& profile);
     const RenderProfile& renderProfile() const { return m_renderProfile; }
-    void setRenderConfig(const WorldRenderConfig& config);
-    WorldRenderConfig renderConfig() const;
     const std::shared_ptr<const ViewDistancePolicy>& viewDistancePolicy() const {
         return m_viewDistancePolicy;
     }

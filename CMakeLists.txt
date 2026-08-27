@@ -221,9 +221,21 @@ if (RIGEL_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderLoader.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderCompiler.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderAsset.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/ChunkSerializer.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/FormatRegistry.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/PersistenceService.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/Storage.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/WorldSettings.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/ZoneIdentifier.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/backends/memory/MemoryFormat.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/BlockRegistry.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/Chunk.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/ChunkManager.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/DensityFunction.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/GeneratorDefinition.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/GeneratorDefinitionLoader.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/Noise.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/WorldGenerator.cpp
     )
     target_include_directories(Rigel_asset_manifest_validation_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/invalid_generator_manifests
@@ -239,6 +251,7 @@ if (RIGEL_BUILD_TESTS)
         OpenGL::GL
         ryml::ryml
         stb::stb
+        glm::glm
     )
 
     add_executable(Rigel_public_header_consumer

@@ -27,6 +27,11 @@ struct GeneratorDefinitionAssetTransactionAccess {
         assets.forEachGeneratorDefinitionCandidate(visitor);
     }
 
+    static void rethrowDeclarationError(
+        const Asset::AssetManager& assets) {
+        assets.rethrowPendingGeneratorDefinitionError();
+    }
+
     static void commit(Asset::AssetManager& assets) {
         assets.commitPendingGeneratorDefinitions();
     }
@@ -101,6 +106,45 @@ public:
     }
 };
 
+std::vector<GeneratorDefinition> loadAndValidateGeneratorDefinitionCandidate(
+    Asset::AssetManager& assets,
+    const BlockRegistry& registry,
+    GeneratorDefinitionOrigin origin) {
+    GeneratorDefinitionAssetTransactionAccess::rethrowDeclarationError(
+        assets);
+    std::vector<std::pair<
+        std::string, const Asset::AssetManager::AssetEntry*>> declarations;
+    GeneratorDefinitionAssetTransactionAccess::forEachCandidate(
+        assets,
+        [&](const std::string& name,
+            const Asset::AssetManager::AssetEntry& entry) {
+            declarations.emplace_back(name, &entry);
+        });
+    std::sort(declarations.begin(), declarations.end(),
+              [](const auto& left, const auto& right) {
+                  return left.first < right.first;
+              });
+
+    GeneratorDefinitionAssetLoader loader;
+    std::vector<GeneratorDefinition> definitions;
+    definitions.reserve(declarations.size());
+    for (const auto& [name, entry] : declarations) {
+        const std::string id = "generator_definitions/" + name;
+        Asset::LoadContext context{id, entry->config, assets};
+        const auto loaded =
+            std::dynamic_pointer_cast<GeneratorDefinitionAsset>(
+                loader.load(context));
+        if (!loaded) {
+            throw Asset::AssetLoadError(
+                id,
+                "Generator definition loader returned an incompatible asset");
+        }
+        definitions.push_back(loaded->definition);
+    }
+    return validateAndOrderGeneratorDefinitions(
+        std::move(definitions), registry, origin);
+}
+
 } // namespace
 
 std::vector<GeneratorDefinition> validateAndOrderGeneratorDefinitions(
@@ -145,38 +189,9 @@ std::vector<GeneratorDefinition> loadDeclaredGeneratorDefinitions(
     GeneratorDefinitionOrigin origin) {
     const bool candidatePending =
         GeneratorDefinitionAssetTransactionAccess::hasPending(assets);
-    std::vector<std::pair<
-        std::string, const Asset::AssetManager::AssetEntry*>> declarations;
-    GeneratorDefinitionAssetTransactionAccess::forEachCandidate(
-        assets,
-        [&](const std::string& name,
-            const Asset::AssetManager::AssetEntry& entry) {
-            declarations.emplace_back(name, &entry);
-        });
-    std::sort(declarations.begin(), declarations.end(),
-              [](const auto& left, const auto& right) {
-                  return left.first < right.first;
-              });
-
     try {
-        GeneratorDefinitionAssetLoader loader;
-        std::vector<GeneratorDefinition> definitions;
-        definitions.reserve(declarations.size());
-        for (const auto& [name, entry] : declarations) {
-            const std::string id = "generator_definitions/" + name;
-            Asset::LoadContext context{id, entry->config, assets};
-            const auto loaded =
-                std::dynamic_pointer_cast<GeneratorDefinitionAsset>(
-                    loader.load(context));
-            if (!loaded) {
-                throw Asset::AssetLoadError(
-                    id,
-                    "Generator definition loader returned an incompatible asset");
-            }
-            definitions.push_back(loaded->definition);
-        }
-        auto validated = validateAndOrderGeneratorDefinitions(
-            std::move(definitions), registry, origin);
+        auto validated = loadAndValidateGeneratorDefinitionCandidate(
+            assets, registry, origin);
         if (candidatePending) {
             GeneratorDefinitionAssetTransactionAccess::commit(assets);
         }
@@ -199,22 +214,38 @@ PreparedGeneratorDefinitionSnapshot loadPreparedGeneratorDefinitionSnapshot(
     const BlockRegistry& registry,
     std::string_view selectedId,
     GeneratorDefinitionOrigin origin) {
-    const std::vector<GeneratorDefinition> definitions =
-        loadDeclaredGeneratorDefinitions(assets, registry, origin);
-    const auto selected = std::find_if(
-        definitions.begin(), definitions.end(), [&](const auto& definition) {
-            return definition.id == selectedId;
-        });
-    if (selected == definitions.end()) {
-        throw Asset::AssetLoadError(
-            "generator_definitions",
-            "Selected generator definition is not declared: " +
-                std::string(selectedId));
-    }
+    const bool candidatePending =
+        GeneratorDefinitionAssetTransactionAccess::hasPending(assets);
     try {
-        return prepareGeneratorDefinitionSnapshot(
+        const std::vector<GeneratorDefinition> definitions =
+            loadAndValidateGeneratorDefinitionCandidate(
+                assets, registry, origin);
+        const auto selected = std::find_if(
+            definitions.begin(), definitions.end(),
+            [&](const auto& definition) {
+                return definition.id == selectedId;
+            });
+        if (selected == definitions.end()) {
+            throw Asset::AssetLoadError(
+                "generator_definitions",
+                "Selected generator definition is not declared: " +
+                    std::string(selectedId));
+        }
+        auto prepared = prepareGeneratorDefinitionSnapshot(
             *selected, registry, origin);
+        if (candidatePending) {
+            GeneratorDefinitionAssetTransactionAccess::commit(assets);
+        }
+        return prepared;
+    } catch (const Asset::AssetLoadError&) {
+        if (candidatePending) {
+            GeneratorDefinitionAssetTransactionAccess::discard(assets);
+        }
+        throw;
     } catch (const std::exception& error) {
+        if (candidatePending) {
+            GeneratorDefinitionAssetTransactionAccess::discard(assets);
+        }
         throw Asset::AssetLoadError(
             "generator_definitions", error.what());
     }

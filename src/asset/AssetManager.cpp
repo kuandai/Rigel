@@ -166,6 +166,9 @@ void AssetManager::loadManifest(const std::string& path) {
     if (!root.has_child("assets")) {
         if (manifestNamespace) {
             m_namespace = std::move(*manifestNamespace);
+            if (m_pendingGeneratorDefinitions) {
+                m_pendingGeneratorDefinitions->previousNamespace = m_namespace;
+            }
             spdlog::debug("Manifest namespace: {}", m_namespace);
         }
         spdlog::warn("Manifest has no 'assets' section");
@@ -174,53 +177,56 @@ void AssetManager::loadManifest(const std::string& path) {
 
     ryml::ConstNodeRef assets = root["assets"];
 
-    // Generator definitions are a replaceable aggregate. Build a private
-    // candidate now; the definition loader publishes it only after validating
-    // every payload and cross-definition constraint.
-    std::optional<PendingGeneratorDefinitions> pendingGenerators;
-    const std::string namespaceBeforeCandidate = m_pendingGeneratorDefinitions
-        ? m_pendingGeneratorDefinitions->previousNamespace
-        : m_namespace;
+    // A manifest that declares generator definitions remains provisional until
+    // the complete installed set and the requested definition are validated.
+    // Declaration-shape failures are retained privately so published worlds can
+    // continue using their save-owned snapshot without resolving installed
+    // content.
+    std::optional<PendingGeneratorDefinitions> generatorCandidate;
     bool foundGeneratorCategory = false;
     for (const ryml::ConstNodeRef category : assets.children()) {
         const std::string categoryName = Util::toStdString(category.key());
         if (categoryName != "generator_definitions") {
             continue;
         }
-        if (foundGeneratorCategory) {
-            throw AssetLoadError(
-                "generator_definitions",
-                "duplicate generator definition manifest category");
+        if (!generatorCandidate) {
+            generatorCandidate.emplace();
         }
-        foundGeneratorCategory = true;
-        if (!category.is_map()) {
-            throw AssetLoadError(
-                "generator_definitions",
-                "generator definition manifest category must be a mapping");
-        }
-        pendingGenerators.emplace();
-        pendingGenerators->previousNamespace = namespaceBeforeCandidate;
-        for (const ryml::ConstNodeRef assetNode : category.children()) {
-            const std::string fullId = categoryName + "/" +
-                Util::toStdString(assetNode.key());
-            validateGeneratorDeclaration(assetNode, fullId);
-            auto [it, inserted] = pendingGenerators->entries.emplace(
-                fullId, cloneManifestEntry(assetNode, categoryName));
-            if (!inserted) {
+        try {
+            if (foundGeneratorCategory) {
                 throw AssetLoadError(
-                    fullId,
-                    "duplicate generator definition asset declaration");
+                    "generator_definitions",
+                    "duplicate generator definition manifest category");
             }
-            it->second.config = it->second.configTree.rootref();
+            foundGeneratorCategory = true;
+            if (!category.is_map()) {
+                throw AssetLoadError(
+                    "generator_definitions",
+                    "generator definition manifest category must be a mapping");
+            }
+            for (const ryml::ConstNodeRef assetNode : category.children()) {
+                const std::string fullId = categoryName + "/" +
+                    Util::toStdString(assetNode.key());
+                validateGeneratorDeclaration(assetNode, fullId);
+                auto [it, inserted] = generatorCandidate->entries.emplace(
+                    fullId, cloneManifestEntry(assetNode, categoryName));
+                if (!inserted) {
+                    throw AssetLoadError(
+                        fullId,
+                        "duplicate generator definition asset declaration");
+                }
+                it->second.config = it->second.configTree.rootref();
+            }
+        } catch (const AssetLoadError&) {
+            if (!generatorCandidate->declarationError) {
+                generatorCandidate->declarationError =
+                    std::current_exception();
+            }
         }
     }
 
-    if (manifestNamespace) {
-        m_namespace = std::move(*manifestNamespace);
-        spdlog::debug("Manifest namespace: {}", m_namespace);
-    }
-
-    // Iterate categories (raw, textures, shaders, etc.)
+    // Clone ordinary entries before publishing any part of this manifest.
+    std::unordered_map<std::string, AssetEntry> manifestEntries;
     for (ryml::ConstNodeRef category : assets.children()) {
         std::string categoryName = Util::toStdString(category.key());
         if (categoryName == "generator_definitions") {
@@ -242,20 +248,10 @@ void AssetManager::loadManifest(const std::string& path) {
                 spdlog::debug("Registered asset: {} (complex config)", fullId);
             }
 
-            m_entries[fullId] = std::move(entry);
-
-            // Fix the config reference after move - ConstNodeRef is just a pointer,
-            // so it must be regenerated to point to the moved tree's new location
-            m_entries[fullId].config = m_entries[fullId].configTree.rootref();
+            manifestEntries[fullId] = std::move(entry);
+            manifestEntries[fullId].config =
+                manifestEntries[fullId].configTree.rootref();
         }
-    }
-
-    if (pendingGenerators) {
-        m_pendingGeneratorDefinitions = std::move(*pendingGenerators);
-    }
-
-    for (auto& [id, entry] : m_entries) {
-        entry.config = entry.configTree.rootref();
     }
 
     auto startsWith = [](std::string_view value, std::string_view prefix) {
@@ -344,7 +340,16 @@ void AssetManager::loadManifest(const std::string& path) {
             }
 
             std::string fullId = category + "/" + name;
-            if (m_entries.find(fullId) != m_entries.end()) {
+            const auto existedBeforePending = [&] {
+                if (!m_pendingGeneratorDefinitions ||
+                    !m_pendingGeneratorDefinitions->touchedEntryIds.contains(
+                        fullId)) {
+                    return m_entries.contains(fullId);
+                }
+                return m_pendingGeneratorDefinitions->previousEntries.contains(
+                    fullId);
+            }();
+            if (manifestEntries.contains(fullId) || existedBeforePending) {
                 continue;
             }
 
@@ -357,7 +362,8 @@ void AssetManager::loadManifest(const std::string& path) {
                 tree.copy_to_arena(ryml::to_csubstr(entryPath));
             entry.configTree = std::move(tree);
             entry.config = entry.configTree.rootref();
-            auto [it, inserted] = m_entries.emplace(std::move(fullId), std::move(entry));
+            auto [it, inserted] = manifestEntries.emplace(
+                std::move(fullId), std::move(entry));
             if (inserted) {
                 it->second.config = it->second.configTree.rootref();
             }
@@ -367,6 +373,53 @@ void AssetManager::loadManifest(const std::string& path) {
     registerEmbeddedCategory("entity_models", "models/entities/", ".json", ".yaml", true);
     registerEmbeddedCategory("entity_anims", "animations/entities/", ".json", ".yaml", true);
     registerEmbeddedCategory("textures", "textures/", ".png", {}, false);
+
+    if (generatorCandidate) {
+        // A corrected generator manifest replaces any unresolved candidate and
+        // starts again from the last committed manifest state.
+        discardPendingGeneratorDefinitions();
+
+        generatorCandidate->previousNamespace = m_namespace;
+        for (const auto& [id, entry] : manifestEntries) {
+            static_cast<void>(entry);
+            generatorCandidate->touchedEntryIds.insert(id);
+        }
+        for (const auto& [key, asset] : m_cache) {
+            if (generatorCandidate->touchedEntryIds.contains(key.second)) {
+                generatorCandidate->previousCacheEntries.emplace(key, asset);
+            }
+        }
+        if (manifestNamespace) {
+            m_namespace = std::move(*manifestNamespace);
+            spdlog::debug("Manifest namespace: {}", m_namespace);
+        }
+        for (auto& [id, entry] : manifestEntries) {
+            if (auto found = m_entries.find(id); found != m_entries.end()) {
+                generatorCandidate->previousEntries.emplace(
+                    id, std::move(found->second));
+            }
+            m_entries[id] = std::move(entry);
+            m_entries[id].config = m_entries[id].configTree.rootref();
+        }
+        m_pendingGeneratorDefinitions = std::move(*generatorCandidate);
+    } else {
+        if (manifestNamespace) {
+            m_namespace = std::move(*manifestNamespace);
+            if (m_pendingGeneratorDefinitions) {
+                m_pendingGeneratorDefinitions->previousNamespace = m_namespace;
+            }
+            spdlog::debug("Manifest namespace: {}", m_namespace);
+        }
+        for (auto& [id, entry] : manifestEntries) {
+            m_entries[id] = std::move(entry);
+            m_entries[id].config = m_entries[id].configTree.rootref();
+        }
+    }
+
+    for (auto& [id, entry] : m_entries) {
+        static_cast<void>(id);
+        entry.config = entry.configTree.rootref();
+    }
 
     spdlog::info("Loaded {} assets from manifest", m_entries.size());
 }
@@ -417,6 +470,14 @@ void AssetManager::forEachGeneratorDefinitionCandidate(
     }
 }
 
+void AssetManager::rethrowPendingGeneratorDefinitionError() const {
+    if (m_pendingGeneratorDefinitions &&
+        m_pendingGeneratorDefinitions->declarationError) {
+        std::rethrow_exception(
+            m_pendingGeneratorDefinitions->declarationError);
+    }
+}
+
 void AssetManager::commitPendingGeneratorDefinitions() {
     if (!m_pendingGeneratorDefinitions) {
         return;
@@ -432,13 +493,36 @@ void AssetManager::commitPendingGeneratorDefinitions() {
     std::erase_if(m_cache, [](const auto& item) {
         return item.first.second.starts_with("generator_definitions/");
     });
+    std::erase_if(m_cache, [&](const auto& item) {
+        return m_pendingGeneratorDefinitions->touchedEntryIds.contains(
+            item.first.second);
+    });
     m_pendingGeneratorDefinitions.reset();
 }
 
 void AssetManager::discardPendingGeneratorDefinitions() {
-    if (m_pendingGeneratorDefinitions) {
-        m_namespace = std::move(
-            m_pendingGeneratorDefinitions->previousNamespace);
+    if (!m_pendingGeneratorDefinitions) {
+        return;
+    }
+
+    m_namespace = std::move(
+        m_pendingGeneratorDefinitions->previousNamespace);
+    for (const std::string& id :
+         m_pendingGeneratorDefinitions->touchedEntryIds) {
+        m_entries.erase(id);
+    }
+    for (auto& [id, entry] :
+         m_pendingGeneratorDefinitions->previousEntries) {
+        m_entries[id] = std::move(entry);
+        m_entries[id].config = m_entries[id].configTree.rootref();
+    }
+    std::erase_if(m_cache, [&](const auto& item) {
+        return m_pendingGeneratorDefinitions->touchedEntryIds.contains(
+            item.first.second);
+    });
+    for (auto& [key, asset] :
+         m_pendingGeneratorDefinitions->previousCacheEntries) {
+        m_cache.emplace(std::move(key), std::move(asset));
     }
     m_pendingGeneratorDefinitions.reset();
 }

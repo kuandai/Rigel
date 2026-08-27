@@ -80,13 +80,15 @@
 #include "Types.h"
 #include "AssetLoader.h"
 
-#include <string>
-#include <optional>
-#include <unordered_map>
-#include <memory>
-#include <typeindex>
-#include <stdexcept>
+#include <exception>
 #include <functional>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <typeindex>
+#include <unordered_map>
+#include <unordered_set>
 #include <GL/glew.h>
 #include <ryml.hpp>
 
@@ -556,9 +558,23 @@ public:
 private:
     friend struct Voxel::GeneratorDefinitionAssetTransactionAccess;
 
+    // Type-erased cache: maps (type_index, id) -> shared_ptr<void>
+    using CacheKey = std::pair<std::type_index, std::string>;
+    struct CacheKeyHash {
+        size_t operator()(const CacheKey& k) const {
+            return std::hash<std::type_index>{}(k.first) ^
+                   (std::hash<std::string>{}(k.second) << 1);
+        }
+    };
+
     struct PendingGeneratorDefinitions {
         std::string previousNamespace;
         std::unordered_map<std::string, AssetEntry> entries;
+        std::exception_ptr declarationError;
+        std::unordered_set<std::string> touchedEntryIds;
+        std::unordered_map<std::string, AssetEntry> previousEntries;
+        std::unordered_map<CacheKey, std::shared_ptr<void>, CacheKeyHash>
+            previousCacheEntries;
     };
 
     // Generator definitions replace their manifest category only after the
@@ -569,6 +585,7 @@ private:
     void forEachGeneratorDefinitionCandidate(
         const std::function<void(const std::string& name, const AssetEntry& entry)>& fn
     ) const;
+    void rethrowPendingGeneratorDefinitionError() const;
     void commitPendingGeneratorDefinitions();
     void discardPendingGeneratorDefinitions();
 
@@ -577,14 +594,6 @@ private:
     std::unordered_map<std::string, std::unique_ptr<IAssetLoader>> m_loaders;
     std::optional<PendingGeneratorDefinitions> m_pendingGeneratorDefinitions;
 
-    // Type-erased cache: maps (type_index, id) -> shared_ptr<void>
-    using CacheKey = std::pair<std::type_index, std::string>;
-    struct CacheKeyHash {
-        size_t operator()(const CacheKey& k) const {
-            return std::hash<std::type_index>{}(k.first) ^
-                   (std::hash<std::string>{}(k.second) << 1);
-        }
-    };
     std::unordered_map<CacheKey, std::shared_ptr<void>, CacheKeyHash> m_cache;
 };
 

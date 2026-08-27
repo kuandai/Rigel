@@ -27,6 +27,11 @@ public:
         static constexpr char aggregateMissingResource[] =
             "namespace: failed-missing\n"
             "assets:\n"
+            "  raw:\n"
+            "    stable:\n"
+            "      path: changed.txt\n"
+            "    provisional:\n"
+            "      path: provisional.txt\n"
             "  generator_definitions:\n"
             "    a_valid:\n"
             "      path: generators/valid.yaml\n"
@@ -35,6 +40,11 @@ public:
         static constexpr char aggregateInvalidPayload[] =
             "namespace: failed-aggregate\n"
             "assets:\n"
+            "  raw:\n"
+            "    stable:\n"
+            "      path: changed.txt\n"
+            "    provisional:\n"
+            "      path: provisional.txt\n"
             "  generator_definitions:\n"
             "    a_valid:\n"
             "      path: generators/valid.yaml\n"
@@ -43,6 +53,9 @@ public:
         static constexpr char malformedDeclaration[] =
             "namespace: failed-malformed\n"
             "assets:\n"
+            "  raw:\n"
+            "    required:\n"
+            "      path: required.txt\n"
             "  generator_definitions:\n"
             "    default:\n"
             "      path: [generators/valid.yaml]\n";
@@ -58,9 +71,14 @@ public:
         static constexpr char correctedManifest[] =
             "namespace: corrected\n"
             "assets:\n"
+            "  raw:\n"
+            "    stable:\n"
+            "      path: corrected.txt\n"
+            "    committed:\n"
+            "      path: committed.txt\n"
             "  generator_definitions:\n"
             "    corrected:\n"
-            "      path: generators/valid.yaml\n";
+            "      path: generators/corrected.yaml\n";
         static constexpr char validDefinition[] = R"yaml(generator:
   schema_version: 2
   id: test:valid
@@ -127,11 +145,21 @@ public:
     blend_power: 2
     epsilon: 0.001
     coast:
-      biome: land
+      biome: coast
       min_continentalness: -0.1
       max_continentalness: 0.1
     entries:
       - id: land
+        target:
+          temperature: 0
+          humidity: 0
+          continentalness: 0
+        weight: 1
+        water_fill: false
+        surface:
+          - material: test:surface
+            depth: 1
+      - id: coast
         target:
           temperature: 0
           humidity: 0
@@ -154,6 +182,11 @@ public:
     enabled: false
 )yaml";
         static constexpr char stable[] = "retained";
+        static constexpr char changed[] = "changed provisionally";
+        static constexpr char provisional[] = "new provisional entry";
+        static constexpr char required[] = "ordinary required asset";
+        static constexpr char corrected[] = "corrected committed entry";
+        static constexpr char committed[] = "new committed entry";
         static constexpr char invalidDefinition[] =
             "generator:\n"
             "  schema_version: 2\n"
@@ -162,6 +195,23 @@ public:
             "  label: Invalid\n"
             "  description: Invalid aggregate fixture.\n"
             "  unknown_field: rejected\n";
+        static const std::string correctedDefinition = [] {
+            std::string result(
+                validDefinition, sizeof(validDefinition) - 1);
+            result.replace(
+                result.find("id: test:valid"),
+                std::string("id: test:valid").size(),
+                "id: test:corrected");
+            result.replace(
+                result.find("source_revision: 1"),
+                std::string("source_revision: 1").size(),
+                "source_revision: 9");
+            result.replace(
+                result.find("value: 1"),
+                std::string("value: 1").size(),
+                "value: 0.5");
+            return result;
+        }();
 
         if (path == "duplicate_generator_field.yaml") {
             return {duplicateField, sizeof(duplicateField) - 1};
@@ -192,8 +242,26 @@ public:
         if (path == "generators/invalid.yaml") {
             return {invalidDefinition, sizeof(invalidDefinition) - 1};
         }
+        if (path == "generators/corrected.yaml") {
+            return {correctedDefinition.data(), correctedDefinition.size()};
+        }
         if (path == "stable.txt") {
             return {stable, sizeof(stable) - 1};
+        }
+        if (path == "changed.txt") {
+            return {changed, sizeof(changed) - 1};
+        }
+        if (path == "provisional.txt") {
+            return {provisional, sizeof(provisional) - 1};
+        }
+        if (path == "required.txt") {
+            return {required, sizeof(required) - 1};
+        }
+        if (path == "corrected.txt") {
+            return {corrected, sizeof(corrected) - 1};
+        }
+        if (path == "committed.txt") {
+            return {committed, sizeof(committed) - 1};
         }
         throw std::runtime_error("Resource not found: " + path);
     }

@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <stdexcept>
 
 namespace Rigel::Voxel {
 
@@ -59,6 +60,17 @@ void WorldView::initialize(Asset::AssetManager& assets) {
 void WorldView::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
     if (!m_world || !m_resources) {
         return;
+    }
+    const auto& worldGenerator = m_world->generator();
+    if (worldGenerator) {
+        if (!generator || !worldGenerator->matchesGenerationInputs(
+                generator->definition(),
+                generator->seed(),
+                generator->semanticsVersion())) {
+            throw std::invalid_argument(
+                "WorldView generator must match the world-owned generator");
+        }
+        generator = worldGenerator;
     }
     m_streamer.setGenerator(std::move(generator));
 }

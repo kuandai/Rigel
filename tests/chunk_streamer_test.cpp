@@ -4109,7 +4109,6 @@ TEST_CASE(ChunkStreamer_VisibilityTraceRefreshesBudgetedSourceResolution) {
     World world(resources);
     auto& registry = resources.registry();
     auto generator = makeGenerator(registry);
-    world.setGenerator(generator);
     auto& manager = world.chunkManager();
     WorldMeshStore meshStore;
     PersistedChunkContext persistence;
@@ -16322,7 +16321,6 @@ TEST_CASE(ChunkStreamer_EmptyChunkIgnoresPersistedNeighborArrival) {
     World world(resources);
     auto& registry = resources.registry();
     auto generator = makeGenerator(registry);
-    world.setGenerator(generator);
     auto& manager = world.chunkManager();
     WorldMeshStore meshStore;
     const ChunkCoord survivingCoord{0, 2, 0};
@@ -16413,7 +16411,6 @@ TEST_CASE(ChunkStreamer_EmptyPersistedArrivalKeepsSolidNeighborMesh) {
     World world(resources);
     auto& registry = resources.registry();
     auto generator = makeGenerator(registry);
-    world.setGenerator(generator);
     auto& manager = world.chunkManager();
     WorldMeshStore meshStore;
     const BlockID solid =
@@ -16527,7 +16524,6 @@ TEST_CASE(ChunkStreamer_NonEmptyChunkRemeshesAfterPersistedNeighborArrival) {
     World world(resources);
     auto& registry = resources.registry();
     auto generator = makeGenerator(registry);
-    world.setGenerator(generator);
     auto& manager = world.chunkManager();
     WorldMeshStore meshStore;
     const BlockID solid =

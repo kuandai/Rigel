@@ -71,6 +71,10 @@ public:
     const GeneratorDefinitionData& definition() const { return m_definition; }
     uint32_t seed() const { return m_seed; }
     uint32_t semanticsVersion() const { return m_semanticsVersion; }
+    bool matchesGenerationInputs(
+        const GeneratorDefinitionData& definition,
+        uint32_t seed,
+        uint32_t semanticsVersion) const;
 
     void generate(ChunkCoord coord, ChunkBuffer& out,
                   const std::atomic_bool* cancel = nullptr) const;

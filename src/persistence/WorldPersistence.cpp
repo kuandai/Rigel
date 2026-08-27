@@ -34,8 +34,18 @@ BootstrappedWorldGeneration requirePublishedWorldGeneration(
     const Voxel::World& world,
     PersistenceService& service,
     const PersistenceContext& context) {
-    return loadPublishedWorldGeneration(
+    BootstrappedWorldGeneration published = loadPublishedWorldGeneration(
         service, world.blockRegistry(), context);
+    if (world.generator() &&
+        !world.generator()->matchesGenerationInputs(
+            published.generation.definition,
+            published.generation.settings.seed,
+            published.generation.settings.generator.semanticsVersion)) {
+        throw std::runtime_error(
+            "World generator does not match the authoritative generator "
+            "snapshot for save '" + context.rootPath + "'");
+    }
+    return published;
 }
 
 void requireSupportedDefaultZone(const PersistenceFormat& format,

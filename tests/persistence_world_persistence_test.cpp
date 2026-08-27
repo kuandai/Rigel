@@ -701,3 +701,59 @@ TEST_CASE(Persistence_SaveAPIsRejectUnpublishedWorldWithoutMutation) {
     CHECK(!std::filesystem::exists(legacyRoot / "zones"));
     CHECK(chunk.isPersistDirty());
 }
+
+TEST_CASE(Persistence_SaveAPIsRejectGeneratorOutsidePublishedSnapshot) {
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService service(formats);
+
+    Test::TemporaryDirectory directory("rigel_divergent_generator_save");
+    Persistence::PersistenceContext context;
+    context.rootPath = directory.path().string();
+    context.preferredFormat = "memory";
+    context.storage =
+        std::make_shared<Persistence::FilesystemBackend>();
+
+    Voxel::WorldResources resources;
+    Voxel::World world(resources);
+    context.providers = world.persistenceProvidersHandle();
+    const Persistence::WorldSettings settings = testWorldSettings();
+    const Voxel::GeneratorDefinitionData authoritativeDefinition =
+        Test::savedGeneratorDefinitionFixture(settings);
+    Test::installSavedWorldGenerationFixture(
+        service, context, settings, authoritativeDefinition);
+
+    Voxel::GeneratorDefinitionData divergentDefinition =
+        authoritativeDefinition;
+    divergentDefinition.densityGraph.nodes.front().value = 0.5f;
+    world.setGenerator(Test::makeWorldGeneratorFixture(
+        resources.registry(),
+        std::move(divergentDefinition),
+        settings.seed,
+        settings.generator.semanticsVersion));
+    const Voxel::ChunkCoord coord{0, 0, 0};
+    Voxel::Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
+    chunk.markPersistDirty();
+
+    const std::vector<uint8_t> settingsBefore = readStorageBytes(
+        *context.storage, context.rootPath + "/world-settings.yaml");
+    const std::vector<uint8_t> definitionBefore = readStorageBytes(
+        *context.storage, context.rootPath + "/generator-definition.yaml");
+
+    CHECK_THROWS(Persistence::saveChunkToDisk(
+        world, service, context, coord));
+    CHECK_THROWS(Persistence::saveWorldToDisk(
+        world, settings, service, context));
+    CHECK_EQ(
+        readStorageBytes(
+            *context.storage, context.rootPath + "/world-settings.yaml"),
+        settingsBefore);
+    CHECK_EQ(
+        readStorageBytes(
+            *context.storage, context.rootPath + "/generator-definition.yaml"),
+        definitionBefore);
+    CHECK(chunk.isPersistDirty());
+}

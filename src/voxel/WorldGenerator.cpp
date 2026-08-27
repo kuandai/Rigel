@@ -1036,6 +1036,15 @@ WorldGenerator::WorldGenerator(const BlockRegistry& registry,
       m_stages(buildStages(
           m_definition, m_seed, m_registry, m_densityGraph)) {}
 
+bool WorldGenerator::matchesGenerationInputs(
+    const GeneratorDefinitionData& definition,
+    uint32_t seed,
+    uint32_t semanticsVersion) const {
+    return m_seed == seed &&
+        m_semanticsVersion == semanticsVersion &&
+        m_definition == definition;
+}
+
 void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
                               const std::atomic_bool* cancel) const {
     const LocalWorldYRange worldYRange =

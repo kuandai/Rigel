@@ -1134,13 +1134,15 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
             context.context.rootPath + "'");
     CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
 
-    world.setGenerator(divergent);
+    World divergentWorld;
+    divergentWorld.initialize(resources);
+    divergentWorld.setGenerator(divergent);
     CHECK_EQ(
         exceptionMessage([&] {
             AsyncChunkLoader loader(
                 context.service,
                 context.context,
-                world,
+                divergentWorld,
                 authoritative->semanticsVersion(),
                 0,
                 0,
@@ -1150,8 +1152,9 @@ TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {
         "World generator does not match authoritative "
         "generator-definition.yaml for world save '" +
             context.context.rootPath + "'");
-    CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(0));
-    world.setGenerator(authoritative);
+    CHECK_EQ(
+        divergentWorld.chunkManager().loadedChunkCount(),
+        static_cast<size_t>(0));
 
     auto wrongSeed = Rigel::Test::makeWorldGeneratorFixture(
         resources.registry(),
@@ -2180,7 +2183,6 @@ TEST_CASE(ChunkStreamer_VersionReplacementPersistsEditedChunkBeforeRegeneration)
         std::move(changedDefinition),
         generator->seed(),
         generator->semanticsVersion() + 1);
-    world.setGenerator(generator);
     streamer.setGenerator(generator);
 
     streamer.update(coord.toWorldCenter());

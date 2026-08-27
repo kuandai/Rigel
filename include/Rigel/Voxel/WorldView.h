@@ -41,6 +41,7 @@ public:
     WorldRenderConfig& renderConfig() { return m_renderConfig; }
     const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
 
+    /// Binds streaming to the generator already owned by the world.
     void setGenerator(std::shared_ptr<const WorldGenerator> generator);
     const std::shared_ptr<const WorldGenerator>& generator() const {
         return m_streamer.m_generator;

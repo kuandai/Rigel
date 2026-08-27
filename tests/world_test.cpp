@@ -202,6 +202,50 @@ TEST_CASE(World_StreamingPopulatesChunks) {
     CHECK_EQ(world.chunkManager().loadedChunkCount(), static_cast<size_t>(1));
 }
 
+TEST_CASE(World_GeneratorOwnershipRejectsRuntimeReplacement) {
+    WorldResources resources;
+    World world(resources);
+
+    GeneratorDefinitionData originalDefinition =
+        testDefinition("rigel:owned_solid", "rigel:owned_surface");
+    auto original = Rigel::Test::makeWorldGeneratorFixture(
+        resources.registry(), originalDefinition, 1u);
+    originalDefinition.densityGraph.nodes.front().value = -0.75f;
+    auto replacement = Rigel::Test::makeWorldGeneratorFixture(
+        resources.registry(),
+        std::move(originalDefinition),
+        original->seed(),
+        original->semanticsVersion());
+
+    world.setGenerator(original);
+
+    CHECK_THROWS(world.setGenerator(replacement));
+    CHECK_EQ(world.generator(), original);
+}
+
+TEST_CASE(WorldView_UsesWorldOwnedGeneratorIdentity) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+
+    GeneratorDefinitionData originalDefinition =
+        testDefinition("rigel:view_owned_solid", "rigel:view_owned_surface");
+    auto original = Rigel::Test::makeWorldGeneratorFixture(
+        resources.registry(), originalDefinition, 1u);
+    originalDefinition.densityGraph.nodes.front().value = -0.75f;
+    auto replacement = Rigel::Test::makeWorldGeneratorFixture(
+        resources.registry(),
+        std::move(originalDefinition),
+        original->seed(),
+        original->semanticsVersion());
+
+    world.setGenerator(original);
+    view.setGenerator(original);
+
+    CHECK_THROWS(view.setGenerator(replacement));
+    CHECK_EQ(view.generator(), original);
+}
+
 TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
     WorldResources resources;
     World world(resources);

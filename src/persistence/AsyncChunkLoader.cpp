@@ -29,10 +29,10 @@ constexpr size_t kMaxRegionLoadAttempts = 3;
 bool matchesPublishedGenerator(
     const Voxel::WorldGenerator& generator,
     const SavedWorldGeneration& published) {
-    return generator.seed() == published.settings.seed &&
-        generator.semanticsVersion() ==
-            published.settings.generator.semanticsVersion &&
-        generator.definition() == published.definition;
+    return generator.matchesGenerationInputs(
+        published.definition,
+        published.settings.seed,
+        published.settings.generator.semanticsVersion);
 }
 
 PersistenceContext validatedPublishedContext(

@@ -112,6 +112,7 @@ public:
     /// @name Generation
     /// @{
 
+    /// Installs creation-time generation inputs. Divergent replacements fail.
     void setGenerator(std::shared_ptr<const WorldGenerator> generator);
     const std::shared_ptr<const WorldGenerator>& generator() const { return m_generator; }
 

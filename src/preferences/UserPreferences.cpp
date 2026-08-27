@@ -17,6 +17,7 @@
 #include <memory>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 
 #ifdef _WIN32
@@ -269,6 +270,43 @@ std::unique_ptr<ryml::Tree> parseYaml(std::string_view document,
 
 std::string sourceName(const std::filesystem::path& path) {
     return path.string();
+}
+
+std::optional<std::string> duplicateMappingKeyPath(
+    ryml::ConstNodeRef node,
+    std::string_view path = {}) {
+    if (node.is_map()) {
+        std::unordered_set<std::string> keys;
+        for (const ryml::ConstNodeRef child : node.children()) {
+            const std::string key = Util::toStdString(child.key());
+            const std::string childPath = path.empty()
+                ? key
+                : std::string(path) + "." + key;
+            if (!keys.insert(key).second) {
+                return childPath;
+            }
+        }
+        for (const ryml::ConstNodeRef child : node.children()) {
+            const std::string key = Util::toStdString(child.key());
+            const std::string childPath = path.empty()
+                ? key
+                : std::string(path) + "." + key;
+            if (auto duplicate = duplicateMappingKeyPath(child, childPath)) {
+                return duplicate;
+            }
+        }
+    } else if (node.is_seq()) {
+        size_t index = 0;
+        for (const ryml::ConstNodeRef child : node.children()) {
+            const std::string childPath = std::string(path) + "[" +
+                std::to_string(index) + "]";
+            if (auto duplicate = duplicateMappingKeyPath(child, childPath)) {
+                return duplicate;
+            }
+            ++index;
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<UserAction> parseUserAction(std::string_view name) {
@@ -741,6 +779,10 @@ DocumentInspection inspectDocument(const std::filesystem::path& path) {
     if (!root.readable() || !root.is_map()) {
         return {DocumentKind::Unsafe, {}, nullptr,
                 "document root is not a mapping"};
+    }
+    if (const auto duplicate = duplicateMappingKeyPath(root)) {
+        return {DocumentKind::Unsafe, {}, nullptr,
+                "duplicate mapping key at '" + *duplicate + "'"};
     }
     const ryml::ConstNodeRef schemaNode = childOrInvalid(root, "schema_version");
     if (!schemaNode.readable()) {

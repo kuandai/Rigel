@@ -408,6 +408,88 @@ TEST_CASE(UserPreferences_unsafe_documents_preserve_bytes_and_block_normal_save)
     CHECK_EQ(replaceStore.load().requested, replacement);
 }
 
+TEST_CASE(UserPreferences_duplicate_mapping_keys_require_explicit_replacement) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_user_preferences_duplicates");
+    struct DuplicateCase {
+        std::string name;
+        std::string document;
+        std::string path;
+    };
+    const std::vector<DuplicateCase> cases{
+        {
+            "schema-version",
+            "schema_version: 1\n"
+            "schema_version: 2\n"
+            "future_root: preserved\n",
+            "schema_version"
+        },
+        {
+            "known-scalar",
+            "schema_version: 1\n"
+            "graphics:\n"
+            "  view_distance_chunks: 8\n"
+            "  view_distance_chunks: invalid\n",
+            "graphics.view_distance_chunks"
+        },
+        {
+            "known-section-with-unknown-field",
+            "schema_version: 1\n"
+            "graphics:\n"
+            "  view_distance_chunks: 8\n"
+            "graphics:\n"
+            "  future_quality: ultra\n"
+            "  shadows: false\n",
+            "graphics"
+        },
+        {
+            "binding-action",
+            "schema_version: 1\n"
+            "input:\n"
+            "  bindings:\n"
+            "    move_forward: [W]\n"
+            "    move_forward: [invalid-token]\n",
+            "input.bindings.move_forward"
+        }
+    };
+
+    for (const DuplicateCase& duplicateCase : cases) {
+        const auto path = directory.path() / duplicateCase.name /
+            "user-preferences.yaml";
+        writeDocument(path, duplicateCase.document);
+        UserPreferencesStore store(path);
+        {
+            Rigel::Test::LogCapture logs(
+                "user-preferences-duplicate-" + duplicateCase.name);
+            CHECK_EQ(store.load(), UserPreferencesState{});
+            CHECK_EQ(
+                logs.output(),
+                "User preferences file '" + path.string() +
+                    "' cannot be loaded: duplicate mapping key at '" +
+                    duplicateCase.path +
+                    "'; using shipped defaults and preserving the file\n");
+        }
+
+        bool normalSaveBlocked = false;
+        try {
+            store.saveRequested(UserPreferences{});
+        } catch (const UserPreferencesWriteBlocked&) {
+            normalSaveBlocked = true;
+        }
+        CHECK(normalSaveBlocked);
+        CHECK_EQ(readDocument(path), duplicateCase.document);
+        CHECK(stagingFiles(path).empty());
+
+        UserPreferences replacement;
+        replacement.graphics.viewDistanceChunks = 6;
+        store.replaceWithRequested(replacement);
+        CHECK_EQ(store.load().requested, replacement);
+        replacement.graphics.viewDistanceChunks = 7;
+        CHECK_NO_THROW(store.saveRequested(replacement));
+        CHECK_EQ(store.load().requested, replacement);
+    }
+}
+
 TEST_CASE(UserPreferences_invalid_candidates_do_not_touch_or_wait_for_storage) {
     Rigel::Test::TemporaryDirectory directory(
         "rigel_user_preferences_invalid_candidate");

@@ -2301,10 +2301,11 @@ StreamingDiagnosticSnapshot ChunkStreamer::collectDiagnostics() {
         advanceFailureVersion(m_chunkLoadFailureVersion);
     }
     snapshot.chunkLoad.failureVersion = m_chunkLoadFailureVersion;
+    snapshot.cacheEvictionPending = m_cache.evictionPending();
     snapshot.eviction = StreamingWorkCount{
         .pending = m_evictionRetryAfter.size() +
             m_versionReplacementWaiting.size() +
-            (m_cache.evictionPending() ? 1 : 0),
+            (snapshot.cacheEvictionPending ? 1 : 0),
         .terminalErrors = m_evictionErrors.size(),
         .lastError = diagnosticForLowestCoordinate(m_evictionErrors),
         .failureVersion = m_evictionFailureVersion

@@ -81,6 +81,10 @@ GlfwRuntime::GlfwRuntime()
           &glfwGetError,
           &glfwSetWindowSizeCallback,
           &glfwSetFramebufferSizeCallback,
+          &glfwGetTime,
+          &glfwWindowShouldClose,
+          &glfwPollEvents,
+          &glfwSwapBuffers,
       }) {
 }
 
@@ -90,6 +94,26 @@ GlfwRuntime::GlfwRuntime(Api api)
 
 GlfwRuntime::~GlfwRuntime() {
     shutdown();
+}
+
+double GlfwRuntime::time() const {
+    return m_api.getTime ? m_api.getTime() : 0.0;
+}
+
+bool GlfwRuntime::windowShouldClose(GLFWwindow* window) const {
+    return !m_api.windowShouldClose || m_api.windowShouldClose(window) != 0;
+}
+
+void GlfwRuntime::pollEvents() const {
+    if (m_api.pollEvents) {
+        m_api.pollEvents();
+    }
+}
+
+void GlfwRuntime::swapBuffers(GLFWwindow* window) const {
+    if (m_api.swapBuffers) {
+        m_api.swapBuffers(window);
+    }
 }
 
 bool GlfwRuntime::initialize() {

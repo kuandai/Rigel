@@ -2,6 +2,7 @@
 #include "Rigel/Preferences/UserPreferences.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace Rigel {
@@ -61,6 +62,8 @@ private:
     Application(std::unique_ptr<Impl> impl, Initialization initialization);
 
     void initialize();
+    std::optional<PreferenceApplyResult>
+    consumePendingViewDistanceAtFrameBoundary();
 
     friend class ApplicationTestAccess;
     std::unique_ptr<Impl> m_impl;

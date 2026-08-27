@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "ApplicationPreferences.h"
+#include "ApplicationTestAccess.h"
 #include "FrameRendererTestAccess.h"
 #include "GeneratorDefinitionTestRegistry.h"
 #include "Rigel/Asset/AssetManager.h"
@@ -34,6 +35,17 @@ void setUserPreferencesAfterPublicationHookForTesting(
     std::function<void()> hook);
 
 } // namespace Rigel::Preferences::detail
+
+template<typename T>
+concept PubliclyConsumesViewDistance = requires(
+    T& value,
+    Rigel::Voxel::WorldView& view
+) {
+    value.consumePendingViewDistance(view);
+};
+
+static_assert(
+    !PubliclyConsumesViewDistance<Rigel::ApplicationPreferences>);
 
 namespace {
 
@@ -516,7 +528,8 @@ TEST_CASE(ApplicationPreferences_ViewDistanceValidatesBeforeSessionAndSave) {
     CHECK_EQ(readDocument(fixture.path), before);
 
     const auto applied =
-        preferences.consumePendingViewDistance(fixture.view);
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, fixture.view);
 
     CHECK(applied.has_value());
     CHECK_EQ(applied->status, Rigel::PreferenceApplyStatus::Applied);
@@ -545,7 +558,8 @@ TEST_CASE(ApplicationPreferences_ViewDistancePublicationOutcomesMatchSession) {
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
     const auto notPublished =
-        preferences.consumePendingViewDistance(fixture.view);
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, fixture.view);
 
     CHECK(notPublished.has_value());
     CHECK_EQ(
@@ -573,7 +587,8 @@ TEST_CASE(ApplicationPreferences_ViewDistancePublicationOutcomesMatchSession) {
         preferences.requestViewDistance(10).status,
         Rigel::PreferenceApplyStatus::Applied);
     const auto uncertain =
-        preferences.consumePendingViewDistance(fixture.view);
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, fixture.view);
 
     CHECK(uncertain.has_value());
     CHECK_EQ(
@@ -632,7 +647,8 @@ TEST_CASE(ApplicationPreferences_UnpublishedActiveViewDistanceRestoresPlannerSta
         Rigel::PreferenceApplyStatus::Applied);
 
     const auto result =
-        preferences.consumePendingViewDistance(fixture.view);
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, fixture.view);
 
     CHECK(result.has_value());
     CHECK_EQ(result->status, Rigel::PreferenceApplyStatus::NotPublished);
@@ -674,7 +690,8 @@ TEST_CASE(ApplicationPreferences_ViewDistancePreparationFailureDoesNotMutateSess
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 12);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 12);
     const auto result =
-        preferences.consumePendingViewDistance(fixture.view);
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, fixture.view);
 
     CHECK(result.has_value());
     CHECK_EQ(
@@ -705,7 +722,8 @@ TEST_CASE(ApplicationPreferences_ViewDistanceEditsSupersedeBeforeBoundary) {
     CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
 
     const auto applied =
-        preferences.consumePendingViewDistance(fixture.view);
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, fixture.view);
 
     CHECK(applied.has_value());
     CHECK_EQ(applied->status, Rigel::PreferenceApplyStatus::Applied);
@@ -721,7 +739,9 @@ TEST_CASE(ApplicationPreferences_ViewDistanceEditsSupersedeBeforeBoundary) {
     const std::string persisted = readDocument(fixture.path);
     CHECK_EQ(persisted.find("unload"), std::string::npos);
     CHECK_EQ(persisted.find("prefetch"), std::string::npos);
-    CHECK(!preferences.consumePendingViewDistance(fixture.view).has_value());
+    CHECK(!Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+               preferences, fixture.view)
+               .has_value());
 }
 
 TEST_CASE(ApplicationPreferences_StartupConsumesRequestWithoutWriting) {

@@ -2,6 +2,7 @@
 #include "ThreadPoolTestAccess.h"
 
 #include "ApplicationPreferences.h"
+#include "ApplicationTestAccess.h"
 
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
@@ -33,6 +34,13 @@
 
 using namespace Rigel::Voxel;
 using namespace Rigel::Persistence;
+
+namespace Rigel::Preferences::detail {
+
+void setUserPreferencesBeforePublicationHookForTesting(
+    std::function<void()> hook);
+
+} // namespace Rigel::Preferences::detail
 
 template<typename T>
 concept PubliclyAppliesViewDistance = requires(T& value) {
@@ -284,6 +292,26 @@ struct AsyncChunkLoaderTestAccess {
 }
 
 namespace {
+
+void failPreferencePublication() {
+    throw Rigel::Persistence::AtomicFilePublicationError(
+        Rigel::Persistence::AtomicFilePublicationState::NotPublished,
+        "injected preference publication failure");
+}
+
+class ScopedPreferencePublicationFailure {
+public:
+    ScopedPreferencePublicationFailure() {
+        Rigel::Preferences::detail::
+            setUserPreferencesBeforePublicationHookForTesting(
+                &failPreferencePublication);
+    }
+
+    ~ScopedPreferencePublicationFailure() {
+        Rigel::Preferences::detail::
+            setUserPreferencesBeforePublicationHookForTesting({});
+    }
+};
 ChunkLoadRequest makeLoadRequest(ChunkCoord coord) {
     static ChunkLoadRequestId nextRequestId = 1;
     return {coord, nextRequestId++};
@@ -1174,7 +1202,8 @@ TEST_CASE(AsyncChunkLoader_ViewPolicyDrivesStartupAndLivePrefetchAdmissions) {
         preferences.requestViewDistance(16).status,
         Rigel::PreferenceApplyStatus::Applied);
     const auto liveResult =
-        preferences.consumePendingViewDistance(view, &loader);
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, view, &loader);
     CHECK(liveResult.has_value());
     CHECK_EQ(liveResult->status, Rigel::PreferenceApplyStatus::Applied);
     const auto livePolicy =
@@ -1192,6 +1221,136 @@ TEST_CASE(AsyncChunkLoader_ViewPolicyDrivesStartupAndLivePrefetchAdmissions) {
         live.speculativeOrigin.logicalAdmissions,
         policy->preloadRegionsPerRequest() +
             livePolicy->preloadRegionsPerRequest());
+}
+
+TEST_CASE(AsyncChunkLoader_ViewPolicyPublicationFailureRestoresEveryConsumer) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+    MemoryContext context;
+    AsyncChunkLoader loader(
+        context.service,
+        context.context,
+        world,
+        generator->semanticsVersion(),
+        0,
+        0,
+        generator);
+    WorldView view(world, resources);
+    StreamingConfig streaming;
+    streaming.workerThreads = 0;
+    view.setStreamConfig(streaming);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_loader_view_policy_publication_failure");
+    const auto preferencePath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 2;
+    Rigel::Preferences::UserPreferencesStore(preferencePath)
+        .saveRequested(requested);
+    Rigel::ApplicationPreferences preferences(preferencePath);
+    preferences.load();
+    preferences.initializeViewDistance(view, &loader);
+
+    const auto previousPolicy = view.viewDistancePolicy();
+    const auto previousLoaderPolicy =
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            viewDistancePolicy(loader);
+    const auto previousDiagnostics = view.streamingDiagnostics();
+    CHECK_EQ(previousLoaderPolicy, previousPolicy);
+    CHECK_EQ(
+        preferences.requestViewDistance(16).status,
+        Rigel::PreferenceApplyStatus::Applied);
+
+    std::optional<Rigel::PreferenceApplyResult> result;
+    {
+        ScopedPreferencePublicationFailure failure;
+        result =
+            Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+                preferences, view, &loader);
+    }
+
+    CHECK(result.has_value());
+    CHECK_EQ(result->status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(preferences.requested().graphics.viewDistanceChunks, 2);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 2);
+    CHECK_EQ(view.viewDistanceChunks(), 2);
+    CHECK_EQ(view.viewDistancePolicy(), previousPolicy);
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            viewDistancePolicy(loader),
+        previousLoaderPolicy);
+    CHECK_EQ(view.viewDistancePolicy()->generation(), static_cast<uint64_t>(1));
+    CHECK_NEAR(
+        view.renderConfig().renderDistance,
+        previousPolicy->renderDistanceWorldUnits(),
+        0.0001f);
+    CHECK_EQ(
+        view.streamingDiagnostics().plannerReconciliationPending,
+        previousDiagnostics.plannerReconciliationPending);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(preferencePath)
+            .load()
+            .graphics.viewDistanceChunks,
+        2);
+}
+
+TEST_CASE(AsyncChunkLoader_ViewPolicyRejectsUninitializedLateConsumer) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+    MemoryContext context;
+    AsyncChunkLoader loader(
+        context.service,
+        context.context,
+        world,
+        generator->semanticsVersion(),
+        0,
+        0,
+        generator);
+    WorldView view(world, resources);
+    StreamingConfig streaming;
+    streaming.workerThreads = 0;
+    view.setStreamConfig(streaming);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_loader_view_policy_late_consumer");
+    const auto preferencePath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 2;
+    Rigel::Preferences::UserPreferencesStore(preferencePath)
+        .saveRequested(requested);
+    Rigel::ApplicationPreferences preferences(preferencePath);
+    preferences.load();
+    preferences.initializeViewDistance(view);
+    const auto previousPolicy = view.viewDistancePolicy();
+
+    CHECK_EQ(
+        preferences.requestViewDistance(16).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const auto result =
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, view, &loader);
+
+    CHECK(result.has_value());
+    CHECK_EQ(result->status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_EQ(preferences.requested().graphics.viewDistanceChunks, 2);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 2);
+    CHECK_EQ(view.viewDistanceChunks(), 2);
+    CHECK_EQ(view.viewDistancePolicy(), previousPolicy);
+    CHECK_EQ(view.viewDistancePolicy()->generation(), static_cast<uint64_t>(1));
+    CHECK(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            viewDistancePolicy(loader) == nullptr);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(preferencePath)
+            .load()
+            .graphics.viewDistanceChunks,
+        2);
 }
 
 TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {

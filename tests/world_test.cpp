@@ -2,18 +2,26 @@
 #include "OpenGLFixture.h"
 #include "WorldGenerationTestFixture.h"
 
+#include "ApplicationPreferences.h"
+#include "ApplicationTestAccess.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
+#include "Rigel/Preferences/UserPreferences.h"
+#include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/WorldView.h"
 
+#include <array>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 using namespace Rigel::Voxel;
 
@@ -333,6 +341,138 @@ TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
     CHECK_EQ(states.front().coord, coord);
     CHECK_EQ(states.front().state,
              ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
+}
+
+TEST_CASE(WorldView_ViewPolicyDrivesFrameProjectionAndShadowCeiling) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    WorldResources resources;
+    resources.initialize(assets);
+    World world(resources);
+    WorldView view(world, resources);
+    view.initialize(assets);
+
+    const auto solidId =
+        resources.registry().findByIdentifier("base:stone_shale");
+    CHECK(solidId.has_value());
+    GeneratorDefinitionData generation =
+        testDefinition("base:stone_shale", "base:stone_shale");
+    auto generator = Rigel::Test::makeWorldGeneratorFixture(
+        resources.registry(), generation, 1u);
+    world.setGenerator(generator);
+    view.setGenerator(generator);
+
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 0;
+    streaming.unloadDistanceChunks = 0;
+    streaming.genQueueLimit = 0;
+    streaming.meshQueueLimit = 0;
+    streaming.updateBudgetPerFrame = 0;
+    streaming.applyBudgetPerFrame = 0;
+    streaming.workerThreads = 0;
+    streaming.maxResidentChunks = 0;
+    view.setStreamConfig(streaming);
+
+    const ChunkCoord coord{0, 0, 0};
+    Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
+    chunk.setBlock(
+        0, 0, 0, BlockState{*solidId}, resources.registry());
+    chunk.setWorldGenVersion(generator->semanticsVersion());
+    chunk.setLoadedFromDisk(true);
+    view.updateStreaming(coord.toWorldCenter());
+    view.updateMeshes();
+    CHECK(view.meshStore().contains(coord));
+
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_world_view_policy_render");
+    const auto preferencePath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 7;
+    Rigel::Preferences::UserPreferencesStore(preferencePath)
+        .saveRequested(requested);
+    Rigel::ApplicationPreferences preferences(preferencePath);
+    preferences.load();
+    preferences.initializeViewDistance(view);
+    const auto startupPolicy = view.viewDistancePolicy();
+    CHECK_EQ(
+        preferences.requestViewDistance(2).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const auto applied =
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, view);
+    CHECK(applied.has_value());
+    CHECK_EQ(applied->status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_NE(view.viewDistancePolicy(), startupPolicy);
+    CHECK_EQ(view.viewDistancePolicy()->generation(), static_cast<uint64_t>(2));
+
+    WorldRenderConfig renderConfig = view.renderConfig();
+    renderConfig.shadow.enabled = true;
+    renderConfig.shadow.cascades = 1;
+    renderConfig.shadow.mapSize = 16;
+    renderConfig.shadow.maxDistance = 10000.0f;
+    view.setRenderConfig(renderConfig);
+
+    constexpr float verticalFovDegrees = 60.0f;
+    constexpr float nearPlane = 0.1f;
+    const glm::vec3 cameraPosition(8.0f, 8.0f, 24.0f);
+    const glm::vec3 cameraTarget(8.0f, 8.0f, 8.0f);
+    Rigel::Render::FrameRenderer renderer;
+    renderer.setVerticalFovDegrees(verticalFovDegrees);
+    renderer.render({
+        world,
+        view,
+        cameraPosition,
+        cameraTarget,
+        glm::normalize(cameraTarget - cameraPosition),
+        64,
+        64,
+        0.0f,
+    });
+
+    const auto shader =
+        assets.get<Rigel::Asset::ShaderAsset>("shaders/voxel");
+    const GLint projectionLocation = shader->uniform("u_viewProjection");
+    CHECK(projectionLocation >= 0);
+    std::array<float, 16> actualViewProjection{};
+    glGetUniformfv(
+        shader->program,
+        projectionLocation,
+        actualViewProjection.data());
+    const glm::mat4 expectedViewProjection =
+        glm::perspective(
+            glm::radians(verticalFovDegrees),
+            1.0f,
+            nearPlane,
+            view.viewDistancePolicy()->projectionFarPlaneWorldUnits()) *
+        glm::lookAt(
+            cameraPosition,
+            cameraTarget,
+            glm::vec3(0.0f, 1.0f, 0.0f));
+    const float* expected = glm::value_ptr(expectedViewProjection);
+    for (size_t index = 0; index < actualViewProjection.size(); ++index) {
+        CHECK_NEAR(actualViewProjection[index], expected[index], 0.0001f);
+    }
+
+    const GLint cascadeCountLocation =
+        shader->uniform("u_shadowCascadeCount");
+    GLint cascadeCount = 0;
+    glGetUniformiv(shader->program, cascadeCountLocation, &cascadeCount);
+    CHECK_EQ(cascadeCount, 1);
+    const GLint shadowFadeLocation = shader->uniform("u_shadowFadeStart");
+    GLfloat shadowFadeStart = 0.0f;
+    glGetUniformfv(shader->program, shadowFadeLocation, &shadowFadeStart);
+    CHECK_NEAR(
+        shadowFadeStart,
+        view.viewDistancePolicy()->shadowDistanceCeilingWorldUnits(),
+        0.0001f);
+
+    view.releaseRenderResources();
+    resources.releaseRenderResources();
+    assets.clearCache();
 }
 
 TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {

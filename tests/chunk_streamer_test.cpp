@@ -693,6 +693,17 @@ TEST_CASE(ChunkStreamer_ViewPolicyShrinkBoundsAggregateRetainedStateWork) {
     CHECK_EQ(persistenceAttempts, static_cast<size_t>(retainedStateCount));
     CHECK_EQ(manager.loadedChunkCount(),
              static_cast<size_t>(retainedStateCount));
+    CHECK(!streamer.diagnostics().cacheEvictionPending);
+
+    for (uint32_t stationary = 0;
+         stationary <= StreamingDiagnosticSnapshot::QuiescenceUpdateWindow;
+         ++stationary) {
+        streamer.update(glm::vec3(0.0f));
+        CHECK_EQ(
+            streamer.workMetrics().lastUpdateCacheEvictionCoordinatesInspected,
+            static_cast<uint64_t>(0));
+        CHECK(!streamer.diagnostics().cacheEvictionPending);
+    }
 }
 
 TEST_CASE(ChunkStreamer_RepeatedViewPoliciesKeepOnlyTheLatestTransition) {

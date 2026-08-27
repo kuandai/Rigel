@@ -91,6 +91,87 @@ std::pair<int, int> requireFramebufferSize(const GlfwRuntime& runtime) {
     return *size;
 }
 
+struct ViewDistanceBoundaryObserved final {};
+
+struct ViewDistanceBoundaryProbe {
+    Application* application = nullptr;
+    Voxel::WorldView* view = nullptr;
+    ApplicationViewDistanceState* observed = nullptr;
+    std::filesystem::path preferencesPath;
+    int candidateChunks = 0;
+};
+
+ViewDistanceBoundaryProbe* g_viewDistanceBoundaryProbe = nullptr;
+
+double viewDistanceBoundaryTime() {
+    return 0.0;
+}
+
+int viewDistanceBoundaryWindowShouldClose(GLFWwindow*) {
+    return GLFW_FALSE;
+}
+
+void viewDistanceBoundaryPollEvents() {
+    auto& probe = *g_viewDistanceBoundaryProbe;
+    auto& application = *probe.application;
+    auto& view = *probe.view;
+    auto& observed = *probe.observed;
+
+    observed.requestResult =
+        application.applyViewDistance(probe.candidateChunks);
+    observed.beforeRequestedChunks =
+        application.requestedPreferences().graphics.viewDistanceChunks;
+    observed.beforePersistedChunks =
+        Preferences::UserPreferencesStore(probe.preferencesPath)
+            .load()
+            .graphics.viewDistanceChunks;
+    observed.beforeEffectiveChunks = application.effectiveViewDistanceChunks();
+    observed.beforeStreamedChunks = view.viewDistanceChunks();
+    observed.beforeRenderDistance = view.renderConfig().renderDistance;
+    if (view.viewDistancePolicy()) {
+        observed.beforePolicyGeneration =
+            view.viewDistancePolicy()->generation();
+    }
+}
+
+void viewDistanceBoundarySwapBuffers(GLFWwindow*) {
+}
+
+void observeViewDistanceBoundary(
+    Application& application,
+    const std::optional<PreferenceApplyResult>& result
+) {
+    auto& probe = *g_viewDistanceBoundaryProbe;
+    auto& view = *probe.view;
+    auto& observed = *probe.observed;
+
+    observed.result = result.value_or(observed.requestResult);
+    observed.requestedChunks =
+        application.requestedPreferences().graphics.viewDistanceChunks;
+    observed.effectiveChunks = application.effectiveViewDistanceChunks();
+    observed.streamedChunks = view.viewDistanceChunks();
+    observed.renderDistance = view.renderConfig().renderDistance;
+    observed.projectionFarPlane = view.projectionFarPlaneWorldUnits();
+    if (view.viewDistancePolicy()) {
+        observed.unloadChunks =
+            view.viewDistancePolicy()->unloadRadiusChunks();
+        observed.preloadRadiusRegions =
+            view.viewDistancePolicy()->preloadRadiusRegions();
+        observed.shadowDistanceCeiling =
+            view.viewDistancePolicy()->shadowDistanceCeilingWorldUnits();
+        observed.policyGeneration =
+            view.viewDistancePolicy()->generation();
+    }
+    const auto& work = view.streamingMetrics();
+    observed.worldWorkCoordinatesInspected =
+        work.lastUpdateDesiredBuildCoordinatesInspected +
+        work.lastUpdateSchedulerCoordinatesInspected +
+        work.lastUpdateCacheEvictionCoordinatesInspected +
+        work.lastUpdateResidentEvictionCoordinatesInspected +
+        work.lastUpdateDeferredEvictionCoordinatesInspected;
+    throw ViewDistanceBoundaryObserved{};
+}
+
 } // namespace
 
 struct Application::Impl {
@@ -148,7 +229,9 @@ struct Application::Impl {
     void persistWorld();
     void persistPendingResizeForClose();
     void persistPendingResizeForCleanup() noexcept;
-    std::optional<PreferenceApplyResult> consumePendingViewDistance();
+    void (*afterViewDistanceFrameBoundary)(
+        Application&,
+        const std::optional<PreferenceApplyResult>&) = nullptr;
     void close();
     void closeNoThrow() noexcept;
     void shutdown() noexcept;
@@ -587,17 +670,17 @@ void Application::Impl::persistPendingResizeForCleanup() noexcept {
 }
 
 std::optional<PreferenceApplyResult>
-Application::Impl::consumePendingViewDistance() {
-    if (!preferences) {
+Application::consumePendingViewDistanceAtFrameBoundary() {
+    if (!m_impl || !m_impl->preferences) {
         return std::nullopt;
     }
-    if (!world.ready || !world.worldView) {
-        preferences->discardPendingViewDistance();
+    if (!m_impl->world.ready || !m_impl->world.worldView) {
+        m_impl->preferences->discardPendingViewDistance();
         return std::nullopt;
     }
-    return preferences->consumePendingViewDistance(
-        *world.worldView,
-        world.chunkLoader.get());
+    return m_impl->preferences->consumePendingViewDistance(
+        *m_impl->world.worldView,
+        m_impl->world.chunkLoader.get());
 }
 
 void Application::Impl::close() {
@@ -814,50 +897,61 @@ ApplicationTestAccess::applyViewDistanceAtFrameBoundary(
     streaming.workerThreads = 0;
     view.setStreamConfig(streaming);
 
-    auto impl = std::make_unique<Application::Impl>();
+    GlfwRuntime::Api runtimeApi{};
+    runtimeApi.getTime = &viewDistanceBoundaryTime;
+    runtimeApi.windowShouldClose =
+        &viewDistanceBoundaryWindowShouldClose;
+    runtimeApi.pollEvents = &viewDistanceBoundaryPollEvents;
+    runtimeApi.swapBuffers = &viewDistanceBoundarySwapBuffers;
+    ApplicationConstructionHooks construction;
+    construction.runtimeApi = runtimeApi;
+    auto impl = std::make_unique<Application::Impl>(construction);
+    const auto persistedPreferencesPath = userPreferencesPath;
     impl->preferences = std::make_unique<ApplicationPreferences>(
         std::move(userPreferencesPath));
     impl->preferences->load();
     impl->preferences->initializeViewDistance(view);
+    impl->window.window = reinterpret_cast<GLFWwindow*>(0x1);
+    impl->world.world = &world;
     impl->world.worldView = &view;
     impl->world.ready = activeSession;
+    impl->afterViewDistanceFrameBoundary = &observeViewDistanceBoundary;
     Application::Impl* state = impl.get();
 
     Application application(
         std::move(impl), Application::Initialization::Skip);
     ApplicationViewDistanceState observed;
-    observed.requestResult = application.applyViewDistance(candidateChunks);
-    observed.beforeRequestedChunks =
-        application.requestedPreferences().graphics.viewDistanceChunks;
-    observed.beforeEffectiveChunks = application.effectiveViewDistanceChunks();
-    observed.beforeStreamedChunks = view.viewDistanceChunks();
-    observed.beforeRenderDistance = view.renderConfig().renderDistance;
-    if (view.viewDistancePolicy()) {
-        observed.beforePolicyGeneration =
-            view.viewDistancePolicy()->generation();
-    }
-    const auto boundaryResult = state->consumePendingViewDistance();
-    observed.result = boundaryResult.value_or(observed.requestResult);
-    observed.requestedChunks =
-        application.requestedPreferences().graphics.viewDistanceChunks;
-    observed.effectiveChunks = application.effectiveViewDistanceChunks();
-    observed.streamedChunks = view.viewDistanceChunks();
-    observed.renderDistance = view.renderConfig().renderDistance;
-    observed.projectionFarPlane = view.projectionFarPlaneWorldUnits();
-    if (view.viewDistancePolicy()) {
-        observed.unloadChunks =
-            view.viewDistancePolicy()->unloadRadiusChunks();
-        observed.preloadRadiusRegions =
-            view.viewDistancePolicy()->preloadRadiusRegions();
-        observed.shadowDistanceCeiling =
-            view.viewDistancePolicy()->shadowDistanceCeilingWorldUnits();
-        observed.policyGeneration =
-            view.viewDistancePolicy()->generation();
+    ViewDistanceBoundaryProbe probe{
+        &application,
+        &view,
+        &observed,
+        persistedPreferencesPath,
+        candidateChunks,
+    };
+    g_viewDistanceBoundaryProbe = &probe;
+    try {
+        application.run();
+    } catch (const ViewDistanceBoundaryObserved&) {
+        g_viewDistanceBoundaryProbe = nullptr;
+    } catch (...) {
+        g_viewDistanceBoundaryProbe = nullptr;
+        throw;
     }
 
     state->world.ready = false;
     state->world.worldView = nullptr;
+    state->world.world = nullptr;
+    state->window.window = nullptr;
     return observed;
+}
+
+std::optional<PreferenceApplyResult>
+ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+    ApplicationPreferences& preferences,
+    Voxel::WorldView& view,
+    Persistence::AsyncChunkLoader* loader
+) {
+    return preferences.consumePendingViewDistance(view, loader);
 }
 
 bool ApplicationTestAccess::initializeOptionalUserInterface(
@@ -888,19 +982,19 @@ int runApplication() noexcept {
 }
 
 void Application::run() {
-    m_impl->timing.lastTime = glfwGetTime();
+    m_impl->timing.lastTime = m_impl->runtime.time();
     if (m_impl->timing.benchmarkEnabled) {
         m_impl->timing.benchmarkStartTime = m_impl->timing.lastTime;
     }
 
     // Render loop
-    while (!glfwWindowShouldClose(m_impl->window.window)) {
-        double now = glfwGetTime();
+    while (!m_impl->runtime.windowShouldClose(m_impl->window.window)) {
+        double now = m_impl->runtime.time();
         float deltaTime = static_cast<float>(now - m_impl->timing.lastTime);
         m_impl->timing.lastTime = now;
 
         // Flush event queue
-        glfwPollEvents();
+        m_impl->runtime.pollEvents();
         if (auto resizeObservation =
                 m_impl->preferences->consumeLogicalResize(
                     m_impl->runtime,
@@ -933,8 +1027,12 @@ void Application::run() {
         }
         // Runtime preference swaps occur only here, after events have been
         // collected for this application frame and before world work begins.
-        if (auto viewDistanceResult =
-                m_impl->consumePendingViewDistance()) {
+        const auto viewDistanceResult =
+            consumePendingViewDistanceAtFrameBoundary();
+        if (m_impl->afterViewDistanceFrameBoundary) {
+            m_impl->afterViewDistanceFrameBoundary(*this, viewDistanceResult);
+        }
+        if (viewDistanceResult) {
             if (viewDistanceResult->status ==
                 PreferenceApplyStatus::NotPublished) {
                 spdlog::error(
@@ -964,7 +1062,7 @@ void Application::run() {
             }
         }
         if (m_impl->window.pendingTimeReset) {
-            m_impl->timing.lastTime = glfwGetTime();
+            m_impl->timing.lastTime = m_impl->runtime.time();
             deltaTime = 0.0f;
             m_impl->window.pendingTimeReset = false;
             m_impl->preferences->resetFramePacingSchedule();
@@ -1165,13 +1263,13 @@ void Application::run() {
         Core::Profiler::endFrame();
 
         UI::endFrame();
-        glfwSwapBuffers(m_impl->window.window);
+        m_impl->runtime.swapBuffers(m_impl->window.window);
         m_impl->preferences->waitForNextFrame();
 
     }
 
     if (m_impl->timing.benchmarkEnabled) {
-        double endTime = glfwGetTime();
+        double endTime = m_impl->runtime.time();
         double elapsed = endTime - m_impl->timing.benchmarkStartTime;
         const auto& stats = m_impl->timing.benchmark;
         double genRate = (elapsed > 0.0)

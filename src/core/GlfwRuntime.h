@@ -50,6 +50,10 @@ public:
             GLFWwindow*, WindowSizeCallback);
         WindowSizeCallback (*setFramebufferSizeCallback)(
             GLFWwindow*, WindowSizeCallback);
+        double (*getTime)() = nullptr;
+        int (*windowShouldClose)(GLFWwindow*) = nullptr;
+        void (*pollEvents)() = nullptr;
+        void (*swapBuffers)(GLFWwindow*) = nullptr;
     };
 
     GlfwRuntime();
@@ -82,6 +86,10 @@ public:
     }
     void setWindowSizeCallback(WindowSizeCallback callback) const;
     void setFramebufferSizeCallback(WindowSizeCallback callback) const;
+    double time() const;
+    bool windowShouldClose(GLFWwindow* window) const;
+    void pollEvents() const;
+    void swapBuffers(GLFWwindow* window) const;
     const std::string& lastError() const { return m_lastError; }
 
     void shutdown() noexcept;

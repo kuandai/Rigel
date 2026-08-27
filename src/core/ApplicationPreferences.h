@@ -64,10 +64,6 @@ public:
         Voxel::WorldView& view,
         Persistence::AsyncChunkLoader* loader = nullptr);
     PreferenceApplyResult requestViewDistance(int candidateChunks);
-    std::optional<PreferenceApplyResult> consumePendingViewDistance(
-        Voxel::WorldView& view,
-        Persistence::AsyncChunkLoader* loader = nullptr);
-    void discardPendingViewDistance() { m_pendingViewDistanceChunks.reset(); }
     void initializeInput(
         Input::InputState& input,
         const Input::InputBindings& playerDefaults);
@@ -127,6 +123,10 @@ private:
     void acceptLogicalResize(
         Preferences::WindowedSize observed,
         double observedAt);
+    std::optional<PreferenceApplyResult> consumePendingViewDistance(
+        Voxel::WorldView& view,
+        Persistence::AsyncChunkLoader* loader = nullptr);
+    void discardPendingViewDistance() { m_pendingViewDistanceChunks.reset(); }
 
     Preferences::UserPreferencesStore m_store;
     Preferences::UserPreferences m_requested;
@@ -149,6 +149,7 @@ private:
     unsigned int m_resizePublicationRetriesRemaining = 0;
     double m_nextResizePersistenceAttempt = 0.0;
 
+    friend class Application;
     friend class ApplicationTestAccess;
 };
 

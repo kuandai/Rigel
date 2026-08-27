@@ -2,6 +2,7 @@
 #include "OpenGLFixture.h"
 
 #include "ApplicationPreferences.h"
+#include "ApplicationTestAccess.h"
 #include "Rigel/Asset/ShaderCompiler.h"
 #include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Voxel/ChunkRenderer.h"
@@ -589,7 +590,9 @@ TEST_CASE(ChunkRenderer_ViewPolicyBoundaryShrinkCullsRetainedGeometryImmediately
     CHECK(renderer.hasDrawnMesh(
         store.storeId(), outsideReducedView, queuedButNotConsumed->revision));
 
-    const auto applied = preferences.consumePendingViewDistance(view);
+    const auto applied =
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, view);
     CHECK(applied.has_value());
     CHECK_EQ(applied->status, Rigel::PreferenceApplyStatus::Applied);
     store.set(outsideReducedView, makeMesh(3, 3));

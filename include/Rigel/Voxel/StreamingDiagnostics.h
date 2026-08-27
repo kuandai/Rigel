@@ -116,6 +116,7 @@ struct StreamingDiagnosticSnapshot {
     // drain, including the bounded inline executor path.
     size_t meshSubmissionLimit = 0;
     StreamingWorkCount eviction;
+    bool cacheEvictionPending = false;
     size_t retiredWorkPending = 0;
     uint32_t stableUpdates = 0;
 

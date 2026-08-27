@@ -10,8 +10,13 @@
 namespace Rigel {
 
 class Application;
+class ApplicationPreferences;
 namespace Persistence {
+class AsyncChunkLoader;
 class StorageBackend;
+}
+namespace Voxel {
+class WorldView;
 }
 
 enum class ApplicationShutdownStage {
@@ -43,6 +48,7 @@ struct ApplicationViewDistanceState {
     PreferenceApplyResult requestResult;
     PreferenceApplyResult result;
     int beforeRequestedChunks = 0;
+    int beforePersistedChunks = 0;
     int beforeEffectiveChunks = 0;
     int beforeStreamedChunks = 0;
     float beforeRenderDistance = 0.0f;
@@ -56,6 +62,7 @@ struct ApplicationViewDistanceState {
     int preloadRadiusRegions = 0;
     float shadowDistanceCeiling = 0.0f;
     uint64_t policyGeneration = 0;
+    uint64_t worldWorkCoordinatesInspected = 0;
 };
 
 class ApplicationTestAccess {
@@ -78,6 +85,11 @@ public:
         int initialChunks,
         int candidateChunks,
         bool activeSession);
+    static std::optional<PreferenceApplyResult>
+    consumeViewDistanceOwnerForTesting(
+        ApplicationPreferences& preferences,
+        Voxel::WorldView& view,
+        Persistence::AsyncChunkLoader* loader = nullptr);
     static bool initializeOptionalUserInterface(
         GLFWwindow* window,
         bool (*initialize)(GLFWwindow*)) noexcept;

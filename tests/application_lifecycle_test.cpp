@@ -511,7 +511,7 @@ TEST_CASE(Application_InvalidPreferencesRejectBeforeMutationOrPublication) {
     CHECK_EQ(calls.preferenceSavePreflights, static_cast<size_t>(0));
 }
 
-TEST_CASE(Application_ViewDistanceUsesTheActiveFrameBoundarySessionSeam) {
+TEST_CASE(Application_RunConsumesViewDistanceAtTheRealFrameBoundary) {
     Rigel::Test::TemporaryDirectory directory(
         "rigel_application_view_distance");
     const auto activePath =
@@ -525,6 +525,7 @@ TEST_CASE(Application_ViewDistanceUsesTheActiveFrameBoundarySessionSeam) {
         active.requestResult.status,
         Rigel::PreferenceApplyStatus::Applied);
     CHECK_EQ(active.beforeRequestedChunks, 7);
+    CHECK_EQ(active.beforePersistedChunks, 7);
     CHECK_EQ(active.beforeEffectiveChunks, 7);
     CHECK_EQ(active.beforeStreamedChunks, 7);
     CHECK_NEAR(
@@ -552,6 +553,7 @@ TEST_CASE(Application_ViewDistanceUsesTheActiveFrameBoundarySessionSeam) {
         active.renderDistance,
         0.0001f);
     CHECK_EQ(active.policyGeneration, static_cast<uint64_t>(2));
+    CHECK_EQ(active.worldWorkCoordinatesInspected, static_cast<uint64_t>(0));
     CHECK_EQ(
         Rigel::Preferences::UserPreferencesStore(activePath)
             .load()
@@ -571,6 +573,7 @@ TEST_CASE(Application_ViewDistanceUsesTheActiveFrameBoundarySessionSeam) {
     CHECK_EQ(inactive.requestedChunks, 7);
     CHECK_EQ(inactive.effectiveChunks, 7);
     CHECK_EQ(inactive.streamedChunks, 7);
+    CHECK_EQ(inactive.worldWorkCoordinatesInspected, static_cast<uint64_t>(0));
     CHECK_EQ(
         Rigel::Preferences::UserPreferencesStore(inactivePath)
             .load()
@@ -602,6 +605,7 @@ TEST_CASE(Application_ViewDistancePublicationFailureRestoresActiveSession) {
         observed.requestResult.status,
         Rigel::PreferenceApplyStatus::Applied);
     CHECK_EQ(observed.beforeRequestedChunks, 7);
+    CHECK_EQ(observed.beforePersistedChunks, 7);
     CHECK_EQ(observed.beforeEffectiveChunks, 7);
     CHECK_EQ(observed.beforeStreamedChunks, 7);
     CHECK_EQ(observed.requestedChunks, 7);
@@ -613,6 +617,9 @@ TEST_CASE(Application_ViewDistancePublicationFailureRestoresActiveSession) {
         0.0001f);
     CHECK_EQ(observed.unloadChunks, 8);
     CHECK_EQ(observed.policyGeneration, static_cast<uint64_t>(1));
+    CHECK_EQ(
+        observed.worldWorkCoordinatesInspected,
+        static_cast<uint64_t>(0));
     CHECK_EQ(
         Rigel::Preferences::UserPreferencesStore(path)
             .load()

@@ -536,6 +536,16 @@ ApplicationPreferences::consumePendingViewDistance(
     const int candidateChunks = *m_pendingViewDistanceChunks;
     m_pendingViewDistanceChunks.reset();
 
+    if (!m_effectiveViewDistancePolicy ||
+        view.viewDistancePolicy() != m_effectiveViewDistancePolicy ||
+        (loader &&
+         loader->m_viewDistancePolicy != m_effectiveViewDistancePolicy)) {
+        return std::optional<PreferenceApplyResult>{PreferenceApplyResult{
+            PreferenceApplyStatus::Rejected,
+            "active world View Distance consumers do not share the current "
+            "effective policy"}};
+    }
+
     std::shared_ptr<const Voxel::ViewDistancePolicy> candidatePolicy;
     try {
         candidatePolicy = Voxel::ViewDistancePolicy::derive(

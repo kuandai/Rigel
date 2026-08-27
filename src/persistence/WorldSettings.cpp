@@ -1241,29 +1241,6 @@ void detail::recoverAbandonedWorldGenerationStagingForTesting(
         storage, context, worldRoot, nullptr, nullptr);
 }
 
-void recoverWorldGenerationPublication(
-    PersistenceService& persistence,
-    const Voxel::BlockRegistry& registry,
-    const PersistenceContext& context) {
-    StorageBackend& storage = storageFor(context);
-    const std::filesystem::path worldRoot = worldRootPath(context);
-    // An existing invalid root must fail before the filesystem lock can create
-    // its durable sidecar in the save parent.
-    if (storage.entryKind(context.rootPath) != StorageEntryKind::Missing) {
-        static_cast<void>(validatePublicationIdentityAndFormat(
-            persistence, registry, context, worldRoot, {}, false));
-    }
-    auto bootstrapLock =
-        storage.lockWorldGenerationBootstrap(context.rootPath);
-    // Revalidate under the lock before recovery can remove owned staging.
-    if (storage.entryKind(context.rootPath) != StorageEntryKind::Missing) {
-        static_cast<void>(validatePublicationIdentityAndFormat(
-            persistence, registry, context, worldRoot, {}, false));
-    }
-    recoverAbandonedWorldGenerationStagingLocked(
-        storage, context, worldRoot, &persistence, &registry);
-}
-
 // Requires the per-world bootstrap lock and staging recovery performed by
 // bootstrapWorldGeneration.
 static std::string publishValidatedWorldGenerationLocked(

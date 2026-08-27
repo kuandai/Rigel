@@ -1754,11 +1754,6 @@ TEST_CASE(WorldSettings_handoff_precedes_child_marker_during_recovery) {
         creationForTest(savedSettings(), savedDefinition());
     unrelatedCreation.definition.data.terrain.solidMaterial =
         "base:missing-installed-block";
-    Persistence::recoverWorldGenerationPublication(
-        persistence, blocks, restartedContext);
-    CHECK_EQ(
-        Persistence::inspectSavedWorldGeneration(restartedContext),
-        Persistence::SavedWorldGenerationPresence::Published);
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
         Persistence::deferredCreationForTest(unrelatedCreation),
         persistence,
@@ -2006,8 +2001,6 @@ TEST_CASE(WorldSettings_recovery_rejects_unavailable_saved_blocks_before_publish
     Voxel::BlockRegistry blocks;
     registerSavedDefinitionBlocks(blocks);
 
-    CHECK_THROWS(Persistence::recoverWorldGenerationPublication(
-        persistence, blocks, restartedContext));
     CHECK_THROWS(Persistence::bootstrapWorldGeneration(
         Persistence::NewWorldGenerationFactory{},
         persistence,
@@ -2026,14 +2019,12 @@ TEST_CASE(WorldSettings_recovery_rejects_unavailable_saved_blocks_before_publish
         definition.biomes.entries.front().surface.front().material;
     const std::string restoredIdentifier = restoredBlock.identifier;
     blocks.registerBlock(restoredIdentifier, std::move(restoredBlock));
-    Persistence::recoverWorldGenerationPublication(
-        persistence, blocks, restartedContext);
-    CHECK_EQ(restartedStorage->publishAttempts, static_cast<size_t>(1));
     const auto bootstrapped = Persistence::bootstrapWorldGeneration(
         Persistence::NewWorldGenerationFactory{},
         persistence,
         blocks,
         restartedContext);
+    CHECK_EQ(restartedStorage->publishAttempts, static_cast<size_t>(1));
 
     CHECK_EQ(bootstrapped.generation.settings, savedSettings());
     CHECK_EQ(
@@ -3449,14 +3440,6 @@ TEST_CASE(WorldSettings_first_legacy_rejection_preserves_parent_tree) {
 
     CHECK_EQ(
         exceptionMessage([&] {
-            Persistence::recoverWorldGenerationPublication(
-                persistence, blocks, context);
-        }),
-        expected);
-    CHECK_EQ(snapshotSaveTree(directory.path()), before);
-
-    CHECK_EQ(
-        exceptionMessage([&] {
             static_cast<void>(Persistence::bootstrapWorldGeneration(
                 Persistence::deferredCreationForTest(currentDefault),
                 persistence,
@@ -3467,82 +3450,70 @@ TEST_CASE(WorldSettings_first_legacy_rejection_preserves_parent_tree) {
     CHECK_EQ(snapshotSaveTree(directory.path()), before);
 }
 
-TEST_CASE(WorldSettings_revalidates_existing_root_before_recovery_cleanup) {
-    for (const bool bootstrap : {false, true}) {
-        Test::TemporaryDirectory directory(
-            bootstrap
-                ? "rigel_world_bootstrap_revalidation"
-                : "rigel_world_recovery_revalidation");
-        const auto worldRoot = directory.path() / "world_14";
-        auto storage =
-            std::make_shared<CorruptingOnLockAcquisitionStorage>();
-        auto context = contextFor(worldRoot, storage);
-        context.preferredFormat = "memory";
+TEST_CASE(WorldSettings_bootstrap_revalidates_before_recovery_cleanup) {
+    Test::TemporaryDirectory directory("rigel_world_bootstrap_revalidation");
+    const auto worldRoot = directory.path() / "world_14";
+    auto storage =
+        std::make_shared<CorruptingOnLockAcquisitionStorage>();
+    auto context = contextFor(worldRoot, storage);
+    context.preferredFormat = "memory";
 
-        Persistence::FormatRegistry formats;
-        formats.registerFormat(
-            Persistence::Backends::Memory::descriptor(),
-            Persistence::Backends::Memory::factory(),
-            Persistence::Backends::Memory::probe());
-        Persistence::PersistenceService persistence(formats);
-        Voxel::BlockRegistry blocks;
-        registerSavedDefinitionBlocks(blocks);
-        writeText(
-            *storage,
-            worldRoot / "world-settings.yaml",
-            savedSettingsDocument());
-        writeText(
-            *storage,
-            worldRoot / "generator-definition.yaml",
-            Voxel::serializeGeneratorDefinitionSnapshot(savedDefinition()));
-        persistence.saveWorldMetadata(
-            Persistence::WorldMetadata{
-                worldRoot.filename().string(),
-                savedSettings().displayName},
-            context);
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+    writeText(
+        *storage,
+        worldRoot / "world-settings.yaml",
+        savedSettingsDocument());
+    writeText(
+        *storage,
+        worldRoot / "generator-definition.yaml",
+        Voxel::serializeGeneratorDefinitionSnapshot(savedDefinition()));
+    persistence.saveWorldMetadata(
+        Persistence::WorldMetadata{
+            worldRoot.filename().string(),
+            savedSettings().displayName},
+        context);
 
-        const std::filesystem::path stagedRoot =
-            std::filesystem::path(worldRoot.string() + ".staging.0");
-        writeText(
-            *storage,
-            stagedRoot / kStagingOwnershipFilename,
-            stagingOwnershipMarkerForTest(worldRoot, stagedRoot));
-        writeText(
-            *storage,
-            stagedRoot / "preserve.bin",
-            "recovery must not clean after failed revalidation");
-        storage->removeAttempts = 0;
-        storage->armed = true;
+    const std::filesystem::path stagedRoot =
+        std::filesystem::path(worldRoot.string() + ".staging.0");
+    writeText(
+        *storage,
+        stagedRoot / kStagingOwnershipFilename,
+        stagingOwnershipMarkerForTest(worldRoot, stagedRoot));
+    writeText(
+        *storage,
+        stagedRoot / "preserve.bin",
+        "recovery must not clean after failed revalidation");
+    storage->removeAttempts = 0;
+    storage->armed = true;
 
-        const auto operation = [&] {
-            if (bootstrap) {
-                const Persistence::NewWorldGeneration currentDefault =
-                    creationForTest(savedSettings(), savedDefinition());
-                static_cast<void>(Persistence::bootstrapWorldGeneration(
-                    Persistence::deferredCreationForTest(currentDefault),
-                    persistence,
-                    blocks,
-                    context));
-            } else {
-                Persistence::recoverWorldGenerationPublication(
-                    persistence, blocks, context);
-            }
-        };
-        CHECK_EQ(
-            exceptionMessage(operation),
-            rejectionDiagnostic(
-                worldRoot,
-                "world-settings.yaml is invalid: Saved world settings 'world' must be a mapping"));
-        CHECK(storage->corrupted);
-        CHECK_EQ(storage->removeAttempts, static_cast<size_t>(0));
-        CHECK_EQ(
-            readText(*storage, stagedRoot / "preserve.bin"),
-            std::string(
-                "recovery must not clean after failed revalidation"));
-        CHECK_EQ(
-            Persistence::inspectSavedWorldGeneration(context),
-            Persistence::SavedWorldGenerationPresence::LegacyOrIncomplete);
-    }
+    const Persistence::NewWorldGeneration currentDefault =
+        creationForTest(savedSettings(), savedDefinition());
+    CHECK_EQ(
+        exceptionMessage([&] {
+            static_cast<void>(Persistence::bootstrapWorldGeneration(
+                Persistence::deferredCreationForTest(currentDefault),
+                persistence,
+                blocks,
+                context));
+        }),
+        rejectionDiagnostic(
+            worldRoot,
+            "world-settings.yaml is invalid: Saved world settings 'world' must be a mapping"));
+    CHECK(storage->corrupted);
+    CHECK_EQ(storage->removeAttempts, static_cast<size_t>(0));
+    CHECK_EQ(
+        readText(*storage, stagedRoot / "preserve.bin"),
+        std::string("recovery must not clean after failed revalidation"));
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(context),
+        Persistence::SavedWorldGenerationPresence::LegacyOrIncomplete);
 }
 
 TEST_CASE(WorldSettings_rejects_incoherent_prepared_snapshot_before_write) {
@@ -3894,14 +3865,6 @@ TEST_CASE(WorldSettings_rejection_preserves_complete_save_parent_tree) {
                 snapshotSaveTree(directory.path());
             const std::string expected =
                 rejectionDiagnostic(worldRoot, scenario.problem);
-
-            CHECK_EQ(
-                exceptionMessage([&] {
-                    Persistence::recoverWorldGenerationPublication(
-                        persistence, blocks, context);
-                }),
-                expected);
-            CHECK_EQ(snapshotSaveTree(directory.path()), before);
 
             CHECK_EQ(
                 exceptionMessage([&] {

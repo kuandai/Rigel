@@ -65,15 +65,6 @@ enum class SavedWorldGenerationPresence {
 SavedWorldGenerationPresence inspectSavedWorldGeneration(
     const PersistenceContext& context);
 
-// Completes a durable publication handoff before creation inputs are resolved.
-// The saved snapshot is validated against the runtime block registry before
-// any handoff mutation. This never invents a missing backend identity or
-// consults installed generator-definition content.
-void recoverWorldGenerationPublication(
-    PersistenceService& persistence,
-    const Voxel::BlockRegistry& registry,
-    const PersistenceContext& context);
-
 // Opens a saved generation identity and its authoritative persistence format
 // under the per-world bootstrap lock. When the root is still missing, the
 // creation factory is invoked exactly once under that lock, then its result is

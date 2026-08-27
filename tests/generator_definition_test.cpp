@@ -234,6 +234,35 @@ Rigel::Voxel::PreparedGeneratorDefinitionSnapshot prepareSnapshot(
     return prepareGeneratorDefinitionSnapshot(definition, registry);
 }
 
+GeneratorDefinitionData parseSavedSnapshot(
+    const GeneratorDefinitionData& data,
+    std::string_view sourceName) {
+    return parseGeneratorDefinitionSnapshot(
+        Rigel::Voxel::serializeGeneratorDefinitionSnapshot(data),
+        Rigel::Voxel::kGeneratorDefinitionSchemaVersion,
+        sourceName);
+}
+
+void checkAuthorAndSavedSnapshotAccept(
+    const GeneratorDefinition& definition,
+    std::string_view sourceName) {
+    const auto prepared = prepareSnapshot(definition);
+    CHECK_EQ(
+        parseGeneratorDefinitionSnapshot(
+            prepared.canonicalSnapshot,
+            prepared.definitionSchemaVersion,
+            sourceName),
+        prepared.data);
+    CHECK_EQ(parseSavedSnapshot(definition.data, sourceName), prepared.data);
+}
+
+void checkAuthorAndSavedSnapshotReject(
+    const GeneratorDefinition& definition,
+    std::string_view sourceName) {
+    CHECK_THROWS(prepareSnapshot(definition));
+    CHECK_THROWS(parseSavedSnapshot(definition.data, sourceName));
+}
+
 uint64_t appendGoldenBytes(uint64_t hash, std::string_view value) {
     constexpr uint64_t Prime = 1099511628211ull;
     for (const unsigned char byte : value) {
@@ -343,6 +372,86 @@ TEST_CASE(GeneratorDefinition_rejects_invalid_ranges_and_dependencies) {
     CHECK(rejectsMutation(
         "  structures:\n    enabled: true\n    features:\n",
         "  structures:\n    enabled: false\n    features:\n"));
+}
+
+TEST_CASE(GeneratorDefinition_accepts_exact_engine_safety_boundaries) {
+    GeneratorDefinition minimumY = definitionWithoutUnusedNodes();
+    minimumY.data.bounds = {
+        GeneratorDefinitionData::MinWorldY,
+        GeneratorDefinitionData::MinWorldY + 1};
+    minimumY.data.terrain.seaLevel = GeneratorDefinitionData::MinWorldY;
+    checkAuthorAndSavedSnapshotAccept(minimumY, "minimum-y-snapshot.yaml");
+    CHECK_EQ(minimumY.data.bounds.minY, GeneratorDefinitionData::MinWorldY);
+
+    GeneratorDefinition maximumY = definitionWithoutUnusedNodes();
+    maximumY.data.bounds = {
+        GeneratorDefinitionData::MaxWorldY - 1,
+        GeneratorDefinitionData::MaxWorldY};
+    maximumY.data.terrain.seaLevel = GeneratorDefinitionData::MaxWorldY;
+    checkAuthorAndSavedSnapshotAccept(maximumY, "maximum-y-snapshot.yaml");
+    CHECK_EQ(maximumY.data.bounds.maxY, GeneratorDefinitionData::MaxWorldY);
+
+    GeneratorDefinition maximumHeight = definitionWithoutUnusedNodes();
+    maximumHeight.data.bounds = {
+        0,
+        GeneratorDefinitionData::MaxWorldHeight - 1};
+    checkAuthorAndSavedSnapshotAccept(
+        maximumHeight, "maximum-height-snapshot.yaml");
+    CHECK_EQ(
+        maximumHeight.data.bounds.maxY - maximumHeight.data.bounds.minY + 1,
+        GeneratorDefinitionData::MaxWorldHeight);
+
+    GeneratorDefinition maximumOctaves = definitionWithoutUnusedNodes();
+    auto& noise = maximumOctaves.data.climate.global.temperature;
+    noise.octaves = GeneratorDefinitionData::MaxNoiseOctaves;
+    noise.lacunarity = 1.0f;
+    checkAuthorAndSavedSnapshotAccept(
+        maximumOctaves, "maximum-octaves-snapshot.yaml");
+    CHECK_EQ(noise.octaves, GeneratorDefinitionData::MaxNoiseOctaves);
+}
+
+TEST_CASE(GeneratorDefinition_rejects_values_beyond_engine_safety_boundaries) {
+    GeneratorDefinition belowMinimumY = definitionWithoutUnusedNodes();
+    belowMinimumY.data.bounds = {
+        GeneratorDefinitionData::MinWorldY - 1,
+        GeneratorDefinitionData::MinWorldY};
+    belowMinimumY.data.terrain.seaLevel = GeneratorDefinitionData::MinWorldY;
+    checkAuthorAndSavedSnapshotReject(
+        belowMinimumY, "below-minimum-y-snapshot.yaml");
+
+    GeneratorDefinition aboveMaximumY = definitionWithoutUnusedNodes();
+    aboveMaximumY.data.bounds = {
+        GeneratorDefinitionData::MaxWorldY,
+        GeneratorDefinitionData::MaxWorldY + 1};
+    aboveMaximumY.data.terrain.seaLevel = GeneratorDefinitionData::MaxWorldY;
+    checkAuthorAndSavedSnapshotReject(
+        aboveMaximumY, "above-maximum-y-snapshot.yaml");
+
+    GeneratorDefinition excessiveHeight = definitionWithoutUnusedNodes();
+    excessiveHeight.data.bounds = {
+        0,
+        GeneratorDefinitionData::MaxWorldHeight};
+    checkAuthorAndSavedSnapshotReject(
+        excessiveHeight, "excessive-height-snapshot.yaml");
+    CHECK_EQ(
+        excessiveHeight.data.bounds.maxY - excessiveHeight.data.bounds.minY + 1,
+        GeneratorDefinitionData::MaxWorldHeight + 1);
+
+    GeneratorDefinition seaBelowBounds = definitionWithoutUnusedNodes();
+    seaBelowBounds.data.terrain.seaLevel = seaBelowBounds.data.bounds.minY - 1;
+    checkAuthorAndSavedSnapshotReject(
+        seaBelowBounds, "sea-below-bounds-snapshot.yaml");
+
+    GeneratorDefinition seaAboveBounds = definitionWithoutUnusedNodes();
+    seaAboveBounds.data.terrain.seaLevel = seaAboveBounds.data.bounds.maxY + 1;
+    checkAuthorAndSavedSnapshotReject(
+        seaAboveBounds, "sea-above-bounds-snapshot.yaml");
+
+    GeneratorDefinition excessiveOctaves = definitionWithoutUnusedNodes();
+    excessiveOctaves.data.climate.global.temperature.octaves =
+        GeneratorDefinitionData::MaxNoiseOctaves + 1;
+    checkAuthorAndSavedSnapshotReject(
+        excessiveOctaves, "excessive-octaves-snapshot.yaml");
 }
 
 TEST_CASE(GeneratorDefinition_rejects_unsafe_evaluator_arithmetic) {

@@ -2,6 +2,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <charconv>
@@ -127,8 +128,12 @@ std::optional<int> decodeMouseButton(std::string_view token) {
 } // namespace
 
 std::optional<PhysicalInput> decodeBindingToken(std::string_view token) {
-    if (token.size() > 1 &&
-        (token.front() == '-' || token.front() == '+')) {
+    const auto firstNonSpace = std::find_if(
+        token.begin(), token.end(), [](const unsigned char byte) {
+            return !std::isspace(byte);
+        });
+    if (firstNonSpace != token.end() &&
+        (*firstNonSpace == '-' || *firstNonSpace == '+')) {
         return std::nullopt;
     }
     const std::string normalized = normalizeToken(token);

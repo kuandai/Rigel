@@ -300,6 +300,7 @@ TEST_CASE(InputBindings_SymbolicDecoderRejectsNumericAndUnknownTokens) {
     CHECK(!decodeBindingToken("87"));
     CHECK(!decodeBindingToken("-1"));
     CHECK(!decodeBindingToken("+1"));
+    CHECK(!decodeBindingToken("  -1 "));
     CHECK(!decodeBindingToken("999999999999999999999999999999"));
     CHECK(!decodeBindingToken("MOUSE_9"));
     CHECK(!decodeBindingToken("NOT_A_KEY"));

@@ -182,6 +182,14 @@ errors. The provider prepares and validates a replacement value for each
 available source before publishing it as the input to the next layer. There is
 no cross-file overlay path or conditional flag mechanism.
 
+At startup, migration diagnostics check a finite list of exact legacy paths:
+the former `world_generation.yaml` locations and the corresponding shipped or
+source-relative `worldgen_overlays/no_carvers.yaml` locations for the active
+world. If an entry exists, Rigel warns that it is ignored and directs authors
+to declare a complete generator definition variant in `assets/manifest.yaml`.
+The check does not enumerate directories, parse legacy documents, or interpret
+their paths, flags, or conditions.
+
 ---
 
 ## Save-Owned World Identity

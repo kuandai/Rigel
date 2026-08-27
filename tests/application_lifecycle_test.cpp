@@ -105,6 +105,22 @@ private:
     std::shared_ptr<spdlog::logger> m_logger;
 };
 
+class ScopedCurrentDirectory {
+public:
+    explicit ScopedCurrentDirectory(const std::filesystem::path& path)
+        : m_previous(std::filesystem::current_path()) {
+        std::filesystem::current_path(path);
+    }
+
+    ~ScopedCurrentDirectory() {
+        std::error_code error;
+        std::filesystem::current_path(m_previous, error);
+    }
+
+private:
+    std::filesystem::path m_previous;
+};
+
 int initialize() {
     g_calls->runtime.emplace_back("initialize");
     return 1;
@@ -482,6 +498,34 @@ TEST_CASE(Application_BootstrapFailureReturnsFailureBeforeRunLoop) {
     CHECK(!calls.runLoopEntered);
     CHECK(logs.output().find("required bootstrap data unavailable") !=
           std::string::npos);
+}
+
+TEST_CASE(Application_ReportsObsoleteGenerationConfigurationAtStartup) {
+    LifecycleCalls calls;
+    ScopedLifecycleCalls scopedCalls(calls);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_obsolete_generation_configuration");
+    const auto obsoletePath =
+        directory.path() / "config/world_generation.yaml";
+    std::filesystem::create_directories(obsoletePath.parent_path());
+    std::ofstream(obsoletePath) << "flags:\n  no_carvers: true\n";
+    ScopedCurrentDirectory currentDirectory(directory.path());
+    LogCapture logs;
+
+    Rigel::ApplicationConstructionHooks hooks;
+    hooks.runtimeApi = fakeRuntimeApi();
+    hooks.userPreferencesPath =
+        directory.path() / "user-preferences.yaml";
+    hooks.afterContextAcquired = &failAfterContextAcquired;
+    hooks.shutdownStageCompleted = &recordShutdownStage;
+    CHECK_THROWS(Rigel::ApplicationTestAccess::construct(std::move(hooks)));
+
+    const std::string output = logs.output();
+    CHECK(output.find(
+              "Obsolete generation configuration "
+              "'config/world_generation.yaml' is ignored") !=
+          std::string::npos);
+    CHECK(output.find("assets/manifest.yaml") != std::string::npos);
 }
 
 TEST_CASE(Application_InvalidPreferencesRejectBeforeMutationOrPublication) {

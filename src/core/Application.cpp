@@ -276,6 +276,15 @@ void Application::initialize() {
     spdlog::info("Rigel v{}", RIGEL_VERSION);
     #endif
 
+    std::error_code launchDirectoryError;
+    const std::filesystem::path launchDirectory =
+        std::filesystem::current_path(launchDirectoryError);
+    if (!launchDirectoryError) {
+        detail::warnAboutObsoleteGenerationConfiguration(
+            launchDirectory,
+            m_impl->world.activeWorldId);
+    }
+
     const char* benchEnv = std::getenv("RIGEL_CHUNK_BENCH");
     m_impl->timing.benchmarkEnabled =
         benchEnv && benchEnv[0] != '\0' && benchEnv[0] != '0';

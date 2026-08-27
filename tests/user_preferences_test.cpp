@@ -1,0 +1,426 @@
+#include "TestFramework.h"
+#include "LogCapture.h"
+
+#include "Rigel/Persistence/Storage.h"
+#include "Rigel/Preferences/UserPreferences.h"
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+using namespace Rigel::Preferences;
+
+namespace {
+
+void writeDocument(const std::filesystem::path& path,
+                   const std::string& document) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(document.data(), static_cast<std::streamsize>(document.size()));
+    stream.close();
+    if (!stream) {
+        throw Rigel::Test::TestFailure(
+            "Failed to write user preferences fixture");
+    }
+}
+
+std::string readDocument(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return std::string(
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>());
+}
+
+std::vector<std::filesystem::path> stagingFiles(
+    const std::filesystem::path& path) {
+    std::vector<std::filesystem::path> result;
+    if (!std::filesystem::exists(path.parent_path())) {
+        return result;
+    }
+    const std::string prefix = path.filename().string() + ".tmp.";
+    for (const auto& entry :
+         std::filesystem::directory_iterator(path.parent_path())) {
+        if (entry.path().filename().string().starts_with(prefix)) {
+            result.push_back(entry.path());
+        }
+    }
+    return result;
+}
+
+class ScopedEnvironment final {
+public:
+    ScopedEnvironment(std::string name, std::optional<std::string> value)
+        : m_name(std::move(name)) {
+        if (const char* previous = std::getenv(m_name.c_str())) {
+            m_previous = previous;
+        }
+        set(std::move(value));
+    }
+
+    ~ScopedEnvironment() {
+        set(m_previous);
+    }
+
+private:
+    void set(const std::optional<std::string>& value) const {
+#ifdef _WIN32
+        _putenv_s(m_name.c_str(), value ? value->c_str() : "");
+#else
+        if (value) {
+            setenv(m_name.c_str(), value->c_str(), 1);
+        } else {
+            unsetenv(m_name.c_str());
+        }
+#endif
+    }
+
+    std::string m_name;
+    std::optional<std::string> m_previous;
+};
+
+class ScopedCurrentPath final {
+public:
+    explicit ScopedCurrentPath(const std::filesystem::path& path)
+        : m_previous(std::filesystem::current_path()) {
+        std::filesystem::current_path(path);
+    }
+
+    ~ScopedCurrentPath() {
+        std::error_code error;
+        std::filesystem::current_path(m_previous, error);
+    }
+
+private:
+    std::filesystem::path m_previous;
+};
+
+} // namespace
+
+TEST_CASE(UserPreferences_missing_file_uses_shipped_defaults_without_creation) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences");
+    const auto path = directory.path() / "profile" / "user-preferences.yaml";
+    UserPreferencesStore store(path);
+
+    const UserPreferencesState state = store.load();
+
+    CHECK_EQ(state.requested, UserPreferences{});
+    CHECK_EQ(state.effective, UserPreferences{});
+    CHECK(!store.normalSaveBlocked());
+    CHECK(!std::filesystem::exists(path));
+    CHECK_THROWS(UserPreferencesStore("relative/user-preferences.yaml"));
+}
+
+TEST_CASE(UserPreferences_path_is_explicit_and_uses_platform_config_policy) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_path");
+    const auto explicitPath =
+        directory.path() / "platform" / "user-preferences.yaml";
+    writeDocument(
+        directory.path() / "user-preferences.yaml",
+        "schema_version: 1\ngraphics: {view_distance_chunks: 2}\n");
+    writeDocument(
+        directory.path() / "config" / "user-preferences.yaml",
+        "schema_version: 1\ngraphics: {view_distance_chunks: 3}\n");
+    writeDocument(
+        directory.path() / "saves" / "world_0" / "user-preferences.yaml",
+        "schema_version: 1\ngraphics: {view_distance_chunks: 4}\n");
+
+    {
+        ScopedCurrentPath cwd(directory.path());
+        UserPreferencesStore store(explicitPath);
+        CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 12);
+        CHECK(!std::filesystem::exists(explicitPath));
+    }
+
+#ifndef _WIN32
+    const auto xdg = directory.path() / "xdg";
+    const auto home = directory.path() / "home";
+    ScopedEnvironment setHome("HOME", home.string());
+    {
+        ScopedEnvironment setXdg("XDG_CONFIG_HOME", xdg.string());
+        CHECK_EQ(
+            currentUserPreferencesPath(),
+            xdg / "rigel" / "user-preferences.yaml");
+    }
+    {
+        ScopedEnvironment relativeXdg("XDG_CONFIG_HOME", "relative-xdg");
+        CHECK_EQ(
+            currentUserPreferencesPath(),
+            home / ".config" / "rigel" / "user-preferences.yaml");
+    }
+#endif
+}
+
+TEST_CASE(UserPreferences_boundary_values_and_sparse_bindings_round_trip) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_bounds");
+    const auto path = directory.path() / "user-preferences.yaml";
+    UserPreferencesStore store(path);
+    UserPreferences requested;
+    requested.display.mode = DisplayMode::Borderless;
+    requested.display.windowedSize = {1, 16384};
+    requested.display.vsync = false;
+    requested.display.fpsLimit = 30;
+    requested.graphics.viewDistanceChunks = 2;
+    requested.graphics.shadows = false;
+    requested.camera.verticalFovDegrees = 50.0;
+    requested.input.mouseSensitivity = 0.01;
+    requested.input.invertY = true;
+    requested.input.bindings[UserAction::MoveForward] = {"W", "UP"};
+    requested.input.bindings[UserAction::PlaceBlock] = {};
+
+    store.saveRequested(requested);
+    CHECK_EQ(store.load().requested, requested);
+    CHECK(stagingFiles(path).empty());
+
+    requested.display.fpsLimit = 1000;
+    requested.graphics.viewDistanceChunks = 16;
+    requested.camera.verticalFovDegrees = 110.0;
+    requested.input.mouseSensitivity = 1.0;
+    store.saveRequested(requested);
+    CHECK_EQ(store.load().requested, requested);
+}
+
+TEST_CASE(UserPreferences_invalid_leaves_and_sections_preserve_valid_siblings) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_tolerant");
+    const auto path = directory.path() / "user-preferences.yaml";
+    writeDocument(path,
+        "schema_version: 1\n"
+        "future_root: true\n"
+        "display:\n"
+        "  mode: borderless\n"
+        "  windowed_size: [1920, nope]\n"
+        "  vsync: \"false\"\n"
+        "  fps_limit: 144\n"
+        "graphics:\n"
+        "  view_distance_chunks: 16\n"
+        "  shadows: maybe\n"
+        "camera: []\n"
+        "input:\n"
+        "  mouse_sensitivity: 0.5\n"
+        "  invert_y: true\n"
+        "  bindings:\n"
+        "    move_forward: [W, bad-token]\n"
+        "    place_block: []\n"
+        "    fly: [F]\n");
+    UserPreferencesStore store(path);
+    Rigel::Test::LogCapture logs("user-preferences-tolerant");
+
+    const UserPreferences requested = store.load().requested;
+
+    CHECK_EQ(requested.display.mode, DisplayMode::Borderless);
+    CHECK_EQ(requested.display.windowedSize, WindowedSize{});
+    CHECK(requested.display.vsync);
+    CHECK_EQ(requested.display.fpsLimit, std::optional<int>(144));
+    CHECK_EQ(requested.graphics.viewDistanceChunks, 16);
+    CHECK(requested.graphics.shadows);
+    CHECK_NEAR(requested.camera.verticalFovDegrees, 60.0, 0.0001);
+    CHECK_NEAR(requested.input.mouseSensitivity, 0.5, 0.0001);
+    CHECK(requested.input.invertY);
+    CHECK(!requested.input.bindings.contains(UserAction::MoveForward));
+    CHECK_EQ(
+        requested.input.bindings.at(UserAction::PlaceBlock),
+        std::vector<std::string>{});
+    CHECK_EQ(
+        logs.output(),
+        "Unknown user preference 'future_root' in '" + path.string() +
+        "'; ignored\n"
+        "Invalid user preference 'display.windowed_size' in '" +
+        path.string() +
+        "': expected two integers in [1, 16384], got sequence; using shipped default\n"
+        "Invalid user preference 'display.vsync' in '" + path.string() +
+        "': expected boolean, got 'false'; using shipped default\n"
+        "Invalid user preference 'graphics.shadows' in '" + path.string() +
+        "': expected boolean, got 'maybe'; using shipped default\n"
+        "Invalid user preference section 'camera' in '" + path.string() +
+        "': expected mapping, got sequence; using shipped defaults for section\n"
+        "Invalid user preference 'input.bindings.move_forward' in '" +
+        path.string() +
+        "': expected list of at most 8 keyboard/mouse string tokens, got sequence; using shipped default\n"
+        "Unknown user preference action 'fly' in '" + path.string() +
+        "'; ignored\n");
+}
+
+TEST_CASE(UserPreferences_unknown_supported_nodes_survive_known_edits) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_unknown");
+    const auto path = directory.path() / "user-preferences.yaml";
+    writeDocument(path,
+        "schema_version: 1\n"
+        "future_root: {enabled: true}\n"
+        "graphics:\n"
+        "  view_distance_chunks: 7\n"
+        "  future_quality: ultra\n"
+        "input:\n"
+        "  bindings:\n"
+        "    future_action: [F]\n");
+    UserPreferencesStore store(path);
+    UserPreferences requested;
+    {
+        Rigel::Test::LogCapture logs("user-preferences-unknown-load");
+        requested = store.load().requested;
+        CHECK_EQ(Rigel::Test::countOccurrences(logs.output(), "ignored"), 3u);
+    }
+    requested.graphics.viewDistanceChunks = 9;
+    {
+        Rigel::Test::LogCapture logs("user-preferences-unknown-save");
+        store.saveRequested(requested);
+        CHECK_EQ(Rigel::Test::countOccurrences(logs.output(), "ignored"), 3u);
+    }
+
+    const std::string saved = readDocument(path);
+    CHECK_NE(saved.find("future_root:"), std::string::npos);
+    CHECK_NE(saved.find("future_quality: ultra"), std::string::npos);
+    CHECK_NE(saved.find("future_action:"), std::string::npos);
+    CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 9);
+}
+
+TEST_CASE(UserPreferences_unsafe_documents_preserve_bytes_and_block_normal_save) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_unsafe");
+    const std::vector<std::pair<std::string, std::string>> cases{
+        {"malformed", "schema_version: [\n"},
+        {"missing-schema", "display: {vsync: false}\n"},
+        {"invalid-schema", "schema_version: \"1\"\n"},
+        {"older-schema", "schema_version: 0\nlegacy: preserved\n"},
+        {"newer-schema", "schema_version: 2\nfuture: preserved\n"}
+    };
+
+    for (const auto& [name, original] : cases) {
+        const auto path = directory.path() / name / "user-preferences.yaml";
+        writeDocument(path, original);
+        UserPreferencesStore store(path);
+        Rigel::Test::LogCapture logs("user-preferences-unsafe-" + name);
+        CHECK_EQ(store.load(), UserPreferencesState{});
+        CHECK(store.normalSaveBlocked());
+        CHECK_NE(logs.output().find("preserving the file"), std::string::npos);
+        CHECK_THROWS(store.saveRequested(UserPreferences{}));
+        CHECK_EQ(readDocument(path), original);
+        CHECK(stagingFiles(path).empty());
+    }
+
+    const auto oversized =
+        directory.path() / "oversized" / "user-preferences.yaml";
+    writeDocument(oversized, std::string(262145, 'x'));
+    UserPreferencesStore oversizedStore(oversized);
+    CHECK_EQ(oversizedStore.load(), UserPreferencesState{});
+    CHECK(oversizedStore.normalSaveBlocked());
+    CHECK_EQ(std::filesystem::file_size(oversized), 262145u);
+
+#ifndef _WIN32
+    const auto unreadable =
+        directory.path() / "unreadable" / "user-preferences.yaml";
+    writeDocument(unreadable, "schema_version: 1\n");
+    std::filesystem::permissions(
+        unreadable,
+        std::filesystem::perms::none,
+        std::filesystem::perm_options::replace);
+    UserPreferencesStore unreadableStore(unreadable);
+    CHECK_EQ(unreadableStore.load(), UserPreferencesState{});
+    CHECK(unreadableStore.normalSaveBlocked());
+    std::filesystem::permissions(
+        unreadable,
+        std::filesystem::perms::owner_read |
+            std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::replace);
+#endif
+
+    const auto nonregular =
+        directory.path() / "nonregular" / "user-preferences.yaml";
+    std::filesystem::create_directories(nonregular);
+    UserPreferencesStore nonregularStore(nonregular);
+    CHECK_EQ(nonregularStore.load(), UserPreferencesState{});
+    CHECK(nonregularStore.normalSaveBlocked());
+
+    const auto replacePath =
+        directory.path() / "newer-schema" / "user-preferences.yaml";
+    UserPreferencesStore replaceStore(replacePath);
+    replaceStore.load();
+    UserPreferences replacement;
+    replacement.graphics.viewDistanceChunks = 6;
+    replaceStore.replaceWithRequested(replacement);
+    CHECK(!replaceStore.normalSaveBlocked());
+    CHECK_EQ(replaceStore.load().requested, replacement);
+}
+
+TEST_CASE(UserPreferences_rechecks_external_replacement_before_saving) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_replace");
+    const auto path = directory.path() / "user-preferences.yaml";
+    const std::string supported =
+        "schema_version: 1\ngraphics: {view_distance_chunks: 8}\n";
+    const std::string newer =
+        "schema_version: 2\nfuture: must-survive\n";
+    writeDocument(path, supported);
+    UserPreferencesStore store(path);
+    UserPreferences requested = store.load().requested;
+    requested.graphics.viewDistanceChunks = 10;
+    writeDocument(path, newer);
+
+    CHECK_THROWS(store.saveRequested(requested));
+    CHECK(store.normalSaveBlocked());
+    CHECK_EQ(readDocument(path), newer);
+
+    writeDocument(path, supported);
+    CHECK_THROWS(store.saveRequested(requested));
+    CHECK_EQ(readDocument(path), supported);
+}
+
+TEST_CASE(UserPreferences_serializes_requested_not_hardware_effective_values) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_state");
+    const auto path = directory.path() / "user-preferences.yaml";
+    UserPreferencesStore store(path);
+    UserPreferencesState state;
+    state.requested.display.mode = DisplayMode::Borderless;
+    state.requested.display.windowedSize = {3840, 2160};
+    state.requested.graphics.shadows = true;
+    state.effective = state.requested;
+    state.effective.display.mode = DisplayMode::Windowed;
+    state.effective.display.windowedSize = {800, 600};
+    state.effective.graphics.shadows = false;
+
+    store.saveRequested(state);
+
+    CHECK_EQ(store.load().requested, state.requested);
+    CHECK_NE(store.load().requested, state.effective);
+}
+
+TEST_CASE(UserPreferences_prepublication_failure_preserves_last_valid_file) {
+#ifdef _WIN32
+    throw Rigel::Test::TestSkip(
+        "Directory write permission behavior is platform-specific");
+#else
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_failure");
+    const auto path = directory.path() / "profile" / "user-preferences.yaml";
+    UserPreferencesStore store(path);
+    UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 7;
+    store.saveRequested(requested);
+    const std::string previous = readDocument(path);
+    requested.graphics.viewDistanceChunks = 11;
+
+    std::filesystem::permissions(
+        path.parent_path(),
+        std::filesystem::perms::owner_read |
+            std::filesystem::perms::owner_exec,
+        std::filesystem::perm_options::replace);
+    bool failed = false;
+    try {
+        store.saveRequested(requested);
+    } catch (const Rigel::Persistence::AtomicFilePublicationError& error) {
+        CHECK_EQ(
+            error.state(),
+            Rigel::Persistence::AtomicFilePublicationState::NotPublished);
+        failed = true;
+    }
+    std::filesystem::permissions(
+        path.parent_path(),
+        std::filesystem::perms::owner_all,
+        std::filesystem::perm_options::replace);
+
+    CHECK(failed);
+    CHECK_EQ(readDocument(path), previous);
+    CHECK(stagingFiles(path).empty());
+    CHECK_NO_THROW(store.saveRequested(requested));
+    CHECK_EQ(store.load().requested, requested);
+#endif
+}

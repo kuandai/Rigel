@@ -1,4 +1,5 @@
 #include <Rigel/Asset/Assets.h>
+#include <Rigel/Preferences/UserPreferences.h>
 #include <Rigel/Render/TemporalJitter.h>
 #include <Rigel/Util/Yaml.h>
 #include <Rigel/Voxel/WorldView.h>
@@ -36,6 +37,8 @@ uint64_t consumeRegionSchedulerBenchmark(
 }
 
 int main() {
+    Rigel::Preferences::UserPreferences preferences;
+    (void)preferences.graphics.viewDistanceChunks;
     Rigel::Render::TemporalJitterSequence jitter;
     (void)jitter.next(1280, 720, 1.0f);
     const auto consumer = &consumeRegionSchedulerBenchmark;

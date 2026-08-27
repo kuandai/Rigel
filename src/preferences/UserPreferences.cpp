@@ -963,6 +963,17 @@ std::string serializePreferences(UserPreferences preferences,
     return ryml::emitrs_yaml<std::string>(*retainedTree);
 }
 
+void requireValidSerializedSize(const std::filesystem::path& path,
+                                const std::string& document) {
+    if (document.size() <= kMaximumUserPreferencesBytes) {
+        return;
+    }
+    throw Persistence::AtomicFilePublicationError(
+        Persistence::AtomicFilePublicationState::NotPublished,
+        "Cannot save user preferences to '" + sourceName(path) +
+            "': serialized document exceeds the 262144-byte limit");
+}
+
 void writeAtomically(const std::filesystem::path& path,
                      const std::string& document) {
     try {
@@ -1072,6 +1083,7 @@ void UserPreferencesStore::saveRequested(const UserPreferences& requested) {
         current.kind == DocumentKind::Supported
             ? std::move(current.tree)
             : nullptr);
+    requireValidSerializedSize(m_path, document);
     try {
         writeAtomically(m_path, document);
     } catch (const Persistence::AtomicFilePublicationError& error) {
@@ -1091,6 +1103,7 @@ void UserPreferencesStore::replaceWithRequested(
     const UserPreferences& requested) {
     const auto publicationLock = lockUserPreferencesPublication(m_path);
     const std::string document = serializePreferences(requested, nullptr);
+    requireValidSerializedSize(m_path, document);
     try {
         writeAtomically(m_path, document);
         m_normalSaveBlocked = false;

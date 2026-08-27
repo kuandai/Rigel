@@ -291,6 +291,54 @@ TEST_CASE(UserPreferences_unknown_supported_nodes_survive_known_edits) {
     CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 9);
 }
 
+TEST_CASE(UserPreferences_serialized_size_limit_preserves_exact_limit_input) {
+    Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_size");
+    const auto path = directory.path() / "user-preferences.yaml";
+    constexpr size_t maximumDocumentBytes = 262144;
+    const std::string prefix =
+        "schema_version: 1\n"
+        "graphics: {view_distance_chunks: 8}\n"
+        "retained: ";
+    const std::string suffix = "\n";
+    CHECK(prefix.size() + suffix.size() < maximumDocumentBytes);
+    const std::string original = prefix +
+        std::string(
+            maximumDocumentBytes - prefix.size() - suffix.size(), 'x') +
+        suffix;
+    CHECK_EQ(original.size(), maximumDocumentBytes);
+    writeDocument(path, original);
+
+    UserPreferencesStore store(path);
+    UserPreferences requested;
+    {
+        Rigel::Test::LogCapture logs("user-preferences-size-load");
+        requested = store.load().requested;
+        CHECK_EQ(
+            Rigel::Test::countOccurrences(
+                logs.output(), "Unknown user preference 'retained'"),
+            1u);
+    }
+    CHECK_EQ(requested.graphics.viewDistanceChunks, 8);
+    CHECK(!store.normalSaveBlocked());
+    requested.graphics.viewDistanceChunks = 9;
+
+    bool failedBeforePublication = false;
+    try {
+        Rigel::Test::LogCapture logs("user-preferences-size-save");
+        store.saveRequested(requested);
+    } catch (const Rigel::Persistence::AtomicFilePublicationError& error) {
+        CHECK_EQ(
+            error.state(),
+            Rigel::Persistence::AtomicFilePublicationState::NotPublished);
+        failedBeforePublication = true;
+    }
+    CHECK(failedBeforePublication);
+    CHECK(!store.normalSaveBlocked());
+    CHECK_EQ(readDocument(path), original);
+    CHECK_EQ(std::filesystem::file_size(path), maximumDocumentBytes);
+    CHECK(stagingFiles(path).empty());
+}
+
 TEST_CASE(UserPreferences_unsafe_documents_preserve_bytes_and_block_normal_save) {
     Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_unsafe");
     const std::vector<std::pair<std::string, std::string>> cases{

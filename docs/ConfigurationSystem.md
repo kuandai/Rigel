@@ -114,11 +114,13 @@ an unsupported document and uses the same lock.
 
 Writes stage complete replacement bytes and publish them atomically. Commit
 errors distinguish a definite prepublication failure from a replacement that
-was published before parent-directory durability became uncertain. Requested
-and effective preferences are separate values: hardware recovery may select a
-safe effective value, while persistence always writes the requested value.
-The store does not itself apply requests to window, renderer, streaming, or
-input consumers.
+was published before parent-directory durability became uncertain. Both loaded
+and serialized documents are limited to 262144 bytes; retained unknown fields
+cannot make a saved replacement exceed the load bound, and an oversized result
+leaves the previous file intact. Requested and effective preferences are
+separate values: hardware recovery may select a safe effective value, while
+persistence always writes the requested value. The store does not itself apply
+requests to window, renderer, streaming, or input consumers.
 
 ---
 

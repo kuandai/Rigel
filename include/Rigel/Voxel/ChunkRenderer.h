@@ -20,7 +20,9 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <array>
+#include <functional>
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <GL/glew.h>
@@ -213,6 +215,11 @@ private:
     ShadowState m_shadowState;
     bool m_shadowsActive = false;
 
+    using ShadowPreparationHookForTesting = std::function<
+        std::optional<GLenum>(
+            std::string_view, GLuint, GLuint, GLuint)>;
+    ShadowPreparationHookForTesting m_shadowPreparationHookForTesting;
+
     void uploadMesh(GpuMesh& gpu, const ChunkMesh& mesh) const;
     void pruneCache(const WorldMeshStore& store);
     void cacheUniformLocations();
@@ -223,6 +230,9 @@ private:
     void setupLayerState(RenderLayer layer) const;
     static void releaseShadowResources(ShadowState& state) noexcept;
     void releaseShadowResources();
+    std::optional<GLenum> shadowPreparationCheckpointForTesting(
+        std::string_view phase,
+        const ShadowState& state) const;
     PreparedShadowResources prepareShadowResources(
         bool enabled,
         const ShadowConfig& config) const;

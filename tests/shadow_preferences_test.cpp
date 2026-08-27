@@ -14,6 +14,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <optional>
 #include <string_view>
 
 namespace Rigel::Preferences::detail {
@@ -29,10 +30,10 @@ void setUserPreferencesAfterPublicationHookForTesting(
 
 namespace Rigel::Voxel::detail {
 
-void setShadowPreparationHookForTesting(
-    std::function<void(std::string_view, GLuint, GLuint, GLuint)> hook);
-
 struct WorldViewTestAccess {
+    using ShadowPreparationHook = std::function<std::optional<GLenum>(
+        std::string_view, GLuint, GLuint, GLuint)>;
+
     struct ShadowResources {
         GLuint depthArray = 0;
         GLuint transmitArray = 0;
@@ -50,6 +51,12 @@ struct WorldViewTestAccess {
             state.cascades,
             state.mapSize,
         };
+    }
+
+    static void setShadowPreparationHook(
+        WorldView& view,
+        ShadowPreparationHook hook) {
+        view.m_renderer.m_shadowPreparationHookForTesting = std::move(hook);
     }
 };
 
@@ -151,7 +158,8 @@ public:
     }
 
     ~ShadowFixture() {
-        Rigel::Voxel::detail::setShadowPreparationHookForTesting({});
+        Rigel::Voxel::detail::WorldViewTestAccess::
+            setShadowPreparationHook(view, {});
         Rigel::Preferences::detail::
             setUserPreferencesAfterSavePreflightHookForTesting({});
         Rigel::Preferences::detail::
@@ -225,13 +233,13 @@ private:
 enum class ShadowPreparationFailureKind {
     Throw,
     OpenGLError,
-    DetachDepth,
-    DetachTransmittance,
+    IncompleteFramebuffer,
 };
 
 struct ShadowPreparationFailureCase {
     std::string_view phase;
     ShadowPreparationFailureKind kind;
+    std::string_view expectedMessage;
     bool hasDepth;
     bool hasTransmittance;
     bool hasFramebuffer;
@@ -241,41 +249,49 @@ constexpr std::array<ShadowPreparationFailureCase, 8>
     kShadowPreparationFailureCases{{
         {"depth_texture_created",
          ShadowPreparationFailureKind::Throw,
+         "injected shadow preparation failure",
          true,
          false,
          false},
         {"depth_texture_allocated",
          ShadowPreparationFailureKind::OpenGLError,
+         "OpenGL rejected shadow resource depth allocation",
          true,
          false,
          false},
         {"transmittance_texture_created",
          ShadowPreparationFailureKind::Throw,
+         "injected shadow preparation failure",
          true,
          true,
          false},
         {"transmittance_texture_allocated",
          ShadowPreparationFailureKind::OpenGLError,
+         "OpenGL rejected shadow resource transmittance allocation",
          true,
          true,
          false},
         {"framebuffer_created",
          ShadowPreparationFailureKind::Throw,
+         "injected shadow preparation failure",
          true,
          true,
          true},
-        {"depth_framebuffer_validation",
-         ShadowPreparationFailureKind::DetachDepth,
+        {"depth_framebuffer_completeness",
+         ShadowPreparationFailureKind::IncompleteFramebuffer,
+         "shadow depth framebuffer validation failed",
          true,
          true,
          true},
-        {"transmittance_framebuffer_validation",
-         ShadowPreparationFailureKind::DetachTransmittance,
+        {"transmittance_framebuffer_completeness",
+         ShadowPreparationFailureKind::IncompleteFramebuffer,
+         "shadow transmittance framebuffer validation failed",
          true,
          true,
          true},
         {"final_framebuffer_validation",
          ShadowPreparationFailureKind::OpenGLError,
+         "OpenGL rejected shadow resource framebuffer validation",
          true,
          true,
          true},
@@ -404,13 +420,14 @@ TEST_CASE(ApplicationPreferences_PartialShadowPreparationFailureIsAtomic) {
     for (const auto& failure : kShadowPreparationFailureCases) {
         ShadowPreparationBindings bindings;
         ObservedShadowPreparation observed;
-        Rigel::Voxel::detail::setShadowPreparationHookForTesting(
+        Rigel::Voxel::detail::WorldViewTestAccess::setShadowPreparationHook(
+            fixture.view,
             [&](std::string_view phase,
                 GLuint depth,
                 GLuint transmittance,
-                GLuint framebuffer) {
+                GLuint framebuffer) -> std::optional<GLenum> {
                 if (phase != failure.phase) {
-                    return;
+                    return std::nullopt;
                 }
                 observed.reached = true;
                 observed.depth = depth;
@@ -428,30 +445,22 @@ TEST_CASE(ApplicationPreferences_PartialShadowPreparationFailureIsAtomic) {
                             "injected shadow preparation failure");
                     case ShadowPreparationFailureKind::OpenGLError:
                         glBindFramebuffer(GL_TEXTURE_2D, 0);
-                        break;
-                    case ShadowPreparationFailureKind::DetachDepth:
-                        glFramebufferTextureLayer(
-                            GL_FRAMEBUFFER,
-                            GL_DEPTH_ATTACHMENT,
-                            0,
-                            0,
-                            0);
-                        break;
-                    case ShadowPreparationFailureKind::DetachTransmittance:
-                        glFramebufferTextureLayer(
-                            GL_FRAMEBUFFER,
-                            GL_COLOR_ATTACHMENT0,
-                            0,
-                            0,
-                            0);
-                        break;
+                        return std::nullopt;
+                    case ShadowPreparationFailureKind::
+                        IncompleteFramebuffer:
+                        return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
                 }
+                return std::nullopt;
             });
 
         const auto result = preferences.applyShadows(fixture.view, true);
-        Rigel::Voxel::detail::setShadowPreparationHookForTesting({});
+        Rigel::Voxel::detail::WorldViewTestAccess::
+            setShadowPreparationHook(fixture.view, {});
 
         CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::Rejected);
+        CHECK_NE(
+            result.message.find(failure.expectedMessage),
+            std::string::npos);
         CHECK(observed.reached);
         CHECK_EQ(observed.depth != 0, failure.hasDepth);
         CHECK_EQ(

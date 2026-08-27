@@ -626,10 +626,6 @@ public:
                 if (height < bounds.minY) {
                     continue;
                 }
-                int localY = height - ctx.coord.y * Chunk::SIZE;
-                if (localY < 0 || localY >= Chunk::SIZE) {
-                    continue;
-                }
 
                 const std::vector<ResolvedLayer>* layers = nullptr;
                 int biomeIndex = ctx.biomes[index].primary;

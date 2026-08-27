@@ -97,6 +97,33 @@ TEST_CASE(WorldGenerator_uses_explicit_coast_water_and_surface_semantics) {
         registry.findByIdentifier("rigel:coast_surface")->type);
 }
 
+TEST_CASE(WorldGenerator_continues_surface_layers_across_vertical_chunks) {
+    BlockRegistry registry = makeRegistry();
+    GeneratorDefinitionData definition = flatDefinition();
+    definition.bounds.maxY = Chunk::SIZE + 1;
+    definition.densityGraph.nodes.front().offset =
+        static_cast<float>(Chunk::SIZE);
+    definition.biomes.entries.front().surface = {
+        {"rigel:grass", 1},
+        {"rigel:coast_surface", 2}};
+
+    WorldGenerator generator(registry, definition, 7u);
+    ChunkBuffer upper;
+    generator.generate({0, 1, 0}, upper);
+    ChunkBuffer lower;
+    generator.generate({0, 0, 0}, lower);
+
+    const BlockID grass = *registry.findByIdentifier("rigel:grass");
+    const BlockID lowerSurface =
+        *registry.findByIdentifier("rigel:coast_surface");
+    const BlockID base = *registry.findByIdentifier("rigel:stone");
+    CHECK_EQ(upper.at(0, 0, 0).id.type, grass.type);
+    CHECK(upper.at(0, 1, 0).isAir());
+    CHECK_EQ(lower.at(0, Chunk::SIZE - 1, 0).id.type, lowerSurface.type);
+    CHECK_EQ(lower.at(0, Chunk::SIZE - 2, 0).id.type, lowerSurface.type);
+    CHECK_EQ(lower.at(0, Chunk::SIZE - 3, 0).id.type, base.type);
+}
+
 TEST_CASE(WorldGenerator_honors_enabled_cave_output) {
     BlockRegistry registry = makeRegistry();
     GeneratorDefinitionData definition = flatDefinition();

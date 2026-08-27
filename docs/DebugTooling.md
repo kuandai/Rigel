@@ -720,9 +720,10 @@ does not justify adding a provisional neighbor policy; a separately bounded
 interactive first-draw study would be required before such a change.
 
 The two-worker fixture exercises the production split as one generation plus
-one mesh worker. The shipped `worker_threads=12` setting remains a six/six
-split, with generation submission narrowed to twelve submitted-but-undrained
-jobs. No split or worker-pool policy changed in this validation.
+one mesh worker. On the 20-logical-CPU assessment host, automatic installed
+policy selects 12 scheduler workers and therefore the same six/six split, with
+generation submission narrowed to twelve submitted-but-undrained jobs. No
+split or worker-pool behavior changed in this validation.
 
 The shipped view radius is 12 and the shipped inclusive vertical bounds are
 -64 through 320. Before finite-world clipping, a direct enumeration of the
@@ -989,9 +990,10 @@ owner transition, not introduce a public scheduler interface now.
 
 Remaining maintainability debt is bounded and non-blocking:
 
-- Configuration: `worker_threads` owns an implicit generation/mesh split, and
-  the effective generation submission bound is not exposed alongside the
-  mesh submission diagnostic. No new setting is needed for current behavior.
+- Policy: the automatic scheduler worker count owns an implicit
+  generation/mesh split, and the effective generation submission bound is not
+  exposed alongside the mesh submission diagnostic. No new setting is needed
+  for current behavior.
 - Overlay language: the red field summary intentionally collapses source,
   load, generation-pending, capacity, queued, and running states into “waiting
   for chunk data”; the selected detail record is required for exact phase

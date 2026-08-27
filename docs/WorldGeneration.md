@@ -146,16 +146,16 @@ explicit failed state until a later streaming requeue retries them.
 
 ### 5.3 Background Work and Budgets
 
-- Generation and meshing use separate pools partitioned from
-  `streaming.worker_threads`. A pool with no worker executes its job inline.
-- `streaming.gen_queue_limit` caps selected generation work, while
-  `streaming.mesh_queue_limit` caps mesh work selected from the pending
-  scheduler (`0` means no configured cap). Executor capacity may narrow that
-  cap but the configured cap cannot expand executor capacity. Asynchronous
+- Generation and meshing use separate pools partitioned from the automatic
+  internal scheduler worker count. Tests and developer benchmarks can inject
+  an exact count; a pool with no worker executes its job inline.
+- Internal generation and mesh queue limits cap work selected from the pending
+  scheduler. Executor capacity may narrow a limit but a policy limit cannot
+  expand executor capacity. Asynchronous
   generation submission is capped at two generation worker widths, allowing
   one standby wave behind the running wave. With no worker, generation and mesh
   each own at most one completed-but-unapplied inline result regardless of
-  `streaming.apply_budget_per_frame`; the mesh bound is observable as the
+  the application budget; the mesh bound is observable as the
   `meshSubmissionLimit` streaming diagnostic.
 - `m_loadGenQueue` holds coordinates that have not selected persisted load
   versus generation yet and reports them as source-resolution-pending. Once a
@@ -179,26 +179,25 @@ explicit failed state until a later streaming requeue retries them.
   mesh worker count so work that has not started remains reprioritizable.
 - When both kinds are pending, mesh dispatch reserves roughly 1/4 of finite
   dispatch slots for dirty remeshes while remaining work-conserving.
-- `streaming.update_budget_per_frame` limits how many queued load, generation,
+- The internal request budget limits how many queued load, generation,
   or missing-mesh requests advance during an update (`0` means unlimited). A
   desired-set rebuild itself is not spread across frames.
-- `streaming.apply_budget_per_frame` limits completed generation results and
+- The internal apply budget limits completed generation results and
   completed mesh results separately (`0` means unlimited).
-- Disk load payloads are applied via `streaming.load_apply_budget_per_frame`
+- Disk load payloads are applied via an internal per-frame budget
   to prevent IO completions from stalling frames.
-- `streaming.io_threads` controls region IO concurrency, while
-  `streaming.load_worker_threads` controls chunk payload build (decode + base
-  fill) concurrency.
-- `streaming.load_queue_limit` caps pending disk load requests (`0` means
-  unlimited).
+- Automatic IO workers control region concurrency, while automatic payload
+  workers control chunk decode and base-fill concurrency. Tests construct
+  loaders with exact counts.
+- The installed policy leaves direct chunk demand uncapped; scheduler-owned
+  region work remains bounded independently.
 
-UserPreferences default View Distance to 12 chunks. The shipped streaming
-configuration uses `gen_queue_limit=128`, `update_budget_per_frame=4096`, and
-`worker_threads=12`. The pool split assigns six threads to generation and six
-to meshing. The executor-capacity bound narrows the configured generation cap
-to twelve submitted-but-undrained jobs: at most six running and six in the
-standby wave. The larger cold-view set remains reprioritizable in the logical
-pending scheduler.
+UserPreferences default View Distance to 12 chunks. On the representative
+20-logical-processor benchmark host, automatic policy selects 12 scheduler
+workers, split as six generation and six mesh workers. The executor-capacity
+bound narrows the internal generation limit to twelve submitted-but-undrained
+jobs: at most six running and six in the standby wave. The larger cold-view
+set remains reprioritizable in the logical pending scheduler.
 
 ### 5.3.1 Cardinal-motion ordering
 
@@ -238,9 +237,10 @@ and final quiescence.
   the worker-claim race, the running or published task retains one physical
   coordinate owner until result drain, so a retry or replacement cannot overlap
   it.
-- `streaming.max_resident_chunks` enables an LRU eviction pass (via `ChunkCache`).
-  Desired chunks are protected, so the cache can remain above this limit when
-  the desired set alone exceeds it.
+- `ChunkCache` retains an exact resident-cap injection seam for scheduler tests
+  and developer tools. Installed policy leaves the raw chunk-count cap
+  disabled because it does not meter total CPU and GPU memory. Desired chunks
+  remain protected when an exact cap is injected.
 - Chunks outside the derived unload radius are unloaded after modified data is
   persisted. Failed persistence defers removal to a bounded retry update and
   remains explicit pending lifecycle work between attempts. Due retry and

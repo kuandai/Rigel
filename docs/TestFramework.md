@@ -78,7 +78,7 @@ You can also run the test executable directly:
 
 ```bash
 ../Rigel-build-debug/Rigel_tests --list
-../Rigel-build-debug/Rigel_tests --filter WorldConfigProvider
+../Rigel-build-debug/Rigel_tests --filter StreamingPolicy
 ../Rigel-build-debug/Rigel_tests --verbose
 ../Rigel-build-debug/Rigel_profiler_tests --verbose
 ../Rigel-build-debug/Rigel_block_asset_failure_tests --verbose

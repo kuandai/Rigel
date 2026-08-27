@@ -1,7 +1,7 @@
 # Configuration System
 
-This document describes Rigel's current preference, streaming, rendering,
-persistence, and generator-definition configuration paths.
+This document describes Rigel's current preference, internal streaming,
+rendering, persistence, and generator-definition configuration paths.
 
 ---
 
@@ -10,12 +10,13 @@ persistence, and generator-definition configuration paths.
 - [Overview](#overview)
 - [Global User Preferences](#global-user-preferences)
 - [Config Sources and Precedence](#config-sources-and-precedence)
-  - [Generator Definitions and Streaming](#generator-definitions-and-streaming)
+  - [Generator Definition Sources](#generator-definition-sources)
   - [Rendering](#rendering)
   - [Persistence](#persistence)
 - [Config Provider and Sources](#config-provider-and-sources)
 - [Save-Owned World Identity](#save-owned-world-identity)
 - [Generator Definitions](#generator-definitions)
+- [Streaming Policy](#streaming-policy)
 - [Render Config](#render-config)
 - [Persistence Config](#persistence-config)
 - [Per-World Overrides](#per-world-overrides)
@@ -26,8 +27,8 @@ persistence, and generator-definition configuration paths.
 
 ## Overview
 
-Rigel uses layered configuration for the remaining streaming, rendering, and
-persistence policy. Each layered type is loaded from a fixed stack of sources,
+Rigel uses layered configuration for the remaining rendering and persistence
+policy. Each layered type is loaded from a fixed stack of sources,
 and later sources override earlier values. Configs are read once during
 application bootstrap. Generator content is separate: a new world resolves one
 strict named asset, while an existing world loads only its save-owned canonical
@@ -42,17 +43,14 @@ Fields merge according to their YAML shape:
 
 Persistence's typed CR options merge by key.
 
-Three layered config types are supported today:
+Two layered config types are supported today:
 
-- `StreamingConfig` (runtime chunk loading, generation, and meshing schedules)
 - `WorldRenderConfig` (render pipeline settings)
 - `PersistenceConfig` (save/load format and provider options)
 
 Typed providers load each layered subsystem's settings from YAML input using
-rapidyaml. `Voxel::WorldConfigProvider` supplies only `StreamingConfig` to
-production bootstrap and ignores unrelated top-level keys. Rendering is loaded by
-`Render::RenderConfigProvider`, and persistence by
-`Persistence::PersistenceConfigProvider`. Each subsystem's bootstrap function
+rapidyaml. Rendering is loaded by `Render::RenderConfigProvider`, and
+persistence by `Persistence::PersistenceConfigProvider`. Each subsystem's bootstrap function
 uses the shared standard-source builder, but the typed provider remains the
 semantic owner of parsing and merging its settings. Unknown fixed keys produce
 a warning and are not applied.
@@ -149,23 +147,17 @@ The general rule is:
 3) Project root overrides (for quick testing).
 4) Per-world overrides under `config/worlds/<worldId>/`.
 
-### Generator Definitions and Streaming
+### Generator Definition Sources
 
 The shipped manifest declares `generator_definitions/default`, whose asset is
 `assets/generators/default.yaml`. New-world bootstrap resolves the selected
 namespaced definition only after save inspection. Published-world startup does
 not enumerate or load installed generator definitions.
 
-Streaming sources (in order):
-
-1. `assets/config/streaming.yaml` (embedded as `raw/streaming_config`)
-2. `config/streaming.yaml`
-3. `streaming.yaml`
-4. `config/worlds/<worldId>/streaming.yaml`
-
-These sources contain only streaming policy. Generator declarations, flags,
-overlays, and stage lists are not interpreted by this path. Unavailable
-installed generator content is irrelevant to published-world reload.
+Installed streaming policy is internal code. Normal startup does not load a
+streaming asset or inspect project-root or per-world streaming files.
+Unavailable installed generator content is irrelevant to published-world
+reload.
 
 ### Rendering
 
@@ -192,7 +184,7 @@ Sources (in order):
 Each typed provider aggregates neutral `Config::IConfigSource` instances:
 
 - `EmbeddedConfigSource` reads an embedded raw asset (e.g.
-  `raw/streaming_config`).
+  `raw/render_config`).
 - `FileConfigSource` reads a file from disk.
 
 Each source provides its complete YAML document and a name used in validation
@@ -274,38 +266,28 @@ sections; there is no author-facing pipeline or simple terrain mode.
 
 ---
 
-## Streaming Config
+## Streaming Policy
 
-`StreamingConfig` owns the remaining runtime chunk loading, generation, and
-meshing schedule inputs under the `streaming` key. It uses the dedicated
-streaming source order above. Player View Distance is absent from this YAML
-domain. Unload distance and loader prefetch are derived active-world policy,
-not streaming YAML inputs.
+Installed startup constructs one internal automatic policy. It neither parses
+nor ships YAML for scheduler queues, frame budgets, worker partitioning,
+loader queues/caches/inflight work, prefetch, unload distance, or resident
+chunk caps. There is no player, content, or save-owned engine-policy document.
 
-| Key | Type | Code fallback | Notes |
-| --- | --- | --- | --- |
-| `streaming.gen_queue_limit` | int | `0` | Generation dispatch cap before executor-capacity bounds (0 = no configured cap; maximum explicit cap `32768`). |
-| `streaming.mesh_queue_limit` | int | `0` | Mesh dispatch cap before executor-capacity bounds (0 = no configured cap; maximum explicit cap `32768`). |
-| `streaming.update_budget_per_frame` | int | `0` | Load/generation/missing-mesh requests advanced per update (0 = unlimited). |
-| `streaming.apply_budget_per_frame` | int | `0` | Generation and mesh results applied per category (0 = unlimited). |
-| `streaming.worker_threads` | int | `2` | Total worker count partitioned between generation and meshing. |
-| `streaming.io_threads` | int | `1` | Region IO thread count. |
-| `streaming.load_worker_threads` | int | `2` | Chunk payload build thread count; all three worker settings total at most `64`. |
-| `streaming.load_apply_budget_per_frame` | int | `8` | Disk payload apply budget (0 = unlimited). |
-| `streaming.load_region_drain_budget` | int | `32` | Region completion drain budget. |
-| `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited; maximum explicit cap `32768`). |
-| `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = unlimited, maximum `256`). |
-| `streaming.load_max_inflight_regions` | int | `8` | Configured physical region-read cap (0 = no configured physical-read cap; maximum explicit cap `64`). The zero-cap fallback retains at most 64 speculative owners in the loader-owned queue; dispatched or pool-pending work is bounded separately by IO executor capacity, including one inline result when `io_threads` is 0. |
-| `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited, maximum explicit cap `65536`). |
+The current topology normalizes detected logical processors to 4 through 64.
+It selects one IO worker below eight processors and two otherwise, clamps
+payload-build workers to `processors / 5` in the range 1 through 4, and assigns
+the remainder to generation/mesh scheduling in the range 2 through 12.
+`ChunkStreamer` divides those scheduler workers between its generation and
+mesh pools. Unknown host topology uses the four-processor policy.
 
-Region worker submission is also capped by the physical IO thread count.
-Speculative owners remain in a direct-first loader queue bounded by
-`load_max_inflight_regions`, or by a 64-owner fallback when that setting is
-zero. That fallback does not include separately bounded dispatched or
-pool-pending work, which may occupy the IO executor capacity. With no IO
-worker, reads execute inline and at most one completed result remains
-dispatched-undrained. The setting continues to control physical read
-concurrency rather than rejecting direct chunk demand.
+Current internal capacities preserve bounded startup behavior: generation and
+mesh queue limits are 128, request advancement is 4096 per update,
+generation/mesh application is 128 per category, disk payload and region
+drains are 16, the region cache and inflight owner limits are 16, and no raw
+resident-chunk cap is enabled. These are implementation policy rather than a
+supported configuration contract. Scheduler tests construct `StreamingConfig`
+directly and loader tests use explicit constructors/setters; developer
+benchmarks accept only the exact CLI inputs needed for reproducible runs.
 
 The sole player request is
 `UserPreferences.graphics.view_distance_chunks`, with a default of 12 and an
@@ -353,13 +335,12 @@ The player view limit bounds a synchronous desired-set rebuild to 35,937 cube
 candidates and 17,077 selected sphere coordinates. Its derived one-chunk
 retention radius contains at most 20,479 sphere coordinates. Normal preload
 scans at most 124 radius-two neighboring region coordinates and admits at most
-12. Per-frame budgets are limited to 32,768. These are operational ceilings for
-Rigel's fixed 32-cubed chunks rather than integer or address-space maxima.
+12. These are operational ceilings for Rigel's fixed 32-cubed chunks rather
+than integer or address-space maxima.
 Tests and benchmarks may still construct `StreamingConfig` with exact view and
 unload radii or set exact loader preload inputs as explicit developer
 injection; an active application world replaces those values from its policy.
 
-Negative queue, budget, thread, and cache values are clamped to zero.
 The desired set is rebuilt only when the camera enters a different chunk, a
 distance changes, or the internal streamer generator assignment changes its
 vertical clip. Increasing View Distance publishes the new policy immediately
@@ -371,8 +352,8 @@ reconciled in deterministic batches of at most 64 per update. A newer live
 edit replaces the same pending policy transition instead of adding another
 reconciliation queue. Save-owned generator definitions are not
 live-replaceable.
-`update_budget_per_frame` does not turn the desired-set rebuild into a partial
-scan.
+The internal request-advancement budget does not turn the desired-set rebuild
+into a partial scan.
 
 ---
 
@@ -491,7 +472,6 @@ it carries objects such as the block registry and CR settings after bootstrap.
 Per-world overrides are resolved by world ID. The default world ID is numeric
 and used directly in the override paths:
 
-- `config/worlds/<worldId>/streaming.yaml`
 - `config/worlds/<worldId>/render.yaml`
 - `config/worlds/<worldId>/persistence.yaml`
 
@@ -502,7 +482,7 @@ source layer, they have the highest precedence.
 
 ## Limitations
 
-- Layered engine/content configs and saved world identity are loaded once at
+- Layered render/persistence configs and saved world identity are loaded once at
   startup. Supported UserPreferences changes use their direct live apply paths;
   View Distance requires an active world session.
 - Validation is implemented by concrete owners rather than one generic schema

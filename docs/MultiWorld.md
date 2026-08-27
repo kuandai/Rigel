@@ -103,16 +103,15 @@ The application configures those shared values for its active default world
 before loading or saving it. The root used by that boot path is
 `saves/world_<id>`.
 
-The subsystem bootstrap functions accept a world ID and include these optional
-highest-precedence files for that ID:
+The render and persistence bootstrap functions accept a world ID and include
+these optional highest-precedence files for that ID:
 
-- `config/worlds/<worldId>/streaming.yaml`
 - `config/worlds/<worldId>/render.yaml`
 - `config/worlds/<worldId>/persistence.yaml`
 
 Configuration values are loaded and applied by the application and subsystem
 providers; they are not stored as a general configuration object on `World` or
-`WorldSet`. The streaming override file contributes only streaming policy.
+`WorldSet`. Streaming scheduler policy is internal and has no per-world file.
 Each published save owns `world-settings.yaml` and
 `generator-definition.yaml`, and reload does not enumerate installed generator
 definitions.

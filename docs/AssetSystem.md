@@ -36,8 +36,8 @@ The manifest defines asset IDs and their configuration. Example:
 namespace: base
 assets:
   raw:
-    streaming_config:
-      path: config/streaming.yaml
+    render_config:
+      path: config/render.yaml
   textures:
     stone:
       path: textures/blocks/stone/stone_shale.png
@@ -56,7 +56,7 @@ Manifest constraints in the current implementation:
 ## Asset IDs
 
 Asset IDs are always `category/name` (for example: `textures/stone`,
-`shaders/voxel`, `raw/streaming_config`).
+`shaders/voxel`, `raw/render_config`).
 
 The manifest category determines which loader handles the asset.
 

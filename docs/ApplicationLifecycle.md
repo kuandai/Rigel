@@ -183,8 +183,9 @@ Worker threads:
 
 Synchronization:
 - `detail::ConcurrentQueue` for result handoff.
-- Separate generation and mesh pools partition `streaming.worker_threads`;
-  asynchronous loading has region IO and payload-build pools.
+- Separate generation and mesh pools partition the automatic internal
+  scheduler worker count; asynchronous loading has automatically sized region
+  IO and payload-build pools.
 
 ---
 
@@ -204,8 +205,8 @@ Synchronization:
 **Queueing rules**:
 - Generation-needed coordinates remain in the camera-prioritized scheduler
   until dispatch.
-- `streaming.gen_queue_limit` caps selected jobs (0 = no configured cap), and
-  asynchronous dispatch is additionally capped at two generation worker
+- Internal policy caps selected jobs, and asynchronous dispatch is
+  additionally capped at two generation worker
   widths: one running wave and at most one standby wave.
 - With no generation worker, one inline result remains submitted until the
   owner-thread completion drain observes it.
@@ -250,11 +251,11 @@ Synchronization:
 **Queueing rules**:
 - Initial meshes and dirty remeshes remain in one priority scheduler until
   dispatch.
-- `streaming.mesh_queue_limit` caps selected mesh jobs (0 = no configured
-  cap). Executor capacity can narrow that configured cap: asynchronous
+- Internal policy caps selected mesh jobs. Executor capacity can narrow that
+  cap: asynchronous
   submission is capped at the mesh worker count, while an executor with no
   mesh worker owns at most one completed-but-unapplied inline result regardless
-  of `streaming.apply_budget_per_frame`. The queue cap cannot expand that
+  of the apply budget. The queue cap cannot expand that
   physical slot. The effective bound is reported by the `meshSubmissionLimit`
   streaming diagnostic.
 - A portion of finite dispatch capacity is reserved for dirty remeshes when
@@ -289,7 +290,7 @@ Synchronization:
 - Payload builds run on a worker pool. They decode stored spans and, when the
   selected format enables `fillMissingChunkSpans`, generate base fill first.
 - `ChunkStreamer::processCompletions()` drains payloads on the main thread via
-  `ChunkLoadDrainCallback`, honoring `streaming.load_apply_budget_per_frame`.
+  `ChunkLoadDrainCallback`, honoring the internal per-frame apply budget.
 - Failed region reads are retried from their completion events. Exhausted reads
   complete with a failure outcome and do not fall through to generation.
 
@@ -336,9 +337,9 @@ Synchronization:
 - `Voxel::Chunk` and `BlockRegistry` are not thread-safe; treat them as
   main-thread-only objects.
 - Region IO is async, but application of spans is always main-threaded.
-- Worker counts are controlled by `StreamingConfig` (`worker_threads` is split
-  between generation and meshing; `io_threads` and `load_worker_threads`
-  control asynchronous loading).
+- Installed worker counts are derived from detected logical processors by
+  internal policy. Scheduler tests and developer benchmarks retain exact
+  constructor/CLI injection seams.
 
 ---
 

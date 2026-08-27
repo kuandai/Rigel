@@ -60,6 +60,10 @@ public:
     PreferenceApplyResult applyVerticalFov(
         Render::FrameRenderer& renderer,
         double candidateDegrees);
+    PreferenceApplyResult initializeShadows(Voxel::WorldView& view);
+    PreferenceApplyResult applyShadows(
+        Voxel::WorldView& view,
+        bool enabled);
     void initializeViewDistance(
         Voxel::WorldView& view,
         Persistence::AsyncChunkLoader* loader = nullptr);
@@ -94,6 +98,9 @@ public:
     }
     double effectiveVerticalFovDegrees() const {
         return m_effectiveVerticalFovDegrees.value();
+    }
+    bool effectiveShadowsEnabled() const {
+        return m_effectiveShadowsEnabled;
     }
     int effectiveViewDistanceChunks() const {
         return m_effectiveViewDistanceChunks;
@@ -132,6 +139,7 @@ private:
     Preferences::UserPreferences m_requested;
     Preferences::DisplayPreferences m_effectiveDisplay;
     std::optional<double> m_effectiveVerticalFovDegrees;
+    bool m_effectiveShadowsEnabled = false;
     int m_effectiveViewDistanceChunks =
         Preferences::kDefaultViewDistanceChunks;
     std::shared_ptr<const Voxel::ViewDistancePolicy>

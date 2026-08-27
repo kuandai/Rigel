@@ -21,6 +21,9 @@ The application supplies the active `World`, `WorldView`, camera vectors,
 viewport, and frame time to `FrameRenderer` once per frame. The application
 renders the ImGui profiler after `FrameRenderer` returns.
 
+`UserPreferences.graphics.shadows` is the sole player shadow request. The
+renderer config supplies one internal On profile; it has no enable field.
+
 ---
 
 ## 2. Frame Flow (Current)
@@ -74,8 +77,9 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
 
 `Render::makeRenderConfigProvider()` assembles these sources in order, and the
 application assigns the loaded `WorldRenderConfig` to the active `WorldView`.
-It then installs the accepted player View Distance policy. Later render-config
-assignments preserve the policy-owned render range:
+It then installs the accepted player View Distance policy and prepares the
+requested player shadow state. Later render-config assignments preserve the
+policy-owned render range:
 
 - `assets/config/render.yaml` (embedded as `raw/render_config`)
 - `config/render.yaml`
@@ -103,6 +107,14 @@ Key fields in `WorldRenderConfig`:
 - One framebuffer reused for depth and transmittance passes.
 
 Depth maps use `GL_NEAREST`. Transmittance maps use `GL_LINEAR`.
+
+For an On transition, `ChunkRenderer` allocates a candidate set, validates the
+depth and combined transmittance framebuffer attachments, and only then swaps
+the candidate into the active view. The prior set remains available until the
+preference file is published; definite publication failure swaps it back. An
+Off transition installs no shadow targets and releases the retired targets only
+after publication succeeds. With no installed targets, shadow rendering exits
+before framebuffer state queries or draw submission.
 
 ### 5.2 Cascade Splits
 

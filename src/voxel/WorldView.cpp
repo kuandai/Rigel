@@ -126,6 +126,30 @@ void WorldView::setRenderConfig(const WorldRenderConfig& config) {
     }
 }
 
+WorldView::PreparedShadowChange WorldView::prepareShadowPreference(
+    bool enabled) const {
+    if (enabled && !m_initialized) {
+        throw std::runtime_error(
+            "shadows require an initialized world renderer");
+    }
+    if (enabled && !m_shadowDepthShader) {
+        throw std::runtime_error(
+            "the voxel shadow depth shader is unavailable");
+    }
+    return PreparedShadowChange{
+        m_renderer.prepareShadowResources(enabled, m_renderConfig.shadow)};
+}
+
+WorldView::PreparedShadowChange WorldView::installShadowPreference(
+    PreparedShadowChange prepared) noexcept {
+    return PreparedShadowChange{m_renderer.installShadowResources(
+        std::move(prepared.m_resources))};
+}
+
+bool WorldView::shadowPreferenceEnabled() const {
+    return m_renderer.shadowResourcesInstalled();
+}
+
 WorldView::ViewDistancePolicyState WorldView::applyViewDistancePolicy(
     std::shared_ptr<const ViewDistancePolicy> policy) {
     if (!policy) {
@@ -247,7 +271,7 @@ void WorldView::render(const glm::mat4& view,
         entityCtx.sunDirection = ctx.config.sunDirection;
         entityCtx.ambientStrength = 0.3f;
         auto shadowState = m_renderer.shadowRenderState();
-        entityCtx.shadow.enabled = shadowState.active && ctx.config.shadow.enabled;
+        entityCtx.shadow.enabled = shadowState.active;
         entityCtx.shadow.depthMap = shadowState.depthArray;
         entityCtx.shadow.transmittanceMap = shadowState.transmitArray;
         entityCtx.shadow.cascadeCount = shadowState.cascades;

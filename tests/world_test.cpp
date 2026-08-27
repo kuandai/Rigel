@@ -410,11 +410,14 @@ TEST_CASE(WorldView_ViewPolicyDrivesFrameProjectionAndShadowCeiling) {
     CHECK_EQ(view.viewDistancePolicy()->generation(), static_cast<uint64_t>(2));
 
     WorldRenderConfig renderConfig = view.renderConfig();
-    renderConfig.shadow.enabled = true;
     renderConfig.shadow.cascades = 1;
     renderConfig.shadow.mapSize = 16;
     renderConfig.shadow.maxDistance = 10000.0f;
     view.setRenderConfig(renderConfig);
+    const auto shadowsInitialized = preferences.initializeShadows(view);
+    CHECK_EQ(
+        shadowsInitialized.status,
+        Rigel::PreferenceApplyStatus::Applied);
 
     constexpr float verticalFovDegrees = 60.0f;
     constexpr float nearPlane = 0.1f;

@@ -14,7 +14,6 @@ struct ShadowConfig {
     static constexpr int MaxMapSize = 6144;
     static constexpr int MaxPcfRadius = 4;
 
-    bool enabled = false;
     int cascades = 3;
     int mapSize = 1024;
     float maxDistance = 200.0f;

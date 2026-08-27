@@ -10,6 +10,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace Rigel::Voxel {
@@ -49,8 +52,90 @@ std::array<glm::vec3, 8> getFrustumCornersWorld(const glm::mat4& invViewProj) {
     return corners;
 }
 
+bool validShadowProfile(const ShadowConfig& config) {
+    return config.cascades >= 1 &&
+        config.cascades <= ShadowConfig::MaxCascades &&
+        config.mapSize >= 1 &&
+        config.mapSize <= ShadowConfig::MaxMapSize &&
+        std::isfinite(config.maxDistance) &&
+        std::isfinite(config.splitLambda) &&
+        config.splitLambda >= 0.0f && config.splitLambda <= 1.0f &&
+        std::isfinite(config.bias) && config.bias >= 0.0f &&
+        std::isfinite(config.normalBias) && config.normalBias >= 0.0f &&
+        config.pcfRadius >= 0 &&
+        config.pcfRadius <= ShadowConfig::MaxPcfRadius &&
+        config.pcfRadiusNear >= 0 &&
+        config.pcfRadiusNear <= ShadowConfig::MaxPcfRadius &&
+        config.pcfRadiusFar >= 0 &&
+        config.pcfRadiusFar <= ShadowConfig::MaxPcfRadius &&
+        std::isfinite(config.transparentScale) &&
+        config.transparentScale >= 0.0f &&
+        std::isfinite(config.strength) && config.strength >= 0.0f &&
+        std::isfinite(config.fadePower) && config.fadePower >= 0.0f;
+}
+
+void clearOpenGLErrors() {
+    while (glGetError() != GL_NO_ERROR) {
+    }
+}
+
+void requireNoOpenGLError(const char* operation) {
+    const GLenum error = glGetError();
+    if (error == GL_NO_ERROR) {
+        return;
+    }
+    throw std::runtime_error(
+        std::string("OpenGL rejected shadow resource ") + operation +
+        " (error " + std::to_string(error) + ")");
+}
+
+class ShadowPreparationBindingRestore final {
+public:
+    ShadowPreparationBindingRestore() {
+        glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &m_textureArray);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &m_drawFramebuffer);
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &m_readFramebuffer);
+    }
+
+    ~ShadowPreparationBindingRestore() {
+        glBindTexture(
+            GL_TEXTURE_2D_ARRAY,
+            static_cast<GLuint>(m_textureArray));
+        glBindFramebuffer(
+            GL_DRAW_FRAMEBUFFER,
+            static_cast<GLuint>(m_drawFramebuffer));
+        glBindFramebuffer(
+            GL_READ_FRAMEBUFFER,
+            static_cast<GLuint>(m_readFramebuffer));
+    }
+
+private:
+    GLint m_textureArray = 0;
+    GLint m_drawFramebuffer = 0;
+    GLint m_readFramebuffer = 0;
+};
+
 
 } // namespace
+
+ChunkRenderer::PreparedShadowResources::PreparedShadowResources(
+    PreparedShadowResources&& other) noexcept
+    : m_state(std::exchange(other.m_state, {})) {
+}
+
+ChunkRenderer::PreparedShadowResources&
+ChunkRenderer::PreparedShadowResources::operator=(
+    PreparedShadowResources&& other) noexcept {
+    if (this != &other) {
+        ChunkRenderer::releaseShadowResources(m_state);
+        m_state = std::exchange(other.m_state, {});
+    }
+    return *this;
+}
+
+ChunkRenderer::PreparedShadowResources::~PreparedShadowResources() {
+    ChunkRenderer::releaseShadowResources(m_state);
+}
 
 void ChunkRenderer::GpuMesh::release() {
     if (vao != 0) {
@@ -530,47 +615,59 @@ void ChunkRenderer::setupLayerState(RenderLayer layer) const {
     }
 }
 
-void ChunkRenderer::releaseShadowResources() {
-    if (m_shadowState.fbo != 0) {
-        glDeleteFramebuffers(1, &m_shadowState.fbo);
-        m_shadowState.fbo = 0;
+void ChunkRenderer::releaseShadowResources(ShadowState& state) noexcept {
+    if (state.fbo != 0) {
+        glDeleteFramebuffers(1, &state.fbo);
+        state.fbo = 0;
     }
-    if (m_shadowState.depthArray != 0) {
-        glDeleteTextures(1, &m_shadowState.depthArray);
-        m_shadowState.depthArray = 0;
+    if (state.depthArray != 0) {
+        glDeleteTextures(1, &state.depthArray);
+        state.depthArray = 0;
     }
-    if (m_shadowState.transmitArray != 0) {
-        glDeleteTextures(1, &m_shadowState.transmitArray);
-        m_shadowState.transmitArray = 0;
+    if (state.transmitArray != 0) {
+        glDeleteTextures(1, &state.transmitArray);
+        state.transmitArray = 0;
     }
-    m_shadowState.cascades = 0;
-    m_shadowState.mapSize = 0;
-    m_shadowState.matrices = {};
-    m_shadowState.splits = {};
+    state.cascades = 0;
+    state.mapSize = 0;
+    state.matrices = {};
+    state.splits = {};
 }
 
-bool ChunkRenderer::ensureShadowResources(const ShadowConfig& config) {
-    const int cascades = config.cascades;
-    const int mapSize = config.mapSize;
+void ChunkRenderer::releaseShadowResources() {
+    releaseShadowResources(m_shadowState);
+    m_shadowsActive = false;
+}
 
-    if (m_shadowState.depthArray != 0 &&
-        m_shadowState.transmitArray != 0 &&
-        m_shadowState.fbo != 0 &&
-        m_shadowState.cascades == cascades &&
-        m_shadowState.mapSize == mapSize) {
-        return true;
+ChunkRenderer::PreparedShadowResources
+ChunkRenderer::prepareShadowResources(
+    bool enabled,
+    const ShadowConfig& config) const {
+    PreparedShadowResources prepared;
+    if (!enabled) {
+        return prepared;
+    }
+    if (!validShadowProfile(config)) {
+        throw std::invalid_argument(
+            "the internal shadow profile is outside renderer safety bounds");
     }
 
-    releaseShadowResources();
+    clearOpenGLErrors();
+    ShadowPreparationBindingRestore restoreBindings;
+    ShadowState& state = prepared.m_state;
+    state.cascades = config.cascades;
+    state.mapSize = config.mapSize;
 
-    m_shadowState.cascades = cascades;
-    m_shadowState.mapSize = mapSize;
-
-    glGenTextures(1, &m_shadowState.depthArray);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, m_shadowState.depthArray);
+    glGenTextures(1, &state.depthArray);
+    if (state.depthArray == 0) {
+        throw std::runtime_error(
+            "OpenGL did not create the shadow depth texture");
+    }
+    glBindTexture(GL_TEXTURE_2D_ARRAY, state.depthArray);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT24,
-                 mapSize, mapSize, cascades, 0,
+                 state.mapSize, state.mapSize, state.cascades, 0,
                  GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    requireNoOpenGLError("depth allocation");
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
@@ -579,11 +676,16 @@ bool ChunkRenderer::ensureShadowResources(const ShadowConfig& config) {
     glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, borderDepth);
     glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
-    glGenTextures(1, &m_shadowState.transmitArray);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, m_shadowState.transmitArray);
+    glGenTextures(1, &state.transmitArray);
+    if (state.transmitArray == 0) {
+        throw std::runtime_error(
+            "OpenGL did not create the shadow transmittance texture");
+    }
+    glBindTexture(GL_TEXTURE_2D_ARRAY, state.transmitArray);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8,
-                 mapSize, mapSize, cascades, 0,
+                 state.mapSize, state.mapSize, state.cascades, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    requireNoOpenGLError("transmittance allocation");
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
@@ -592,32 +694,81 @@ bool ChunkRenderer::ensureShadowResources(const ShadowConfig& config) {
     glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, borderColor);
     glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
-    glGenFramebuffers(1, &m_shadowState.fbo);
-    return true;
+    glGenFramebuffers(1, &state.fbo);
+    if (state.fbo == 0) {
+        throw std::runtime_error(
+            "OpenGL did not create the shadow framebuffer");
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, state.fbo);
+    glFramebufferTextureLayer(
+        GL_FRAMEBUFFER,
+        GL_DEPTH_ATTACHMENT,
+        state.depthArray,
+        0,
+        0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    const GLenum depthStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (depthStatus != GL_FRAMEBUFFER_COMPLETE) {
+        throw std::runtime_error(
+            "shadow depth framebuffer validation failed (status " +
+            std::to_string(depthStatus) + ")");
+    }
+
+    glFramebufferTextureLayer(
+        GL_FRAMEBUFFER,
+        GL_COLOR_ATTACHMENT0,
+        state.transmitArray,
+        0,
+        0);
+    const GLenum drawBuffer = GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1, &drawBuffer);
+    const GLenum transmitStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (transmitStatus != GL_FRAMEBUFFER_COMPLETE) {
+        throw std::runtime_error(
+            "shadow transmittance framebuffer validation failed (status " +
+            std::to_string(transmitStatus) + ")");
+    }
+    requireNoOpenGLError("framebuffer validation");
+    return prepared;
+}
+
+ChunkRenderer::PreparedShadowResources
+ChunkRenderer::installShadowResources(
+    PreparedShadowResources prepared) noexcept {
+    std::swap(m_shadowState, prepared.m_state);
+    m_shadowsActive = false;
+    return prepared;
+}
+
+bool ChunkRenderer::shadowResourcesInstalled() const {
+    return m_shadowState.depthArray != 0 &&
+        m_shadowState.transmitArray != 0 &&
+        m_shadowState.fbo != 0 &&
+        m_shadowState.cascades > 0 && m_shadowState.mapSize > 0;
 }
 
 bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
                                   const std::vector<RenderEntry>& entries) {
-    GLint prevDrawFbo = 0;
-    GLint prevReadFbo = 0;
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFbo);
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevReadFbo);
     const ShadowConfig& shadow = ctx.config.shadow;
-    if (!shadow.enabled || !m_shadowDepthShader || !m_atlas) {
+    const bool resourcesReady = shadowResourcesInstalled();
+    if (!resourcesReady || !m_shadowDepthShader || !m_atlas) {
         static int skipLogCounter = 0;
         if (skipLogCounter++ < 3) {
             spdlog::info(
-                "Shadow pass skipped: enabled={}, depthShader={}, atlas={}",
-                shadow.enabled ? 1 : 0,
+                "Shadow pass skipped: resources={}, depthShader={}, atlas={}",
+                resourcesReady ? 1 : 0,
                 static_cast<bool>(m_shadowDepthShader),
                 static_cast<bool>(m_atlas)
             );
         }
         return false;
     }
-    if (!ensureShadowResources(shadow)) {
-        return false;
-    }
+
+    GLint prevDrawFbo = 0;
+    GLint prevReadFbo = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFbo);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevReadFbo);
 
     static int drawLogCounter = 0;
     if (drawLogCounter++ < 3) {

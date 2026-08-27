@@ -46,8 +46,11 @@ Shutdown persists world state and releases resources.
    - `shaders/voxel` is required. Failure to load it aborts view creation; the
      failed candidate is not published, so a later call can retry normally.
    - Voxel depth and transmission shadow shaders are optional independently.
-     A missing or unloadable shader emits one warning naming its asset id and
-     disables only the pass that consumes it.
+     A missing or unloadable shader emits one warning naming its asset id. The
+     depth shader is required to enable the user-requested shadow profile; if it
+     is unavailable at startup the requested value is retained and the
+     effective state is Off. A missing transmission shader keeps opaque/cutout
+     shadows and disables colored transparent attenuation.
    - Entity and entity-shadow shaders are optional independently. A missing or
      unloadable main shader disables entity rendering; a missing or unloadable
      shadow shader disables entity shadow casting.

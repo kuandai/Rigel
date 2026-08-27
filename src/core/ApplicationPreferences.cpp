@@ -97,6 +97,7 @@ void ApplicationPreferences::load() {
     m_effectiveDisplay = m_requested.display;
     m_effectiveVerticalFovDegrees =
         m_requested.camera.verticalFovDegrees;
+    m_effectiveShadowsEnabled = false;
     m_effectiveViewDistanceChunks =
         m_requested.graphics.viewDistanceChunks;
     m_effectiveViewDistancePolicy.reset();
@@ -485,6 +486,79 @@ PreferenceApplyResult ApplicationPreferences::applyVerticalFov(
         }
         renderer.setVerticalFovDegrees(previousEffective);
         m_effectiveVerticalFovDegrees = previousEffective;
+        return result;
+    }
+}
+
+PreferenceApplyResult ApplicationPreferences::initializeShadows(
+    Voxel::WorldView& view) {
+    const bool requested = m_requested.graphics.shadows;
+    try {
+        auto prepared = view.prepareShadowPreference(requested);
+        auto previous = view.installShadowPreference(std::move(prepared));
+        m_effectiveShadowsEnabled = requested;
+        return {};
+    } catch (const std::exception& error) {
+        m_effectiveShadowsEnabled = view.shadowPreferenceEnabled();
+        return {PreferenceApplyStatus::Rejected, error.what()};
+    }
+}
+
+PreferenceApplyResult ApplicationPreferences::applyShadows(
+    Voxel::WorldView& view,
+    bool enabled) {
+    if (view.shadowPreferenceEnabled() != m_effectiveShadowsEnabled) {
+        return {
+            PreferenceApplyStatus::Rejected,
+            "the active world shadow resources do not match the effective "
+            "preference"};
+    }
+    if (enabled == m_requested.graphics.shadows &&
+        enabled == m_effectiveShadowsEnabled) {
+        return {};
+    }
+
+    using PreparedShadowChange =
+        decltype(view.prepareShadowPreference(enabled));
+    std::optional<PreparedShadowChange> candidate;
+    try {
+        candidate.emplace(view.prepareShadowPreference(enabled));
+    } catch (const std::exception& error) {
+        return {PreferenceApplyStatus::Rejected, error.what()};
+    }
+
+    Preferences::UserPreferences nextRequested = m_requested;
+    nextRequested.graphics.shadows = enabled;
+    std::optional<Preferences::UserPreferencesStore::PreparedSave>
+        preparedSave;
+    if (enabled != m_requested.graphics.shadows) {
+        try {
+            preparedSave.emplace(m_store.prepareSave(nextRequested));
+        } catch (const std::exception& error) {
+            return publicationFailure(error);
+        }
+    }
+
+    const bool previousEffective = m_effectiveShadowsEnabled;
+    auto previous = view.installShadowPreference(std::move(*candidate));
+    m_effectiveShadowsEnabled = enabled;
+    if (!preparedSave) {
+        return {};
+    }
+
+    try {
+        m_store.publishPrepared(std::move(*preparedSave));
+        m_requested = std::move(nextRequested);
+        return {};
+    } catch (const std::exception& error) {
+        PreferenceApplyResult result = publicationFailure(error);
+        if (result.status ==
+            PreferenceApplyStatus::PublishedDurabilityUncertain) {
+            m_requested = std::move(nextRequested);
+            return result;
+        }
+        auto rejected = view.installShadowPreference(std::move(previous));
+        m_effectiveShadowsEnabled = previousEffective;
         return result;
     }
 }

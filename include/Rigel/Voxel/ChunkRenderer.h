@@ -27,6 +27,11 @@
 
 namespace Rigel::Voxel {
 
+class WorldView;
+namespace detail {
+struct WorldViewTestAccess;
+}
+
 /**
  * @brief Renders voxel chunks with multi-pass transparency support.
  *
@@ -91,6 +96,9 @@ public:
                       MeshRevision revision) const;
 
 private:
+    friend class WorldView;
+    friend struct detail::WorldViewTestAccess;
+
     static constexpr int kMaxShadowCascades = ShadowConfig::MaxCascades;
 
     struct GpuMesh {
@@ -183,6 +191,25 @@ private:
         std::array<float, kMaxShadowCascades> splits{};
     };
 
+    class PreparedShadowResources final {
+    public:
+        PreparedShadowResources(PreparedShadowResources&& other) noexcept;
+        PreparedShadowResources& operator=(
+            PreparedShadowResources&& other) noexcept;
+        ~PreparedShadowResources();
+
+        PreparedShadowResources(const PreparedShadowResources&) = delete;
+        PreparedShadowResources& operator=(
+            const PreparedShadowResources&) = delete;
+
+    private:
+        PreparedShadowResources() = default;
+
+        ShadowState m_state;
+
+        friend class ChunkRenderer;
+    };
+
     ShadowState m_shadowState;
     bool m_shadowsActive = false;
 
@@ -194,8 +221,14 @@ private:
                     const std::vector<RenderEntry>& entries,
                     const WorldRenderContext& ctx);
     void setupLayerState(RenderLayer layer) const;
+    static void releaseShadowResources(ShadowState& state) noexcept;
     void releaseShadowResources();
-    bool ensureShadowResources(const ShadowConfig& config);
+    PreparedShadowResources prepareShadowResources(
+        bool enabled,
+        const ShadowConfig& config) const;
+    PreparedShadowResources installShadowResources(
+        PreparedShadowResources prepared) noexcept;
+    bool shadowResourcesInstalled() const;
     bool renderShadows(const WorldRenderContext& ctx,
                        const std::vector<RenderEntry>& entries);
     void renderShadowLayer(const std::vector<RenderEntry>& entries,

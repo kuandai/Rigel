@@ -77,24 +77,20 @@ std::string readFile(const std::filesystem::path& path) {
 
 } // namespace
 
-TEST_CASE(RenderConfig_RejectsInvalidBooleanWithFullPath) {
+TEST_CASE(RenderConfig_ReportsRemovedShadowEnableAuthority) {
+    LogCapture logs;
     Rigel::Render::RenderConfigProvider provider;
     provider.addSource(std::make_unique<NamedConfigSource>(
         "invalid-render.yaml",
         "render:\n"
         "  shadow:\n"
-        "    enabled: TRUE\n"));
+        "    enabled: true\n"));
 
-    std::string diagnostic;
-    try {
-        (void)provider.load();
-    } catch (const std::invalid_argument& error) {
-        diagnostic = error.what();
-    }
-    CHECK_EQ(
-        diagnostic,
-        "Invalid configuration value 'render.shadow.enabled' in "
-        "'invalid-render.yaml': expected boolean 'true' or 'false', got 'TRUE'");
+    (void)provider.load();
+
+    const std::string output = logs.output();
+    CHECK(output.find("render.shadow.enabled") != std::string::npos);
+    CHECK(output.find("invalid-render.yaml") != std::string::npos);
 }
 
 TEST_CASE(RenderConfig_ReportsUnknownKeyAndSource) {

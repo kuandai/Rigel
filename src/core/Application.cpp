@@ -546,6 +546,23 @@ void Application::initialize() {
         m_impl->preferences->initializeViewDistance(
             *m_impl->world.worldView,
             m_impl->world.chunkLoader.get());
+        const PreferenceApplyResult shadowStartup =
+            m_impl->preferences->initializeShadows(
+                *m_impl->world.worldView);
+        if (shadowStartup.status == PreferenceApplyStatus::Rejected) {
+            spdlog::warn(
+                "Requested shadows could not be enabled at startup; "
+                "continuing with shadows off: {}",
+                shadowStartup.message);
+        }
+        spdlog::info(
+            "Shadows request={}; effective={}",
+            m_impl->preferences->requested().graphics.shadows
+                ? "on"
+                : "off",
+            m_impl->preferences->effectiveShadowsEnabled()
+                ? "on"
+                : "off");
         if (m_impl->timing.benchmarkEnabled) {
             m_impl->world.worldView->setBenchmark(&m_impl->timing.benchmark);
         }
@@ -1302,6 +1319,17 @@ PreferenceApplyResult Application::applyVerticalFov(double verticalFovDegrees) {
         m_impl->renderer, verticalFovDegrees);
 }
 
+PreferenceApplyResult Application::applyShadows(bool enabled) {
+    if (!m_impl->preferences || !m_impl->world.ready ||
+        !m_impl->world.worldView) {
+        return {
+            PreferenceApplyStatus::Rejected,
+            "shadows require an active world session"};
+    }
+    return m_impl->preferences->applyShadows(
+        *m_impl->world.worldView, enabled);
+}
+
 PreferenceApplyResult Application::applyViewDistance(int viewDistanceChunks) {
     if (!m_impl->preferences || !m_impl->world.ready ||
         !m_impl->world.worldView) {
@@ -1334,6 +1362,10 @@ Application::effectiveDisplayPreferences() const {
 
 double Application::effectiveVerticalFovDegrees() const {
     return m_impl->preferences->effectiveVerticalFovDegrees();
+}
+
+bool Application::effectiveShadowsEnabled() const {
+    return m_impl->preferences->effectiveShadowsEnabled();
 }
 
 int Application::effectiveViewDistanceChunks() const {

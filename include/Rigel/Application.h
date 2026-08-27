@@ -39,6 +39,7 @@ public:
         const Preferences::DisplayPreferences& preferences,
         WindowedSizeIntent windowedSizeIntent);
     PreferenceApplyResult applyVerticalFov(double verticalFovDegrees);
+    PreferenceApplyResult applyShadows(bool enabled);
     // Queues a main-thread request for the next active-world frame boundary.
     PreferenceApplyResult applyViewDistance(int viewDistanceChunks);
     PreferenceApplyResult applyInputPreferences(
@@ -48,6 +49,7 @@ public:
     const Preferences::UserPreferences& requestedPreferences() const;
     const Preferences::DisplayPreferences& effectiveDisplayPreferences() const;
     double effectiveVerticalFovDegrees() const;
+    bool effectiveShadowsEnabled() const;
     int effectiveViewDistanceChunks() const;
     const Preferences::InputPreferences& effectiveInputPreferences() const;
 

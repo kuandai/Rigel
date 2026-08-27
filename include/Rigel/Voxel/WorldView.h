@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace Rigel {
@@ -24,6 +25,10 @@ class ApplicationPreferences;
 }
 
 namespace Rigel::Voxel {
+
+namespace detail {
+struct WorldViewTestAccess;
+}
 
 class WorldView {
 public:
@@ -100,6 +105,28 @@ public:
 
 private:
     friend class ::Rigel::ApplicationPreferences;
+    friend struct detail::WorldViewTestAccess;
+
+    class PreparedShadowChange final {
+    public:
+        PreparedShadowChange(PreparedShadowChange&&) noexcept = default;
+        PreparedShadowChange& operator=(PreparedShadowChange&&) noexcept =
+            default;
+        ~PreparedShadowChange() = default;
+
+        PreparedShadowChange(const PreparedShadowChange&) = delete;
+        PreparedShadowChange& operator=(const PreparedShadowChange&) = delete;
+
+    private:
+        explicit PreparedShadowChange(
+            ChunkRenderer::PreparedShadowResources resources)
+            : m_resources(std::move(resources)) {
+        }
+
+        ChunkRenderer::PreparedShadowResources m_resources;
+
+        friend class WorldView;
+    };
 
     struct ViewDistancePolicyState {
         std::shared_ptr<const ViewDistancePolicy> policy;
@@ -110,6 +137,10 @@ private:
     ViewDistancePolicyState applyViewDistancePolicy(
         std::shared_ptr<const ViewDistancePolicy> policy);
     void restoreViewDistancePolicy(ViewDistancePolicyState state) noexcept;
+    PreparedShadowChange prepareShadowPreference(bool enabled) const;
+    PreparedShadowChange installShadowPreference(
+        PreparedShadowChange prepared) noexcept;
+    bool shadowPreferenceEnabled() const;
 
     World* m_world = nullptr;
     WorldResources* m_resources = nullptr;

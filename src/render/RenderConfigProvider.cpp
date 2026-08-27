@@ -48,7 +48,7 @@ void validateRenderConfigKeys(ryml::ConstNodeRef root,
             sourceName,
             "render.shadow",
             {
-                "enabled", "cascades", "map_size", "max_distance", "split_lambda",
+                "cascades", "map_size", "max_distance", "split_lambda",
                 "bias", "normal_bias", "pcf_radius", "pcf_radius_near",
                 "pcf_radius_far", "transparent_scale", "strength", "fade_power"
             }
@@ -79,8 +79,6 @@ void applyShadowConfig(ryml::ConstNodeRef shadowNode,
     if (!shadowNode.readable()) {
         return;
     }
-    shadow.enabled = Util::readBool(
-        shadowNode, "enabled", shadow.enabled, sourceName, "render.shadow");
     shadow.cascades = Util::readIntWithMaximum(
         shadowNode, "cascades", shadow.cascades, 1,
         Voxel::ShadowConfig::MaxCascades, sourceName, "render.shadow");

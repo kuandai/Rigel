@@ -9,6 +9,13 @@ using namespace Rigel::Config;
 using namespace Rigel::Render;
 using namespace Rigel::Voxel;
 
+template<typename T>
+concept HasShadowEnableSetting = requires(T value) {
+    value.shadow.enabled;
+};
+
+static_assert(!HasShadowEnableSetting<WorldRenderConfig>);
+
 namespace {
 
 class StringConfigSource : public IConfigSource {
@@ -47,7 +54,6 @@ render:
   transparent_alpha: 0.4
   render_distance: 300.0
   shadow:
-    enabled: true
     cascades: 2
     map_size: 512
     max_distance: 150.0
@@ -77,7 +83,6 @@ render:
     CHECK_NEAR(config.sunDirection.z, 0.1f, 0.0001f);
     CHECK_NEAR(config.transparentAlpha, 0.4f, 0.0001f);
     CHECK_NEAR(config.renderDistance, 256.0f, 0.0001f);
-    CHECK(config.shadow.enabled);
     CHECK_EQ(config.shadow.cascades, 2);
     CHECK_EQ(config.shadow.mapSize, 512);
     CHECK_NEAR(config.shadow.maxDistance, 150.0f, 0.0001f);
@@ -101,7 +106,6 @@ TEST_CASE(RenderConfig_LayeredShadowRetainsOmittedValues) {
     provider.addSource(std::make_unique<StringConfigSource>(R"(
 render:
   shadow:
-    enabled: true
     pcf_radius: 2
     pcf_radius_near: 1
     pcf_radius_far: 3
@@ -109,15 +113,15 @@ render:
     provider.addSource(std::make_unique<StringConfigSource>(R"(
 render:
   shadow:
-    enabled: false
+    bias: 0.002
 )"));
 
     const WorldRenderConfig config = provider.load();
 
-    CHECK(!config.shadow.enabled);
     CHECK_EQ(config.shadow.pcfRadius, 2);
     CHECK_EQ(config.shadow.pcfRadiusNear, 1);
     CHECK_EQ(config.shadow.pcfRadiusFar, 3);
+    CHECK_NEAR(config.shadow.bias, 0.002f, 0.0001f);
 }
 
 TEST_CASE(RenderConfig_GenericPcfRadiusSuppliesNearAndFarFallbacks) {

@@ -115,12 +115,22 @@ separate values: hardware recovery may select a safe effective value, while
 persistence always writes the requested value. The store does not itself apply
 requests to window, renderer, streaming, or input consumers.
 
-`ApplicationPreferences` is the direct runtime owner for applying input and
-View Distance requests. `Application` exposes the sole public View Distance
-session seam. A request only replaces the pending candidate; it does not change
-requested preferences, active streaming, or rendering synchronously. After
-events are collected for the next application frame, the owner derives and
-validates one complete active-world policy, prepares the preference save,
+`ApplicationPreferences` is the direct runtime owner for applying input,
+Shadows, and View Distance requests. Shadows are one On/Off request; the
+low-level cascade, texture, and filtering fields are not user preferences.
+Enabling validates the renderer-owned profile and prepares complete depth,
+transmittance, and framebuffer resources before swapping them into the active
+view. Disabling swaps in an empty resource set. A definite preference
+publication failure restores the prior effective resources and request;
+durability uncertainty keeps the already-published request and effective
+state. Startup preparation failure leaves the persisted request intact and
+reports Shadows as effectively Off.
+
+`Application` exposes the public active-session seams for Shadows and View
+Distance. A View Distance request only replaces the pending candidate; it does
+not change requested preferences, active streaming, or rendering synchronously.
+After events are collected for the next application frame, the owner derives
+and validates one complete active-world policy, prepares the preference save,
 applies that same immutable policy to the world and loader, and publishes the
 save. Repeated requests before that boundary supersede the pending candidate.
 A definite preparation or publication failure restores the prior complete
@@ -371,7 +381,6 @@ config (`assets/config/render.yaml`) may override them.
 | --- | --- | --- | --- |
 | `render.sun_direction` | vec3 | `[0.5, 1.0, 0.3]` | Directional light vector. |
 | `render.transparent_alpha` | float | `0.5` | Alpha for transparent pass. |
-| `render.shadow.enabled` | bool | `false` | Toggle cascaded shadows. |
 | `render.shadow.cascades` | int | `3` | Cascade count (maximum `4`). |
 | `render.shadow.map_size` | int | `1024` | Shadow map resolution (maximum `6144`). |
 | `render.shadow.max_distance` | float | `200.0` | Internal profile distance, capped by the active View Distance policy. |
@@ -393,13 +402,16 @@ config (`assets/config/render.yaml`) may override them.
 loaded and meshed. `WorldView` derives the renderer's world-unit culling range,
 projection far plane, and shadow-distance ceiling from the accepted request.
 `render.render_distance` is not a supported render YAML key.
+`render.shadow.enabled` is also not supported: the sole player request is
+`UserPreferences.graphics.shadows`. The remaining shadow fields are the
+renderer-owned internal On profile during the current rendering migration.
 
 Key fields:
 
 - `sun_direction` (vec3)
 - `transparent_alpha` (float)
 - `shadow`:
-  - `enabled`, `cascades`, `map_size`, `max_distance`
+  - `cascades`, `map_size`, `max_distance`
   - `split_lambda`, `bias`, `normal_bias`
   - `pcf_radius`, `pcf_radius_near`, `pcf_radius_far`
   - `transparent_scale`, `strength`, `fade_power`
@@ -484,7 +496,7 @@ source layer, they have the highest precedence.
 
 - Layered render/persistence configs and saved world identity are loaded once at
   startup. Supported UserPreferences changes use their direct live apply paths;
-  View Distance requires an active world session.
+  Shadows and View Distance require an active world session.
 - Validation is implemented by concrete owners rather than one generic schema
   engine. Generator definitions and save-owned settings are strict; other
   current config domains retain their documented parsing behavior.

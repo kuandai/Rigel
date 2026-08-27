@@ -139,7 +139,8 @@ explicit failed state until a later streaming requeue retries them.
 - Entries use shared chunk importance: the camera-containing chunk first,
   then squared chunk distance, then lexicographic chunk coordinate. Generation
   and direct-view mesh admission therefore use the same deterministic order.
-- Unload retention is derived one chunk beyond the requested View Distance.
+- Unload retention continues to use the internal streaming policy, with the
+  requested View Distance as its effective minimum.
 - The render range is derived in world units to include the outer boundary of
   the requested chunk sphere.
 

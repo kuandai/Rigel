@@ -118,16 +118,16 @@ persistence always writes the requested value. The store does not itself apply
 requests to window, renderer, streaming, or input consumers.
 
 `ApplicationPreferences` is the direct runtime owner for applying input and
-View Distance requests. Sensitivity and invert-Y update the cursor callback
-immediately. A binding candidate is compiled against the required nine-action
-manifest asset without mutating the cached asset, then queued for
-`InputState::beginFrame()`. View Distance is applied to the active world and
-chunk loader at a main-thread frame boundary. A definite preparation or
-publication failure retains the prior requested and effective state. If
-replacement bytes were published but directory durability is uncertain, the
-complete candidate remains requested and visible. Resetting controls clears
-only the sparse binding map, preserving sensitivity and invert-Y while
-restoring manifest inheritance.
+View Distance requests. `Application` exposes the sole public View Distance
+session seam, which applies at a main-thread boundary between frames.
+Sensitivity and invert-Y update the cursor callback immediately. A binding
+candidate is compiled against the required nine-action manifest asset without
+mutating the cached asset, then queued for `InputState::beginFrame()`. A
+definite preparation or publication failure retains the prior requested and
+effective state. If replacement bytes were published but directory durability
+is uncertain, the complete candidate remains requested and visible. Resetting
+controls clears only the sparse binding map, preserving sensitivity and
+invert-Y while restoring manifest inheritance.
 
 ---
 
@@ -270,11 +270,13 @@ sections; there is no author-facing pipeline or simple terrain mode.
 
 `StreamingConfig` owns the remaining runtime chunk loading, generation, and
 meshing schedule inputs under the `streaming` key. It uses the dedicated
-streaming source order above. Player View Distance, unload hysteresis, and
-region prefetch radius are deliberately absent from this YAML domain.
+streaming source order above. Player View Distance is absent from this YAML
+domain. Unload distance and loader prefetch radius remain transitional engine
+policy inputs.
 
 | Key | Type | Code fallback | Notes |
 | --- | --- | --- | --- |
+| `streaming.unload_distance_chunks` | int | `8` | Retention radius (maximum `24`); the player View Distance is its effective minimum. |
 | `streaming.gen_queue_limit` | int | `0` | Generation dispatch cap before executor-capacity bounds (0 = no configured cap; maximum explicit cap `32768`). |
 | `streaming.mesh_queue_limit` | int | `0` | Mesh dispatch cap before executor-capacity bounds (0 = no configured cap; maximum explicit cap `32768`). |
 | `streaming.update_budget_per_frame` | int | `0` | Load/generation/missing-mesh requests advanced per update (0 = unlimited). |
@@ -287,6 +289,7 @@ region prefetch radius are deliberately absent from this YAML domain.
 | `streaming.load_queue_limit` | int | `0` | Pending disk load cap (0 = unlimited; maximum explicit cap `32768`). |
 | `streaming.load_max_cached_regions` | int | `8` | Cached region cap (0 = unlimited, maximum `256`). |
 | `streaming.load_max_inflight_regions` | int | `8` | Configured physical region-read cap (0 = no configured physical-read cap; maximum explicit cap `64`). The zero-cap fallback retains at most 64 speculative owners in the loader-owned queue; dispatched or pool-pending work is bounded separately by IO executor capacity, including one inline result when `io_threads` is 0. |
+| `streaming.load_prefetch_radius` | int | `1` | Region prefetch radius (maximum `4`). |
 | `streaming.load_prefetch_per_request` | int | `12` | Prefetch request cap per chunk request (0 = all candidates; maximum `728`). |
 | `streaming.max_resident_chunks` | int | `0` | Resident chunk cache cap (0 = unlimited, maximum explicit cap `65536`). |
 
@@ -302,10 +305,10 @@ concurrency rather than rejecting direct chunk demand.
 The sole player request is
 `UserPreferences.graphics.view_distance_chunks`, with a default of 12 and an
 inclusive range of 2 through 16. The active `WorldView` applies that radius to
-streaming and derives a one-chunk unload hysteresis. The renderer culling range
-covers the outer boundary of the requested chunk sphere. The chunk loader
-derives its region prefetch radius from the same request and its persistence
-format. These derivations are runtime state, not persisted settings.
+streaming and derives the renderer culling range needed to cover the outer
+boundary of the requested chunk sphere. Live changes do not replace the
+configured unload or loader-prefetch policies. The shipped values are 13 chunks
+and one region, respectively.
 
 The one-chunk hysteresis is covered by a deterministic lifecycle regression.
 It preloads a sparse radius-12 sphere with one solid boundary probe, settles to
@@ -331,13 +334,14 @@ asynchronous copies, and currently unmetered CPU and GPU mesh memory. They are
 block-storage bounds, not measurements of total resident memory.
 
 The player view limit bounds a synchronous desired-set rebuild to 35,937 cube
-candidates and 17,077 selected sphere coordinates. Normal unload retention is
-one chunk wider. Prefetch scans at most 728 neighbors; the maximum explicit
-per-request cap equals that candidate count. Per-frame budgets are limited to
-32,768. These are operational ceilings for Rigel's fixed 32-cubed chunks rather
-than integer or address-space maxima. Tests and benchmarks may still construct
-`StreamingConfig` with exact distance values as explicit developer injection;
-normal application bootstrap overwrites those values from `UserPreferences`.
+candidates and 17,077 selected sphere coordinates. The unload limit bounds its
+distance-retention sphere to 57,777 coordinates. Prefetch scans at most 728
+neighbors; the maximum explicit per-request cap equals that radius-four
+candidate count. Per-frame budgets are limited to 32,768. These are operational
+ceilings for Rigel's fixed 32-cubed chunks rather than integer or address-space
+maxima. Tests and benchmarks may still construct `StreamingConfig` with exact
+view distances as explicit developer injection; normal application bootstrap
+overwrites the view value from `UserPreferences`.
 
 Negative queue, budget, thread, cache, and prefetch values are clamped to zero.
 The desired set is rebuilt only when the camera enters a different chunk, a
@@ -385,7 +389,7 @@ config (`assets/config/render.yaml`) may override them.
 
 `UserPreferences.graphics.view_distance_chunks` controls which chunks are
 loaded and meshed. `WorldView` derives the renderer's world-unit culling range,
-projection distance, and shadow-distance ceiling from the accepted request.
+including projection distance, from the accepted request.
 `render.render_distance` is not a supported render YAML key.
 
 Key fields:

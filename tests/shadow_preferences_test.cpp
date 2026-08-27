@@ -10,9 +10,11 @@
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/WorldView.h"
 
+#include <array>
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <string_view>
 
 namespace Rigel::Preferences::detail {
 
@@ -26,6 +28,9 @@ void setUserPreferencesAfterPublicationHookForTesting(
 } // namespace Rigel::Preferences::detail
 
 namespace Rigel::Voxel::detail {
+
+void setShadowPreparationHookForTesting(
+    std::function<void(std::string_view, GLuint, GLuint, GLuint)> hook);
 
 struct WorldViewTestAccess {
     struct ShadowResources {
@@ -146,6 +151,7 @@ public:
     }
 
     ~ShadowFixture() {
+        Rigel::Voxel::detail::setShadowPreparationHookForTesting({});
         Rigel::Preferences::detail::
             setUserPreferencesAfterSavePreflightHookForTesting({});
         Rigel::Preferences::detail::
@@ -171,6 +177,118 @@ public:
     Rigel::Voxel::World world;
     Rigel::Voxel::WorldView view;
     std::filesystem::path path;
+};
+
+class ShadowPreparationBindings final {
+public:
+    ShadowPreparationBindings() {
+        glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &m_previousTexture);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &m_previousDrawFramebuffer);
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &m_previousReadFramebuffer);
+
+        glGenTextures(1, &m_texture);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, m_texture);
+        glGenFramebuffers(1, &m_drawFramebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_drawFramebuffer);
+        glGenFramebuffers(1, &m_readFramebuffer);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, m_readFramebuffer);
+    }
+
+    ~ShadowPreparationBindings() {
+        glBindTexture(
+            GL_TEXTURE_2D_ARRAY,
+            static_cast<GLuint>(m_previousTexture));
+        glBindFramebuffer(
+            GL_DRAW_FRAMEBUFFER,
+            static_cast<GLuint>(m_previousDrawFramebuffer));
+        glBindFramebuffer(
+            GL_READ_FRAMEBUFFER,
+            static_cast<GLuint>(m_previousReadFramebuffer));
+        glDeleteTextures(1, &m_texture);
+        glDeleteFramebuffers(1, &m_drawFramebuffer);
+        glDeleteFramebuffers(1, &m_readFramebuffer);
+    }
+
+    GLuint texture() const { return m_texture; }
+    GLuint drawFramebuffer() const { return m_drawFramebuffer; }
+    GLuint readFramebuffer() const { return m_readFramebuffer; }
+
+private:
+    GLint m_previousTexture = 0;
+    GLint m_previousDrawFramebuffer = 0;
+    GLint m_previousReadFramebuffer = 0;
+    GLuint m_texture = 0;
+    GLuint m_drawFramebuffer = 0;
+    GLuint m_readFramebuffer = 0;
+};
+
+enum class ShadowPreparationFailureKind {
+    Throw,
+    OpenGLError,
+    DetachDepth,
+    DetachTransmittance,
+};
+
+struct ShadowPreparationFailureCase {
+    std::string_view phase;
+    ShadowPreparationFailureKind kind;
+    bool hasDepth;
+    bool hasTransmittance;
+    bool hasFramebuffer;
+};
+
+constexpr std::array<ShadowPreparationFailureCase, 8>
+    kShadowPreparationFailureCases{{
+        {"depth_texture_created",
+         ShadowPreparationFailureKind::Throw,
+         true,
+         false,
+         false},
+        {"depth_texture_allocated",
+         ShadowPreparationFailureKind::OpenGLError,
+         true,
+         false,
+         false},
+        {"transmittance_texture_created",
+         ShadowPreparationFailureKind::Throw,
+         true,
+         true,
+         false},
+        {"transmittance_texture_allocated",
+         ShadowPreparationFailureKind::OpenGLError,
+         true,
+         true,
+         false},
+        {"framebuffer_created",
+         ShadowPreparationFailureKind::Throw,
+         true,
+         true,
+         true},
+        {"depth_framebuffer_validation",
+         ShadowPreparationFailureKind::DetachDepth,
+         true,
+         true,
+         true},
+        {"transmittance_framebuffer_validation",
+         ShadowPreparationFailureKind::DetachTransmittance,
+         true,
+         true,
+         true},
+        {"final_framebuffer_validation",
+         ShadowPreparationFailureKind::OpenGLError,
+         true,
+         true,
+         true},
+    }};
+
+struct ObservedShadowPreparation {
+    bool reached = false;
+    bool depthWasObject = false;
+    bool transmittanceWasObject = false;
+    bool framebufferWasObject = false;
+    GLuint depth = 0;
+    GLuint transmittance = 0;
+    GLuint framebuffer = 0;
 };
 
 class MissingShadowDepthFixture final {
@@ -272,6 +390,126 @@ TEST_CASE(ApplicationPreferences_ShadowStartupAndLiveToggleOwnResources) {
     CHECK(preferences.requested().graphics.shadows);
     CHECK(persistedShadows(fixture.path));
     CHECK(shadowResources(fixture.view).depthArray != 0);
+}
+
+TEST_CASE(ApplicationPreferences_PartialShadowPreparationFailureIsAtomic) {
+    ShadowFixture fixture;
+    auto preferences = fixture.owner(false);
+    CHECK_EQ(
+        preferences.initializeShadows(fixture.view).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const ShadowResources beforeResources = shadowResources(fixture.view);
+    const std::string beforeDocument = persistedDocument(fixture.path);
+
+    for (const auto& failure : kShadowPreparationFailureCases) {
+        ShadowPreparationBindings bindings;
+        ObservedShadowPreparation observed;
+        Rigel::Voxel::detail::setShadowPreparationHookForTesting(
+            [&](std::string_view phase,
+                GLuint depth,
+                GLuint transmittance,
+                GLuint framebuffer) {
+                if (phase != failure.phase) {
+                    return;
+                }
+                observed.reached = true;
+                observed.depth = depth;
+                observed.transmittance = transmittance;
+                observed.framebuffer = framebuffer;
+                observed.depthWasObject = glIsTexture(depth) == GL_TRUE;
+                observed.transmittanceWasObject =
+                    glIsTexture(transmittance) == GL_TRUE;
+                observed.framebufferWasObject =
+                    glIsFramebuffer(framebuffer) == GL_TRUE;
+
+                switch (failure.kind) {
+                    case ShadowPreparationFailureKind::Throw:
+                        throw std::runtime_error(
+                            "injected shadow preparation failure");
+                    case ShadowPreparationFailureKind::OpenGLError:
+                        glBindFramebuffer(GL_TEXTURE_2D, 0);
+                        break;
+                    case ShadowPreparationFailureKind::DetachDepth:
+                        glFramebufferTextureLayer(
+                            GL_FRAMEBUFFER,
+                            GL_DEPTH_ATTACHMENT,
+                            0,
+                            0,
+                            0);
+                        break;
+                    case ShadowPreparationFailureKind::DetachTransmittance:
+                        glFramebufferTextureLayer(
+                            GL_FRAMEBUFFER,
+                            GL_COLOR_ATTACHMENT0,
+                            0,
+                            0,
+                            0);
+                        break;
+                }
+            });
+
+        const auto result = preferences.applyShadows(fixture.view, true);
+        Rigel::Voxel::detail::setShadowPreparationHookForTesting({});
+
+        CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::Rejected);
+        CHECK(observed.reached);
+        CHECK_EQ(observed.depth != 0, failure.hasDepth);
+        CHECK_EQ(
+            observed.transmittance != 0,
+            failure.hasTransmittance);
+        CHECK_EQ(observed.framebuffer != 0, failure.hasFramebuffer);
+        CHECK_EQ(observed.depthWasObject, failure.hasDepth);
+        CHECK_EQ(
+            observed.transmittanceWasObject,
+            failure.hasTransmittance);
+        CHECK_EQ(observed.framebufferWasObject, failure.hasFramebuffer);
+        if (failure.hasDepth) {
+            CHECK_EQ(glIsTexture(observed.depth), GL_FALSE);
+        }
+        if (failure.hasTransmittance) {
+            CHECK_EQ(glIsTexture(observed.transmittance), GL_FALSE);
+        }
+        if (failure.hasFramebuffer) {
+            CHECK_EQ(glIsFramebuffer(observed.framebuffer), GL_FALSE);
+        }
+
+        GLint boundTexture = 0;
+        GLint boundDrawFramebuffer = 0;
+        GLint boundReadFramebuffer = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &boundTexture);
+        glGetIntegerv(
+            GL_DRAW_FRAMEBUFFER_BINDING,
+            &boundDrawFramebuffer);
+        glGetIntegerv(
+            GL_READ_FRAMEBUFFER_BINDING,
+            &boundReadFramebuffer);
+        CHECK_EQ(
+            boundTexture,
+            static_cast<GLint>(bindings.texture()));
+        CHECK_EQ(
+            boundDrawFramebuffer,
+            static_cast<GLint>(bindings.drawFramebuffer()));
+        CHECK_EQ(
+            boundReadFramebuffer,
+            static_cast<GLint>(bindings.readFramebuffer()));
+        CHECK_EQ(glIsTexture(bindings.texture()), GL_TRUE);
+        CHECK_EQ(
+            glIsFramebuffer(bindings.drawFramebuffer()),
+            GL_TRUE);
+        CHECK_EQ(
+            glIsFramebuffer(bindings.readFramebuffer()),
+            GL_TRUE);
+
+        const ShadowResources retained = shadowResources(fixture.view);
+        CHECK_EQ(retained.depthArray, beforeResources.depthArray);
+        CHECK_EQ(
+            retained.transmitArray,
+            beforeResources.transmitArray);
+        CHECK_EQ(retained.framebuffer, beforeResources.framebuffer);
+        CHECK(!preferences.effectiveShadowsEnabled());
+        CHECK(!preferences.requested().graphics.shadows);
+        CHECK_EQ(persistedDocument(fixture.path), beforeDocument);
+    }
 }
 
 TEST_CASE(ApplicationPreferences_UnpublishedShadowDisableRestoresResources) {

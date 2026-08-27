@@ -9,15 +9,36 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace Rigel::Voxel {
 
 namespace {
+using ShadowPreparationTestHook =
+    std::function<void(std::string_view, GLuint, GLuint, GLuint)>;
+
+ShadowPreparationTestHook g_shadowPreparationTestHook;
+
+void shadowPreparationCheckpoint(
+    std::string_view phase,
+    GLuint depthArray,
+    GLuint transmitArray,
+    GLuint framebuffer) {
+    if (g_shadowPreparationTestHook) {
+        g_shadowPreparationTestHook(
+            phase,
+            depthArray,
+            transmitArray,
+            framebuffer);
+    }
+}
+
 glm::vec3 normalizeOrDefault(const glm::vec3& value) {
     float lengthSq = glm::dot(value, value);
     if (lengthSq <= 0.000001f) {
@@ -117,6 +138,14 @@ private:
 
 
 } // namespace
+
+namespace detail {
+
+void setShadowPreparationHookForTesting(ShadowPreparationTestHook hook) {
+    g_shadowPreparationTestHook = std::move(hook);
+}
+
+} // namespace detail
 
 ChunkRenderer::PreparedShadowResources::PreparedShadowResources(
     PreparedShadowResources&& other) noexcept
@@ -664,9 +693,19 @@ ChunkRenderer::prepareShadowResources(
             "OpenGL did not create the shadow depth texture");
     }
     glBindTexture(GL_TEXTURE_2D_ARRAY, state.depthArray);
+    shadowPreparationCheckpoint(
+        "depth_texture_created",
+        state.depthArray,
+        state.transmitArray,
+        state.fbo);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT24,
                  state.mapSize, state.mapSize, state.cascades, 0,
                  GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    shadowPreparationCheckpoint(
+        "depth_texture_allocated",
+        state.depthArray,
+        state.transmitArray,
+        state.fbo);
     requireNoOpenGLError("depth allocation");
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -682,9 +721,19 @@ ChunkRenderer::prepareShadowResources(
             "OpenGL did not create the shadow transmittance texture");
     }
     glBindTexture(GL_TEXTURE_2D_ARRAY, state.transmitArray);
+    shadowPreparationCheckpoint(
+        "transmittance_texture_created",
+        state.depthArray,
+        state.transmitArray,
+        state.fbo);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8,
                  state.mapSize, state.mapSize, state.cascades, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    shadowPreparationCheckpoint(
+        "transmittance_texture_allocated",
+        state.depthArray,
+        state.transmitArray,
+        state.fbo);
     requireNoOpenGLError("transmittance allocation");
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -700,6 +749,11 @@ ChunkRenderer::prepareShadowResources(
             "OpenGL did not create the shadow framebuffer");
     }
     glBindFramebuffer(GL_FRAMEBUFFER, state.fbo);
+    shadowPreparationCheckpoint(
+        "framebuffer_created",
+        state.depthArray,
+        state.transmitArray,
+        state.fbo);
     glFramebufferTextureLayer(
         GL_FRAMEBUFFER,
         GL_DEPTH_ATTACHMENT,
@@ -708,6 +762,11 @@ ChunkRenderer::prepareShadowResources(
         0);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
+    shadowPreparationCheckpoint(
+        "depth_framebuffer_validation",
+        state.depthArray,
+        state.transmitArray,
+        state.fbo);
     const GLenum depthStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (depthStatus != GL_FRAMEBUFFER_COMPLETE) {
         throw std::runtime_error(
@@ -723,12 +782,22 @@ ChunkRenderer::prepareShadowResources(
         0);
     const GLenum drawBuffer = GL_COLOR_ATTACHMENT0;
     glDrawBuffers(1, &drawBuffer);
+    shadowPreparationCheckpoint(
+        "transmittance_framebuffer_validation",
+        state.depthArray,
+        state.transmitArray,
+        state.fbo);
     const GLenum transmitStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (transmitStatus != GL_FRAMEBUFFER_COMPLETE) {
         throw std::runtime_error(
             "shadow transmittance framebuffer validation failed (status " +
             std::to_string(transmitStatus) + ")");
     }
+    shadowPreparationCheckpoint(
+        "final_framebuffer_validation",
+        state.depthArray,
+        state.transmitArray,
+        state.fbo);
     requireNoOpenGLError("framebuffer validation");
     return prepared;
 }

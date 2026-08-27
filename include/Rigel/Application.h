@@ -38,10 +38,14 @@ public:
         const Preferences::DisplayPreferences& preferences,
         WindowedSizeIntent windowedSizeIntent);
     PreferenceApplyResult applyVerticalFov(double verticalFovDegrees);
+    PreferenceApplyResult applyInputPreferences(
+        const Preferences::InputPreferences& preferences);
+    PreferenceApplyResult resetControlBindings();
 
     const Preferences::UserPreferences& requestedPreferences() const;
     const Preferences::DisplayPreferences& effectiveDisplayPreferences() const;
     double effectiveVerticalFovDegrees() const;
+    const Preferences::InputPreferences& effectiveInputPreferences() const;
 
 private:
     enum class Initialization {

@@ -99,7 +99,9 @@ leaf or section warns and uses the shipped default for only that leaf or
 section; valid siblings remain usable. Unknown fields and binding actions warn
 and are ignored. Unknown schema-1 nodes are retained when known requests are
 later saved. Binding overrides distinguish an absent action from an explicit
-empty list.
+empty list. Binding lists accept bounded symbolic keyboard and mouse tokens;
+raw multi-digit GLFW codes and unknown tokens invalidate only that action's
+override.
 
 Malformed, missing-schema, unsupported-schema, unreadable, oversized, and
 nonregular files return safe defaults without changing the existing path.
@@ -121,6 +123,16 @@ leaves the previous file intact. Requested and effective preferences are
 separate values: hardware recovery may select a safe effective value, while
 persistence always writes the requested value. The store does not itself apply
 requests to window, renderer, streaming, or input consumers.
+
+`ApplicationPreferences` is the direct runtime owner for applying input
+requests. Sensitivity and invert-Y update the cursor callback immediately. A
+binding candidate is compiled against the required nine-action manifest asset
+without mutating the cached asset, then queued for `InputState::beginFrame()`.
+A definite preparation or publication failure retains the prior requested and
+effective input state. If replacement bytes were published but directory
+durability is uncertain, the complete candidate remains requested and visible.
+Resetting controls clears only the sparse binding map, preserving sensitivity
+and invert-Y while restoring manifest inheritance.
 
 ---
 
@@ -625,7 +637,8 @@ retain their normal streaming precedence without applying generation fields.
   world bounds, and density-graph cycles are rejected before runtime resource
   construction.
 - World generation overlays are the only supported overlay mechanism.
-- Input bindings are configured through the asset manifest, not this system.
+- Shipped player binding defaults are content in the asset manifest; sparse
+  global user replacements are `UserPreferences`.
 
 ---
 

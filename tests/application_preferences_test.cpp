@@ -2,9 +2,11 @@
 
 #include "ApplicationPreferences.h"
 #include "FrameRendererTestAccess.h"
+#include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/input/GameplayInput.h"
+#include "Rigel/input/InputBindingsLoader.h"
 
 #include <GLFW/glfw3.h>
 
@@ -335,6 +337,21 @@ public:
     Rigel::ApplicationPreferences* preferenceOwner = nullptr;
     std::filesystem::path path;
     Rigel::GlfwRuntime runtime;
+};
+
+class InputFixture {
+public:
+    InputFixture() {
+        assets.loadManifest("manifest.yaml");
+        assets.registerLoader(
+            "input",
+            std::make_unique<Rigel::Input::InputBindingsLoader>());
+        defaults = Rigel::Input::loadPlayerDefaultBindings(assets);
+    }
+
+    Rigel::Asset::AssetManager assets;
+    std::shared_ptr<const Rigel::Input::InputBindings> defaults;
+    Rigel::Input::InputState input;
 };
 
 } // namespace
@@ -1212,4 +1229,179 @@ TEST_CASE(ApplicationPreferences_FovPublicationFailureRestoresProjection) {
         requested.camera.verticalFovDegrees);
     CHECK(!Rigel::Render::FrameRendererTestAccess::temporalHistoryValid(
         renderer));
+}
+
+TEST_CASE(ApplicationPreferences_StartupInputUsesLoadedGlobalRequest) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    requested.input.mouseSensitivity = 0.35;
+    requested.input.invertY = true;
+    requested.input.bindings[
+        Rigel::Preferences::UserAction::MoveForward] = {"UP"};
+    auto preferences = fixture.owner(requested);
+    const std::string before = readDocument(fixture.path);
+    InputFixture controls;
+
+    preferences.initializeInput(controls.input, *controls.defaults);
+    controls.input.beginFrame();
+    controls.input.handleKeyEvent(GLFW_KEY_UP, GLFW_PRESS);
+    controls.input.beginFrame();
+
+    CHECK_EQ(preferences.effectiveInput(), requested.input);
+    CHECK(controls.input.isActionPressed("move_forward"));
+    CHECK_EQ(readDocument(fixture.path), before);
+}
+
+TEST_CASE(ApplicationPreferences_InputApplyIsImmediateAndMapSwapsAtBoundary) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    InputFixture controls;
+    preferences.initializeInput(controls.input, *controls.defaults);
+    controls.input.beginFrame();
+
+    auto candidate = requested.input;
+    candidate.mouseSensitivity = 0.5;
+    candidate.invertY = true;
+    candidate.bindings[Rigel::Preferences::UserAction::MoveForward] =
+        {"UP", "MOUSE_4"};
+    candidate.bindings[Rigel::Preferences::UserAction::PlaceBlock] = {};
+    controls.input.handleKeyEvent(GLFW_KEY_UP, GLFW_PRESS);
+
+    const auto result = preferences.applyInput(
+        controls.input, *controls.defaults, candidate);
+
+    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.requested().input, candidate);
+    CHECK_EQ(preferences.effectiveInput(), candidate);
+    CHECK(!controls.input.isActionPressed("move_forward"));
+    controls.input.beginFrame();
+    CHECK(controls.input.isActionPressed("move_forward"));
+    CHECK(!controls.input.isActionJustPressed("move_forward"));
+    controls.input.handleMouseButtonEvent(
+        GLFW_MOUSE_BUTTON_RIGHT, GLFW_PRESS);
+    controls.input.beginFrame();
+    CHECK(!controls.input.isActionPressed("place_block"));
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path).load().input,
+        candidate);
+}
+
+TEST_CASE(ApplicationPreferences_InvalidInputEditRetainsPriorState) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    InputFixture controls;
+    preferences.initializeInput(controls.input, *controls.defaults);
+    controls.input.beginFrame();
+    const std::string before = readDocument(fixture.path);
+
+    auto candidate = requested.input;
+    candidate.mouseSensitivity = 0.7;
+    candidate.bindings[Rigel::Preferences::UserAction::MoveForward] = {"87"};
+    const auto result = preferences.applyInput(
+        controls.input, *controls.defaults, candidate);
+
+    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_EQ(preferences.requested(), requested);
+    CHECK_EQ(preferences.effectiveInput(), requested.input);
+    CHECK_EQ(readDocument(fixture.path), before);
+    controls.input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
+    controls.input.beginFrame();
+    CHECK(controls.input.isActionPressed("move_forward"));
+}
+
+TEST_CASE(ApplicationPreferences_InputPublicationFailureRestoresPriorState) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    InputFixture controls;
+    preferences.initializeInput(controls.input, *controls.defaults);
+    controls.input.beginFrame();
+    const std::string before = readDocument(fixture.path);
+    auto candidate = requested.input;
+    candidate.mouseSensitivity = 0.7;
+    candidate.invertY = true;
+    candidate.bindings[Rigel::Preferences::UserAction::MoveForward] = {"UP"};
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting(
+            &failBeforePublication);
+    controls.input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
+
+    const auto result = preferences.applyInput(
+        controls.input, *controls.defaults, candidate);
+
+    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(preferences.requested(), requested);
+    CHECK_EQ(preferences.effectiveInput(), requested.input);
+    CHECK_EQ(readDocument(fixture.path), before);
+    controls.input.beginFrame();
+    CHECK(controls.input.isActionPressed("move_forward"));
+    CHECK(controls.input.isActionJustPressed("move_forward"));
+}
+
+TEST_CASE(ApplicationPreferences_UncertainInputPublicationKeepsCompleteCandidate) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    InputFixture controls;
+    preferences.initializeInput(controls.input, *controls.defaults);
+    controls.input.beginFrame();
+    auto candidate = requested.input;
+    candidate.mouseSensitivity = 0.8;
+    candidate.invertY = true;
+    candidate.bindings[Rigel::Preferences::UserAction::MoveForward] = {"UP"};
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterPublicationHookForTesting(
+            &failAfterPublication);
+
+    const auto result = preferences.applyInput(
+        controls.input, *controls.defaults, candidate);
+
+    CHECK_EQ(
+        result.status,
+        Rigel::PreferenceApplyStatus::PublishedDurabilityUncertain);
+    CHECK_EQ(preferences.requested().input, candidate);
+    CHECK_EQ(preferences.effectiveInput(), candidate);
+    controls.input.beginFrame();
+    controls.input.handleKeyEvent(GLFW_KEY_UP, GLFW_PRESS);
+    controls.input.beginFrame();
+    CHECK(controls.input.isActionPressed("move_forward"));
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path).load().input,
+        candidate);
+}
+
+TEST_CASE(ApplicationPreferences_ResetBindingsPreservesMouseControls) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    requested.input.mouseSensitivity = 0.42;
+    requested.input.invertY = true;
+    requested.input.bindings[
+        Rigel::Preferences::UserAction::MoveForward] = {"UP"};
+    requested.input.bindings[
+        Rigel::Preferences::UserAction::PlaceBlock] = {};
+    auto preferences = fixture.owner(requested);
+    InputFixture controls;
+    preferences.initializeInput(controls.input, *controls.defaults);
+    controls.input.beginFrame();
+
+    const auto result = preferences.resetControlBindings(
+        controls.input, *controls.defaults);
+
+    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.effectiveInput().mouseSensitivity, 0.42);
+    CHECK(preferences.effectiveInput().invertY);
+    CHECK(preferences.effectiveInput().bindings.empty());
+    CHECK(preferences.requested().input.bindings.empty());
+    controls.input.beginFrame();
+    controls.input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
+    controls.input.handleMouseButtonEvent(
+        GLFW_MOUSE_BUTTON_RIGHT, GLFW_PRESS);
+    controls.input.beginFrame();
+    CHECK(controls.input.isActionPressed("move_forward"));
+    CHECK(controls.input.isActionJustPressed("place_block"));
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path).load().input,
+        preferences.effectiveInput());
 }

@@ -4,6 +4,7 @@
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/input/GameplayInput.h"
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <stdexcept>
@@ -32,6 +33,28 @@ bool validFpsLimit(const std::optional<int>& limit) {
     return !limit ||
            (*limit >= Preferences::kMinimumFpsLimit &&
             *limit <= Preferences::kMaximumFpsLimit);
+}
+
+bool validInputPreferences(
+    const Preferences::InputPreferences& preferences) {
+    if (!std::isfinite(preferences.mouseSensitivity) ||
+        preferences.mouseSensitivity < Preferences::kMinimumMouseSensitivity ||
+        preferences.mouseSensitivity > Preferences::kMaximumMouseSensitivity) {
+        return false;
+    }
+    for (const auto& [action, tokens] : preferences.bindings) {
+        const bool knownAction = std::any_of(
+            Preferences::kUserActions.begin(),
+            Preferences::kUserActions.end(),
+            [action](const auto& candidate) {
+                return candidate.first == action;
+            });
+        if (!knownAction ||
+            tokens.size() > Preferences::kMaximumBindingsPerAction) {
+            return false;
+        }
+    }
+    return true;
 }
 
 PreferenceApplyResult publicationFailure(const std::exception& error) {
@@ -72,6 +95,7 @@ void ApplicationPreferences::load() {
     m_effectiveDisplay = m_requested.display;
     m_effectiveVerticalFovDegrees =
         m_requested.camera.verticalFovDegrees;
+    m_effectiveInput = m_requested.input;
     m_logicalResizeDirty = false;
     m_pendingResize.reset();
     m_resizePersistenceTerminal.reset();
@@ -456,6 +480,73 @@ PreferenceApplyResult ApplicationPreferences::applyVerticalFov(
         m_effectiveVerticalFovDegrees = previousEffective;
         return result;
     }
+}
+
+void ApplicationPreferences::initializeInput(
+    Input::InputState& input,
+    const Input::InputBindings& playerDefaults) {
+    m_effectiveBindings =
+        Input::compileInputBindings(playerDefaults, m_requested.input);
+    m_effectiveInput = m_requested.input;
+    input.setBindings(m_effectiveBindings);
+}
+
+PreferenceApplyResult ApplicationPreferences::applyInput(
+    Input::InputState& input,
+    const Input::InputBindings& playerDefaults,
+    const Preferences::InputPreferences& candidate) {
+    if (!validInputPreferences(candidate)) {
+        return {
+            PreferenceApplyStatus::Rejected,
+            "input request is outside the supported sensitivity or binding limits"};
+    }
+    if (candidate == m_requested.input && candidate == m_effectiveInput) {
+        return {};
+    }
+
+    std::shared_ptr<Input::InputBindings> compiled;
+    try {
+        compiled = Input::compileInputBindings(playerDefaults, candidate);
+    } catch (const std::invalid_argument& error) {
+        return {PreferenceApplyStatus::Rejected, error.what()};
+    }
+    Preferences::UserPreferences nextRequested = m_requested;
+    nextRequested.input = candidate;
+    std::optional<Preferences::UserPreferencesStore::PreparedSave> prepared;
+    try {
+        prepared.emplace(m_store.prepareSave(nextRequested));
+    } catch (const std::exception& error) {
+        return publicationFailure(error);
+    }
+
+    const Preferences::InputPreferences previousEffective = m_effectiveInput;
+    m_effectiveInput = candidate;
+    input.setBindings(compiled);
+    try {
+        m_store.publishPrepared(std::move(*prepared));
+        m_requested = std::move(nextRequested);
+        m_effectiveBindings = std::move(compiled);
+        return {};
+    } catch (const std::exception& error) {
+        PreferenceApplyResult result = publicationFailure(error);
+        if (result.status ==
+            PreferenceApplyStatus::PublishedDurabilityUncertain) {
+            m_requested = std::move(nextRequested);
+            m_effectiveBindings = std::move(compiled);
+            return result;
+        }
+        m_effectiveInput = previousEffective;
+        input.setBindings(m_effectiveBindings);
+        return result;
+    }
+}
+
+PreferenceApplyResult ApplicationPreferences::resetControlBindings(
+    Input::InputState& input,
+    const Input::InputBindings& playerDefaults) {
+    Preferences::InputPreferences candidate = m_requested.input;
+    candidate.bindings.clear();
+    return applyInput(input, playerDefaults, candidate);
 }
 
 void ApplicationPreferences::markLogicalResize() {

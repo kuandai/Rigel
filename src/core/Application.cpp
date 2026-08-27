@@ -121,6 +121,7 @@ struct Application::Impl {
     Input::WindowState window;
     Input::CameraState camera;
     Input::InputState input;
+    std::shared_ptr<const Input::InputBindings> playerDefaultBindings;
     Input::DebugOverlayListener debugOverlayListener;
     Input::ImGuiOverlayListener imguiOverlayListener;
     Render::FrameRenderer renderer;
@@ -287,7 +288,7 @@ void Application::initialize() {
     m_impl->inputCallbacks.window = &m_impl->window;
     m_impl->inputCallbacks.camera = &m_impl->camera;
     m_impl->inputCallbacks.effectiveInputPreferences =
-        &m_impl->preferences->requested().input;
+        &m_impl->preferences->effectiveInput();
     registerApplicationPreferenceCallbacks(
         m_impl->inputCallbacks, *m_impl->preferences);
     Input::registerWindowCallbacks(m_impl->window.window, m_impl->inputCallbacks);
@@ -340,11 +341,11 @@ void Application::initialize() {
 
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
-        const auto playerDefaultBindings =
+        m_impl->playerDefaultBindings =
             Input::loadPlayerDefaultBindings(m_impl->assets);
-        m_impl->input.setBindings(Input::compileInputBindings(
-            *playerDefaultBindings,
-            m_impl->preferences->requested().input));
+        m_impl->preferences->initializeInput(
+            m_impl->input,
+            *m_impl->playerDefaultBindings);
         m_impl->debugOverlayListener.enabled = &m_impl->renderer.debugOverlayEnabled();
         m_impl->input.addListener(&m_impl->debugOverlayListener);
         m_impl->imguiOverlayListener.enabled = &m_impl->renderer.profilerWindowEnabled();
@@ -1121,6 +1122,17 @@ PreferenceApplyResult Application::applyVerticalFov(double verticalFovDegrees) {
         m_impl->renderer, verticalFovDegrees);
 }
 
+PreferenceApplyResult Application::applyInputPreferences(
+    const Preferences::InputPreferences& preferences) {
+    return m_impl->preferences->applyInput(
+        m_impl->input, *m_impl->playerDefaultBindings, preferences);
+}
+
+PreferenceApplyResult Application::resetControlBindings() {
+    return m_impl->preferences->resetControlBindings(
+        m_impl->input, *m_impl->playerDefaultBindings);
+}
+
 const Preferences::UserPreferences& Application::requestedPreferences() const {
     return m_impl->preferences->requested();
 }
@@ -1132,6 +1144,11 @@ Application::effectiveDisplayPreferences() const {
 
 double Application::effectiveVerticalFovDegrees() const {
     return m_impl->preferences->effectiveVerticalFovDegrees();
+}
+
+const Preferences::InputPreferences&
+Application::effectiveInputPreferences() const {
+    return m_impl->preferences->effectiveInput();
 }
 
 } // namespace Rigel

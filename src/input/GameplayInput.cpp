@@ -236,17 +236,10 @@ void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) 
         }
 #endif
         auto* ctx = static_cast<InputCallbackContext*>(glfwGetWindowUserPointer(cbWindow));
-        if (!ctx || !ctx->window || !ctx->camera ||
-            !ctx->effectiveInputPreferences) {
+        if (!ctx) {
             return;
         }
-        applyCursorPosition(
-            *ctx->window,
-            *ctx->camera,
-            ctx->effectiveInputPreferences->mouseSensitivity,
-            ctx->effectiveInputPreferences->invertY,
-            xpos,
-            ypos);
+        applyCursorPosition(*ctx, xpos, ypos);
     });
     glfwSetWindowFocusCallback(window, [](GLFWwindow* cbWindow, int focused) {
         auto* ctx = static_cast<InputCallbackContext*>(glfwGetWindowUserPointer(cbWindow));
@@ -315,12 +308,18 @@ std::shared_ptr<InputBindings> compileInputBindings(
 }
 
 void applyCursorPosition(
-    WindowState& window,
-    CameraState& camera,
-    double mouseSensitivity,
-    bool invertY,
+    InputCallbackContext& context,
     double xpos,
     double ypos) {
+    if (!context.window || !context.camera ||
+        !context.effectiveInputPreferences) {
+        return;
+    }
+    WindowState& window = *context.window;
+    CameraState& camera = *context.camera;
+    const double mouseSensitivity =
+        context.effectiveInputPreferences->mouseSensitivity;
+    const bool invertY = context.effectiveInputPreferences->invertY;
     if (!window.cursorCaptured) {
         return;
     }

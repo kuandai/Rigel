@@ -17,21 +17,30 @@ TEST_CASE(GameplayInput_CursorMathUsesEffectiveSensitivityAndInvertY) {
     Input::CameraState camera;
     camera.yaw = 10.0f;
     camera.pitch = 5.0f;
+    Preferences::InputPreferences preferences;
+    preferences.mouseSensitivity = 0.5;
+    Input::InputCallbackContext context;
+    context.window = &window;
+    context.camera = &camera;
+    context.effectiveInputPreferences = &preferences;
 
-    Input::applyCursorPosition(window, camera, 0.5, false, 100.0, 200.0);
+    Input::applyCursorPosition(context, 100.0, 200.0);
     CHECK_EQ(camera.yaw, 10.0f);
     CHECK_EQ(camera.pitch, 5.0f);
 
-    Input::applyCursorPosition(window, camera, 0.5, false, 104.0, 206.0);
+    Input::applyCursorPosition(context, 104.0, 206.0);
     CHECK_EQ(camera.yaw, 12.0f);
     CHECK_EQ(camera.pitch, 2.0f);
 
-    Input::applyCursorPosition(window, camera, 0.25, true, 108.0, 210.0);
+    preferences.mouseSensitivity = 0.25;
+    preferences.invertY = true;
+    Input::applyCursorPosition(context, 108.0, 210.0);
     CHECK_EQ(camera.yaw, 13.0f);
     CHECK_EQ(camera.pitch, 3.0f);
 
     window.cursorCaptured = false;
-    Input::applyCursorPosition(window, camera, 1.0, true, 200.0, 300.0);
+    preferences.mouseSensitivity = 1.0;
+    Input::applyCursorPosition(context, 200.0, 300.0);
     CHECK_EQ(camera.yaw, 13.0f);
     CHECK_EQ(camera.pitch, 3.0f);
 }

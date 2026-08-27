@@ -85,10 +85,7 @@ std::shared_ptr<InputBindings> compileInputBindings(
     const Preferences::InputPreferences& preferences);
 
 void applyCursorPosition(
-    WindowState& window,
-    CameraState& camera,
-    double mouseSensitivity,
-    bool invertY,
+    InputCallbackContext& context,
     double xpos,
     double ypos);
 

@@ -888,9 +888,10 @@ logical backlog, cumulative accounting partitions, and hard-zero physical
 execution gauges.
 
 The same runner reports `startup_overlay_enabled=false`. The focused toggle
-regression loads the shipped `debug_overlay` binding, asserts that it resolves
-to F1, and delivers F1 press/release events through `InputState` to the
-application's `DebugOverlayListener` and `FrameRenderer`. The first release
+regression confirms the shipped player asset excludes `debug_overlay`, compiles
+the separate developer F1 binding, and delivers F1 press/release events through
+`InputState` to the application's `DebugOverlayListener` and `FrameRenderer`.
+The first release
 changes false to true and the second changes it back. Production collection,
 presentation construction, GL work, and the ImGui legend are therefore opt-in
 rather than per-frame startup work.

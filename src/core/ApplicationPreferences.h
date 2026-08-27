@@ -6,6 +6,7 @@
 #include "Rigel/Preferences/UserPreferences.h"
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -13,6 +14,8 @@
 namespace Rigel {
 
 namespace Input {
+class InputBindings;
+class InputState;
 struct InputCallbackContext;
 }
 
@@ -48,6 +51,16 @@ public:
     PreferenceApplyResult applyVerticalFov(
         Render::FrameRenderer& renderer,
         double candidateDegrees);
+    void initializeInput(
+        Input::InputState& input,
+        const Input::InputBindings& playerDefaults);
+    PreferenceApplyResult applyInput(
+        Input::InputState& input,
+        const Input::InputBindings& playerDefaults,
+        const Preferences::InputPreferences& candidate);
+    PreferenceApplyResult resetControlBindings(
+        Input::InputState& input,
+        const Input::InputBindings& playerDefaults);
 
     void markLogicalResize();
     std::optional<PreferenceApplyResult> consumeLogicalResize(
@@ -68,6 +81,9 @@ public:
     }
     double effectiveVerticalFovDegrees() const {
         return m_effectiveVerticalFovDegrees.value();
+    }
+    const Preferences::InputPreferences& effectiveInput() const {
+        return m_effectiveInput;
     }
 
 private:
@@ -96,6 +112,8 @@ private:
     Preferences::UserPreferences m_requested;
     Preferences::DisplayPreferences m_effectiveDisplay;
     std::optional<double> m_effectiveVerticalFovDegrees;
+    Preferences::InputPreferences m_effectiveInput;
+    std::shared_ptr<Input::InputBindings> m_effectiveBindings;
     Core::FramePacer m_framePacer;
     bool m_benchmarkMode = false;
     bool m_logicalResizeDirty = false;

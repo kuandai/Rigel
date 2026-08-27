@@ -11,9 +11,9 @@ sparse global user overrides, and developer-only controls have distinct owners.
 - `UserPreferences.input.bindings` stores sparse per-action replacements. An
   absent action inherits the manifest list; an empty list explicitly unbinds
   it.
-- Application startup validates and compiles the loaded global preference
-  against the manifest without changing the cached asset, then queues the
-  effective map for the first frame boundary.
+- `ApplicationPreferences` validates and compiles a complete candidate without
+  changing the cached manifest asset. It publishes the requested preference
+  and queues the effective map for the next frame boundary.
 - Debug overlay, profiler overlay, demo entity spawn, and prototype mouse
   capture remain fixed developer/prototype bindings. They are not manifest
   player defaults and cannot be changed through `UserPreferences`.
@@ -80,10 +80,11 @@ diagnostics, but gameplay movement and block edits use semantic actions.
 
 ## Mouse Look and Cursor Capture
 
-The cursor callback reads the loaded global mouse sensitivity and invert-Y
-values from `UserPreferences`. The first cursor sample after capture or focus
-change only establishes the position baseline. Pitch remains clamped to -89
-through 89 degrees.
+The cursor callback reads the effective global mouse sensitivity and invert-Y
+values owned by `ApplicationPreferences`. Sensitivity and invert-Y changes are
+visible immediately; binding-map changes wait for `beginFrame()`. The first
+cursor sample after capture or focus change only establishes the position
+baseline. Pitch remains clamped to -89 through 89 degrees.
 
 `setCursorCaptured()` selects disabled or normal cursor mode, enables raw mouse
 motion where supported, and resets the first-sample guard. A future normal

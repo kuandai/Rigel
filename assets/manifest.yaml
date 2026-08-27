@@ -7,6 +7,9 @@ assets:
       path: config/render.yaml
     persistence_config:
       path: config/persistence.yaml
+  generator_definitions:
+    default:
+      path: generators/default.yaml
   textures:
     entity_debug:
       path: textures/blocks/stone/stone_shale.png

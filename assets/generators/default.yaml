@@ -1,0 +1,205 @@
+generator:
+  schema_version: 2
+  id: rigel:default
+  source_revision: 1
+  label: Default
+  description: Rigel's standard continents, biomes, and caves.
+  bounds:
+    min_y: -64
+    max_y: 320
+  terrain:
+    sea_level: 60
+    solid_material: base:stone_shale
+    water_material: base:water[type=source]
+    density_output: terrain_density
+  climate:
+    latitude_scale: 0.0002
+    latitude_strength: 0.3
+    local_blend: 0.3
+    global:
+      temperature:
+        octaves: 2
+        frequency: 0.0005
+        lacunarity: 2.0
+        persistence: 0.5
+        scale: 1.0
+        offset: 0.0
+      humidity:
+        octaves: 2
+        frequency: 0.0005
+        lacunarity: 2.0
+        persistence: 0.5
+        scale: 1.0
+        offset: 0.0
+      continentalness:
+        octaves: 1
+        frequency: 0.0004
+        lacunarity: 2.0
+        persistence: 0.5
+        scale: 1.0
+        offset: 0.0
+    local:
+      temperature:
+        octaves: 1
+        frequency: 0.01
+        lacunarity: 2.0
+        persistence: 0.5
+        scale: 1.0
+        offset: 0.0
+      humidity:
+        octaves: 1
+        frequency: 0.01
+        lacunarity: 2.0
+        persistence: 0.5
+        scale: 1.0
+        offset: 0.0
+      continentalness:
+        octaves: 1
+        frequency: 0.008
+        lacunarity: 2.0
+        persistence: 0.5
+        scale: 1.0
+        offset: 0.0
+  biomes:
+    blend_power: 2.0
+    epsilon: 0.0001
+    coast:
+      biome: beach
+      min_continentalness: -0.15
+      max_continentalness: -0.05
+    entries:
+      - id: land
+        target:
+          temperature: 0.0
+          humidity: 0.0
+          continentalness: 0.4
+        weight: 1.0
+        water_fill: false
+        surface:
+          - material: base:grass
+            depth: 1
+          - material: base:dirt
+            depth: 3
+      - id: beach
+        target:
+          temperature: 0.0
+          humidity: 0.0
+          continentalness: -0.1
+        weight: 1.0
+        water_fill: true
+        surface:
+          - material: base:sand
+            depth: 4
+      - id: sea
+        target:
+          temperature: 0.0
+          humidity: 0.0
+          continentalness: -0.6
+        weight: 1.0
+        water_fill: true
+        surface:
+          - material: base:sand
+            depth: 4
+  density_graph:
+    outputs:
+      terrain_density: base_density
+      cavern_field: cave_density
+    nodes:
+      - id: density_noise
+        type: noise3d
+        noise:
+          octaves: 4
+          frequency: 0.05
+          lacunarity: 2.0
+          persistence: 0.5
+          scale: 1.0
+          offset: 0.0
+      - id: y
+        type: y
+        scale: 1.0
+        offset: 0.0
+      - id: y_norm
+        type: y
+        scale: 0.0026041667
+        offset: 0.1666667
+      - id: continentalness_raw
+        type: climate
+        field: continentalness
+      - id: continentalness
+        type: clamp
+        inputs: [continentalness_raw]
+        min: -1.0
+        max: 1.0
+      - id: continent_shift
+        type: spline
+        inputs: [continentalness]
+        spline:
+          - [-1.0, 0.25]
+          - [-0.6, 0.18]
+          - [-0.2, 0.06]
+          - [-0.15, 0.02]
+          - [-0.05, 0.0]
+          - [0.0, -0.02]
+          - [0.2, -0.08]
+          - [0.5, -0.18]
+          - [1.0, -0.25]
+      - id: y_norm_shifted
+        type: add
+        inputs: [y_norm, continent_shift]
+      - id: threshold_curve
+        type: spline
+        inputs: [y_norm_shifted]
+        spline:
+          - [0.0, -2.0]
+          - [0.2969, -2.0]
+          - [0.375, 2.0]
+          - [1.0, 2.0]
+      - id: threshold_invert
+        type: invert
+        inputs: [threshold_curve]
+      - id: continent_bias
+        type: spline
+        inputs: [continentalness]
+        spline:
+          - [-1.0, -2.2]
+          - [-0.6, -2.0]
+          - [-0.2, -0.3]
+          - [-0.05, -0.05]
+          - [0.0, 0.0]
+          - [0.2, 0.12]
+          - [0.5, 0.3]
+          - [1.0, 0.6]
+      - id: base_density
+        type: add
+        inputs: [density_noise, threshold_invert, continent_bias]
+      - id: cave_noise
+        type: noise3d
+        noise:
+          octaves: 2
+          frequency: 0.02
+          lacunarity: 2.0
+          persistence: 0.5
+          scale: 1.0
+          offset: 0.0
+      - id: cave_depth_bias
+        type: spline
+        inputs: [y]
+        spline:
+          - [-64.0, 0.3]
+          - [0.0, 0.0]
+          - [30.0, -0.2]
+          - [50.0, -0.35]
+          - [60.0, -0.5]
+          - [70.0, -0.65]
+          - [80.0, -0.8]
+          - [100.0, -1.0]
+          - [140.0, -1.2]
+      - id: cave_density
+        type: add
+        inputs: [cave_noise, cave_depth_bias]
+  caves:
+    enabled: true
+    density_output: cavern_field
+    threshold: 0.75
+  structures:
+    enabled: false

@@ -1,10 +1,15 @@
 #include "TestFramework.h"
 #include "LogCapture.h"
 
+#include "Rigel/Asset/AssetLoader.h"
+#include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Voxel/BlockLoader.h"
 #include "Rigel/Voxel/GeneratorDefinition.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/BlockType.h"
+#include "Rigel/Voxel/TextureAtlas.h"
+#include "Rigel/Voxel/WorldGenerator.h"
 
 #include <string>
 #include <string_view>
@@ -507,6 +512,11 @@ TEST_CASE(GeneratorDefinition_declared_set_is_complete_validated_and_ordered) {
     CHECK_THROWS(validateAndOrderGeneratorDefinitions(
         {earlier, later, later}, registry,
         GeneratorDefinitionOrigin::Shipped));
+    GeneratorDefinition conflictingRevision = earlier;
+    conflictingRevision.sourceRevision += 1;
+    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
+        {earlier, conflictingRevision}, registry,
+        GeneratorDefinitionOrigin::Shipped));
 
     GeneratorDefinition duplicateFeature = earlier;
     duplicateFeature.data.structures.features.push_back(
@@ -556,4 +566,51 @@ TEST_CASE(GeneratorDefinition_declared_set_warns_but_accepts_unreachable_nodes) 
     CHECK_NO_THROW(validateAndOrderGeneratorDefinitions(
         {definitionWithoutUnusedNodes()}, registry,
         GeneratorDefinitionOrigin::Shipped));
+}
+
+TEST_CASE(GeneratorDefinition_shipped_default_bootstraps_strict_runtime) {
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    Rigel::Voxel::BlockRegistry registry;
+    Rigel::Voxel::TextureAtlas atlas;
+    Rigel::Voxel::BlockLoader blocks;
+    const Rigel::Voxel::BlockLoadReport report =
+        blocks.loadFromManifest(assets, registry, atlas);
+    CHECK_EQ(report.failed, size_t{0});
+
+    const auto prepared =
+        Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets,
+            registry,
+            "rigel:default",
+            GeneratorDefinitionOrigin::Shipped);
+    CHECK_EQ(prepared.sourceId, std::string("rigel:default"));
+    CHECK_EQ(prepared.sourceRevision, uint32_t{1});
+    CHECK_EQ(
+        prepared.definitionSchemaVersion,
+        Rigel::Voxel::kGeneratorDefinitionSchemaVersion);
+    CHECK_EQ(
+        prepared.canonicalSnapshot,
+        Rigel::Voxel::serializeGeneratorDefinitionSnapshot(prepared.data));
+    CHECK_EQ(prepared.data.terrain.densityOutput,
+             std::string("terrain_density"));
+    CHECK_EQ(prepared.data.caves.densityOutput,
+             std::string("cavern_field"));
+    CHECK(prepared.data.caves.enabled);
+    CHECK(!prepared.data.structures.enabled);
+
+    CHECK_NO_THROW(Rigel::Voxel::WorldGenerator(
+        registry, prepared.data, 1337u));
+    bool assetBoundary = false;
+    try {
+        static_cast<void>(
+            Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+                assets,
+                registry,
+                "rigel:missing",
+                GeneratorDefinitionOrigin::Shipped));
+    } catch (const Rigel::Asset::AssetLoadError&) {
+        assetBoundary = true;
+    }
+    CHECK(assetBoundary);
 }

@@ -549,10 +549,14 @@ public:
         const std::function<void(const std::string& name, const AssetEntry& entry)>& fn
     ) const;
 
+    std::optional<std::string> categoryDeclarationError(
+        const std::string& category) const;
+
 private:
     std::string m_namespace;
     std::unordered_map<std::string, AssetEntry> m_entries;
     std::unordered_map<std::string, std::unique_ptr<IAssetLoader>> m_loaders;
+    std::unordered_map<std::string, std::string> m_categoryDeclarationErrors;
 
     // Type-erased cache: maps (type_index, id) -> shared_ptr<void>
     using CacheKey = std::pair<std::type_index, std::string>;

@@ -12,6 +12,7 @@ namespace Rigel::Voxel {
 class BlockRegistry;
 
 inline constexpr uint32_t kGeneratorDefinitionSchemaVersion = 2;
+inline constexpr uint32_t kGeneratorSemanticsVersion = 1;
 
 enum class GeneratorDefinitionOrigin {
     Shipped,
@@ -195,6 +196,7 @@ struct PreparedGeneratorDefinitionSnapshot {
     std::string sourceId;
     uint32_t sourceRevision = 0;
     uint32_t definitionSchemaVersion = 0;
+    GeneratorDefinitionData data;
     std::string canonicalSnapshot;
 
     bool operator==(const PreparedGeneratorDefinitionSnapshot&) const = default;
@@ -210,6 +212,9 @@ PreparedGeneratorDefinitionSnapshot prepareGeneratorDefinitionSnapshot(
     const GeneratorDefinition& definition,
     const BlockRegistry& registry,
     GeneratorDefinitionOrigin origin);
+
+std::string serializeGeneratorDefinitionSnapshot(
+    const GeneratorDefinitionData& data);
 
 GeneratorDefinitionData parseGeneratorDefinitionSnapshot(
     std::string_view snapshot,

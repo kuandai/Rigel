@@ -22,4 +22,10 @@ std::vector<GeneratorDefinition> loadDeclaredGeneratorDefinitions(
     const BlockRegistry& registry,
     GeneratorDefinitionOrigin origin);
 
+PreparedGeneratorDefinitionSnapshot loadPreparedGeneratorDefinitionSnapshot(
+    Asset::AssetManager& assets,
+    const BlockRegistry& registry,
+    std::string_view selectedId,
+    GeneratorDefinitionOrigin origin);
+
 } // namespace Rigel::Voxel

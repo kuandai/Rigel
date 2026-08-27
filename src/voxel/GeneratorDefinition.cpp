@@ -1284,11 +1284,20 @@ PreparedGeneratorDefinitionSnapshot prepareGeneratorDefinitionSnapshot(
             definition.sourceRevision,
             nodeId);
     }
+    const std::string canonical = serializeSnapshotData(definition.data);
+    GeneratorDefinitionData effective = parseGeneratorDefinitionSnapshot(
+        canonical, definition.schemaVersion, definition.id);
     return PreparedGeneratorDefinitionSnapshot{
         definition.id,
         definition.sourceRevision,
         definition.schemaVersion,
-        serializeSnapshotData(definition.data)};
+        std::move(effective),
+        canonical};
+}
+
+std::string serializeGeneratorDefinitionSnapshot(
+    const GeneratorDefinitionData& data) {
+    return serializeSnapshotData(data);
 }
 
 GeneratorDefinitionData parseGeneratorDefinitionSnapshot(

@@ -62,13 +62,15 @@ public:
 
     std::shared_ptr<Asset::AssetBase> load(
         const Asset::LoadContext& context) override {
-        const std::string path = readDefinitionPath(context);
-        const std::span<const char> source = context.loadResource(path);
         try {
+            const std::string path = readDefinitionPath(context);
+            const std::span<const char> source = context.loadResource(path);
             auto result = std::make_shared<GeneratorDefinitionAsset>();
             result->definition = parseGeneratorDefinition(
                 std::string_view(source.data(), source.size()), path);
             return result;
+        } catch (const Asset::AssetLoadError&) {
+            throw;
         } catch (const std::exception& error) {
             throw Asset::AssetLoadError(context.id, error.what());
         }
@@ -97,13 +99,13 @@ std::vector<GeneratorDefinition> validateAndOrderGeneratorDefinitions(
               });
 
     for (size_t index = 1; index < definitions.size(); ++index) {
-        if (definitions[index - 1].id == definitions[index].id &&
-            definitions[index - 1].sourceRevision ==
-                definitions[index].sourceRevision) {
+        if (definitions[index - 1].id == definitions[index].id) {
             throw std::invalid_argument(
-                "Duplicate generator definition identity '" +
-                definitions[index].id + "@" +
-                std::to_string(definitions[index].sourceRevision) + "'");
+                "Duplicate generator definition ID '" +
+                definitions[index].id + "' at revisions " +
+                std::to_string(definitions[index - 1].sourceRevision) +
+                " and " +
+                std::to_string(definitions[index].sourceRevision));
         }
     }
     for (const auto& definition : definitions) {
@@ -117,27 +119,71 @@ std::vector<GeneratorDefinition> loadDeclaredGeneratorDefinitions(
     Asset::AssetManager& assets,
     const BlockRegistry& registry,
     GeneratorDefinitionOrigin origin) {
-    assets.registerLoader(
-        "generator_definitions",
-        std::make_unique<GeneratorDefinitionAssetLoader>());
-
-    std::vector<std::string> declarationNames;
+    if (const auto error =
+            assets.categoryDeclarationError("generator_definitions")) {
+        throw Asset::AssetLoadError("generator_definitions", *error);
+    }
+    std::vector<std::pair<
+        std::string, const Asset::AssetManager::AssetEntry*>> declarations;
     assets.forEachInCategory(
         "generator_definitions",
-        [&](const std::string& name, const Asset::AssetManager::AssetEntry&) {
-            declarationNames.push_back(name);
+        [&](const std::string& name,
+            const Asset::AssetManager::AssetEntry& entry) {
+            declarations.emplace_back(name, &entry);
         });
-    std::sort(declarationNames.begin(), declarationNames.end());
+    std::sort(declarations.begin(), declarations.end(),
+              [](const auto& left, const auto& right) {
+                  return left.first < right.first;
+              });
 
+    GeneratorDefinitionAssetLoader loader;
     std::vector<GeneratorDefinition> definitions;
-    definitions.reserve(declarationNames.size());
-    for (const auto& name : declarationNames) {
-        definitions.push_back(
-            assets.get<GeneratorDefinitionAsset>(
-                "generator_definitions/" + name)->definition);
+    definitions.reserve(declarations.size());
+    for (const auto& [name, entry] : declarations) {
+        const std::string id = "generator_definitions/" + name;
+        Asset::LoadContext context{id, entry->config, assets};
+        const auto loaded = std::dynamic_pointer_cast<GeneratorDefinitionAsset>(
+            loader.load(context));
+        if (!loaded) {
+            throw Asset::AssetLoadError(
+                id, "Generator definition loader returned an incompatible asset");
+        }
+        definitions.push_back(loaded->definition);
     }
-    return validateAndOrderGeneratorDefinitions(
-        std::move(definitions), registry, origin);
+    try {
+        return validateAndOrderGeneratorDefinitions(
+            std::move(definitions), registry, origin);
+    } catch (const Asset::AssetLoadError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw Asset::AssetLoadError("generator_definitions", error.what());
+    }
+}
+
+PreparedGeneratorDefinitionSnapshot loadPreparedGeneratorDefinitionSnapshot(
+    Asset::AssetManager& assets,
+    const BlockRegistry& registry,
+    std::string_view selectedId,
+    GeneratorDefinitionOrigin origin) {
+    const std::vector<GeneratorDefinition> definitions =
+        loadDeclaredGeneratorDefinitions(assets, registry, origin);
+    const auto selected = std::find_if(
+        definitions.begin(), definitions.end(), [&](const auto& definition) {
+            return definition.id == selectedId;
+        });
+    if (selected == definitions.end()) {
+        throw Asset::AssetLoadError(
+            "generator_definitions",
+            "Selected generator definition is not declared: " +
+                std::string(selectedId));
+    }
+    try {
+        return prepareGeneratorDefinitionSnapshot(
+            *selected, registry, origin);
+    } catch (const std::exception& error) {
+        throw Asset::AssetLoadError(
+            "generator_definitions", error.what());
+    }
 }
 
 } // namespace Rigel::Voxel

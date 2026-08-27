@@ -221,6 +221,9 @@ if (RIGEL_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderLoader.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderCompiler.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderAsset.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/BlockRegistry.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/GeneratorDefinition.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/GeneratorDefinitionLoader.cpp
     )
     target_include_directories(Rigel_asset_manifest_validation_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/invalid_generator_manifests

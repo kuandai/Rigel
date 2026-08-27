@@ -22,8 +22,12 @@ std::optional<std::string> AssetManager::AssetEntry::getString(const std::string
     if (!root.readable() || !root.has_child(ryml::to_csubstr(key))) {
         return std::nullopt;
     }
+    const ryml::ConstNodeRef node = root[ryml::to_csubstr(key)];
+    if (!node.has_val() || node.has_children()) {
+        return std::nullopt;
+    }
     std::string value;
-    root[ryml::to_csubstr(key)] >> value;
+    node >> value;
     return value;
 }
 
@@ -78,6 +82,7 @@ void AssetManager::loadManifest(const std::string& path) {
     // Generator definitions are consumed only as a completely validated set.
     // Reject declaration collisions before publishing any manifest entries.
     std::unordered_set<std::string> generatorDeclarations;
+    std::optional<std::string> generatorDeclarationError;
     for (const ryml::ConstNodeRef category : assets.children()) {
         const std::string categoryName = Util::toStdString(category.key());
         if (categoryName != "generator_definitions") {
@@ -88,21 +93,29 @@ void AssetManager::loadManifest(const std::string& path) {
                 Util::toStdString(assetNode.key());
             if (m_entries.contains(fullId) ||
                 !generatorDeclarations.insert(fullId).second) {
-                throw std::invalid_argument(
-                    "Duplicate generator definition asset declaration '" +
-                    fullId + "'");
+                if (!generatorDeclarationError) {
+                    generatorDeclarationError =
+                        "Duplicate generator definition asset declaration '" +
+                        fullId + "'";
+                }
             }
             std::unordered_set<std::string> fields;
             for (const ryml::ConstNodeRef field : assetNode.children()) {
                 const std::string fieldName = Util::toStdString(field.key());
                 if (!fields.insert(fieldName).second) {
-                    throw std::invalid_argument(
-                        "Duplicate field '" + fieldName +
-                        "' in generator definition asset declaration '" +
-                        fullId + "'");
+                    if (!generatorDeclarationError) {
+                        generatorDeclarationError =
+                            "Duplicate field '" + fieldName +
+                            "' in generator definition asset declaration '" +
+                            fullId + "'";
+                    }
                 }
             }
         }
+    }
+    if (generatorDeclarationError) {
+        m_categoryDeclarationErrors["generator_definitions"] =
+            *generatorDeclarationError;
     }
 
     if (manifestNamespace) {
@@ -113,6 +126,10 @@ void AssetManager::loadManifest(const std::string& path) {
     // Iterate categories (raw, textures, shaders, etc.)
     for (ryml::ConstNodeRef category : assets.children()) {
         std::string categoryName = Util::toStdString(category.key());
+        if (categoryName == "generator_definitions" &&
+            generatorDeclarationError) {
+            continue;
+        }
 
         // Iterate assets in category
         for (ryml::ConstNodeRef assetNode : category.children()) {
@@ -344,6 +361,15 @@ void AssetManager::forEachInCategory(
             fn(name, entry);
         }
     }
+}
+
+std::optional<std::string> AssetManager::categoryDeclarationError(
+    const std::string& category) const {
+    const auto found = m_categoryDeclarationErrors.find(category);
+    if (found == m_categoryDeclarationErrors.end()) {
+        return std::nullopt;
+    }
+    return found->second;
 }
 
 } // namespace Rigel::Asset

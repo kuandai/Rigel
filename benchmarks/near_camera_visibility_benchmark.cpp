@@ -352,12 +352,17 @@ std::shared_ptr<Voxel::WorldGenerator> makeGenerator(
     definition.climate.local = {noise, noise, noise};
     definition.biomes.blendPower = 2.0f;
     definition.biomes.epsilon = 0.0001f;
-    definition.biomes.coast = {"land", -100.0f, 100.0f};
+    definition.biomes.coast = {"coast", -100.0f, 100.0f};
     Voxel::GeneratorDefinitionData::Biome biome;
     biome.id = "land";
     biome.weight = 1.0f;
     biome.surface.push_back({surface.identifier, 1});
     definition.biomes.entries.push_back(std::move(biome));
+    Voxel::GeneratorDefinitionData::Biome coast;
+    coast.id = "coast";
+    coast.weight = 1.0f;
+    coast.surface.push_back({surface.identifier, 1});
+    definition.biomes.entries.push_back(std::move(coast));
     Voxel::GeneratorDefinitionData::DensityNode density;
     density.id = "flat_height";
     density.type = "y";

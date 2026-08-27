@@ -25,7 +25,7 @@ std::string exceptionMessage(const std::function<void()>& operation) {
 TEST_CASE(StreamingConfig_ShippedStreamingDistances) {
     const std::string path =
         std::string(RIGEL_TEST_SOURCE_DIRECTORY) +
-        "/assets/config/world_generation.yaml";
+        "/assets/config/streaming.yaml";
     std::ifstream input(path);
     CHECK(input.good());
 

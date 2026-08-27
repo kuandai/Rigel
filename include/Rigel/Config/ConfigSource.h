@@ -5,29 +5,16 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <stdexcept>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace Rigel::Config {
-
-class ConfigPathNotFound : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
-
-struct ConfigSourceResult {
-    std::string name;
-    std::string content;
-};
 
 class IConfigSource {
 public:
     virtual ~IConfigSource() = default;
     virtual std::optional<std::string> load() const = 0;
     virtual std::string name() const = 0;
-    virtual std::optional<ConfigSourceResult> loadPath(std::string_view path) const;
 };
 
 class EmbeddedConfigSource : public IConfigSource {
@@ -36,7 +23,6 @@ public:
 
     std::optional<std::string> load() const override;
     std::string name() const override;
-    std::optional<ConfigSourceResult> loadPath(std::string_view path) const override;
 
 private:
     Asset::AssetManager& m_assets;
@@ -49,7 +35,6 @@ public:
 
     std::optional<std::string> load() const override;
     std::string name() const override;
-    std::optional<ConfigSourceResult> loadPath(std::string_view path) const override;
 
 private:
     std::string m_path;

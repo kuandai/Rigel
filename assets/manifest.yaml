@@ -1,8 +1,8 @@
 namespace: base
 assets:
   raw:
-    world_config:
-      path: config/world_generation.yaml
+    streaming_config:
+      path: config/streaming.yaml
     render_config:
       path: config/render.yaml
     persistence_config:

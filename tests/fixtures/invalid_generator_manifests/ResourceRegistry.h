@@ -122,21 +122,21 @@ public:
     global:
       temperature:
         octaves: 1
-        frequency: 1
+        frequency: 0.5
         lacunarity: 2
         persistence: 0.5
         scale: 1
         offset: 0
       humidity:
         octaves: 1
-        frequency: 1
+        frequency: 0.5
         lacunarity: 2
         persistence: 0.5
         scale: 1
         offset: 0
       continentalness:
         octaves: 1
-        frequency: 1
+        frequency: 0.5
         lacunarity: 2
         persistence: 0.5
         scale: 1
@@ -144,21 +144,21 @@ public:
     local:
       temperature:
         octaves: 1
-        frequency: 1
+        frequency: 0.5
         lacunarity: 2
         persistence: 0.5
         scale: 1
         offset: 0
       humidity:
         octaves: 1
-        frequency: 1
+        frequency: 0.5
         lacunarity: 2
         persistence: 0.5
         scale: 1
         offset: 0
       continentalness:
         octaves: 1
-        frequency: 1
+        frequency: 0.5
         lacunarity: 2
         persistence: 0.5
         scale: 1

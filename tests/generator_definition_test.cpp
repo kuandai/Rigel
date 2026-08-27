@@ -178,6 +178,23 @@ void replaceOnce(std::string& text,
     text.replace(position, before.size(), after);
 }
 
+void replaceFirstScalar(std::string& text,
+                        std::string_view field,
+                        std::string_view replacement) {
+    const size_t position = text.find(field);
+    if (position == std::string::npos) {
+        throw Rigel::Test::TestFailure(
+            "Generator definition scalar fixture is missing");
+    }
+    const size_t valueStart = position + field.size();
+    const size_t valueEnd = text.find('\n', valueStart);
+    if (valueEnd == std::string::npos) {
+        throw Rigel::Test::TestFailure(
+            "Generator definition scalar fixture is unterminated");
+    }
+    text.replace(valueStart, valueEnd - valueStart, replacement);
+}
+
 bool rejectsMutation(std::string_view before, std::string_view after) {
     std::string yaml = validDefinitionYaml();
     replaceOnce(yaml, before, after);
@@ -323,6 +340,53 @@ TEST_CASE(GeneratorDefinition_rejects_invalid_ranges_and_dependencies) {
     CHECK(rejectsMutation(
         "  structures:\n    enabled: true\n    features:\n",
         "  structures:\n    enabled: false\n    features:\n"));
+}
+
+TEST_CASE(GeneratorDefinition_rejects_unsafe_evaluator_arithmetic) {
+    CHECK(rejectsMutation(
+        "        frequency: 0.001\n",
+        "        frequency: 3.40282347e+38\n"));
+    CHECK(rejectsMutation(
+        "        octaves: 4\n"
+        "        frequency: 0.001\n"
+        "        lacunarity: 2\n",
+        "        octaves: 3\n"
+        "        frequency: 0.5\n"
+        "        lacunarity: 2\n"));
+    CHECK(rejectsMutation(
+        "        scale: 1\n"
+        "        offset: 0\n",
+        "        scale: 3.40282347e+38\n"
+        "        offset: 3.40282347e+38\n"));
+
+    GeneratorDefinition derived =
+        parseGeneratorDefinition(validDefinitionYaml(), "derived.yaml");
+    derived.data.climate.global.temperature.scale = 0.0f;
+    derived.data.climate.global.temperature.offset = 2.9e38f;
+    derived.data.climate.local.temperature.scale = 0.0f;
+    derived.data.climate.local.temperature.offset = 2.9e38f;
+    CHECK_THROWS(prepareSnapshot(derived));
+}
+
+TEST_CASE(GeneratorDefinition_snapshot_rejects_unsafe_evaluator_arithmetic) {
+    const std::string canonical =
+        prepareSnapshot(definitionWithoutUnusedNodes()).canonicalSnapshot;
+
+    std::string frequency = canonical;
+    replaceFirstScalar(
+        frequency, "frequency: ", "3.40282347e+38");
+    CHECK_THROWS(parseGeneratorDefinitionSnapshot(
+        frequency,
+        Rigel::Voxel::kGeneratorDefinitionSchemaVersion,
+        "extreme-frequency-snapshot.yaml"));
+
+    std::string transform = canonical;
+    replaceFirstScalar(transform, "scale: ", "3.40282347e+38");
+    replaceFirstScalar(transform, "offset: ", "3.40282347e+38");
+    CHECK_THROWS(parseGeneratorDefinitionSnapshot(
+        transform,
+        Rigel::Voxel::kGeneratorDefinitionSchemaVersion,
+        "extreme-transform-snapshot.yaml"));
 }
 
 TEST_CASE(GeneratorDefinition_rejects_coast_only_biome_selection) {

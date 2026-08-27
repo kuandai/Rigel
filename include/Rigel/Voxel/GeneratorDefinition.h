@@ -24,6 +24,9 @@ struct GeneratorDefinitionData {
     static constexpr int MaxWorldY = 4096;
     static constexpr int MaxWorldHeight = 1024;
     static constexpr int MaxNoiseOctaves = 16;
+    // The largest float below one keeps every int world coordinate inside
+    // Noise.cpp's signed lattice domain after octave scaling.
+    static constexpr float MaxNoiseFrequency = 0x1.fffffep-1f;
     static constexpr int MaxSurfaceDepth = 32;
     static constexpr int MaxStructureHeight = MaxWorldHeight;
     static constexpr size_t MaxBiomeEntries = 32;

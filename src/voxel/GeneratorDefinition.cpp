@@ -555,9 +555,16 @@ void requireFinite(float value,
     }
 }
 
-void validateNoise(const GeneratorDefinitionData::Noise& noise,
-                   std::string_view sourceName,
-                   std::string_view path) {
+// Conservative bounds include room for the evaluator's float interpolation
+// arithmetic, not just the ideal mathematical ranges of value and gradient
+// noise.
+constexpr long double kNoise2DEvaluatorMagnitude = 2.0L;
+constexpr long double kNoise3DEvaluatorMagnitude = 4.0L;
+
+long double validateNoise(const GeneratorDefinitionData::Noise& noise,
+                          std::string_view sourceName,
+                          std::string_view path,
+                          long double sampleMagnitude) {
     if (noise.octaves < 1 ||
         noise.octaves > GeneratorDefinitionData::MaxNoiseOctaves) {
         fail(sourceName, std::string(path) + ".octaves",
@@ -581,6 +588,42 @@ void validateNoise(const GeneratorDefinitionData::Noise& noise,
     if (noise.persistence < 0.0f || noise.persistence > 1.0f) {
         fail(sourceName, std::string(path) + ".persistence", "must be in [0, 1]");
     }
+
+    float frequency = noise.frequency;
+    float amplitude = 1.0f;
+    float amplitudeTotal = 0.0f;
+    for (int octave = 0; octave < noise.octaves; ++octave) {
+        if (frequency > GeneratorDefinitionData::MaxNoiseFrequency) {
+            fail(sourceName, std::string(path) + ".frequency",
+                 "octave " + std::to_string(octave + 1) +
+                     " exceeds the supported noise lattice frequency");
+        }
+        amplitudeTotal += amplitude;
+        if (!std::isfinite(amplitudeTotal)) {
+            fail(sourceName, std::string(path) + ".persistence",
+                 "octave amplitude accumulation must remain finite");
+        }
+        frequency *= noise.lacunarity;
+        amplitude *= noise.persistence;
+        if (!std::isfinite(frequency)) {
+            fail(sourceName, std::string(path) + ".lacunarity",
+                 "octave frequency recurrence must remain finite");
+        }
+        if (!std::isfinite(amplitude)) {
+            fail(sourceName, std::string(path) + ".persistence",
+                 "octave amplitude recurrence must remain finite");
+        }
+    }
+
+    const long double outputMagnitude =
+        sampleMagnitude * std::abs(static_cast<long double>(noise.scale)) +
+        std::abs(static_cast<long double>(noise.offset));
+    if (outputMagnitude >
+        static_cast<long double>(std::numeric_limits<float>::max())) {
+        fail(sourceName, path,
+             "scale and offset can exceed the finite evaluator range");
+    }
+    return outputMagnitude;
 }
 
 const GeneratorDefinitionData::DensityOutput* findOutput(
@@ -622,16 +665,71 @@ void validateData(const GeneratorDefinitionData& data,
     if (data.climate.localBlend < 0.0f || data.climate.localBlend > 1.0f) {
         fail(sourceName, "generator.climate.local_blend", "must be in [0, 1]");
     }
-    auto validateLayer = [&](const auto& layer, std::string_view path) {
-        validateNoise(layer.temperature, sourceName,
-                      std::string(path) + ".temperature");
-        validateNoise(layer.humidity, sourceName,
-                      std::string(path) + ".humidity");
-        validateNoise(layer.continentalness, sourceName,
-                      std::string(path) + ".continentalness");
+    struct ClimateMagnitude {
+        long double temperature = 0.0L;
+        long double humidity = 0.0L;
+        long double continentalness = 0.0L;
     };
-    validateLayer(data.climate.global, "generator.climate.global");
-    validateLayer(data.climate.local, "generator.climate.local");
+    auto validateLayer = [&](const auto& layer, std::string_view path) {
+        return ClimateMagnitude{
+            validateNoise(
+                layer.temperature,
+                sourceName,
+                std::string(path) + ".temperature",
+                kNoise2DEvaluatorMagnitude),
+            validateNoise(
+                layer.humidity,
+                sourceName,
+                std::string(path) + ".humidity",
+                kNoise2DEvaluatorMagnitude),
+            validateNoise(
+                layer.continentalness,
+                sourceName,
+                std::string(path) + ".continentalness",
+                kNoise2DEvaluatorMagnitude)};
+    };
+    const ClimateMagnitude globalMagnitude =
+        validateLayer(data.climate.global, "generator.climate.global");
+    const ClimateMagnitude localMagnitude =
+        validateLayer(data.climate.local, "generator.climate.local");
+
+    const long double maxFiniteFloat =
+        static_cast<long double>(std::numeric_limits<float>::max());
+    const long double maxWorldCoordinateMagnitude =
+        -static_cast<long double>(std::numeric_limits<int>::min());
+    if (static_cast<long double>(data.climate.latitudeScale) *
+            maxWorldCoordinateMagnitude >
+        maxFiniteFloat) {
+        fail(sourceName, "generator.climate.latitude_scale",
+             "can overflow before latitude clamping");
+    }
+    auto validateClimateComposition = [&](long double global,
+                                          long double local,
+                                          long double latitude,
+                                          std::string_view path) {
+        const long double magnitude = global + latitude +
+            local * static_cast<long double>(data.climate.localBlend);
+        if (magnitude > maxFiniteFloat) {
+            fail(sourceName, path,
+                 "global, latitude, and local arithmetic can exceed the "
+                 "finite evaluator range");
+        }
+    };
+    validateClimateComposition(
+        globalMagnitude.temperature,
+        localMagnitude.temperature,
+        std::abs(static_cast<long double>(data.climate.latitudeStrength)),
+        "generator.climate.temperature");
+    validateClimateComposition(
+        globalMagnitude.humidity,
+        localMagnitude.humidity,
+        0.0L,
+        "generator.climate.humidity");
+    validateClimateComposition(
+        globalMagnitude.continentalness,
+        localMagnitude.continentalness,
+        0.0L,
+        "generator.climate.continentalness");
 
     requireFinite(data.biomes.blendPower, sourceName,
                   "generator.biomes.blend_power");
@@ -789,7 +887,13 @@ void validateData(const GeneratorDefinitionData& data,
         }
         if (node.type == "noise2d" || node.type == "noise3d" ||
             node.type == "noise3d_xy") {
-            validateNoise(node.noise, sourceName, path + ".noise");
+            validateNoise(
+                node.noise,
+                sourceName,
+                path + ".noise",
+                node.type == "noise2d"
+                    ? kNoise2DEvaluatorMagnitude
+                    : kNoise3DEvaluatorMagnitude);
         } else if (node.type == "constant") {
             requireFinite(node.value, sourceName, path + ".value");
         } else if (node.type == "clamp") {

@@ -1,6 +1,8 @@
 #include "Rigel/Voxel/Noise.h"
 
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 
 namespace Rigel::Voxel::Noise {
 
@@ -54,10 +56,21 @@ float dotGrad(int gradIndex, float x, float y, float z) {
     return static_cast<float>(g[0]) * x + static_cast<float>(g[1]) * y + static_cast<float>(g[2]) * z;
 }
 
+int checkedLatticeFloor(float coordinate) {
+    const double value = static_cast<double>(coordinate);
+    if (!std::isfinite(coordinate) ||
+        value < static_cast<double>(std::numeric_limits<int>::min()) ||
+        value > static_cast<double>(std::numeric_limits<int>::max() - 1)) {
+        throw std::out_of_range(
+            "Noise coordinate is outside the supported lattice range");
+    }
+    return static_cast<int>(std::floor(coordinate));
+}
+
 float perlinNoise3D(float x, float y, float z, uint32_t seed) {
-    int x0 = static_cast<int>(std::floor(x));
-    int y0 = static_cast<int>(std::floor(y));
-    int z0 = static_cast<int>(std::floor(z));
+    int x0 = checkedLatticeFloor(x);
+    int y0 = checkedLatticeFloor(y);
+    int z0 = checkedLatticeFloor(z);
     int x1 = x0 + 1;
     int y1 = y0 + 1;
     int z1 = z0 + 1;
@@ -99,8 +112,8 @@ uint32_t seedForChannel(uint32_t baseSeed, std::string_view name) {
 }
 
 float noise2D(float x, float z, uint32_t seed) {
-    int x0 = static_cast<int>(std::floor(x));
-    int z0 = static_cast<int>(std::floor(z));
+    int x0 = checkedLatticeFloor(x);
+    int z0 = checkedLatticeFloor(z);
     int x1 = x0 + 1;
     int z1 = z0 + 1;
 

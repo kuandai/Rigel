@@ -1,9 +1,11 @@
 #include "TestFramework.h"
 #include "GeneratorDefinitionTestRegistry.h"
 
+#include "Rigel/Voxel/Noise.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 
 #include <algorithm>
+#include <limits>
 
 using namespace Rigel::Voxel;
 
@@ -210,4 +212,40 @@ TEST_CASE(WorldGenerator_rejects_missing_semantics_identity) {
         definition,
         1u,
         0u));
+}
+
+TEST_CASE(WorldGenerator_generates_at_supported_noise_frequency_boundary) {
+    BlockRegistry registry = makeRegistry();
+    GeneratorDefinitionData definition = flatDefinition();
+    const GeneratorDefinitionData::Noise boundaryNoise{
+        .octaves = 2,
+        .frequency = GeneratorDefinitionData::MaxNoiseFrequency * 0.5f,
+        .lacunarity = 2.0f,
+        .persistence = 0.5f,
+        .scale = 0.0f,
+        .offset = 0.0f};
+    definition.climate.global = {
+        boundaryNoise, boundaryNoise, boundaryNoise};
+    definition.climate.local = {
+        boundaryNoise, boundaryNoise, boundaryNoise};
+    auto& density = definition.densityGraph.nodes.front();
+    density.type = "noise3d";
+    density.noise = boundaryNoise;
+    density.scale = 0.0f;
+    density.offset = 0.0f;
+
+    WorldGenerator generator(registry, definition, 19u);
+    ChunkBuffer buffer;
+    CHECK_NO_THROW(generator.generate({0, 0, 0}, buffer));
+}
+
+TEST_CASE(Noise_checks_lattice_coordinate_range_before_integer_conversion) {
+    const float safe = static_cast<float>(std::numeric_limits<int>::max()) *
+        GeneratorDefinitionData::MaxNoiseFrequency;
+    CHECK_NO_THROW(Noise::noise2D(safe, -safe, 3u));
+    CHECK_NO_THROW(Noise::noise3D(safe, 0.0f, -safe, 3u));
+
+    const float outside = std::numeric_limits<float>::max();
+    CHECK_THROWS(Noise::noise2D(outside, 0.0f, 3u));
+    CHECK_THROWS(Noise::noise3D(0.0f, outside, 0.0f, 3u));
 }

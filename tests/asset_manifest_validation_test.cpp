@@ -11,6 +11,7 @@
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
+#include "Rigel/Voxel/WorldGenerator.h"
 
 #include <algorithm>
 #include <memory>
@@ -24,7 +25,8 @@ using Rigel::Voxel::GeneratorDefinitionOrigin;
 
 void registerDefinitionMaterials(Rigel::Voxel::BlockRegistry& registry) {
     for (const std::string& id : {
-             "test:stone", "test:water", "test:surface"}) {
+             "test:stone", "test:water", "test:surface",
+             "test:other", "test:expected"}) {
         Rigel::Voxel::BlockType block;
         block.identifier = id;
         registry.registerBlock(id, std::move(block));
@@ -484,4 +486,120 @@ TEST_CASE(GeneratorDefinitionLoader_published_bootstrap_bypasses_deferred_instal
     CHECK(assetBoundary);
     CHECK_EQ(installedResolutionCalls, size_t{1});
     CHECK(!storage->exists(missingContext.rootPath));
+}
+
+TEST_CASE(GeneratorDefinitionLoader_extreme_biomes_generate_before_and_after_publication) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_extreme_biome_publication");
+    auto storage =
+        std::make_shared<Rigel::Persistence::FilesystemBackend>();
+    Rigel::Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Rigel::Persistence::Backends::Memory::descriptor(),
+        Rigel::Persistence::Backends::Memory::factory(),
+        Rigel::Persistence::Backends::Memory::probe());
+    Rigel::Persistence::PersistenceService persistence(formats);
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    Rigel::Asset::AssetManager assets;
+
+    assets.loadManifest("extreme_biome.yaml");
+    const auto installed =
+        Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets, registry, "test:extreme",
+            GeneratorDefinitionOrigin::Shipped);
+    CHECK_EQ(installed.sourceRevision, uint32_t{11});
+    CHECK_EQ(installed.canonicalSnapshot,
+             Rigel::Voxel::serializeGeneratorDefinitionSnapshot(
+                 installed.data));
+    CHECK_EQ(installed.data.biomes.entries.size(), size_t{3});
+    CHECK_EQ(installed.data.biomes.entries[0].id, std::string("other"));
+    CHECK_EQ(installed.data.biomes.entries[1].id, std::string("expected"));
+    CHECK_EQ(installed.data.climate.global.temperature.scale, 0.0f);
+
+    const auto expected = registry.findByIdentifier("test:expected");
+    CHECK(expected.has_value());
+    Rigel::Voxel::WorldGenerator installedGenerator(
+        registry, installed.data, 73u);
+    const std::vector<Rigel::Voxel::ChunkCoord> coordinates = {
+        {0, 0, 0}, {5, 0, -4}};
+    std::vector<Rigel::Voxel::ChunkBuffer> installedBuffers(
+        coordinates.size());
+    for (size_t index = 0; index < coordinates.size(); ++index) {
+        CHECK_NO_THROW(installedGenerator.generate(
+            coordinates[index], installedBuffers[index]));
+        for (int z = 0; z < Rigel::Voxel::Chunk::SIZE; ++z) {
+            for (int x = 0; x < Rigel::Voxel::Chunk::SIZE; ++x) {
+                const auto actual = installedBuffers[index].at(x, 15, z).id;
+                if (actual != *expected) {
+                    throw Rigel::Test::TestFailure(
+                        "Expected extreme biome surface, got '" +
+                        registry.getType(actual).identifier + "'");
+                }
+            }
+        }
+    }
+
+    Rigel::Persistence::PersistenceContext context;
+    context.rootPath = (directory.path() / "world_extreme").string();
+    context.preferredFormat = "memory";
+    context.storage = storage;
+    const auto created = Rigel::Persistence::bootstrapWorldGeneration(
+        [&] {
+            return Rigel::Persistence::NewWorldGeneration{
+                "Extreme", 73u, installed};
+        },
+        persistence,
+        registry,
+        context);
+    CHECK_EQ(created.generation.settings.schemaVersion,
+             Rigel::Persistence::kWorldSettingsSchemaVersion);
+    CHECK_EQ(created.generation.settings.generator.sourceId,
+             std::string("test:extreme"));
+    CHECK_EQ(created.generation.canonicalDefinitionSnapshot,
+             installed.canonicalSnapshot);
+    CHECK(storage->exists(context.rootPath));
+    Rigel::Voxel::WorldGenerator createdGenerator(
+        registry,
+        created.generation.definition,
+        created.generation.settings.seed,
+        created.generation.settings.generator.semanticsVersion);
+    for (size_t index = 0; index < coordinates.size(); ++index) {
+        Rigel::Voxel::ChunkBuffer createdBuffer;
+        CHECK_NO_THROW(createdGenerator.generate(
+            coordinates[index], createdBuffer));
+        CHECK_EQ(createdBuffer.blocks, installedBuffers[index].blocks);
+    }
+
+    assets.loadManifest("corrected.yaml");
+    const auto replacement =
+        Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets, registry, "test:corrected",
+            GeneratorDefinitionOrigin::Shipped);
+    size_t installedResolverCalls = 0;
+    const auto reloaded = Rigel::Persistence::bootstrapWorldGeneration(
+        [&] {
+            ++installedResolverCalls;
+            return Rigel::Persistence::NewWorldGeneration{
+                "Replacement", 99u, replacement};
+        },
+        persistence,
+        registry,
+        context);
+    CHECK_EQ(installedResolverCalls, size_t{0});
+    CHECK_EQ(reloaded.generation.settings.generator.sourceId,
+             std::string("test:extreme"));
+    CHECK_EQ(reloaded.generation.canonicalDefinitionSnapshot,
+             installed.canonicalSnapshot);
+    Rigel::Voxel::WorldGenerator reloadedGenerator(
+        registry,
+        reloaded.generation.definition,
+        reloaded.generation.settings.seed,
+        reloaded.generation.settings.generator.semanticsVersion);
+    for (size_t index = 0; index < coordinates.size(); ++index) {
+        Rigel::Voxel::ChunkBuffer reloadedBuffer;
+        CHECK_NO_THROW(reloadedGenerator.generate(
+            coordinates[index], reloadedBuffer));
+        CHECK_EQ(reloadedBuffer.blocks, installedBuffers[index].blocks);
+    }
 }

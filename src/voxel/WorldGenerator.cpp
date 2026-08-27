@@ -68,6 +68,22 @@ int columnIndex(int x, int z) {
     return x + z * Chunk::SIZE;
 }
 
+struct BiomeSelectionScore {
+    long double logWeight = 0.0L;
+    long double logDistance = 0.0L;
+};
+
+long double relativeBiomeLogWeight(
+    const BiomeSelectionScore& candidate,
+    const BiomeSelectionScore& reference,
+    float blendPower) {
+    // Compare the ratio directly so a very large shared distance exponent
+    // cannot erase the authored weight difference through cancellation.
+    return candidate.logWeight - reference.logWeight -
+        static_cast<long double>(blendPower) *
+            (candidate.logDistance - reference.logDistance);
+}
+
 int normalizeSampleStep(int step) {
     if (step <= 0 || (Chunk::SIZE % step) != 0) {
         return kDefaultNoiseSampleStep;
@@ -358,8 +374,8 @@ public:
 
                 int bestIndex = -1;
                 int secondIndex = -1;
-                float bestWeight = 0.0f;
-                float secondWeight = 0.0f;
+                BiomeSelectionScore bestScore;
+                BiomeSelectionScore secondScore;
                 bool coastActive = sample.continentalness >= m_coastMin
                     && sample.continentalness <= m_coastMax;
 
@@ -369,19 +385,33 @@ public:
                         continue;
                     }
                     const auto& biome = biomes.entries[i];
-                    float dt = sample.temperature - biome.target.temperature;
-                    float dh = sample.humidity - biome.target.humidity;
-                    float dc = sample.continentalness - biome.target.continentalness;
-                    float dist = std::sqrt(dt * dt + dh * dh + dc * dc);
-                    float weight = biome.weight
-                        / std::pow(dist + biomes.epsilon, biomes.blendPower);
-                    if (weight > bestWeight) {
-                        secondWeight = bestWeight;
+                    const long double dt =
+                        static_cast<long double>(sample.temperature) -
+                        static_cast<long double>(biome.target.temperature);
+                    const long double dh =
+                        static_cast<long double>(sample.humidity) -
+                        static_cast<long double>(biome.target.humidity);
+                    const long double dc =
+                        static_cast<long double>(sample.continentalness) -
+                        static_cast<long double>(biome.target.continentalness);
+                    const long double distance = std::hypot(dt, dh, dc);
+                    const BiomeSelectionScore score{
+                        std::log(static_cast<long double>(biome.weight)),
+                        std::log(
+                            distance +
+                            static_cast<long double>(biomes.epsilon))};
+                    if (bestIndex < 0 ||
+                        relativeBiomeLogWeight(
+                            score, bestScore, biomes.blendPower) > 0.0L) {
+                        secondScore = bestScore;
                         secondIndex = bestIndex;
-                        bestWeight = weight;
+                        bestScore = score;
                         bestIndex = static_cast<int>(i);
-                    } else if (weight > secondWeight) {
-                        secondWeight = weight;
+                    } else if (
+                        secondIndex < 0 ||
+                        relativeBiomeLogWeight(
+                            score, secondScore, biomes.blendPower) > 0.0L) {
+                        secondScore = score;
                         secondIndex = static_cast<int>(i);
                     }
                 }
@@ -389,15 +419,18 @@ public:
                 if (coastActive) {
                     secondIndex = bestIndex;
                     bestIndex = m_coastBiomeIndex;
-                    bestWeight = 1.0f;
-                    secondWeight = 0.0f;
                 }
 
                 BiomeSample result;
                 result.primary = bestIndex;
                 result.secondary = secondIndex;
-                float total = bestWeight + secondWeight;
-                result.blend = (total > 0.0f) ? (secondWeight / total) : 0.0f;
+                if (!coastActive && secondIndex >= 0) {
+                    const long double relativeSecond = std::exp(
+                        relativeBiomeLogWeight(
+                            secondScore, bestScore, biomes.blendPower));
+                    result.blend = static_cast<float>(
+                        relativeSecond / (1.0L + relativeSecond));
+                }
                 ctx.biomes[static_cast<size_t>(index)] = result;
             }
         }

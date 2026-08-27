@@ -89,6 +89,12 @@ public:
             "namespace: malformed\n"
             "assets:\n"
             "  raw: [\n";
+        static constexpr char extremeBiomeManifest[] =
+            "namespace: extreme-biome\n"
+            "assets:\n"
+            "  generator_definitions:\n"
+            "    extreme:\n"
+            "      path: generators/extreme.yaml\n";
         static constexpr char validDefinition[] = R"yaml(generator:
   schema_version: 2
   id: test:valid
@@ -223,6 +229,68 @@ public:
                 "value: 0.5");
             return result;
         }();
+        static const std::string extremeBiomeDefinition = [] {
+            std::string result(
+                validDefinition, sizeof(validDefinition) - 1);
+            const auto replace = [&](std::string_view oldValue,
+                                     std::string_view newValue) {
+                const size_t position = result.find(oldValue);
+                if (position == std::string::npos) {
+                    throw std::runtime_error(
+                        "Extreme biome fixture mutation source is unavailable");
+                }
+                result.replace(position, oldValue.size(), newValue);
+            };
+            replace("id: test:valid", "id: test:extreme");
+            replace("source_revision: 1", "source_revision: 11");
+            replace("label: Valid", "label: Extreme Biome");
+            size_t scale = 0;
+            while ((scale = result.find("        scale: 1\n", scale)) !=
+                   std::string::npos) {
+                result.replace(scale, std::string_view("        scale: 1").size(),
+                               "        scale: 0");
+                ++scale;
+            }
+            replace("blend_power: 2", "blend_power: 3.40282347e+38");
+            replace("epsilon: 0.001", "epsilon: 1.40129846e-45");
+            replace("min_continentalness: -0.1",
+                    "min_continentalness: 1e+38");
+            replace("max_continentalness: 0.1",
+                    "max_continentalness: 2e+38");
+
+            const size_t firstBiome = result.find("      - id: land\n");
+            const size_t coastBiome = result.find(
+                "      - id: coast\n", firstBiome);
+            if (firstBiome == std::string::npos ||
+                coastBiome == std::string::npos) {
+                throw std::runtime_error(
+                    "Extreme biome fixture entries are unavailable");
+            }
+            result.replace(
+                firstBiome,
+                coastBiome - firstBiome,
+                "      - id: other\n"
+                "        target:\n"
+                "          temperature: 3.40282347e+38\n"
+                "          humidity: 3.40282347e+38\n"
+                "          continentalness: 3.40282347e+38\n"
+                "        weight: 1.40129846e-45\n"
+                "        water_fill: false\n"
+                "        surface:\n"
+                "          - material: test:other\n"
+                "            depth: 1\n"
+                "      - id: expected\n"
+                "        target:\n"
+                "          temperature: -3.40282347e+38\n"
+                "          humidity: -3.40282347e+38\n"
+                "          continentalness: -3.40282347e+38\n"
+                "        weight: 3.40282347e+38\n"
+                "        water_fill: false\n"
+                "        surface:\n"
+                "          - material: test:expected\n"
+                "            depth: 1\n");
+            return result;
+        }();
 
         if (path == "duplicate_generator_field.yaml") {
             return {duplicateField, sizeof(duplicateField) - 1};
@@ -255,6 +323,10 @@ public:
             return {malformedManifestYaml,
                     sizeof(malformedManifestYaml) - 1};
         }
+        if (path == "extreme_biome.yaml") {
+            return {extremeBiomeManifest,
+                    sizeof(extremeBiomeManifest) - 1};
+        }
         if (path == "generators/valid.yaml") {
             return {validDefinition, sizeof(validDefinition) - 1};
         }
@@ -263,6 +335,10 @@ public:
         }
         if (path == "generators/corrected.yaml") {
             return {correctedDefinition.data(), correctedDefinition.size()};
+        }
+        if (path == "generators/extreme.yaml") {
+            return {extremeBiomeDefinition.data(),
+                    extremeBiomeDefinition.size()};
         }
         if (path == "stable.txt") {
             return {stable, sizeof(stable) - 1};

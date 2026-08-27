@@ -21,6 +21,11 @@ struct PreferenceApplyResult {
     std::string message;
 };
 
+enum class WindowedSizeIntent {
+    Unchanged,
+    Changed,
+};
+
 class Application {
 public:
     Application();
@@ -30,7 +35,8 @@ public:
     void close();
 
     PreferenceApplyResult applyDisplayPreferences(
-        const Preferences::DisplayPreferences& preferences);
+        const Preferences::DisplayPreferences& preferences,
+        WindowedSizeIntent windowedSizeIntent);
     PreferenceApplyResult applyVerticalFov(double verticalFovDegrees);
 
     const Preferences::UserPreferences& requestedPreferences() const;

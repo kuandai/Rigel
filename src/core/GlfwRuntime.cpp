@@ -153,6 +153,7 @@ void GlfwRuntime::destroyWindow() noexcept {
 
 std::optional<GlfwRuntime::Rectangle> GlfwRuntime::currentDesktopBounds() const {
     int monitorCount = 0;
+    GLFWmonitor* primaryFallback = nullptr;
     clearError();
     GLFWmonitor** monitors = m_api.getMonitors(&monitorCount);
     if (captureError("monitor enumeration")) {
@@ -160,15 +161,15 @@ std::optional<GlfwRuntime::Rectangle> GlfwRuntime::currentDesktopBounds() const 
     }
     if (!monitors || monitorCount <= 0) {
         clearError();
-        GLFWmonitor* primary = m_api.getPrimaryMonitor();
+        primaryFallback = m_api.getPrimaryMonitor();
         if (captureError("primary monitor query")) {
             return std::nullopt;
         }
-        if (!primary) {
+        if (!primaryFallback) {
             m_lastError = "no current or default monitor is available";
             return std::nullopt;
         }
-        monitors = &primary;
+        monitors = &primaryFallback;
         monitorCount = 1;
     }
 

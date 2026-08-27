@@ -391,11 +391,32 @@ TEST_CASE(ApplicationPreferences_StartupIsFatalWhenFallbackFails) {
     DisplayFixture fixture;
     Rigel::Preferences::UserPreferences requested;
     auto preferences = fixture.owner(requested);
-    fixture.display.createFailuresRemaining = 2;
+    fixture.display.createFailuresRemaining = 3;
 
     CHECK_THROWS(preferences.initializeDisplay(fixture.runtime, false));
-    CHECK_EQ(fixture.display.createAttempts, 2);
+    CHECK_EQ(fixture.display.createAttempts, 3);
     CHECK_EQ(fixture.runtime.window(), nullptr);
+}
+
+TEST_CASE(ApplicationPreferences_StartupFallbackCanUseSupportedVSyncOn) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    requested.display.vsync = false;
+    auto preferences = fixture.owner(requested);
+    const std::string before = readDocument(fixture.path);
+    fixture.display.swapIntervalZeroSupported = false;
+
+    const auto startup =
+        preferences.initializeDisplay(fixture.runtime, false);
+
+    CHECK(startup.usedSafeFallback);
+    CHECK_EQ(fixture.display.createAttempts, 3);
+    CHECK_EQ(fixture.display.bounds.width, 800);
+    CHECK_EQ(fixture.display.bounds.height, 600);
+    CHECK(preferences.effectiveDisplay().vsync);
+    CHECK(!preferences.effectiveDisplay().fpsLimit);
+    CHECK_EQ(preferences.requested(), requested);
+    CHECK_EQ(readDocument(fixture.path), before);
 }
 
 TEST_CASE(ApplicationPreferences_BenchmarkOverridesEffectivePacingOnly) {
@@ -415,6 +436,21 @@ TEST_CASE(ApplicationPreferences_BenchmarkOverridesEffectivePacingOnly) {
     CHECK_EQ(fixture.display.swapIntervals.back(), 0);
     preferences.waitForNextFrame();
     CHECK(fixture.display.sleepDeadlines.empty());
+    CHECK_EQ(readDocument(fixture.path), before);
+}
+
+TEST_CASE(ApplicationPreferences_BenchmarkRejectsVSyncOnFallback) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    requested.display.vsync = true;
+    auto preferences = fixture.owner(requested);
+    const std::string before = readDocument(fixture.path);
+    fixture.display.swapIntervalZeroSupported = false;
+
+    CHECK_THROWS(preferences.initializeDisplay(fixture.runtime, true));
+    CHECK_EQ(fixture.display.createAttempts, 2);
+    CHECK_EQ(fixture.runtime.window(), nullptr);
+    CHECK_EQ(preferences.requested(), requested);
     CHECK_EQ(readDocument(fixture.path), before);
 }
 
@@ -938,6 +974,30 @@ TEST_CASE(ApplicationPreferences_ResizePublicationRetriesExactlyOnce) {
              (Rigel::Preferences::WindowedSize{1300, 850}));
 }
 
+TEST_CASE(ApplicationPreferences_ShutdownConsumesOneResizeRetry) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.manualResize(1200, 800, 1.0);
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting(
+            &countAndFailBeforePublication);
+
+    const auto failed = preferences.flushResizePersistenceForShutdown();
+
+    CHECK(failed.has_value());
+    CHECK_EQ(failed->status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(fixture.display.savePreflights, 2);
+    const auto terminal = preferences.flushResizePersistenceForShutdown();
+    CHECK(terminal.has_value());
+    CHECK_EQ(terminal->status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(fixture.display.savePreflights, 2);
+    CHECK_EQ(preferences.requested().display.windowedSize,
+             requested.display.windowedSize);
+}
+
 TEST_CASE(ApplicationPreferences_ResizePreparationFailureIsTerminalForSize) {
     DisplayFixture fixture;
     const std::string original = maximumRetainedDocument();
@@ -1021,7 +1081,9 @@ TEST_CASE(ApplicationPreferences_ExplicitApplySupersedesPendingManualResize) {
     auto candidate = requested.display;
     candidate.windowedSize = {1280, 720};
 
-    const auto applied = preferences.applyDisplay(fixture.runtime, candidate);
+    const auto applied =
+        preferences.applyDisplay(
+            fixture.runtime, candidate, Rigel::WindowedSizeIntent::Changed);
 
     CHECK_EQ(applied.status, Rigel::PreferenceApplyStatus::Applied);
     CHECK_EQ(fixture.display.bounds.width, 1280);
@@ -1034,6 +1096,82 @@ TEST_CASE(ApplicationPreferences_ExplicitApplySupersedesPendingManualResize) {
     CHECK(!preferences.flushResizePersistence(10.0));
     CHECK_EQ(preferences.effectiveDisplay(), candidate);
     CHECK_EQ(preferences.requested().display, candidate);
+}
+
+TEST_CASE(ApplicationPreferences_DisplayEditRetainsPendingManualResize) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.manualResize(1100, 750, 1.0);
+    auto candidate = preferences.requested().display;
+    candidate.vsync = false;
+
+    const auto applied =
+        preferences.applyDisplay(
+            fixture.runtime, candidate, Rigel::WindowedSizeIntent::Unchanged);
+
+    CHECK_EQ(applied.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(fixture.display.bounds.width, 1100);
+    CHECK_EQ(fixture.display.bounds.height, 750);
+    candidate.windowedSize = {1100, 750};
+    CHECK_EQ(preferences.effectiveDisplay(), candidate);
+    CHECK_EQ(preferences.requested().display, candidate);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path).load().display,
+        candidate);
+    CHECK(!preferences.flushResizePersistence(10.0));
+}
+
+TEST_CASE(ApplicationPreferences_ExplicitApplyCanRestoreSavedWindowedSize) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.manualResize(1100, 750, 1.0);
+    const auto candidate = preferences.requested().display;
+
+    const auto applied =
+        preferences.applyDisplay(
+            fixture.runtime, candidate, Rigel::WindowedSizeIntent::Changed);
+
+    CHECK_EQ(applied.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(fixture.display.bounds.width, 800);
+    CHECK_EQ(fixture.display.bounds.height, 600);
+    CHECK_EQ(preferences.effectiveDisplay(), candidate);
+    CHECK_EQ(preferences.requested().display, candidate);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path).load().display,
+        candidate);
+    CHECK(!preferences.flushResizePersistence(10.0));
+}
+
+TEST_CASE(ApplicationPreferences_BorderlessEditRetainsPendingWindowedSize) {
+    DisplayFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeDisplay(fixture.runtime, false);
+    fixture.connectResizeCallback(preferences);
+    fixture.manualResize(1100, 750, 1.0);
+    auto candidate = preferences.requested().display;
+    candidate.mode = Rigel::Preferences::DisplayMode::Borderless;
+
+    const auto applied =
+        preferences.applyDisplay(
+            fixture.runtime, candidate, Rigel::WindowedSizeIntent::Unchanged);
+
+    CHECK_EQ(applied.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(fixture.display.bounds,
+             (Rigel::GlfwRuntime::Rectangle{1920, 0, 2560, 1440}));
+    candidate.windowedSize = {1100, 750};
+    CHECK_EQ(preferences.effectiveDisplay(), candidate);
+    CHECK_EQ(preferences.requested().display, candidate);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path).load().display,
+        candidate);
+    CHECK(!preferences.flushResizePersistence(10.0));
 }
 
 TEST_CASE(ApplicationPreferences_ShutdownFlushesInsideResizeDebounceWindow) {

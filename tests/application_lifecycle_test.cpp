@@ -226,7 +226,10 @@ void validateInvalidApplicationPreferences(Rigel::Application& application) {
     invalidDisplay.windowedSize.width =
         Rigel::Preferences::kMinimumWindowDimension - 1;
     g_calls->invalidDisplayStatus =
-        application.applyDisplayPreferences(invalidDisplay).status;
+        application
+            .applyDisplayPreferences(
+                invalidDisplay, Rigel::WindowedSizeIntent::Changed)
+            .status;
     g_calls->invalidFovStatus = application.applyVerticalFov(
         Rigel::Preferences::kMaximumVerticalFovDegrees + 1.0).status;
     throw std::runtime_error("application preference validation completed");
@@ -577,6 +580,32 @@ TEST_CASE(Application_ShutdownFlushesPendingResizeBeforeDebounceExpires) {
             .load()
             .display.windowedSize,
         (Rigel::Preferences::WindowedSize{1040, 780}));
+}
+
+TEST_CASE(Application_ShutdownBoundsPendingResizePublicationRetries) {
+    LifecycleCalls calls;
+    calls.failPreferencePublication = true;
+    ScopedLifecycleCalls scopedCalls(calls);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_shutdown_resize_failure");
+    const auto preferencesPath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath).saveRequested({});
+    ScopedPreferenceSavePreflight savePreflight;
+    LogCapture logs;
+
+    Rigel::ApplicationTestAccess::shutdownWithPendingResize(
+        preferencesPath, 1040, 780);
+
+    CHECK_EQ(calls.preferenceSavePreflights, static_cast<size_t>(2));
+    CHECK_NE(
+        logs.output().find("Pending window resize was not saved"),
+        std::string::npos);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(preferencesPath)
+            .load()
+            .display.windowedSize,
+        (Rigel::Preferences::WindowedSize{800, 600}));
 }
 
 TEST_CASE(Application_BlockedResizeDoesNotRetryOrFailClose) {

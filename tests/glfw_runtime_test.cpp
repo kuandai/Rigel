@@ -23,6 +23,7 @@ struct RuntimeCalls {
     int nextDecorated = GLFW_TRUE;
     int error = GLFW_NO_ERROR;
     bool swapIntervalZeroSupported = true;
+    bool enumerateMonitors = true;
     bool failWindowPositionQuery = false;
     bool failMonitorPositionQuery = false;
     bool failDecorationQuery = false;
@@ -69,8 +70,8 @@ void makeContextCurrent(GLFWwindow* window) {
 }
 
 GLFWmonitor** getMonitors(int* count) {
-    *count = 1;
-    return g_calls->monitors;
+    *count = g_calls->enumerateMonitors ? 1 : 0;
+    return g_calls->enumerateMonitors ? g_calls->monitors : nullptr;
 }
 
 GLFWmonitor* getPrimaryMonitor() {
@@ -262,6 +263,24 @@ TEST_CASE(GlfwRuntime_RejectsUnsupportedSwapIntervalWithoutCallingPlatform) {
         CHECK(calls.swapIntervals.empty());
         CHECK_NE(
             runtime.lastError().find("cannot disable"), std::string::npos);
+    }
+    g_calls = nullptr;
+}
+
+TEST_CASE(GlfwRuntime_UsesPrimaryMonitorWhenEnumerationIsEmpty) {
+    RuntimeCalls calls;
+    calls.videoMode.width = 1920;
+    calls.videoMode.height = 1080;
+    calls.enumerateMonitors = false;
+    g_calls = &calls;
+    {
+        Rigel::GlfwRuntime runtime(fakeApi());
+        CHECK(runtime.initialize());
+        CHECK(runtime.createWindow(800, 600, "Rigel"));
+
+        CHECK_EQ(
+            runtime.currentDesktopBounds(),
+            std::optional(Rigel::GlfwRuntime::Rectangle{0, 0, 1920, 1080}));
     }
     g_calls = nullptr;
 }

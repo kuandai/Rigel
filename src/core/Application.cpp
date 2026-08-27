@@ -1104,8 +1104,10 @@ void Application::run() {
 }
 
 PreferenceApplyResult Application::applyDisplayPreferences(
-    const Preferences::DisplayPreferences& preferences) {
-    return m_impl->preferences->applyDisplay(m_impl->runtime, preferences);
+    const Preferences::DisplayPreferences& preferences,
+    WindowedSizeIntent windowedSizeIntent) {
+    return m_impl->preferences->applyDisplay(
+        m_impl->runtime, preferences, windowedSizeIntent);
 }
 
 PreferenceApplyResult Application::applyVerticalFov(double verticalFovDegrees) {

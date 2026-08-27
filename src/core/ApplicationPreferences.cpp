@@ -173,12 +173,24 @@ ApplicationPreferences::initializeDisplay(
     safe.windowedSize = kSafeWindowedSize;
     safe.vsync = false;
     safe.fpsLimit.reset();
-    std::string fallbackFailure;
-    if (!createDisplay(runtime, safe, fallbackFailure)) {
-        throw std::runtime_error(
-            "Requested display failed (" + requestedFailure +
-            "); fixed safe windowed fallback also failed (" +
-            fallbackFailure + ")");
+    std::string vsyncOffFallbackFailure;
+    if (!createDisplay(runtime, safe, vsyncOffFallbackFailure)) {
+        if (benchmarkMode) {
+            throw std::runtime_error(
+                "Requested benchmark display failed (" + requestedFailure +
+                "); fixed safe benchmark display also failed (" +
+                vsyncOffFallbackFailure + ")");
+        }
+        safe.vsync = true;
+        std::string vsyncOnFallbackFailure;
+        if (!createDisplay(runtime, safe, vsyncOnFallbackFailure)) {
+            throw std::runtime_error(
+                "Requested display failed (" + requestedFailure +
+                "); fixed safe windowed fallback with VSync off failed (" +
+                vsyncOffFallbackFailure +
+                "); fixed safe windowed fallback with VSync on also failed (" +
+                vsyncOnFallbackFailure + ")");
+        }
     }
 
     m_effectiveDisplay = safe;
@@ -186,7 +198,8 @@ ApplicationPreferences::initializeDisplay(
     return {
         true,
         "Requested display failed (" + requestedFailure +
-            "); using fixed safe 800x600 windowed display with VSync off"};
+            "); using fixed safe 800x600 windowed display with VSync " +
+            (safe.vsync ? "on" : "off")};
 }
 
 bool ApplicationPreferences::restorePhysicalDisplay(
@@ -229,10 +242,16 @@ bool ApplicationPreferences::restorePhysicalDisplay(
 
 PreferenceApplyResult ApplicationPreferences::applyDisplay(
     GlfwRuntime& runtime,
-    const Preferences::DisplayPreferences& candidate) {
-    if (!validDisplayMode(candidate.mode) ||
-        !validWindowedSize(candidate.windowedSize) ||
-        !validFpsLimit(candidate.fpsLimit)) {
+    const Preferences::DisplayPreferences& candidate,
+    WindowedSizeIntent windowedSizeIntent) {
+    Preferences::DisplayPreferences requestedCandidate = candidate;
+    if (windowedSizeIntent == WindowedSizeIntent::Unchanged) {
+        requestedCandidate.windowedSize = m_pendingResize.value_or(
+            m_requested.display.windowedSize);
+    }
+    if (!validDisplayMode(requestedCandidate.mode) ||
+        !validWindowedSize(requestedCandidate.windowedSize) ||
+        !validFpsLimit(requestedCandidate.fpsLimit)) {
         return {
             PreferenceApplyStatus::Rejected,
             "display request is outside the supported window or FPS range"};
@@ -240,8 +259,8 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
     const Preferences::DisplayPreferences previousEffective =
         m_effectiveDisplay;
     const Preferences::DisplayPreferences nextEffective =
-        effectiveDisplayFor(candidate);
-    if (candidate == m_requested.display &&
+        effectiveDisplayFor(requestedCandidate);
+    if (requestedCandidate == m_requested.display &&
         nextEffective == previousEffective) {
         m_pendingResize.reset();
         m_resizePersistenceTerminal.reset();
@@ -302,7 +321,7 @@ PreferenceApplyResult ApplicationPreferences::applyDisplay(
     }
 
     Preferences::UserPreferences nextRequested = m_requested;
-    nextRequested.display = candidate;
+    nextRequested.display = requestedCandidate;
     std::optional<Preferences::UserPreferencesStore::PreparedSave> prepared;
     try {
         prepared.emplace(m_store.prepareSave(nextRequested));
@@ -491,7 +510,12 @@ ApplicationPreferences::flushResizePersistence(double now) {
 
 std::optional<PreferenceApplyResult>
 ApplicationPreferences::flushResizePersistenceForShutdown() {
-    return persistPendingResize(now(), true);
+    auto result = persistPendingResize(now(), true);
+    if (result && result->status == PreferenceApplyStatus::NotPublished &&
+        m_pendingResize && !m_resizePersistenceTerminal) {
+        result = persistPendingResize(now(), true);
+    }
+    return result;
 }
 
 std::optional<PreferenceApplyResult>

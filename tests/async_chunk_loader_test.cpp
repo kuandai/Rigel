@@ -1,14 +1,19 @@
 #include "TestFramework.h"
 #include "ThreadPoolTestAccess.h"
 
+#include "ApplicationPreferences.h"
+
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/ChunkSerializer.h"
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
+#include "Rigel/Preferences/UserPreferences.h"
+#include "Rigel/Voxel/StreamingConfig.h"
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/ChunkStreamer.h"
+#include "Rigel/Voxel/WorldView.h"
 #include "WorldGenerationTestFixture.h"
 
 #include <algorithm>
@@ -38,16 +43,6 @@ static_assert(!PubliclyAppliesViewDistance<AsyncChunkLoader>);
 
 namespace Rigel::Persistence::detail {
 struct AsyncChunkLoaderTestAccess {
-    static int viewPolicyRegionSpanChunks(const AsyncChunkLoader& loader) {
-        return loader.viewPolicyRegionSpanChunks();
-    }
-
-    static void applyViewDistancePolicy(
-        AsyncChunkLoader& loader,
-        std::shared_ptr<const ViewDistancePolicy> policy) {
-        loader.applyViewDistancePolicy(std::move(policy));
-    }
-
     static std::shared_ptr<const ViewDistancePolicy> viewDistancePolicy(
         const AsyncChunkLoader& loader) {
         return loader.m_viewDistancePolicy;
@@ -1124,7 +1119,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
 }
 
-TEST_CASE(AsyncChunkLoader_ConsumesThePreparedViewDistancePolicy) {
+TEST_CASE(AsyncChunkLoader_SharesThePreparedViewDistancePolicy) {
     WorldResources resources;
     World world;
     world.initialize(resources);
@@ -1139,20 +1134,29 @@ TEST_CASE(AsyncChunkLoader_ConsumesThePreparedViewDistancePolicy) {
         0,
         0,
         generator);
-    const int regionSpan =
-        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
-            viewPolicyRegionSpanChunks(loader);
-    const auto policy = ViewDistancePolicy::derive(16, regionSpan, 4);
+    WorldView view(world, resources);
+    StreamingConfig streaming;
+    streaming.workerThreads = 0;
+    view.setStreamConfig(streaming);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_loader_view_policy");
+    const auto preferencePath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 16;
+    Rigel::Preferences::UserPreferencesStore(preferencePath)
+        .saveRequested(requested);
+    Rigel::ApplicationPreferences preferences(preferencePath);
+    preferences.load();
 
-    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
-        applyViewDistancePolicy(loader, policy);
+    preferences.initializeViewDistance(view, &loader);
 
-    CHECK_EQ(
+    const auto policy =
         Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
-            viewDistancePolicy(loader),
-        policy);
+            viewDistancePolicy(loader);
+    CHECK_EQ(policy, view.viewDistancePolicy());
     CHECK_EQ(policy->preloadRadiusRegions(), 1);
-    CHECK_EQ(policy->generation(), static_cast<uint64_t>(4));
+    CHECK_EQ(policy->generation(), static_cast<uint64_t>(1));
 }
 
 TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {

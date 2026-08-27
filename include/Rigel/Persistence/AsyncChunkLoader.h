@@ -71,6 +71,8 @@ public:
 
     void setMaxCachedRegions(size_t maxRegions);
     void setMaxInFlightRegions(size_t maxRegions);
+    // Exact developer/test injection. Active application worlds consume their
+    // immutable View Distance policy instead of these fallback values.
     void setPrefetchRadius(int radius);
     void setPrefetchPerRequest(size_t count);
     void setRegionDrainBudget(size_t budget);

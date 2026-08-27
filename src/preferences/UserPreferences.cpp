@@ -231,6 +231,7 @@ private:
 };
 
 thread_local std::function<void()> g_afterSavePreflightHook;
+thread_local std::function<void()> g_afterPublicationHook;
 
 std::unique_ptr<UserPreferencesFileLock> lockUserPreferencesPublication(
     const std::filesystem::path& path) {
@@ -982,6 +983,9 @@ void writeAtomically(const std::filesystem::path& path,
         session->writer().writeBytes(
             reinterpret_cast<const uint8_t*>(document.data()), document.size());
         session->commit();
+        if (g_afterPublicationHook) {
+            g_afterPublicationHook();
+        }
     } catch (const Persistence::AtomicFilePublicationError&) {
         throw;
     } catch (const std::exception& error) {
@@ -1062,7 +1066,8 @@ UserPreferencesState UserPreferencesStore::load() {
 }
 
 void UserPreferencesStore::saveRequested(const UserPreferences& requested) {
-    validatePreferences(requested);
+    std::string document = serializePreferences(requested, nullptr);
+    requireValidSerializedSize(m_path, document);
     if (m_normalSaveBlocked) {
         throwWriteBlocked(m_path, "normal saves are blocked after an unsafe load");
     }
@@ -1078,12 +1083,10 @@ void UserPreferencesStore::saveRequested(const UserPreferences& requested) {
         g_afterSavePreflightHook();
     }
 
-    const std::string document = serializePreferences(
-        requested,
-        current.kind == DocumentKind::Supported
-            ? std::move(current.tree)
-            : nullptr);
-    requireValidSerializedSize(m_path, document);
+    if (current.kind == DocumentKind::Supported) {
+        document = serializePreferences(requested, std::move(current.tree));
+        requireValidSerializedSize(m_path, document);
+    }
     try {
         writeAtomically(m_path, document);
     } catch (const Persistence::AtomicFilePublicationError& error) {
@@ -1101,9 +1104,9 @@ void UserPreferencesStore::saveRequested(const UserPreferencesState& state) {
 
 void UserPreferencesStore::replaceWithRequested(
     const UserPreferences& requested) {
-    const auto publicationLock = lockUserPreferencesPublication(m_path);
     const std::string document = serializePreferences(requested, nullptr);
     requireValidSerializedSize(m_path, document);
+    const auto publicationLock = lockUserPreferencesPublication(m_path);
     try {
         writeAtomically(m_path, document);
         m_normalSaveBlocked = false;
@@ -1121,6 +1124,11 @@ namespace detail {
 void setUserPreferencesAfterSavePreflightHookForTesting(
     std::function<void()> hook) {
     g_afterSavePreflightHook = std::move(hook);
+}
+
+void setUserPreferencesAfterPublicationHookForTesting(
+    std::function<void()> hook) {
+    g_afterPublicationHook = std::move(hook);
 }
 
 bool tryPublishCooperatingUserPreferencesDocumentForTesting(

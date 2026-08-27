@@ -118,14 +118,6 @@ public:
     // save block without first loading a supported schema.
     void replaceWithRequested(const UserPreferences& requested);
 
-    bool normalSaveBlocked() const noexcept {
-        return m_normalSaveBlocked;
-    }
-
-    const std::filesystem::path& path() const noexcept {
-        return m_path;
-    }
-
 private:
     std::filesystem::path m_path;
     bool m_normalSaveBlocked = false;

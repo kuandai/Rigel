@@ -338,12 +338,13 @@ maxima.
 
 Negative queue, budget, thread, cache, and prefetch values are clamped to zero.
 The desired set is rebuilt only when the camera enters a different chunk, a
-distance changes, or generator replacement changes its vertical clip.
-Generator replacement synchronously reconciles only the bounded current and
-prospective desired coordinates. Retained residents are reconciled in
-deterministic batches of at most 64 during replacement and each subsequent
-update. `update_budget_per_frame` does not turn the desired-set rebuild into a
-partial scan.
+distance changes, or the internal streamer generator assignment changes its
+vertical clip. The assignment path synchronously reconciles only the bounded
+current and prospective desired coordinates. Retained residents are reconciled
+in deterministic batches of at most 64 during assignment and each subsequent
+update. Save-owned generator definitions are not live-replaceable.
+`update_budget_per_frame` does not turn the desired-set rebuild into a partial
+scan.
 
 ---
 

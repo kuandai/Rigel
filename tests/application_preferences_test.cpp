@@ -507,6 +507,11 @@ TEST_CASE(ApplicationPreferences_ViewDistancePublicationOutcomesMatchSession) {
     CHECK_EQ(preferences.requested(), requested);
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path)
+            .load()
+            .graphics.viewDistanceChunks,
+        7);
 
     Rigel::Preferences::detail::
         setUserPreferencesBeforePublicationHookForTesting({});

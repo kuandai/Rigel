@@ -182,6 +182,13 @@ struct ChunkStreamerTestAccess {
         return streamer.m_configRetiredWork.size();
     }
 
+    static StreamingConfig applyViewDistanceChunks(
+        ChunkStreamer& streamer,
+        int chunks) {
+        streamer.applyViewDistanceChunks(chunks);
+        return streamer.m_config;
+    }
+
     static size_t meshDispatchLimit(const ChunkStreamer& streamer) {
         return streamer.meshDispatchLimit();
     }
@@ -508,6 +515,25 @@ concept HasPublicReset = requires(T& streamer) {
 };
 
 static_assert(!HasPublicReset<ChunkStreamer>);
+
+TEST_CASE(ChunkStreamer_ViewDistanceDerivesUnloadHysteresis) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, nullptr);
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 3;
+    streaming.unloadDistanceChunks = 20;
+    streamer.setConfig(streaming);
+
+    const StreamingConfig effective =
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            applyViewDistanceChunks(streamer, 7);
+
+    CHECK_EQ(effective.viewDistanceChunks, 7);
+    CHECK_EQ(effective.unloadDistanceChunks, 8);
+}
 
 class WorkerGate {
 public:

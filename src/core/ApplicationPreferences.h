@@ -130,7 +130,8 @@ private:
     Preferences::UserPreferences m_requested;
     Preferences::DisplayPreferences m_effectiveDisplay;
     std::optional<double> m_effectiveVerticalFovDegrees;
-    int m_effectiveViewDistanceChunks = 12;
+    int m_effectiveViewDistanceChunks =
+        Preferences::kDefaultViewDistanceChunks;
     Preferences::InputPreferences m_effectiveInput;
     std::shared_ptr<const Input::InputBindings> m_effectiveBindings;
     Core::FramePacer m_framePacer;

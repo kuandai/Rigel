@@ -1185,6 +1185,11 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
             ++schedulerCoordinatesInspected;
             if (m_desiredSet.find(coord) == m_desiredSet.end() &&
                 distanceSquared(center, coord) > unloadRadiusSq) {
+                rememberConfigRetiredWork(
+                    coord,
+                    flight.kind == MeshRequestKind::Dirty
+                        ? ConfigRetiredWorkKind::DirtyMesh
+                        : ConfigRetiredWorkKind::MissingMesh);
                 flight.obsolete = true;
                 setReplacementPending(coord, flight, false);
                 flight.prioritized = false;

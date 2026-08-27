@@ -2,6 +2,7 @@
 
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Util/Ryml.h"
+#include "Rigel/input/PhysicalInput.h"
 
 #include <ryml.hpp>
 #include <ryml_std.hpp>
@@ -37,21 +38,6 @@ namespace Rigel::Preferences {
 namespace {
 
 constexpr size_t kMaximumUserPreferencesBytes = 256 * 1024;
-constexpr size_t kMaximumBindingsPerAction = 8;
-constexpr size_t kMaximumBindingTokenBytes = 64;
-
-constexpr std::array<std::pair<UserAction, std::string_view>, 9>
-    kUserActionNames{{
-        {UserAction::MoveForward, "move_forward"},
-        {UserAction::MoveBackward, "move_backward"},
-        {UserAction::MoveLeft, "move_left"},
-        {UserAction::MoveRight, "move_right"},
-        {UserAction::Ascend, "ascend"},
-        {UserAction::Descend, "descend"},
-        {UserAction::Sprint, "sprint"},
-        {UserAction::RemoveBlock, "remove_block"},
-        {UserAction::PlaceBlock, "place_block"}
-    }};
 
 enum class DocumentKind {
     Missing,
@@ -272,8 +258,10 @@ std::string sourceName(const std::filesystem::path& path) {
     return path.string();
 }
 
+} // namespace
+
 std::optional<UserAction> parseUserAction(std::string_view name) {
-    for (const auto& [action, actionName] : kUserActionNames) {
+    for (const auto& [action, actionName] : kUserActions) {
         if (name == actionName) {
             return action;
         }
@@ -282,13 +270,15 @@ std::optional<UserAction> parseUserAction(std::string_view name) {
 }
 
 std::string_view userActionName(UserAction action) {
-    for (const auto& [candidate, name] : kUserActionNames) {
+    for (const auto& [candidate, name] : kUserActions) {
         if (action == candidate) {
             return name;
         }
     }
     throw std::invalid_argument("Unknown user preference action");
 }
+
+namespace {
 
 std::string scalarText(ryml::ConstNodeRef node) {
     if (!node.readable() || !node.has_val() || node.is_container()) {
@@ -403,17 +393,7 @@ std::optional<bool> parseBool(ryml::ConstNodeRef node) {
 }
 
 bool validBindingToken(std::string_view token) {
-    if (token.empty() || token.size() > kMaximumBindingTokenBytes) {
-        return false;
-    }
-    for (const unsigned char byte : token) {
-        if ((byte >= 'A' && byte <= 'Z') ||
-            (byte >= '0' && byte <= '9') || byte == '_') {
-            continue;
-        }
-        return false;
-    }
-    return true;
+    return Input::decodeBindingToken(token).has_value();
 }
 
 ryml::ConstNodeRef childOrInvalid(ryml::ConstNodeRef node,
@@ -987,7 +967,7 @@ void setWindowedSize(ryml::NodeRef display, const WindowedSize& size) {
 
 void setBindings(ryml::NodeRef input, const InputPreferences& preferences) {
     ryml::NodeRef bindings = ensureMap(input, "bindings");
-    for (const auto& [action, name] : kUserActionNames) {
+    for (const auto& [action, name] : kUserActions) {
         static_cast<void>(action);
         const ryml::csubstr key(name.data(), name.size());
         while (bindings.has_child(key)) {

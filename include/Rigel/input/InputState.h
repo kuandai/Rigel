@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Rigel::Input {
@@ -34,6 +36,7 @@ public:
 
     void handleKeyEvent(int key, int action);
     void handleMouseButtonEvent(int button, int action);
+    void handleFocusLost();
     void beginFrame();
 
     bool isKeyPressed(int key) const;
@@ -51,7 +54,9 @@ private:
     using KeyStates = std::array<std::uint8_t, GLFW_KEY_LAST + 1>;
     using MouseButtonStates = std::array<std::uint8_t, GLFW_MOUSE_BUTTON_LAST + 1>;
 
-    std::optional<int> resolveKey(std::string_view action) const;
+    bool isPhysicalInputPressed(const PhysicalInput& input) const;
+    void rebaseActionStates();
+    void updateActionTransitions();
     void dispatchActionTransitions();
 
     KeyStates m_currentKeys{};
@@ -59,6 +64,8 @@ private:
     MouseButtonStates m_currentMouseButtons{};
     MouseButtonStates m_pendingMouseButtons{};
     std::shared_ptr<InputBindings> m_bindings;
+    std::optional<std::shared_ptr<InputBindings>> m_pendingBindings;
+    std::unordered_map<std::string, std::uint8_t> m_actionStates;
     std::vector<InputListener*> m_listeners;
 };
 

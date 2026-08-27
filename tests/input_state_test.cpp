@@ -2,6 +2,8 @@
 #include "LogCapture.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Preferences/UserPreferences.h"
+#include "Rigel/input/InputBindingsLoader.h"
 #include "Rigel/input/InputState.h"
 #include "Rigel/input/GameplayInput.h"
 
@@ -110,6 +112,7 @@ TEST_CASE(InputState_ActionMappingUsesOwnedFrameState) {
     RecordingListener listener;
     input.setBindings(bindings);
     input.addListener(&listener);
+    input.beginFrame();
 
     input.handleKeyEvent(GLFW_KEY_A, GLFW_PRESS);
     input.beginFrame();
@@ -130,6 +133,104 @@ TEST_CASE(InputState_ActionMappingUsesOwnedFrameState) {
     CHECK_EQ(listener.released.front(), std::string("test_action"));
 }
 
+TEST_CASE(InputState_ActionAlternativesAggregateHeldAndEdges) {
+    auto bindings = std::make_shared<InputBindings>();
+    bindings->setBindings(
+        "test_action",
+        {{PhysicalInputType::Keyboard, GLFW_KEY_A},
+         {PhysicalInputType::MouseButton, GLFW_MOUSE_BUTTON_LEFT}});
+
+    InputState input;
+    input.setBindings(bindings);
+    input.beginFrame();
+
+    input.handleKeyEvent(GLFW_KEY_A, GLFW_PRESS);
+    input.beginFrame();
+    CHECK(input.isActionPressed("test_action"));
+    CHECK(input.isActionJustPressed("test_action"));
+
+    input.handleMouseButtonEvent(GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS);
+    input.beginFrame();
+    CHECK(input.isActionPressed("test_action"));
+    CHECK(!input.isActionJustPressed("test_action"));
+
+    input.handleKeyEvent(GLFW_KEY_A, GLFW_RELEASE);
+    input.beginFrame();
+    CHECK(input.isActionPressed("test_action"));
+    CHECK(!input.isActionJustReleased("test_action"));
+
+    input.handleMouseButtonEvent(GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE);
+    input.beginFrame();
+    CHECK(!input.isActionPressed("test_action"));
+    CHECK(input.isActionJustReleased("test_action"));
+}
+
+TEST_CASE(InputState_CompleteTapBetweenFramesKeepsBothSemanticEdges) {
+    auto bindings = std::make_shared<InputBindings>();
+    bindings->bind("test_action", GLFW_KEY_A);
+    InputState input;
+    input.setBindings(bindings);
+    input.beginFrame();
+
+    input.handleKeyEvent(GLFW_KEY_A, GLFW_PRESS);
+    input.handleKeyEvent(GLFW_KEY_A, GLFW_RELEASE);
+    input.beginFrame();
+
+    CHECK(!input.isActionPressed("test_action"));
+    CHECK(input.isActionJustPressed("test_action"));
+    CHECK(input.isActionJustReleased("test_action"));
+}
+
+TEST_CASE(InputState_BindingSwapRebasesHeldStateWithoutSyntheticEdges) {
+    auto first = std::make_shared<InputBindings>();
+    first->bind("test_action", GLFW_KEY_A);
+    auto second = std::make_shared<InputBindings>();
+    second->bind("test_action", GLFW_KEY_B);
+
+    InputState input;
+    input.setBindings(first);
+    input.beginFrame();
+    input.handleKeyEvent(GLFW_KEY_A, GLFW_PRESS);
+    input.beginFrame();
+    CHECK(input.isActionJustPressed("test_action"));
+
+    input.handleKeyEvent(GLFW_KEY_B, GLFW_PRESS);
+    input.setBindings(second);
+    CHECK(input.isActionPressed("test_action"));
+    input.beginFrame();
+    CHECK(input.isActionPressed("test_action"));
+    CHECK(!input.isActionJustPressed("test_action"));
+    CHECK(!input.isActionJustReleased("test_action"));
+
+    input.handleKeyEvent(GLFW_KEY_A, GLFW_RELEASE);
+    input.beginFrame();
+    CHECK(input.isActionPressed("test_action"));
+    CHECK(!input.isActionJustReleased("test_action"));
+
+    input.handleKeyEvent(GLFW_KEY_B, GLFW_RELEASE);
+    input.beginFrame();
+    CHECK(input.isActionJustReleased("test_action"));
+}
+
+TEST_CASE(InputState_FocusLossReleasesHeldSemanticActions) {
+    auto bindings = std::make_shared<InputBindings>();
+    bindings->bind("test_action", GLFW_KEY_A);
+    InputState input;
+    input.setBindings(bindings);
+    input.beginFrame();
+    input.handleKeyEvent(GLFW_KEY_A, GLFW_PRESS);
+    input.beginFrame();
+    CHECK(input.isActionPressed("test_action"));
+
+    input.handleFocusLost();
+    input.beginFrame();
+    CHECK(!input.isActionPressed("test_action"));
+    CHECK(input.isActionJustReleased("test_action"));
+
+    input.beginFrame();
+    CHECK(!input.isActionJustReleased("test_action"));
+}
+
 TEST_CASE(InputState_InstancesDoNotShareDeviceState) {
     InputState first;
     InputState second;
@@ -145,40 +246,103 @@ TEST_CASE(InputState_InstancesDoNotShareDeviceState) {
     CHECK(!second.isMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT));
 }
 
-TEST_CASE(InputState_DefaultBindingsCoverAbsentAndFailedAssets) {
+TEST_CASE(InputBindings_ShippedDefaultsAreCompleteAndCacheIsImmutable) {
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    assets.registerLoader(
+        "input", std::make_unique<Rigel::Input::InputBindingsLoader>());
+    const auto defaults = loadPlayerDefaultBindings(assets);
+
+    CHECK_EQ(defaults->bindings().size(), Rigel::Preferences::kUserActions.size());
+    for (const auto& [action, name] : Rigel::Preferences::kUserActions) {
+        static_cast<void>(action);
+        CHECK(defaults->isBound(name));
+    }
+    CHECK(!defaults->hasAction("debug_overlay"));
+    CHECK_EQ(
+        defaults->inputsFor("remove_block"),
+        (std::vector<PhysicalInput>{{
+            PhysicalInputType::MouseButton, GLFW_MOUSE_BUTTON_LEFT}}));
+
+    Rigel::Preferences::InputPreferences preferences;
+    preferences.bindings[Rigel::Preferences::UserAction::MoveForward] =
+        {"UP", "MOUSE_4"};
+    preferences.bindings[Rigel::Preferences::UserAction::PlaceBlock] = {};
+    const auto effective = compileInputBindings(*defaults, preferences);
+
+    CHECK_EQ(
+        effective->inputsFor("move_forward"),
+        (std::vector<PhysicalInput>{
+            {PhysicalInputType::Keyboard, GLFW_KEY_UP},
+            {PhysicalInputType::MouseButton, GLFW_MOUSE_BUTTON_4}}));
+    CHECK(!effective->isBound("place_block"));
+    CHECK_EQ(
+        defaults->inputsFor("move_forward"),
+        (std::vector<PhysicalInput>{{
+            PhysicalInputType::Keyboard, GLFW_KEY_W}}));
+    CHECK(defaults->isBound("place_block"));
+    CHECK(!defaults->hasAction("debug_overlay"));
+    CHECK_EQ(
+        effective->inputsFor("debug_overlay"),
+        (std::vector<PhysicalInput>{{
+            PhysicalInputType::Keyboard, GLFW_KEY_F1}}));
+}
+
+TEST_CASE(InputBindings_SymbolicDecoderRejectsNumericAndUnknownTokens) {
+    CHECK_EQ(
+        decodeBindingToken("left-shift"),
+        std::optional<PhysicalInput>({
+            PhysicalInputType::Keyboard, GLFW_KEY_LEFT_SHIFT}));
+    CHECK_EQ(
+        decodeBindingToken("MOUSE_RIGHT"),
+        std::optional<PhysicalInput>({
+            PhysicalInputType::MouseButton, GLFW_MOUSE_BUTTON_RIGHT}));
+    CHECK(!decodeBindingToken("87"));
+    CHECK(!decodeBindingToken("-1"));
+    CHECK(!decodeBindingToken("+1"));
+    CHECK(!decodeBindingToken("999999999999999999999999999999"));
+    CHECK(!decodeBindingToken("MOUSE_9"));
+    CHECK(!decodeBindingToken("NOT_A_KEY"));
+}
+
+TEST_CASE(InputBindings_InvalidOrIncompleteDefaultsFailWithoutFallback) {
+    InputBindings incomplete;
+    incomplete.bind("move_forward", GLFW_KEY_W);
+    CHECK_THROWS(compileInputBindings(
+        incomplete, Rigel::Preferences::InputPreferences{}));
+
     {
-        Rigel::Test::LogCapture logs("input-optional-absent-test");
         Rigel::Asset::AssetManager assets;
-        InputState input;
-        loadInputBindings(assets, input);
-        input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
-        input.beginFrame();
-        CHECK(input.isActionPressed("move_forward"));
-        CHECK_EQ(
-            Rigel::Test::countOccurrences(
-                logs.output(), "Optional startup resource 'input/default'"),
-            static_cast<size_t>(1));
+        CHECK_THROWS(loadPlayerDefaultBindings(assets));
     }
 
     {
-        Rigel::Test::LogCapture logs("input-optional-failure-test");
         Rigel::Asset::AssetManager assets;
         auto loader = std::make_unique<ThrowingInputLoader>();
         auto* loaderProbe = loader.get();
         assets.registerLoader("input", std::move(loader));
         assets.loadManifest("manifest.yaml");
 
-        InputState input;
-        CHECK_NO_THROW(loadInputBindings(assets, input));
+        CHECK_THROWS(loadPlayerDefaultBindings(assets));
         CHECK_EQ(loaderProbe->loadCount, static_cast<size_t>(1));
-        input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
-        input.beginFrame();
-        CHECK(input.isActionPressed("move_forward"));
-        const auto output = logs.output();
-        CHECK_EQ(
-            Rigel::Test::countOccurrences(
-                output, "Optional startup resource 'input/default'"),
-            static_cast<size_t>(1));
-        CHECK(output.find("injected input failure") != std::string::npos);
     }
+}
+
+TEST_CASE(InputBindings_DuplicatePhysicalInputsWarnOnceAndRemainAllowed) {
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    assets.registerLoader(
+        "input", std::make_unique<Rigel::Input::InputBindingsLoader>());
+    const auto defaults = loadPlayerDefaultBindings(assets);
+    Rigel::Preferences::InputPreferences preferences;
+    preferences.bindings[Rigel::Preferences::UserAction::MoveForward] = {"A"};
+
+    Rigel::Test::LogCapture logs("duplicate-input-bindings");
+    const auto effective = compileInputBindings(*defaults, preferences);
+    CHECK(effective->isBound("move_forward"));
+    CHECK(effective->isBound("move_left"));
+    CHECK_EQ(
+        Rigel::Test::countOccurrences(
+            logs.output(), "Multiple actions share a physical input binding"),
+        static_cast<size_t>(1));
 }

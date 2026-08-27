@@ -22,7 +22,10 @@
 #include <cmath>
 #include <exception>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace Rigel::Input {
 namespace {
@@ -32,6 +35,47 @@ struct RaycastHit {
     glm::ivec3 normal{};
     float distance = 0.0f;
 };
+
+void requireCompletePlayerDefaults(const InputBindings& bindings) {
+    if (bindings.bindings().size() != Preferences::kUserActions.size()) {
+        throw std::runtime_error(
+            "Shipped player bindings must define exactly the nine player actions; found " +
+            std::to_string(bindings.bindings().size()));
+    }
+    for (const auto& [action, name] : Preferences::kUserActions) {
+        static_cast<void>(action);
+        if (!bindings.hasAction(name) || !bindings.isBound(name)) {
+            throw std::runtime_error(
+                "Shipped player bindings are missing required action '" +
+                std::string(name) + "'");
+        }
+    }
+}
+
+void addDeveloperBindings(InputBindings& bindings) {
+    bindings.bind("debug_overlay", GLFW_KEY_F1);
+    bindings.bind("imgui_overlay", GLFW_KEY_F3);
+    bindings.bind("demo_spawn_entity", GLFW_KEY_F2);
+    bindings.bind("toggle_mouse_capture", GLFW_KEY_TAB);
+}
+
+void warnAboutDuplicatePhysicalBindings(const InputBindings& bindings) {
+    std::vector<std::pair<PhysicalInput, std::string_view>> seen;
+    for (const auto& [action, inputs] : bindings.bindings()) {
+        for (const PhysicalInput& input : inputs) {
+            const auto duplicate = std::find_if(
+                seen.begin(), seen.end(), [&](const auto& prior) {
+                    return prior.first == input && prior.second != action;
+                });
+            if (duplicate != seen.end()) {
+                spdlog::warn(
+                    "Multiple actions share a physical input binding; all bindings remain active");
+                return;
+            }
+            seen.emplace_back(input, action);
+        }
+    }
+}
 
 bool raycastBlock(const Voxel::World& world,
                   const glm::vec3& origin,
@@ -192,31 +236,17 @@ void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) 
         }
 #endif
         auto* ctx = static_cast<InputCallbackContext*>(glfwGetWindowUserPointer(cbWindow));
-        if (!ctx || !ctx->window || !ctx->camera) {
+        if (!ctx || !ctx->window || !ctx->camera ||
+            !ctx->effectiveInputPreferences) {
             return;
         }
-        WindowState& windowState = *ctx->window;
-        CameraState& camera = *ctx->camera;
-
-        if (!windowState.cursorCaptured) {
-            return;
-        }
-
-        if (windowState.firstMouse) {
-            windowState.lastMouseX = xpos;
-            windowState.lastMouseY = ypos;
-            windowState.firstMouse = false;
-            return;
-        }
-
-        double xoffset = xpos - windowState.lastMouseX;
-        double yoffset = ypos - windowState.lastMouseY;
-        windowState.lastMouseX = xpos;
-        windowState.lastMouseY = ypos;
-
-        camera.yaw += static_cast<float>(xoffset) * camera.mouseSensitivity;
-        camera.pitch -= static_cast<float>(yoffset) * camera.mouseSensitivity;
-        camera.pitch = std::clamp(camera.pitch, -89.0f, 89.0f);
+        applyCursorPosition(
+            *ctx->window,
+            *ctx->camera,
+            ctx->effectiveInputPreferences->mouseSensitivity,
+            ctx->effectiveInputPreferences->invertY,
+            xpos,
+            ypos);
     });
     glfwSetWindowFocusCallback(window, [](GLFWwindow* cbWindow, int focused) {
         auto* ctx = static_cast<InputCallbackContext*>(glfwGetWindowUserPointer(cbWindow));
@@ -231,66 +261,86 @@ void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context) 
                 setCursorCaptured(windowState, true);
             }
         } else {
+            if (ctx->input) {
+                ctx->input->handleFocusLost();
+            }
             windowState.firstMouse = true;
         }
     });
 }
 
-void loadInputBindings(Asset::AssetManager& assets, InputState& input) {
-    std::shared_ptr<InputBindings> bindings;
-    if (assets.exists("input/default")) {
-        try {
-            auto bindingsHandle = assets.get<InputBindings>("input/default");
-            bindings = bindingsHandle.shared();
-        } catch (const std::exception& error) {
-            spdlog::warn(
-                "Optional startup resource 'input/default' failed to load: {}",
-                error.what());
-        }
-    } else {
-        spdlog::warn("Optional startup resource 'input/default' is absent");
+std::shared_ptr<const InputBindings> loadPlayerDefaultBindings(
+    Asset::AssetManager& assets) {
+    if (!assets.exists("input/default")) {
+        throw std::runtime_error(
+            "Required startup resource 'input/default' is absent");
     }
-    if (!bindings) {
-        bindings = std::make_shared<InputBindings>();
-    }
-    ensureDefaultBindings(*bindings);
-    input.setBindings(std::move(bindings));
+    auto handle = assets.get<InputBindings>("input/default");
+    requireCompletePlayerDefaults(*handle);
+    return handle.shared();
 }
 
-void ensureDefaultBindings(InputBindings& bindings) {
-    if (!bindings.hasAction("debug_overlay")) {
-        bindings.bind("debug_overlay", GLFW_KEY_F1);
+std::shared_ptr<InputBindings> compileInputBindings(
+    const InputBindings& playerDefaults,
+    const Preferences::InputPreferences& preferences) {
+    requireCompletePlayerDefaults(playerDefaults);
+    auto effective = std::make_shared<InputBindings>();
+    for (const auto& [action, inputs] : playerDefaults.bindings()) {
+        effective->setBindings(action, inputs);
     }
-    if (!bindings.hasAction("imgui_overlay")) {
-        bindings.bind("imgui_overlay", GLFW_KEY_F3);
+
+    for (const auto& [action, tokens] : preferences.bindings) {
+        if (tokens.size() > Preferences::kMaximumBindingsPerAction) {
+            throw std::invalid_argument(
+                "Input binding action has too many alternatives");
+        }
+        std::vector<PhysicalInput> inputs;
+        inputs.reserve(tokens.size());
+        for (const std::string& token : tokens) {
+            const auto decoded = decodeBindingToken(token);
+            if (!decoded) {
+                throw std::invalid_argument(
+                    "Unknown input binding token '" + token + "'");
+            }
+            inputs.push_back(*decoded);
+        }
+        effective->setBindings(
+            std::string(Preferences::userActionName(action)),
+            std::move(inputs));
     }
-    if (!bindings.hasAction("move_forward")) {
-        bindings.bind("move_forward", GLFW_KEY_W);
+
+    addDeveloperBindings(*effective);
+    warnAboutDuplicatePhysicalBindings(*effective);
+    return effective;
+}
+
+void applyCursorPosition(
+    WindowState& window,
+    CameraState& camera,
+    double mouseSensitivity,
+    bool invertY,
+    double xpos,
+    double ypos) {
+    if (!window.cursorCaptured) {
+        return;
     }
-    if (!bindings.hasAction("move_backward")) {
-        bindings.bind("move_backward", GLFW_KEY_S);
+    if (window.firstMouse) {
+        window.lastMouseX = xpos;
+        window.lastMouseY = ypos;
+        window.firstMouse = false;
+        return;
     }
-    if (!bindings.hasAction("move_left")) {
-        bindings.bind("move_left", GLFW_KEY_A);
-    }
-    if (!bindings.hasAction("move_right")) {
-        bindings.bind("move_right", GLFW_KEY_D);
-    }
-    if (!bindings.hasAction("move_up")) {
-        bindings.bind("move_up", GLFW_KEY_SPACE);
-    }
-    if (!bindings.hasAction("move_down")) {
-        bindings.bind("move_down", GLFW_KEY_LEFT_CONTROL);
-    }
-    if (!bindings.hasAction("sprint")) {
-        bindings.bind("sprint", GLFW_KEY_LEFT_SHIFT);
-    }
-    if (!bindings.hasAction("toggle_mouse_capture")) {
-        bindings.bind("toggle_mouse_capture", GLFW_KEY_TAB);
-    }
-    if (!bindings.hasAction("demo_spawn_entity")) {
-        bindings.bind("demo_spawn_entity", GLFW_KEY_F2);
-    }
+
+    const double xoffset = xpos - window.lastMouseX;
+    const double yoffset = ypos - window.lastMouseY;
+    window.lastMouseX = xpos;
+    window.lastMouseY = ypos;
+
+    camera.yaw += static_cast<float>(xoffset * mouseSensitivity);
+    const double verticalSign = invertY ? 1.0 : -1.0;
+    camera.pitch +=
+        static_cast<float>(yoffset * mouseSensitivity * verticalSign);
+    camera.pitch = std::clamp(camera.pitch, -89.0f, 89.0f);
 }
 
 void updateCamera(const InputState& input, CameraState& camera, float dt) {
@@ -326,10 +376,10 @@ void updateCamera(const InputState& input, CameraState& camera, float dt) {
     if (input.isActionPressed("move_left")) {
         move -= right;
     }
-    if (input.isActionPressed("move_up")) {
+    if (input.isActionPressed("ascend")) {
         move += worldUp;
     }
-    if (input.isActionPressed("move_down")) {
+    if (input.isActionPressed("descend")) {
         move -= worldUp;
     }
 
@@ -407,14 +457,14 @@ void handleBlockEdits(const InputState& input,
 
         const float interactDistance = 8.0f;
         RaycastHit hit;
-        if (input.isMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT)) {
+        if (input.isActionJustPressed("remove_block")) {
             if (raycastBlock(world, camera.position, camera.forward,
                              interactDistance, hit)) {
                 world.setBlock(hit.block.x, hit.block.y, hit.block.z, Voxel::BlockState{});
                 prioritizeEditedChunk(hit.block);
             }
         }
-        if (input.isMouseButtonJustPressed(GLFW_MOUSE_BUTTON_RIGHT)) {
+        if (input.isActionJustPressed("place_block")) {
             if (raycastBlock(world, camera.position, camera.forward,
                              interactDistance, hit)) {
                 glm::ivec3 placePos = hit.block + hit.normal;

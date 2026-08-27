@@ -67,7 +67,7 @@ The manifest category determines which loader handles the asset.
 | `raw` | `RawLoader` | Loads embedded bytes into `RawAsset`. |
 | `textures` | `TextureLoader` | Loads PNG data into OpenGL textures. |
 | `shaders` | `ShaderLoader` | Loads + compiles GLSL programs. |
-| `input` | `InputBindingsLoader` | Parses input bindings from YAML. |
+| `input` | `InputBindingsLoader` | Strictly parses symbolic keyboard/mouse binding tokens and lists. |
 | `entity_models` | `EntityModelLoader` | Loads entity models (JSON/YAML). |
 | `entity_anims` | `EntityAnimationSetLoader` | Loads entity animations. |
 

@@ -51,9 +51,11 @@ Shutdown persists world state and releases resources.
    - Entity and entity-shadow shaders are optional independently. A missing or
      unloadable main shader disables entity rendering; a missing or unloadable
      shadow shader disables entity shadow casting.
-   - A missing or unloadable `input/default` asset emits one warning and uses
-     the built-in bindings. Bindings are published only after this fallback is
-     complete.
+   - `input/default` must strictly define all nine player actions and no
+     developer actions. Missing, unloadable, incomplete, or extra definitions
+     abort startup. Sparse user replacements compile into a fresh map; fixed
+     developer/prototype bindings are added separately, and the candidate is
+     queued for the first input frame.
    - ImGui initialization is optional. A false result or exception emits one
      warning naming ImGui, cleans partial UI state, and continues without UI.
 5. Register persistence formats and configure persistence root.
@@ -99,8 +101,8 @@ Per frame:
    callback-fed key and mouse-button state and notify action listeners.
 4. Apply cursor-capture actions, then update camera and interaction logic.
    - Mouse look is applied if the cursor is captured.
-   - Block edit raycasts use mouse press edges; demo entity spawning uses an
-     action press edge.
+   - Block edit raycasts use semantic remove/place action edges; demo entity
+     spawning uses its developer action press edge.
 5. Tick entities (`World::tickEntities`).
 6. Update chunk streaming (load/generation/mesh decisions).
 7. Drain and apply completed generation, load, and mesh work.

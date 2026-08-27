@@ -1,10 +1,13 @@
 #pragma once
 
 #include "Rigel/Voxel/Block.h"
+#include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/input/InputBindings.h"
 #include "Rigel/input/InputState.h"
 
 #include <glm/glm.hpp>
+
+#include <memory>
 
 struct GLFWwindow;
 
@@ -33,7 +36,6 @@ struct CameraState {
     float yaw = -135.0f;
     float pitch = -20.0f;
     float moveSpeed = 10.0f;
-    float mouseSensitivity = 0.12f;
 };
 
 struct DebugOverlayListener : InputListener {
@@ -66,6 +68,7 @@ struct InputCallbackContext {
     InputState* input = nullptr;
     WindowState* window = nullptr;
     CameraState* camera = nullptr;
+    const Preferences::InputPreferences* effectiveInputPreferences = nullptr;
     void* logicalResizeContext = nullptr;
     void (*logicalResize)(void*, int, int) = nullptr;
 };
@@ -74,9 +77,20 @@ void setCursorCaptured(WindowState& window, bool captured);
 
 void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context);
 
-void loadInputBindings(Asset::AssetManager& assets, InputState& input);
+std::shared_ptr<const InputBindings> loadPlayerDefaultBindings(
+    Asset::AssetManager& assets);
 
-void ensureDefaultBindings(InputBindings& bindings);
+std::shared_ptr<InputBindings> compileInputBindings(
+    const InputBindings& playerDefaults,
+    const Preferences::InputPreferences& preferences);
+
+void applyCursorPosition(
+    WindowState& window,
+    CameraState& camera,
+    double mouseSensitivity,
+    bool invertY,
+    double xpos,
+    double ypos);
 
 void updateCamera(const InputState& input, CameraState& camera, float dt);
 

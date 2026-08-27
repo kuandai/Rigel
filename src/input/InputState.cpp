@@ -44,7 +44,11 @@ bool hasState(const auto& states, int index, std::uint8_t state) {
 } // namespace
 
 void InputState::setBindings(std::shared_ptr<InputBindings> bindings) {
-    m_bindings = std::move(bindings);
+    if (bindings == m_bindings) {
+        m_pendingBindings.reset();
+        return;
+    }
+    m_pendingBindings = std::move(bindings);
 }
 
 void InputState::addListener(InputListener* listener) {
@@ -75,9 +79,29 @@ void InputState::handleMouseButtonEvent(int button, int action) {
     applyButtonEvent(m_pendingMouseButtons[static_cast<std::size_t>(button)], action);
 }
 
+void InputState::handleFocusLost() {
+    auto releaseHeld = [](auto& states) {
+        for (std::uint8_t& state : states) {
+            if (state & kPressed) {
+                state &= static_cast<std::uint8_t>(~(kPressed | kRepeating));
+                state |= kJustReleased;
+            }
+        }
+    };
+    releaseHeld(m_pendingKeys);
+    releaseHeld(m_pendingMouseButtons);
+}
+
 void InputState::beginFrame() {
     publishPendingStates(m_currentKeys, m_pendingKeys);
     publishPendingStates(m_currentMouseButtons, m_pendingMouseButtons);
+    if (m_pendingBindings) {
+        m_bindings = std::move(*m_pendingBindings);
+        m_pendingBindings.reset();
+        rebaseActionStates();
+    } else {
+        updateActionTransitions();
+    }
     dispatchActionTransitions();
 }
 
@@ -102,44 +126,101 @@ bool InputState::isMouseButtonJustPressed(int button) const {
 }
 
 bool InputState::isActionPressed(std::string_view action) const {
-    auto key = resolveKey(action);
-    return key && isKeyPressed(*key);
+    const auto state = m_actionStates.find(std::string(action));
+    return state != m_actionStates.end() && (state->second & kPressed);
 }
 
 bool InputState::isActionJustPressed(std::string_view action) const {
-    auto key = resolveKey(action);
-    return key && isKeyJustPressed(*key);
+    const auto state = m_actionStates.find(std::string(action));
+    return state != m_actionStates.end() && (state->second & kJustPressed);
 }
 
 bool InputState::isActionJustReleased(std::string_view action) const {
-    auto key = resolveKey(action);
-    return key && isKeyJustReleased(*key);
+    const auto state = m_actionStates.find(std::string(action));
+    return state != m_actionStates.end() && (state->second & kJustReleased);
 }
 
-std::optional<int> InputState::resolveKey(std::string_view action) const {
-    if (!m_bindings) {
-        return std::nullopt;
+bool InputState::isPhysicalInputPressed(const PhysicalInput& input) const {
+    if (input.type == PhysicalInputType::Keyboard) {
+        return isKeyPressed(input.code);
     }
-    return m_bindings->keyFor(action);
+    return hasState(m_currentMouseButtons, input.code, kPressed);
 }
 
-void InputState::dispatchActionTransitions() {
+void InputState::rebaseActionStates() {
+    m_actionStates.clear();
     if (!m_bindings) {
         return;
     }
+    for (const auto& [action, inputs] : m_bindings->bindings()) {
+        const bool held = std::any_of(
+            inputs.begin(), inputs.end(), [&](const PhysicalInput& input) {
+                return isPhysicalInputPressed(input);
+            });
+        m_actionStates[action] = held ? kPressed : 0;
+    }
+}
 
-    for (const auto& [action, key] : m_bindings->bindings()) {
-        if (!key) {
-            continue;
+void InputState::updateActionTransitions() {
+    if (!m_bindings) {
+        m_actionStates.clear();
+        return;
+    }
+    std::unordered_map<std::string, std::uint8_t> nextStates;
+    nextStates.reserve(m_bindings->bindings().size());
+    for (const auto& [action, inputs] : m_bindings->bindings()) {
+        const auto previous = m_actionStates.find(action);
+        const bool wasHeld = previous != m_actionStates.end() &&
+            (previous->second & kPressed);
+        const bool held = std::any_of(
+            inputs.begin(), inputs.end(), [&](const PhysicalInput& input) {
+                return isPhysicalInputPressed(input);
+            });
+        std::uint8_t state = held ? kPressed : 0;
+        if (held && !wasHeld) {
+            state |= kJustPressed;
+        } else if (!held && wasHeld) {
+            state |= kJustReleased;
+        } else if (!held && !wasHeld) {
+            const bool tapped = std::any_of(
+                inputs.begin(), inputs.end(), [&](const PhysicalInput& input) {
+                    if (input.type == PhysicalInputType::Keyboard) {
+                        return hasState(
+                                   m_currentKeys,
+                                   input.code,
+                                   kJustPressed) &&
+                            hasState(
+                                   m_currentKeys,
+                                   input.code,
+                                   kJustReleased);
+                    }
+                    return hasState(
+                               m_currentMouseButtons,
+                               input.code,
+                               kJustPressed) &&
+                        hasState(
+                               m_currentMouseButtons,
+                               input.code,
+                               kJustReleased);
+                });
+            if (tapped) {
+                state |= kJustPressed | kJustReleased;
+            }
         }
+        nextStates.emplace(action, state);
+    }
+    m_actionStates = std::move(nextStates);
+}
 
-        if (isKeyJustPressed(*key)) {
+void InputState::dispatchActionTransitions() {
+    for (const auto& [action, state] : m_actionStates) {
+        if (state & kJustPressed) {
             for (InputListener* listener : m_listeners) {
                 listener->onActionPressed(action);
             }
         }
 
-        if (isKeyJustReleased(*key)) {
+        if (state & kJustReleased) {
             for (InputListener* listener : m_listeners) {
                 listener->onActionReleased(action);
             }

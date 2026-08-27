@@ -1,154 +1,97 @@
 # Input System
 
-This document describes the input state owned by each Rigel application,
-manifest-defined keyboard actions, cursor-driven camera look, and direct mouse
-button interactions.
+Rigel keeps physical device state in each `Application` instance and resolves
+that state through one effective semantic binding map. Shipped player defaults,
+sparse global user overrides, and developer-only controls have distinct owners.
 
-## Overview
+## Ownership
 
-- `Application::Impl` owns one `InputState`; device state is not shared between
-  application instances.
-- GLFW key and mouse-button callbacks write transitions into that instance's
-  pending state.
-- `InputState::beginFrame()` publishes the pending device state, clears consumed
-  edge flags for the next frame, and notifies action listeners.
-- Gameplay reads held and edge-triggered keyboard actions from `InputState`.
-- Block edits read mouse-button press edges from the same state.
+- `assets/manifest.yaml` is the sole shipped-default source for the nine player
+  actions.
+- `UserPreferences.input.bindings` stores sparse per-action replacements. An
+  absent action inherits the manifest list; an empty list explicitly unbinds
+  it.
+- Application startup validates and compiles the loaded global preference
+  against the manifest without changing the cached asset, then queues the
+  effective map for the first frame boundary.
+- Debug overlay, profiler overlay, demo entity spawn, and prototype mouse
+  capture remain fixed developer/prototype bindings. They are not manifest
+  player defaults and cannot be changed through `UserPreferences`.
 
-## Core Components
+The manifest is required at startup. Missing, malformed, incomplete, or extra
+player actions are startup errors; Rigel does not synthesize a second default
+table in C++.
 
-### InputBindings
+## Binding Values
 
-- Stores `action -> optional key` mappings.
-- Supports bind, unbind, lookup, and action enumeration.
-- Is loaded as an `InputBindings` asset from the `input` manifest category.
+`InputBindings` stores `action -> physical-input list`. A physical input is a
+typed keyboard key or mouse button, so keyboard and mouse codes cannot alias.
+One bounded symbolic decoder is shared by manifest loading and user-preference
+compilation.
 
-### InputBindingsLoader
+Supported keyboard tokens include single letters and digits, `F1` through
+`F25`, Space, Tab, Enter, Escape, Backspace, Insert, Delete, Home, End,
+Page Up/Down, arrow keys, lock keys, Print Screen, Pause, and left/right Shift,
+Control, Alt, and Super aliases. Mouse tokens are `MOUSE_LEFT`, `MOUSE_RIGHT`,
+`MOUSE_MIDDLE`, and `MOUSE_4` through `MOUSE_8`. Parsing is case-insensitive;
+spaces and hyphens normalize to underscores. Raw multi-digit GLFW codes and
+unknown names are rejected.
 
-- Parses `bindings` as a map of action names to key names.
-- Accepts common key names and function keys (`F1` through `F25`).
-- Treats `none`, `unbound`, `null`, or `~` as explicitly unbound.
+The shipped player defaults are:
 
-### InputState
+| Action | Physical input |
+| --- | --- |
+| `move_forward` | W |
+| `move_backward` | S |
+| `move_left` | A |
+| `move_right` | D |
+| `ascend` | Space |
+| `descend` | Left Control |
+| `sprint` | Left Shift |
+| `remove_block` | Left Mouse |
+| `place_block` | Right Mouse |
 
-- Owns the current and pending key and mouse-button arrays.
-- Accepts callback events through `handleKeyEvent()` and
-  `handleMouseButtonEvent()`.
-- Exposes direct key queries and action-mapped queries.
-- Notifies registered `InputListener` instances when bound actions are pressed
-  or released.
+The fixed developer/prototype bindings are F1 for `debug_overlay`, F3 for
+`imgui_overlay`, F2 for `demo_spawn_entity`, and Tab for
+`toggle_mouse_capture`. Duplicate physical inputs across actions emit one
+warning for a compiled map but remain active.
 
-### WindowState and CameraState
+## Per-Frame State
 
-- `WindowState` tracks the GLFW window, cursor capture, last cursor position,
-  focus, and frame-time reset state.
-- `CameraState` holds position, orientation vectors, yaw, pitch, and movement
-  settings.
-- `InputCallbackContext` points GLFW callbacks at the application-owned input,
-  window, and camera state.
+GLFW key and mouse callbacks update pending physical arrays. At
+`InputState::beginFrame()` Rigel:
 
-## Manifest Configuration
+1. publishes pending physical held and edge state;
+2. installs any queued binding candidate;
+3. rebases semantic held state without manufacturing press or release edges
+   when a map changed;
+4. otherwise derives semantic edges from the aggregate held state of every
+   alternative; and
+5. notifies action listeners.
 
-Declare keyboard bindings in the asset manifest:
+Pressing a second alternative while an action is held does not create another
+semantic press. Releasing one alternative while another remains held does not
+create a release. A complete press/release tap between frames retains both
+edges. Focus loss releases pending held inputs so actions do not remain stuck.
 
-```yaml
-assets:
-  input:
-    default:
-      bindings:
-        move_forward: W
-        move_backward: S
-        move_left: A
-        move_right: D
-        move_up: SPACE
-        move_down: LCTRL
-        sprint: LSHIFT
-        toggle_mouse_capture: TAB
-        debug_overlay: F1
-        imgui_overlay: F3
-        unbound_action: none
-```
-
-If `input/default` is absent, the application creates an empty binding set.
-`ensureDefaultBindings()` then adds defaults only for actions that are missing;
-an explicitly unbound action remains unbound.
-
-Defaults currently include:
-
-- `move_forward`: W
-- `move_backward`: S
-- `move_left`: A
-- `move_right`: D
-- `move_up`: Space
-- `move_down`: Left Control
-- `sprint`: Left Shift
-- `toggle_mouse_capture`: Tab
-- `debug_overlay`: F1
-- `imgui_overlay`: F3
-- `demo_spawn_entity`: F2
-
-## Key Parsing Rules
-
-- Parsing is case-insensitive, and spaces and dashes are normalized.
-- Single letters map to `A` through `Z`; digits map to `0` through `9`.
-- Function keys `F1` through `F25` are supported.
-- Common names include `SPACE`, `ENTER`, `ESC`, `TAB`, direction keys, and
-  left/right Shift, Control, Alt, and Super keys.
-- Unknown names produce a warning and leave the action unbound.
-
-## Per-Frame Lifecycle
-
-1. `glfwPollEvents()` invokes the registered callbacks. Key and mouse-button
-   callbacks update the pending arrays without changing the state visible to
-   gameplay in the current frame.
-2. `InputState::beginFrame()` copies pending state to the current arrays.
-   Press and release edges are visible for that frame. Held and repeat state is
-   retained in the pending arrays until release.
-3. During `beginFrame()`, bound key edges invoke `InputListener` press and
-   release callbacks.
-4. The application and gameplay helpers query the published state for camera
-   movement, cursor capture, entity spawning, block edits, and overlays.
-
-The main action queries are:
-
-- `isActionPressed()` for held movement and sprint actions.
-- `isActionJustPressed()` for one-frame actions such as cursor capture and demo
-  entity spawning.
-- `isActionJustReleased()` for release-triggered behavior.
-
-The debug overlay and profiler window listeners toggle their state on action
-release. They are bound independently to `debug_overlay` and `imgui_overlay`.
+The main queries are `isActionPressed()`, `isActionJustPressed()`, and
+`isActionJustReleased()`. Direct physical queries remain available for device
+diagnostics, but gameplay movement and block edits use semantic actions.
 
 ## Mouse Look and Cursor Capture
 
-- The cursor-position callback updates camera yaw and pitch while the cursor is
-  captured.
-- `setCursorCaptured()` selects `GLFW_CURSOR_DISABLED` or
-  `GLFW_CURSOR_NORMAL`, enables raw mouse motion when supported, and resets the
-  first-sample guard.
-- The `toggle_mouse_capture` action changes capture state once on its key press
-  edge.
-- Focus changes reset frame timing; regaining focus restores disabled-cursor
-  mode when capture is active.
+The cursor callback reads the loaded global mouse sensitivity and invert-Y
+values from `UserPreferences`. The first cursor sample after capture or focus
+change only establishes the position baseline. Pitch remains clamped to -89
+through 89 degrees.
 
-## Mouse Buttons
-
-Mouse buttons are not action-bound. The GLFW mouse-button callback records
-their state in `InputState`, and `isMouseButtonJustPressed()` exposes a
-one-frame press edge. While the cursor is captured, left press removes the
-raycast block and right press places a block. Holding a button does not repeat
-the edit on later frames.
-
-## Current Limitations
-
-- Each action maps to at most one keyboard key.
-- Mouse buttons and axes cannot be declared as actions in the manifest.
-- Bindings are loaded during application bootstrap and are not hot-reloaded.
-
----
+`setCursorCaptured()` selects disabled or normal cursor mode, enables raw mouse
+motion where supported, and resets the first-sample guard. A future normal
+pause/settings surface can replace the prototype Tab capture binding without
+putting that prototype action into player preferences.
 
 ## Related Docs
 
 - `docs/ApplicationLifecycle.md`
+- `docs/ConfigurationSystem.md`
 - `docs/DebugTooling.md`
-- `docs/AssetSystem.md`

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -7,6 +9,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Rigel::Preferences {
@@ -22,6 +26,7 @@ inline constexpr double kMinimumVerticalFovDegrees = 50.0;
 inline constexpr double kMaximumVerticalFovDegrees = 110.0;
 inline constexpr double kMinimumMouseSensitivity = 0.01;
 inline constexpr double kMaximumMouseSensitivity = 1.0;
+inline constexpr std::size_t kMaximumBindingsPerAction = 8;
 
 enum class DisplayMode {
     Windowed,
@@ -39,6 +44,22 @@ enum class UserAction {
     RemoveBlock,
     PlaceBlock
 };
+
+inline constexpr std::array<std::pair<UserAction, std::string_view>, 9>
+    kUserActions{{
+        {UserAction::MoveForward, "move_forward"},
+        {UserAction::MoveBackward, "move_backward"},
+        {UserAction::MoveLeft, "move_left"},
+        {UserAction::MoveRight, "move_right"},
+        {UserAction::Ascend, "ascend"},
+        {UserAction::Descend, "descend"},
+        {UserAction::Sprint, "sprint"},
+        {UserAction::RemoveBlock, "remove_block"},
+        {UserAction::PlaceBlock, "place_block"},
+    }};
+
+std::optional<UserAction> parseUserAction(std::string_view name);
+std::string_view userActionName(UserAction action);
 
 struct WindowedSize {
     int width = 800;

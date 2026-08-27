@@ -286,6 +286,8 @@ void Application::initialize() {
     m_impl->inputCallbacks.input = &m_impl->input;
     m_impl->inputCallbacks.window = &m_impl->window;
     m_impl->inputCallbacks.camera = &m_impl->camera;
+    m_impl->inputCallbacks.effectiveInputPreferences =
+        &m_impl->preferences->requested().input;
     registerApplicationPreferenceCallbacks(
         m_impl->inputCallbacks, *m_impl->preferences);
     Input::registerWindowCallbacks(m_impl->window.window, m_impl->inputCallbacks);
@@ -338,7 +340,11 @@ void Application::initialize() {
 
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
-        Input::loadInputBindings(m_impl->assets, m_impl->input);
+        const auto playerDefaultBindings =
+            Input::loadPlayerDefaultBindings(m_impl->assets);
+        m_impl->input.setBindings(Input::compileInputBindings(
+            *playerDefaultBindings,
+            m_impl->preferences->requested().input));
         m_impl->debugOverlayListener.enabled = &m_impl->renderer.debugOverlayEnabled();
         m_impl->input.addListener(&m_impl->debugOverlayListener);
         m_impl->imguiOverlayListener.enabled = &m_impl->renderer.profilerWindowEnabled();

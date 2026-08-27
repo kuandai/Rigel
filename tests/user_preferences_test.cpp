@@ -184,7 +184,8 @@ TEST_CASE(UserPreferences_boundary_values_and_sparse_bindings_round_trip) {
     requested.camera.verticalFovDegrees = 50.0;
     requested.input.mouseSensitivity = 0.01;
     requested.input.invertY = true;
-    requested.input.bindings[UserAction::MoveForward] = {"W", "UP"};
+    requested.input.bindings[UserAction::MoveForward] =
+        {"W", "UP", "MOUSE_LEFT"};
     requested.input.bindings[UserAction::PlaceBlock] = {};
 
     store.saveRequested(requested);
@@ -218,7 +219,7 @@ TEST_CASE(UserPreferences_invalid_leaves_and_sections_preserve_valid_siblings) {
         "  mouse_sensitivity: 0.5\n"
         "  invert_y: true\n"
         "  bindings:\n"
-        "    move_forward: [W, bad-token]\n"
+        "    move_forward: [W, \"87\"]\n"
         "    place_block: []\n"
         "    fly: [F]\n");
     UserPreferencesStore store(path);

@@ -119,9 +119,8 @@ TEST_CASE(DebugOverlay_ProductionF1ReleaseTogglesStartupDefault) {
         "input", std::make_unique<Rigel::Input::InputBindingsLoader>());
 
     const auto shippedBindings =
-        assets.get<Rigel::Input::InputBindings>("input/default");
-    CHECK(shippedBindings->hasAction("debug_overlay"));
-    CHECK_EQ(shippedBindings->keyFor("debug_overlay"), GLFW_KEY_F1);
+        Rigel::Input::loadPlayerDefaultBindings(assets);
+    CHECK(!shippedBindings->hasAction("debug_overlay"));
 
     Rigel::Render::FrameRenderer renderer;
     CHECK(!renderer.debugOverlayEnabled());
@@ -130,7 +129,9 @@ TEST_CASE(DebugOverlay_ProductionF1ReleaseTogglesStartupDefault) {
     listener.enabled = &renderer.debugOverlayEnabled();
 
     Rigel::Input::InputState input;
-    Rigel::Input::loadInputBindings(assets, input);
+    input.setBindings(Rigel::Input::compileInputBindings(
+        *shippedBindings, Rigel::Preferences::InputPreferences{}));
+    input.beginFrame();
     input.addListener(&listener);
 
     input.handleKeyEvent(GLFW_KEY_F1, GLFW_PRESS);

@@ -729,6 +729,7 @@ std::shared_ptr<WorldGenerator> makeBoundedSolidGenerator(
         Rigel::Test::generatorDefinitionFixture(
             solidIdentifier, solidIdentifier, solidIdentifier);
     definition.bounds = {minY, maxY};
+    definition.terrain.seaLevel = std::clamp(0, minY, maxY);
     definition.terrain.densityOutput = "base_density";
     definition.densityGraph.outputs = {{"base_density", "solid"}};
     definition.densityGraph.nodes = {{

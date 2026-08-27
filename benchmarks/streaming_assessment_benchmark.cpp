@@ -90,12 +90,12 @@ void printPercentiles(std::string_view prefix, const Percentiles& values) {
               << ' ' << prefix << "_p99_ms=" << values.p99;
 }
 
-struct ShippedWorldConfiguration {
+struct ShippedBootstrapConfiguration {
     Voxel::GeneratorDefinitionData generation;
     Voxel::StreamingConfig streaming;
 };
 
-ShippedWorldConfiguration loadShippedWorldConfiguration(
+ShippedBootstrapConfiguration loadShippedBootstrapConfiguration(
     Asset::AssetManager& assets,
     Voxel::BlockRegistry& registry,
     bool loadBlockAssets) {
@@ -300,7 +300,7 @@ bool overlayStartupClassified(const OverlayStartupSnapshot& startup) {
 bool runVerticalAssessment(Asset::AssetManager& assets) {
     Voxel::BlockRegistry registry;
     const auto configuration =
-        loadShippedWorldConfiguration(assets, registry, true);
+        loadShippedBootstrapConfiguration(assets, registry, true);
     const auto generator = std::make_shared<const Voxel::WorldGenerator>(
         registry, configuration.generation, 1337u);
 
@@ -727,7 +727,7 @@ void printStartupBacklog(const OverlayStartupSnapshot& startup) {
 
 bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
     Voxel::WorldResources resources;
-    const auto configuration = loadShippedWorldConfiguration(
+    const auto configuration = loadShippedBootstrapConfiguration(
         assets, resources.registry(), true);
     Voxel::World world(resources);
     Voxel::WorldView view(world, resources);
@@ -857,7 +857,7 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
     ScopeExit resourcesGuard(
         [&resources]() { resources.releaseRenderResources(); });
     resources.initialize(assets);
-    const auto configuration = loadShippedWorldConfiguration(
+    const auto configuration = loadShippedBootstrapConfiguration(
         assets, resources.registry(), false);
     Voxel::World world(resources);
     Voxel::WorldView view(world, resources);

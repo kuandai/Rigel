@@ -246,6 +246,22 @@ TEST_CASE(WorldView_UsesWorldOwnedGeneratorIdentity) {
     CHECK_EQ(view.generator(), original);
 }
 
+TEST_CASE(WorldView_RejectsGeneratorBeforeWorldOwner) {
+    WorldResources resources;
+    World world(resources);
+    WorldView view(world, resources);
+    auto generator = Rigel::Test::makeWorldGeneratorFixture(
+        resources.registry(),
+        testDefinition(
+            "rigel:unowned_view_solid",
+            "rigel:unowned_view_surface"),
+        1u);
+
+    CHECK_THROWS(view.setGenerator(generator));
+    CHECK(world.generator() == nullptr);
+    CHECK(view.generator() == nullptr);
+}
+
 TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
     WorldResources resources;
     World world(resources);

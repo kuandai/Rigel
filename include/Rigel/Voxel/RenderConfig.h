@@ -1,39 +1,18 @@
 #pragma once
 
-/**
- * @file RenderConfig.h
- * @brief Render configuration for voxel rendering.
- */
-
-#include <glm/vec3.hpp>
+#include "RenderProfile.h"
 
 namespace Rigel::Voxel {
 
-struct ShadowConfig {
-    static constexpr int MaxCascades = 4;
-    static constexpr int MaxMapSize = 6144;
-    static constexpr int MaxPcfRadius = 4;
-
-    int cascades = 3;
-    int mapSize = 1024;
-    float maxDistance = 200.0f;
-    float splitLambda = 0.5f;
-    float bias = 0.0005f;
-    float normalBias = 0.005f;
-    int pcfRadius = 1;
-    int pcfRadiusNear = 1;
-    int pcfRadiusFar = 1;
-    float transparentScale = 1.0f;
-    float strength = 1.0f;
-    float fadePower = 1.0f;
+// Transitional source-compatible value for low-level callers while renderer
+// policy moves to RenderProfile. Normal application startup does not construct
+// or load this type.
+struct ShadowConfig : ShadowProfile {
+    int pcfRadius = 2;
+    float maxDistance = maximumDistanceWorldUnits;
 };
 
-struct TaaConfig {
-    bool enabled = false;
-    float blend = 0.9f;
-    float jitterScale = 1.0f;
-};
-
+struct TaaConfig : TemporalAAProfile {};
 
 struct WorldRenderConfig {
     float renderDistance = 256.0f;
@@ -41,7 +20,6 @@ struct WorldRenderConfig {
     float transparentAlpha = 0.5f;
     ShadowConfig shadow;
     TaaConfig taa;
-    bool profilingEnabled = false;
 };
 
 } // namespace Rigel::Voxel

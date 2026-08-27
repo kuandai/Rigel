@@ -1,271 +1,107 @@
 #include "TestFramework.h"
 
-#include "Rigel/Render/RenderConfigProvider.h"
-
-#include <functional>
-#include <stdexcept>
-
-using namespace Rigel::Config;
-using namespace Rigel::Render;
-using namespace Rigel::Voxel;
-
-template<typename T>
-concept HasShadowEnableSetting = requires(T value) {
-    value.shadow.enabled;
-};
-
-static_assert(!HasShadowEnableSetting<WorldRenderConfig>);
+#include "ApplicationPreferences.h"
+#include "Rigel/Preferences/UserPreferences.h"
+#include "Rigel/Voxel/RenderProfile.h"
+#include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldResources.h"
+#include "Rigel/Voxel/WorldView.h"
 
 namespace {
 
-class StringConfigSource : public IConfigSource {
+template<typename T>
+concept HasAntiAliasingPreference = requires(T value) {
+    value.graphics.antiAliasing;
+};
+
+template<typename T>
+concept HasProfilingSetting = requires(T value) {
+    value.profilingEnabled;
+};
+
+template<typename T>
+concept StoresDerivedRenderDistance = requires(T value) {
+    value.renderDistance;
+};
+
+static_assert(
+    !HasAntiAliasingPreference<Rigel::Preferences::UserPreferences>);
+static_assert(!HasProfilingSetting<Rigel::Voxel::RenderProfile>);
+static_assert(!StoresDerivedRenderDistance<Rigel::Voxel::RenderProfile>);
+
+class ViewDistanceRenderFixture final {
 public:
-    explicit StringConfigSource(std::string yaml)
-        : m_yaml(std::move(yaml))
-    {}
-
-    std::optional<std::string> load() const override {
-        return m_yaml;
-    }
-
-    std::string name() const override {
-        return "string";
+    explicit ViewDistanceRenderFixture(int chunks)
+        : m_directory("rigel_render_profile")
+        , world(resources)
+        , view(world, resources)
+        , preferences(m_directory.path() / "user-preferences.yaml") {
+        Rigel::Preferences::UserPreferences requested;
+        requested.graphics.viewDistanceChunks = chunks;
+        Rigel::Preferences::UserPreferencesStore(
+            m_directory.path() / "user-preferences.yaml")
+            .saveRequested(requested);
+        preferences.load();
+        preferences.initializeViewDistance(view);
     }
 
 private:
-    std::string m_yaml;
-};
+    Rigel::Test::TemporaryDirectory m_directory;
 
-std::string exceptionMessage(const std::function<void()>& operation) {
-    try {
-        operation();
-    } catch (const std::invalid_argument& error) {
-        return error.what();
-    }
-    throw Rigel::Test::TestFailure("Expected invalid configuration");
-}
+public:
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::World world;
+    Rigel::Voxel::WorldView view;
+    Rigel::ApplicationPreferences preferences;
+};
 
 } // namespace
 
-TEST_CASE(RenderConfig_ApplyYaml) {
-    const std::string yaml = R"(
-render:
-  sun_direction: [0.2, 0.8, 0.1]
-  transparent_alpha: 0.4
-  render_distance: 300.0
-  shadow:
-    cascades: 2
-    map_size: 512
-    max_distance: 150.0
-    split_lambda: 0.6
-    bias: 0.001
-    normal_bias: 0.01
-    pcf_radius: 2
-    pcf_radius_near: 1
-    pcf_radius_far: 3
-    transparent_scale: 0.75
-    strength: 1.8
-    fade_power: 1.5
-  taa:
-    enabled: true
-    blend: 0.8
-    jitter_scale: 1.5
-  profiling:
-    enabled: true
-)";
+TEST_CASE(RenderProfile_UsesOneShippedShadowAndArtProfile) {
+    const Rigel::Voxel::RenderProfile profile;
 
-    RenderConfigProvider provider;
-    provider.addSource(std::make_unique<StringConfigSource>(yaml));
-    WorldRenderConfig config = provider.load();
-
-    CHECK_NEAR(config.sunDirection.x, 0.2f, 0.0001f);
-    CHECK_NEAR(config.sunDirection.y, 0.8f, 0.0001f);
-    CHECK_NEAR(config.sunDirection.z, 0.1f, 0.0001f);
-    CHECK_NEAR(config.transparentAlpha, 0.4f, 0.0001f);
-    CHECK_NEAR(config.renderDistance, 256.0f, 0.0001f);
-    CHECK_EQ(config.shadow.cascades, 2);
-    CHECK_EQ(config.shadow.mapSize, 512);
-    CHECK_NEAR(config.shadow.maxDistance, 150.0f, 0.0001f);
-    CHECK_NEAR(config.shadow.splitLambda, 0.6f, 0.0001f);
-    CHECK_NEAR(config.shadow.bias, 0.001f, 0.0001f);
-    CHECK_NEAR(config.shadow.normalBias, 0.01f, 0.0001f);
-    CHECK_EQ(config.shadow.pcfRadius, 2);
-    CHECK_EQ(config.shadow.pcfRadiusNear, 1);
-    CHECK_EQ(config.shadow.pcfRadiusFar, 3);
-    CHECK_NEAR(config.shadow.transparentScale, 0.75f, 0.0001f);
-    CHECK_NEAR(config.shadow.strength, 1.8f, 0.0001f);
-    CHECK_NEAR(config.shadow.fadePower, 1.5f, 0.0001f);
-    CHECK(config.taa.enabled);
-    CHECK_NEAR(config.taa.blend, 0.8f, 0.0001f);
-    CHECK_NEAR(config.taa.jitterScale, 1.5f, 0.0001f);
-    CHECK(config.profilingEnabled);
+    CHECK_NEAR(profile.sunDirection.x, 0.5f, 0.0001f);
+    CHECK_NEAR(profile.sunDirection.y, 1.0f, 0.0001f);
+    CHECK_NEAR(profile.sunDirection.z, 0.3f, 0.0001f);
+    CHECK_NEAR(profile.transparentAlpha, 0.5f, 0.0001f);
+    CHECK_EQ(profile.shadow.cascades, 3);
+    CHECK_EQ(profile.shadow.mapSize, 6144);
+    CHECK_NEAR(
+        profile.shadow.maximumDistanceWorldUnits, 200.0f, 0.0001f);
+    CHECK_NEAR(profile.shadow.splitLambda, 0.25f, 0.0001f);
+    CHECK_NEAR(profile.shadow.bias, 0.001f, 0.0001f);
+    CHECK_NEAR(profile.shadow.normalBias, 0.02f, 0.0001f);
+    CHECK_EQ(profile.shadow.pcfRadiusNear, 2);
+    CHECK_EQ(profile.shadow.pcfRadiusFar, 3);
+    CHECK_NEAR(profile.shadow.transparentScale, 1.0f, 0.0001f);
+    CHECK_NEAR(profile.shadow.strength, 3.0f, 0.0001f);
+    CHECK_NEAR(profile.shadow.fadePower, 1.0f, 0.0001f);
 }
 
-TEST_CASE(RenderConfig_LayeredShadowRetainsOmittedValues) {
-    RenderConfigProvider provider;
-    provider.addSource(std::make_unique<StringConfigSource>(R"(
-render:
-  shadow:
-    pcf_radius: 2
-    pcf_radius_near: 1
-    pcf_radius_far: 3
-)"));
-    provider.addSource(std::make_unique<StringConfigSource>(R"(
-render:
-  shadow:
-    bias: 0.002
-)"));
+TEST_CASE(RenderProfile_TaaRemainsInternalAndDisabledByDefault) {
+    const Rigel::Voxel::RenderProfile profile;
 
-    const WorldRenderConfig config = provider.load();
-
-    CHECK_EQ(config.shadow.pcfRadius, 2);
-    CHECK_EQ(config.shadow.pcfRadiusNear, 1);
-    CHECK_EQ(config.shadow.pcfRadiusFar, 3);
-    CHECK_NEAR(config.shadow.bias, 0.002f, 0.0001f);
+    CHECK(!profile.temporalAA.enabled);
+    CHECK_NEAR(profile.temporalAA.blend, 0.95f, 0.0001f);
+    CHECK_NEAR(profile.temporalAA.jitterScale, 1.0f, 0.0001f);
 }
 
-TEST_CASE(RenderConfig_GenericPcfRadiusSuppliesNearAndFarFallbacks) {
-    RenderConfigProvider provider;
-    provider.addSource(std::make_unique<StringConfigSource>(R"(
-render:
-  shadow:
-    pcf_radius: 4
-)"));
+TEST_CASE(RenderProfile_ViewDistanceCeilingBoundsShadowsWithoutMutation) {
+    ViewDistanceRenderFixture fixture(2);
+    const float profileDistance =
+        fixture.view.renderProfile().shadow.maximumDistanceWorldUnits;
 
-    const WorldRenderConfig config = provider.load();
-
-    CHECK_EQ(config.shadow.pcfRadius, 4);
-    CHECK_EQ(config.shadow.pcfRadiusNear, 4);
-    CHECK_EQ(config.shadow.pcfRadiusFar, 4);
+    CHECK_NEAR(fixture.view.renderDistanceWorldUnits(), 96.0f, 0.0001f);
+    CHECK_NEAR(fixture.view.shadowDistanceWorldUnits(), 96.0f, 0.0001f);
+    CHECK_NEAR(
+        fixture.view.renderProfile().shadow.maximumDistanceWorldUnits,
+        profileDistance,
+        0.0001f);
 }
 
-TEST_CASE(RenderConfig_LayeredGenericPcfRadiusPreservesSpecificOverrides) {
-    RenderConfigProvider provider;
-    provider.addSource(std::make_unique<StringConfigSource>(R"(
-render:
-  shadow:
-    pcf_radius: 2
-    pcf_radius_near: 1
-    pcf_radius_far: 3
-)"));
-    provider.addSource(std::make_unique<StringConfigSource>(R"(
-render:
-  shadow:
-    pcf_radius: 4
-)"));
+TEST_CASE(RenderProfile_InternalDistanceCapsLargerViewDistance) {
+    ViewDistanceRenderFixture fixture(12);
 
-    const WorldRenderConfig config = provider.load();
-
-    CHECK_EQ(config.shadow.pcfRadius, 4);
-    CHECK_EQ(config.shadow.pcfRadiusNear, 1);
-    CHECK_EQ(config.shadow.pcfRadiusFar, 3);
-}
-
-TEST_CASE(RenderConfig_LayeredGenericPcfRadiusUpdatesUnspecifiedFallback) {
-    RenderConfigProvider provider;
-    provider.addSource(std::make_unique<StringConfigSource>(R"(
-render:
-  shadow:
-    pcf_radius: 2
-    pcf_radius_near: 1
-)"));
-    provider.addSource(std::make_unique<StringConfigSource>(R"(
-render:
-  shadow:
-    pcf_radius: 4
-)"));
-
-    const WorldRenderConfig config = provider.load();
-
-    CHECK_EQ(config.shadow.pcfRadius, 4);
-    CHECK_EQ(config.shadow.pcfRadiusNear, 1);
-    CHECK_EQ(config.shadow.pcfRadiusFar, 4);
-}
-
-TEST_CASE(RenderConfig_AcceptsShadowResourceMaxima) {
-    RenderConfigProvider provider;
-    provider.addSource(std::make_unique<StringConfigSource>(R"(
-render:
-  shadow:
-    cascades: 4
-    map_size: 6144
-    pcf_radius: 4
-    pcf_radius_near: 4
-    pcf_radius_far: 4
-)"));
-
-    const WorldRenderConfig config = provider.load();
-
-    CHECK_EQ(config.shadow.cascades, ShadowConfig::MaxCascades);
-    CHECK_EQ(config.shadow.mapSize, ShadowConfig::MaxMapSize);
-    CHECK_EQ(config.shadow.pcfRadius, ShadowConfig::MaxPcfRadius);
-    CHECK_EQ(config.shadow.pcfRadiusNear, ShadowConfig::MaxPcfRadius);
-    CHECK_EQ(config.shadow.pcfRadiusFar, ShadowConfig::MaxPcfRadius);
-}
-
-TEST_CASE(RenderConfig_RejectsShadowValuesAboveResourceMaxima) {
-    const std::string cascadeError = exceptionMessage([] {
-        RenderConfigProvider provider;
-        provider.addSource(std::make_unique<StringConfigSource>(
-            "render:\n  shadow:\n    cascades: 5\n"
-        ));
-        provider.load();
-    });
-    CHECK_EQ(
-        cascadeError,
-        "Invalid configuration value 'render.shadow.cascades' in 'string': "
-        "expected integer no greater than 4, got '5'"
-    );
-
-    const std::string mapError = exceptionMessage([] {
-        RenderConfigProvider provider;
-        provider.addSource(std::make_unique<StringConfigSource>(
-            "render:\n  shadow:\n    map_size: 6145\n"
-        ));
-        provider.load();
-    });
-    CHECK_EQ(
-        mapError,
-        "Invalid configuration value 'render.shadow.map_size' in 'string': "
-        "expected integer no greater than 6144, got '6145'"
-    );
-
-    const std::string pcfMaxError = exceptionMessage([] {
-        RenderConfigProvider provider;
-        provider.addSource(std::make_unique<StringConfigSource>(
-            "render:\n  shadow:\n    pcf_radius_near: 5\n"
-        ));
-        provider.load();
-    });
-    CHECK_EQ(
-        pcfMaxError,
-        "Invalid configuration value 'render.shadow.pcf_radius_near' in "
-        "'string': expected integer no greater than 4, got '5'"
-    );
-
-    const std::string pcfError = exceptionMessage([] {
-        RenderConfigProvider provider;
-        provider.addSource(std::make_unique<StringConfigSource>(
-            "render:\n  shadow:\n    pcf_radius_far: 2147483647\n"
-        ));
-        provider.load();
-    });
-    CHECK_EQ(
-        pcfError,
-        "Invalid configuration value 'render.shadow.pcf_radius_far' in "
-        "'string': expected integer no greater than 4, got '2147483647'"
-    );
-
-    const std::string unsignedError = exceptionMessage([] {
-        RenderConfigProvider provider;
-        provider.addSource(std::make_unique<StringConfigSource>(
-            "render:\n  shadow:\n    map_size: 4294967295\n"
-        ));
-        provider.load();
-    });
-    CHECK_EQ(
-        unsignedError,
-        "Invalid configuration value 'render.shadow.map_size' in 'string': "
-        "expected integer no greater than 6144, got '4294967295'"
-    );
+    CHECK_NEAR(fixture.view.renderDistanceWorldUnits(), 416.0f, 0.0001f);
+    CHECK_NEAR(fixture.view.shadowDistanceWorldUnits(), 200.0f, 0.0001f);
 }

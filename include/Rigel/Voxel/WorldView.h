@@ -48,11 +48,17 @@ public:
 
     const WorldMeshStore& meshStore() const { return m_meshStore; }
 
+    // Exact low-level replacement for renderer diagnostics and tests. Normal
+    // application startup uses the shipped profile.
+    void setRenderProfileForDiagnostics(const RenderProfile& profile);
+    const RenderProfile& renderProfile() const { return m_renderProfile; }
     void setRenderConfig(const WorldRenderConfig& config);
-    const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
+    WorldRenderConfig renderConfig() const;
     const std::shared_ptr<const ViewDistancePolicy>& viewDistancePolicy() const {
         return m_viewDistancePolicy;
     }
+    float renderDistanceWorldUnits() const;
+    float shadowDistanceWorldUnits() const;
     float projectionFarPlaneWorldUnits() const;
 
     /// Binds streaming to the generator already owned by the world.
@@ -130,7 +136,6 @@ private:
 
     struct ViewDistancePolicyState {
         std::shared_ptr<const ViewDistancePolicy> policy;
-        float renderDistance = 0.0f;
         ChunkStreamer::ViewDistancePolicyState streaming;
     };
 
@@ -147,7 +152,7 @@ private:
     ChunkRenderer m_renderer;
     WorldMeshStore m_meshStore;
     ChunkStreamer m_streamer;
-    WorldRenderConfig m_renderConfig;
+    RenderProfile m_renderProfile;
     std::shared_ptr<const ViewDistancePolicy> m_viewDistancePolicy;
     Asset::Handle<Asset::ShaderAsset> m_shader;
     Asset::Handle<Asset::ShaderAsset> m_shadowDepthShader;

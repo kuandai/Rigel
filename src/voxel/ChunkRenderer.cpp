@@ -52,26 +52,24 @@ std::array<glm::vec3, 8> getFrustumCornersWorld(const glm::mat4& invViewProj) {
     return corners;
 }
 
-bool validShadowProfile(const ShadowConfig& config) {
-    return config.cascades >= 1 &&
-        config.cascades <= ShadowConfig::MaxCascades &&
-        config.mapSize >= 1 &&
-        config.mapSize <= ShadowConfig::MaxMapSize &&
-        std::isfinite(config.maxDistance) &&
-        std::isfinite(config.splitLambda) &&
-        config.splitLambda >= 0.0f && config.splitLambda <= 1.0f &&
-        std::isfinite(config.bias) && config.bias >= 0.0f &&
-        std::isfinite(config.normalBias) && config.normalBias >= 0.0f &&
-        config.pcfRadius >= 0 &&
-        config.pcfRadius <= ShadowConfig::MaxPcfRadius &&
-        config.pcfRadiusNear >= 0 &&
-        config.pcfRadiusNear <= ShadowConfig::MaxPcfRadius &&
-        config.pcfRadiusFar >= 0 &&
-        config.pcfRadiusFar <= ShadowConfig::MaxPcfRadius &&
-        std::isfinite(config.transparentScale) &&
-        config.transparentScale >= 0.0f &&
-        std::isfinite(config.strength) && config.strength >= 0.0f &&
-        std::isfinite(config.fadePower) && config.fadePower >= 0.0f;
+bool validShadowProfile(const ShadowProfile& profile) {
+    return profile.cascades >= 1 &&
+        profile.cascades <= ShadowProfile::MaxCascades &&
+        profile.mapSize >= 1 &&
+        profile.mapSize <= ShadowProfile::MaxMapSize &&
+        std::isfinite(profile.maximumDistanceWorldUnits) &&
+        std::isfinite(profile.splitLambda) &&
+        profile.splitLambda >= 0.0f && profile.splitLambda <= 1.0f &&
+        std::isfinite(profile.bias) && profile.bias >= 0.0f &&
+        std::isfinite(profile.normalBias) && profile.normalBias >= 0.0f &&
+        profile.pcfRadiusNear >= 0 &&
+        profile.pcfRadiusNear <= ShadowProfile::MaxPcfRadius &&
+        profile.pcfRadiusFar >= 0 &&
+        profile.pcfRadiusFar <= ShadowProfile::MaxPcfRadius &&
+        std::isfinite(profile.transparentScale) &&
+        profile.transparentScale >= 0.0f &&
+        std::isfinite(profile.strength) && profile.strength >= 0.0f &&
+        std::isfinite(profile.fadePower) && profile.fadePower >= 0.0f;
 }
 
 void clearOpenGLErrors() {
@@ -285,7 +283,10 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
         m_storeVersions[storeId] = version;
     }
 
-    float renderDistance = std::max(0.0f, ctx.config.renderDistance);
+    const float effectiveRenderDistance = ctx.renderDistanceWorldUnits > 0.0f
+        ? ctx.renderDistanceWorldUnits
+        : ctx.config.renderDistance;
+    float renderDistance = std::max(0.0f, effectiveRenderDistance);
     float renderDistanceSq = renderDistance * renderDistance;
 
     glm::vec3 viewDir(-ctx.view[0][2], -ctx.view[1][2], -ctx.view[2][2]);
@@ -343,7 +344,7 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
     m_shadowsActive = shadowsActive;
 
     glm::mat4 viewProjection = ctx.viewProjection * ctx.worldTransform;
-    glm::vec3 sunDirection = normalizeOrDefault(ctx.config.sunDirection);
+    glm::vec3 sunDirection = normalizeOrDefault(ctx.profile.sunDirection);
 
     m_shader->bind();
     if (m_locViewProjection >= 0) {
@@ -396,33 +397,33 @@ void ChunkRenderer::render(const WorldRenderContext& ctx) {
             glUniform1i(m_locShadowCascadeCount, m_shadowState.cascades);
         }
         if (m_locShadowBias >= 0) {
-            glUniform1f(m_locShadowBias, ctx.config.shadow.bias);
+            glUniform1f(m_locShadowBias, ctx.profile.shadow.bias);
         }
         if (m_locShadowNormalBias >= 0) {
-            glUniform1f(m_locShadowNormalBias, ctx.config.shadow.normalBias);
+            glUniform1f(m_locShadowNormalBias, ctx.profile.shadow.normalBias);
         }
-    if (m_locShadowPcfNear >= 0) {
-        glUniform1f(m_locShadowPcfNear,
-                    static_cast<float>(ctx.config.shadow.pcfRadiusNear));
-    }
+        if (m_locShadowPcfNear >= 0) {
+            glUniform1f(m_locShadowPcfNear,
+                        static_cast<float>(ctx.profile.shadow.pcfRadiusNear));
+        }
         if (m_locShadowPcfFar >= 0) {
             glUniform1f(m_locShadowPcfFar,
-                        static_cast<float>(ctx.config.shadow.pcfRadiusFar));
+                        static_cast<float>(ctx.profile.shadow.pcfRadiusFar));
         }
         if (m_locShadowStrength >= 0) {
-            glUniform1f(m_locShadowStrength, ctx.config.shadow.strength);
+            glUniform1f(m_locShadowStrength, ctx.profile.shadow.strength);
         }
         if (m_locShadowNear >= 0) {
             glUniform1f(m_locShadowNear, ctx.nearPlane);
         }
         if (m_locShadowFadeStart >= 0) {
-            float fadeStart = ctx.config.shadow.maxDistance > 0.0f
-                ? std::min(ctx.config.shadow.maxDistance, ctx.farPlane)
+            float fadeStart = ctx.shadowDistanceWorldUnits > 0.0f
+                ? std::min(ctx.shadowDistanceWorldUnits, ctx.farPlane)
                 : ctx.farPlane;
             glUniform1f(m_locShadowFadeStart, fadeStart);
         }
         if (m_locShadowFadePower >= 0) {
-            glUniform1f(m_locShadowFadePower, ctx.config.shadow.fadePower);
+            glUniform1f(m_locShadowFadePower, ctx.profile.shadow.fadePower);
         }
     } else if (m_locShadowCascadeCount >= 0) {
         glUniform1i(m_locShadowCascadeCount, 0);
@@ -516,7 +517,7 @@ void ChunkRenderer::renderPass(RenderLayer layer,
     if (layer == RenderLayer::Cutout) {
         alphaCutoff = 0.5f;
     } else if (layer == RenderLayer::Transparent) {
-        alphaMultiplier = ctx.config.transparentAlpha;
+        alphaMultiplier = ctx.profile.transparentAlpha;
     }
 
     if (m_locAlphaMultiplier >= 0) {
@@ -656,12 +657,12 @@ ChunkRenderer::shadowPreparationCheckpointForTesting(
 ChunkRenderer::PreparedShadowResources
 ChunkRenderer::prepareShadowResources(
     bool enabled,
-    const ShadowConfig& config) const {
+    const ShadowProfile& profile) const {
     PreparedShadowResources prepared;
     if (!enabled) {
         return prepared;
     }
-    if (!validShadowProfile(config)) {
+    if (!validShadowProfile(profile)) {
         throw std::invalid_argument(
             "the internal shadow profile is outside renderer safety bounds");
     }
@@ -669,8 +670,8 @@ ChunkRenderer::prepareShadowResources(
     clearOpenGLErrors();
     ShadowPreparationBindingRestore restoreBindings;
     ShadowState& state = prepared.m_state;
-    state.cascades = config.cascades;
-    state.mapSize = config.mapSize;
+    state.cascades = profile.cascades;
+    state.mapSize = profile.mapSize;
 
     glGenTextures(1, &state.depthArray);
     if (state.depthArray == 0) {
@@ -785,7 +786,7 @@ bool ChunkRenderer::shadowResourcesInstalled() const {
 
 bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
                                   const std::vector<RenderEntry>& entries) {
-    const ShadowConfig& shadow = ctx.config.shadow;
+    const ShadowProfile& shadow = ctx.profile.shadow;
     const bool resourcesReady = shadowResourcesInstalled();
     if (!resourcesReady || !m_shadowDepthShader || !m_atlas) {
         static int skipLogCounter = 0;
@@ -845,12 +846,14 @@ bool ChunkRenderer::renderShadows(const WorldRenderContext& ctx,
         float aspect = ctx.projection[1][1] / ctx.projection[0][0];
 
         glm::vec3 centerWorld = ctx.cameraPos;
-        glm::vec3 sunDir = normalizeOrDefault(ctx.config.sunDirection);
+        glm::vec3 sunDir = normalizeOrDefault(ctx.profile.sunDirection);
         float lightDistance = cascadeFar + 50.0f;
         glm::vec3 lightPos = centerWorld + sunDir * lightDistance;
         glm::mat4 lightView = glm::lookAt(lightPos, centerWorld, pickUpVector(sunDir));
 
-        float casterLimit = (shadow.maxDistance > 0.0f) ? shadow.maxDistance : cascadeFar;
+        float casterLimit = ctx.shadowDistanceWorldUnits > 0.0f
+            ? ctx.shadowDistanceWorldUnits
+            : cascadeFar;
         float casterRadius = std::min(cascadeFar, casterLimit);
 
         glm::vec3 minLS(std::numeric_limits<float>::max());

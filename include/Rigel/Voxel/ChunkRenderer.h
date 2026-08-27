@@ -64,8 +64,8 @@ public:
         GLuint transmitArray = 0;
         int cascades = 0;
         int mapSize = 0;
-        std::array<glm::mat4, ShadowConfig::MaxCascades> matrices{};
-        std::array<float, ShadowConfig::MaxCascades> splits{};
+        std::array<glm::mat4, ShadowProfile::MaxCascades> matrices{};
+        std::array<float, ShadowProfile::MaxCascades> splits{};
     };
 
     /**
@@ -101,7 +101,7 @@ private:
     friend class WorldView;
     friend struct detail::WorldViewTestAccess;
 
-    static constexpr int kMaxShadowCascades = ShadowConfig::MaxCascades;
+    static constexpr int kMaxShadowCascades = ShadowProfile::MaxCascades;
 
     struct GpuMesh {
         GLuint vao = 0;
@@ -235,7 +235,7 @@ private:
         const ShadowState& state) const;
     PreparedShadowResources prepareShadowResources(
         bool enabled,
-        const ShadowConfig& config) const;
+        const ShadowProfile& profile) const;
     PreparedShadowResources installShadowResources(
         PreparedShadowResources prepared) noexcept;
     bool shadowResourcesInstalled() const;

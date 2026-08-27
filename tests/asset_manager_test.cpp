@@ -44,7 +44,8 @@ TEST_CASE(AssetManager_LoadsEmbeddedManifest) {
     CHECK_NO_THROW(assets.loadManifest("manifest.yaml"));
 
     CHECK(!assets.exists("raw/streaming_config"));
-    CHECK(assets.exists("raw/render_config"));
+    CHECK(!assets.exists("raw/render_config"));
+    CHECK(assets.exists("raw/persistence_config"));
     CHECK(assets.exists("shaders/voxel"));
     CHECK(!assets.exists("blocks/dirt"));
     CHECK(assets.exists("entity_models/demo_cube"));
@@ -80,7 +81,7 @@ TEST_CASE(AssetManager_CustomLoaderBeforeManifestKeepsRawLoader) {
 
     CHECK(assets.get<InputAsset>("input/default"));
 
-    const auto raw = assets.get<RawAsset>("raw/render_config");
+    const auto raw = assets.get<RawAsset>("raw/persistence_config");
     CHECK(!raw->data.empty());
 }
 
@@ -117,7 +118,7 @@ TEST_CASE(AssetManager_ManifestLoadingPreservesBuiltinReplacements) {
         std::make_unique<CountingLoader<ShaderAsset>>("shaders", shaderLoads));
     assets.loadManifest("manifest.yaml");
 
-    CHECK(assets.get<RawAsset>("raw/render_config"));
+    CHECK(assets.get<RawAsset>("raw/persistence_config"));
     CHECK(assets.get<TextureAsset>("textures/entity_debug"));
     CHECK(assets.get<ShaderAsset>("shaders/voxel"));
     CHECK_EQ(rawLoads, 1);

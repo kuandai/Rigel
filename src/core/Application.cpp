@@ -17,7 +17,6 @@
 #include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Render/OpenGLRuntime.h"
-#include "Rigel/Render/RenderConfigBootstrap.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
@@ -126,7 +125,7 @@ void viewDistanceBoundaryPollEvents() {
             .graphics.viewDistanceChunks;
     observed.beforeEffectiveChunks = application.effectiveViewDistanceChunks();
     observed.beforeStreamedChunks = view.viewDistanceChunks();
-    observed.beforeRenderDistance = view.renderConfig().renderDistance;
+    observed.beforeRenderDistance = view.renderDistanceWorldUnits();
     if (view.viewDistancePolicy()) {
         observed.beforePolicyGeneration =
             view.viewDistancePolicy()->generation();
@@ -149,7 +148,7 @@ void observeViewDistanceBoundary(
         application.requestedPreferences().graphics.viewDistanceChunks;
     observed.effectiveChunks = application.effectiveViewDistanceChunks();
     observed.streamedChunks = view.viewDistanceChunks();
-    observed.renderDistance = view.renderConfig().renderDistance;
+    observed.renderDistance = view.renderDistanceWorldUnits();
     observed.projectionFarPlane = view.projectionFarPlaneWorldUnits();
     if (view.viewDistancePolicy()) {
         observed.unloadChunks =
@@ -420,11 +419,6 @@ void Application::initialize() {
             detail::makeAutomaticStreamingPolicy();
         const Voxel::StreamingConfig& streamingConfig =
             streamingPolicy.streamer;
-        Render::RenderConfigProvider renderConfigProvider =
-            Render::makeRenderConfigProvider(
-                m_impl->assets, m_impl->world.activeWorldId);
-        Voxel::WorldRenderConfig renderConfig = renderConfigProvider.load();
-
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
         m_impl->playerDefaultBindings =
@@ -536,12 +530,10 @@ void Application::initialize() {
                 return loader ? loader->persistChunk(coord) : false;
             });
 
-        const char* profileEnv = std::getenv("RIGEL_PROFILE");
-        if (profileEnv && profileEnv[0] != '\0') {
-            renderConfig.profilingEnabled = (profileEnv[0] != '0');
-        }
-        m_impl->world.worldView->setRenderConfig(renderConfig);
-        Core::Profiler::setEnabled(renderConfig.profilingEnabled);
+        const char* profilerInput = std::getenv("RIGEL_PROFILE");
+        Core::Profiler::setEnabled(
+            profilerInput != nullptr &&
+            std::string_view(profilerInput) == "1");
         m_impl->world.worldView->setStreamConfig(streamingConfig);
         m_impl->preferences->initializeViewDistance(
             *m_impl->world.worldView,

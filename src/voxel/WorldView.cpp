@@ -118,12 +118,32 @@ void WorldView::setStreamConfig(const StreamingConfig& config) {
     m_streamer.setConfig(effective);
 }
 
+void WorldView::setRenderProfileForDiagnostics(
+    const RenderProfile& profile) {
+    m_renderProfile = profile;
+}
+
 void WorldView::setRenderConfig(const WorldRenderConfig& config) {
-    m_renderConfig = config;
-    if (m_viewDistancePolicy) {
-        m_renderConfig.renderDistance =
-            m_viewDistancePolicy->renderDistanceWorldUnits();
-    }
+    RenderProfile profile;
+    profile.sunDirection = config.sunDirection;
+    profile.transparentAlpha = config.transparentAlpha;
+    profile.shadow = config.shadow;
+    profile.shadow.maximumDistanceWorldUnits = config.shadow.maxDistance;
+    profile.temporalAA = config.taa;
+    setRenderProfileForDiagnostics(profile);
+}
+
+WorldRenderConfig WorldView::renderConfig() const {
+    WorldRenderConfig config;
+    config.renderDistance = renderDistanceWorldUnits();
+    config.sunDirection = m_renderProfile.sunDirection;
+    config.transparentAlpha = m_renderProfile.transparentAlpha;
+    static_cast<ShadowProfile&>(config.shadow) = m_renderProfile.shadow;
+    config.shadow.maxDistance =
+        m_renderProfile.shadow.maximumDistanceWorldUnits;
+    static_cast<TemporalAAProfile&>(config.taa) =
+        m_renderProfile.temporalAA;
+    return config;
 }
 
 WorldView::PreparedShadowChange WorldView::prepareShadowPreference(
@@ -137,7 +157,7 @@ WorldView::PreparedShadowChange WorldView::prepareShadowPreference(
             "the voxel shadow depth shader is unavailable");
     }
     return PreparedShadowChange{
-        m_renderer.prepareShadowResources(enabled, m_renderConfig.shadow)};
+        m_renderer.prepareShadowResources(enabled, m_renderProfile.shadow)};
 }
 
 WorldView::PreparedShadowChange WorldView::installShadowPreference(
@@ -158,11 +178,8 @@ WorldView::ViewDistancePolicyState WorldView::applyViewDistancePolicy(
     }
     ViewDistancePolicyState previous{
         .policy = m_viewDistancePolicy,
-        .renderDistance = m_renderConfig.renderDistance,
         .streaming = m_streamer.applyViewDistancePolicy(policy)
     };
-    m_renderConfig.renderDistance =
-        policy->renderDistanceWorldUnits();
     m_viewDistancePolicy = std::move(policy);
     return previous;
 }
@@ -170,7 +187,6 @@ WorldView::ViewDistancePolicyState WorldView::applyViewDistancePolicy(
 void WorldView::restoreViewDistancePolicy(
     ViewDistancePolicyState state) noexcept {
     m_streamer.restoreViewDistancePolicy(std::move(state.streaming));
-    m_renderConfig.renderDistance = state.renderDistance;
     m_viewDistancePolicy = std::move(state.policy);
 }
 
@@ -178,9 +194,26 @@ float WorldView::projectionFarPlaneWorldUnits() const {
     if (m_viewDistancePolicy) {
         return m_viewDistancePolicy->projectionFarPlaneWorldUnits();
     }
-    return std::max(
-        500.0f,
-        m_renderConfig.renderDistance + static_cast<float>(Chunk::SIZE));
+    return 500.0f;
+}
+
+float WorldView::renderDistanceWorldUnits() const {
+    return m_viewDistancePolicy
+        ? m_viewDistancePolicy->renderDistanceWorldUnits()
+        : 256.0f;
+}
+
+float WorldView::shadowDistanceWorldUnits() const {
+    const float profileLimit =
+        m_renderProfile.shadow.maximumDistanceWorldUnits;
+    if (!m_viewDistancePolicy) {
+        return profileLimit;
+    }
+    const float viewDistanceCeiling =
+        m_viewDistancePolicy->shadowDistanceCeilingWorldUnits();
+    return profileLimit > 0.0f
+        ? std::min(profileLimit, viewDistanceCeiling)
+        : viewDistanceCeiling;
 }
 
 void WorldView::setBenchmark(ChunkBenchmarkStats* stats) {
@@ -244,17 +277,9 @@ void WorldView::render(const glm::mat4& view,
     ctx.shadowDepthShader = m_shadowDepthShader;
     ctx.shadowTransmitShader = m_shadowTransmitShader;
     ctx.shadowCaster = m_world ? &shadowCaster : nullptr;
-    ctx.config = m_renderConfig;
-    if (m_viewDistancePolicy) {
-        ctx.config.renderDistance =
-            m_viewDistancePolicy->renderDistanceWorldUnits();
-        const float shadowCeiling =
-            m_viewDistancePolicy->shadowDistanceCeilingWorldUnits();
-        if (ctx.config.shadow.maxDistance <= 0.0f ||
-            ctx.config.shadow.maxDistance > shadowCeiling) {
-            ctx.config.shadow.maxDistance = shadowCeiling;
-        }
-    }
+    ctx.profile = m_renderProfile;
+    ctx.renderDistanceWorldUnits = renderDistanceWorldUnits();
+    ctx.shadowDistanceWorldUnits = shadowDistanceWorldUnits();
     ctx.view = view;
     ctx.projection = projection;
     ctx.viewProjection = projection * view;
@@ -268,7 +293,7 @@ void WorldView::render(const glm::mat4& view,
         entityCtx.viewProjection = ctx.viewProjection;
         entityCtx.view = ctx.view;
         entityCtx.cameraPos = cameraPos;
-        entityCtx.sunDirection = ctx.config.sunDirection;
+        entityCtx.sunDirection = ctx.profile.sunDirection;
         entityCtx.ambientStrength = 0.3f;
         auto shadowState = m_renderer.shadowRenderState();
         entityCtx.shadow.enabled = shadowState.active;
@@ -277,18 +302,19 @@ void WorldView::render(const glm::mat4& view,
         entityCtx.shadow.cascadeCount = shadowState.cascades;
         entityCtx.shadow.matrices = shadowState.matrices;
         entityCtx.shadow.splits = shadowState.splits;
-        entityCtx.shadow.bias = ctx.config.shadow.bias;
-        entityCtx.shadow.normalBias = ctx.config.shadow.normalBias;
-        entityCtx.shadow.pcfRadius = ctx.config.shadow.pcfRadius;
-        entityCtx.shadow.pcfNear = static_cast<float>(ctx.config.shadow.pcfRadiusNear);
-        entityCtx.shadow.pcfFar = static_cast<float>(ctx.config.shadow.pcfRadiusFar);
-        entityCtx.shadow.strength = ctx.config.shadow.strength;
+        entityCtx.shadow.bias = ctx.profile.shadow.bias;
+        entityCtx.shadow.normalBias = ctx.profile.shadow.normalBias;
+        entityCtx.shadow.pcfNear = static_cast<float>(
+            ctx.profile.shadow.pcfRadiusNear);
+        entityCtx.shadow.pcfFar = static_cast<float>(
+            ctx.profile.shadow.pcfRadiusFar);
+        entityCtx.shadow.strength = ctx.profile.shadow.strength;
         entityCtx.shadow.nearPlane = ctx.nearPlane;
-        float fadeStart = ctx.config.shadow.maxDistance > 0.0f
-            ? std::min(ctx.config.shadow.maxDistance, ctx.farPlane)
+        float fadeStart = ctx.shadowDistanceWorldUnits > 0.0f
+            ? std::min(ctx.shadowDistanceWorldUnits, ctx.farPlane)
             : ctx.farPlane;
         entityCtx.shadow.fadeStart = fadeStart;
-        entityCtx.shadow.fadePower = ctx.config.shadow.fadePower;
+        entityCtx.shadow.fadePower = ctx.profile.shadow.fadePower;
         m_entityRenderer.render(*m_world, entityCtx);
     }
 }

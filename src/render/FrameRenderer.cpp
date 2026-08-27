@@ -215,12 +215,12 @@ struct FrameRenderer::Impl {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
-    bool prepareTaa(const Voxel::TaaConfig& config,
+    bool prepareTaa(const Voxel::TemporalAAProfile& profile,
                     int width,
                     int height,
                     glm::mat4& projection,
                     glm::vec2& jitter) {
-        if (!config.enabled) {
+        if (!profile.enabled) {
             taa.historyValid = false;
             return false;
         }
@@ -230,7 +230,7 @@ struct FrameRenderer::Impl {
             return false;
         }
 
-        jitter = taa.jitter.next(width, height, config.jitterScale);
+        jitter = taa.jitter.next(width, height, profile.jitterScale);
         projection[2][0] += jitter.x;
         projection[2][1] += jitter.y;
         return true;
@@ -382,7 +382,7 @@ void FrameRenderer::setVerticalFovDegrees(double verticalFovDegrees) {
 }
 
 void FrameRenderer::render(const FrameRenderContext& context) {
-    const auto& config = context.worldView.renderConfig();
+    const auto& profile = context.worldView.renderProfile();
     float aspect = context.viewportHeight > 0
         ? static_cast<float>(context.viewportWidth) /
             static_cast<float>(context.viewportHeight)
@@ -400,7 +400,7 @@ void FrameRenderer::render(const FrameRenderContext& context) {
         glm::vec3(0.0f, 1.0f, 0.0f));
     glm::vec2 jitter(0.0f);
     bool useTaa = m_impl->prepareTaa(
-        config.taa,
+        profile.temporalAA,
         context.viewportWidth,
         context.viewportHeight,
         projection,
@@ -428,7 +428,7 @@ void FrameRenderer::render(const FrameRenderContext& context) {
                 glm::inverse(viewProjectionNoJitter),
                 viewProjectionNoJitter,
                 jitter * 0.5f,
-                config.taa.blend);
+                profile.temporalAA.blend);
         }
         glViewport(0, 0, context.viewportWidth, context.viewportHeight);
     } else {

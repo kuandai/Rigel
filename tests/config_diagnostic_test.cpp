@@ -1,7 +1,6 @@
 #include "TestFramework.h"
 
 #include "Rigel/Persistence/PersistenceConfig.h"
-#include "Rigel/Render/RenderConfigProvider.h"
 
 #include <spdlog/logger.h>
 #include <spdlog/sinks/ostream_sink.h>
@@ -13,9 +12,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-
-using namespace Rigel::Voxel;
-using namespace Rigel::Config;
 
 namespace {
 
@@ -46,26 +42,6 @@ private:
     std::shared_ptr<spdlog::logger> m_logger;
 };
 
-class NamedConfigSource : public IConfigSource {
-public:
-    NamedConfigSource(std::string sourceName, std::string yaml)
-        : m_sourceName(std::move(sourceName))
-        , m_yaml(std::move(yaml))
-    {}
-
-    std::optional<std::string> load() const override {
-        return m_yaml;
-    }
-
-    std::string name() const override {
-        return m_sourceName;
-    }
-
-private:
-    std::string m_sourceName;
-    std::string m_yaml;
-};
-
 std::string readFile(const std::filesystem::path& path) {
     std::ifstream input(path);
     CHECK(input.good());
@@ -76,39 +52,6 @@ std::string readFile(const std::filesystem::path& path) {
 }
 
 } // namespace
-
-TEST_CASE(RenderConfig_ReportsRemovedShadowEnableAuthority) {
-    LogCapture logs;
-    Rigel::Render::RenderConfigProvider provider;
-    provider.addSource(std::make_unique<NamedConfigSource>(
-        "invalid-render.yaml",
-        "render:\n"
-        "  shadow:\n"
-        "    enabled: true\n"));
-
-    (void)provider.load();
-
-    const std::string output = logs.output();
-    CHECK(output.find("render.shadow.enabled") != std::string::npos);
-    CHECK(output.find("invalid-render.yaml") != std::string::npos);
-}
-
-TEST_CASE(RenderConfig_ReportsUnknownKeyAndSource) {
-    LogCapture logs;
-    Rigel::Render::RenderConfigProvider provider;
-    provider.addSource(std::make_unique<NamedConfigSource>(
-        "render-settings.yaml",
-        "render:\n"
-        "  shadow:\n"
-        "    split_lamda: 0.5\n"
-    ));
-
-    provider.load();
-
-    const std::string output = logs.output();
-    CHECK(output.find("render.shadow.split_lamda") != std::string::npos);
-    CHECK(output.find("render-settings.yaml") != std::string::npos);
-}
 
 TEST_CASE(PersistenceConfig_ReportsUnknownKeyAndSource) {
     LogCapture logs;
@@ -129,15 +72,7 @@ TEST_CASE(Configuration_ValidKeysAreQuiet) {
     LogCapture logs;
     const std::filesystem::path configDirectory =
         std::filesystem::path(__FILE__).parent_path().parent_path() / "assets/config";
-    const std::filesystem::path renderPath = configDirectory / "render.yaml";
     const std::filesystem::path persistencePath = configDirectory / "persistence.yaml";
-
-    Rigel::Render::RenderConfigProvider renderProvider;
-    renderProvider.addSource(std::make_unique<NamedConfigSource>(
-        renderPath.string(),
-        readFile(renderPath)
-    ));
-    renderProvider.load();
 
     Rigel::Persistence::PersistenceConfig persistenceConfig;
     persistenceConfig.applyYaml(

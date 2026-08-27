@@ -58,7 +58,21 @@ struct FrameRenderer::Impl {
     DebugState debug;
     TemporalAA taa;
     std::optional<double> verticalFovDegrees;
-    std::uint64_t temporalHistoryGeneration = 0;
+
+    std::pair<glm::mat4, glm::mat4> cameraProjections(
+        float mainAspect,
+        float nearPlane,
+        float farPlane) const {
+        if (!verticalFovDegrees) {
+            throw std::logic_error(
+                "FrameRenderer requires an effective vertical FOV before "
+                "rendering");
+        }
+        const float fov = static_cast<float>(*verticalFovDegrees);
+        return {
+            makeCameraProjection(fov, mainAspect, nearPlane, farPlane),
+            makeCameraProjection(fov, 1.0f, nearPlane, farPlane)};
+    }
 
     void clearTarget(GLuint framebuffer, int width, int height) {
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
@@ -365,14 +379,9 @@ void FrameRenderer::setVerticalFovDegrees(double verticalFovDegrees) {
     m_impl->verticalFovDegrees = verticalFovDegrees;
     m_impl->taa.historyValid = false;
     m_impl->taa.jitter.reset();
-    ++m_impl->temporalHistoryGeneration;
 }
 
 void FrameRenderer::render(const FrameRenderContext& context) {
-    if (!m_impl->verticalFovDegrees) {
-        throw std::logic_error(
-            "FrameRenderer requires an effective vertical FOV before rendering");
-    }
     const auto& config = context.worldView.renderConfig();
     float aspect = context.viewportHeight > 0
         ? static_cast<float>(context.viewportWidth) /
@@ -382,11 +391,9 @@ void FrameRenderer::render(const FrameRenderContext& context) {
     float farPlane = std::max(
         500.0f, config.renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
 
-    glm::mat4 projection = makeCameraProjection(
-        static_cast<float>(*m_impl->verticalFovDegrees),
-        aspect,
-        nearPlane,
-        farPlane);
+    const auto [mainProjection, debugProjection] =
+        m_impl->cameraProjections(aspect, nearPlane, farPlane);
+    glm::mat4 projection = mainProjection;
     glm::mat4 projectionNoJitter = projection;
     glm::mat4 view = glm::lookAt(
         context.cameraPosition,
@@ -438,7 +445,7 @@ void FrameRenderer::render(const FrameRenderContext& context) {
         context.cameraForward,
         context.viewportWidth,
         context.viewportHeight,
-        static_cast<float>(*m_impl->verticalFovDegrees));
+        debugProjection);
     renderFrameGraph(m_impl->debug);
 }
 
@@ -467,9 +474,14 @@ double FrameRendererTestAccess::verticalFovDegrees(
     return renderer.m_impl->verticalFovDegrees.value();
 }
 
-std::uint64_t FrameRendererTestAccess::temporalHistoryGeneration(
-    const FrameRenderer& renderer) {
-    return renderer.m_impl->temporalHistoryGeneration;
+std::pair<glm::mat4, glm::mat4>
+FrameRendererTestAccess::cameraProjections(
+    const FrameRenderer& renderer,
+    float mainAspect,
+    float nearPlane,
+    float farPlane) {
+    return renderer.m_impl->cameraProjections(
+        mainAspect, nearPlane, farPlane);
 }
 
 bool FrameRendererTestAccess::temporalHistoryValid(
@@ -480,6 +492,14 @@ bool FrameRendererTestAccess::temporalHistoryValid(
 void FrameRendererTestAccess::markTemporalHistoryValid(
     FrameRenderer& renderer) {
     renderer.m_impl->taa.historyValid = true;
+}
+
+glm::vec2 FrameRendererTestAccess::nextTemporalJitter(
+    FrameRenderer& renderer,
+    int width,
+    int height,
+    float scale) {
+    return renderer.m_impl->taa.jitter.next(width, height, scale);
 }
 
 } // namespace Rigel::Render

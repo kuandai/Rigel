@@ -1,7 +1,5 @@
 #include "Rigel/Render/DebugOverlay.h"
 
-#include "Rigel/Render/CameraProjection.h"
-
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Voxel/Chunk.h"
@@ -507,7 +505,7 @@ void renderDebugField(DebugState& debug,
                       const glm::vec3& viewForward,
                       int viewportWidth,
                       int viewportHeight,
-                      float verticalFovDegrees) {
+                      const glm::mat4& projection) {
     auto presentation =
         buildDebugFieldPresentation(debug, worldView, cameraPos);
     if (!presentation) {
@@ -526,16 +524,12 @@ void renderDebugField(DebugState& debug,
     int viewportY = std::max(0, viewportHeight - viewportSize - marginY);
     glViewport(viewportX, viewportY, viewportSize, viewportSize);
 
-    float renderDistance = worldView->renderConfig().renderDistance;
-    float farPlane = std::max(500.0f, renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
-    glm::mat4 debugProjection = makeCameraProjection(
-        verticalFovDegrees, 1.0f, 0.1f, farPlane);
     glm::mat4 debugView = glm::lookAt(
         cameraPos,
         cameraTarget,
         glm::vec3(0.0f, 1.0f, 0.0f)
     );
-    glm::mat4 debugViewProjection = debugProjection * debugView;
+    glm::mat4 debugViewProjection = projection * debugView;
 
     debug.field.shader->bind();
     if (debug.field.locViewProjection >= 0) {

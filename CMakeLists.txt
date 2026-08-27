@@ -119,6 +119,9 @@ if (RIGEL_BUILD_BENCHMARKS)
     add_executable(Rigel_streaming_assessment_benchmark
         ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/streaming_assessment_benchmark.cpp
     )
+    target_include_directories(Rigel_streaming_assessment_benchmark PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    )
     target_compile_definitions(Rigel_streaming_assessment_benchmark PRIVATE
         RIGEL_BENCHMARK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
     )

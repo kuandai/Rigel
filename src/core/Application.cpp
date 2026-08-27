@@ -3,6 +3,7 @@
 #include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
 #include "GlfwRuntime.h"
+#include "StreamingPolicy.h"
 #include "WorldGenerationBootstrap.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Core/Profiler.h"
@@ -21,9 +22,7 @@
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
 #include "Rigel/Voxel/WorldSet.h"
-#include "Rigel/Voxel/WorldConfigProvider.h"
 #include "Rigel/Persistence/WorldPersistence.h"
-#include "Rigel/Voxel/WorldConfigBootstrap.h"
 #include "Rigel/Voxel/WorldSpawn.h"
 #include "Rigel/UI/ImGuiLayer.h"
 #include "Rigel/input/GameplayInput.h"
@@ -417,10 +416,10 @@ void Application::initialize() {
             m_impl->world.worldSet.setPersistencePreferredFormat(
                 persistenceConfig.format);
         }
-        Voxel::WorldConfigProvider configProvider =
-            Voxel::makeWorldConfigProvider(m_impl->assets, m_impl->world.activeWorldId);
-        Voxel::StreamingConfig streamingConfig =
-            configProvider.loadStreamingConfig();
+        detail::StreamingPolicy streamingPolicy =
+            detail::makeAutomaticStreamingPolicy();
+        const Voxel::StreamingConfig& streamingConfig =
+            streamingPolicy.streamer;
         Render::RenderConfigProvider renderConfigProvider =
             Render::makeRenderConfigProvider(
                 m_impl->assets, m_impl->world.activeWorldId);
@@ -481,31 +480,22 @@ void Application::initialize() {
             persistenceContext);
 
         uint32_t worldGenVersion = generator->semanticsVersion();
-        size_t ioThreads = static_cast<size_t>(
-            std::max(0, streamingConfig.ioThreads));
-        size_t loadWorkerThreads = static_cast<size_t>(
-            std::max(0, streamingConfig.loadWorkerThreads));
         m_impl->world.chunkLoader = std::make_shared<Persistence::AsyncChunkLoader>(
             m_impl->world.worldSet.persistenceService(),
             std::move(persistenceContext),
             *m_impl->world.world,
             worldGenVersion,
-            ioThreads,
-            loadWorkerThreads,
+            streamingPolicy.ioThreads,
+            streamingPolicy.loadWorkerThreads,
             generator);
-        if (streamingConfig.loadQueueLimit >= 0) {
-            m_impl->world.chunkLoader->setLoadQueueLimit(
-                static_cast<size_t>(streamingConfig.loadQueueLimit));
-        }
+        m_impl->world.chunkLoader->setLoadQueueLimit(
+            streamingPolicy.loadQueueLimit);
         m_impl->world.chunkLoader->setRegionDrainBudget(
-            static_cast<size_t>(
-                std::max(0, streamingConfig.loadRegionDrainBudget)));
+            streamingPolicy.loadRegionDrainBudget);
         m_impl->world.chunkLoader->setMaxCachedRegions(
-            static_cast<size_t>(
-                std::max(0, streamingConfig.loadMaxCachedRegions)));
+            streamingPolicy.loadMaxCachedRegions);
         m_impl->world.chunkLoader->setMaxInFlightRegions(
-            static_cast<size_t>(
-                std::max(0, streamingConfig.loadMaxInFlightRegions)));
+            streamingPolicy.loadMaxInFlightRegions);
         m_impl->world.worldView->setChunkLoader(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkLoadRequest request) {
                 return loader

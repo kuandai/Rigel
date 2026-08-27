@@ -40,6 +40,8 @@ constexpr long double kDefaultUpdateIntervalMilliseconds = 1000.0L / 60.0L;
 constexpr size_t kMaxSamplesPerWorkload = 1000;
 constexpr int kMaxMotionSteps = 100000;
 constexpr int kMaxTimeoutSeconds = 3600;
+constexpr long long kMaxExplicitWorkerThreads = 64;
+constexpr long long kMaxExplicitQueueLimit = 32768;
 constexpr double kMaxComparisonBudgetMilliseconds = 3600000.0;
 
 struct Options {
@@ -280,14 +282,14 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.motionSteps = static_cast<int>(*parsed);
         } else if (argument == "--worker-threads") {
             if (*parsed <= 0 ||
-                *parsed > Voxel::StreamingConfig::MaxTotalWorkerThreads) {
+                *parsed > kMaxExplicitWorkerThreads) {
                 std::cerr << "Unsupported worker count: " << value << '\n';
                 return false;
             }
             options.workerThreads = static_cast<int>(*parsed);
         } else if (argument == "--mesh-queue-limit") {
             if (*parsed < 0 ||
-                *parsed > Voxel::StreamingConfig::MaxQueueLimit) {
+                *parsed > kMaxExplicitQueueLimit) {
                 std::cerr << "Unsupported mesh queue limit: " << value << '\n';
                 return false;
             }

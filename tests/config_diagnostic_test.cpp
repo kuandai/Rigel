@@ -2,7 +2,6 @@
 
 #include "Rigel/Persistence/PersistenceConfig.h"
 #include "Rigel/Render/RenderConfigProvider.h"
-#include "Rigel/Voxel/StreamingConfig.h"
 
 #include <spdlog/logger.h>
 #include <spdlog/sinks/ostream_sink.h>
@@ -115,21 +114,6 @@ TEST_CASE(RenderConfig_ReportsUnknownKeyAndSource) {
     CHECK(output.find("render-settings.yaml") != std::string::npos);
 }
 
-TEST_CASE(StreamingConfig_ReportsUnknownKeyAndSource) {
-    LogCapture logs;
-    StreamingConfig config;
-
-    config.applyYaml(
-        "streaming-settings.yaml",
-        "streaming:\n"
-        "  worker_threds: 2\n"
-    );
-
-    const std::string output = logs.output();
-    CHECK(output.find("streaming.worker_threds") != std::string::npos);
-    CHECK(output.find("streaming-settings.yaml") != std::string::npos);
-}
-
 TEST_CASE(PersistenceConfig_ReportsUnknownKeyAndSource) {
     LogCapture logs;
     Rigel::Persistence::PersistenceConfig config;
@@ -149,13 +133,8 @@ TEST_CASE(Configuration_ValidKeysAreQuiet) {
     LogCapture logs;
     const std::filesystem::path configDirectory =
         std::filesystem::path(__FILE__).parent_path().parent_path() / "assets/config";
-    const std::filesystem::path streamingPath = configDirectory / "streaming.yaml";
     const std::filesystem::path renderPath = configDirectory / "render.yaml";
     const std::filesystem::path persistencePath = configDirectory / "persistence.yaml";
-
-    StreamingConfig streamingConfig;
-    streamingConfig.applyYaml(
-        streamingPath.string().c_str(), readFile(streamingPath));
 
     Rigel::Render::RenderConfigProvider renderProvider;
     renderProvider.addSource(std::make_unique<NamedConfigSource>(

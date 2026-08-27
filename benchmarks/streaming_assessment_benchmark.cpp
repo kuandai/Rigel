@@ -1,3 +1,4 @@
+#include "StreamingPolicy.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Render/DebugOverlay.h"
@@ -10,9 +11,8 @@
 #include "Rigel/Voxel/ChunkStreamer.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
 #include "Rigel/Voxel/TextureAtlas.h"
+#include "Rigel/Voxel/ViewDistancePolicy.h"
 #include "Rigel/Voxel/World.h"
-#include "Rigel/Voxel/WorldConfigBootstrap.h"
-#include "Rigel/Voxel/WorldConfigProvider.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldMeshStore.h"
 #include "Rigel/Voxel/WorldResources.h"
@@ -91,12 +91,12 @@ void printPercentiles(std::string_view prefix, const Percentiles& values) {
               << ' ' << prefix << "_p99_ms=" << values.p99;
 }
 
-struct ShippedBootstrapConfiguration {
+struct RepresentativeBootstrapConfiguration {
     Voxel::GeneratorDefinitionData generation;
     Voxel::StreamingConfig streaming;
 };
 
-ShippedBootstrapConfiguration loadShippedBootstrapConfiguration(
+RepresentativeBootstrapConfiguration loadRepresentativeBootstrapConfiguration(
     Asset::AssetManager& assets,
     Voxel::BlockRegistry& registry,
     bool loadBlockAssets) {
@@ -115,10 +115,14 @@ ShippedBootstrapConfiguration loadShippedBootstrapConfiguration(
             assets,
             registry,
             "rigel:default");
-    auto streaming =
-        Voxel::makeWorldConfigProvider(assets, 0).loadStreamingConfig();
-    // Benchmarks inject an explicit player request without a live application.
-    streaming.viewDistanceChunks = Preferences::kDefaultViewDistanceChunks;
+    auto streaming = detail::makeAutomaticStreamingPolicy().streamer;
+    // Benchmarks inject the default player request without a live application.
+    const auto viewPolicy = Voxel::ViewDistancePolicy::derive(
+        Preferences::kDefaultViewDistanceChunks,
+        1,
+        1);
+    streaming.viewDistanceChunks = viewPolicy->desiredRadiusChunks();
+    streaming.unloadDistanceChunks = viewPolicy->unloadRadiusChunks();
     return {prepared.data, std::move(streaming)};
 }
 
@@ -144,7 +148,7 @@ struct LifecycleResult {
 
 LifecycleResult runOutOfBoundsLifecycle(
     Voxel::ChunkCoord target,
-    const Voxel::StreamingConfig& shippedStreaming,
+    const Voxel::StreamingConfig& streamingPolicy,
     Voxel::BlockRegistry& registry,
     const std::shared_ptr<const Voxel::WorldGenerator>& generator) {
     Voxel::ChunkManager manager;
@@ -152,7 +156,7 @@ LifecycleResult runOutOfBoundsLifecycle(
     Voxel::WorldMeshStore meshStore;
     Voxel::ChunkStreamer streamer(
         manager, meshStore, registry, nullptr, generator);
-    streamer.setConfig(shippedStreaming);
+    streamer.setConfig(streamingPolicy);
     streamer.setChunkLoader([](Voxel::ChunkLoadRequest) {
         return Voxel::ChunkLoadRequestResult::Missing;
     });
@@ -179,7 +183,7 @@ LifecycleResult runOutOfBoundsLifecycle(
     }
     std::vector<Voxel::ChunkStreamer::DebugChunkState> states;
     streamer.getDebugStates(
-        states, target, shippedStreaming.viewDistanceChunks);
+        states, target, streamingPolicy.viewDistanceChunks);
     result.desiredCoordinates = states.size();
     const auto targetIt = std::find_if(
         states.begin(), states.end(), [&](const auto& state) {
@@ -302,7 +306,7 @@ bool overlayStartupClassified(const OverlayStartupSnapshot& startup) {
 bool runVerticalAssessment(Asset::AssetManager& assets) {
     Voxel::BlockRegistry registry;
     const auto configuration =
-        loadShippedBootstrapConfiguration(assets, registry, true);
+        loadRepresentativeBootstrapConfiguration(assets, registry, true);
     const auto generator = std::make_shared<const Voxel::WorldGenerator>(
         registry, configuration.generation, 1337u);
 
@@ -358,7 +362,7 @@ bool runVerticalAssessment(Asset::AssetManager& assets) {
                   << configuration.streaming.viewDistanceChunks
                   << " unload_radius="
                   << configuration.streaming.unloadDistanceChunks
-                  << " shipped_worker_threads="
+                  << " automatic_worker_threads="
                   << configuration.streaming.workerThreads
                   << " generation_workers="
                   << configuration.streaming.workerThreads -
@@ -729,7 +733,7 @@ void printStartupBacklog(const OverlayStartupSnapshot& startup) {
 
 bool runOverlayCpuAssessment(Asset::AssetManager& assets, size_t frames) {
     Voxel::WorldResources resources;
-    const auto configuration = loadShippedBootstrapConfiguration(
+    const auto configuration = loadRepresentativeBootstrapConfiguration(
         assets, resources.registry(), true);
     Voxel::World world(resources);
     Voxel::WorldView view(world, resources);
@@ -859,7 +863,7 @@ bool runOverlayAssessment(Asset::AssetManager& assets, size_t frames) {
     ScopeExit resourcesGuard(
         [&resources]() { resources.releaseRenderResources(); });
     resources.initialize(assets);
-    const auto configuration = loadShippedBootstrapConfiguration(
+    const auto configuration = loadRepresentativeBootstrapConfiguration(
         assets, resources.registry(), false);
     Voxel::World world(resources);
     Voxel::WorldView view(world, resources);
@@ -1075,7 +1079,7 @@ int runBenchmark(int argc, char** argv) {
               << "benchmark name=streaming_assessment version=6"
               << " build_type=" << RIGEL_BENCHMARK_BUILD_TYPE
               << " hardware_threads=" << std::thread::hardware_concurrency()
-              << " shipped_world_configuration=true"
+              << " installed_scheduler_policy=true"
               << " percentile_method=nearest_rank"
               << " p95_p99_9_sample_interpretation="
                  "observed_cohort_maximum_noisy_tail\n";

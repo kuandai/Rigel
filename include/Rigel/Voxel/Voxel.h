@@ -34,7 +34,6 @@
 #include "ChunkStreamer.h"
 #include "WorldMeshStore.h"
 #include "WorldRenderContext.h"
-#include "WorldConfigProvider.h"
 #include "WorldGenerator.h"
 #include "World.h"
 #include "WorldId.h"

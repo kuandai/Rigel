@@ -79,6 +79,16 @@ public:
             "  generator_definitions:\n"
             "    corrected:\n"
             "      path: generators/corrected.yaml\n";
+        static constexpr char laterOrdinaryManifest[] =
+            "namespace: later-ordinary\n"
+            "assets:\n"
+            "  raw:\n"
+            "    stable:\n"
+            "      path: later.txt\n";
+        static constexpr char malformedManifestYaml[] =
+            "namespace: malformed\n"
+            "assets:\n"
+            "  raw: [\n";
         static constexpr char validDefinition[] = R"yaml(generator:
   schema_version: 2
   id: test:valid
@@ -187,6 +197,7 @@ public:
         static constexpr char required[] = "ordinary required asset";
         static constexpr char corrected[] = "corrected committed entry";
         static constexpr char committed[] = "new committed entry";
+        static constexpr char later[] = "later ordinary entry";
         static constexpr char invalidDefinition[] =
             "generator:\n"
             "  schema_version: 2\n"
@@ -236,6 +247,14 @@ public:
         if (path == "corrected.yaml") {
             return {correctedManifest, sizeof(correctedManifest) - 1};
         }
+        if (path == "later_ordinary.yaml") {
+            return {laterOrdinaryManifest,
+                    sizeof(laterOrdinaryManifest) - 1};
+        }
+        if (path == "malformed_manifest_yaml.yaml") {
+            return {malformedManifestYaml,
+                    sizeof(malformedManifestYaml) - 1};
+        }
         if (path == "generators/valid.yaml") {
             return {validDefinition, sizeof(validDefinition) - 1};
         }
@@ -262,6 +281,9 @@ public:
         }
         if (path == "committed.txt") {
             return {committed, sizeof(committed) - 1};
+        }
+        if (path == "later.txt") {
+            return {later, sizeof(later) - 1};
         }
         throw std::runtime_error("Resource not found: " + path);
     }

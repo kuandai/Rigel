@@ -93,7 +93,20 @@ TEST_CASE(AssetManager_DefersDuplicateGeneratorDeclarationFields) {
     CHECK(!assets.exists("generator_definitions/default"));
     CHECK_EQ(assets.ns(), std::string("test"));
     CHECK(generatorDeclarationNames(assets).empty());
-    CHECK(loadFailsAtAssetBoundary(assets, registry));
+    std::string assetId;
+    std::string diagnostic;
+    try {
+        static_cast<void>(
+            Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+                assets, registry, "test:valid",
+                GeneratorDefinitionOrigin::Shipped));
+    } catch (const Rigel::Asset::AssetLoadError& error) {
+        assetId = error.assetId();
+        diagnostic = error.what();
+    }
+    CHECK_EQ(assetId, std::string("generator_definitions/default"));
+    CHECK(diagnostic.find("duplicate generator definition declaration field") !=
+          std::string::npos);
     CHECK(assets.ns().empty());
 }
 
@@ -106,7 +119,20 @@ TEST_CASE(AssetManager_DefersDuplicateGeneratorDeclarationNames) {
     CHECK(!assets.exists("generator_definitions/default"));
     CHECK_EQ(assets.ns(), std::string("test"));
     CHECK(generatorDeclarationNames(assets).empty());
-    CHECK(loadFailsAtAssetBoundary(assets, registry));
+    std::string assetId;
+    std::string diagnostic;
+    try {
+        static_cast<void>(
+            Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+                assets, registry, "test:valid",
+                GeneratorDefinitionOrigin::Shipped));
+    } catch (const Rigel::Asset::AssetLoadError& error) {
+        assetId = error.assetId();
+        diagnostic = error.what();
+    }
+    CHECK_EQ(assetId, std::string("generator_definitions/default"));
+    CHECK(diagnostic.find("duplicate generator definition asset declaration") !=
+          std::string::npos);
     CHECK(assets.ns().empty());
 }
 
@@ -152,6 +178,23 @@ TEST_CASE(AssetManager_DoesNotDeferUnrelatedManifestLoadFailure) {
     CHECK_EQ(generatorDeclarationNames(assets),
              std::vector<std::string>{"stable"});
     CHECK_EQ(assets.get<Rigel::Asset::RawAsset>("raw/stable"), retained);
+}
+
+TEST_CASE(AssetManager_DoesNotDeferUnrelatedMalformedManifestYaml) {
+    Rigel::Asset::AssetManager assets;
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    commitInitialGeneratorSet(assets, registry);
+
+    assets.loadManifest("corrected.yaml");
+    CHECK_THROWS(assets.loadManifest("malformed_manifest_yaml.yaml"));
+    CHECK_EQ(assets.ns(), std::string("corrected"));
+
+    const auto corrected =
+        Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets, registry, "test:corrected",
+            GeneratorDefinitionOrigin::Shipped);
+    CHECK_EQ(corrected.sourceRevision, uint32_t{9});
 }
 
 TEST_CASE(GeneratorDefinitionLoader_missing_resource_preserves_prior_set_and_recovers) {
@@ -250,7 +293,98 @@ TEST_CASE(GeneratorDefinitionLoader_missing_selection_discards_complete_candidat
              std::vector<std::string>{"stable"});
     CHECK_EQ(assets.get<Rigel::Asset::RawAsset>("raw/stable"), retained);
     CHECK(!assets.exists("raw/committed"));
+    CHECK_THROWS(
+        assets.get<Rigel::Asset::RawAsset>("raw/committed"));
     CHECK_EQ(rawText(provisional), std::string("new committed entry"));
+    const auto restored =
+        Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets, registry, "test:valid",
+            GeneratorDefinitionOrigin::Shipped);
+    CHECK_EQ(restored.sourceId, std::string("test:valid"));
+    CHECK_EQ(restored.sourceRevision, uint32_t{1});
+    CHECK_EQ(restored.data.densityGraph.nodes.front().value, 1.0f);
+}
+
+TEST_CASE(GeneratorDefinitionLoader_later_ordinary_entry_survives_candidate_commit) {
+    Rigel::Asset::AssetManager assets;
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    commitInitialGeneratorSet(assets, registry);
+    const auto retained = assets.get<Rigel::Asset::RawAsset>("raw/stable");
+
+    assets.loadManifest("corrected.yaml");
+    assets.loadManifest("later_ordinary.yaml");
+    assets.clearCache();
+    const auto later = assets.get<Rigel::Asset::RawAsset>("raw/stable");
+    CHECK_NE(later, retained);
+    CHECK_EQ(rawText(later), std::string("later ordinary entry"));
+
+    const auto corrected =
+        Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets, registry, "test:corrected",
+            GeneratorDefinitionOrigin::Shipped);
+    CHECK_EQ(corrected.sourceRevision, uint32_t{9});
+    CHECK_EQ(assets.ns(), std::string("later-ordinary"));
+    CHECK_EQ(assets.get<Rigel::Asset::RawAsset>("raw/stable"), later);
+    CHECK_EQ(rawText(assets.get<Rigel::Asset::RawAsset>("raw/stable")),
+             std::string("later ordinary entry"));
+}
+
+TEST_CASE(GeneratorDefinitionLoader_later_ordinary_entry_survives_selection_failure) {
+    Rigel::Asset::AssetManager assets;
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    commitInitialGeneratorSet(assets, registry);
+    const auto retained = assets.get<Rigel::Asset::RawAsset>("raw/stable");
+
+    assets.loadManifest("corrected.yaml");
+    assets.loadManifest("later_ordinary.yaml");
+    assets.clearCache();
+    const auto later = assets.get<Rigel::Asset::RawAsset>("raw/stable");
+    CHECK_NE(later, retained);
+    CHECK_EQ(rawText(later), std::string("later ordinary entry"));
+
+    CHECK_THROWS(Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+        assets, registry, "test:missing",
+        GeneratorDefinitionOrigin::Shipped));
+    CHECK_EQ(assets.ns(), std::string("later-ordinary"));
+    CHECK_EQ(assets.get<Rigel::Asset::RawAsset>("raw/stable"), later);
+    CHECK_EQ(rawText(assets.get<Rigel::Asset::RawAsset>("raw/stable")),
+             std::string("later ordinary entry"));
+    const auto restored =
+        Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets, registry, "test:valid",
+            GeneratorDefinitionOrigin::Shipped);
+    CHECK_EQ(restored.sourceRevision, uint32_t{1});
+}
+
+TEST_CASE(GeneratorDefinitionLoader_later_ordinary_entry_survives_aggregate_failure) {
+    Rigel::Asset::AssetManager assets;
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    commitInitialGeneratorSet(assets, registry);
+    const auto retained = assets.get<Rigel::Asset::RawAsset>("raw/stable");
+
+    assets.loadManifest("aggregate_invalid_payload.yaml");
+    assets.loadManifest("later_ordinary.yaml");
+    assets.clearCache();
+    const auto later = assets.get<Rigel::Asset::RawAsset>("raw/stable");
+    CHECK_NE(later, retained);
+    CHECK_EQ(rawText(later), std::string("later ordinary entry"));
+
+    std::string failedAssetId;
+    CHECK(loadFailsAtAssetBoundary(assets, registry, &failedAssetId));
+    CHECK_EQ(failedAssetId, std::string("generator_definitions/z_invalid"));
+    CHECK_EQ(assets.ns(), std::string("later-ordinary"));
+    CHECK_EQ(assets.get<Rigel::Asset::RawAsset>("raw/stable"), later);
+    CHECK_EQ(rawText(assets.get<Rigel::Asset::RawAsset>("raw/stable")),
+             std::string("later ordinary entry"));
+    CHECK(!assets.exists("raw/provisional"));
+    const auto restored =
+        Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
+            assets, registry, "test:valid",
+            GeneratorDefinitionOrigin::Shipped);
+    CHECK_EQ(restored.sourceRevision, uint32_t{1});
 }
 
 TEST_CASE(GeneratorDefinitionLoader_corrected_manifest_replaces_deferred_error) {

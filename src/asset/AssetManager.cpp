@@ -17,6 +17,38 @@
 namespace Rigel::Asset {
 namespace {
 
+class ManifestYamlParseError final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+[[noreturn]] void throwManifestYamlParseError(const char* message,
+                                              size_t length,
+                                              ryml::Location,
+                                              void*) {
+    throw ManifestYamlParseError(std::string(message, length));
+}
+
+ryml::Tree parseManifestYaml(std::span<const char> data,
+                             const std::string& path) {
+    ryml::Callbacks callbacks = ryml::get_callbacks();
+    callbacks.m_error = &throwManifestYamlParseError;
+    ryml::Tree tree(callbacks);
+    ryml::Parser::handler_type handler(callbacks);
+    ryml::Parser parser(&handler);
+    try {
+        ryml::parse_in_arena(
+            &parser,
+            ryml::to_csubstr(path.c_str()),
+            ryml::csubstr(data.data(), data.size()),
+            &tree);
+    } catch (const ManifestYamlParseError& error) {
+        throw AssetLoadError(path, "invalid manifest YAML: " +
+                                       std::string(error.what()));
+    }
+    return tree;
+}
+
 AssetManager::AssetEntry cloneManifestEntry(
     ryml::ConstNodeRef assetNode,
     const std::string& categoryName) {
@@ -149,10 +181,7 @@ void AssetManager::loadManifest(const std::string& path) {
     auto data = ResourceRegistry::Get(path);
 
     // Parse YAML
-    ryml::Tree tree = ryml::parse_in_arena(
-        ryml::to_csubstr(path.c_str()),
-        ryml::csubstr(data.data(), data.size())
-    );
+    ryml::Tree tree = parseManifestYaml(data, path);
     ryml::ConstNodeRef root = tree.rootref();
 
     // Parse the namespace without publishing it until exact declarations pass.
@@ -409,6 +438,18 @@ void AssetManager::loadManifest(const std::string& path) {
                 m_pendingGeneratorDefinitions->previousNamespace = m_namespace;
             }
             spdlog::debug("Manifest namespace: {}", m_namespace);
+        }
+        if (m_pendingGeneratorDefinitions) {
+            for (const auto& [id, entry] : manifestEntries) {
+                static_cast<void>(entry);
+                m_pendingGeneratorDefinitions->touchedEntryIds.erase(id);
+                m_pendingGeneratorDefinitions->previousEntries.erase(id);
+                std::erase_if(
+                    m_pendingGeneratorDefinitions->previousCacheEntries,
+                    [&](const auto& item) {
+                        return item.first.second == id;
+                    });
+            }
         }
         for (auto& [id, entry] : manifestEntries) {
             m_entries[id] = std::move(entry);

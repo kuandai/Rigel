@@ -204,6 +204,7 @@ private:
     friend struct detail::ChunkStreamerTestAccess;
 
     void reset();
+    void applyViewDistanceChunks(int chunks);
 
     static constexpr int kPaddedSize = Chunk::SIZE + 2;
     static constexpr int kPaddedVolume = kPaddedSize * kPaddedSize * kPaddedSize;

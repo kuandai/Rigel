@@ -379,6 +379,14 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     refreshDiagnostics(false);
 }
 
+void ChunkStreamer::applyViewDistanceChunks(int chunks) {
+    StreamingConfig updated = m_config;
+    updated.viewDistanceChunks = chunks;
+    updated.unloadDistanceChunks = std::min(
+        chunks + 1, StreamingConfig::MaxUnloadDistanceChunks);
+    setConfig(updated);
+}
+
 void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
     if (m_generator == generator) {
         return;

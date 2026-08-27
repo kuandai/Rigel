@@ -23,6 +23,14 @@ namespace Render {
 class FrameRenderer;
 }
 
+namespace Persistence {
+class AsyncChunkLoader;
+}
+
+namespace Voxel {
+class WorldView;
+}
+
 class ApplicationPreferences final {
 public:
     struct StartupResult {
@@ -51,6 +59,13 @@ public:
     PreferenceApplyResult applyVerticalFov(
         Render::FrameRenderer& renderer,
         double candidateDegrees);
+    void initializeViewDistance(
+        Voxel::WorldView& view,
+        Persistence::AsyncChunkLoader& loader);
+    PreferenceApplyResult applyViewDistance(
+        Voxel::WorldView& view,
+        Persistence::AsyncChunkLoader& loader,
+        int candidateChunks);
     void initializeInput(
         Input::InputState& input,
         const Input::InputBindings& playerDefaults);
@@ -82,6 +97,9 @@ public:
     double effectiveVerticalFovDegrees() const {
         return m_effectiveVerticalFovDegrees.value();
     }
+    int effectiveViewDistanceChunks() const {
+        return m_effectiveViewDistanceChunks;
+    }
     const Preferences::InputPreferences& effectiveInput() const {
         return m_effectiveInput;
     }
@@ -112,6 +130,7 @@ private:
     Preferences::UserPreferences m_requested;
     Preferences::DisplayPreferences m_effectiveDisplay;
     std::optional<double> m_effectiveVerticalFovDegrees;
+    int m_effectiveViewDistanceChunks = 12;
     Preferences::InputPreferences m_effectiveInput;
     std::shared_ptr<const Input::InputBindings> m_effectiveBindings;
     Core::FramePacer m_framePacer;

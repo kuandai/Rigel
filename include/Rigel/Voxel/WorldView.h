@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace Rigel::Voxel {
@@ -56,6 +57,7 @@ public:
         ChunkStreamer::ChunkLoadExecutionStateCallback executionState);
     void setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback evict);
     void setStreamConfig(const StreamingConfig& config);
+    bool applyViewDistanceChunks(int chunks);
     void setBenchmark(ChunkBenchmarkStats* stats);
     void setVisibilityTracer(std::shared_ptr<ChunkVisibilityTracer> tracer);
     void markSpawnDiscoveryComplete();
@@ -102,6 +104,7 @@ private:
     ChunkBenchmarkStats* m_benchmark = nullptr;
     Entity::EntityRenderer m_entityRenderer;
     uint64_t m_frameCounter = 0;
+    std::optional<int> m_playerViewDistanceChunks;
     bool m_initialized = false;
 };
 

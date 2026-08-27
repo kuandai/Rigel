@@ -22,7 +22,7 @@ std::string exceptionMessage(const std::function<void()>& operation) {
 
 } // namespace
 
-TEST_CASE(StreamingConfig_ShippedStreamingDistances) {
+TEST_CASE(StreamingConfig_ShippedPolicyOmitsPlayerDistanceAndPrefetchRadius) {
     const std::string path =
         std::string(RIGEL_TEST_SOURCE_DIRECTORY) +
         "/assets/config/streaming.yaml";
@@ -35,8 +35,12 @@ TEST_CASE(StreamingConfig_ShippedStreamingDistances) {
     StreamingConfig config;
     config.applyYaml(path.c_str(), yaml.str());
 
-    CHECK_EQ(config.viewDistanceChunks, 12);
-    CHECK_EQ(config.unloadDistanceChunks, 13);
+    const std::string document = yaml.str();
+    CHECK_EQ(document.find("view_distance_chunks"), std::string::npos);
+    CHECK_EQ(document.find("unload_distance_chunks"), std::string::npos);
+    CHECK_EQ(document.find("load_prefetch_radius"), std::string::npos);
+    CHECK_EQ(config.viewDistanceChunks, 6);
+    CHECK_EQ(config.unloadDistanceChunks, 8);
 }
 
 TEST_CASE(StreamingConfig_ApplyYaml) {
@@ -62,8 +66,8 @@ streaming:
   max_resident_chunks: 100
 )");
 
-    CHECK_EQ(config.viewDistanceChunks, 3);
-    CHECK_EQ(config.unloadDistanceChunks, 5);
+    CHECK_EQ(config.viewDistanceChunks, 6);
+    CHECK_EQ(config.unloadDistanceChunks, 8);
     CHECK_EQ(config.genQueueLimit, static_cast<size_t>(4));
     CHECK_EQ(config.meshQueueLimit, static_cast<size_t>(6));
     CHECK_EQ(config.updateBudgetPerFrame, 12);
@@ -76,7 +80,6 @@ streaming:
     CHECK_EQ(config.loadQueueLimit, 11);
     CHECK_EQ(config.loadMaxCachedRegions, 13);
     CHECK_EQ(config.loadMaxInFlightRegions, 15);
-    CHECK_EQ(config.loadPrefetchRadius, 2);
     CHECK_EQ(config.loadPrefetchPerRequest, 17);
     CHECK_EQ(config.maxResidentChunks, static_cast<size_t>(100));
 }
@@ -97,7 +100,7 @@ streaming:
 )");
     config.validate("merged test configuration");
 
-    CHECK_EQ(config.viewDistanceChunks, 9);
+    CHECK_EQ(config.viewDistanceChunks, 6);
     CHECK_EQ(config.unloadDistanceChunks, 8);
     CHECK_EQ(config.workerThreads, 0);
     CHECK_EQ(config.loadQueueLimit, 0);
@@ -128,46 +131,19 @@ streaming:
 )");
     config.validate("merged test configuration");
 
-    CHECK_EQ(config.viewDistanceChunks, StreamingConfig::MaxViewDistanceChunks);
-    CHECK_EQ(config.unloadDistanceChunks, StreamingConfig::MaxUnloadDistanceChunks);
+    CHECK_EQ(config.viewDistanceChunks, 6);
+    CHECK_EQ(config.unloadDistanceChunks, 8);
     CHECK_EQ(config.genQueueLimit,
              static_cast<size_t>(StreamingConfig::MaxQueueLimit));
     CHECK_EQ(config.meshQueueLimit,
              static_cast<size_t>(StreamingConfig::MaxQueueLimit));
     CHECK_EQ(config.workerThreads + config.ioThreads + config.loadWorkerThreads,
              StreamingConfig::MaxTotalWorkerThreads);
-    CHECK_EQ(config.loadPrefetchRadius, StreamingConfig::MaxPrefetchRadius);
     CHECK_EQ(config.loadPrefetchPerRequest,
              StreamingConfig::MaxPrefetchPerRequest);
 }
 
 TEST_CASE(StreamingConfig_RejectsValuesAboveOperationalMaxima) {
-    const std::string radiusError = exceptionMessage([] {
-        StreamingConfig config;
-        config.applyYaml(
-            "limits.yaml",
-            "streaming:\n  view_distance_chunks: 17\n"
-        );
-    });
-    CHECK_EQ(
-        radiusError,
-        "Invalid configuration value 'streaming.view_distance_chunks' in "
-        "'limits.yaml': expected integer no greater than 16, got '17'"
-    );
-
-    const std::string unloadError = exceptionMessage([] {
-        StreamingConfig config;
-        config.applyYaml(
-            "limits.yaml",
-            "streaming:\n  unload_distance_chunks: 25\n"
-        );
-    });
-    CHECK_EQ(
-        unloadError,
-        "Invalid configuration value 'streaming.unload_distance_chunks' in "
-        "'limits.yaml': expected integer no greater than 24, got '25'"
-    );
-
     const std::string workerError = exceptionMessage([] {
         StreamingConfig config;
         config.applyYaml(

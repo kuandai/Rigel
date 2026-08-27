@@ -3,10 +3,20 @@
 #include "ApplicationPreferences.h"
 #include "FrameRendererTestAccess.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Persistence/AsyncChunkLoader.h"
+#include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
+#include "Rigel/Persistence/FormatRegistry.h"
+#include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/FrameRenderer.h"
+#include "Rigel/Voxel/Chunk.h"
+#include "Rigel/Voxel/StreamingConfig.h"
+#include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldResources.h"
+#include "Rigel/Voxel/WorldView.h"
 #include "Rigel/input/GameplayInput.h"
 #include "Rigel/input/InputBindingsLoader.h"
+#include "WorldGenerationTestFixture.h"
 
 #include <GLFW/glfw3.h>
 
@@ -354,7 +364,196 @@ public:
     Rigel::Input::InputState input;
 };
 
+class ViewDistanceFixture {
+public:
+    ViewDistanceFixture()
+        : directory("rigel_view_distance_preferences")
+        , path(directory.path() / "user-preferences.yaml")
+        , persistence(formats)
+        , world(resources)
+        , view(world, resources) {
+        formats.registerFormat(
+            Rigel::Persistence::Backends::Memory::descriptor(),
+            Rigel::Persistence::Backends::Memory::factory(),
+            Rigel::Persistence::Backends::Memory::probe());
+        persistenceContext.rootPath =
+            (directory.path() / "world").string();
+        persistenceContext.preferredFormat = "memory";
+        persistenceContext.storage =
+            std::make_shared<Rigel::Persistence::FilesystemBackend>();
+        const auto settings = Rigel::Test::savedWorldSettingsFixture(
+            "View Distance Preference Test World");
+        const auto definition =
+            Rigel::Test::savedGeneratorDefinitionFixture(settings);
+        generator = Rigel::Test::makeWorldGeneratorFixture(
+            resources.registry(), definition, settings.seed);
+        world.setGenerator(generator);
+        Rigel::Test::installSavedWorldGenerationFixture(
+            persistence,
+            persistenceContext,
+            settings,
+            definition);
+
+        Rigel::Voxel::StreamingConfig streaming;
+        streaming.viewDistanceChunks = 3;
+        streaming.unloadDistanceChunks = 20;
+        streaming.workerThreads = 0;
+        view.setStreamConfig(streaming);
+    }
+
+    ~ViewDistanceFixture() {
+        Rigel::Preferences::detail::
+            setUserPreferencesAfterSavePreflightHookForTesting({});
+        Rigel::Preferences::detail::
+            setUserPreferencesBeforePublicationHookForTesting({});
+        Rigel::Preferences::detail::
+            setUserPreferencesAfterPublicationHookForTesting({});
+    }
+
+    Rigel::ApplicationPreferences owner(
+        const Rigel::Preferences::UserPreferences& requested) {
+        Rigel::Preferences::UserPreferencesStore(path).saveRequested(requested);
+        loader = std::make_unique<Rigel::Persistence::AsyncChunkLoader>(
+            persistence,
+            persistenceContext,
+            world,
+            generator->semanticsVersion(),
+            0,
+            0,
+            requested.graphics.viewDistanceChunks,
+            generator);
+        Rigel::ApplicationPreferences result(path);
+        result.load();
+        return result;
+    }
+
+    Rigel::Test::TemporaryDirectory directory;
+    std::filesystem::path path;
+    Rigel::Persistence::FormatRegistry formats;
+    Rigel::Persistence::PersistenceService persistence;
+    Rigel::Persistence::PersistenceContext persistenceContext;
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::World world;
+    Rigel::Voxel::WorldView view;
+    std::shared_ptr<Rigel::Voxel::WorldGenerator> generator;
+    std::unique_ptr<Rigel::Persistence::AsyncChunkLoader> loader;
+};
+
 } // namespace
+
+TEST_CASE(ApplicationPreferences_StartupViewDistanceUsesLoadedGlobalRequest) {
+    ViewDistanceFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 7;
+    auto preferences = fixture.owner(requested);
+    const std::string before = readDocument(fixture.path);
+    fixture.view.renderConfig().renderDistance = 123.0f;
+
+    preferences.initializeViewDistance(fixture.view, *fixture.loader);
+
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
+    CHECK_NEAR(
+        fixture.view.renderConfig().renderDistance,
+        static_cast<float>(8 * Rigel::Voxel::Chunk::SIZE),
+        0.0001f);
+    CHECK_EQ(readDocument(fixture.path), before);
+}
+
+TEST_CASE(ApplicationPreferences_ViewDistanceValidatesBeforeSessionAndSave) {
+    ViewDistanceFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 7;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeViewDistance(fixture.view, *fixture.loader);
+    const std::string before = readDocument(fixture.path);
+
+    const auto rejected = preferences.applyViewDistance(
+        fixture.view, *fixture.loader, 1);
+
+    CHECK_EQ(rejected.status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
+    CHECK_EQ(readDocument(fixture.path), before);
+
+    const auto applied = preferences.applyViewDistance(
+        fixture.view, *fixture.loader, 16);
+
+    CHECK_EQ(applied.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 16);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 16);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path)
+            .load()
+            .graphics.viewDistanceChunks,
+        16);
+}
+
+TEST_CASE(ApplicationPreferences_ViewDistancePublicationOutcomesMatchSession) {
+    ViewDistanceFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 7;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeViewDistance(fixture.view, *fixture.loader);
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting(
+            &failBeforePublication);
+
+    const auto notPublished = preferences.applyViewDistance(
+        fixture.view, *fixture.loader, 10);
+
+    CHECK_EQ(
+        notPublished.status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(preferences.requested(), requested);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
+
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting({});
+    Rigel::Preferences::detail::
+        setUserPreferencesAfterPublicationHookForTesting(
+            &failAfterPublication);
+
+    const auto uncertain = preferences.applyViewDistance(
+        fixture.view, *fixture.loader, 10);
+
+    CHECK_EQ(
+        uncertain.status,
+        Rigel::PreferenceApplyStatus::PublishedDurabilityUncertain);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 10);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 10);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path)
+            .load()
+            .graphics.viewDistanceChunks,
+        10);
+}
+
+TEST_CASE(ApplicationPreferences_ViewDistancePreparationFailureDoesNotMutateSession) {
+    ViewDistanceFixture fixture;
+    const std::string original = maximumRetainedDocument();
+    writeDocument(fixture.path, original);
+    Rigel::ApplicationPreferences preferences(fixture.path);
+    preferences.load();
+    fixture.loader = std::make_unique<Rigel::Persistence::AsyncChunkLoader>(
+        fixture.persistence,
+        fixture.persistenceContext,
+        fixture.world,
+        fixture.generator->semanticsVersion(),
+        0,
+        0,
+        12,
+        fixture.generator);
+    preferences.initializeViewDistance(fixture.view, *fixture.loader);
+
+    const auto result = preferences.applyViewDistance(
+        fixture.view, *fixture.loader, 10);
+
+    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 12);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 12);
+    CHECK_EQ(readDocument(fixture.path), original);
+}
 
 TEST_CASE(ApplicationPreferences_StartupConsumesRequestWithoutWriting) {
     DisplayFixture fixture;

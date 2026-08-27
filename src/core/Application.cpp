@@ -408,7 +408,7 @@ void Application::initialize() {
             worldGenVersion,
             ioThreads,
             loadWorkerThreads,
-            streamingConfig.viewDistanceChunks,
+            m_impl->preferences->requested().graphics.viewDistanceChunks,
             generator);
         if (streamingConfig.loadQueueLimit >= 0) {
             m_impl->world.chunkLoader->setLoadQueueLimit(
@@ -423,8 +423,6 @@ void Application::initialize() {
         m_impl->world.chunkLoader->setMaxInFlightRegions(
             static_cast<size_t>(
                 std::max(0, streamingConfig.loadMaxInFlightRegions)));
-        m_impl->world.chunkLoader->setPrefetchRadius(
-            std::max(0, streamingConfig.loadPrefetchRadius));
         m_impl->world.chunkLoader->setPrefetchPerRequest(
             static_cast<size_t>(
                 std::max(0, streamingConfig.loadPrefetchPerRequest)));
@@ -475,6 +473,9 @@ void Application::initialize() {
         m_impl->world.worldView->renderConfig() = renderConfig;
         Core::Profiler::setEnabled(renderConfig.profilingEnabled);
         m_impl->world.worldView->setStreamConfig(streamingConfig);
+        m_impl->preferences->initializeViewDistance(
+            *m_impl->world.worldView,
+            *m_impl->world.chunkLoader);
         if (m_impl->timing.benchmarkEnabled) {
             m_impl->world.worldView->setBenchmark(&m_impl->timing.benchmark);
         }
@@ -1098,6 +1099,19 @@ PreferenceApplyResult Application::applyVerticalFov(double verticalFovDegrees) {
         m_impl->renderer, verticalFovDegrees);
 }
 
+PreferenceApplyResult Application::applyViewDistance(int viewDistanceChunks) {
+    if (!m_impl->preferences || !m_impl->world.ready ||
+        !m_impl->world.worldView || !m_impl->world.chunkLoader) {
+        return {
+            PreferenceApplyStatus::Rejected,
+            "view distance requires an active world session"};
+    }
+    return m_impl->preferences->applyViewDistance(
+        *m_impl->world.worldView,
+        *m_impl->world.chunkLoader,
+        viewDistanceChunks);
+}
+
 PreferenceApplyResult Application::applyInputPreferences(
     const Preferences::InputPreferences& preferences) {
     return m_impl->preferences->applyInput(
@@ -1120,6 +1134,10 @@ Application::effectiveDisplayPreferences() const {
 
 double Application::effectiveVerticalFovDegrees() const {
     return m_impl->preferences->effectiveVerticalFovDegrees();
+}
+
+int Application::effectiveViewDistanceChunks() const {
+    return m_impl->preferences->effectiveViewDistanceChunks();
 }
 
 const Preferences::InputPreferences&

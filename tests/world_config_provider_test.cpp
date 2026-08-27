@@ -80,7 +80,7 @@ TEST_CASE(WorldConfigProvider_streaming_ignores_legacy_generation_authoring) {
     const Rigel::Voxel::StreamingConfig streaming =
         provider.loadStreamingConfig();
 
-    CHECK_EQ(streaming.viewDistanceChunks, 9);
+    CHECK_EQ(streaming.viewDistanceChunks, 6);
     CHECK_EQ(streaming.workerThreads, 3);
     CHECK_EQ(tracked->loadCalls, size_t{1});
 }
@@ -131,8 +131,8 @@ TEST_CASE(WorldConfigBootstrap_uses_dedicated_shipped_streaming_asset) {
     const Rigel::Voxel::StreamingConfig streaming =
         Rigel::Voxel::makeWorldConfigProvider(assets, 17)
             .loadStreamingConfig();
-    CHECK_EQ(streaming.viewDistanceChunks, 12);
-    CHECK_EQ(streaming.unloadDistanceChunks, 13);
+    CHECK_EQ(streaming.viewDistanceChunks, 6);
+    CHECK_EQ(streaming.unloadDistanceChunks, 8);
 }
 
 TEST_CASE(WorldConfigBootstrap_reads_streaming_paths_only) {
@@ -149,7 +149,8 @@ TEST_CASE(WorldConfigBootstrap_reads_streaming_paths_only) {
     writeConfig(
         "streaming.yaml",
         "streaming:\n"
-        "  view_distance_chunks: 9\n");
+        "  view_distance_chunks: 9\n"
+        "  worker_threads: 9\n");
 
     Rigel::Asset::AssetManager assets;
     assets.loadManifest("manifest.yaml");
@@ -157,6 +158,7 @@ TEST_CASE(WorldConfigBootstrap_reads_streaming_paths_only) {
         Rigel::Voxel::makeWorldConfigProvider(assets, 17)
             .loadStreamingConfig();
 
-    CHECK_EQ(streaming.viewDistanceChunks, 9);
-    CHECK_EQ(streaming.unloadDistanceChunks, 13);
+    CHECK_EQ(streaming.viewDistanceChunks, 6);
+    CHECK_EQ(streaming.unloadDistanceChunks, 8);
+    CHECK_EQ(streaming.workerThreads, 9);
 }

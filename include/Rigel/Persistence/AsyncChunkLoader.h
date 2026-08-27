@@ -62,6 +62,7 @@ public:
     void setPrefetchPerRequest(size_t count);
     void setRegionDrainBudget(size_t budget);
     void setLoadQueueLimit(size_t maxPending);
+    void applyViewDistanceChunks(int chunks);
 
 private:
     friend struct detail::AsyncChunkLoaderTestAccess;
@@ -205,6 +206,7 @@ private:
     void touch(const RegionKey& key);
     void evictIfNeeded();
     void promoteRegionDemand(const RegionKey& key);
+    int prefetchRadiusForViewDistance(int chunks) const;
     int estimateRegionSpan() const;
     bool regionMayExist(const RegionKey& key);
 

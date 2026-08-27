@@ -76,7 +76,7 @@ render:
     CHECK_NEAR(config.sunDirection.y, 0.8f, 0.0001f);
     CHECK_NEAR(config.sunDirection.z, 0.1f, 0.0001f);
     CHECK_NEAR(config.transparentAlpha, 0.4f, 0.0001f);
-    CHECK_NEAR(config.renderDistance, 300.0f, 0.0001f);
+    CHECK_NEAR(config.renderDistance, 256.0f, 0.0001f);
     CHECK(config.shadow.enabled);
     CHECK_EQ(config.shadow.cascades, 2);
     CHECK_EQ(config.shadow.mapSize, 512);

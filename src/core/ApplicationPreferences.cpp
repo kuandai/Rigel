@@ -1,7 +1,9 @@
 #include "ApplicationPreferences.h"
 
+#include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/FrameRenderer.h"
+#include "Rigel/Voxel/WorldView.h"
 #include "Rigel/input/GameplayInput.h"
 
 #include <algorithm>
@@ -95,6 +97,8 @@ void ApplicationPreferences::load() {
     m_effectiveDisplay = m_requested.display;
     m_effectiveVerticalFovDegrees =
         m_requested.camera.verticalFovDegrees;
+    m_effectiveViewDistanceChunks =
+        m_requested.graphics.viewDistanceChunks;
     m_effectiveInput = m_requested.input;
     m_logicalResizeDirty = false;
     m_pendingResize.reset();
@@ -478,6 +482,72 @@ PreferenceApplyResult ApplicationPreferences::applyVerticalFov(
         }
         renderer.setVerticalFovDegrees(previousEffective);
         m_effectiveVerticalFovDegrees = previousEffective;
+        return result;
+    }
+}
+
+void ApplicationPreferences::initializeViewDistance(
+    Voxel::WorldView& view,
+    Persistence::AsyncChunkLoader& loader) {
+    const int requestedChunks = m_requested.graphics.viewDistanceChunks;
+    if (!view.applyViewDistanceChunks(requestedChunks)) {
+        throw std::logic_error(
+            "Loaded view distance is outside the supported range");
+    }
+    loader.applyViewDistanceChunks(requestedChunks);
+    m_effectiveViewDistanceChunks = requestedChunks;
+}
+
+PreferenceApplyResult ApplicationPreferences::applyViewDistance(
+    Voxel::WorldView& view,
+    Persistence::AsyncChunkLoader& loader,
+    int candidateChunks) {
+    if (candidateChunks < Preferences::kMinimumViewDistanceChunks ||
+        candidateChunks > Preferences::kMaximumViewDistanceChunks) {
+        return {
+            PreferenceApplyStatus::Rejected,
+            "view distance is outside the supported 2 through 16 chunk range"};
+    }
+    if (candidateChunks == m_requested.graphics.viewDistanceChunks &&
+        candidateChunks == m_effectiveViewDistanceChunks) {
+        return {};
+    }
+
+    Preferences::UserPreferences nextRequested = m_requested;
+    nextRequested.graphics.viewDistanceChunks = candidateChunks;
+    std::optional<Preferences::UserPreferencesStore::PreparedSave> prepared;
+    try {
+        prepared.emplace(m_store.prepareSave(nextRequested));
+    } catch (const std::exception& error) {
+        return publicationFailure(error);
+    }
+
+    const int previousEffective = m_effectiveViewDistanceChunks;
+    if (!view.applyViewDistanceChunks(candidateChunks)) {
+        return {
+            PreferenceApplyStatus::Rejected,
+            "active world rejected the view distance request"};
+    }
+    loader.applyViewDistanceChunks(candidateChunks);
+    m_effectiveViewDistanceChunks = candidateChunks;
+
+    try {
+        m_store.publishPrepared(std::move(*prepared));
+        m_requested = std::move(nextRequested);
+        return {};
+    } catch (const std::exception& error) {
+        PreferenceApplyResult result = publicationFailure(error);
+        if (result.status ==
+            PreferenceApplyStatus::PublishedDurabilityUncertain) {
+            m_requested = std::move(nextRequested);
+            return result;
+        }
+        if (!view.applyViewDistanceChunks(previousEffective)) {
+            throw std::logic_error(
+                "Active world rejected its previous view distance");
+        }
+        loader.applyViewDistanceChunks(previousEffective);
+        m_effectiveViewDistanceChunks = previousEffective;
         return result;
     }
 }

@@ -29,22 +29,15 @@ void StreamingConfig::applyYaml(const char* sourceName, const std::string& yaml)
         sourceName,
         "streaming",
         {
-            "view_distance_chunks", "unload_distance_chunks", "gen_queue_limit",
-            "mesh_queue_limit", "update_budget_per_frame", "apply_budget_per_frame",
+            "gen_queue_limit", "mesh_queue_limit", "update_budget_per_frame",
+            "apply_budget_per_frame",
             "worker_threads", "io_threads", "load_worker_threads",
             "load_apply_budget_per_frame", "load_region_drain_budget",
             "load_queue_limit", "load_max_cached_regions",
-            "load_max_inflight_regions", "load_prefetch_radius",
-            "load_prefetch_per_request", "max_resident_chunks"
+            "load_max_inflight_regions", "load_prefetch_per_request",
+            "max_resident_chunks"
         }
     );
-
-    viewDistanceChunks = Util::readIntWithMaximum(
-        streamNode, "view_distance_chunks", viewDistanceChunks, 0,
-        MaxViewDistanceChunks, sourceName, "streaming");
-    unloadDistanceChunks = Util::readIntWithMaximum(
-        streamNode, "unload_distance_chunks", unloadDistanceChunks, 0,
-        MaxUnloadDistanceChunks, sourceName, "streaming");
 
     int genLimit = Util::readIntWithMaximum(
         streamNode, "gen_queue_limit", static_cast<int>(genQueueLimit), 0,
@@ -86,9 +79,6 @@ void StreamingConfig::applyYaml(const char* sourceName, const std::string& yaml)
     loadMaxInFlightRegions = Util::readIntWithMaximum(
         streamNode, "load_max_inflight_regions", loadMaxInFlightRegions, 0,
         MaxInFlightRegions, sourceName, "streaming");
-    loadPrefetchRadius = Util::readIntWithMaximum(
-        streamNode, "load_prefetch_radius", loadPrefetchRadius, 0,
-        MaxPrefetchRadius, sourceName, "streaming");
     loadPrefetchPerRequest = Util::readIntWithMaximum(
         streamNode, "load_prefetch_per_request", loadPrefetchPerRequest, 0,
         MaxPrefetchPerRequest, sourceName, "streaming");

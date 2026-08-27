@@ -38,6 +38,7 @@ public:
         const Preferences::DisplayPreferences& preferences,
         WindowedSizeIntent windowedSizeIntent);
     PreferenceApplyResult applyVerticalFov(double verticalFovDegrees);
+    PreferenceApplyResult applyViewDistance(int viewDistanceChunks);
     PreferenceApplyResult applyInputPreferences(
         const Preferences::InputPreferences& preferences);
     PreferenceApplyResult resetControlBindings();
@@ -45,6 +46,7 @@ public:
     const Preferences::UserPreferences& requestedPreferences() const;
     const Preferences::DisplayPreferences& effectiveDisplayPreferences() const;
     double effectiveVerticalFovDegrees() const;
+    int effectiveViewDistanceChunks() const;
     const Preferences::InputPreferences& effectiveInputPreferences() const;
 
 private:

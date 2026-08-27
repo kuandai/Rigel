@@ -40,7 +40,7 @@ void validateRenderConfigKeys(ryml::ConstNodeRef root,
         renderNode,
         sourceName,
         "render",
-        {"sun_direction", "transparent_alpha", "render_distance", "shadow", "taa", "profiling"}
+        {"sun_direction", "transparent_alpha", "shadow", "taa", "profiling"}
     );
     if (renderNode.has_child("shadow")) {
         Util::warnUnknownKeys(
@@ -168,8 +168,6 @@ void applyRenderYaml(const char* sourceName,
     readVec3(renderNode, "sun_direction", config.sunDirection);
     config.transparentAlpha = Util::readFloat(
         renderNode, "transparent_alpha", config.transparentAlpha);
-    config.renderDistance = Util::readFloat(
-        renderNode, "render_distance", config.renderDistance);
 
     if (renderNode.has_child("shadow")) {
         applyShadowConfig(

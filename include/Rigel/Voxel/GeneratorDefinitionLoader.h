@@ -14,10 +14,12 @@ class BlockRegistry;
 
 std::vector<GeneratorDefinition> validateAndOrderGeneratorDefinitions(
     std::vector<GeneratorDefinition> definitions,
-    const BlockRegistry& registry);
+    const BlockRegistry& registry,
+    GeneratorDefinitionOrigin origin);
 
 std::vector<GeneratorDefinition> loadDeclaredGeneratorDefinitions(
     Asset::AssetManager& assets,
-    const BlockRegistry& registry);
+    const BlockRegistry& registry,
+    GeneratorDefinitionOrigin origin);
 
 } // namespace Rigel::Voxel

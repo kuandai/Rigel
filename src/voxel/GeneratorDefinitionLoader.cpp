@@ -79,7 +79,8 @@ public:
 
 std::vector<GeneratorDefinition> validateAndOrderGeneratorDefinitions(
     std::vector<GeneratorDefinition> definitions,
-    const BlockRegistry& registry) {
+    const BlockRegistry& registry,
+    GeneratorDefinitionOrigin origin) {
     if (definitions.empty()) {
         throw std::invalid_argument(
             "At least one generator definition must be declared");
@@ -95,26 +96,27 @@ std::vector<GeneratorDefinition> validateAndOrderGeneratorDefinitions(
                   return left.label < right.label;
               });
 
-    for (size_t index = 0; index < definitions.size(); ++index) {
-        const auto& definition = definitions[index];
-        const std::string source =
-            definition.id + "@" + std::to_string(definition.sourceRevision);
-        validateGeneratorDefinition(definition, source);
-        validateGeneratorDefinitionContent(
-            definition.data, registry, source);
-        if (index > 0 && definitions[index - 1].id == definition.id &&
+    for (size_t index = 1; index < definitions.size(); ++index) {
+        if (definitions[index - 1].id == definitions[index].id &&
             definitions[index - 1].sourceRevision ==
-                definition.sourceRevision) {
+                definitions[index].sourceRevision) {
             throw std::invalid_argument(
-                "Duplicate generator definition identity '" + source + "'");
+                "Duplicate generator definition identity '" +
+                definitions[index].id + "@" +
+                std::to_string(definitions[index].sourceRevision) + "'");
         }
+    }
+    for (const auto& definition : definitions) {
+        static_cast<void>(prepareGeneratorDefinitionSnapshot(
+            definition, registry, origin));
     }
     return definitions;
 }
 
 std::vector<GeneratorDefinition> loadDeclaredGeneratorDefinitions(
     Asset::AssetManager& assets,
-    const BlockRegistry& registry) {
+    const BlockRegistry& registry,
+    GeneratorDefinitionOrigin origin) {
     assets.registerLoader(
         "generator_definitions",
         std::make_unique<GeneratorDefinitionAssetLoader>());
@@ -135,7 +137,7 @@ std::vector<GeneratorDefinition> loadDeclaredGeneratorDefinitions(
                 "generator_definitions/" + name)->definition);
     }
     return validateAndOrderGeneratorDefinitions(
-        std::move(definitions), registry);
+        std::move(definitions), registry, origin);
 }
 
 } // namespace Rigel::Voxel

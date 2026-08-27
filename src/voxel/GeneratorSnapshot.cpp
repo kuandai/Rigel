@@ -542,7 +542,7 @@ WorldGenConfig parseGeneratorSnapshot(std::string_view snapshot,
                                       uint32_t definitionSchemaVersion,
                                       uint32_t seed,
                                       uint32_t runtimeGenerationVersion) {
-    if (definitionSchemaVersion != kGeneratorDefinitionSchemaVersion) {
+    if (definitionSchemaVersion != kWorldGenConfigSnapshotSchemaVersion) {
         throw std::invalid_argument(
             "Unsupported generator definition schema version: " +
             std::to_string(definitionSchemaVersion));

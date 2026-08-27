@@ -59,7 +59,7 @@ TEST_CASE(GeneratorSnapshot_round_trips_normalized_runtime_definition) {
 
     const WorldGenConfig loaded = parseGeneratorSnapshot(
         snapshot,
-        kGeneratorDefinitionSchemaVersion,
+        kWorldGenConfigSnapshotSchemaVersion,
         998877u,
         51u);
     CHECK_EQ(loaded.seed, 998877u);
@@ -81,7 +81,7 @@ TEST_CASE(GeneratorSnapshot_round_trips_supported_empty_sequences) {
         CHECK(snapshot.find("  entries:\n") == std::string::npos);
         const WorldGenConfig loaded = parseGeneratorSnapshot(
             snapshot,
-            kGeneratorDefinitionSchemaVersion,
+            kWorldGenConfigSnapshotSchemaVersion,
             definition.seed,
             definition.world.version);
         CHECK(loaded.biomes.entries.empty());
@@ -97,7 +97,7 @@ TEST_CASE(GeneratorSnapshot_round_trips_supported_empty_sequences) {
         CHECK(snapshot.find("      surface:\n") == std::string::npos);
         const WorldGenConfig loaded = parseGeneratorSnapshot(
             snapshot,
-            kGeneratorDefinitionSchemaVersion,
+            kWorldGenConfigSnapshotSchemaVersion,
             definition.seed,
             definition.world.version);
         CHECK(loaded.biomes.entries.front().surface.empty());
@@ -118,7 +118,7 @@ TEST_CASE(GeneratorSnapshot_round_trips_supported_empty_sequences) {
         CHECK(snapshot.find("      biomes:\n") == std::string::npos);
         const WorldGenConfig loaded = parseGeneratorSnapshot(
             snapshot,
-            kGeneratorDefinitionSchemaVersion,
+            kWorldGenConfigSnapshotSchemaVersion,
             definition.seed,
             definition.world.version);
         CHECK(loaded.isStageEnabled("structures"));
@@ -134,7 +134,7 @@ TEST_CASE(GeneratorSnapshot_rejects_noncanonical_or_unknown_content) {
     unknownField += "unknown_runtime_field: true\n";
     CHECK_THROWS(parseGeneratorSnapshot(
         unknownField,
-        kGeneratorDefinitionSchemaVersion,
+        kWorldGenConfigSnapshotSchemaVersion,
         1u,
         1u));
 
@@ -147,7 +147,7 @@ TEST_CASE(GeneratorSnapshot_rejects_noncanonical_or_unknown_content) {
         "type: \"mystery\"");
     CHECK_THROWS(parseGeneratorSnapshot(
         unknownType,
-        kGeneratorDefinitionSchemaVersion,
+        kWorldGenConfigSnapshotSchemaVersion,
         1u,
         1u));
 

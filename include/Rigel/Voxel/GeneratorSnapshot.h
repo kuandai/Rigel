@@ -10,7 +10,7 @@ namespace Rigel::Voxel {
 
 class BlockRegistry;
 
-inline constexpr uint32_t kGeneratorDefinitionSchemaVersion = 1;
+inline constexpr uint32_t kWorldGenConfigSnapshotSchemaVersion = 1;
 inline constexpr uint32_t kGeneratorSemanticsVersion = 1;
 
 std::string serializeGeneratorSnapshot(const WorldGenConfig& definition);

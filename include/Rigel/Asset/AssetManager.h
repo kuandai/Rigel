@@ -403,7 +403,8 @@ public:
      * @endcode
      *
      * @note Multiple calls to loadManifest() will merge assets. Later
-     *       declarations override earlier ones with the same ID.
+     *       declarations override earlier ones with the same ID, except
+     *       generator definitions, whose declarations must remain unique.
      */
     void loadManifest(const std::string& path);
 

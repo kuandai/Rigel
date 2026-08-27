@@ -383,7 +383,7 @@ void Application::initialize() {
             settings.generator.sourceRevision =
                 config.generatorSource.revision;
             settings.generator.definitionSchemaVersion =
-                Voxel::kGeneratorDefinitionSchemaVersion;
+                Voxel::kWorldGenConfigSnapshotSchemaVersion;
             settings.generator.semanticsVersion =
                 Voxel::kGeneratorSemanticsVersion;
             creation = Persistence::NewWorldGeneration{

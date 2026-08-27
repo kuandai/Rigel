@@ -4,6 +4,7 @@
 #include "Rigel/Voxel/BlockRegistry.h"
 
 #include <ryml.hpp>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
@@ -220,8 +221,7 @@ GeneratorDefinitionData::DensityNode parseDensityNode(
         requireMap(node, sourceName, path, {"id", "type", "value"});
     } else if (type == "noise2d" || type == "noise3d" ||
                type == "noise3d_xy") {
-        requireMap(node, sourceName, path,
-                   {"id", "type", "noise", "scale", "offset"});
+        requireMap(node, sourceName, path, {"id", "type", "noise"});
     } else if (type == "add" || type == "mul" || type == "max" ||
                type == "min" || type == "abs" || type == "invert") {
         requireMap(node, sourceName, path, {"id", "type", "inputs"});
@@ -250,8 +250,6 @@ GeneratorDefinitionData::DensityNode parseDensityNode(
                type == "noise3d_xy") {
         result.noise = parseNoise(
             child(node, "noise"), sourceName, std::string(path) + ".noise");
-        result.scale = readFloat(node, "scale", sourceName, path);
-        result.offset = readFloat(node, "offset", sourceName, path);
     } else if (type == "add" || type == "mul" || type == "max" ||
                type == "min" || type == "abs" || type == "invert" ||
                type == "clamp" || type == "spline") {
@@ -647,6 +645,11 @@ void validateData(const GeneratorDefinitionData& data,
             fail(sourceName, path + ".surface",
                  "requires at least one authoritative surface layer");
         }
+        if (biome.surface.size() >
+            GeneratorDefinitionData::MaxSurfaceLayers) {
+            fail(sourceName, path + ".surface", "contains too many layers");
+        }
+        int totalSurfaceDepth = 0;
         for (size_t layer = 0; layer < biome.surface.size(); ++layer) {
             const auto& surface = biome.surface[layer];
             if (surface.material.empty()) {
@@ -660,6 +663,12 @@ void validateData(const GeneratorDefinitionData& data,
                      path + ".surface[" + std::to_string(layer) + "].depth",
                      "is outside the supported range");
             }
+            totalSurfaceDepth += surface.depth;
+            if (totalSurfaceDepth >
+                GeneratorDefinitionData::MaxSurfaceDepth) {
+                fail(sourceName, path + ".surface",
+                     "cumulative depth exceeds the supported range");
+            }
         }
     }
     if (!biomeIds.contains(data.biomes.coast.biome)) {
@@ -670,6 +679,11 @@ void validateData(const GeneratorDefinitionData& data,
     if (data.densityGraph.nodes.empty()) {
         fail(sourceName, "generator.density_graph.nodes",
              "requires at least one density node");
+    }
+    if (data.densityGraph.nodes.size() >
+        GeneratorDefinitionData::MaxDensityGraphNodes) {
+        fail(sourceName, "generator.density_graph.nodes",
+             "contains too many nodes");
     }
     std::unordered_map<std::string, const GeneratorDefinitionData::DensityNode*>
         nodes;
@@ -692,11 +706,48 @@ void validateData(const GeneratorDefinitionData& data,
         if (inputs > GeneratorDefinitionData::MaxDensityNodeInputs) {
             fail(sourceName, path + ".inputs", "contains too many inputs");
         }
+        const bool allowsInputs =
+            node.type == "add" || node.type == "mul" || node.type == "max" ||
+            node.type == "min" || node.type == "abs" ||
+            node.type == "invert" || node.type == "clamp" ||
+            node.type == "spline";
+        const bool allowsNoise =
+            node.type == "noise2d" || node.type == "noise3d" ||
+            node.type == "noise3d_xy";
+        if (!allowsInputs && !node.inputs.empty()) {
+            fail(sourceName, path + ".inputs",
+                 "field is not valid for type '" + node.type + "'");
+        }
+        if (!allowsNoise && node.noise != GeneratorDefinitionData::Noise{}) {
+            fail(sourceName, path + ".noise",
+                 "field is not valid for type '" + node.type + "'");
+        }
+        if (node.type != "constant" && node.value != 0.0f) {
+            fail(sourceName, path + ".value",
+                 "field is not valid for type '" + node.type + "'");
+        }
+        if (node.type != "clamp" &&
+            (node.minValue != 0.0f || node.maxValue != 0.0f)) {
+            fail(sourceName, path + ".min",
+                 "range fields are not valid for type '" + node.type + "'");
+        }
+        if (node.type != "y" &&
+            (node.scale != 0.0f || node.offset != 0.0f)) {
+            fail(sourceName, path + ".scale",
+                 "transform fields are not valid for type '" + node.type +
+                     "'");
+        }
+        if (node.type != "spline" && !node.splinePoints.empty()) {
+            fail(sourceName, path + ".spline",
+                 "field is not valid for type '" + node.type + "'");
+        }
+        if (node.type != "climate" && !node.field.empty()) {
+            fail(sourceName, path + ".field",
+                 "field is not valid for type '" + node.type + "'");
+        }
         if (node.type == "noise2d" || node.type == "noise3d" ||
             node.type == "noise3d_xy") {
             validateNoise(node.noise, sourceName, path + ".noise");
-            requireFinite(node.scale, sourceName, path + ".scale");
-            requireFinite(node.offset, sourceName, path + ".offset");
         } else if (node.type == "constant") {
             requireFinite(node.value, sourceName, path + ".value");
         } else if (node.type == "clamp") {
@@ -708,6 +759,10 @@ void validateData(const GeneratorDefinitionData& data,
         } else if (node.type == "spline") {
             if (node.splinePoints.empty()) {
                 fail(sourceName, path + ".spline", "requires at least one point");
+            }
+            if (node.splinePoints.size() >
+                GeneratorDefinitionData::MaxDensitySplinePoints) {
+                fail(sourceName, path + ".spline", "contains too many points");
             }
             std::unordered_set<float> coordinates;
             for (const auto& point : node.splinePoints) {
@@ -768,6 +823,11 @@ void validateData(const GeneratorDefinitionData& data,
         fail(sourceName, "generator.density_graph.outputs",
              "requires at least one semantic output");
     }
+    if (data.densityGraph.outputs.size() >
+        GeneratorDefinitionData::MaxDensityGraphOutputs) {
+        fail(sourceName, "generator.density_graph.outputs",
+             "contains too many outputs");
+    }
     std::unordered_set<std::string> outputNames;
     for (const auto& output : data.densityGraph.outputs) {
         if (output.semantic.empty() ||
@@ -827,6 +887,11 @@ void validateData(const GeneratorDefinitionData& data,
         fail(sourceName, "generator.structures.features",
              "enabled structures require at least one feature");
     }
+    if (data.structures.features.size() >
+        GeneratorDefinitionData::MaxStructureFeatures) {
+        fail(sourceName, "generator.structures.features",
+             "contains too many features");
+    }
     std::unordered_set<std::string> featureIds;
     for (size_t index = 0; index < data.structures.features.size(); ++index) {
         const auto& feature = data.structures.features[index];
@@ -849,6 +914,10 @@ void validateData(const GeneratorDefinitionData& data,
                  "feature height range is invalid or reversed");
         }
         std::unordered_set<std::string> filters;
+        if (feature.biomes.size() >
+            GeneratorDefinitionData::MaxFeatureBiomeFilters) {
+            fail(sourceName, path + ".biomes", "contains too many filters");
+        }
         for (const auto& biome : feature.biomes) {
             if (!biomeIds.contains(biome)) {
                 fail(sourceName, path + ".biomes",
@@ -979,8 +1048,6 @@ void appendNode(std::string& out,
                node.type == "noise3d_xy") {
         out += indent + "  noise:\n";
         appendNoise(out, node.noise, indent + "    ");
-        out += indent + "  scale: " + number(node.scale) + "\n";
-        out += indent + "  offset: " + number(node.offset) + "\n";
     } else if (node.type == "clamp") {
         out += indent + "  min: " + number(node.minValue) + "\n";
         out += indent + "  max: " + number(node.maxValue) + "\n";
@@ -1120,12 +1187,22 @@ void appendData(std::string& out,
                 out += indent + "      biomes: []\n";
             } else {
                 out += indent + "      biomes:\n";
-                for (const auto& biome : feature.biomes) {
+                std::vector<std::string> filters = feature.biomes;
+                std::sort(filters.begin(), filters.end());
+                for (const auto& biome : filters) {
                     out += indent + "        - " + quoted(biome) + "\n";
                 }
             }
         }
     }
+}
+
+std::string serializeSnapshotData(const GeneratorDefinitionData& data) {
+    validateData(data, "generator definition snapshot");
+    std::string out;
+    out.reserve(8192);
+    appendData(out, data, "", true);
+    return out;
 }
 
 } // namespace
@@ -1178,13 +1255,40 @@ std::string serializeGeneratorDefinition(
     return out;
 }
 
-std::string serializeGeneratorDefinitionSnapshot(
-    const GeneratorDefinitionData& data) {
-    validateData(data, "generator definition snapshot");
-    std::string out;
-    out.reserve(8192);
-    appendData(out, data, "", true);
-    return out;
+PreparedGeneratorDefinitionSnapshot prepareGeneratorDefinitionSnapshot(
+    const GeneratorDefinition& definition,
+    const BlockRegistry& registry,
+    GeneratorDefinitionOrigin origin) {
+    validateGeneratorDefinition(definition, definition.id);
+    validateGeneratorDefinitionContent(
+        definition.data, registry, definition.id);
+    const auto reachable = reachableNodes(definition.data);
+    std::vector<std::string> unreachable;
+    for (const auto& node : definition.data.densityGraph.nodes) {
+        if (!reachable.contains(node.id)) {
+            unreachable.push_back(node.id);
+        }
+    }
+    std::sort(unreachable.begin(), unreachable.end());
+    if (!unreachable.empty() && origin == GeneratorDefinitionOrigin::Shipped) {
+        throw std::invalid_argument(
+            "Shipped generator definition '" + definition.id + "@" +
+            std::to_string(definition.sourceRevision) +
+            "' contains unreachable density node '" + unreachable.front() +
+            "'");
+    }
+    for (const auto& nodeId : unreachable) {
+        spdlog::warn(
+            "Generator definition '{}@{}' contains unreachable density node '{}'",
+            definition.id,
+            definition.sourceRevision,
+            nodeId);
+    }
+    return PreparedGeneratorDefinitionSnapshot{
+        definition.id,
+        definition.sourceRevision,
+        definition.schemaVersion,
+        serializeSnapshotData(definition.data)};
 }
 
 GeneratorDefinitionData parseGeneratorDefinitionSnapshot(
@@ -1192,7 +1296,7 @@ GeneratorDefinitionData parseGeneratorDefinitionSnapshot(
     uint32_t definitionSchemaVersion,
     std::string_view sourceName) {
     if (definitionSchemaVersion !=
-        kGeneratorDefinitionAuthoringSchemaVersion) {
+        kGeneratorDefinitionSchemaVersion) {
         throw std::invalid_argument(
             "Unsupported generator definition schema version: " +
             std::to_string(definitionSchemaVersion));
@@ -1206,7 +1310,7 @@ GeneratorDefinitionData parseGeneratorDefinitionSnapshot(
     GeneratorDefinitionData data =
         parseData(tree.crootref(), sourceName, "generator", true);
     validateData(data, sourceName);
-    if (serializeGeneratorDefinitionSnapshot(data) != snapshot) {
+    if (serializeSnapshotData(data) != snapshot) {
         throw std::invalid_argument(
             "Saved generator definition is not in canonical form");
     }
@@ -1216,7 +1320,7 @@ GeneratorDefinitionData parseGeneratorDefinitionSnapshot(
 void validateGeneratorDefinition(const GeneratorDefinition& definition,
                                  std::string_view sourceName) {
     if (definition.schemaVersion !=
-        kGeneratorDefinitionAuthoringSchemaVersion) {
+        kGeneratorDefinitionSchemaVersion) {
         fail(sourceName, "generator.schema_version",
              "unsupported schema version " +
                  std::to_string(definition.schemaVersion));
@@ -1231,12 +1335,16 @@ void validateGeneratorDefinition(const GeneratorDefinition& definition,
     if (definition.label.empty()) {
         fail(sourceName, "generator.label", "must not be empty");
     }
+    if (definition.description.empty()) {
+        fail(sourceName, "generator.description", "must not be empty");
+    }
     validateData(definition.data, sourceName);
 }
 
 void validateGeneratorDefinitionContent(const GeneratorDefinitionData& data,
                                         const BlockRegistry& registry,
                                         std::string_view sourceName) {
+    validateData(data, sourceName);
     auto requireMaterial = [&](const std::string& identifier,
                                const std::string& path) {
         if (!registry.findByIdentifier(identifier)) {

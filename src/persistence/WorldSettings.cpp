@@ -188,7 +188,7 @@ void validateSettings(const WorldSettings& settings) {
             "World generator source revision must be greater than zero");
     }
     if (settings.generator.definitionSchemaVersion !=
-        Voxel::kGeneratorDefinitionSchemaVersion) {
+        Voxel::kWorldGenConfigSnapshotSchemaVersion) {
         throw std::invalid_argument(
             "Unsupported generator definition schema version: " +
             std::to_string(settings.generator.definitionSchemaVersion));

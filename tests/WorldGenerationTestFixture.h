@@ -26,7 +26,7 @@ inline Persistence::WorldSettings savedWorldSettingsFixture(
     settings.generator.sourceId = "rigel:test_generator";
     settings.generator.sourceRevision = 1;
     settings.generator.definitionSchemaVersion =
-        Voxel::kGeneratorDefinitionSchemaVersion;
+        Voxel::kWorldGenConfigSnapshotSchemaVersion;
     settings.generator.semanticsVersion =
         Voxel::kGeneratorSemanticsVersion;
     return settings;

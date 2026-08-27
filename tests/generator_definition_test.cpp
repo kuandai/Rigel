@@ -1,4 +1,5 @@
 #include "TestFramework.h"
+#include "LogCapture.h"
 
 #include "Rigel/Voxel/GeneratorDefinition.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
@@ -11,15 +12,16 @@
 namespace {
 
 using Rigel::Voxel::GeneratorDefinition;
+using Rigel::Voxel::GeneratorDefinitionOrigin;
 using Rigel::Voxel::parseGeneratorDefinition;
 using Rigel::Voxel::parseGeneratorDefinitionSnapshot;
+using Rigel::Voxel::prepareGeneratorDefinitionSnapshot;
 using Rigel::Voxel::serializeGeneratorDefinition;
-using Rigel::Voxel::serializeGeneratorDefinitionSnapshot;
 using Rigel::Voxel::validateAndOrderGeneratorDefinitions;
 
 std::string validDefinitionYaml() {
     return R"yaml(generator:
-  schema_version: 1
+  schema_version: 2
   id: test:continental
   source_revision: 7
   label: Continental
@@ -137,8 +139,6 @@ std::string validDefinitionYaml() {
           persistence: 0.5
           scale: 1
           offset: 0
-        scale: 1
-        offset: 0
       - id: author_note
         type: constant
         value: 99
@@ -194,13 +194,30 @@ void registerDefinitionMaterials(Rigel::Voxel::BlockRegistry& registry,
     }
 }
 
+GeneratorDefinition definitionWithoutUnusedNodes() {
+    GeneratorDefinition definition =
+        parseGeneratorDefinition(validDefinitionYaml(), "installed.yaml");
+    definition.data.densityGraph.nodes.erase(
+        definition.data.densityGraph.nodes.begin() + 2);
+    return definition;
+}
+
+Rigel::Voxel::PreparedGeneratorDefinitionSnapshot prepareSnapshot(
+    const GeneratorDefinition& definition) {
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+    return prepareGeneratorDefinitionSnapshot(
+        definition, registry, GeneratorDefinitionOrigin::ThirdParty);
+}
+
 } // namespace
 
 TEST_CASE(GeneratorDefinition_parses_complete_graph_only_author_contract) {
     const GeneratorDefinition definition =
         parseGeneratorDefinition(validDefinitionYaml(), "complete.yaml");
 
-    CHECK_EQ(definition.schemaVersion, uint32_t{1});
+    CHECK_EQ(definition.schemaVersion,
+             Rigel::Voxel::kGeneratorDefinitionSchemaVersion);
     CHECK_EQ(definition.id, std::string("test:continental"));
     CHECK_EQ(definition.sourceRevision, uint32_t{7});
     CHECK_EQ(definition.label, std::string("Continental"));
@@ -220,16 +237,24 @@ TEST_CASE(GeneratorDefinition_rejects_unknown_missing_and_inapplicable_fields) {
     CHECK(rejectsMutation(
         "    water_material: test:water\n", ""));
     CHECK(rejectsMutation(
+        "  description: A complete graph-only test definition.\n",
+        "  description: \"\"\n"));
+    CHECK(rejectsMutation(
         "        type: constant\n        value: 0.25\n",
         "        type: constant\n        value: 0.25\n        scale: 2\n"));
     CHECK(rejectsMutation("        type: noise3d\n",
                           "        type: mystery\n"));
+    CHECK(rejectsMutation("        type: noise3d\n        noise:\n",
+                          "        type: noise3d\n        scale: 2\n"
+                          "        noise:\n"));
     CHECK(rejectsMutation(
         "      - id: author_note\n        type: constant\n        value: 99\n",
         "      - id: author_note\n        type: climate\n"
         "        field: wind\n"));
     CHECK(rejectsMutation("    local_blend: 0.3\n",
                           "    local_blend: unrestricted\n"));
+    CHECK(rejectsMutation("    latitude_strength: 0.3\n",
+                          "    latitude_strength: .nan\n"));
     CHECK(rejectsMutation("  structures:\n    enabled: true\n",
                           "  structures:\n"));
 }
@@ -259,6 +284,15 @@ TEST_CASE(GeneratorDefinition_rejects_invalid_ranges_and_dependencies) {
         "      max_continentalness: -0.1\n"));
     CHECK(rejectsMutation("        min_height: 1\n        max_height: 3\n",
                           "        min_height: 4\n        max_height: 3\n"));
+    CHECK(rejectsMutation(
+        "          - material: test:grass\n"
+        "            depth: 1\n"
+        "          - material: test:dirt\n"
+        "            depth: 3\n",
+        "          - material: test:grass\n"
+        "            depth: 20\n"
+        "          - material: test:dirt\n"
+        "            depth: 20\n"));
     CHECK(rejectsMutation("        surface:\n",
                           "        surface: []\n        ignored:\n"));
     CHECK(rejectsMutation(
@@ -282,6 +316,70 @@ TEST_CASE(GeneratorDefinition_validates_unreachable_nodes_before_pruning) {
         "        inputs: [author_note]\n"));
 }
 
+TEST_CASE(GeneratorDefinition_enforces_programmatic_collection_limits) {
+    GeneratorDefinition tooManyNodes =
+        parseGeneratorDefinition(validDefinitionYaml(), "node-limit.yaml");
+    while (tooManyNodes.data.densityGraph.nodes.size() <=
+           Rigel::Voxel::GeneratorDefinitionData::MaxDensityGraphNodes) {
+        auto node = tooManyNodes.data.densityGraph.nodes.front();
+        node.id = "extra_node_" +
+            std::to_string(tooManyNodes.data.densityGraph.nodes.size());
+        tooManyNodes.data.densityGraph.nodes.push_back(std::move(node));
+    }
+    CHECK_THROWS(prepareSnapshot(tooManyNodes));
+
+    GeneratorDefinition tooManyOutputs =
+        parseGeneratorDefinition(validDefinitionYaml(), "output-limit.yaml");
+    while (tooManyOutputs.data.densityGraph.outputs.size() <=
+           Rigel::Voxel::GeneratorDefinitionData::MaxDensityGraphOutputs) {
+        tooManyOutputs.data.densityGraph.outputs.push_back(
+            {"extra_output_" +
+                 std::to_string(tooManyOutputs.data.densityGraph.outputs.size()),
+             "terrain"});
+    }
+    CHECK_THROWS(prepareSnapshot(tooManyOutputs));
+
+    GeneratorDefinition tooManySplinePoints =
+        parseGeneratorDefinition(validDefinitionYaml(), "spline-limit.yaml");
+    Rigel::Voxel::GeneratorDefinitionData::DensityNode spline;
+    spline.id = "oversized_spline";
+    spline.type = "spline";
+    spline.inputs = {"terrain"};
+    for (size_t point = 0;
+         point <=
+         Rigel::Voxel::GeneratorDefinitionData::MaxDensitySplinePoints;
+         ++point) {
+        spline.splinePoints.emplace_back(
+            static_cast<float>(point), static_cast<float>(point));
+    }
+    tooManySplinePoints.data.densityGraph.nodes.push_back(std::move(spline));
+    tooManySplinePoints.data.densityGraph.outputs.front().node =
+        "oversized_spline";
+    CHECK_THROWS(prepareSnapshot(tooManySplinePoints));
+
+    GeneratorDefinition tooManyFeatures =
+        parseGeneratorDefinition(validDefinitionYaml(), "feature-limit.yaml");
+    while (tooManyFeatures.data.structures.features.size() <=
+           Rigel::Voxel::GeneratorDefinitionData::MaxStructureFeatures) {
+        auto feature = tooManyFeatures.data.structures.features.front();
+        feature.id = "extra_feature_" +
+            std::to_string(tooManyFeatures.data.structures.features.size());
+        tooManyFeatures.data.structures.features.push_back(std::move(feature));
+    }
+    CHECK_THROWS(prepareSnapshot(tooManyFeatures));
+
+    GeneratorDefinition tooManyBiomes =
+        parseGeneratorDefinition(validDefinitionYaml(), "biome-limit.yaml");
+    while (tooManyBiomes.data.biomes.entries.size() <=
+           Rigel::Voxel::GeneratorDefinitionData::MaxBiomeEntries) {
+        auto biome = tooManyBiomes.data.biomes.entries.front();
+        biome.id = "extra_biome_" +
+            std::to_string(tooManyBiomes.data.biomes.entries.size());
+        tooManyBiomes.data.biomes.entries.push_back(std::move(biome));
+    }
+    CHECK_THROWS(prepareSnapshot(tooManyBiomes));
+}
+
 TEST_CASE(GeneratorDefinition_authoring_serialization_is_normalized_and_stable) {
     const GeneratorDefinition parsed =
         parseGeneratorDefinition(validDefinitionYaml(), "author.yaml");
@@ -296,10 +394,15 @@ TEST_CASE(GeneratorDefinition_authoring_serialization_is_normalized_and_stable) 
 }
 
 TEST_CASE(GeneratorDefinition_snapshot_is_metadata_free_effective_data) {
-    const GeneratorDefinition definition =
+    GeneratorDefinition definition =
         parseGeneratorDefinition(validDefinitionYaml(), "snapshot-source.yaml");
-    const std::string snapshot =
-        serializeGeneratorDefinitionSnapshot(definition.data);
+    definition.data.structures.features.front().biomes = {"ocean", "land"};
+    const auto prepared = prepareSnapshot(definition);
+    const std::string& snapshot = prepared.canonicalSnapshot;
+
+    CHECK_EQ(prepared.sourceId, definition.id);
+    CHECK_EQ(prepared.sourceRevision, definition.sourceRevision);
+    CHECK_EQ(prepared.definitionSchemaVersion, definition.schemaVersion);
 
     CHECK(snapshot.find("schema_version") == std::string::npos);
     CHECK(snapshot.find("source_revision") == std::string::npos);
@@ -309,22 +412,29 @@ TEST_CASE(GeneratorDefinition_snapshot_is_metadata_free_effective_data) {
     CHECK(snapshot.find("density_output: \"terrain_density\"") !=
           std::string::npos);
     CHECK(snapshot.find("water_fill: true") != std::string::npos);
+    CHECK(snapshot.find(
+              "      biomes:\n        - \"land\"\n        - \"ocean\"\n") !=
+          std::string::npos);
 
     const auto loaded = parseGeneratorDefinitionSnapshot(
-        snapshot, 1u, "generator-definition.yaml");
-    CHECK_EQ(serializeGeneratorDefinitionSnapshot(loaded), snapshot);
+        snapshot, Rigel::Voxel::kGeneratorDefinitionSchemaVersion,
+        "generator-definition.yaml");
+    GeneratorDefinition loadedDefinition = definition;
+    loadedDefinition.data = loaded;
+    CHECK_EQ(prepareSnapshot(loadedDefinition).canonicalSnapshot, snapshot);
 }
 
 TEST_CASE(GeneratorDefinition_snapshot_parser_requires_canonical_content) {
     const GeneratorDefinition definition =
         parseGeneratorDefinition(validDefinitionYaml(), "snapshot-source.yaml");
     const std::string canonical =
-        serializeGeneratorDefinitionSnapshot(definition.data);
+        prepareSnapshot(definition).canonicalSnapshot;
 
     std::string unknown = canonical;
     unknown += "legacy_mode: simple\n";
     CHECK_THROWS(parseGeneratorDefinitionSnapshot(
-        unknown, 1u, "unknown-snapshot.yaml"));
+        unknown, Rigel::Voxel::kGeneratorDefinitionSchemaVersion,
+        "unknown-snapshot.yaml"));
 
     std::string unused = canonical;
     const size_t caves = unused.find("caves:\n");
@@ -335,9 +445,15 @@ TEST_CASE(GeneratorDefinition_snapshot_parser_requires_canonical_content) {
         "      type: \"constant\"\n"
         "      value: 4\n");
     CHECK_THROWS(parseGeneratorDefinitionSnapshot(
-        unused, 1u, "noncanonical-snapshot.yaml"));
+        unused, Rigel::Voxel::kGeneratorDefinitionSchemaVersion,
+        "noncanonical-snapshot.yaml"));
     CHECK_THROWS(parseGeneratorDefinitionSnapshot(
-        canonical, 2u, "newer-snapshot.yaml"));
+        canonical, Rigel::Voxel::kGeneratorDefinitionSchemaVersion + 1u,
+        "newer-snapshot.yaml"));
+
+    GeneratorDefinition programmatic = definition;
+    programmatic.data.densityGraph.nodes.front().inputs = {"cave"};
+    CHECK_THROWS(prepareSnapshot(programmatic));
 }
 
 TEST_CASE(GeneratorDefinition_snapshot_normalizes_splines_and_disabled_features) {
@@ -356,7 +472,7 @@ TEST_CASE(GeneratorDefinition_snapshot_normalizes_splines_and_disabled_features)
     definition.data.structures = {};
 
     const std::string snapshot =
-        serializeGeneratorDefinitionSnapshot(definition.data);
+        prepareSnapshot(definition).canonicalSnapshot;
     CHECK(snapshot.find("density_output: cave_density") == std::string::npos);
     CHECK(snapshot.find("features:") == std::string::npos);
     CHECK(snapshot.find("caves:\n  enabled: false\n") != std::string::npos);
@@ -365,12 +481,12 @@ TEST_CASE(GeneratorDefinition_snapshot_normalizes_splines_and_disabled_features)
     CHECK(snapshot.find("- [-1, -2]") < snapshot.find("- [0, 0.5]"));
     CHECK(snapshot.find("- [0, 0.5]") < snapshot.find("- [1, 2]"));
     CHECK_NO_THROW(parseGeneratorDefinitionSnapshot(
-        snapshot, 1u, "normalized-snapshot.yaml"));
+        snapshot, Rigel::Voxel::kGeneratorDefinitionSchemaVersion,
+        "normalized-snapshot.yaml"));
 }
 
 TEST_CASE(GeneratorDefinition_declared_set_is_complete_validated_and_ordered) {
-    GeneratorDefinition later =
-        parseGeneratorDefinition(validDefinitionYaml(), "later.yaml");
+    GeneratorDefinition later = definitionWithoutUnusedNodes();
     later.id = "test:zeta";
     later.sourceRevision = 2;
     GeneratorDefinition earlier = later;
@@ -380,44 +496,64 @@ TEST_CASE(GeneratorDefinition_declared_set_is_complete_validated_and_ordered) {
     registerDefinitionMaterials(registry);
 
     const auto definitions = validateAndOrderGeneratorDefinitions(
-        {later, earlier}, registry);
+        {later, earlier}, registry, GeneratorDefinitionOrigin::Shipped);
     CHECK_EQ(definitions.size(), size_t{2});
     CHECK_EQ(definitions[0].id, std::string("test:alpha"));
     CHECK_EQ(definitions[1].id, std::string("test:zeta"));
 
-    CHECK_THROWS(validateAndOrderGeneratorDefinitions({}, registry));
+    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
+        {}, registry, GeneratorDefinitionOrigin::Shipped));
     later.label = "Same identity, different declaration";
     CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {earlier, later, later}, registry));
+        {earlier, later, later}, registry,
+        GeneratorDefinitionOrigin::Shipped));
 
     GeneratorDefinition duplicateFeature = earlier;
     duplicateFeature.data.structures.features.push_back(
         duplicateFeature.data.structures.features.front());
     CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {duplicateFeature}, registry));
+        {duplicateFeature}, registry, GeneratorDefinitionOrigin::Shipped));
 }
 
 TEST_CASE(GeneratorDefinition_declared_set_requires_every_material) {
-    const GeneratorDefinition definition =
-        parseGeneratorDefinition(validDefinitionYaml(), "materials.yaml");
+    const GeneratorDefinition definition = definitionWithoutUnusedNodes();
     Rigel::Voxel::BlockRegistry incomplete;
     registerDefinitionMaterials(incomplete, false);
     CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {definition}, incomplete));
+        {definition}, incomplete, GeneratorDefinitionOrigin::Shipped));
 
     Rigel::Voxel::BlockRegistry complete;
     registerDefinitionMaterials(complete);
     CHECK_NO_THROW(validateAndOrderGeneratorDefinitions(
-        {definition}, complete));
+        {definition}, complete, GeneratorDefinitionOrigin::Shipped));
 
     GeneratorDefinition missingSurface = definition;
     missingSurface.data.biomes.entries.front().surface.front().material =
         "test:missing";
     CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {missingSurface}, complete));
+        {missingSurface}, complete, GeneratorDefinitionOrigin::Shipped));
 
     GeneratorDefinition missingFeature = definition;
     missingFeature.data.structures.features.front().material = "test:missing";
     CHECK_THROWS(validateAndOrderGeneratorDefinitions(
-        {missingFeature}, complete));
+        {missingFeature}, complete, GeneratorDefinitionOrigin::Shipped));
+}
+
+TEST_CASE(GeneratorDefinition_declared_set_warns_but_accepts_unreachable_nodes) {
+    const GeneratorDefinition definition =
+        parseGeneratorDefinition(validDefinitionYaml(), "dead-node.yaml");
+    Rigel::Voxel::BlockRegistry registry;
+    registerDefinitionMaterials(registry);
+
+    Rigel::Test::LogCapture log("generator-definition-warning");
+    CHECK_NO_THROW(validateAndOrderGeneratorDefinitions(
+        {definition}, registry, GeneratorDefinitionOrigin::ThirdParty));
+    const std::string warning = log.output();
+    CHECK(warning.find("test:continental@7") != std::string::npos);
+    CHECK(warning.find("author_note") != std::string::npos);
+    CHECK_THROWS(validateAndOrderGeneratorDefinitions(
+        {definition}, registry, GeneratorDefinitionOrigin::Shipped));
+    CHECK_NO_THROW(validateAndOrderGeneratorDefinitions(
+        {definitionWithoutUnusedNodes()}, registry,
+        GeneratorDefinitionOrigin::Shipped));
 }

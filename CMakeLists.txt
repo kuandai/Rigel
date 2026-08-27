@@ -140,12 +140,16 @@ if (RIGEL_BUILD_TESTS)
     set(BLOCK_ASSET_FAILURE_TEST_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/block_asset_failure_test.cpp
     )
+    set(ASSET_MANIFEST_VALIDATION_TEST_SOURCE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/asset_manifest_validation_test.cpp
+    )
     set(PUBLIC_HEADER_CONSUMER_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/public_header_consumer.cpp
     )
     list(REMOVE_ITEM TEST_SOURCES
         ${PROFILER_TEST_SOURCE}
         ${BLOCK_ASSET_FAILURE_TEST_SOURCE}
+        ${ASSET_MANIFEST_VALIDATION_TEST_SOURCE}
         ${PUBLIC_HEADER_CONSUMER_SOURCE}
     )
 
@@ -207,6 +211,33 @@ if (RIGEL_BUILD_TESTS)
         stb::stb
     )
 
+    add_executable(Rigel_asset_manifest_validation_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/TestFramework.cpp
+        ${ASSET_MANIFEST_VALIDATION_TEST_SOURCE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/AssetManager.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/RawLoader.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/TextureLoader.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderLoader.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderCompiler.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderAsset.cpp
+    )
+    target_include_directories(Rigel_asset_manifest_validation_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/invalid_generator_manifests
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+    target_compile_definitions(Rigel_asset_manifest_validation_tests PRIVATE
+        RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(Rigel_asset_manifest_validation_tests PRIVATE
+        spdlog::spdlog
+        GLEW::GLEW
+        OpenGL::GL
+        ryml::ryml
+        stb::stb
+    )
+
     add_executable(Rigel_public_header_consumer
         ${PUBLIC_HEADER_CONSUMER_SOURCE}
     )
@@ -215,12 +246,14 @@ if (RIGEL_BUILD_TESTS)
     add_dependencies(Rigel_tests
         Rigel_profiler_tests
         Rigel_block_asset_failure_tests
+        Rigel_asset_manifest_validation_tests
         Rigel_public_header_consumer
     )
 
     add_test(NAME Rigel_tests COMMAND Rigel_tests)
     add_test(NAME Rigel_profiler_tests COMMAND Rigel_profiler_tests)
     add_test(NAME Rigel_block_asset_failure_tests COMMAND Rigel_block_asset_failure_tests)
+    add_test(NAME Rigel_asset_manifest_validation_tests COMMAND Rigel_asset_manifest_validation_tests)
     add_test(NAME Rigel_public_header_consumer COMMAND Rigel_public_header_consumer)
     add_test(
         NAME Rigel_tests_filtered_count

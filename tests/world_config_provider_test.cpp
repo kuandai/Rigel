@@ -505,7 +505,7 @@ TEST_CASE(WorldConfigProvider_SavedWorldReloadToleratesRemovedFileOverlay) {
     settings.generator.sourceId = created.generatorSource.id;
     settings.generator.sourceRevision = created.generatorSource.revision;
     settings.generator.definitionSchemaVersion =
-        kGeneratorDefinitionSchemaVersion;
+        kWorldGenConfigSnapshotSchemaVersion;
     settings.generator.semanticsVersion = kGeneratorSemanticsVersion;
     created.generation.world.version = kGeneratorSemanticsVersion;
     auto storage = std::make_shared<Rigel::Persistence::FilesystemBackend>();
@@ -613,7 +613,7 @@ TEST_CASE(WorldConfigProvider_ShippedDefinitionProducesNormalizedSnapshot) {
         serializeGeneratorSnapshot(config.generation);
     const WorldGenConfig loaded = parseGeneratorSnapshot(
         snapshot,
-        kGeneratorDefinitionSchemaVersion,
+        kWorldGenConfigSnapshotSchemaVersion,
         config.generation.seed,
         kGeneratorSemanticsVersion);
 

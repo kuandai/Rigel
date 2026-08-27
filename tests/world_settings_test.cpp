@@ -108,7 +108,7 @@ Persistence::WorldSettings savedSettings() {
     settings.generator.sourceId = "rigel:default";
     settings.generator.sourceRevision = 19u;
     settings.generator.definitionSchemaVersion =
-        Voxel::kGeneratorDefinitionSchemaVersion;
+        Voxel::kWorldGenConfigSnapshotSchemaVersion;
     settings.generator.semanticsVersion = Voxel::kGeneratorSemanticsVersion;
     return settings;
 }

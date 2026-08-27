@@ -51,7 +51,7 @@ Persistence::NewWorldGeneration creation(
     result.settings.generator.sourceId = "test:installed";
     result.settings.generator.sourceRevision = 1;
     result.settings.generator.definitionSchemaVersion =
-        Voxel::kGeneratorDefinitionSchemaVersion;
+        Voxel::kWorldGenConfigSnapshotSchemaVersion;
     result.settings.generator.semanticsVersion =
         Voxel::kGeneratorSemanticsVersion;
     result.definition = definition(seed, density);

@@ -311,6 +311,9 @@ private:
         std::optional<PendingWorldBoundsReconciliation>
             worldBoundsReconciliation;
         StreamingDiagnosticSnapshot diagnostics;
+        uint64_t observedLoaderFailureVersion = 0;
+        uint64_t observedLoadFailureVersion = 0;
+        uint64_t chunkLoadFailureVersion = 0;
     };
 
     void reset();

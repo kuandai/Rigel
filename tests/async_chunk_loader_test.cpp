@@ -1297,6 +1297,135 @@ TEST_CASE(AsyncChunkLoader_ViewPolicyPublicationFailureRestoresEveryConsumer) {
         2);
 }
 
+TEST_CASE(AsyncChunkLoader_ViewPolicyInstallFailureRestoresEveryConsumer) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+    MemoryContext context;
+    AsyncChunkLoader loader(
+        context.service,
+        context.context,
+        world,
+        generator->semanticsVersion(),
+        0,
+        0,
+        generator);
+    bool failNextDiagnostics = false;
+    size_t diagnosticsCalls = 0;
+    WorldView view(world, resources);
+    view.setGenerator(generator);
+    StreamingConfig streaming;
+    streaming.workerThreads = 0;
+    view.setStreamConfig(streaming);
+    view.setChunkLoadDiagnosticsCallback([&]() {
+        ++diagnosticsCalls;
+        if (failNextDiagnostics) {
+            failNextDiagnostics = false;
+            throw std::runtime_error("injected View Distance install failure");
+        }
+        return loader.diagnostics();
+    });
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_loader_view_policy_install_failure");
+    const auto preferencePath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 2;
+    Rigel::Preferences::UserPreferencesStore(preferencePath)
+        .saveRequested(requested);
+    Rigel::ApplicationPreferences preferences(preferencePath);
+    preferences.load();
+    preferences.initializeViewDistance(view, &loader);
+    view.updateStreaming(glm::vec3(0.0f));
+
+    const auto previousPolicy = view.viewDistancePolicy();
+    const auto previousLoaderPolicy =
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            viewDistancePolicy(loader);
+    const auto previousDiagnostics = view.streamingDiagnostics();
+    CHECK_EQ(previousLoaderPolicy, previousPolicy);
+    CHECK_EQ(
+        preferences.requestViewDistance(16).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const size_t diagnosticsCallsBeforeApply = diagnosticsCalls;
+    failNextDiagnostics = true;
+
+    const auto failed =
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, view, &loader);
+
+    CHECK(failed.has_value());
+    CHECK_EQ(failed->status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(diagnosticsCalls, diagnosticsCallsBeforeApply + 1);
+    CHECK_EQ(preferences.requested().graphics.viewDistanceChunks, 2);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 2);
+    CHECK_EQ(view.viewDistanceChunks(), 2);
+    CHECK_EQ(view.viewDistancePolicy(), previousPolicy);
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            viewDistancePolicy(loader),
+        previousLoaderPolicy);
+    CHECK_NEAR(
+        view.renderConfig().renderDistance,
+        previousPolicy->renderDistanceWorldUnits(),
+        0.0001f);
+    CHECK_EQ(
+        view.streamingDiagnostics().plannerReconciliationPending,
+        previousDiagnostics.plannerReconciliationPending);
+    CHECK_EQ(
+        view.streamingDiagnostics().sourceResolutionPending,
+        previousDiagnostics.sourceResolutionPending);
+    CHECK_EQ(
+        view.streamingDiagnostics().generationSchedulerPending,
+        previousDiagnostics.generationSchedulerPending);
+    CHECK_EQ(
+        view.streamingDiagnostics().generationCompletionsPending,
+        previousDiagnostics.generationCompletionsPending);
+    CHECK_EQ(
+        view.streamingDiagnostics().meshCompletionsPending,
+        previousDiagnostics.meshCompletionsPending);
+    CHECK_EQ(
+        view.streamingDiagnostics().cacheEvictionPending,
+        previousDiagnostics.cacheEvictionPending);
+    CHECK_EQ(
+        view.streamingDiagnostics().retiredWorkPending,
+        previousDiagnostics.retiredWorkPending);
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(preferencePath)
+            .load()
+            .graphics.viewDistanceChunks,
+        2);
+
+    CHECK_EQ(
+        preferences.requestViewDistance(10).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const auto recovered =
+        Rigel::ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
+            preferences, view, &loader);
+
+    CHECK(recovered.has_value());
+    CHECK_EQ(recovered->status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.requested().graphics.viewDistanceChunks, 10);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 10);
+    CHECK_EQ(view.viewDistanceChunks(), 10);
+    CHECK_NE(view.viewDistancePolicy(), previousPolicy);
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            viewDistancePolicy(loader),
+        view.viewDistancePolicy());
+    CHECK_EQ(view.viewDistancePolicy()->generation(), static_cast<uint64_t>(2));
+    CHECK_EQ(
+        view.streamingDiagnostics().plannerReconciliationPending,
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(preferencePath)
+            .load()
+            .graphics.viewDistanceChunks,
+        10);
+}
+
 TEST_CASE(AsyncChunkLoader_ViewPolicyRejectsUninitializedLateConsumer) {
     WorldResources resources;
     World world;

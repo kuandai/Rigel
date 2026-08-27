@@ -572,7 +572,14 @@ ApplicationPreferences::consumePendingViewDistance(
     const auto previousLoaderPolicy = loader
         ? loader->m_viewDistancePolicy
         : std::shared_ptr<const Voxel::ViewDistancePolicy>{};
-    auto previousViewState = view.applyViewDistancePolicy(candidatePolicy);
+    std::optional<Voxel::WorldView::ViewDistancePolicyState>
+        previousViewState;
+    try {
+        previousViewState.emplace(
+            view.applyViewDistancePolicy(candidatePolicy));
+    } catch (const std::exception& error) {
+        return std::optional<PreferenceApplyResult>{publicationFailure(error)};
+    }
     if (loader) {
         loader->applyViewDistancePolicy(candidatePolicy);
     }
@@ -592,7 +599,7 @@ ApplicationPreferences::consumePendingViewDistance(
             ++m_nextViewDistancePolicyGeneration;
             return result;
         }
-        view.restoreViewDistancePolicy(std::move(previousViewState));
+        view.restoreViewDistancePolicy(std::move(*previousViewState));
         if (loader) {
             loader->applyViewDistancePolicy(previousLoaderPolicy);
         }

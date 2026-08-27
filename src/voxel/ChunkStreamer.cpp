@@ -401,7 +401,10 @@ ChunkStreamer::ViewDistancePolicyState ChunkStreamer::applyViewDistancePolicy(
         .lastUnloadDistance = m_lastUnloadDistance,
         .desiredSetRebuildPending = m_desiredSetRebuildPending,
         .worldBoundsReconciliation = m_worldBoundsReconciliation,
-        .diagnostics = m_diagnostics
+        .diagnostics = m_diagnostics,
+        .observedLoaderFailureVersion = m_observedLoaderFailureVersion,
+        .observedLoadFailureVersion = m_observedLoadFailureVersion,
+        .chunkLoadFailureVersion = m_chunkLoadFailureVersion
     };
     StreamingConfig updated = m_config;
     updated.viewDistanceChunks = policy->desiredRadiusChunks();
@@ -411,44 +414,49 @@ ChunkStreamer::ViewDistancePolicyState ChunkStreamer::applyViewDistancePolicy(
     const int previousViewDistance = std::max(0, m_config.viewDistanceChunks);
     const int previousUnloadDistance = std::max(
         previousViewDistance, m_config.unloadDistanceChunks);
-    m_viewDistancePolicy = std::move(policy);
-    m_config.viewDistanceChunks = updated.viewDistanceChunks;
-    m_config.unloadDistanceChunks = updated.unloadDistanceChunks;
-    if (!activeStream) {
+    try {
+        m_viewDistancePolicy = std::move(policy);
+        m_config.viewDistanceChunks = updated.viewDistanceChunks;
+        m_config.unloadDistanceChunks = updated.unloadDistanceChunks;
+        if (!activeStream) {
+            refreshDiagnostics(false);
+            return previous;
+        }
+
+        const int viewDistance = std::max(0, updated.viewDistanceChunks);
+        const int unloadDistance = std::max(
+            viewDistance, updated.unloadDistanceChunks);
+        if (viewDistance == previousViewDistance &&
+            unloadDistance == previousUnloadDistance) {
+            return previous;
+        }
+        if (m_generator) {
+            const bool reconciliationInProgress =
+                m_worldBoundsReconciliation &&
+                m_worldBoundsReconciliation->deferredCursor.has_value();
+            if (!m_worldBoundsReconciliation) {
+                m_worldBoundsReconciliation = PendingWorldBoundsReconciliation{
+                    .replacement = m_generator->definition().bounds,
+                    .replacementSemanticsVersion =
+                        m_generator->semanticsVersion()
+                };
+            }
+            m_worldBoundsReconciliation->retentionCenter = *m_lastCenter;
+            m_worldBoundsReconciliation->retentionRadiusSquared =
+                unloadDistance * unloadDistance;
+            m_worldBoundsReconciliation->revisitFromStart =
+                m_worldBoundsReconciliation->revisitFromStart ||
+                reconciliationInProgress;
+        }
+        m_desiredSetRebuildPending = true;
+        m_lastViewDistance = -1;
+        m_lastUnloadDistance = -1;
         refreshDiagnostics(false);
         return previous;
+    } catch (...) {
+        restoreViewDistancePolicy(std::move(previous));
+        throw;
     }
-
-    const int viewDistance = std::max(0, updated.viewDistanceChunks);
-    const int unloadDistance = std::max(
-        viewDistance, updated.unloadDistanceChunks);
-    if (viewDistance == previousViewDistance &&
-        unloadDistance == previousUnloadDistance) {
-        return previous;
-    }
-    if (m_generator) {
-        const bool reconciliationInProgress =
-            m_worldBoundsReconciliation &&
-            m_worldBoundsReconciliation->deferredCursor.has_value();
-        if (!m_worldBoundsReconciliation) {
-            m_worldBoundsReconciliation = PendingWorldBoundsReconciliation{
-                .replacement = m_generator->definition().bounds,
-                .replacementSemanticsVersion =
-                    m_generator->semanticsVersion()
-            };
-        }
-        m_worldBoundsReconciliation->retentionCenter = *m_lastCenter;
-        m_worldBoundsReconciliation->retentionRadiusSquared =
-            unloadDistance * unloadDistance;
-        m_worldBoundsReconciliation->revisitFromStart =
-            m_worldBoundsReconciliation->revisitFromStart ||
-            reconciliationInProgress;
-    }
-    m_desiredSetRebuildPending = true;
-    m_lastViewDistance = -1;
-    m_lastUnloadDistance = -1;
-    refreshDiagnostics(false);
-    return previous;
 }
 
 void ChunkStreamer::restoreViewDistancePolicy(
@@ -462,6 +470,9 @@ void ChunkStreamer::restoreViewDistancePolicy(
     m_worldBoundsReconciliation =
         std::move(state.worldBoundsReconciliation);
     m_diagnostics = std::move(state.diagnostics);
+    m_observedLoaderFailureVersion = state.observedLoaderFailureVersion;
+    m_observedLoadFailureVersion = state.observedLoadFailureVersion;
+    m_chunkLoadFailureVersion = state.chunkLoadFailureVersion;
 }
 
 void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator) {

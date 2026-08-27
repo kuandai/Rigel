@@ -126,16 +126,28 @@ void WorldView::setRenderConfig(const WorldRenderConfig& config) {
     }
 }
 
-void WorldView::applyViewDistancePolicy(
+WorldView::ViewDistancePolicyState WorldView::applyViewDistancePolicy(
     std::shared_ptr<const ViewDistancePolicy> policy) {
     if (!policy) {
         throw std::invalid_argument(
             "WorldView requires a complete View Distance policy");
     }
-    m_streamer.applyViewDistancePolicy(policy);
+    ViewDistancePolicyState previous{
+        .policy = m_viewDistancePolicy,
+        .renderDistance = m_renderConfig.renderDistance,
+        .streaming = m_streamer.applyViewDistancePolicy(policy)
+    };
     m_renderConfig.renderDistance =
         policy->renderDistanceWorldUnits();
     m_viewDistancePolicy = std::move(policy);
+    return previous;
+}
+
+void WorldView::restoreViewDistancePolicy(
+    ViewDistancePolicyState state) noexcept {
+    m_streamer.restoreViewDistancePolicy(std::move(state.streaming));
+    m_renderConfig.renderDistance = state.renderDistance;
+    m_viewDistancePolicy = std::move(state.policy);
 }
 
 float WorldView::projectionFarPlaneWorldUnits() const {

@@ -1,9 +1,15 @@
 #include "TestFramework.h"
 #include "OpenGLFixture.h"
 
+#include "ApplicationPreferences.h"
 #include "Rigel/Asset/ShaderCompiler.h"
+#include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Voxel/ChunkRenderer.h"
+#include "Rigel/Voxel/StreamingConfig.h"
+#include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldMeshStore.h"
+#include "Rigel/Voxel/WorldResources.h"
+#include "Rigel/Voxel/WorldView.h"
 
 #include <array>
 #include <atomic>
@@ -532,6 +538,71 @@ TEST_CASE(ChunkRenderer_VisibilityTraceRequiresRealNonemptyDraw) {
     records = tracer->snapshot();
     CHECK_EQ(records.size(), static_cast<size_t>(2));
     CHECK(!records.back().stage(ChunkVisibilityStage::FirstDraw).has_value());
+}
+
+TEST_CASE(ChunkRenderer_ViewPolicyBoundaryShrinkCullsRetainedGeometryImmediately) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::World world(resources);
+    Rigel::Voxel::WorldView view(world, resources);
+    StreamingConfig streaming;
+    streaming.workerThreads = 0;
+    view.setStreamConfig(streaming);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_renderer_view_policy_boundary");
+    const auto preferencePath =
+        directory.path() / "user-preferences.yaml";
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 7;
+    Rigel::Preferences::UserPreferencesStore(preferencePath)
+        .saveRequested(requested);
+    Rigel::ApplicationPreferences preferences(preferencePath);
+    preferences.load();
+    preferences.initializeViewDistance(view);
+
+    const ChunkCoord outsideReducedView{7, 0, 0};
+    WorldMeshStore store;
+    store.set(outsideReducedView, makeMesh(3, 3));
+    WorldRenderContext renderContext;
+    renderContext.meshes = &store;
+    renderContext.shader = makeShader();
+    renderContext.cameraPos = glm::vec3(0.0f);
+    renderContext.config = view.renderConfig();
+
+    ChunkRenderer renderer;
+    renderer.render(renderContext);
+    const auto initiallyInstalled = store.snapshot(outsideReducedView);
+    CHECK(initiallyInstalled.has_value());
+    CHECK(renderer.hasDrawnMesh(
+        store.storeId(), outsideReducedView, initiallyInstalled->revision));
+
+    CHECK_EQ(
+        preferences.requestViewDistance(2).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    store.set(outsideReducedView, makeMesh(3, 3));
+    const auto queuedButNotConsumed = store.snapshot(outsideReducedView);
+    CHECK(queuedButNotConsumed.has_value());
+    renderContext.config = view.renderConfig();
+    renderer.render(renderContext);
+    CHECK(renderer.hasDrawnMesh(
+        store.storeId(), outsideReducedView, queuedButNotConsumed->revision));
+
+    const auto applied = preferences.consumePendingViewDistance(view);
+    CHECK(applied.has_value());
+    CHECK_EQ(applied->status, Rigel::PreferenceApplyStatus::Applied);
+    store.set(outsideReducedView, makeMesh(3, 3));
+    const auto retainedAfterBoundary = store.snapshot(outsideReducedView);
+    CHECK(retainedAfterBoundary.has_value());
+    renderContext.config = view.renderConfig();
+
+    renderer.render(renderContext);
+
+    CHECK(store.contains(outsideReducedView));
+    CHECK_EQ(renderer.cachedMeshCount(), static_cast<size_t>(1));
+    CHECK(!renderer.hasDrawnMesh(
+        store.storeId(), outsideReducedView, retainedAfterBoundary->revision));
 }
 
 TEST_CASE(ChunkRenderer_RemovedTraceIsNotDrawnByReplacementMesh) {

@@ -101,8 +101,15 @@ public:
 private:
     friend class ::Rigel::ApplicationPreferences;
 
-    void applyViewDistancePolicy(
+    struct ViewDistancePolicyState {
+        std::shared_ptr<const ViewDistancePolicy> policy;
+        float renderDistance = 0.0f;
+        ChunkStreamer::ViewDistancePolicyState streaming;
+    };
+
+    ViewDistancePolicyState applyViewDistancePolicy(
         std::shared_ptr<const ViewDistancePolicy> policy);
+    void restoreViewDistancePolicy(ViewDistancePolicyState state) noexcept;
 
     World* m_world = nullptr;
     WorldResources* m_resources = nullptr;

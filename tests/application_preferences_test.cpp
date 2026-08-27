@@ -2,6 +2,7 @@
 
 #include "ApplicationPreferences.h"
 #include "FrameRendererTestAccess.h"
+#include "GeneratorDefinitionTestRegistry.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/FrameRenderer.h"
@@ -397,6 +398,57 @@ public:
     Rigel::Voxel::WorldView view;
 };
 
+std::vector<uint64_t> workMetricValues(
+    const Rigel::Voxel::ChunkStreamer::WorkMetrics& metrics) {
+    return {
+        metrics.generationJobsStarted,
+        metrics.generationJobsCompleted,
+        metrics.generationJobsCancelled,
+        metrics.generationJobsFailed,
+        metrics.chunkLoadRequestsStarted,
+        metrics.meshJobsStarted,
+        metrics.meshJobsCompleted,
+        metrics.meshJobsAccepted,
+        metrics.meshJobsRejectedStale,
+        metrics.meshJobsFailed,
+        metrics.meshInvalidations,
+        metrics.meshRequestsCoalesced,
+        metrics.desiredBuildCoordinatesInspected,
+        metrics.desiredBuildCoordinatesSkippedByWorldBounds,
+        metrics.schedulerCoordinatesInspected,
+        metrics.cacheEvictionCoordinatesInspected,
+        metrics.residentEvictionCoordinatesInspected,
+        metrics.deferredEvictionCoordinatesInspected,
+        metrics.lastUpdateDesiredBuildCoordinatesInspected,
+        metrics.lastUpdateDesiredBuildCoordinatesSkippedByWorldBounds,
+        metrics.lastUpdateSchedulerCoordinatesInspected,
+        metrics.lastUpdateCacheEvictionCoordinatesInspected,
+        metrics.lastUpdateResidentEvictionCoordinatesInspected,
+        metrics.lastUpdateDeferredEvictionCoordinatesInspected
+    };
+}
+
+void installEmptyDesiredSphere(
+    Rigel::Voxel::World& world,
+    int radius,
+    uint32_t semanticsVersion) {
+    const int radiusSquared = radius * radius;
+    for (int z = -radius; z <= radius; ++z) {
+        for (int y = -radius; y <= radius; ++y) {
+            for (int x = -radius; x <= radius; ++x) {
+                if (x * x + y * y + z * z > radiusSquared) {
+                    continue;
+                }
+                auto& chunk = world.chunkManager().getOrCreateChunk({x, y, z});
+                chunk.setWorldGenVersion(semanticsVersion);
+                chunk.setLoadedFromDisk(true);
+                chunk.clearDirty();
+                chunk.clearPersistDirty();
+            }
+        }
+    }
+}
+
 } // namespace
 
 TEST_CASE(ApplicationPreferences_StartupViewDistanceUsesLoadedGlobalRequest) {
@@ -534,6 +586,78 @@ TEST_CASE(ApplicationPreferences_ViewDistancePublicationOutcomesMatchSession) {
             .load()
             .graphics.viewDistanceChunks,
         10);
+}
+
+TEST_CASE(ApplicationPreferences_UnpublishedActiveViewDistanceRestoresPlannerState) {
+    ViewDistanceFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 3;
+    auto preferences = fixture.owner(requested);
+    auto generator = Rigel::Test::makeWorldGeneratorFixture(
+        fixture.resources.registry(),
+        Rigel::Test::generatorDefinitionFixture(),
+        17,
+        Rigel::Voxel::kGeneratorSemanticsVersion);
+    fixture.world.setGenerator(generator);
+    fixture.view.setGenerator(generator);
+    installEmptyDesiredSphere(
+        fixture.world, requested.graphics.viewDistanceChunks,
+        generator->semanticsVersion());
+    preferences.initializeViewDistance(fixture.view);
+    fixture.view.markSpawnDiscoveryComplete();
+    fixture.view.updateStreaming(glm::vec3(0.0f));
+    for (int update = 0;
+         update < 8 &&
+         fixture.view.streamingDiagnostics().plannerReconciliationPending > 0;
+         ++update) {
+        fixture.view.updateStreaming(glm::vec3(0.0f));
+    }
+    fixture.view.updateStreaming(glm::vec3(0.0f));
+    CHECK_EQ(
+        fixture.view.streamingMetrics().
+            lastUpdateDesiredBuildCoordinatesInspected,
+        static_cast<uint64_t>(0));
+    CHECK_EQ(
+        fixture.view.streamingDiagnostics().plannerReconciliationPending,
+        static_cast<size_t>(0));
+
+    const auto beforeMetrics = workMetricValues(
+        fixture.view.streamingMetrics());
+    const auto beforeDiagnostics = fixture.view.streamingDiagnostics();
+    Rigel::Preferences::detail::
+        setUserPreferencesBeforePublicationHookForTesting(
+            &failBeforePublication);
+    CHECK_EQ(
+        preferences.requestViewDistance(2).status,
+        Rigel::PreferenceApplyStatus::Applied);
+
+    const auto result =
+        preferences.consumePendingViewDistance(fixture.view);
+
+    CHECK(result.has_value());
+    CHECK_EQ(result->status, Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 3);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 3);
+    CHECK_EQ(workMetricValues(fixture.view.streamingMetrics()), beforeMetrics);
+    CHECK_EQ(
+        fixture.view.streamingDiagnostics().plannerReconciliationPending,
+        beforeDiagnostics.plannerReconciliationPending);
+    CHECK_EQ(
+        fixture.view.streamingDiagnostics().sourceResolutionPending,
+        beforeDiagnostics.sourceResolutionPending);
+    CHECK_EQ(
+        fixture.view.streamingDiagnostics().generationSchedulerPending,
+        beforeDiagnostics.generationSchedulerPending);
+    CHECK_EQ(
+        fixture.view.streamingDiagnostics().retiredWorkPending,
+        beforeDiagnostics.retiredWorkPending);
+
+    fixture.view.updateStreaming(glm::vec3(0.0f));
+
+    CHECK_EQ(workMetricValues(fixture.view.streamingMetrics()), beforeMetrics);
+    CHECK_EQ(
+        fixture.view.streamingDiagnostics().plannerReconciliationPending,
+        static_cast<size_t>(0));
 }
 
 TEST_CASE(ApplicationPreferences_ViewDistancePreparationFailureDoesNotMutateSession) {

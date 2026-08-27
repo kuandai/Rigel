@@ -1119,7 +1119,7 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
 }
 
-TEST_CASE(AsyncChunkLoader_SharesThePreparedViewDistancePolicy) {
+TEST_CASE(AsyncChunkLoader_ViewPolicyDrivesStartupAndLivePrefetchAdmissions) {
     WorldResources resources;
     World world;
     world.initialize(resources);
@@ -1138,12 +1138,15 @@ TEST_CASE(AsyncChunkLoader_SharesThePreparedViewDistancePolicy) {
     StreamingConfig streaming;
     streaming.workerThreads = 0;
     view.setStreamConfig(streaming);
+    loader.setMaxInFlightRegions(0);
+    loader.setPrefetchRadius(0);
+    loader.setPrefetchPerRequest(1);
     Rigel::Test::TemporaryDirectory directory(
         "rigel_loader_view_policy");
     const auto preferencePath =
         directory.path() / "user-preferences.yaml";
     Rigel::Preferences::UserPreferences requested;
-    requested.graphics.viewDistanceChunks = 16;
+    requested.graphics.viewDistanceChunks = 2;
     Rigel::Preferences::UserPreferencesStore(preferencePath)
         .saveRequested(requested);
     Rigel::ApplicationPreferences preferences(preferencePath);
@@ -1157,6 +1160,38 @@ TEST_CASE(AsyncChunkLoader_SharesThePreparedViewDistancePolicy) {
     CHECK_EQ(policy, view.viewDistancePolicy());
     CHECK_EQ(policy->preloadRadiusRegions(), 1);
     CHECK_EQ(policy->generation(), static_cast<uint64_t>(1));
+
+    CHECK_EQ(loader.request(makeLoadRequest({0, 0, 0})),
+             ChunkLoadRequestResult::Queued);
+    auto startup = loader.metrics();
+    CHECK_EQ(startup.directOrigin.logicalAdmissions, static_cast<uint64_t>(1));
+    CHECK_EQ(startup.speculativeOrigin.logicalAdmissions,
+             policy->preloadRegionsPerRequest());
+    std::vector<ChunkLoadCompletion> resolved;
+    CHECK(drainRegionJobsUntilSettled(loader, resolved));
+
+    CHECK_EQ(
+        preferences.requestViewDistance(16).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const auto liveResult =
+        preferences.consumePendingViewDistance(view, &loader);
+    CHECK(liveResult.has_value());
+    CHECK_EQ(liveResult->status, Rigel::PreferenceApplyStatus::Applied);
+    const auto livePolicy =
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            viewDistancePolicy(loader);
+    CHECK_NE(livePolicy, policy);
+    CHECK_EQ(livePolicy, view.viewDistancePolicy());
+    CHECK_EQ(livePolicy->preloadRadiusRegions(), 1);
+
+    CHECK_EQ(loader.request(makeLoadRequest({160, 0, 0})),
+             ChunkLoadRequestResult::Queued);
+    const auto live = loader.metrics();
+    CHECK_EQ(live.directOrigin.logicalAdmissions, static_cast<uint64_t>(2));
+    CHECK_EQ(
+        live.speculativeOrigin.logicalAdmissions,
+        policy->preloadRegionsPerRequest() +
+            livePolicy->preloadRegionsPerRequest());
 }
 
 TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {

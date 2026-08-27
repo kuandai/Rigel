@@ -500,7 +500,7 @@ void ApplicationPreferences::initializeViewDistance(
         requestedChunks,
         regionSpan,
         m_nextViewDistancePolicyGeneration++);
-    view.applyViewDistancePolicy(policy);
+    static_cast<void>(view.applyViewDistancePolicy(policy));
     if (loader) {
         loader->applyViewDistancePolicy(policy);
     }
@@ -559,7 +559,10 @@ ApplicationPreferences::consumePendingViewDistance(
 
     const int previousEffective = m_effectiveViewDistanceChunks;
     const auto previousPolicy = m_effectiveViewDistancePolicy;
-    view.applyViewDistancePolicy(candidatePolicy);
+    const auto previousLoaderPolicy = loader
+        ? loader->m_viewDistancePolicy
+        : std::shared_ptr<const Voxel::ViewDistancePolicy>{};
+    auto previousViewState = view.applyViewDistancePolicy(candidatePolicy);
     if (loader) {
         loader->applyViewDistancePolicy(candidatePolicy);
     }
@@ -579,9 +582,9 @@ ApplicationPreferences::consumePendingViewDistance(
             ++m_nextViewDistancePolicyGeneration;
             return result;
         }
-        view.applyViewDistancePolicy(previousPolicy);
+        view.restoreViewDistancePolicy(std::move(previousViewState));
         if (loader) {
-            loader->applyViewDistancePolicy(previousPolicy);
+            loader->applyViewDistancePolicy(previousLoaderPolicy);
         }
         m_effectiveViewDistancePolicy = previousPolicy;
         m_effectiveViewDistanceChunks = previousEffective;

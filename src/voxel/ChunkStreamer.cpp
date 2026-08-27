@@ -386,36 +386,44 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     refreshDiagnostics(false);
 }
 
-void ChunkStreamer::applyViewDistancePolicy(
+ChunkStreamer::ViewDistancePolicyState ChunkStreamer::applyViewDistancePolicy(
     std::shared_ptr<const ViewDistancePolicy> policy) {
     if (!policy) {
         throw std::invalid_argument(
             "ChunkStreamer requires a complete View Distance policy");
     }
+    ViewDistancePolicyState previous{
+        .policy = m_viewDistancePolicy,
+        .viewDistanceChunks = m_config.viewDistanceChunks,
+        .unloadDistanceChunks = m_config.unloadDistanceChunks,
+        .lastViewDistance = m_lastViewDistance,
+        .lastUnloadDistance = m_lastUnloadDistance,
+        .desiredSetRebuildPending = m_desiredSetRebuildPending,
+        .worldBoundsReconciliation = m_worldBoundsReconciliation,
+        .diagnostics = m_diagnostics
+    };
     StreamingConfig updated = m_config;
     updated.viewDistanceChunks = policy->desiredRadiusChunks();
     updated.unloadDistanceChunks = policy->unloadRadiusChunks();
     const bool activeStream =
         m_initialStreamingBegun && m_lastCenter.has_value();
-    if (!activeStream) {
-        m_viewDistancePolicy = std::move(policy);
-        setConfig(updated);
-        return;
-    }
-
     const int previousViewDistance = std::max(0, m_config.viewDistanceChunks);
     const int previousUnloadDistance = std::max(
         previousViewDistance, m_config.unloadDistanceChunks);
-    const int viewDistance = std::max(0, updated.viewDistanceChunks);
-    const int unloadDistance = std::max(
-        viewDistance, updated.unloadDistanceChunks);
     m_viewDistancePolicy = std::move(policy);
     m_config.viewDistanceChunks = updated.viewDistanceChunks;
     m_config.unloadDistanceChunks = updated.unloadDistanceChunks;
+    if (!activeStream) {
+        refreshDiagnostics(false);
+        return previous;
+    }
 
+    const int viewDistance = std::max(0, updated.viewDistanceChunks);
+    const int unloadDistance = std::max(
+        viewDistance, updated.unloadDistanceChunks);
     if (viewDistance == previousViewDistance &&
         unloadDistance == previousUnloadDistance) {
-        return;
+        return previous;
     }
     if (m_generator) {
         const bool reconciliationInProgress =
@@ -439,6 +447,20 @@ void ChunkStreamer::applyViewDistancePolicy(
     m_lastViewDistance = -1;
     m_lastUnloadDistance = -1;
     refreshDiagnostics(false);
+    return previous;
+}
+
+void ChunkStreamer::restoreViewDistancePolicy(
+    ViewDistancePolicyState state) noexcept {
+    m_viewDistancePolicy = std::move(state.policy);
+    m_config.viewDistanceChunks = state.viewDistanceChunks;
+    m_config.unloadDistanceChunks = state.unloadDistanceChunks;
+    m_lastViewDistance = state.lastViewDistance;
+    m_lastUnloadDistance = state.lastUnloadDistance;
+    m_desiredSetRebuildPending = state.desiredSetRebuildPending;
+    m_worldBoundsReconciliation =
+        std::move(state.worldBoundsReconciliation);
+    m_diagnostics = std::move(state.diagnostics);
 }
 
 void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
@@ -1153,17 +1175,25 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         for (const ChunkCoord& coord : outsideMeshRetention) {
             retirePendingMesh(coord);
             m_priorityMeshRequests.erase(coord);
+            auto stateIt = m_states.find(coord);
+            if (stateIt != m_states.end() &&
+                stateIt->second == ChunkState::QueuedMesh) {
+                m_states.erase(stateIt);
+            }
         }
         for (auto& [coord, flight] : m_meshInFlight) {
             ++schedulerCoordinatesInspected;
-            if (!flight.replacementPending) {
-                continue;
-            }
             if (m_desiredSet.find(coord) == m_desiredSet.end() &&
                 distanceSquared(center, coord) > unloadRadiusSq) {
+                flight.obsolete = true;
                 setReplacementPending(coord, flight, false);
                 flight.prioritized = false;
                 m_priorityMeshRequests.erase(coord);
+                auto stateIt = m_states.find(coord);
+                if (stateIt != m_states.end() &&
+                    stateIt->second == ChunkState::QueuedMesh) {
+                    m_states.erase(stateIt);
+                }
             }
         }
         reprioritizePendingMeshes(schedulerCoordinatesInspected);
@@ -1221,42 +1251,21 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                     m_visibilityTracer->traces(coord)) {
                     m_meshStore->endCameraVisibilityTrace(coord);
                 }
+                auto stateIt = m_states.find(coord);
+                if (stateIt != m_states.end()) {
+                    if (stateIt->second == ChunkState::QueuedGen) {
+                        retireGeneration(coord);
+                    } else if ((stateIt->second == ChunkState::QueuedMesh ||
+                                stateIt->second == ChunkState::GenerationFailed) &&
+                               !retainedMesh) {
+                        m_states.erase(stateIt);
+                    }
+                }
+                cancelPendingLoad(coord);
                 queueLoadedNeighbors(coord);
             }
         }
         m_desiredSetRebuildPending = false;
-        for (auto it = m_states.begin(); it != m_states.end(); ) {
-            bool retainedMeshRequest =
-                it->second == ChunkState::QueuedMesh &&
-                dirtyMeshPriority(it->first).has_value();
-            if ((it->second == ChunkState::QueuedGen ||
-                 it->second == ChunkState::QueuedMesh ||
-                 it->second == ChunkState::GenerationFailed) &&
-                m_desiredSet.find(it->first) == m_desiredSet.end() &&
-                !retainedMeshRequest) {
-                if (it->second == ChunkState::QueuedGen) {
-                    const ChunkCoord coord = it->first;
-                    ++it;
-                    retireGeneration(coord);
-                    continue;
-                }
-                it = m_states.erase(it);
-                continue;
-            }
-            ++it;
-        }
-
-        if (!m_loadPending.empty()) {
-            for (auto it = m_loadPending.begin(); it != m_loadPending.end(); ) {
-                if (m_desiredSet.find(it->first) == m_desiredSet.end()) {
-                    ChunkCoord coord = it->first;
-                    ++it;
-                    cancelPendingLoad(coord);
-                } else {
-                    ++it;
-                }
-            }
-        }
     }
 
     residentEvictionCoordinatesInspected +=

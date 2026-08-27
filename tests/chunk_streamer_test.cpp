@@ -503,6 +503,13 @@ struct ChunkStreamerTestAccess {
         return streamer.evictChunk(coord);
     }
 
+    static bool retainReadyStateAfterFailedPersistence(
+        ChunkStreamer& streamer,
+        ChunkCoord coord) {
+        streamer.m_states[coord] = ChunkStreamer::ChunkState::ReadyMesh;
+        return !streamer.evictChunk(coord);
+    }
+
     static void reset(ChunkStreamer& streamer) {
         streamer.reset();
     }
@@ -596,6 +603,72 @@ TEST_CASE(ChunkStreamer_ActiveViewPolicyDefersCancellationUntilUpdate) {
     CHECK(streamer.workMetrics().
               lastUpdateResidentEvictionCoordinatesInspected <=
           static_cast<uint64_t>(64));
+}
+
+TEST_CASE(ChunkStreamer_ViewPolicyShrinkBoundsAggregateRetainedStateWork) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, generator);
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 3;
+    streaming.unloadDistanceChunks = 4;
+    streaming.updateBudgetPerFrame = 0;
+    streaming.workerThreads = 0;
+    streamer.setConfig(streaming);
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::applyViewDistancePolicy(
+        streamer, 3);
+    streamer.setChunkLoader([](ChunkLoadRequest) {
+        return ChunkLoadRequestResult::Queued;
+    });
+    streamer.update(glm::vec3(0.0f));
+
+    streamer.setChunkEvictionCallback([](ChunkCoord) { return false; });
+    constexpr int retainedStateCount = 256;
+    for (int index = 0; index < retainedStateCount; ++index) {
+        const ChunkCoord coord{1000 + index, 0, 0};
+        Chunk& chunk = manager.getOrCreateChunk(coord);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
+        chunk.setLoadedFromDisk(true);
+        chunk.clearDirty();
+        chunk.markPersistDirty();
+        CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::
+                  retainReadyStateAfterFailedPersistence(streamer, coord));
+    }
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            evictionRetryCount(streamer),
+        static_cast<size_t>(retainedStateCount));
+
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::applyViewDistancePolicy(
+        streamer, 2, 2);
+    streamer.update(glm::vec3(0.0f));
+
+    const auto& work = streamer.workMetrics();
+    constexpr uint64_t maximumDesiredBuildCoordinates = 125;
+    constexpr uint64_t maximumTransitionSchedulerCoordinates = 128;
+    constexpr uint64_t maximumResidentReconciliationCoordinates = 64;
+    constexpr uint64_t maximumDeferredEvictionCoordinates = 64;
+    const uint64_t aggregateTransitionCoordinates =
+        work.lastUpdateDesiredBuildCoordinatesInspected +
+        work.lastUpdateSchedulerCoordinatesInspected +
+        work.lastUpdateResidentEvictionCoordinatesInspected +
+        work.lastUpdateDeferredEvictionCoordinatesInspected;
+    CHECK(work.lastUpdateSchedulerCoordinatesInspected <=
+          maximumTransitionSchedulerCoordinates);
+    CHECK(work.lastUpdateResidentEvictionCoordinatesInspected <=
+          maximumResidentReconciliationCoordinates);
+    CHECK(work.lastUpdateDeferredEvictionCoordinatesInspected <=
+          maximumDeferredEvictionCoordinates);
+    CHECK(aggregateTransitionCoordinates <=
+          maximumDesiredBuildCoordinates +
+              maximumTransitionSchedulerCoordinates +
+              maximumResidentReconciliationCoordinates +
+              maximumDeferredEvictionCoordinates);
+    CHECK_EQ(manager.loadedChunkCount(),
+             static_cast<size_t>(retainedStateCount));
 }
 
 TEST_CASE(ChunkStreamer_RepeatedViewPoliciesKeepOnlyTheLatestTransition) {

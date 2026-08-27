@@ -208,10 +208,6 @@ private:
     friend class WorldView;
     friend struct detail::ChunkStreamerTestAccess;
 
-    void reset();
-    void applyViewDistancePolicy(
-        std::shared_ptr<const ViewDistancePolicy> policy);
-
     static constexpr int kPaddedSize = Chunk::SIZE + 2;
     static constexpr int kPaddedVolume = kPaddedSize * kPaddedSize * kPaddedSize;
 
@@ -304,6 +300,23 @@ private:
         bool forceRemeshIntersecting = false;
         bool revisitFromStart = false;
     };
+
+    struct ViewDistancePolicyState {
+        std::shared_ptr<const ViewDistancePolicy> policy;
+        int viewDistanceChunks = 0;
+        int unloadDistanceChunks = 0;
+        int lastViewDistance = -1;
+        int lastUnloadDistance = -1;
+        bool desiredSetRebuildPending = false;
+        std::optional<PendingWorldBoundsReconciliation>
+            worldBoundsReconciliation;
+        StreamingDiagnosticSnapshot diagnostics;
+    };
+
+    void reset();
+    ViewDistancePolicyState applyViewDistancePolicy(
+        std::shared_ptr<const ViewDistancePolicy> policy);
+    void restoreViewDistancePolicy(ViewDistancePolicyState state) noexcept;
 
     enum class PendingWorkKind : uint8_t {
         None,

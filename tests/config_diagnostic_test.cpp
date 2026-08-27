@@ -3,7 +3,6 @@
 #include "Rigel/Persistence/PersistenceConfig.h"
 #include "Rigel/Render/RenderConfigProvider.h"
 #include "Rigel/Voxel/StreamingConfig.h"
-#include "Rigel/Voxel/WorldConfigProvider.h"
 
 #include <spdlog/logger.h>
 #include <spdlog/sinks/ostream_sink.h>
@@ -79,107 +78,6 @@ std::string readFile(const std::filesystem::path& path) {
 
 } // namespace
 
-TEST_CASE(WorldGenConfig_ReportsUnknownKeyAndSource) {
-    LogCapture logs;
-    WorldGenConfig config;
-
-    config.applyYaml(
-        "world-settings.yaml",
-        "terrain:\n"
-        "  height_variaton: 20.0\n"
-    );
-
-    const std::string output = logs.output();
-    CHECK(output.find("terrain.height_variaton") != std::string::npos);
-    CHECK(output.find("world-settings.yaml") != std::string::npos);
-}
-
-TEST_CASE(WorldGenConfig_ReportsRemovedKeysAndIgnoresUnknownStages) {
-    LogCapture logs;
-    WorldGenConfig config;
-
-    config.applyYaml(
-        "legacy-world-settings.yaml",
-        "world:\n"
-        "  lava_level: -16\n"
-        "climate:\n"
-        "  elevation_lapse: 0.02\n"
-        "caves:\n"
-        "  enabled: false\n"
-        "  sample_step: 8\n"
-        "generation:\n"
-        "  stages:\n"
-        "    terrain_density: false\n"
-        "    post_process: true\n"
-        "    terrain_densitty: false\n"
-    );
-
-    const std::string output = logs.output();
-    CHECK(output.find("world.lava_level") != std::string::npos);
-    CHECK(output.find("climate.elevation_lapse") != std::string::npos);
-    CHECK(output.find("caves.enabled") != std::string::npos);
-    CHECK(output.find("caves.sample_step") != std::string::npos);
-    CHECK(output.find("generation.stages.post_process") != std::string::npos);
-    CHECK(output.find("generation.stages.terrain_densitty") != std::string::npos);
-    CHECK(output.find("legacy-world-settings.yaml") != std::string::npos);
-    CHECK(!config.isStageEnabled("terrain_density"));
-    CHECK(!config.isStageEnabled("post_process"));
-    CHECK(!config.isStageEnabled("terrain_densitty"));
-    CHECK_EQ(config.stageEnabled.size(), static_cast<size_t>(1));
-}
-
-TEST_CASE(WorldGenConfig_BooleanValuesAreStrictAndAtomic) {
-    WorldGenConfig config;
-    config.seed = 7;
-    config.terrain.baseHeight = 3.0f;
-    config.flags["retained"] = true;
-
-    config.applyYaml(
-        "canonical-booleans.yaml",
-        "flags:\n"
-        "  enabled: true\n"
-        "  disabled: false\n"
-        "generation:\n"
-        "  stages:\n"
-        "    caves: false\n");
-    CHECK(config.isFlagEnabled("enabled"));
-    CHECK(!config.isFlagEnabled("disabled"));
-    CHECK(!config.isStageEnabled("caves"));
-
-    for (const std::string& invalid : {
-             std::string("TRUE"),
-             std::string("False"),
-             std::string("yes"),
-             std::string("maybe"),
-             std::string("[true]")}) {
-        const WorldGenConfig before = config;
-        std::string diagnostic;
-        try {
-            config.applyYaml(
-                "invalid-boolean.yaml",
-                "seed: 99\n"
-                "terrain:\n"
-                "  base_height: 12.0\n"
-                "flags:\n"
-                "  invalid: " + invalid + "\n");
-        } catch (const std::invalid_argument& error) {
-            diagnostic = error.what();
-        }
-        CHECK(
-            diagnostic.find("flags.invalid") != std::string::npos);
-        CHECK(
-            diagnostic.find("invalid-boolean.yaml") != std::string::npos);
-        CHECK(
-            diagnostic.find("expected boolean 'true' or 'false'") !=
-            std::string::npos);
-        CHECK_EQ(config.seed, before.seed);
-        CHECK_NEAR(
-            config.terrain.baseHeight, before.terrain.baseHeight, 0.001f);
-        CHECK_EQ(config.flags, before.flags);
-        CHECK_EQ(config.stageEnabled, before.stageEnabled);
-    }
-}
-
 TEST_CASE(RenderConfig_RejectsInvalidBooleanWithFullPath) {
     Rigel::Render::RenderConfigProvider provider;
     provider.addSource(std::make_unique<NamedConfigSource>(
@@ -251,14 +149,13 @@ TEST_CASE(Configuration_ValidKeysAreQuiet) {
     LogCapture logs;
     const std::filesystem::path configDirectory =
         std::filesystem::path(__FILE__).parent_path().parent_path() / "assets/config";
-    const std::filesystem::path worldPath = configDirectory / "world_generation.yaml";
+    const std::filesystem::path streamingPath = configDirectory / "streaming.yaml";
     const std::filesystem::path renderPath = configDirectory / "render.yaml";
     const std::filesystem::path persistencePath = configDirectory / "persistence.yaml";
 
-    WorldGenConfig worldConfig;
-    worldConfig.applyYaml(worldPath.string().c_str(), readFile(worldPath));
     StreamingConfig streamingConfig;
-    streamingConfig.applyYaml(worldPath.string().c_str(), readFile(worldPath));
+    streamingConfig.applyYaml(
+        streamingPath.string().c_str(), readFile(streamingPath));
 
     Rigel::Render::RenderConfigProvider renderProvider;
     renderProvider.addSource(std::make_unique<NamedConfigSource>(

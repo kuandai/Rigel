@@ -1,8 +1,7 @@
 # Configuration System
 
-This document describes how Rigel loads and merges runtime configuration
-(world generation, rendering, and persistence). It reflects the current
-implementation and the on-disk configuration files shipped with the project.
+This document describes Rigel's current preference, streaming, rendering,
+persistence, and generator-definition configuration paths.
 
 ---
 
@@ -11,7 +10,7 @@ implementation and the on-disk configuration files shipped with the project.
 - [Overview](#overview)
 - [Global User Preferences](#global-user-preferences)
 - [Config Sources and Precedence](#config-sources-and-precedence)
-  - [World Generation](#world-generation)
+  - [Generator Definitions and Streaming](#generator-definitions-and-streaming)
   - [Rendering](#rendering)
   - [Persistence](#persistence)
 - [Config Provider and Sources](#config-provider-and-sources)
@@ -27,11 +26,12 @@ implementation and the on-disk configuration files shipped with the project.
 
 ## Overview
 
-Rigel uses layered configuration for remaining runtime policy. Each layered
-type is loaded from a stack of sources, and later sources override earlier
-values. Configs are read once during application bootstrap. Generator content
-is separate: a new world resolves one strict named asset, while an existing
-world loads only its save-owned canonical snapshot.
+Rigel uses layered configuration for the remaining streaming, rendering, and
+persistence policy. Each layered type is loaded from a fixed stack of sources,
+and later sources override earlier values. Configs are read once during
+application bootstrap. Generator content is separate: a new world resolves one
+strict named asset, while an existing world loads only its save-owned canonical
+snapshot.
 
 Fields merge according to their YAML shape:
 
@@ -49,10 +49,8 @@ Three layered config types are supported today:
 - `PersistenceConfig` (save/load format and provider options)
 
 Typed providers load each layered subsystem's settings from YAML input using
-rapidyaml. `Voxel::WorldConfigProvider` currently supplies only
-`StreamingConfig` to production bootstrap. It follows available overlay routing
-to retain streaming precedence but never applies legacy generation fields.
-Rendering is loaded by
+rapidyaml. `Voxel::WorldConfigProvider` supplies only `StreamingConfig` to
+production bootstrap and ignores unrelated top-level keys. Rendering is loaded by
 `Render::RenderConfigProvider`, and persistence by
 `Persistence::PersistenceConfigProvider`. Each subsystem's bootstrap function
 uses the shared standard-source builder, but the typed provider remains the
@@ -150,15 +148,14 @@ not enumerate or load installed generator definitions.
 
 Streaming sources (in order):
 
-1. `assets/config/world_generation.yaml` (embedded as `raw/world_config`)
-2. `config/world_generation.yaml`
-3. `world_generation.yaml`
-4. `config/worlds/<worldId>/world_generation.yaml`
+1. `assets/config/streaming.yaml` (embedded as `raw/streaming_config`)
+2. `config/streaming.yaml`
+3. `streaming.yaml`
+4. `config/worlds/<worldId>/streaming.yaml`
 
-Only streaming fields from these sources affect production. Opening a world may
-follow the legacy shell's `flags` and `overlays` to apply available streaming
-values, but those files are never generator input and unavailable installed
-generator content is irrelevant to reload.
+These sources contain only streaming policy. Generator declarations, flags,
+overlays, and stage lists are not interpreted by this path. Unavailable
+installed generator content is irrelevant to published-world reload.
 
 ### Rendering
 
@@ -184,29 +181,14 @@ Sources (in order):
 
 Each typed provider aggregates neutral `Config::IConfigSource` instances:
 
-- `EmbeddedConfigSource` reads an embedded raw asset (e.g. `raw/world_config`).
+- `EmbeddedConfigSource` reads an embedded raw asset (e.g.
+  `raw/streaming_config`).
 - `FileConfigSource` reads a file from disk.
 
-Each source provides:
-
-- `load()` -> full YAML file content.
-- `loadPath(path)` -> resolution of overlays declared by that source.
-
-Overlay resolution has two behaviors:
-
-- For embedded sources, `assets/` is stripped and the file is fetched from the
-  embedded `ResourceRegistry` (e.g. `assets/config/worldgen_overlays/no_carvers.yaml`).
-- For file sources, relative paths are resolved against the source file's
-  directory (e.g. `config/world_generation.yaml` can reference
-  `worldgen_overlays/no_carvers.yaml`).
-
-Each source and its overlays form one precedence layer. A source's base YAML is
-applied first, followed by its overlays in declaration order. Loading then
-continues with the next source, so project-root and per-world values cannot be
-overridden by an overlay from a lower-precedence source. Overlay paths are
-resolved only by the source that declared them.
-The streaming-only load skips unavailable overlay content. Generator
-definitions do not use this overlay mechanism.
+Each source provides its complete YAML document and a name used in validation
+errors. Providers prepare and validate a replacement value for each available
+source before publishing it as the input to the next layer. There is no
+cross-file overlay path or conditional flag mechanism.
 
 ---
 
@@ -243,8 +225,8 @@ The seed and source revision are deliberately absent from the generator
 snapshot. The seed and evaluator semantics version are applied from
 `WorldSettings` when the snapshot is decoded; source revision remains provenance
 only. Snapshot
-serialization also omits flags, overlays, aliases, comments, and inactive
-legacy scalar terrain inputs and graph nodes unreachable from runtime outputs.
+serialization also omits aliases, comments, authoring-only metadata, and graph
+nodes unreachable from runtime outputs.
 Snapshot parsing is strict and accepts only the canonical representation and
 supported schema/semantics versions.
 
@@ -272,7 +254,7 @@ definitions are validated as one set, and IDs are unique across that set.
 The canonical save snapshot contains normalized effective runtime data. It
 sorts keyed content, retains only graph nodes reachable from terrain and enabled
 cave outputs, and omits author metadata, aliases, comments, overlays, flags,
-inactive sections, and legacy scalar terrain forms. The evaluator consumes the
+inactive sections, and noncanonical scalar terrain forms. The evaluator consumes the
 same `GeneratorDefinitionData` represented by those bytes.
 
 Engine code derives the fixed stage sequence: global climate, local climate,
@@ -285,9 +267,8 @@ sections; there is no author-facing pipeline or simple terrain mode.
 ## Streaming Config
 
 `StreamingConfig` owns runtime chunk loading, generation, and meshing schedule
-settings under the `streaming` key. It uses the world generation and streaming
-source order above so existing project and per-world overrides retain their
-precedence.
+settings under the `streaming` key. It uses the dedicated streaming source
+order above.
 
 | Key | Type | Code fallback | Notes |
 | --- | --- | --- | --- |
@@ -482,14 +463,12 @@ it carries objects such as the block registry and CR settings after bootstrap.
 Per-world overrides are resolved by world ID. The default world ID is numeric
 and used directly in the override paths:
 
-- `config/worlds/<worldId>/world_generation.yaml`
+- `config/worlds/<worldId>/streaming.yaml`
 - `config/worlds/<worldId>/render.yaml`
 - `config/worlds/<worldId>/persistence.yaml`
 
 These files are optional and only override fields they define. As the last
-source layer, they have the highest precedence. Only the world-generation
-file's streaming fields affect production bootstrap; its legacy generation
-fields do not affect either new or published worlds.
+source layer, they have the highest precedence.
 
 ---
 
@@ -500,8 +479,8 @@ fields do not affect either new or published worlds.
 - Validation is implemented by concrete owners rather than one generic schema
   engine. Generator definitions and save-owned settings are strict; other
   current config domains retain their documented parsing behavior.
-- Conditional overlays remain only in the temporary streaming configuration
-  shell; generator definitions do not support overlays.
+- Generator definitions have no inheritance, overlay, flag, or author-facing
+  stage-pipeline mechanism.
 - Shipped player binding defaults are content in the asset manifest; sparse
   global user replacements are `UserPreferences`.
 

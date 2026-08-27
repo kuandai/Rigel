@@ -105,14 +105,14 @@ before loading or saving it. The root used by that boot path is
 The subsystem bootstrap functions accept a world ID and include these optional
 highest-precedence files for that ID:
 
-- `config/worlds/<worldId>/world_generation.yaml`
+- `config/worlds/<worldId>/streaming.yaml`
 - `config/worlds/<worldId>/render.yaml`
 - `config/worlds/<worldId>/persistence.yaml`
 
 Configuration values are loaded and applied by the application and subsystem
 providers; they are not stored as a general configuration object on `World` or
-`WorldSet`. The world-generation override file contributes only streaming
-policy. Each published save owns `world-settings.yaml` and
+`WorldSet`. The streaming override file contributes only streaming policy.
+Each published save owns `world-settings.yaml` and
 `generator-definition.yaml`, and reload does not enumerate installed generator
 definitions.
 

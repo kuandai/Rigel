@@ -68,14 +68,14 @@ try {
 The build embeds project configs under `assets/config/` so they can be loaded
 via `ResourceRegistry` (or the config provider):
 
-- `config/world_generation.yaml`
+- `config/streaming.yaml`
 - `config/render.yaml`
 - `config/persistence.yaml`
 - `generators/default.yaml`
 
-`config/world_generation.yaml` currently supplies streaming policy. Production
-new-world generation resolves the named `generators/default.yaml` definition
-declared by the manifest.
+`config/streaming.yaml` supplies streaming policy. Production new-world
+generation resolves the named `generators/default.yaml` definition declared by
+the manifest.
 
 ### Example B: Loading Binary Data (OpenGL Textures)
 

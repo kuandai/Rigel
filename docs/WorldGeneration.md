@@ -190,7 +190,7 @@ explicit failed state until a later streaming requeue retries them.
 - `streaming.load_queue_limit` caps pending disk load requests (`0` means
   unlimited).
 
-The shipped world configuration uses `view_distance_chunks=12`,
+The shipped streaming configuration uses `view_distance_chunks=12`,
 `gen_queue_limit=128`, `update_budget_per_frame=4096`, and
 `worker_threads=12`. The pool split assigns six threads to generation and six
 to meshing. The executor-capacity bound narrows the configured generation cap

@@ -36,8 +36,8 @@ The manifest defines asset IDs and their configuration. Example:
 namespace: base
 assets:
   raw:
-    world_config:
-      path: config/world_generation.yaml
+    streaming_config:
+      path: config/streaming.yaml
   textures:
     stone:
       path: textures/blocks/stone/stone_shale.png
@@ -56,7 +56,7 @@ Manifest constraints in the current implementation:
 ## Asset IDs
 
 Asset IDs are always `category/name` (for example: `textures/stone`,
-`shaders/voxel`, `raw/world_config`).
+`shaders/voxel`, `raw/streaming_config`).
 
 The manifest category determines which loader handles the asset.
 
@@ -70,6 +70,7 @@ The manifest category determines which loader handles the asset.
 | `input` | `InputBindingsLoader` | Strictly parses symbolic keyboard/mouse binding tokens and lists. |
 | `entity_models` | `EntityModelLoader` | Loads entity models (JSON/YAML). |
 | `entity_anims` | `EntityAnimationSetLoader` | Loads entity animations. |
+| `generator_definitions` | `GeneratorDefinitionLoader` | Strictly loads the complete named generator-definition set. |
 
 The default loaders (`raw`, `textures`, `shaders`) are registered automatically
 when `AssetManager::loadManifest()` is called. Other loaders must be registered
@@ -105,6 +106,13 @@ entries.
 
 The cache is type-specific: the same asset id can be loaded as different types
 if requested incorrectly, which will fail with a type mismatch.
+
+Generator declarations are replaced transactionally. A candidate manifest is
+not made visible until its complete definition set and referenced resources
+load and validate successfully. Duplicate declarations, malformed entries,
+missing resources, or aggregate validation failures preserve the preceding
+namespace, declarations, error state, and cached set; a later corrected load
+can replace that state.
 
 ## Shader-Specific Behavior
 

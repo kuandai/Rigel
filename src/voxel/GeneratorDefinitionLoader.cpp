@@ -8,10 +8,34 @@
 #include <ryml.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <stdexcept>
 #include <string>
 
 namespace Rigel::Voxel {
+
+struct GeneratorDefinitionAssetTransactionAccess {
+    static bool hasPending(const Asset::AssetManager& assets) {
+        return assets.hasPendingGeneratorDefinitions();
+    }
+
+    static void forEachCandidate(
+        const Asset::AssetManager& assets,
+        const std::function<void(
+            const std::string&,
+            const Asset::AssetManager::AssetEntry&)>& visitor) {
+        assets.forEachGeneratorDefinitionCandidate(visitor);
+    }
+
+    static void commit(Asset::AssetManager& assets) {
+        assets.commitPendingGeneratorDefinitions();
+    }
+
+    static void discard(Asset::AssetManager& assets) {
+        assets.discardPendingGeneratorDefinitions();
+    }
+};
+
 namespace {
 
 struct GeneratorDefinitionAsset final : Asset::AssetBase {
@@ -119,14 +143,12 @@ std::vector<GeneratorDefinition> loadDeclaredGeneratorDefinitions(
     Asset::AssetManager& assets,
     const BlockRegistry& registry,
     GeneratorDefinitionOrigin origin) {
-    if (const auto error =
-            assets.categoryDeclarationError("generator_definitions")) {
-        throw Asset::AssetLoadError("generator_definitions", *error);
-    }
+    const bool candidatePending =
+        GeneratorDefinitionAssetTransactionAccess::hasPending(assets);
     std::vector<std::pair<
         std::string, const Asset::AssetManager::AssetEntry*>> declarations;
-    assets.forEachInCategory(
-        "generator_definitions",
+    GeneratorDefinitionAssetTransactionAccess::forEachCandidate(
+        assets,
         [&](const std::string& name,
             const Asset::AssetManager::AssetEntry& entry) {
             declarations.emplace_back(name, &entry);
@@ -136,26 +158,38 @@ std::vector<GeneratorDefinition> loadDeclaredGeneratorDefinitions(
                   return left.first < right.first;
               });
 
-    GeneratorDefinitionAssetLoader loader;
-    std::vector<GeneratorDefinition> definitions;
-    definitions.reserve(declarations.size());
-    for (const auto& [name, entry] : declarations) {
-        const std::string id = "generator_definitions/" + name;
-        Asset::LoadContext context{id, entry->config, assets};
-        const auto loaded = std::dynamic_pointer_cast<GeneratorDefinitionAsset>(
-            loader.load(context));
-        if (!loaded) {
-            throw Asset::AssetLoadError(
-                id, "Generator definition loader returned an incompatible asset");
-        }
-        definitions.push_back(loaded->definition);
-    }
     try {
-        return validateAndOrderGeneratorDefinitions(
+        GeneratorDefinitionAssetLoader loader;
+        std::vector<GeneratorDefinition> definitions;
+        definitions.reserve(declarations.size());
+        for (const auto& [name, entry] : declarations) {
+            const std::string id = "generator_definitions/" + name;
+            Asset::LoadContext context{id, entry->config, assets};
+            const auto loaded =
+                std::dynamic_pointer_cast<GeneratorDefinitionAsset>(
+                    loader.load(context));
+            if (!loaded) {
+                throw Asset::AssetLoadError(
+                    id,
+                    "Generator definition loader returned an incompatible asset");
+            }
+            definitions.push_back(loaded->definition);
+        }
+        auto validated = validateAndOrderGeneratorDefinitions(
             std::move(definitions), registry, origin);
+        if (candidatePending) {
+            GeneratorDefinitionAssetTransactionAccess::commit(assets);
+        }
+        return validated;
     } catch (const Asset::AssetLoadError&) {
+        if (candidatePending) {
+            GeneratorDefinitionAssetTransactionAccess::discard(assets);
+        }
         throw;
     } catch (const std::exception& error) {
+        if (candidatePending) {
+            GeneratorDefinitionAssetTransactionAccess::discard(assets);
+        }
         throw Asset::AssetLoadError("generator_definitions", error.what());
     }
 }

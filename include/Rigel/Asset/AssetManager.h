@@ -90,6 +90,10 @@
 #include <GL/glew.h>
 #include <ryml.hpp>
 
+namespace Rigel::Voxel {
+struct GeneratorDefinitionAssetTransactionAccess;
+}
+
 namespace Rigel::Asset {
 
 /**
@@ -549,14 +553,29 @@ public:
         const std::function<void(const std::string& name, const AssetEntry& entry)>& fn
     ) const;
 
-    std::optional<std::string> categoryDeclarationError(
-        const std::string& category) const;
-
 private:
+    friend struct Voxel::GeneratorDefinitionAssetTransactionAccess;
+
+    struct PendingGeneratorDefinitions {
+        std::string previousNamespace;
+        std::unordered_map<std::string, AssetEntry> entries;
+    };
+
+    // Generator definitions replace their manifest category only after the
+    // definition loader validates the complete candidate set. Normal asset
+    // enumeration continues to expose the last committed set while a
+    // candidate is being checked.
+    bool hasPendingGeneratorDefinitions() const;
+    void forEachGeneratorDefinitionCandidate(
+        const std::function<void(const std::string& name, const AssetEntry& entry)>& fn
+    ) const;
+    void commitPendingGeneratorDefinitions();
+    void discardPendingGeneratorDefinitions();
+
     std::string m_namespace;
     std::unordered_map<std::string, AssetEntry> m_entries;
     std::unordered_map<std::string, std::unique_ptr<IAssetLoader>> m_loaders;
-    std::unordered_map<std::string, std::string> m_categoryDeclarationErrors;
+    std::optional<PendingGeneratorDefinitions> m_pendingGeneratorDefinitions;
 
     // Type-erased cache: maps (type_index, id) -> shared_ptr<void>
     using CacheKey = std::pair<std::type_index, std::string>;

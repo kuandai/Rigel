@@ -15,6 +15,101 @@
 #include <unordered_set>
 
 namespace Rigel::Asset {
+namespace {
+
+AssetManager::AssetEntry cloneManifestEntry(
+    ryml::ConstNodeRef assetNode,
+    const std::string& categoryName) {
+    AssetManager::AssetEntry entry;
+    entry.category = categoryName;
+
+    ryml::Tree subtree;
+    subtree.reserve(assetNode.num_children() * 2 + 1);
+    size_t arenaCapacity = 0;
+    for (ryml::ConstNodeRef child : assetNode.children()) {
+        arenaCapacity += child.key().size();
+        if (child.has_val()) {
+            arenaCapacity += child.val().size();
+        }
+        for (ryml::ConstNodeRef grandchild : child.children()) {
+            if (grandchild.has_key()) {
+                arenaCapacity += grandchild.key().size();
+            }
+            if (grandchild.has_val()) {
+                arenaCapacity += grandchild.val().size();
+            }
+        }
+    }
+    subtree.reserve_arena(arenaCapacity);
+
+    ryml::NodeRef subtreeRoot = subtree.rootref();
+    subtreeRoot |= ryml::MAP;
+    for (ryml::ConstNodeRef child : assetNode.children()) {
+        const ryml::csubstr key = subtree.copy_to_arena(child.key());
+        if (child.is_keyval()) {
+            subtreeRoot[key] = subtree.copy_to_arena(child.val());
+        } else if (child.has_children()) {
+            ryml::NodeRef newChild = subtreeRoot.append_child();
+            newChild.set_key(key);
+            if (child.is_map()) {
+                newChild |= ryml::MAP;
+            } else if (child.is_seq()) {
+                newChild |= ryml::SEQ;
+            }
+            for (ryml::ConstNodeRef grandchild : child.children()) {
+                ryml::NodeRef copy = newChild.append_child();
+                if (grandchild.has_key()) {
+                    copy.set_key(subtree.copy_to_arena(grandchild.key()));
+                }
+                if (grandchild.has_val()) {
+                    copy.set_val(subtree.copy_to_arena(grandchild.val()));
+                }
+            }
+        }
+    }
+
+    entry.configTree = std::move(subtree);
+    entry.config = entry.configTree.rootref();
+    return entry;
+}
+
+void validateGeneratorDeclaration(ryml::ConstNodeRef assetNode,
+                                  const std::string& fullId) {
+    if (!assetNode.is_map()) {
+        throw AssetLoadError(
+            fullId, "generator definition declaration must be a mapping");
+    }
+    bool foundPath = false;
+    std::unordered_set<std::string> fields;
+    for (ryml::ConstNodeRef field : assetNode.children()) {
+        const std::string fieldName = Util::toStdString(field.key());
+        if (!fields.insert(fieldName).second) {
+            throw AssetLoadError(
+                fullId,
+                "duplicate generator definition declaration field '" +
+                    fieldName + "'");
+        }
+        if (fieldName != "path") {
+            throw AssetLoadError(
+                fullId,
+                "unknown generator definition declaration field '" +
+                    fieldName + "'");
+        }
+        if (!field.has_val() || field.has_children() || field.val().empty()) {
+            throw AssetLoadError(
+                fullId,
+                "generator definition declaration path must be a non-empty scalar");
+        }
+        foundPath = true;
+    }
+    if (!foundPath) {
+        throw AssetLoadError(
+            fullId,
+            "generator definition declaration requires a non-empty path");
+    }
+}
+
+} // namespace
 
 // AssetEntry convenience methods
 std::optional<std::string> AssetManager::AssetEntry::getString(const std::string& key) const {
@@ -79,43 +174,45 @@ void AssetManager::loadManifest(const std::string& path) {
 
     ryml::ConstNodeRef assets = root["assets"];
 
-    // Generator definitions are consumed only as a completely validated set.
-    // Reject declaration collisions before publishing any manifest entries.
-    std::unordered_set<std::string> generatorDeclarations;
-    std::optional<std::string> generatorDeclarationError;
+    // Generator definitions are a replaceable aggregate. Build a private
+    // candidate now; the definition loader publishes it only after validating
+    // every payload and cross-definition constraint.
+    std::optional<PendingGeneratorDefinitions> pendingGenerators;
+    const std::string namespaceBeforeCandidate = m_pendingGeneratorDefinitions
+        ? m_pendingGeneratorDefinitions->previousNamespace
+        : m_namespace;
+    bool foundGeneratorCategory = false;
     for (const ryml::ConstNodeRef category : assets.children()) {
         const std::string categoryName = Util::toStdString(category.key());
         if (categoryName != "generator_definitions") {
             continue;
         }
+        if (foundGeneratorCategory) {
+            throw AssetLoadError(
+                "generator_definitions",
+                "duplicate generator definition manifest category");
+        }
+        foundGeneratorCategory = true;
+        if (!category.is_map()) {
+            throw AssetLoadError(
+                "generator_definitions",
+                "generator definition manifest category must be a mapping");
+        }
+        pendingGenerators.emplace();
+        pendingGenerators->previousNamespace = namespaceBeforeCandidate;
         for (const ryml::ConstNodeRef assetNode : category.children()) {
             const std::string fullId = categoryName + "/" +
                 Util::toStdString(assetNode.key());
-            if (m_entries.contains(fullId) ||
-                !generatorDeclarations.insert(fullId).second) {
-                if (!generatorDeclarationError) {
-                    generatorDeclarationError =
-                        "Duplicate generator definition asset declaration '" +
-                        fullId + "'";
-                }
+            validateGeneratorDeclaration(assetNode, fullId);
+            auto [it, inserted] = pendingGenerators->entries.emplace(
+                fullId, cloneManifestEntry(assetNode, categoryName));
+            if (!inserted) {
+                throw AssetLoadError(
+                    fullId,
+                    "duplicate generator definition asset declaration");
             }
-            std::unordered_set<std::string> fields;
-            for (const ryml::ConstNodeRef field : assetNode.children()) {
-                const std::string fieldName = Util::toStdString(field.key());
-                if (!fields.insert(fieldName).second) {
-                    if (!generatorDeclarationError) {
-                        generatorDeclarationError =
-                            "Duplicate field '" + fieldName +
-                            "' in generator definition asset declaration '" +
-                            fullId + "'";
-                    }
-                }
-            }
+            it->second.config = it->second.configTree.rootref();
         }
-    }
-    if (generatorDeclarationError) {
-        m_categoryDeclarationErrors["generator_definitions"] =
-            *generatorDeclarationError;
     }
 
     if (manifestNamespace) {
@@ -126,8 +223,7 @@ void AssetManager::loadManifest(const std::string& path) {
     // Iterate categories (raw, textures, shaders, etc.)
     for (ryml::ConstNodeRef category : assets.children()) {
         std::string categoryName = Util::toStdString(category.key());
-        if (categoryName == "generator_definitions" &&
-            generatorDeclarationError) {
+        if (categoryName == "generator_definitions") {
             continue;
         }
 
@@ -136,70 +232,7 @@ void AssetManager::loadManifest(const std::string& path) {
             std::string assetName = Util::toStdString(assetNode.key());
             const std::string fullId = categoryName + "/" + assetName;
 
-            AssetEntry entry;
-            entry.category = categoryName;
-
-            // Clone the asset's config subtree so it persists
-            // We create a new tree that contains just this asset's config
-            ryml::Tree subtree;
-            subtree.reserve(assetNode.num_children() * 2 + 1);
-            size_t arenaCapacity = 0;
-            for (ryml::ConstNodeRef child : assetNode.children()) {
-                arenaCapacity += child.key().size();
-                if (child.has_val()) {
-                    arenaCapacity += child.val().size();
-                }
-                for (ryml::ConstNodeRef grandchild : child.children()) {
-                    if (grandchild.has_key()) {
-                        arenaCapacity += grandchild.key().size();
-                    }
-                    if (grandchild.has_val()) {
-                        arenaCapacity += grandchild.val().size();
-                    }
-                }
-            }
-            subtree.reserve_arena(arenaCapacity);
-
-            // Copy the node structure
-            ryml::NodeRef subtreeRoot = subtree.rootref();
-            subtreeRoot |= ryml::MAP;
-
-            // Copy nodes to new tree, copying strings to the new tree's arena
-            // (csubstr from the original tree would become dangling pointers)
-            for (ryml::ConstNodeRef child : assetNode.children()) {
-                // Copy key string to new tree's arena
-                ryml::csubstr key = subtree.copy_to_arena(child.key());
-
-                if (child.is_keyval()) {
-                    // Simple key-value pair - copy value to arena too
-                    ryml::csubstr val = subtree.copy_to_arena(child.val());
-                    subtreeRoot[key] = val;
-                } else if (child.has_children()) {
-                    // Nested node
-                    ryml::NodeRef newChild = subtreeRoot.append_child();
-                    newChild.set_key(key);
-
-                    if (child.is_map()) {
-                        newChild |= ryml::MAP;
-                    } else if (child.is_seq()) {
-                        newChild |= ryml::SEQ;
-                    }
-
-                    for (ryml::ConstNodeRef grandchild : child.children()) {
-                        if (grandchild.is_keyval()) {
-                            ryml::NodeRef gc = newChild.append_child();
-                            gc.set_key(subtree.copy_to_arena(grandchild.key()));
-                            gc.set_val(subtree.copy_to_arena(grandchild.val()));
-                        } else if (grandchild.has_val()) {
-                            ryml::NodeRef gc = newChild.append_child();
-                            gc.set_val(subtree.copy_to_arena(grandchild.val()));
-                        }
-                    }
-                }
-            }
-
-            entry.configTree = std::move(subtree);
-            entry.config = entry.configTree.rootref();
+            AssetEntry entry = cloneManifestEntry(assetNode, categoryName);
 
             // Log the path if present, or note that it's a complex asset
             auto pathOpt = entry.getString("path");
@@ -215,6 +248,10 @@ void AssetManager::loadManifest(const std::string& path) {
             // so it must be regenerated to point to the moved tree's new location
             m_entries[fullId].config = m_entries[fullId].configTree.rootref();
         }
+    }
+
+    if (pendingGenerators) {
+        m_pendingGeneratorDefinitions = std::move(*pendingGenerators);
     }
 
     for (auto& [id, entry] : m_entries) {
@@ -363,13 +400,47 @@ void AssetManager::forEachInCategory(
     }
 }
 
-std::optional<std::string> AssetManager::categoryDeclarationError(
-    const std::string& category) const {
-    const auto found = m_categoryDeclarationErrors.find(category);
-    if (found == m_categoryDeclarationErrors.end()) {
-        return std::nullopt;
+bool AssetManager::hasPendingGeneratorDefinitions() const {
+    return m_pendingGeneratorDefinitions.has_value();
+}
+
+void AssetManager::forEachGeneratorDefinitionCandidate(
+    const std::function<void(const std::string& name, const AssetEntry& entry)>& fn
+) const {
+    if (!m_pendingGeneratorDefinitions) {
+        forEachInCategory("generator_definitions", fn);
+        return;
     }
-    return found->second;
+    const std::string prefix = "generator_definitions/";
+    for (const auto& [id, entry] : m_pendingGeneratorDefinitions->entries) {
+        fn(id.substr(prefix.size()), entry);
+    }
+}
+
+void AssetManager::commitPendingGeneratorDefinitions() {
+    if (!m_pendingGeneratorDefinitions) {
+        return;
+    }
+    std::erase_if(m_entries, [](const auto& item) {
+        return item.second.category == "generator_definitions";
+    });
+    for (auto& [id, entry] : m_pendingGeneratorDefinitions->entries) {
+        auto [it, inserted] = m_entries.emplace(id, std::move(entry));
+        static_cast<void>(inserted);
+        it->second.config = it->second.configTree.rootref();
+    }
+    std::erase_if(m_cache, [](const auto& item) {
+        return item.first.second.starts_with("generator_definitions/");
+    });
+    m_pendingGeneratorDefinitions.reset();
+}
+
+void AssetManager::discardPendingGeneratorDefinitions() {
+    if (m_pendingGeneratorDefinitions) {
+        m_namespace = std::move(
+            m_pendingGeneratorDefinitions->previousNamespace);
+    }
+    m_pendingGeneratorDefinitions.reset();
 }
 
 } // namespace Rigel::Asset

@@ -25,22 +25,42 @@ public:
             "    default:\n"
             "      path: generators/second.yaml\n";
         static constexpr char aggregateMissingResource[] =
-            "namespace: test\n"
+            "namespace: failed-missing\n"
             "assets:\n"
-            "  raw:\n"
-            "    stable:\n"
-            "      path: stable.txt\n"
             "  generator_definitions:\n"
             "    a_valid:\n"
             "      path: generators/valid.yaml\n"
             "    z_missing:\n"
             "      path: generators/missing.yaml\n";
+        static constexpr char aggregateInvalidPayload[] =
+            "namespace: failed-aggregate\n"
+            "assets:\n"
+            "  generator_definitions:\n"
+            "    a_valid:\n"
+            "      path: generators/valid.yaml\n"
+            "    z_invalid:\n"
+            "      path: generators/invalid.yaml\n";
         static constexpr char malformedDeclaration[] =
-            "namespace: test\n"
+            "namespace: failed-malformed\n"
             "assets:\n"
             "  generator_definitions:\n"
             "    default:\n"
             "      path: [generators/valid.yaml]\n";
+        static constexpr char initialManifest[] =
+            "namespace: initial\n"
+            "assets:\n"
+            "  raw:\n"
+            "    stable:\n"
+            "      path: stable.txt\n"
+            "  generator_definitions:\n"
+            "    stable:\n"
+            "      path: generators/valid.yaml\n";
+        static constexpr char correctedManifest[] =
+            "namespace: corrected\n"
+            "assets:\n"
+            "  generator_definitions:\n"
+            "    corrected:\n"
+            "      path: generators/valid.yaml\n";
         static constexpr char validDefinition[] = R"yaml(generator:
   schema_version: 2
   id: test:valid
@@ -134,6 +154,14 @@ public:
     enabled: false
 )yaml";
         static constexpr char stable[] = "retained";
+        static constexpr char invalidDefinition[] =
+            "generator:\n"
+            "  schema_version: 2\n"
+            "  id: test:invalid\n"
+            "  source_revision: 1\n"
+            "  label: Invalid\n"
+            "  description: Invalid aggregate fixture.\n"
+            "  unknown_field: rejected\n";
 
         if (path == "duplicate_generator_field.yaml") {
             return {duplicateField, sizeof(duplicateField) - 1};
@@ -145,11 +173,24 @@ public:
             return {aggregateMissingResource,
                     sizeof(aggregateMissingResource) - 1};
         }
+        if (path == "aggregate_invalid_payload.yaml") {
+            return {aggregateInvalidPayload,
+                    sizeof(aggregateInvalidPayload) - 1};
+        }
         if (path == "malformed_generator_declaration.yaml") {
             return {malformedDeclaration, sizeof(malformedDeclaration) - 1};
         }
+        if (path == "initial.yaml") {
+            return {initialManifest, sizeof(initialManifest) - 1};
+        }
+        if (path == "corrected.yaml") {
+            return {correctedManifest, sizeof(correctedManifest) - 1};
+        }
         if (path == "generators/valid.yaml") {
             return {validDefinition, sizeof(validDefinition) - 1};
+        }
+        if (path == "generators/invalid.yaml") {
+            return {invalidDefinition, sizeof(invalidDefinition) - 1};
         }
         if (path == "stable.txt") {
             return {stable, sizeof(stable) - 1};

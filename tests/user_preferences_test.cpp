@@ -295,6 +295,91 @@ TEST_CASE(UserPreferences_unknown_supported_nodes_survive_known_edits) {
     CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 9);
 }
 
+TEST_CASE(UserPreferences_duplicate_unknown_keys_are_tolerated_and_preserved) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_user_preferences_unknown_duplicates");
+    struct UnknownDuplicateCase {
+        std::string name;
+        std::string document;
+        std::string warning;
+        std::string duplicatedKey;
+        std::vector<std::string> retainedFragments;
+        size_t warningCount;
+    };
+    const std::vector<UnknownDuplicateCase> cases{
+        {
+            "root-subtree",
+            "schema_version: 1\n"
+            "graphics: {view_distance_chunks: 7}\n"
+            "future_root:\n"
+            "  variant: alpha\n"
+            "  variant: beta\n",
+            "Unknown user preference 'future_root'",
+            "variant:",
+            {"variant: alpha", "variant: beta"},
+            1
+        },
+        {
+            "binding-action",
+            "schema_version: 1\n"
+            "graphics: {view_distance_chunks: 7}\n"
+            "input:\n"
+            "  bindings:\n"
+            "    future_action: [F]\n"
+            "    future_action: [G]\n",
+            "Unknown user preference action 'future_action'",
+            "future_action:",
+            {"future_action: [F]", "future_action: [G]"},
+            2
+        }
+    };
+
+    for (const UnknownDuplicateCase& duplicateCase : cases) {
+        const auto path = directory.path() / duplicateCase.name /
+            "user-preferences.yaml";
+        writeDocument(path, duplicateCase.document);
+        UserPreferencesStore store(path);
+        UserPreferences requested;
+        {
+            Rigel::Test::LogCapture logs(
+                "user-preferences-unknown-duplicate-load-" +
+                duplicateCase.name);
+            requested = store.load().requested;
+            CHECK_EQ(
+                Rigel::Test::countOccurrences(
+                    logs.output(), duplicateCase.warning),
+                duplicateCase.warningCount);
+        }
+        CHECK_EQ(requested.graphics.viewDistanceChunks, 7);
+
+        requested.graphics.viewDistanceChunks = 9;
+        {
+            Rigel::Test::LogCapture logs(
+                "user-preferences-unknown-duplicate-save-" +
+                duplicateCase.name);
+            CHECK_NO_THROW(store.saveRequested(requested));
+            CHECK_EQ(
+                Rigel::Test::countOccurrences(
+                    logs.output(), duplicateCase.warning),
+                duplicateCase.warningCount);
+        }
+
+        const std::string saved = readDocument(path);
+        CHECK_EQ(
+            Rigel::Test::countOccurrences(saved, duplicateCase.duplicatedKey),
+            2u);
+        for (const std::string& fragment : duplicateCase.retainedFragments) {
+            CHECK_NE(saved.find(fragment), std::string::npos);
+        }
+        {
+            Rigel::Test::LogCapture logs(
+                "user-preferences-unknown-duplicate-reload-" +
+                duplicateCase.name);
+            CHECK_EQ(store.load().requested.graphics.viewDistanceChunks, 9);
+        }
+    }
+}
+
 TEST_CASE(UserPreferences_serialized_size_limit_preserves_exact_limit_input) {
     Rigel::Test::TemporaryDirectory directory("rigel_user_preferences_size");
     const auto path = directory.path() / "user-preferences.yaml";
@@ -749,6 +834,64 @@ TEST_CASE(UserPreferences_prepublication_failure_preserves_last_valid_file) {
     CHECK(stagingFiles(path).empty());
     CHECK_NO_THROW(store.saveRequested(requested));
     CHECK_EQ(store.load().requested, requested);
+#endif
+}
+
+TEST_CASE(UserPreferences_failed_explicit_replace_keeps_unsafe_save_block) {
+#ifdef _WIN32
+    throw Rigel::Test::TestSkip(
+        "Directory write permission behavior is platform-specific");
+#else
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_user_preferences_failed_replace");
+    const auto path = directory.path() / "profile" / "user-preferences.yaml";
+    const std::string original =
+        "schema_version: 2\nfuture: preserved-until-replace\n";
+    writeDocument(path, original);
+    writeDocument(std::filesystem::path(path.string() + ".lock"), {});
+    UserPreferencesStore store(path);
+    {
+        Rigel::Test::LogCapture logs("user-preferences-failed-replace-load");
+        CHECK_EQ(store.load(), UserPreferencesState{});
+    }
+
+    UserPreferences replacement;
+    replacement.graphics.viewDistanceChunks = 6;
+    std::filesystem::permissions(
+        path.parent_path(),
+        std::filesystem::perms::owner_read |
+            std::filesystem::perms::owner_exec,
+        std::filesystem::perm_options::replace);
+    bool definitelyNotPublished = false;
+    try {
+        store.replaceWithRequested(replacement);
+    } catch (const Rigel::Persistence::AtomicFilePublicationError& error) {
+        CHECK_EQ(
+            error.state(),
+            Rigel::Persistence::AtomicFilePublicationState::NotPublished);
+        definitelyNotPublished = true;
+    }
+    std::filesystem::permissions(
+        path.parent_path(),
+        std::filesystem::perms::owner_all,
+        std::filesystem::perm_options::replace);
+
+    CHECK(definitelyNotPublished);
+    CHECK_EQ(readDocument(path), original);
+    CHECK(stagingFiles(path).empty());
+    bool normalSaveBlocked = false;
+    try {
+        store.saveRequested(replacement);
+    } catch (const UserPreferencesWriteBlocked&) {
+        normalSaveBlocked = true;
+    }
+    CHECK(normalSaveBlocked);
+    CHECK_EQ(readDocument(path), original);
+
+    store.replaceWithRequested(replacement);
+    replacement.graphics.viewDistanceChunks = 7;
+    CHECK_NO_THROW(store.saveRequested(replacement));
+    CHECK_EQ(store.load().requested, replacement);
 #endif
 }
 

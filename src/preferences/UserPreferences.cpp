@@ -272,43 +272,6 @@ std::string sourceName(const std::filesystem::path& path) {
     return path.string();
 }
 
-std::optional<std::string> duplicateMappingKeyPath(
-    ryml::ConstNodeRef node,
-    std::string_view path = {}) {
-    if (node.is_map()) {
-        std::unordered_set<std::string> keys;
-        for (const ryml::ConstNodeRef child : node.children()) {
-            const std::string key = Util::toStdString(child.key());
-            const std::string childPath = path.empty()
-                ? key
-                : std::string(path) + "." + key;
-            if (!keys.insert(key).second) {
-                return childPath;
-            }
-        }
-        for (const ryml::ConstNodeRef child : node.children()) {
-            const std::string key = Util::toStdString(child.key());
-            const std::string childPath = path.empty()
-                ? key
-                : std::string(path) + "." + key;
-            if (auto duplicate = duplicateMappingKeyPath(child, childPath)) {
-                return duplicate;
-            }
-        }
-    } else if (node.is_seq()) {
-        size_t index = 0;
-        for (const ryml::ConstNodeRef child : node.children()) {
-            const std::string childPath = std::string(path) + "[" +
-                std::to_string(index) + "]";
-            if (auto duplicate = duplicateMappingKeyPath(child, childPath)) {
-                return duplicate;
-            }
-            ++index;
-        }
-    }
-    return std::nullopt;
-}
-
 std::optional<UserAction> parseUserAction(std::string_view name) {
     for (const auto& [action, actionName] : kUserActionNames) {
         if (name == actionName) {
@@ -460,6 +423,100 @@ ryml::ConstNodeRef childOrInvalid(ryml::ConstNodeRef node,
         return {};
     }
     return node[yamlKey];
+}
+
+bool isKnownKey(
+    std::string_view key,
+    std::initializer_list<std::string_view> knownKeys) {
+    for (const std::string_view knownKey : knownKeys) {
+        if (key == knownKey) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<std::string> duplicateKnownMappingKeyPath(
+    ryml::ConstNodeRef node,
+    std::string_view path,
+    std::initializer_list<std::string_view> knownKeys) {
+    if (!node.readable() || !node.is_map()) {
+        return std::nullopt;
+    }
+
+    std::unordered_set<std::string> keys;
+    for (const ryml::ConstNodeRef child : node.children()) {
+        const std::string key = Util::toStdString(child.key());
+        if (!isKnownKey(key, knownKeys)) {
+            continue;
+        }
+        if (!keys.insert(key).second) {
+            return path.empty() ? key : std::string(path) + "." + key;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> duplicateKnownActionPath(
+    ryml::ConstNodeRef bindings) {
+    if (!bindings.readable() || !bindings.is_map()) {
+        return std::nullopt;
+    }
+
+    std::unordered_set<std::string> actions;
+    for (const ryml::ConstNodeRef child : bindings.children()) {
+        const std::string action = Util::toStdString(child.key());
+        if (!parseUserAction(action)) {
+            continue;
+        }
+        if (!actions.insert(action).second) {
+            return "input.bindings." + action;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> duplicateKnownPreferenceKeyPath(
+    ryml::ConstNodeRef root) {
+    if (auto duplicate = duplicateKnownMappingKeyPath(
+            root,
+            {},
+            {"schema_version", "display", "graphics", "camera", "input"})) {
+        return duplicate;
+    }
+
+    const ryml::ConstNodeRef display = childOrInvalid(root, "display");
+    if (auto duplicate = duplicateKnownMappingKeyPath(
+            display,
+            "display",
+            {"mode", "windowed_size", "vsync", "fps_limit"})) {
+        return duplicate;
+    }
+
+    const ryml::ConstNodeRef graphics = childOrInvalid(root, "graphics");
+    if (auto duplicate = duplicateKnownMappingKeyPath(
+            graphics,
+            "graphics",
+            {"view_distance_chunks", "shadows"})) {
+        return duplicate;
+    }
+
+    const ryml::ConstNodeRef camera = childOrInvalid(root, "camera");
+    if (auto duplicate = duplicateKnownMappingKeyPath(
+            camera, "camera", {"vertical_fov_degrees"})) {
+        return duplicate;
+    }
+
+    const ryml::ConstNodeRef input = childOrInvalid(root, "input");
+    if (auto duplicate = duplicateKnownMappingKeyPath(
+            input,
+            "input",
+            {"mouse_sensitivity", "invert_y", "bindings"})) {
+        return duplicate;
+    }
+
+    const ryml::ConstNodeRef bindings = childOrInvalid(input, "bindings");
+    return duplicateKnownActionPath(bindings);
 }
 
 std::optional<ryml::ConstNodeRef> readSection(
@@ -780,7 +837,7 @@ DocumentInspection inspectDocument(const std::filesystem::path& path) {
         return {DocumentKind::Unsafe, {}, nullptr,
                 "document root is not a mapping"};
     }
-    if (const auto duplicate = duplicateMappingKeyPath(root)) {
+    if (const auto duplicate = duplicateKnownPreferenceKeyPath(root)) {
         return {DocumentKind::Unsafe, {}, nullptr,
                 "duplicate mapping key at '" + *duplicate + "'"};
     }

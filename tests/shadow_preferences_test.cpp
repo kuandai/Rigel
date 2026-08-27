@@ -2,6 +2,7 @@
 #include "OpenGLFixture.h"
 
 #include "ApplicationPreferences.h"
+#include "Rigel/Asset/AssetLoader.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Preferences/UserPreferences.h"
@@ -50,6 +51,21 @@ struct WorldViewTestAccess {
 } // namespace Rigel::Voxel::detail
 
 namespace {
+
+class MissingShadowDepthShaderLoader final
+    : public Rigel::Asset::IAssetLoader {
+public:
+    std::string_view category() const override { return "shaders"; }
+
+    std::shared_ptr<Rigel::Asset::AssetBase> load(
+        const Rigel::Asset::LoadContext& context) override {
+        if (context.id == "shaders/voxel_shadow_depth") {
+            throw std::runtime_error(
+                "injected voxel shadow depth shader failure");
+        }
+        return std::make_shared<Rigel::Asset::ShaderAsset>();
+    }
+};
 
 void failBeforePublication() {
     throw Rigel::Persistence::AtomicFilePublicationError(
@@ -150,6 +166,44 @@ public:
     }
 
     Rigel::Test::HiddenOpenGLContext context;
+    Rigel::Asset::AssetManager assets;
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::World world;
+    Rigel::Voxel::WorldView view;
+    std::filesystem::path path;
+};
+
+class MissingShadowDepthFixture final {
+private:
+    Rigel::Test::TemporaryDirectory m_directory;
+
+public:
+    MissingShadowDepthFixture()
+        : m_directory("rigel_missing_shadow_depth_shader")
+        , world(resources)
+        , view(world, resources)
+        , path(m_directory.path() / "user-preferences.yaml") {
+        assets.registerLoader(
+            "shaders",
+            std::make_unique<MissingShadowDepthShaderLoader>());
+        assets.loadManifest("manifest.yaml");
+        view.initialize(assets);
+    }
+
+    ~MissingShadowDepthFixture() {
+        view.releaseRenderResources();
+        assets.clearCache();
+    }
+
+    Rigel::ApplicationPreferences owner(bool shadows) {
+        Rigel::Preferences::UserPreferences requested;
+        requested.graphics.shadows = shadows;
+        Rigel::Preferences::UserPreferencesStore(path).saveRequested(requested);
+        Rigel::ApplicationPreferences preferences(path);
+        preferences.load();
+        return preferences;
+    }
+
     Rigel::Asset::AssetManager assets;
     Rigel::Voxel::WorldResources resources;
     Rigel::Voxel::World world;
@@ -445,47 +499,43 @@ TEST_CASE(ApplicationPreferences_InvalidShadowProfileRetainsOffState) {
         static_cast<GLuint>(0));
 }
 
-TEST_CASE(ApplicationPreferences_UnavailableShadowRendererRetainsRequest) {
-    Rigel::Test::TemporaryDirectory directory(
-        "rigel_unavailable_shadow_renderer");
-    const auto path = directory.path() / "user-preferences.yaml";
-    Rigel::Preferences::UserPreferences requested;
-    requested.graphics.shadows = false;
-    Rigel::Preferences::UserPreferencesStore(path).saveRequested(requested);
-    Rigel::ApplicationPreferences preferences(path);
-    preferences.load();
-    Rigel::Voxel::WorldResources resources;
-    Rigel::Voxel::World world(resources);
-    Rigel::Voxel::WorldView view(world, resources);
+TEST_CASE(ApplicationPreferences_MissingShadowDepthShaderRejectsLiveEnable) {
+    MissingShadowDepthFixture fixture;
+    auto preferences = fixture.owner(false);
     CHECK_EQ(
-        preferences.initializeShadows(view).status,
+        preferences.initializeShadows(fixture.view).status,
         Rigel::PreferenceApplyStatus::Applied);
 
-    const auto result = preferences.applyShadows(view, true);
+    const auto result = preferences.applyShadows(fixture.view, true);
 
     CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_EQ(
+        result.message,
+        "the voxel shadow depth shader is unavailable");
     CHECK(!preferences.effectiveShadowsEnabled());
     CHECK(!preferences.requested().graphics.shadows);
-    CHECK(!persistedShadows(path));
+    CHECK(!persistedShadows(fixture.path));
+    const ShadowResources resources = shadowResources(fixture.view);
+    CHECK_EQ(resources.depthArray, static_cast<GLuint>(0));
+    CHECK_EQ(resources.transmitArray, static_cast<GLuint>(0));
+    CHECK_EQ(resources.framebuffer, static_cast<GLuint>(0));
 }
 
-TEST_CASE(ApplicationPreferences_ShadowStartupFailureRetainsPersistedOn) {
-    Rigel::Test::TemporaryDirectory directory(
-        "rigel_unavailable_startup_shadow_renderer");
-    const auto path = directory.path() / "user-preferences.yaml";
-    Rigel::Preferences::UserPreferences requested;
-    requested.graphics.shadows = true;
-    Rigel::Preferences::UserPreferencesStore(path).saveRequested(requested);
-    Rigel::ApplicationPreferences preferences(path);
-    preferences.load();
-    Rigel::Voxel::WorldResources resources;
-    Rigel::Voxel::World world(resources);
-    Rigel::Voxel::WorldView view(world, resources);
+TEST_CASE(ApplicationPreferences_MissingShadowDepthShaderRejectsStartupOn) {
+    MissingShadowDepthFixture fixture;
+    auto preferences = fixture.owner(true);
 
-    const auto result = preferences.initializeShadows(view);
+    const auto result = preferences.initializeShadows(fixture.view);
 
     CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_EQ(
+        result.message,
+        "the voxel shadow depth shader is unavailable");
     CHECK(!preferences.effectiveShadowsEnabled());
     CHECK(preferences.requested().graphics.shadows);
-    CHECK(persistedShadows(path));
+    CHECK(persistedShadows(fixture.path));
+    const ShadowResources resources = shadowResources(fixture.view);
+    CHECK_EQ(resources.depthArray, static_cast<GLuint>(0));
+    CHECK_EQ(resources.transmitArray, static_cast<GLuint>(0));
+    CHECK_EQ(resources.framebuffer, static_cast<GLuint>(0));
 }

@@ -6,9 +6,11 @@
 #include <ryml.hpp>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -860,6 +862,272 @@ void validateData(const GeneratorDefinitionData& data,
     }
 }
 
+std::string quoted(std::string_view value) {
+    std::string out;
+    out.reserve(value.size() + 2);
+    out.push_back('"');
+    for (const unsigned char byte : value) {
+        switch (byte) {
+        case '\\':
+            out += "\\\\";
+            break;
+        case '"':
+            out += "\\\"";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            if (byte < 0x20 || byte == 0x7f) {
+                throw std::invalid_argument(
+                    "Generator definition strings cannot contain control characters");
+            }
+            out.push_back(static_cast<char>(byte));
+            break;
+        }
+    }
+    out.push_back('"');
+    return out;
+}
+
+std::string number(float value) {
+    if (!std::isfinite(value)) {
+        throw std::invalid_argument(
+            "Generator definition numbers must be finite");
+    }
+    if (value == 0.0f) {
+        return "0";
+    }
+    std::array<char, 64> buffer{};
+    const auto result = std::to_chars(
+        buffer.data(), buffer.data() + buffer.size(), value,
+        std::chars_format::general, std::numeric_limits<float>::max_digits10);
+    if (result.ec != std::errc{}) {
+        throw std::runtime_error("Failed to serialize generator number");
+    }
+    return std::string(buffer.data(), result.ptr);
+}
+
+void appendNoise(std::string& out,
+                 const GeneratorDefinitionData::Noise& noise,
+                 const std::string& indent) {
+    out += indent + "octaves: " + std::to_string(noise.octaves) + "\n";
+    out += indent + "frequency: " + number(noise.frequency) + "\n";
+    out += indent + "lacunarity: " + number(noise.lacunarity) + "\n";
+    out += indent + "persistence: " + number(noise.persistence) + "\n";
+    out += indent + "scale: " + number(noise.scale) + "\n";
+    out += indent + "offset: " + number(noise.offset) + "\n";
+}
+
+void appendClimateLayer(std::string& out,
+                        const GeneratorDefinitionData::ClimateLayer& layer,
+                        const std::string& indent) {
+    out += indent + "temperature:\n";
+    appendNoise(out, layer.temperature, indent + "  ");
+    out += indent + "humidity:\n";
+    appendNoise(out, layer.humidity, indent + "  ");
+    out += indent + "continentalness:\n";
+    appendNoise(out, layer.continentalness, indent + "  ");
+}
+
+std::unordered_set<std::string> reachableNodes(
+    const GeneratorDefinitionData& data) {
+    std::unordered_map<std::string,
+                       const GeneratorDefinitionData::DensityNode*> nodes;
+    for (const auto& node : data.densityGraph.nodes) {
+        nodes.emplace(node.id, &node);
+    }
+    std::unordered_set<std::string> reachable;
+    std::function<void(const std::string&)> visit = [&](const std::string& id) {
+        if (!reachable.insert(id).second) {
+            return;
+        }
+        for (const auto& input : nodes.at(id)->inputs) {
+            visit(input);
+        }
+    };
+    for (const auto& output : data.densityGraph.outputs) {
+        visit(output.node);
+    }
+    return reachable;
+}
+
+void appendNode(std::string& out,
+                const GeneratorDefinitionData::DensityNode& node,
+                const std::string& indent) {
+    out += indent + "- id: " + quoted(node.id) + "\n";
+    out += indent + "  type: " + quoted(node.type) + "\n";
+    const bool hasInputs =
+        node.type == "add" || node.type == "mul" || node.type == "max" ||
+        node.type == "min" || node.type == "abs" || node.type == "invert" ||
+        node.type == "clamp" || node.type == "spline";
+    if (hasInputs) {
+        out += indent + "  inputs:\n";
+        for (const auto& input : node.inputs) {
+            out += indent + "    - " + quoted(input) + "\n";
+        }
+    }
+    if (node.type == "constant") {
+        out += indent + "  value: " + number(node.value) + "\n";
+    } else if (node.type == "noise2d" || node.type == "noise3d" ||
+               node.type == "noise3d_xy") {
+        out += indent + "  noise:\n";
+        appendNoise(out, node.noise, indent + "    ");
+        out += indent + "  scale: " + number(node.scale) + "\n";
+        out += indent + "  offset: " + number(node.offset) + "\n";
+    } else if (node.type == "clamp") {
+        out += indent + "  min: " + number(node.minValue) + "\n";
+        out += indent + "  max: " + number(node.maxValue) + "\n";
+    } else if (node.type == "spline") {
+        std::vector<std::pair<float, float>> points = node.splinePoints;
+        std::sort(points.begin(), points.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.first < right.first;
+                  });
+        out += indent + "  spline:\n";
+        for (const auto& [x, y] : points) {
+            out += indent + "    - [" + number(x) + ", " + number(y) + "]\n";
+        }
+    } else if (node.type == "climate") {
+        out += indent + "  field: " + quoted(node.field) + "\n";
+    } else if (node.type == "y") {
+        out += indent + "  scale: " + number(node.scale) + "\n";
+        out += indent + "  offset: " + number(node.offset) + "\n";
+    }
+}
+
+void appendData(std::string& out,
+                const GeneratorDefinitionData& data,
+                const std::string& indent,
+                bool omitUnusedNodes) {
+    out += indent + "bounds:\n";
+    out += indent + "  min_y: " + std::to_string(data.bounds.minY) + "\n";
+    out += indent + "  max_y: " + std::to_string(data.bounds.maxY) + "\n";
+    out += indent + "terrain:\n";
+    out += indent + "  sea_level: " +
+        std::to_string(data.terrain.seaLevel) + "\n";
+    out += indent + "  solid_material: " +
+        quoted(data.terrain.solidMaterial) + "\n";
+    out += indent + "  water_material: " +
+        quoted(data.terrain.waterMaterial) + "\n";
+    out += indent + "  density_output: " +
+        quoted(data.terrain.densityOutput) + "\n";
+
+    out += indent + "climate:\n";
+    out += indent + "  latitude_scale: " +
+        number(data.climate.latitudeScale) + "\n";
+    out += indent + "  latitude_strength: " +
+        number(data.climate.latitudeStrength) + "\n";
+    out += indent + "  local_blend: " +
+        number(data.climate.localBlend) + "\n";
+    out += indent + "  global:\n";
+    appendClimateLayer(out, data.climate.global, indent + "    ");
+    out += indent + "  local:\n";
+    appendClimateLayer(out, data.climate.local, indent + "    ");
+
+    out += indent + "biomes:\n";
+    out += indent + "  blend_power: " + number(data.biomes.blendPower) + "\n";
+    out += indent + "  epsilon: " + number(data.biomes.epsilon) + "\n";
+    out += indent + "  coast:\n";
+    out += indent + "    biome: " + quoted(data.biomes.coast.biome) + "\n";
+    out += indent + "    min_continentalness: " +
+        number(data.biomes.coast.minContinentalness) + "\n";
+    out += indent + "    max_continentalness: " +
+        number(data.biomes.coast.maxContinentalness) + "\n";
+    out += indent + "  entries:\n";
+    for (const auto& biome : data.biomes.entries) {
+        out += indent + "    - id: " + quoted(biome.id) + "\n";
+        out += indent + "      target:\n";
+        out += indent + "        temperature: " +
+            number(biome.target.temperature) + "\n";
+        out += indent + "        humidity: " +
+            number(biome.target.humidity) + "\n";
+        out += indent + "        continentalness: " +
+            number(biome.target.continentalness) + "\n";
+        out += indent + "      weight: " + number(biome.weight) + "\n";
+        out += indent + "      water_fill: " +
+            std::string(biome.waterFill ? "true\n" : "false\n");
+        out += indent + "      surface:\n";
+        for (const auto& layer : biome.surface) {
+            out += indent + "        - material: " + quoted(layer.material) +
+                "\n";
+            out += indent + "          depth: " +
+                std::to_string(layer.depth) + "\n";
+        }
+    }
+
+    out += indent + "density_graph:\n";
+    out += indent + "  outputs:\n";
+    std::vector<const GeneratorDefinitionData::DensityOutput*> outputs;
+    for (const auto& output : data.densityGraph.outputs) {
+        outputs.push_back(&output);
+    }
+    std::sort(outputs.begin(), outputs.end(), [](const auto* left,
+                                                 const auto* right) {
+        return left->semantic < right->semantic;
+    });
+    for (const auto* output : outputs) {
+        out += indent + "    " + quoted(output->semantic) + ": " +
+            quoted(output->node) + "\n";
+    }
+    out += indent + "  nodes:\n";
+    const auto reachable = omitUnusedNodes
+        ? reachableNodes(data)
+        : std::unordered_set<std::string>{};
+    std::vector<const GeneratorDefinitionData::DensityNode*> nodes;
+    for (const auto& node : data.densityGraph.nodes) {
+        if (!omitUnusedNodes || reachable.contains(node.id)) {
+            nodes.push_back(&node);
+        }
+    }
+    std::sort(nodes.begin(), nodes.end(), [](const auto* left,
+                                             const auto* right) {
+        return left->id < right->id;
+    });
+    for (const auto* node : nodes) {
+        appendNode(out, *node, indent + "    ");
+    }
+
+    out += indent + "caves:\n";
+    out += indent + "  enabled: " +
+        std::string(data.caves.enabled ? "true\n" : "false\n");
+    if (data.caves.enabled) {
+        out += indent + "  density_output: " +
+            quoted(data.caves.densityOutput) + "\n";
+        out += indent + "  threshold: " + number(data.caves.threshold) + "\n";
+    }
+    out += indent + "structures:\n";
+    out += indent + "  enabled: " +
+        std::string(data.structures.enabled ? "true\n" : "false\n");
+    if (data.structures.enabled) {
+        out += indent + "  features:\n";
+        for (const auto& feature : data.structures.features) {
+            out += indent + "    - id: " + quoted(feature.id) + "\n";
+            out += indent + "      material: " + quoted(feature.material) +
+                "\n";
+            out += indent + "      chance: " + number(feature.chance) + "\n";
+            out += indent + "      min_height: " +
+                std::to_string(feature.minHeight) + "\n";
+            out += indent + "      max_height: " +
+                std::to_string(feature.maxHeight) + "\n";
+            if (feature.biomes.empty()) {
+                out += indent + "      biomes: []\n";
+            } else {
+                out += indent + "      biomes:\n";
+                for (const auto& biome : feature.biomes) {
+                    out += indent + "        - " + quoted(biome) + "\n";
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 GeneratorDefinition parseGeneratorDefinition(std::string_view yaml,
@@ -891,6 +1159,58 @@ GeneratorDefinition parseGeneratorDefinition(std::string_view yaml,
     result.data = parseData(generator, sourceName, "generator", false);
     validateGeneratorDefinition(result, sourceName);
     return result;
+}
+
+std::string serializeGeneratorDefinition(
+    const GeneratorDefinition& definition) {
+    validateGeneratorDefinition(definition, definition.id);
+    std::string out;
+    out.reserve(8192);
+    out += "generator:\n";
+    out += "  schema_version: " +
+        std::to_string(definition.schemaVersion) + "\n";
+    out += "  id: " + quoted(definition.id) + "\n";
+    out += "  source_revision: " +
+        std::to_string(definition.sourceRevision) + "\n";
+    out += "  label: " + quoted(definition.label) + "\n";
+    out += "  description: " + quoted(definition.description) + "\n";
+    appendData(out, definition.data, "  ", false);
+    return out;
+}
+
+std::string serializeGeneratorDefinitionSnapshot(
+    const GeneratorDefinitionData& data) {
+    validateData(data, "generator definition snapshot");
+    std::string out;
+    out.reserve(8192);
+    appendData(out, data, "", true);
+    return out;
+}
+
+GeneratorDefinitionData parseGeneratorDefinitionSnapshot(
+    std::string_view snapshot,
+    uint32_t definitionSchemaVersion,
+    std::string_view sourceName) {
+    if (definitionSchemaVersion !=
+        kGeneratorDefinitionAuthoringSchemaVersion) {
+        throw std::invalid_argument(
+            "Unsupported generator definition schema version: " +
+            std::to_string(definitionSchemaVersion));
+    }
+    if (snapshot.empty()) {
+        throw std::invalid_argument("Generator definition snapshot is empty");
+    }
+    const ryml::Tree tree = ryml::parse_in_arena(
+        ryml::csubstr(sourceName.data(), sourceName.size()),
+        ryml::csubstr(snapshot.data(), snapshot.size()));
+    GeneratorDefinitionData data =
+        parseData(tree.crootref(), sourceName, "generator", true);
+    validateData(data, sourceName);
+    if (serializeGeneratorDefinitionSnapshot(data) != snapshot) {
+        throw std::invalid_argument(
+            "Saved generator definition is not in canonical form");
+    }
+    return data;
 }
 
 void validateGeneratorDefinition(const GeneratorDefinition& definition,

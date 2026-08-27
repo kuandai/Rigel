@@ -9,6 +9,9 @@ namespace {
 
 using Rigel::Voxel::GeneratorDefinition;
 using Rigel::Voxel::parseGeneratorDefinition;
+using Rigel::Voxel::parseGeneratorDefinitionSnapshot;
+using Rigel::Voxel::serializeGeneratorDefinition;
+using Rigel::Voxel::serializeGeneratorDefinitionSnapshot;
 
 std::string validDefinitionYaml() {
     return R"yaml(generator:
@@ -248,4 +251,90 @@ TEST_CASE(GeneratorDefinition_validates_unreachable_nodes_before_pruning) {
         "      - id: author_note\n        type: constant\n        value: 99\n",
         "      - id: author_note\n        type: add\n"
         "        inputs: [missing]\n"));
+}
+
+TEST_CASE(GeneratorDefinition_authoring_serialization_is_normalized_and_stable) {
+    const GeneratorDefinition parsed =
+        parseGeneratorDefinition(validDefinitionYaml(), "author.yaml");
+    const std::string canonical = serializeGeneratorDefinition(parsed);
+    const GeneratorDefinition reparsed =
+        parseGeneratorDefinition(canonical, "canonical-author.yaml");
+
+    CHECK_EQ(serializeGeneratorDefinition(reparsed), canonical);
+    CHECK(canonical.find("mode:") == std::string::npos);
+    CHECK(canonical.find("stages:") == std::string::npos);
+    CHECK(canonical.find("author_note") != std::string::npos);
+}
+
+TEST_CASE(GeneratorDefinition_snapshot_is_metadata_free_effective_data) {
+    const GeneratorDefinition definition =
+        parseGeneratorDefinition(validDefinitionYaml(), "snapshot-source.yaml");
+    const std::string snapshot =
+        serializeGeneratorDefinitionSnapshot(definition.data);
+
+    CHECK(snapshot.find("schema_version") == std::string::npos);
+    CHECK(snapshot.find("source_revision") == std::string::npos);
+    CHECK(snapshot.find("label:") == std::string::npos);
+    CHECK(snapshot.find("description:") == std::string::npos);
+    CHECK(snapshot.find("author_note") == std::string::npos);
+    CHECK(snapshot.find("density_output: \"terrain_density\"") !=
+          std::string::npos);
+    CHECK(snapshot.find("water_fill: true") != std::string::npos);
+
+    const auto loaded = parseGeneratorDefinitionSnapshot(
+        snapshot, 1u, "generator-definition.yaml");
+    CHECK_EQ(serializeGeneratorDefinitionSnapshot(loaded), snapshot);
+}
+
+TEST_CASE(GeneratorDefinition_snapshot_parser_requires_canonical_content) {
+    const GeneratorDefinition definition =
+        parseGeneratorDefinition(validDefinitionYaml(), "snapshot-source.yaml");
+    const std::string canonical =
+        serializeGeneratorDefinitionSnapshot(definition.data);
+
+    std::string unknown = canonical;
+    unknown += "legacy_mode: simple\n";
+    CHECK_THROWS(parseGeneratorDefinitionSnapshot(
+        unknown, 1u, "unknown-snapshot.yaml"));
+
+    std::string unused = canonical;
+    const size_t caves = unused.find("caves:\n");
+    CHECK(caves != std::string::npos);
+    unused.insert(
+        caves,
+        "    - id: \"unused\"\n"
+        "      type: \"constant\"\n"
+        "      value: 4\n");
+    CHECK_THROWS(parseGeneratorDefinitionSnapshot(
+        unused, 1u, "noncanonical-snapshot.yaml"));
+    CHECK_THROWS(parseGeneratorDefinitionSnapshot(
+        canonical, 2u, "newer-snapshot.yaml"));
+}
+
+TEST_CASE(GeneratorDefinition_snapshot_normalizes_splines_and_disabled_features) {
+    GeneratorDefinition definition =
+        parseGeneratorDefinition(validDefinitionYaml(), "normalization.yaml");
+    Rigel::Voxel::GeneratorDefinitionData::DensityNode spline;
+    spline.id = "shaped";
+    spline.type = "spline";
+    spline.inputs = {"terrain"};
+    spline.splinePoints = {{1.0f, 2.0f}, {-1.0f, -2.0f}, {0.0f, 0.5f}};
+    definition.data.densityGraph.nodes.push_back(std::move(spline));
+    definition.data.densityGraph.outputs.front().node = "shaped";
+    definition.data.caves = {};
+    definition.data.densityGraph.outputs.erase(
+        definition.data.densityGraph.outputs.begin() + 1);
+    definition.data.structures = {};
+
+    const std::string snapshot =
+        serializeGeneratorDefinitionSnapshot(definition.data);
+    CHECK(snapshot.find("density_output: cave_density") == std::string::npos);
+    CHECK(snapshot.find("features:") == std::string::npos);
+    CHECK(snapshot.find("caves:\n  enabled: false\n") != std::string::npos);
+    CHECK(snapshot.find("structures:\n  enabled: false\n") !=
+          std::string::npos);
+    CHECK(snapshot.find("- [-1, -2]") < snapshot.find("- [0, 0.5]"));
+    CHECK(snapshot.find("- [0, 0.5]") < snapshot.find("- [1, 2]"));
+    CHECK_NO_THROW(parseGeneratorDefinitionSnapshot(
+        snapshot, 1u, "normalized-snapshot.yaml"));
 }

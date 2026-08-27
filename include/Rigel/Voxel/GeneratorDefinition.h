@@ -189,6 +189,17 @@ struct GeneratorDefinition {
 GeneratorDefinition parseGeneratorDefinition(std::string_view yaml,
                                              std::string_view sourceName);
 
+std::string serializeGeneratorDefinition(
+    const GeneratorDefinition& definition);
+
+std::string serializeGeneratorDefinitionSnapshot(
+    const GeneratorDefinitionData& data);
+
+GeneratorDefinitionData parseGeneratorDefinitionSnapshot(
+    std::string_view snapshot,
+    uint32_t definitionSchemaVersion,
+    std::string_view sourceName);
+
 void validateGeneratorDefinition(const GeneratorDefinition& definition,
                                  std::string_view sourceName);
 

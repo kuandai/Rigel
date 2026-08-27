@@ -1,9 +1,24 @@
 #pragma once
+#include "Rigel/Preferences/UserPreferences.h"
+
 #include <memory>
+#include <string>
 
 namespace Rigel {
 
 class ApplicationTestAccess;
+
+enum class PreferenceApplyStatus {
+    Applied,
+    Rejected,
+    NotPublished,
+    PublishedDurabilityUncertain,
+};
+
+struct PreferenceApplyResult {
+    PreferenceApplyStatus status = PreferenceApplyStatus::Applied;
+    std::string message;
+};
 
 class Application {
 public:
@@ -12,6 +27,14 @@ public:
 
     void run();
     void close();
+
+    PreferenceApplyResult applyDisplayPreferences(
+        const Preferences::DisplayPreferences& preferences);
+    PreferenceApplyResult applyVerticalFov(double verticalFovDegrees);
+
+    const Preferences::UserPreferences& requestedPreferences() const;
+    const Preferences::DisplayPreferences& effectiveDisplayPreferences() const;
+    double effectiveVerticalFovDegrees() const;
 
 private:
     enum class Initialization {

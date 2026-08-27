@@ -1,4 +1,5 @@
 #include "Rigel/Application.h"
+#include "ApplicationPreferences.h"
 #include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
 #include "GlfwRuntime.h"
@@ -105,6 +106,8 @@ struct Application::Impl {
     };
 
     GlfwRuntime runtime;
+    std::unique_ptr<ApplicationPreferences> preferences;
+    std::filesystem::path preferencesPath;
     Asset::AssetManager assets;
     Input::WindowState window;
     Input::CameraState camera;
@@ -123,6 +126,7 @@ struct Application::Impl {
     Impl() = default;
     explicit Impl(ApplicationConstructionHooks hooks)
         : runtime(hooks.runtimeApi)
+        , preferencesPath(std::move(hooks.userPreferencesPath))
         , afterContextAcquired(hooks.afterContextAcquired)
         , shutdownStageCompleted(hooks.shutdownStageCompleted) {
     }
@@ -177,6 +181,13 @@ void Application::initialize() {
     m_impl->timing.benchmarkEnabled =
         benchEnv && benchEnv[0] != '\0' && benchEnv[0] != '0';
 
+    if (m_impl->preferencesPath.empty()) {
+        m_impl->preferencesPath = Preferences::currentUserPreferencesPath();
+    }
+    m_impl->preferences = std::make_unique<ApplicationPreferences>(
+        m_impl->preferencesPath);
+    m_impl->preferences->load();
+
     // Initialize GLFW
     if (!m_impl->runtime.initialize()) {
         spdlog::error("GLFW initialization failed");
@@ -184,7 +195,6 @@ void Application::initialize() {
     }
     spdlog::info("GLFW initialized successfully");
 
-    // Create a simple GLFW window
     m_impl->runtime.windowHint(
         GLFW_CONTEXT_VERSION_MAJOR, Render::kOpenGLContextMajorVersion);
     m_impl->runtime.windowHint(
@@ -193,19 +203,41 @@ void Application::initialize() {
     m_impl->runtime.windowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     m_impl->runtime.windowHint(GLFW_DEPTH_BITS, 24);
 
-    m_impl->window.window = m_impl->runtime.createWindow(800, 600, "Rigel");
-    if (!m_impl->window.window) {
-        spdlog::error("Failed to create GLFW window");
-        throw std::runtime_error("Failed to create GLFW window");
+    const ApplicationPreferences::StartupResult displayStartup =
+        m_impl->preferences->initializeDisplay(
+            m_impl->runtime,
+            m_impl->timing.benchmarkEnabled);
+    m_impl->window.window = m_impl->runtime.window();
+    if (displayStartup.usedSafeFallback) {
+        spdlog::warn("{}", displayStartup.message);
     }
-
-    m_impl->runtime.makeContextCurrent();
     if (m_impl->afterContextAcquired) {
         m_impl->afterContextAcquired();
     }
-    const int swapInterval = m_impl->timing.benchmarkEnabled ? 0 : 1;
-    glfwSwapInterval(swapInterval);
-    spdlog::info("Frame pacing swap interval: {}", swapInterval);
+    const auto& requestedDisplay =
+        m_impl->preferences->requested().display;
+    const auto& effectiveDisplay =
+        m_impl->preferences->effectiveDisplay();
+    spdlog::info(
+        "Display request mode={} size={}x{} VSync={} FPS={}; effective mode={} size={}x{} VSync={} FPS={}",
+        requestedDisplay.mode == Preferences::DisplayMode::Windowed
+            ? "windowed"
+            : "borderless",
+        requestedDisplay.windowedSize.width,
+        requestedDisplay.windowedSize.height,
+        requestedDisplay.vsync,
+        requestedDisplay.fpsLimit
+            ? std::to_string(*requestedDisplay.fpsLimit)
+            : "unlimited",
+        effectiveDisplay.mode == Preferences::DisplayMode::Windowed
+            ? "windowed"
+            : "borderless",
+        effectiveDisplay.windowedSize.width,
+        effectiveDisplay.windowedSize.height,
+        effectiveDisplay.vsync,
+        effectiveDisplay.fpsLimit
+            ? std::to_string(*effectiveDisplay.fpsLimit)
+            : "unlimited");
 
     // Initialize GLEW
     glewExperimental = GL_TRUE;
@@ -223,17 +255,39 @@ void Application::initialize() {
     initializeOptionalUserInterface(m_impl->window.window, &UI::init);
 #endif
 
-    // Set initial viewport
-    glViewport(0, 0, 800, 600);
+    m_impl->renderer.setVerticalFovDegrees(
+        m_impl->preferences->effectiveVerticalFovDegrees());
+
+    const auto [framebufferWidth, framebufferHeight] =
+        m_impl->runtime.framebufferSize();
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
 
     // Set Callbacks
-    glfwSetFramebufferSizeCallback(m_impl->window.window, [](GLFWwindow* window, int width, int height)-> void {
+    m_impl->runtime.setFramebufferSizeCallback([](
+        GLFWwindow*, int width, int height) {
         glViewport(0, 0, width, height);
     });
     m_impl->inputCallbacks.input = &m_impl->input;
     m_impl->inputCallbacks.window = &m_impl->window;
     m_impl->inputCallbacks.camera = &m_impl->camera;
+    m_impl->inputCallbacks.logicalResizeContext = m_impl->preferences.get();
+    m_impl->inputCallbacks.logicalResize = [](void* context,
+                                              int width,
+                                              int height) {
+        auto& preferences =
+            *static_cast<ApplicationPreferences*>(context);
+        preferences.observeLogicalResize(width, height, preferences.now());
+    };
     Input::registerWindowCallbacks(m_impl->window.window, m_impl->inputCallbacks);
+    m_impl->runtime.setWindowSizeCallback([](
+        GLFWwindow* window, int width, int height) {
+        auto* context = static_cast<Input::InputCallbackContext*>(
+            glfwGetWindowUserPointer(window));
+        if (context && context->logicalResize) {
+            context->logicalResize(
+                context->logicalResizeContext, width, height);
+        }
+    });
     Input::setCursorCaptured(m_impl->window, true);
     if (m_impl->timing.benchmarkEnabled) {
         spdlog::info("Chunk benchmark enabled");
@@ -581,6 +635,10 @@ void Application::close() {
 }
 
 void ApplicationTestAccess::construct(ApplicationConstructionHooks hooks) {
+    if (hooks.userPreferencesPath.empty()) {
+        hooks.userPreferencesPath = std::filesystem::absolute(
+            "application-test-user-preferences.yaml");
+    }
     Application application(std::make_unique<Application::Impl>(hooks));
 }
 
@@ -588,6 +646,10 @@ void ApplicationTestAccess::constructAndRun(
     ApplicationConstructionHooks hooks,
     void (*runLoop)(Application&)
 ) {
+    if (hooks.userPreferencesPath.empty()) {
+        hooks.userPreferencesPath = std::filesystem::absolute(
+            "application-test-user-preferences.yaml");
+    }
     Application application(std::make_unique<Application::Impl>(hooks));
     runLoop(application);
 }
@@ -669,6 +731,21 @@ void Application::run() {
 
         // Flush event queue
         glfwPollEvents();
+        if (auto resizeResult =
+                m_impl->preferences->flushResizePersistence(
+                    m_impl->preferences->now())) {
+            if (resizeResult->status == PreferenceApplyStatus::NotPublished) {
+                spdlog::error(
+                    "Window resize remains effective but was not saved: {}",
+                    resizeResult->message);
+            } else if (
+                resizeResult->status ==
+                PreferenceApplyStatus::PublishedDurabilityUncertain) {
+                spdlog::warn(
+                    "Window resize was published but durability is uncertain: {}",
+                    resizeResult->message);
+            }
+        }
         if (m_impl->window.pendingTimeReset) {
             m_impl->timing.lastTime = glfwGetTime();
             deltaTime = 0.0f;
@@ -873,6 +950,7 @@ void Application::run() {
 
         UI::endFrame();
         glfwSwapBuffers(m_impl->window.window);
+        m_impl->preferences->waitForNextFrame();
 
     }
 
@@ -906,6 +984,29 @@ void Application::run() {
             stats.emptyMeshSeconds
         );
     }
+}
+
+PreferenceApplyResult Application::applyDisplayPreferences(
+    const Preferences::DisplayPreferences& preferences) {
+    return m_impl->preferences->applyDisplay(m_impl->runtime, preferences);
+}
+
+PreferenceApplyResult Application::applyVerticalFov(double verticalFovDegrees) {
+    return m_impl->preferences->applyVerticalFov(
+        m_impl->renderer, verticalFovDegrees);
+}
+
+const Preferences::UserPreferences& Application::requestedPreferences() const {
+    return m_impl->preferences->requested();
+}
+
+const Preferences::DisplayPreferences&
+Application::effectiveDisplayPreferences() const {
+    return m_impl->preferences->effectiveDisplay();
+}
+
+double Application::effectiveVerticalFovDegrees() const {
+    return m_impl->preferences->effectiveVerticalFovDegrees();
 }
 
 } // namespace Rigel

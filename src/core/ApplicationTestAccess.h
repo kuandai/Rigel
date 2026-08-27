@@ -2,6 +2,7 @@
 
 #include "GlfwRuntime.h"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -26,6 +27,7 @@ struct ApplicationConstructionHooks {
     GlfwRuntime::Api runtimeApi;
     void (*afterContextAcquired)() = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
+    std::filesystem::path userPreferencesPath;
 };
 
 struct ApplicationCloseHooks {

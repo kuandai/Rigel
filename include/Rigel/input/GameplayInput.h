@@ -66,6 +66,8 @@ struct InputCallbackContext {
     InputState* input = nullptr;
     WindowState* window = nullptr;
     CameraState* camera = nullptr;
+    void* logicalResizeContext = nullptr;
+    void (*logicalResize)(void*, int, int) = nullptr;
 };
 
 void setCursorCaptured(WindowState& window, bool captured);

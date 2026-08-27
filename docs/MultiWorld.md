@@ -111,9 +111,10 @@ highest-precedence files for that ID:
 
 Configuration values are loaded and applied by the application and subsystem
 providers; they are not stored as a general configuration object on `World` or
-`WorldSet`. Generation fields are creation inputs only. Each published save
-owns `world-settings.yaml` and `generator-definition.yaml`, and reload bypasses
-installed generation fields while still loading streaming policy.
+`WorldSet`. The world-generation override file contributes only streaming
+policy. Each published save owns `world-settings.yaml` and
+`generator-definition.yaml`, and reload does not enumerate installed generator
+definitions.
 
 ## Current Limitations
 

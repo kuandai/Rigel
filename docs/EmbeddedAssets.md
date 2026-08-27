@@ -71,6 +71,11 @@ via `ResourceRegistry` (or the config provider):
 - `config/world_generation.yaml`
 - `config/render.yaml`
 - `config/persistence.yaml`
+- `generators/default.yaml`
+
+`config/world_generation.yaml` currently supplies streaming policy. Production
+new-world generation resolves the named `generators/default.yaml` definition
+declared by the manifest.
 
 ### Example B: Loading Binary Data (OpenGL Textures)
 

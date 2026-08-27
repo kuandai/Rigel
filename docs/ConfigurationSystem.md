@@ -16,7 +16,7 @@ implementation and the on-disk configuration files shipped with the project.
   - [Persistence](#persistence)
 - [Config Provider and Sources](#config-provider-and-sources)
 - [Save-Owned World Identity](#save-owned-world-identity)
-- [World Generation Config](#world-generation-config)
+- [Generator Definitions](#generator-definitions)
 - [Render Config](#render-config)
 - [Persistence Config](#persistence-config)
 - [Per-World Overrides](#per-world-overrides)
@@ -27,11 +27,11 @@ implementation and the on-disk configuration files shipped with the project.
 
 ## Overview
 
-Rigel uses layered configuration for creation inputs and runtime policy. Each
-config type is loaded from a stack of sources, and later sources override
-earlier values. Configs are read once during application bootstrap. An existing
-world's generator is the exception: it is loaded from that save's canonical
-generator snapshot, not from the layered creation inputs.
+Rigel uses layered configuration for remaining runtime policy. Each layered
+type is loaded from a stack of sources, and later sources override earlier
+values. Configs are read once during application bootstrap. Generator content
+is separate: a new world resolves one strict named asset, while an existing
+world loads only its save-owned canonical snapshot.
 
 Fields merge according to their YAML shape:
 
@@ -40,24 +40,19 @@ Fields merge according to their YAML shape:
 - Sequences replace the earlier sequence, including when the later sequence is
   empty.
 
-World generation has one keyed sequence exception: `density_graph.nodes`
-merges entries by `id`, replacing a matching node as a whole. Persistence's
-typed CR options merge by key.
+Persistence's typed CR options merge by key.
 
-Four layered config types are supported today:
+Three layered config types are supported today:
 
-- `WorldGenConfig` (world generation)
 - `StreamingConfig` (runtime chunk loading, generation, and meshing schedules)
 - `WorldRenderConfig` (render pipeline settings)
 - `PersistenceConfig` (save/load format and provider options)
 
-Typed providers load each layered subsystem's settings from YAML input using rapidyaml.
-`Voxel::WorldConfigProvider` loads generation and streaming settings together
-when creating a world so their shared overlays have one deterministic order.
-When opening a published save, it loads only `StreamingConfig`; invalid,
-changed, or absent installed generator content cannot replace the saved
-definition. It follows available overlay routing only to retain streaming
-precedence and does not apply generation fields. Rendering is loaded by
+Typed providers load each layered subsystem's settings from YAML input using
+rapidyaml. `Voxel::WorldConfigProvider` currently supplies only
+`StreamingConfig` to production bootstrap. It follows available overlay routing
+to retain streaming precedence but never applies legacy generation fields.
+Rendering is loaded by
 `Render::RenderConfigProvider`, and persistence by
 `Persistence::PersistenceConfigProvider`. Each subsystem's bootstrap function
 uses the shared standard-source builder, but the typed provider remains the
@@ -146,20 +141,24 @@ The general rule is:
 3) Project root overrides (for quick testing).
 4) Per-world overrides under `config/worlds/<worldId>/`.
 
-### World Generation Creation Input and Streaming
+### Generator Definitions and Streaming
 
-Sources (in order):
+The shipped manifest declares `generator_definitions/default`, whose asset is
+`assets/generators/default.yaml`. New-world bootstrap resolves the selected
+namespaced definition only after save inspection. Published-world startup does
+not enumerate or load installed generator definitions.
+
+Streaming sources (in order):
 
 1. `assets/config/world_generation.yaml` (embedded as `raw/world_config`)
 2. `config/world_generation.yaml`
 3. `world_generation.yaml`
 4. `config/worlds/<worldId>/world_generation.yaml`
 
-The generation fields in these sources are resolved only while creating a new
-world. Streaming fields remain bootstrap policy and are loaded for both new and
-existing worlds. Opening an existing world follows `flags` and `overlays` to
-apply available streaming values, but does not parse those files as generator
-input and does not require unavailable installed overlay content.
+Only streaming fields from these sources affect production. Opening a world may
+follow the legacy shell's `flags` and `overlays` to apply available streaming
+values, but those files are never generator input and unavailable installed
+generator content is irrelevant to reload.
 
 ### Rendering
 
@@ -206,12 +205,8 @@ applied first, followed by its overlays in declaration order. Loading then
 continues with the next source, so project-root and per-world values cannot be
 overridden by an overlay from a lower-precedence source. Overlay paths are
 resolved only by the source that declared them.
-During new-world creation, declaring an overlay that the source cannot load is
-a configuration error. The diagnostic names both the declaring source and the
-resolved file or embedded resource path; the source layer is not published
-partially. The existing-world streaming-only load skips unavailable overlay
-content because installed generator definitions are not required to reopen a
-published save.
+The streaming-only load skips unavailable overlay content. Generator
+definitions do not use this overlay mechanism.
 
 ---
 
@@ -255,161 +250,35 @@ supported schema/semantics versions.
 
 ---
 
-## World Generation Config
+## Generator Definitions
 
-`WorldConfiguration` holds an explicit generator source identity plus separate
-`WorldGenConfig` and `StreamingConfig` values. For new-world creation, each
-source and its overlays are applied to both typed configurations before loading
-moves to the next source. The highest-precedence complete `generator` identity
-records the selected definition's namespaced ID and positive source revision.
-Every source that changes definition fields, directly or through an applied
-overlay, declares that identity at its root. Identity-only sources and
-definition-changing sources without identity are rejected; seed- and
-streaming-only sources may retain the selected definition's identity. Overlays
-cannot replace provenance independently from their declaring source.
-Existing worlds apply only streaming fields from base sources and available
-overlays; their saved generator snapshot remains the sole generation input.
+Production generation is graph-only. New-world creation selects a named
+`generator_definitions` asset; the shipped bootstrap selects `rigel:default`
+from `assets/generators/default.yaml`. An installed definition owns:
 
-Defaults below reflect the code defaults from `WorldGenConfig`. The embedded
-config (`assets/config/world_generation.yaml`) overrides many of these values.
+- schema version, namespaced ID, positive source revision, label, and
+  description;
+- finite inclusive bounds and explicit solid/water materials;
+- sea level, terrain output name, climate, biome targets, coast range,
+  per-biome `water_fill`, and surface layers;
+- the density graph, optional caves, and optional structures.
 
-### Quick Reference (World Generation)
+Definitions are strict. Unknown or type-inapplicable fields, unknown node or
+climate types, duplicate IDs, dangling references, cycles, missing terrain or
+cave outputs, invalid biome/material references, invalid bounds, and
+incoherent cave/structure dependencies fail before staging a save. All declared
+definitions are validated as one set, and IDs are unique across that set.
 
-| Key | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `generator.id` | namespaced string | required | Selected definition identity persisted as provenance. |
-| `generator.source_revision` | positive uint | required | Author revision persisted as provenance; it is not the runtime evaluator version. |
-| `seed` | int | `1337` | Global world seed. |
-| `solid_block` | string | `base:debug` | Block ID used for solid fill. |
-| `surface_block` | string | `base:debug` | Block ID used for surface fill. |
-| `world.min_y` | int | `-64` | Inclusive minimum generated Y; lower generator output is air. Persisted rows are retained but masked from meshes while excluded. Supported range is `[-4096,4096]`. |
-| `world.max_y` | int | `320` | Inclusive maximum generated Y; higher generator output is air. Persisted rows are retained but masked from meshes while excluded. Supported range is `[-4096,4096]`. |
-| `world.sea_level` | int | `0` | Sea level for water placement. Values outside the world bounds coherently produce no water or flood all eligible air. |
-| `terrain.base_height` | float | `16.0` | Base terrain height. |
-| `terrain.height_variation` | float | `16.0` | Terrain height variation. |
-| `terrain.surface_depth` | int | `3` | Surface layer depth (maximum `32`, the fixed chunk edge). |
-| `terrain.density_strength` | float | `0.0` | Adds density noise influence. |
-| `terrain.gradient_strength` | float | `1.0` | Vertical density gradient. |
-| `terrain.noise.*` | object | - | Base height noise (see below). |
-| `terrain.density_noise.*` | object | - | Density noise (see below). |
-| `climate.local_blend` | float | `1.0` | Blend factor for local climate. |
-| `climate.latitude_scale` | float | `0.0` | Latitude noise scale. |
-| `climate.latitude_strength` | float | `0.0` | Latitude influence. |
-| `climate.global.*` | object | - | Global climate noise (see below). |
-| `climate.local.*` | object | - | Local climate noise (see below). |
-| `biomes.blend_power` | float | `2.0` | Biome blend power. |
-| `biomes.epsilon` | float | `0.0001` | Blend epsilon. |
-| `biomes.coast_band.*` | object | - | Optional coast override. |
-| `biomes.entries[]` | list | - | Biome definitions. |
-| `density_graph.outputs` | map | - | Output name -> node id (maximum 8 retained names). |
-| `density_graph.nodes[]` | list | - | Density node graph (maximum 32 retained nodes). |
-| `density_graph.nodes[].inputs[]` | list | - | Input node IDs (maximum 8 retained IDs per node). |
-| `density_graph.nodes[].spline[]` | list | - | Spline control points (maximum 16 per node). |
-| `caves.density_output` | string | `cave_density` | Density output name. |
-| `caves.threshold` | float | `0.5` | Density threshold. |
-| `structures.features[]` | list | - | Simple feature definitions. |
-| `generation.stages` | map | all enabled | Boolean stage enable flags. |
-| `flags` | map | - | Boolean flags for overlays. |
-| `overlays[]` | list | - | Overlay definitions. |
+The canonical save snapshot contains normalized effective runtime data. It
+sorts keyed content, retains only graph nodes reachable from terrain and enabled
+cave outputs, and omits author metadata, aliases, comments, overlays, flags,
+inactive sections, and legacy scalar terrain forms. The evaluator consumes the
+same `GeneratorDefinitionData` represented by those bytes.
 
-Creation sources are strict for generator fields. Unknown keys, wrong
-collection shapes, missing or duplicate node identities, duplicate fixed
-fields, unused output semantics, legacy `world.version`, and fields that do not
-apply to a density node's declared type reject creation before any save path is
-published.
-
-Noise objects (`terrain.noise`, `terrain.density_noise`, `climate.*.*`) use:
-
-| Key | Type | Default |
-| --- | --- | --- |
-| `octaves` | int | `5` (maximum `16`) |
-| `frequency` | float | `0.005` |
-| `lacunarity` | float | `2.0` |
-| `persistence` | float | `0.5` |
-| `scale` | float | `1.0` |
-| `offset` | float | `0.0` |
-
-Biome `surface[].depth` values are also limited to `32`, and the positive depths
-in one biome must total at most `32`. Surface rules run only in the chunk that
-contains the surface, so larger depths add iteration without producing blocks.
-Structure `min_height`/`max_height` values may span vertical chunks and are
-limited above by the maximum world height (`1024`). Negative surface depths
-retain their no-output behavior; negative structure minima remain supported and
-use overflow-safe 64-bit range selection, including mixed-sign ranges.
-
-World generation accepts at most 32 biome entries, 32 surface layers per biome,
-16 structure features, and 32 biome filters per feature. At the scalar maxima,
-the structure stage intersects each pillar with the current chunk and performs
-at most 524,288 pillar-height iterations per chunk before chance and biome
-filtering; shipped configuration uses one feature.
-
-Key top-level fields (see `assets/config/world_generation.yaml` for examples):
-
-- `seed`, `solid_block`, `surface_block`
-- `world`: `min_y`, `max_y`, `sea_level`, `version`
-- `flags`: boolean map used by overlays
-- `terrain`: base heights and noise controls
-- `climate`: global/local temperature + humidity + continentalness noise
-- `biomes`: biome targets, weighting, and surface layers
-- `density_graph`: node graph for terrain density
-- `caves`: carver settings
-- `structures`: simple feature generation
-- `generation.stages`: stage enable map
-- `overlays`: conditional config overlays
-
-World bounds are inclusive, ordered, and limited to 1,024 blocks of vertical
-span. The coordinate limit allows worlds to be placed within 128 vertical
-chunks on either side of the origin, while the span limit bounds the global
-surface search to 1,024 density samples per column. Noise declarations are
-limited to 16 octaves so every fBm sample has a fixed product-level work bound.
-Density graphs are limited to 32 nodes, 8 retained inputs per node, and 16
-spline points per node, plus 8 named outputs. The shipped graph uses 21 nodes,
-at most 3 inputs, at most 9 spline points, and 2 outputs. The limits bound graph
-storage and noise grids to 32 nodes, retained edges to 256, and linear spline
-comparisons to 512 per full graph sample while leaving measured headroom over
-the shipped graph. Cycles are rejected because their cached evaluation would
-otherwise depend on sample history. These values are validated before a
-`WorldGenerator` is constructed.
-
-### Pipeline Stages
-
-`generation.stages` maps fixed stage names to boolean enable flags. Map key
-order has no runtime meaning. Unknown stage names are reported and ignored.
-World-generation and render boolean settings use the exact lowercase scalars
-`true` and `false`; aliases, mixed case, containers, and other malformed
-values are rejected with the source and full key path.
-
-Current stage names:
-
-- `climate_global`
-- `climate_local`
-- `biome_resolve`
-- `terrain_density`
-- `caves`
-- `surface_rules`
-- `structures`
-
-Stages default to enabled unless explicitly disabled.
-The `generation.stages.caves` flag is the only control that enables or disables
-cave carving; the `caves` object contains only cave-stage parameters.
-
-### Flags and Overlays
-
-Overlays are applied after the declaring source's base YAML, in the order they
-appear in the `overlays` list. Each overlay is a `{ path, when }` pair:
-
-- `path`: YAML file to load.
-- `when`: name of a boolean in `flags` (optional).
-
-If `when` is omitted, the overlay is unconditional. If it names a false or
-missing flag, the overlay is skipped. The condition uses the configuration
-state at that source layer. Overlays may declare more overlays. Nested
-declarations are appended after any sibling overlays already pending for the
-source layer, and a path is applied at most once within that layer.
-
-The shipped overlay:
-
-- `assets/config/worldgen_overlays/no_carvers.yaml` disables caves.
+Engine code derives the fixed stage sequence: global climate, local climate,
+biome resolution, terrain density, optional caves, surface rules, and optional
+structures. Authors enable caves and structures through their definition-owned
+sections; there is no author-facing pipeline or simple terrain mode.
 
 ---
 
@@ -591,8 +460,8 @@ Key fields:
 - `providers`: typed backend settings keyed by provider ID. The only supported
   configuration provider is `rigel:persistence.cr`.
 
-CR's `lz4` option uses the same exact lowercase `true`/`false` contract as
-world-generation and render booleans. Invalid values fail with the source and
+CR's `lz4` option uses the exact lowercase `true`/`false` contract. Invalid
+values fail with the source and
 full key before a source layer is published. Example from the shipped config:
 
 ```yaml
@@ -618,11 +487,9 @@ and used directly in the override paths:
 - `config/worlds/<worldId>/persistence.yaml`
 
 These files are optional and only override fields they define. As the last
-source layer, they have the highest precedence. Generation fields affect only
-new-world creation; they do not override a published save's generator
-snapshot. The world-generation file's streaming fields still apply at
-bootstrap for an existing world. Available conditional and nested overlays
-retain their normal streaming precedence without applying generation fields.
+source layer, they have the highest precedence. Only the world-generation
+file's streaming fields affect production bootstrap; its legacy generation
+fields do not affect either new or published worlds.
 
 ---
 
@@ -630,13 +497,11 @@ retain their normal streaming precedence without applying generation fields.
 
 - Configs and saved world identity are loaded once at startup; there is no hot
   reload.
-- Validation is implemented by the typed providers rather than one generic
-  schema engine. Generator creation fields are strict; other current config
-  domains diagnose and ignore unknown fixed keys. Invalid scalar shapes and
-  types, strict booleans, numeric bounds, aggregate work limits, cross-field
-  world bounds, and density-graph cycles are rejected before runtime resource
-  construction.
-- World generation overlays are the only supported overlay mechanism.
+- Validation is implemented by concrete owners rather than one generic schema
+  engine. Generator definitions and save-owned settings are strict; other
+  current config domains retain their documented parsing behavior.
+- Conditional overlays remain only in the temporary streaming configuration
+  shell; generator definitions do not support overlays.
 - Shipped player binding defaults are content in the asset manifest; sparse
   global user replacements are `UserPreferences`.
 

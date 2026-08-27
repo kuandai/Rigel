@@ -8,7 +8,7 @@ streaming system in Rigel.
 ## 1. Overview
 
 - Deterministic, seed-based generation per chunk.
-- Fixed stage order; config can enable or disable stages.
+- Fixed engine-owned stage order derived from strict generator content.
 - Generation and meshing run on background threads.
 - Streaming is driven by `WorldView` and `ChunkStreamer`.
 - Persistence integrates via loader callbacks and chunk dirty flags.
@@ -29,8 +29,9 @@ surface_rules
 structures
 ```
 
-Stage order is fixed in code. The `generation.stages` config map contains an
-enable flag for each stage; its key order has no runtime meaning.
+Stage order is fixed in code. Caves and structures are present only when their
+validated definition sections are enabled; authors do not configure or reorder
+the pipeline.
 
 ---
 
@@ -51,33 +52,28 @@ enable flag for each stage; its key order has no runtime meaning.
 
 - Computes weights from distance to each biome target.
 - Picks primary and secondary biomes plus blend factor.
-- Optional coast band override: `biomes.coast_band` forces a biome within a
+- The required `biomes.coast` range forces its named biome within a
   continentalness range.
 
 ### 3.4 terrain_density
 
 - Clears the chunk to air.
-- If a density graph is present, evaluates output `base_density` per voxel.
-- Otherwise uses `terrain.noise` and `terrain.density_noise` fallback:
-  `density = density_noise * density_strength + (height - y) * gradient_strength`.
-- Fills solid blocks using `solid_block` (config).
-- Fills water up to `world.sea_level` when the column biome is `sea` or `beach`
-  and the block `base:water[type=source]` is registered.
+- Evaluates the graph output named by `terrain.density_output` per voxel.
+- Fills solid blocks using the definition's required `solid_material`.
+- Fills the required `water_material` through sea level only for biomes whose
+  explicit `water_fill` value is true.
 - Records the highest solid block per column in `heightMap`.
 
 ### 3.5 caves
 
-- Enabled or disabled by `generation.stages.caves`.
-- Requires a density graph.
-- Evaluates the `caves.density_output` output (default `cave_density`).
+- Included when `caves.enabled` is true.
+- Evaluates the required `caves.density_output` graph output.
 - Carves to air when `density > caves.threshold`.
 
 ### 3.6 surface_rules
 
 - Uses `heightMap` to apply surface materials.
-- If the biome defines `surface` layers, those are applied in order.
-- Otherwise uses `surface_block` with `terrain.surface_depth`.
-- Uses sand when `height <= sea_level + 4` and `base:sand` is registered.
+- Applies each biome's required material/depth surface layers in order.
 
 ### 3.7 structures
 
@@ -109,7 +105,7 @@ zero.
 
 - Node types include noise2D, noise3D, add/mul, clamp, spline, climate lookups,
   and `y` (vertical coordinate).
-- `density_graph.outputs.base_density` drives the base terrain density.
+- `terrain.density_output` selects the graph output that drives terrain.
 - `caves.density_output` selects the output used for cave carving.
 
 When a graph is present, 3D noise nodes are sampled using a per-chunk grid
@@ -137,8 +133,8 @@ explicit failed state until a later streaming requeue retries them.
 
 - The desired set is a sphere around the camera chunk with radius
   `streaming.view_distance_chunks`, intersected with the generator's inclusive
-  finite Y range. Chunks wholly below `world.min_y` or wholly above
-  `world.max_y` never enter source, generation, or mesh scheduling.
+  finite Y range. Chunks wholly below `bounds.min_y` or wholly above
+  `bounds.max_y` never enter source, generation, or mesh scheduling.
 - Entries use shared chunk importance: the camera-containing chunk first,
   then squared chunk distance, then lexicographic chunk coordinate. Generation
   and direct-view mesh admission therefore use the same deterministic order.
@@ -275,7 +271,7 @@ region data asynchronously, builds chunk payloads off-thread, then applies
 payloads on the main thread with a budget. Partial Memory-format spans use
 generator base fill before stored overlays because Memory enables
 `fillMissingChunkSpans`; CR and the default capability leave uncovered voxels
-as air. Generator base fill is clipped to `world.min_y..world.max_y`; stored
+as air. Generator base fill is clipped to `bounds.min_y..bounds.max_y`; stored
 overlays remain authoritative data, while mesh-task sampling masks any stored
 rows currently outside that visible range.
 
@@ -349,21 +345,13 @@ unchanged chunks when persisting data.
 
 ## 7. Configuration and Overrides
 
-New-world generator creation input is loaded from:
-
-- `assets/config/world_generation.yaml` (embedded as `raw/world_config`)
-- `config/world_generation.yaml`
-- `world_generation.yaml`
-- `config/worlds/<worldId>/world_generation.yaml`
-
-The selected creation input declares `generator.id` and
-`generator.source_revision` separately from runtime definition data. Unknown,
-duplicate, malformed, missing-identity, unused-output, and
-density-node-type-inapplicable generator fields are rejected. Generator fields
-and provenance are selected as one source: overlays inherit their declaring
-source's identity, while seed- and streaming-only sources may retain the
-already-selected identity. The evaluator semantics version is engine-owned and
-is not read from `world.version`.
+New-world generator creation input comes from a named
+`generator_definitions` asset declaration. The shipped bootstrap selects
+`rigel:default`, declared at `assets/generators/default.yaml`. Definitions own
+their schema version, namespaced ID, positive source revision, label,
+description, bounds, materials, climate, biomes, graph, caves, and structures.
+Unknown or inapplicable fields, duplicate IDs, dangling references, invalid
+bounds, missing outputs, and unavailable materials reject creation.
 
 The resolved graph definition is validated and canonically stored as
 `saves/world_<worldId>/generator-definition.yaml`; actual seed and generator
@@ -371,17 +359,8 @@ provenance are stored separately in `world-settings.yaml`. The snapshot is the
 authoritative input on reload, so later installed-definition changes or absence
 do not alter unexplored generation in that world. Saves without the complete
 supported pair are rejected without modifying their existing files.
-Solid, surface, water, shore, biome-layer, and structure material identifiers
+Solid, water, biome-layer, and structure material identifiers
 are part of that saved definition and are validated before generation starts.
-
-Overlays:
-
-- `overlays` is a list of `{ path, when }`.
-- `when` references a boolean flag from `flags`.
-- Overlays are resolved using the same config sources.
-
-Overlays are creation-time composition only. They are not loaded when opening
-an existing world's saved snapshot.
 
 ---
 

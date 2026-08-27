@@ -70,6 +70,36 @@ void AssetManager::loadManifest(const std::string& path) {
 
     ryml::ConstNodeRef assets = root["assets"];
 
+    // Generator definitions are consumed only as a completely validated set.
+    // Reject declaration collisions before publishing any manifest entries.
+    std::unordered_set<std::string> generatorDeclarations;
+    for (const ryml::ConstNodeRef category : assets.children()) {
+        const std::string categoryName = Util::toStdString(category.key());
+        if (categoryName != "generator_definitions") {
+            continue;
+        }
+        for (const ryml::ConstNodeRef assetNode : category.children()) {
+            const std::string fullId = categoryName + "/" +
+                Util::toStdString(assetNode.key());
+            if (m_entries.contains(fullId) ||
+                !generatorDeclarations.insert(fullId).second) {
+                throw std::invalid_argument(
+                    "Duplicate generator definition asset declaration '" +
+                    fullId + "'");
+            }
+            std::unordered_set<std::string> fields;
+            for (const ryml::ConstNodeRef field : assetNode.children()) {
+                const std::string fieldName = Util::toStdString(field.key());
+                if (!fields.insert(fieldName).second) {
+                    throw std::invalid_argument(
+                        "Duplicate field '" + fieldName +
+                        "' in generator definition asset declaration '" +
+                        fullId + "'");
+                }
+            }
+        }
+    }
+
     // Iterate categories (raw, textures, shaders, etc.)
     for (ryml::ConstNodeRef category : assets.children()) {
         std::string categoryName = Util::toStdString(category.key());
@@ -78,25 +108,6 @@ void AssetManager::loadManifest(const std::string& path) {
         for (ryml::ConstNodeRef assetNode : category.children()) {
             std::string assetName = Util::toStdString(assetNode.key());
             const std::string fullId = categoryName + "/" + assetName;
-
-            if (categoryName == "generator_definitions") {
-                if (m_entries.contains(fullId)) {
-                    throw std::invalid_argument(
-                        "Duplicate generator definition asset declaration '" +
-                        fullId + "'");
-                }
-                std::unordered_set<std::string> fields;
-                for (const ryml::ConstNodeRef field : assetNode.children()) {
-                    const std::string fieldName =
-                        Util::toStdString(field.key());
-                    if (!fields.insert(fieldName).second) {
-                        throw std::invalid_argument(
-                            "Duplicate field '" + fieldName +
-                            "' in generator definition asset declaration '" +
-                            fullId + "'");
-                    }
-                }
-            }
 
             AssetEntry entry;
             entry.category = categoryName;

@@ -6,6 +6,7 @@
 #include "Rigel/Voxel/ChunkLoadRequest.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/StreamingDiagnostics.h"
+#include "Rigel/Voxel/ViewDistancePolicy.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 
 #include <atomic>
@@ -21,7 +22,10 @@
 #include <unordered_set>
 #include <vector>
 
-namespace Rigel::Voxel { class World; class Chunk; }
+namespace Rigel {
+class ApplicationPreferences;
+namespace Voxel { class World; class Chunk; }
+}
 
 namespace Rigel::Persistence {
 
@@ -39,7 +43,16 @@ public:
                      uint32_t worldGenVersion,
                      size_t ioThreads,
                      size_t workerThreads,
-                     int viewDistanceChunks,
+                     std::shared_ptr<const Voxel::WorldGenerator> generator);
+    AsyncChunkLoader(PersistenceService& service,
+                     PersistenceContext context,
+                     Voxel::World& world,
+                     uint32_t worldGenVersion,
+                     size_t ioThreads,
+                     size_t workerThreads,
+                     // Explicit developer/test preload injection. This is a
+                     // region radius, not a View Distance interpretation.
+                     int explicitPreloadRadiusRegions,
                      std::shared_ptr<const Voxel::WorldGenerator> generator);
     ~AsyncChunkLoader();
 
@@ -64,7 +77,12 @@ public:
     void setLoadQueueLimit(size_t maxPending);
 
 private:
+    friend class ::Rigel::ApplicationPreferences;
     friend struct detail::AsyncChunkLoaderTestAccess;
+
+    void applyViewDistancePolicy(
+        std::shared_ptr<const Voxel::ViewDistancePolicy> policy);
+    int viewPolicyRegionSpanChunks() const;
 
     struct RegionKeyHash {
         size_t operator()(const RegionKey& key) const;
@@ -257,6 +275,7 @@ private:
     size_t m_regionDrainBudget = 32;
 
     std::shared_ptr<const Voxel::WorldGenerator> m_generator;
+    std::shared_ptr<const Voxel::ViewDistancePolicy> m_viewDistancePolicy;
 
     std::function<void()> m_regionLoadStartCallback;
     std::function<void(const RegionKey&, RegionJobOrigin)>

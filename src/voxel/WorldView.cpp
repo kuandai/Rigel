@@ -108,13 +108,43 @@ void WorldView::setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback ev
 }
 
 void WorldView::setStreamConfig(const StreamingConfig& config) {
-    m_streamer.setConfig(config);
+    StreamingConfig effective = config;
+    if (m_viewDistancePolicy) {
+        effective.viewDistanceChunks =
+            m_viewDistancePolicy->desiredRadiusChunks();
+        effective.unloadDistanceChunks =
+            m_viewDistancePolicy->unloadRadiusChunks();
+    }
+    m_streamer.setConfig(effective);
 }
 
-void WorldView::applyViewDistanceChunks(int chunks) {
-    m_streamer.applyViewDistanceChunks(chunks);
+void WorldView::setRenderConfig(const WorldRenderConfig& config) {
+    m_renderConfig = config;
+    if (m_viewDistancePolicy) {
+        m_renderConfig.renderDistance =
+            m_viewDistancePolicy->renderDistanceWorldUnits();
+    }
+}
+
+void WorldView::applyViewDistancePolicy(
+    std::shared_ptr<const ViewDistancePolicy> policy) {
+    if (!policy) {
+        throw std::invalid_argument(
+            "WorldView requires a complete View Distance policy");
+    }
+    m_streamer.applyViewDistancePolicy(policy);
     m_renderConfig.renderDistance =
-        static_cast<float>((chunks + 1) * Chunk::SIZE);
+        policy->renderDistanceWorldUnits();
+    m_viewDistancePolicy = std::move(policy);
+}
+
+float WorldView::projectionFarPlaneWorldUnits() const {
+    if (m_viewDistancePolicy) {
+        return m_viewDistancePolicy->projectionFarPlaneWorldUnits();
+    }
+    return std::max(
+        500.0f,
+        m_renderConfig.renderDistance + static_cast<float>(Chunk::SIZE));
 }
 
 void WorldView::setBenchmark(ChunkBenchmarkStats* stats) {
@@ -179,6 +209,16 @@ void WorldView::render(const glm::mat4& view,
     ctx.shadowTransmitShader = m_shadowTransmitShader;
     ctx.shadowCaster = m_world ? &shadowCaster : nullptr;
     ctx.config = m_renderConfig;
+    if (m_viewDistancePolicy) {
+        ctx.config.renderDistance =
+            m_viewDistancePolicy->renderDistanceWorldUnits();
+        const float shadowCeiling =
+            m_viewDistancePolicy->shadowDistanceCeilingWorldUnits();
+        if (ctx.config.shadow.maxDistance <= 0.0f ||
+            ctx.config.shadow.maxDistance > shadowCeiling) {
+            ctx.config.shadow.maxDistance = shadowCeiling;
+        }
+    }
     ctx.view = view;
     ctx.projection = projection;
     ctx.viewProjection = projection * view;

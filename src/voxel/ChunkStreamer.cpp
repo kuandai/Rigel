@@ -167,6 +167,12 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     const int previousUnloadDistance = std::max(
         previousViewDistance, m_config.unloadDistanceChunks);
     m_config = config;
+    if (m_viewDistancePolicy) {
+        m_config.viewDistanceChunks =
+            m_viewDistancePolicy->desiredRadiusChunks();
+        m_config.unloadDistanceChunks =
+            m_viewDistancePolicy->unloadRadiusChunks();
+    }
     m_cache.setMaxChunks(m_config.maxResidentChunks);
     if (activeStream) {
         int viewDistance = std::max(0, m_config.viewDistanceChunks);
@@ -380,10 +386,59 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     refreshDiagnostics(false);
 }
 
-void ChunkStreamer::applyViewDistanceChunks(int chunks) {
+void ChunkStreamer::applyViewDistancePolicy(
+    std::shared_ptr<const ViewDistancePolicy> policy) {
+    if (!policy) {
+        throw std::invalid_argument(
+            "ChunkStreamer requires a complete View Distance policy");
+    }
     StreamingConfig updated = m_config;
-    updated.viewDistanceChunks = chunks;
-    setConfig(updated);
+    updated.viewDistanceChunks = policy->desiredRadiusChunks();
+    updated.unloadDistanceChunks = policy->unloadRadiusChunks();
+    const bool activeStream =
+        m_initialStreamingBegun && m_lastCenter.has_value();
+    if (!activeStream) {
+        m_viewDistancePolicy = std::move(policy);
+        setConfig(updated);
+        return;
+    }
+
+    const int previousViewDistance = std::max(0, m_config.viewDistanceChunks);
+    const int previousUnloadDistance = std::max(
+        previousViewDistance, m_config.unloadDistanceChunks);
+    const int viewDistance = std::max(0, updated.viewDistanceChunks);
+    const int unloadDistance = std::max(
+        viewDistance, updated.unloadDistanceChunks);
+    m_viewDistancePolicy = std::move(policy);
+    m_config.viewDistanceChunks = updated.viewDistanceChunks;
+    m_config.unloadDistanceChunks = updated.unloadDistanceChunks;
+
+    if (viewDistance == previousViewDistance &&
+        unloadDistance == previousUnloadDistance) {
+        return;
+    }
+    if (m_generator) {
+        const bool reconciliationInProgress =
+            m_worldBoundsReconciliation &&
+            m_worldBoundsReconciliation->deferredCursor.has_value();
+        if (!m_worldBoundsReconciliation) {
+            m_worldBoundsReconciliation = PendingWorldBoundsReconciliation{
+                .replacement = m_generator->definition().bounds,
+                .replacementSemanticsVersion =
+                    m_generator->semanticsVersion()
+            };
+        }
+        m_worldBoundsReconciliation->retentionCenter = *m_lastCenter;
+        m_worldBoundsReconciliation->retentionRadiusSquared =
+            unloadDistance * unloadDistance;
+        m_worldBoundsReconciliation->revisitFromStart =
+            m_worldBoundsReconciliation->revisitFromStart ||
+            reconciliationInProgress;
+    }
+    m_desiredSetRebuildPending = true;
+    m_lastViewDistance = -1;
+    m_lastUnloadDistance = -1;
+    refreshDiagnostics(false);
 }
 
 void ChunkStreamer::setGenerator(std::shared_ptr<const WorldGenerator> generator) {

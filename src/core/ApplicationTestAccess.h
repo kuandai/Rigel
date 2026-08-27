@@ -40,11 +40,22 @@ struct ApplicationCloseHooks {
 };
 
 struct ApplicationViewDistanceState {
+    PreferenceApplyResult requestResult;
     PreferenceApplyResult result;
+    int beforeRequestedChunks = 0;
+    int beforeEffectiveChunks = 0;
+    int beforeStreamedChunks = 0;
+    float beforeRenderDistance = 0.0f;
+    uint64_t beforePolicyGeneration = 0;
     int requestedChunks = 0;
     int effectiveChunks = 0;
     int streamedChunks = 0;
     float renderDistance = 0.0f;
+    float projectionFarPlane = 0.0f;
+    int unloadChunks = 0;
+    int preloadRadiusRegions = 0;
+    float shadowDistanceCeiling = 0.0f;
+    uint64_t policyGeneration = 0;
 };
 
 class ApplicationTestAccess {

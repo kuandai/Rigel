@@ -10,6 +10,7 @@
 #include "StreamingDiagnostics.h"
 #include "StreamingConfig.h"
 #include "TextureAtlas.h"
+#include "ViewDistancePolicy.h"
 #include "WorldMeshStore.h"
 #include "WorldGenerator.h"
 
@@ -195,7 +196,11 @@ public:
     void getDebugStates(std::vector<DebugChunkState>& out,
                         ChunkCoord center,
                         int radius) const;
-    int viewDistanceChunks() const { return m_config.viewDistanceChunks; }
+    int viewDistanceChunks() const {
+        return m_viewDistancePolicy
+            ? m_viewDistancePolicy->viewDistanceChunks()
+            : m_config.viewDistanceChunks;
+    }
     const WorkMetrics& workMetrics() const { return m_workMetrics; }
     const StreamingDiagnosticSnapshot& diagnostics() const { return m_diagnostics; }
 
@@ -204,7 +209,8 @@ private:
     friend struct detail::ChunkStreamerTestAccess;
 
     void reset();
-    void applyViewDistanceChunks(int chunks);
+    void applyViewDistancePolicy(
+        std::shared_ptr<const ViewDistancePolicy> policy);
 
     static constexpr int kPaddedSize = Chunk::SIZE + 2;
     static constexpr int kPaddedVolume = kPaddedSize * kPaddedSize * kPaddedSize;
@@ -374,6 +380,7 @@ private:
         PendingMeshRequestGreater>;
 
     StreamingConfig m_config;
+    std::shared_ptr<const ViewDistancePolicy> m_viewDistancePolicy;
     ChunkManager* const m_chunkManager;
     WorldMeshStore* const m_meshStore;
     BlockRegistry* const m_registry;

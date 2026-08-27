@@ -38,6 +38,21 @@ static_assert(!PubliclyAppliesViewDistance<AsyncChunkLoader>);
 
 namespace Rigel::Persistence::detail {
 struct AsyncChunkLoaderTestAccess {
+    static int viewPolicyRegionSpanChunks(const AsyncChunkLoader& loader) {
+        return loader.viewPolicyRegionSpanChunks();
+    }
+
+    static void applyViewDistancePolicy(
+        AsyncChunkLoader& loader,
+        std::shared_ptr<const ViewDistancePolicy> policy) {
+        loader.applyViewDistancePolicy(std::move(policy));
+    }
+
+    static std::shared_ptr<const ViewDistancePolicy> viewDistancePolicy(
+        const AsyncChunkLoader& loader) {
+        return loader.m_viewDistancePolicy;
+    }
+
     static void setRegionLoadStartCallback(AsyncChunkLoader& loader,
                                            std::function<void()> callback) {
         loader.m_regionLoadStartCallback = std::move(callback);
@@ -1107,6 +1122,37 @@ TEST_CASE(AsyncChunkLoader_Request_Completes_Deterministic) {
     CHECK_EQ(resolved.front().coord, coord);
     CHECK_EQ(resolved.front().requestId, request.requestId);
     CHECK_EQ(resolved.front().outcome, ChunkLoadOutcome::Loaded);
+}
+
+TEST_CASE(AsyncChunkLoader_ConsumesThePreparedViewDistancePolicy) {
+    WorldResources resources;
+    World world;
+    world.initialize(resources);
+    auto generator = makeGenerator(resources.registry());
+    world.setGenerator(generator);
+    MemoryContext context;
+    AsyncChunkLoader loader(
+        context.service,
+        context.context,
+        world,
+        generator->semanticsVersion(),
+        0,
+        0,
+        generator);
+    const int regionSpan =
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            viewPolicyRegionSpanChunks(loader);
+    const auto policy = ViewDistancePolicy::derive(16, regionSpan, 4);
+
+    Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+        applyViewDistancePolicy(loader, policy);
+
+    CHECK_EQ(
+        Rigel::Persistence::detail::AsyncChunkLoaderTestAccess::
+            viewDistancePolicy(loader),
+        policy);
+    CHECK_EQ(policy->preloadRadiusRegions(), 1);
+    CHECK_EQ(policy->generation(), static_cast<uint64_t>(4));
 }
 
 TEST_CASE(AsyncChunkLoader_rejects_runtime_generator_outside_saved_snapshot) {

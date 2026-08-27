@@ -388,8 +388,7 @@ void FrameRenderer::render(const FrameRenderContext& context) {
             static_cast<float>(context.viewportHeight)
         : 1.0f;
     float nearPlane = 0.1f;
-    float farPlane = std::max(
-        500.0f, config.renderDistance + static_cast<float>(Voxel::Chunk::SIZE));
+    float farPlane = context.worldView.projectionFarPlaneWorldUnits();
 
     const auto [mainProjection, debugProjection] =
         m_impl->cameraProjections(aspect, nearPlane, farPlane);

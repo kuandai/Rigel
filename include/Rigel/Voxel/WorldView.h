@@ -3,6 +3,7 @@
 #include "ChunkBenchmark.h"
 #include "ChunkRenderer.h"
 #include "ChunkStreamer.h"
+#include "ViewDistancePolicy.h"
 #include "World.h"
 #include "WorldMeshStore.h"
 #include "WorldRenderContext.h"
@@ -42,8 +43,12 @@ public:
 
     const WorldMeshStore& meshStore() const { return m_meshStore; }
 
-    WorldRenderConfig& renderConfig() { return m_renderConfig; }
+    void setRenderConfig(const WorldRenderConfig& config);
     const WorldRenderConfig& renderConfig() const { return m_renderConfig; }
+    const std::shared_ptr<const ViewDistancePolicy>& viewDistancePolicy() const {
+        return m_viewDistancePolicy;
+    }
+    float projectionFarPlaneWorldUnits() const;
 
     /// Binds streaming to the generator already owned by the world.
     void setGenerator(std::shared_ptr<const WorldGenerator> generator);
@@ -96,7 +101,8 @@ public:
 private:
     friend class ::Rigel::ApplicationPreferences;
 
-    void applyViewDistanceChunks(int chunks);
+    void applyViewDistancePolicy(
+        std::shared_ptr<const ViewDistancePolicy> policy);
 
     World* m_world = nullptr;
     WorldResources* m_resources = nullptr;
@@ -104,6 +110,7 @@ private:
     WorldMeshStore m_meshStore;
     ChunkStreamer m_streamer;
     WorldRenderConfig m_renderConfig;
+    std::shared_ptr<const ViewDistancePolicy> m_viewDistancePolicy;
     Asset::Handle<Asset::ShaderAsset> m_shader;
     Asset::Handle<Asset::ShaderAsset> m_shadowDepthShader;
     Asset::Handle<Asset::ShaderAsset> m_shadowTransmitShader;

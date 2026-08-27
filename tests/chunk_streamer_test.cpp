@@ -182,11 +182,20 @@ struct ChunkStreamerTestAccess {
         return streamer.m_configRetiredWork.size();
     }
 
-    static StreamingConfig applyViewDistanceChunks(
+    static StreamingConfig applyViewDistancePolicy(
         ChunkStreamer& streamer,
-        int chunks) {
-        streamer.applyViewDistanceChunks(chunks);
+        int chunks,
+        uint64_t generation = 1) {
+        streamer.applyViewDistancePolicy(
+            ViewDistancePolicy::derive(chunks, 8, generation));
         return streamer.m_config;
+    }
+
+    static uint64_t viewDistancePolicyGeneration(
+        const ChunkStreamer& streamer) {
+        return streamer.m_viewDistancePolicy
+            ? streamer.m_viewDistancePolicy->generation()
+            : 0;
     }
 
     static size_t meshDispatchLimit(const ChunkStreamer& streamer) {
@@ -509,6 +518,8 @@ struct ChunkStreamerTestAccess {
 }
 
 namespace {
+std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry);
+
 template<typename T>
 concept HasPublicReset = requires(T& streamer) {
     streamer.reset();
@@ -516,7 +527,7 @@ concept HasPublicReset = requires(T& streamer) {
 
 static_assert(!HasPublicReset<ChunkStreamer>);
 
-TEST_CASE(ChunkStreamer_ViewDistancePreservesUnloadPolicy) {
+TEST_CASE(ChunkStreamer_ViewDistancePolicyDerivesUnloadHysteresis) {
     ChunkManager manager;
     BlockRegistry registry;
     WorldMeshStore meshStore;
@@ -529,10 +540,104 @@ TEST_CASE(ChunkStreamer_ViewDistancePreservesUnloadPolicy) {
 
     const StreamingConfig effective =
         Rigel::Voxel::detail::ChunkStreamerTestAccess::
-            applyViewDistanceChunks(streamer, 7);
+            applyViewDistancePolicy(streamer, 7);
 
     CHECK_EQ(effective.viewDistanceChunks, 7);
-    CHECK_EQ(effective.unloadDistanceChunks, 20);
+    CHECK_EQ(effective.unloadDistanceChunks, 8);
+}
+
+TEST_CASE(ChunkStreamer_ActiveViewPolicyDefersCancellationUntilUpdate) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, generator);
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 3;
+    streaming.unloadDistanceChunks = 4;
+    streaming.updateBudgetPerFrame = 0;
+    streaming.workerThreads = 0;
+    streamer.setConfig(streaming);
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::applyViewDistancePolicy(
+        streamer, 3, 8);
+
+    const ChunkCoord departed{3, 0, 0};
+    std::unordered_set<ChunkCoord, ChunkCoordHash> cancelled;
+    streamer.setChunkLoader([](ChunkLoadRequest) {
+        return ChunkLoadRequestResult::Queued;
+    });
+    streamer.setChunkLoadCancel([&](ChunkCoord coord) {
+        cancelled.insert(coord);
+    });
+    streamer.update(glm::vec3(0.0f));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::hasPendingLoad(
+        streamer, departed));
+
+    const StreamingConfig effective =
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            applyViewDistancePolicy(streamer, 2, 9);
+
+    CHECK_EQ(effective.viewDistanceChunks, 2);
+    CHECK_EQ(effective.unloadDistanceChunks, 3);
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            viewDistancePolicyGeneration(streamer),
+        static_cast<uint64_t>(9));
+    CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::hasPendingLoad(
+        streamer, departed));
+    CHECK(cancelled.find(departed) == cancelled.end());
+
+    streamer.update(glm::vec3(0.0f));
+
+    CHECK(!Rigel::Voxel::detail::ChunkStreamerTestAccess::hasPendingLoad(
+        streamer, departed));
+    CHECK(cancelled.find(departed) != cancelled.end());
+    CHECK(streamer.workMetrics().
+              lastUpdateResidentEvictionCoordinatesInspected <=
+          static_cast<uint64_t>(64));
+}
+
+TEST_CASE(ChunkStreamer_RepeatedViewPoliciesKeepOnlyTheLatestTransition) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, generator);
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 3;
+    streaming.unloadDistanceChunks = 4;
+    streaming.workerThreads = 0;
+    streaming.updateBudgetPerFrame = 1;
+    streaming.genQueueLimit = 1;
+    streamer.setConfig(streaming);
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::applyViewDistancePolicy(
+        streamer, 3, 1);
+    streamer.update(glm::vec3(0.0f));
+    const uint64_t jobsBeforeIncrease =
+        streamer.workMetrics().generationJobsStarted;
+
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::applyViewDistancePolicy(
+        streamer, 16, 2);
+    Rigel::Voxel::detail::ChunkStreamerTestAccess::applyViewDistancePolicy(
+        streamer, 5, 3);
+    const StreamingConfig latest =
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            applyViewDistancePolicy(streamer, 10, 4);
+
+    CHECK_EQ(latest.viewDistanceChunks, 10);
+    CHECK_EQ(latest.unloadDistanceChunks, 11);
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::
+            viewDistancePolicyGeneration(streamer),
+        static_cast<uint64_t>(4));
+
+    streamer.update(glm::vec3(0.0f));
+    CHECK_EQ(streamer.viewDistanceChunks(), 10);
+    CHECK(streamer.workMetrics().lastUpdateDesiredBuildCoordinatesInspected > 0);
+    CHECK(streamer.workMetrics().generationJobsStarted <=
+          jobsBeforeIncrease + 1);
 }
 
 class WorkerGate {

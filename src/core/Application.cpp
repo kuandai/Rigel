@@ -148,6 +148,7 @@ struct Application::Impl {
     void persistWorld();
     void persistPendingResizeForClose();
     void persistPendingResizeForCleanup() noexcept;
+    std::optional<PreferenceApplyResult> consumePendingViewDistance();
     void close();
     void closeNoThrow() noexcept;
     void shutdown() noexcept;
@@ -408,7 +409,6 @@ void Application::initialize() {
             worldGenVersion,
             ioThreads,
             loadWorkerThreads,
-            streamingConfig.viewDistanceChunks,
             generator);
         if (streamingConfig.loadQueueLimit >= 0) {
             m_impl->world.chunkLoader->setLoadQueueLimit(
@@ -423,11 +423,6 @@ void Application::initialize() {
         m_impl->world.chunkLoader->setMaxInFlightRegions(
             static_cast<size_t>(
                 std::max(0, streamingConfig.loadMaxInFlightRegions)));
-        m_impl->world.chunkLoader->setPrefetchRadius(
-            std::max(0, streamingConfig.loadPrefetchRadius));
-        m_impl->world.chunkLoader->setPrefetchPerRequest(
-            static_cast<size_t>(
-                std::max(0, streamingConfig.loadPrefetchPerRequest)));
         m_impl->world.worldView->setChunkLoader(
             [loader = m_impl->world.chunkLoader](Voxel::ChunkLoadRequest request) {
                 return loader
@@ -472,11 +467,12 @@ void Application::initialize() {
         if (profileEnv && profileEnv[0] != '\0') {
             renderConfig.profilingEnabled = (profileEnv[0] != '0');
         }
-        m_impl->world.worldView->renderConfig() = renderConfig;
+        m_impl->world.worldView->setRenderConfig(renderConfig);
         Core::Profiler::setEnabled(renderConfig.profilingEnabled);
         m_impl->world.worldView->setStreamConfig(streamingConfig);
         m_impl->preferences->initializeViewDistance(
-            *m_impl->world.worldView);
+            *m_impl->world.worldView,
+            m_impl->world.chunkLoader.get());
         if (m_impl->timing.benchmarkEnabled) {
             m_impl->world.worldView->setBenchmark(&m_impl->timing.benchmark);
         }
@@ -590,6 +586,20 @@ void Application::Impl::persistPendingResizeForCleanup() noexcept {
     }
 }
 
+std::optional<PreferenceApplyResult>
+Application::Impl::consumePendingViewDistance() {
+    if (!preferences) {
+        return std::nullopt;
+    }
+    if (!world.ready || !world.worldView) {
+        preferences->discardPendingViewDistance();
+        return std::nullopt;
+    }
+    return preferences->consumePendingViewDistance(
+        *world.worldView,
+        world.chunkLoader.get());
+}
+
 void Application::Impl::close() {
     if (shutDown) {
         return;
@@ -630,6 +640,10 @@ void Application::Impl::closeNoThrow() noexcept {
 void Application::Impl::shutdown() noexcept {
     if (std::exchange(shutDown, true)) {
         return;
+    }
+
+    if (preferences) {
+        preferences->discardPendingViewDistance();
     }
 
     persistPendingResizeForCleanup();
@@ -812,12 +826,34 @@ ApplicationTestAccess::applyViewDistanceAtFrameBoundary(
     Application application(
         std::move(impl), Application::Initialization::Skip);
     ApplicationViewDistanceState observed;
-    observed.result = application.applyViewDistance(candidateChunks);
+    observed.requestResult = application.applyViewDistance(candidateChunks);
+    observed.beforeRequestedChunks =
+        application.requestedPreferences().graphics.viewDistanceChunks;
+    observed.beforeEffectiveChunks = application.effectiveViewDistanceChunks();
+    observed.beforeStreamedChunks = view.viewDistanceChunks();
+    observed.beforeRenderDistance = view.renderConfig().renderDistance;
+    if (view.viewDistancePolicy()) {
+        observed.beforePolicyGeneration =
+            view.viewDistancePolicy()->generation();
+    }
+    const auto boundaryResult = state->consumePendingViewDistance();
+    observed.result = boundaryResult.value_or(observed.requestResult);
     observed.requestedChunks =
         application.requestedPreferences().graphics.viewDistanceChunks;
     observed.effectiveChunks = application.effectiveViewDistanceChunks();
     observed.streamedChunks = view.viewDistanceChunks();
     observed.renderDistance = view.renderConfig().renderDistance;
+    observed.projectionFarPlane = view.projectionFarPlaneWorldUnits();
+    if (view.viewDistancePolicy()) {
+        observed.unloadChunks =
+            view.viewDistancePolicy()->unloadRadiusChunks();
+        observed.preloadRadiusRegions =
+            view.viewDistancePolicy()->preloadRadiusRegions();
+        observed.shadowDistanceCeiling =
+            view.viewDistancePolicy()->shadowDistanceCeilingWorldUnits();
+        observed.policyGeneration =
+            view.viewDistancePolicy()->generation();
+    }
 
     state->world.ready = false;
     state->world.worldView = nullptr;
@@ -893,6 +929,38 @@ void Application::run() {
                 spdlog::warn(
                     "Window resize was published but durability is uncertain: {}",
                     resizeResult->message);
+            }
+        }
+        // Runtime preference swaps occur only here, after events have been
+        // collected for this application frame and before world work begins.
+        if (auto viewDistanceResult =
+                m_impl->consumePendingViewDistance()) {
+            if (viewDistanceResult->status ==
+                PreferenceApplyStatus::NotPublished) {
+                spdlog::error(
+                    "View Distance was not applied because its preference "
+                    "could not be published: {}",
+                    viewDistanceResult->message);
+            } else if (
+                viewDistanceResult->status ==
+                PreferenceApplyStatus::PersistenceBlocked) {
+                spdlog::error(
+                    "View Distance was not applied because preference "
+                    "persistence is blocked: {}",
+                    viewDistanceResult->message);
+            } else if (
+                viewDistanceResult->status ==
+                PreferenceApplyStatus::PublishedDurabilityUncertain) {
+                spdlog::warn(
+                    "View Distance was applied and published, but durability "
+                    "is uncertain: {}",
+                    viewDistanceResult->message);
+            } else if (
+                viewDistanceResult->status ==
+                PreferenceApplyStatus::Rejected) {
+                spdlog::error(
+                    "View Distance policy preparation failed: {}",
+                    viewDistanceResult->message);
             }
         }
         if (m_impl->window.pendingTimeReset) {
@@ -1153,9 +1221,7 @@ PreferenceApplyResult Application::applyViewDistance(int viewDistanceChunks) {
             PreferenceApplyStatus::Rejected,
             "view distance requires an active world session"};
     }
-    return m_impl->preferences->applyViewDistance(
-        *m_impl->world.worldView,
-        viewDistanceChunks);
+    return m_impl->preferences->requestViewDistance(viewDistanceChunks);
 }
 
 PreferenceApplyResult Application::applyInputPreferences(

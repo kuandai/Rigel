@@ -405,7 +405,9 @@ TEST_CASE(ApplicationPreferences_StartupViewDistanceUsesLoadedGlobalRequest) {
     requested.graphics.viewDistanceChunks = 7;
     auto preferences = fixture.owner(requested);
     const std::string before = readDocument(fixture.path);
-    fixture.view.renderConfig().renderDistance = 123.0f;
+    Rigel::Voxel::WorldRenderConfig renderConfig;
+    renderConfig.renderDistance = 123.0f;
+    fixture.view.setRenderConfig(renderConfig);
 
     preferences.initializeViewDistance(fixture.view);
 
@@ -414,6 +416,27 @@ TEST_CASE(ApplicationPreferences_StartupViewDistanceUsesLoadedGlobalRequest) {
     CHECK_NEAR(
         fixture.view.renderConfig().renderDistance,
         static_cast<float>(8 * Rigel::Voxel::Chunk::SIZE),
+        0.0001f);
+    CHECK_EQ(fixture.view.viewDistancePolicy()->unloadRadiusChunks(), 8);
+    CHECK_EQ(fixture.view.viewDistancePolicy()->preloadRadiusRegions(), 1);
+    CHECK_NEAR(
+        fixture.view.viewDistancePolicy()->shadowDistanceCeilingWorldUnits(),
+        static_cast<float>(8 * Rigel::Voxel::Chunk::SIZE),
+        0.0001f);
+
+    Rigel::Voxel::StreamingConfig attemptedStreamingOverride;
+    attemptedStreamingOverride.viewDistanceChunks = 16;
+    attemptedStreamingOverride.unloadDistanceChunks = 20;
+    attemptedStreamingOverride.workerThreads = 0;
+    fixture.view.setStreamConfig(attemptedStreamingOverride);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
+
+    Rigel::Voxel::WorldRenderConfig attemptedRenderOverride;
+    attemptedRenderOverride.renderDistance = 9999.0f;
+    fixture.view.setRenderConfig(attemptedRenderOverride);
+    CHECK_NEAR(
+        fixture.view.renderConfig().renderDistance,
+        fixture.view.viewDistancePolicy()->renderDistanceWorldUnits(),
         0.0001f);
     CHECK_EQ(readDocument(fixture.path), before);
 }
@@ -426,16 +449,25 @@ TEST_CASE(ApplicationPreferences_ViewDistanceValidatesBeforeSessionAndSave) {
     preferences.initializeViewDistance(fixture.view);
     const std::string before = readDocument(fixture.path);
 
-    const auto rejected = preferences.applyViewDistance(fixture.view, 1);
+    const auto rejected = preferences.requestViewDistance(1);
 
     CHECK_EQ(rejected.status, Rigel::PreferenceApplyStatus::Rejected);
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
     CHECK_EQ(readDocument(fixture.path), before);
 
-    const auto applied = preferences.applyViewDistance(fixture.view, 16);
+    const auto queued = preferences.requestViewDistance(16);
 
-    CHECK_EQ(applied.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(queued.status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
+    CHECK_EQ(readDocument(fixture.path), before);
+
+    const auto applied =
+        preferences.consumePendingViewDistance(fixture.view);
+
+    CHECK(applied.has_value());
+    CHECK_EQ(applied->status, Rigel::PreferenceApplyStatus::Applied);
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 16);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 16);
     CHECK_EQ(
@@ -455,10 +487,17 @@ TEST_CASE(ApplicationPreferences_ViewDistancePublicationOutcomesMatchSession) {
         setUserPreferencesBeforePublicationHookForTesting(
             &failBeforePublication);
 
-    const auto notPublished = preferences.applyViewDistance(fixture.view, 10);
-
     CHECK_EQ(
-        notPublished.status, Rigel::PreferenceApplyStatus::NotPublished);
+        preferences.requestViewDistance(10).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
+    const auto notPublished =
+        preferences.consumePendingViewDistance(fixture.view);
+
+    CHECK(notPublished.has_value());
+    CHECK_EQ(
+        notPublished->status, Rigel::PreferenceApplyStatus::NotPublished);
     CHECK_EQ(preferences.requested(), requested);
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
@@ -478,10 +517,15 @@ TEST_CASE(ApplicationPreferences_ViewDistancePublicationOutcomesMatchSession) {
         setUserPreferencesAfterPublicationHookForTesting(
             &failAfterPublication);
 
-    const auto uncertain = preferences.applyViewDistance(fixture.view, 10);
-
     CHECK_EQ(
-        uncertain.status,
+        preferences.requestViewDistance(10).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    const auto uncertain =
+        preferences.consumePendingViewDistance(fixture.view);
+
+    CHECK(uncertain.has_value());
+    CHECK_EQ(
+        uncertain->status,
         Rigel::PreferenceApplyStatus::PublishedDurabilityUncertain);
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 10);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 10);
@@ -500,12 +544,60 @@ TEST_CASE(ApplicationPreferences_ViewDistancePreparationFailureDoesNotMutateSess
     preferences.load();
     preferences.initializeViewDistance(fixture.view);
 
-    const auto result = preferences.applyViewDistance(fixture.view, 10);
+    CHECK_EQ(
+        preferences.requestViewDistance(10).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 12);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 12);
+    const auto result =
+        preferences.consumePendingViewDistance(fixture.view);
 
-    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK(result.has_value());
+    CHECK_EQ(
+        result->status,
+        Rigel::PreferenceApplyStatus::PersistenceBlocked);
     CHECK_EQ(preferences.effectiveViewDistanceChunks(), 12);
     CHECK_EQ(fixture.view.viewDistanceChunks(), 12);
     CHECK_EQ(readDocument(fixture.path), original);
+}
+
+TEST_CASE(ApplicationPreferences_ViewDistanceEditsSupersedeBeforeBoundary) {
+    ViewDistanceFixture fixture;
+    Rigel::Preferences::UserPreferences requested;
+    requested.graphics.viewDistanceChunks = 7;
+    auto preferences = fixture.owner(requested);
+    preferences.initializeViewDistance(fixture.view);
+
+    CHECK_EQ(
+        preferences.requestViewDistance(9).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(
+        preferences.requestViewDistance(16).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(
+        preferences.requestViewDistance(10).status,
+        Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 7);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 7);
+
+    const auto applied =
+        preferences.consumePendingViewDistance(fixture.view);
+
+    CHECK(applied.has_value());
+    CHECK_EQ(applied->status, Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(preferences.effectiveViewDistanceChunks(), 10);
+    CHECK_EQ(fixture.view.viewDistanceChunks(), 10);
+    CHECK_EQ(fixture.view.viewDistancePolicy()->generation(),
+             static_cast<uint64_t>(2));
+    CHECK_EQ(
+        Rigel::Preferences::UserPreferencesStore(fixture.path)
+            .load()
+            .graphics.viewDistanceChunks,
+        10);
+    const std::string persisted = readDocument(fixture.path);
+    CHECK_EQ(persisted.find("unload"), std::string::npos);
+    CHECK_EQ(persisted.find("prefetch"), std::string::npos);
+    CHECK(!preferences.consumePendingViewDistance(fixture.view).has_value());
 }
 
 TEST_CASE(ApplicationPreferences_StartupConsumesRequestWithoutWriting) {

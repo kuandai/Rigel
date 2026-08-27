@@ -23,7 +23,12 @@ namespace Render {
 class FrameRenderer;
 }
 
+namespace Persistence {
+class AsyncChunkLoader;
+}
+
 namespace Voxel {
+class ViewDistancePolicy;
 class WorldView;
 }
 
@@ -55,10 +60,14 @@ public:
     PreferenceApplyResult applyVerticalFov(
         Render::FrameRenderer& renderer,
         double candidateDegrees);
-    void initializeViewDistance(Voxel::WorldView& view);
-    PreferenceApplyResult applyViewDistance(
+    void initializeViewDistance(
         Voxel::WorldView& view,
-        int candidateChunks);
+        Persistence::AsyncChunkLoader* loader = nullptr);
+    PreferenceApplyResult requestViewDistance(int candidateChunks);
+    std::optional<PreferenceApplyResult> consumePendingViewDistance(
+        Voxel::WorldView& view,
+        Persistence::AsyncChunkLoader* loader = nullptr);
+    void discardPendingViewDistance() { m_pendingViewDistanceChunks.reset(); }
     void initializeInput(
         Input::InputState& input,
         const Input::InputBindings& playerDefaults);
@@ -125,6 +134,10 @@ private:
     std::optional<double> m_effectiveVerticalFovDegrees;
     int m_effectiveViewDistanceChunks =
         Preferences::kDefaultViewDistanceChunks;
+    std::shared_ptr<const Voxel::ViewDistancePolicy>
+        m_effectiveViewDistancePolicy;
+    uint64_t m_nextViewDistancePolicyGeneration = 1;
+    std::optional<int> m_pendingViewDistanceChunks;
     Preferences::InputPreferences m_effectiveInput;
     std::shared_ptr<const Input::InputBindings> m_effectiveBindings;
     Core::FramePacer m_framePacer;

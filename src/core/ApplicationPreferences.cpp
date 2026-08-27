@@ -1,5 +1,6 @@
 #include "ApplicationPreferences.h"
 
+#include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Voxel/WorldView.h"
@@ -98,6 +99,9 @@ void ApplicationPreferences::load() {
         m_requested.camera.verticalFovDegrees;
     m_effectiveViewDistanceChunks =
         m_requested.graphics.viewDistanceChunks;
+    m_effectiveViewDistancePolicy.reset();
+    m_nextViewDistancePolicyGeneration = 1;
+    m_pendingViewDistanceChunks.reset();
     m_effectiveInput = m_requested.input;
     m_logicalResizeDirty = false;
     m_pendingResize.reset();
@@ -485,14 +489,27 @@ PreferenceApplyResult ApplicationPreferences::applyVerticalFov(
     }
 }
 
-void ApplicationPreferences::initializeViewDistance(Voxel::WorldView& view) {
+void ApplicationPreferences::initializeViewDistance(
+    Voxel::WorldView& view,
+    Persistence::AsyncChunkLoader* loader) {
     const int requestedChunks = m_requested.graphics.viewDistanceChunks;
-    view.applyViewDistanceChunks(requestedChunks);
+    const int regionSpan = loader
+        ? loader->viewPolicyRegionSpanChunks()
+        : 8;
+    auto policy = Voxel::ViewDistancePolicy::derive(
+        requestedChunks,
+        regionSpan,
+        m_nextViewDistancePolicyGeneration++);
+    view.applyViewDistancePolicy(policy);
+    if (loader) {
+        loader->applyViewDistancePolicy(policy);
+    }
+    m_effectiveViewDistancePolicy = std::move(policy);
     m_effectiveViewDistanceChunks = requestedChunks;
+    m_pendingViewDistanceChunks.reset();
 }
 
-PreferenceApplyResult ApplicationPreferences::applyViewDistance(
-    Voxel::WorldView& view,
+PreferenceApplyResult ApplicationPreferences::requestViewDistance(
     int candidateChunks) {
     if (candidateChunks < Preferences::kMinimumViewDistanceChunks ||
         candidateChunks > Preferences::kMaximumViewDistanceChunks) {
@@ -502,7 +519,33 @@ PreferenceApplyResult ApplicationPreferences::applyViewDistance(
     }
     if (candidateChunks == m_requested.graphics.viewDistanceChunks &&
         candidateChunks == m_effectiveViewDistanceChunks) {
+        m_pendingViewDistanceChunks.reset();
         return {};
+    }
+    m_pendingViewDistanceChunks = candidateChunks;
+    return {};
+}
+
+std::optional<PreferenceApplyResult>
+ApplicationPreferences::consumePendingViewDistance(
+    Voxel::WorldView& view,
+    Persistence::AsyncChunkLoader* loader) {
+    if (!m_pendingViewDistanceChunks) {
+        return std::nullopt;
+    }
+    const int candidateChunks = *m_pendingViewDistanceChunks;
+    m_pendingViewDistanceChunks.reset();
+
+    std::shared_ptr<const Voxel::ViewDistancePolicy> candidatePolicy;
+    try {
+        candidatePolicy = Voxel::ViewDistancePolicy::derive(
+            candidateChunks,
+            loader ? loader->viewPolicyRegionSpanChunks() : 8,
+            m_nextViewDistancePolicyGeneration);
+    } catch (const std::exception& error) {
+        return std::optional<PreferenceApplyResult>{PreferenceApplyResult{
+            PreferenceApplyStatus::Rejected,
+            error.what()}};
     }
 
     Preferences::UserPreferences nextRequested = m_requested;
@@ -511,25 +554,36 @@ PreferenceApplyResult ApplicationPreferences::applyViewDistance(
     try {
         prepared.emplace(m_store.prepareSave(nextRequested));
     } catch (const std::exception& error) {
-        return publicationFailure(error);
+        return std::optional<PreferenceApplyResult>{publicationFailure(error)};
     }
 
     const int previousEffective = m_effectiveViewDistanceChunks;
-    view.applyViewDistanceChunks(candidateChunks);
+    const auto previousPolicy = m_effectiveViewDistancePolicy;
+    view.applyViewDistancePolicy(candidatePolicy);
+    if (loader) {
+        loader->applyViewDistancePolicy(candidatePolicy);
+    }
+    m_effectiveViewDistancePolicy = candidatePolicy;
     m_effectiveViewDistanceChunks = candidateChunks;
 
     try {
         m_store.publishPrepared(std::move(*prepared));
         m_requested = std::move(nextRequested);
-        return {};
+        ++m_nextViewDistancePolicyGeneration;
+        return PreferenceApplyResult{};
     } catch (const std::exception& error) {
         PreferenceApplyResult result = publicationFailure(error);
         if (result.status ==
             PreferenceApplyStatus::PublishedDurabilityUncertain) {
             m_requested = std::move(nextRequested);
+            ++m_nextViewDistancePolicyGeneration;
             return result;
         }
-        view.applyViewDistanceChunks(previousEffective);
+        view.applyViewDistancePolicy(previousPolicy);
+        if (loader) {
+            loader->applyViewDistancePolicy(previousPolicy);
+        }
+        m_effectiveViewDistancePolicy = previousPolicy;
         m_effectiveViewDistanceChunks = previousEffective;
         return result;
     }

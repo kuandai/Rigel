@@ -17,6 +17,7 @@
 #include <deque>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <system_error>
 
 #include <spdlog/spdlog.h>
@@ -165,7 +166,6 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
                                    uint32_t worldGenVersion,
                                    size_t ioThreads,
                                    size_t workerThreads,
-                                   int viewDistanceChunks,
                                    std::shared_ptr<const Voxel::WorldGenerator> generator)
     : m_service(&service),
       m_context(validatedPublishedContext(
@@ -184,18 +184,27 @@ AsyncChunkLoader::AsyncChunkLoader(PersistenceService& service,
         Backends::CR::requireSupportedDefaultZone(m_context, m_zoneId);
     }
 
-    int regionSpan = estimateRegionSpan();
-    if (regionSpan < 1) {
-        regionSpan = 1;
-    }
-    int radius = viewDistanceChunks / regionSpan;
-    if (radius < 1) {
-        radius = 1;
-    }
-    if (radius > 2) {
-        radius = 2;
-    }
-    m_prefetchRadius = radius;
+    m_prefetchRadius = 0;
+}
+
+AsyncChunkLoader::AsyncChunkLoader(
+    PersistenceService& service,
+    PersistenceContext context,
+    Voxel::World& world,
+    uint32_t worldGenVersion,
+    size_t ioThreads,
+    size_t workerThreads,
+    int explicitPreloadRadiusRegions,
+    std::shared_ptr<const Voxel::WorldGenerator> generator)
+    : AsyncChunkLoader(
+          service,
+          std::move(context),
+          world,
+          worldGenVersion,
+          ioThreads,
+          workerThreads,
+          std::move(generator)) {
+    m_prefetchRadius = std::max(0, explicitPreloadRadiusRegions);
 }
 
 AsyncChunkLoader::~AsyncChunkLoader() {
@@ -228,6 +237,19 @@ void AsyncChunkLoader::setRegionDrainBudget(size_t budget) {
 void AsyncChunkLoader::setLoadQueueLimit(size_t maxPending) {
     m_loadQueueLimit = maxPending;
     startDeferredChunkLoads();
+}
+
+void AsyncChunkLoader::applyViewDistancePolicy(
+    std::shared_ptr<const Voxel::ViewDistancePolicy> policy) {
+    if (!policy) {
+        throw std::invalid_argument(
+            "AsyncChunkLoader requires a complete View Distance policy");
+    }
+    m_viewDistancePolicy = std::move(policy);
+}
+
+int AsyncChunkLoader::viewPolicyRegionSpanChunks() const {
+    return std::max(1, estimateRegionSpan());
 }
 
 Voxel::ChunkLoadRequestResult AsyncChunkLoader::request(
@@ -1539,7 +1561,10 @@ void AsyncChunkLoader::invalidateRegion(const RegionKey& key) {
 }
 
 void AsyncChunkLoader::prefetchNeighbors(const RegionKey& center) {
-    if (m_prefetchRadius <= 0) {
+    const int effectivePrefetchRadius = m_viewDistancePolicy
+        ? m_viewDistancePolicy->preloadRadiusRegions()
+        : m_prefetchRadius;
+    if (effectivePrefetchRadius <= 0) {
         return;
     }
     struct Candidate {
@@ -1549,7 +1574,7 @@ void AsyncChunkLoader::prefetchNeighbors(const RegionKey& center) {
         int dz;
     };
     std::vector<Candidate> candidates;
-    int radius = std::max(1, m_prefetchRadius);
+    int radius = std::max(1, effectivePrefetchRadius);
     for (int dz = -radius; dz <= radius; ++dz) {
         for (int dy = -radius; dy <= radius; ++dy) {
             for (int dx = -radius; dx <= radius; ++dx) {
@@ -1567,7 +1592,9 @@ void AsyncChunkLoader::prefetchNeighbors(const RegionKey& center) {
               });
 
     size_t queued = 0;
-    size_t limit = m_prefetchPerRequest;
+    size_t limit = m_viewDistancePolicy
+        ? m_viewDistancePolicy->preloadRegionsPerRequest()
+        : m_prefetchPerRequest;
     if (limit == 0) {
         limit = std::numeric_limits<size_t>::max();
     }

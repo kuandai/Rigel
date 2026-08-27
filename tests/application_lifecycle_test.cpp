@@ -521,6 +521,17 @@ TEST_CASE(Application_ViewDistanceUsesTheActiveFrameBoundarySessionSeam) {
         Rigel::ApplicationTestAccess::applyViewDistanceAtFrameBoundary(
             activePath, 7, 15, true);
 
+    CHECK_EQ(
+        active.requestResult.status,
+        Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(active.beforeRequestedChunks, 7);
+    CHECK_EQ(active.beforeEffectiveChunks, 7);
+    CHECK_EQ(active.beforeStreamedChunks, 7);
+    CHECK_NEAR(
+        active.beforeRenderDistance,
+        static_cast<float>(8 * Rigel::Voxel::Chunk::SIZE),
+        0.0001f);
+    CHECK_EQ(active.beforePolicyGeneration, static_cast<uint64_t>(1));
     CHECK_EQ(active.result.status, Rigel::PreferenceApplyStatus::Applied);
     CHECK_EQ(active.requestedChunks, 15);
     CHECK_EQ(active.effectiveChunks, 15);
@@ -529,6 +540,18 @@ TEST_CASE(Application_ViewDistanceUsesTheActiveFrameBoundarySessionSeam) {
         active.renderDistance,
         static_cast<float>(16 * Rigel::Voxel::Chunk::SIZE),
         0.0001f);
+    CHECK_EQ(active.unloadChunks, 16);
+    CHECK_EQ(active.preloadRadiusRegions, 1);
+    CHECK_NEAR(
+        active.projectionFarPlane,
+        active.renderDistance +
+            static_cast<float>(Rigel::Voxel::Chunk::SIZE),
+        0.0001f);
+    CHECK_NEAR(
+        active.shadowDistanceCeiling,
+        active.renderDistance,
+        0.0001f);
+    CHECK_EQ(active.policyGeneration, static_cast<uint64_t>(2));
     CHECK_EQ(
         Rigel::Preferences::UserPreferencesStore(activePath)
             .load()
@@ -542,6 +565,9 @@ TEST_CASE(Application_ViewDistanceUsesTheActiveFrameBoundarySessionSeam) {
             inactivePath, 7, 15, false);
 
     CHECK_EQ(inactive.result.status, Rigel::PreferenceApplyStatus::Rejected);
+    CHECK_EQ(
+        inactive.requestResult.status,
+        Rigel::PreferenceApplyStatus::Rejected);
     CHECK_EQ(inactive.requestedChunks, 7);
     CHECK_EQ(inactive.effectiveChunks, 7);
     CHECK_EQ(inactive.streamedChunks, 7);
@@ -572,6 +598,12 @@ TEST_CASE(Application_ViewDistancePublicationFailureRestoresActiveSession) {
     CHECK_EQ(
         observed.result.status,
         Rigel::PreferenceApplyStatus::NotPublished);
+    CHECK_EQ(
+        observed.requestResult.status,
+        Rigel::PreferenceApplyStatus::Applied);
+    CHECK_EQ(observed.beforeRequestedChunks, 7);
+    CHECK_EQ(observed.beforeEffectiveChunks, 7);
+    CHECK_EQ(observed.beforeStreamedChunks, 7);
     CHECK_EQ(observed.requestedChunks, 7);
     CHECK_EQ(observed.effectiveChunks, 7);
     CHECK_EQ(observed.streamedChunks, 7);
@@ -579,6 +611,8 @@ TEST_CASE(Application_ViewDistancePublicationFailureRestoresActiveSession) {
         observed.renderDistance,
         static_cast<float>(8 * Rigel::Voxel::Chunk::SIZE),
         0.0001f);
+    CHECK_EQ(observed.unloadChunks, 8);
+    CHECK_EQ(observed.policyGeneration, static_cast<uint64_t>(1));
     CHECK_EQ(
         Rigel::Preferences::UserPreferencesStore(path)
             .load()

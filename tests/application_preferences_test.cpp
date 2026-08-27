@@ -1311,6 +1311,37 @@ TEST_CASE(ApplicationPreferences_InvalidInputEditRetainsPriorState) {
     CHECK(controls.input.isActionPressed("move_forward"));
 }
 
+TEST_CASE(ApplicationPreferences_InputPreparationFailureRetainsQueuedMap) {
+    DisplayFixture fixture;
+    const std::string original = maximumRetainedDocument();
+    writeDocument(fixture.path, original);
+    Rigel::ApplicationPreferences preferences(
+        fixture.path,
+        Rigel::Core::FramePacer::Clock{&now, &sleepUntil});
+    preferences.load();
+    InputFixture controls;
+    preferences.initializeInput(controls.input, *controls.defaults);
+    auto candidate = preferences.requested().input;
+    candidate.mouseSensitivity = 0.7;
+    candidate.invertY = true;
+    candidate.bindings[Rigel::Preferences::UserAction::MoveForward] = {"UP"};
+
+    const auto result = preferences.applyInput(
+        controls.input, *controls.defaults, candidate);
+
+    CHECK_EQ(result.status, Rigel::PreferenceApplyStatus::PersistenceBlocked);
+    CHECK_NE(result.message.find("262144-byte limit"), std::string::npos);
+    CHECK_EQ(preferences.requested().input,
+             Rigel::Preferences::InputPreferences{});
+    CHECK_EQ(preferences.effectiveInput(),
+             Rigel::Preferences::InputPreferences{});
+    CHECK_EQ(readDocument(fixture.path), original);
+    controls.input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
+    controls.input.beginFrame();
+    CHECK(controls.input.isActionPressed("move_forward"));
+    CHECK(controls.input.isActionJustPressed("move_forward"));
+}
+
 TEST_CASE(ApplicationPreferences_InputPublicationFailureRestoresPriorState) {
     DisplayFixture fixture;
     Rigel::Preferences::UserPreferences requested;

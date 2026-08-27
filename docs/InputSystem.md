@@ -63,10 +63,12 @@ GLFW key and mouse callbacks update pending physical arrays. At
 
 1. publishes pending physical held and edge state;
 2. installs any queued binding candidate;
-3. rebases semantic held state without manufacturing press or release edges
-   when a map changed;
-4. otherwise derives semantic edges from the aggregate held state of every
-   alternative; and
+3. when a map changed, restores its semantic held baseline from the physical
+   state captured when that candidate was queued, so inputs already held at
+   that point do not manufacture edges;
+4. derives semantic edges from that queue-time baseline or from the prior
+   frame state, preserving physical transitions that arrived after the
+   candidate was queued; and
 5. notifies action listeners.
 
 Pressing a second alternative while an action is held does not create another

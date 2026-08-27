@@ -181,6 +181,63 @@ TEST_CASE(InputState_CompleteTapBetweenFramesKeepsBothSemanticEdges) {
     CHECK(input.isActionJustReleased("test_action"));
 }
 
+TEST_CASE(InputState_InitialBindingInstallPreservesEventsAfterQueue) {
+    auto bindings = std::make_shared<InputBindings>();
+    bindings->bind("pressed_action", GLFW_KEY_A);
+    bindings->bind("tapped_action", GLFW_KEY_B);
+    InputState input;
+
+    input.setBindings(bindings);
+    input.handleKeyEvent(GLFW_KEY_A, GLFW_PRESS);
+    input.handleKeyEvent(GLFW_KEY_B, GLFW_PRESS);
+    input.handleKeyEvent(GLFW_KEY_B, GLFW_RELEASE);
+    input.beginFrame();
+
+    CHECK(input.isActionPressed("pressed_action"));
+    CHECK(input.isActionJustPressed("pressed_action"));
+    CHECK(!input.isActionPressed("tapped_action"));
+    CHECK(input.isActionJustPressed("tapped_action"));
+    CHECK(input.isActionJustReleased("tapped_action"));
+}
+
+TEST_CASE(InputState_BindingSwapPreservesEventsAfterQueue) {
+    auto first = std::make_shared<InputBindings>();
+    first->bind("changed_action", GLFW_KEY_A);
+    first->bind("unchanged_action", GLFW_KEY_C);
+    first->bind("released_action", GLFW_KEY_D);
+    first->bind("held_action", GLFW_KEY_E);
+    auto second = std::make_shared<InputBindings>();
+    second->bind("changed_action", GLFW_KEY_B);
+    second->bind("unchanged_action", GLFW_KEY_C);
+    second->bind("released_action", GLFW_KEY_D);
+    second->bind("held_action", GLFW_KEY_E);
+    InputState input;
+    input.setBindings(first);
+    input.beginFrame();
+    input.handleKeyEvent(GLFW_KEY_D, GLFW_PRESS);
+    input.handleKeyEvent(GLFW_KEY_E, GLFW_PRESS);
+    input.beginFrame();
+    input.beginFrame();
+
+    input.setBindings(second);
+    input.handleKeyEvent(GLFW_KEY_B, GLFW_PRESS);
+    input.handleKeyEvent(GLFW_KEY_C, GLFW_PRESS);
+    input.handleKeyEvent(GLFW_KEY_C, GLFW_RELEASE);
+    input.handleKeyEvent(GLFW_KEY_D, GLFW_RELEASE);
+    input.beginFrame();
+
+    CHECK(input.isActionPressed("changed_action"));
+    CHECK(input.isActionJustPressed("changed_action"));
+    CHECK(!input.isActionPressed("unchanged_action"));
+    CHECK(input.isActionJustPressed("unchanged_action"));
+    CHECK(input.isActionJustReleased("unchanged_action"));
+    CHECK(!input.isActionPressed("released_action"));
+    CHECK(input.isActionJustReleased("released_action"));
+    CHECK(input.isActionPressed("held_action"));
+    CHECK(!input.isActionJustPressed("held_action"));
+    CHECK(!input.isActionJustReleased("held_action"));
+}
+
 TEST_CASE(InputState_BindingSwapRebasesHeldStateWithoutSyntheticEdges) {
     auto first = std::make_shared<InputBindings>();
     first->bind("test_action", GLFW_KEY_A);
@@ -260,7 +317,7 @@ TEST_CASE(InputBindings_ShippedDefaultsAreCompleteAndCacheIsImmutable) {
     }
     CHECK(!defaults->hasAction("debug_overlay"));
     CHECK_EQ(
-        defaults->inputsFor("remove_block"),
+        defaults->bindings().at("remove_block"),
         (std::vector<PhysicalInput>{{
             PhysicalInputType::MouseButton, GLFW_MOUSE_BUTTON_LEFT}}));
 
@@ -271,19 +328,19 @@ TEST_CASE(InputBindings_ShippedDefaultsAreCompleteAndCacheIsImmutable) {
     const auto effective = compileInputBindings(*defaults, preferences);
 
     CHECK_EQ(
-        effective->inputsFor("move_forward"),
+        effective->bindings().at("move_forward"),
         (std::vector<PhysicalInput>{
             {PhysicalInputType::Keyboard, GLFW_KEY_UP},
             {PhysicalInputType::MouseButton, GLFW_MOUSE_BUTTON_4}}));
     CHECK(!effective->isBound("place_block"));
     CHECK_EQ(
-        defaults->inputsFor("move_forward"),
+        defaults->bindings().at("move_forward"),
         (std::vector<PhysicalInput>{{
             PhysicalInputType::Keyboard, GLFW_KEY_W}}));
     CHECK(defaults->isBound("place_block"));
     CHECK(!defaults->hasAction("debug_overlay"));
     CHECK_EQ(
-        effective->inputsFor("debug_overlay"),
+        effective->bindings().at("debug_overlay"),
         (std::vector<PhysicalInput>{{
             PhysicalInputType::Keyboard, GLFW_KEY_F1}}));
 }

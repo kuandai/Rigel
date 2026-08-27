@@ -3,18 +3,9 @@
 #include <utility>
 
 namespace Rigel::Input {
-namespace {
-
-const std::vector<PhysicalInput> kNoInputs;
-
-} // namespace
 
 void InputBindings::bind(const std::string& action, int key) {
     m_bindings[action] = {{PhysicalInputType::Keyboard, key}};
-}
-
-void InputBindings::bindMouseButton(const std::string& action, int button) {
-    m_bindings[action] = {{PhysicalInputType::MouseButton, button}};
 }
 
 void InputBindings::unbind(const std::string& action) {
@@ -34,15 +25,6 @@ bool InputBindings::hasAction(std::string_view action) const {
 bool InputBindings::isBound(std::string_view action) const {
     auto it = m_bindings.find(std::string(action));
     return it != m_bindings.end() && !it->second.empty();
-}
-
-const std::vector<PhysicalInput>& InputBindings::inputsFor(
-    std::string_view action) const {
-    auto it = m_bindings.find(std::string(action));
-    if (it == m_bindings.end()) {
-        return kNoInputs;
-    }
-    return it->second;
 }
 
 } // namespace Rigel::Input

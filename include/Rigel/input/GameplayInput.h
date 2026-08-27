@@ -80,7 +80,7 @@ void registerWindowCallbacks(GLFWwindow* window, InputCallbackContext& context);
 std::shared_ptr<const InputBindings> loadPlayerDefaultBindings(
     Asset::AssetManager& assets);
 
-std::shared_ptr<InputBindings> compileInputBindings(
+std::shared_ptr<const InputBindings> compileInputBindings(
     const InputBindings& playerDefaults,
     const Preferences::InputPreferences& preferences);
 

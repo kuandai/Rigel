@@ -504,7 +504,7 @@ PreferenceApplyResult ApplicationPreferences::applyInput(
         return {};
     }
 
-    std::shared_ptr<Input::InputBindings> compiled;
+    std::shared_ptr<const Input::InputBindings> compiled;
     try {
         compiled = Input::compileInputBindings(playerDefaults, candidate);
     } catch (const std::invalid_argument& error) {

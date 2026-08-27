@@ -13,7 +13,6 @@ namespace Rigel::Input {
 class InputBindings : public Asset::AssetBase {
 public:
     void bind(const std::string& action, int key);
-    void bindMouseButton(const std::string& action, int button);
     void unbind(const std::string& action);
     void setBindings(
         const std::string& action,
@@ -21,8 +20,6 @@ public:
 
     bool hasAction(std::string_view action) const;
     bool isBound(std::string_view action) const;
-    const std::vector<PhysicalInput>& inputsFor(
-        std::string_view action) const;
 
     const std::unordered_map<std::string, std::vector<PhysicalInput>>&
     bindings() const {

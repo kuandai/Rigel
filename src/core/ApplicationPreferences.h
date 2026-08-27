@@ -113,7 +113,7 @@ private:
     Preferences::DisplayPreferences m_effectiveDisplay;
     std::optional<double> m_effectiveVerticalFovDegrees;
     Preferences::InputPreferences m_effectiveInput;
-    std::shared_ptr<Input::InputBindings> m_effectiveBindings;
+    std::shared_ptr<const Input::InputBindings> m_effectiveBindings;
     Core::FramePacer m_framePacer;
     bool m_benchmarkMode = false;
     bool m_logicalResizeDirty = false;

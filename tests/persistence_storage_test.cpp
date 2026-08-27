@@ -74,6 +74,21 @@ std::string displayPath(const std::filesystem::path& path) {
     return path.generic_string();
 }
 
+AtomicFilePublicationError requireAtomicPublicationError(
+    const std::function<void()>& operation) {
+    try {
+        operation();
+    } catch (const AtomicFilePublicationError& error) {
+        return error;
+    } catch (const std::exception& error) {
+        throw Rigel::Test::TestFailure(
+            std::string("Expected AtomicFilePublicationError, got: ") +
+            error.what());
+    }
+    throw Rigel::Test::TestFailure(
+        "Expected atomic file publication to fail");
+}
+
 } // namespace
 
 TEST_CASE(DurableDirectoryCreation_synchronizes_each_parent_before_descending) {
@@ -463,22 +478,29 @@ TEST_CASE(AtomicFileCommit_file_sync_failure_preserves_destination) {
     writeRawFile(tempPath, replacement);
     writeRawFile(unownedTempPath, unowned);
 
-    CHECK_THROWS(detail::commitAtomicFile(
-        tempPath,
-        path,
-        []() {},
-        [](const std::filesystem::path&) {
-            throw std::runtime_error("file synchronization failed");
-        },
-        [&](const std::filesystem::path&,
-            const std::filesystem::path&,
-            std::error_code&) {
-            replacementAttempted = true;
-        },
-        [&](const std::filesystem::path&) {
-            directorySyncAttempted = true;
-        }));
+    const auto failure = requireAtomicPublicationError([&]() {
+        detail::commitAtomicFile(
+            tempPath,
+            path,
+            []() {},
+            [](const std::filesystem::path&) {
+                throw std::runtime_error("file synchronization failed");
+            },
+            [&](const std::filesystem::path&,
+                const std::filesystem::path&,
+                std::error_code&) {
+                replacementAttempted = true;
+            },
+            [&](const std::filesystem::path&) {
+                directorySyncAttempted = true;
+            });
+    });
 
+    CHECK_EQ(failure.state(), AtomicFilePublicationState::NotPublished);
+    CHECK_EQ(
+        std::string(failure.what()),
+        "Failed to commit atomic write to " + path.string() +
+            " before publication: file synchronization failed");
     CHECK(!replacementAttempted);
     CHECK(!directorySyncAttempted);
     CHECK_EQ(readFile(storage, path), previous);
@@ -497,22 +519,31 @@ TEST_CASE(AtomicFileCommit_directory_sync_failure_keeps_published_paths) {
 
     writeRawFile(tempPath, replacement);
 
-    CHECK_THROWS(detail::commitAtomicFile(
-        tempPath,
-        path,
-        []() {},
-        [](const std::filesystem::path&) {},
-        [](const std::filesystem::path& replacementPath,
-           const std::filesystem::path& destinationPath,
-           std::error_code& error) {
-            std::filesystem::rename(
-                replacementPath, destinationPath, error);
-        },
-        [&](const std::filesystem::path&) {
-            writeRawFile(tempPath, laterStagingData);
-            throw std::runtime_error("directory synchronization failed");
-        }));
+    const auto failure = requireAtomicPublicationError([&]() {
+        detail::commitAtomicFile(
+            tempPath,
+            path,
+            []() {},
+            [](const std::filesystem::path&) {},
+            [](const std::filesystem::path& replacementPath,
+               const std::filesystem::path& destinationPath,
+               std::error_code& error) {
+                std::filesystem::rename(
+                    replacementPath, destinationPath, error);
+            },
+            [&](const std::filesystem::path&) {
+                writeRawFile(tempPath, laterStagingData);
+                throw std::runtime_error("directory synchronization failed");
+            });
+    });
 
+    CHECK_EQ(
+        failure.state(),
+        AtomicFilePublicationState::PublishedDurabilityUncertain);
+    CHECK_EQ(
+        std::string(failure.what()),
+        "Failed to commit atomic write to " + path.string() +
+            " after publication; durability is uncertain: directory synchronization failed");
     CHECK_EQ(readFile(storage, path), replacement);
     CHECK_EQ(readFile(storage, tempPath), laterStagingData);
 }

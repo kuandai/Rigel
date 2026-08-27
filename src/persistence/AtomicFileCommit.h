@@ -1,10 +1,25 @@
 #pragma once
 
+#include "Rigel/Persistence/Storage.h"
+
+#include <exception>
 #include <filesystem>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace Rigel::Persistence::detail {
+
+inline std::string atomicCommitFailureMessage(
+    const std::filesystem::path& finalPath,
+    AtomicFilePublicationState state,
+    const std::exception& error) {
+    return "Failed to commit atomic write to " + finalPath.string() +
+        (state == AtomicFilePublicationState::NotPublished
+             ? " before publication: "
+             : " after publication; durability is uncertain: ") +
+        error.what();
+}
 
 inline std::filesystem::path containingDirectory(
     const std::filesystem::path& path) {
@@ -30,18 +45,36 @@ void commitAtomicFile(const std::filesystem::path& tempPath,
         std::error_code replaceError;
         std::forward<Replace>(replace)(tempPath, finalPath, replaceError);
         if (replaceError) {
-            throw std::runtime_error(
-                "Failed to commit atomic write to " + finalPath.string() + ": " + replaceError.message());
+            throw std::system_error(replaceError);
         }
         published = true;
         std::forward<SynchronizeDirectory>(synchronizeDirectory)(
             containingDirectory(finalPath));
+    } catch (const std::exception& error) {
+        if (!published) {
+            std::error_code cleanupError;
+            std::filesystem::remove(tempPath, cleanupError);
+        }
+        const auto state = published
+            ? AtomicFilePublicationState::PublishedDurabilityUncertain
+            : AtomicFilePublicationState::NotPublished;
+        throw AtomicFilePublicationError(
+            state,
+            atomicCommitFailureMessage(finalPath, state, error));
     } catch (...) {
         if (!published) {
             std::error_code cleanupError;
             std::filesystem::remove(tempPath, cleanupError);
         }
-        throw;
+        const auto state = published
+            ? AtomicFilePublicationState::PublishedDurabilityUncertain
+            : AtomicFilePublicationState::NotPublished;
+        throw AtomicFilePublicationError(
+            state,
+            "Failed to commit atomic write to " + finalPath.string() +
+                (published
+                     ? " after publication; durability is uncertain"
+                     : " before publication"));
     }
 }
 

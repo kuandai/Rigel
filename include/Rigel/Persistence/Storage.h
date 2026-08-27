@@ -18,6 +18,27 @@ enum class StorageEntryKind {
     Other
 };
 
+enum class AtomicFilePublicationState {
+    NotPublished,
+    PublishedDurabilityUncertain
+};
+
+class AtomicFilePublicationError : public std::runtime_error {
+public:
+    AtomicFilePublicationError(AtomicFilePublicationState state,
+                               const std::string& message)
+        : std::runtime_error(message)
+        , m_state(state) {
+    }
+
+    AtomicFilePublicationState state() const noexcept {
+        return m_state;
+    }
+
+private:
+    AtomicFilePublicationState m_state;
+};
+
 enum class DirectoryPublicationState {
     NotPublished,
     Indeterminate
@@ -82,6 +103,8 @@ public:
     virtual ~AtomicWriteSession() = default;
 
     virtual ByteWriter& writer() = 0;
+    // A failed commit reports whether replacement definitely did not occur or
+    // whether new bytes were published before durability became uncertain.
     virtual void commit() = 0;
     virtual void abort() = 0;
 };

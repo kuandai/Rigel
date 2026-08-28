@@ -1,5 +1,0 @@
-persistence:
-  format: cr
-  providers:
-    rigel:persistence.cr:
-      lz4: false

@@ -13,7 +13,6 @@
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
-#include "Rigel/Persistence/PersistenceConfigBootstrap.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Render/FrameRenderer.h"
@@ -58,6 +57,18 @@ namespace {
 constexpr float kMaxFrameTime = 0.05f;
 constexpr uint32_t kDefaultWorldSeed = 1337;
 constexpr std::string_view kDefaultGeneratorDefinitionId = "rigel:default";
+constexpr std::string_view kInstalledPersistenceFormat = "cr";
+
+void applyInstalledPersistencePolicy(
+    Voxel::WorldSet& worldSet,
+    Voxel::World& world) {
+    worldSet.setPersistencePreferredFormat(
+        std::string(kInstalledPersistenceFormat));
+    world.persistenceProviders().add(
+        Persistence::Backends::CR::kCRSettingsProviderId,
+        std::make_shared<
+            Persistence::Backends::CR::CRPersistenceSettings>());
+}
 
 bool initializeOptionalUserInterface(
     GLFWwindow* window,
@@ -276,14 +287,16 @@ void Application::initialize() {
     spdlog::info("Rigel v{}", RIGEL_VERSION);
     #endif
 
+#ifdef DEBUG
     std::error_code launchDirectoryError;
     const std::filesystem::path launchDirectory =
         std::filesystem::current_path(launchDirectoryError);
     if (!launchDirectoryError) {
-        detail::warnAboutObsoleteGenerationConfiguration(
+        detail::warnAboutObsoleteConfiguration(
             launchDirectory,
             m_impl->world.activeWorldId);
     }
+#endif
 
     const char* benchEnv = std::getenv("RIGEL_CHUNK_BENCH");
     m_impl->timing.benchmarkEnabled =
@@ -416,15 +429,6 @@ void Application::initialize() {
         m_impl->world.worldSet.setPersistenceStorage(std::make_shared<Persistence::FilesystemBackend>());
         m_impl->world.worldSet.setPersistenceRoot(
             Persistence::mainWorldRootPath(m_impl->world.activeWorldId));
-        Persistence::PersistenceConfigProvider persistenceConfigProvider =
-            Persistence::makePersistenceConfigProvider(
-                m_impl->assets, m_impl->world.activeWorldId);
-        Persistence::PersistenceConfig persistenceConfig =
-            persistenceConfigProvider.load();
-        if (!persistenceConfig.format.empty()) {
-            m_impl->world.worldSet.setPersistencePreferredFormat(
-                persistenceConfig.format);
-        }
         detail::StreamingPolicy streamingPolicy =
             detail::makeAutomaticStreamingPolicy();
         const Voxel::StreamingConfig& streamingConfig =
@@ -443,13 +447,8 @@ void Application::initialize() {
 
         m_impl->world.world = &m_impl->world.worldSet.createWorld(m_impl->world.activeWorldId);
         m_impl->world.worldView = &m_impl->world.worldSet.createView(m_impl->world.activeWorldId, m_impl->assets);
-
-        auto crSettings = std::make_shared<
-            Persistence::Backends::CR::CRPersistenceSettings>();
-        crSettings->enableLz4 = persistenceConfig.crLz4Enabled;
-        m_impl->world.world->persistenceProviders().add(
-            Persistence::Backends::CR::kCRSettingsProviderId,
-            crSettings);
+        applyInstalledPersistencePolicy(
+            m_impl->world.worldSet, *m_impl->world.world);
 
         Persistence::PersistenceContext persistenceContext =
             m_impl->world.worldSet.persistenceContext(m_impl->world.activeWorldId);
@@ -818,6 +817,21 @@ void ApplicationTestAccess::constructAndRun(
     }
     Application application(std::make_unique<Application::Impl>(hooks));
     runLoop(application);
+}
+
+ApplicationPersistencePolicyState
+ApplicationTestAccess::installedPersistencePolicy() {
+    Voxel::WorldSet worldSet;
+    Voxel::World& world = worldSet.createWorld(worldSet.defaultWorldId());
+    applyInstalledPersistencePolicy(worldSet, world);
+
+    const auto settings = world.persistenceProviders().findAs<
+        Persistence::Backends::CR::CRPersistenceSettings>(
+            Persistence::Backends::CR::kCRSettingsProviderId);
+    return {
+        worldSet.persistenceContext(world.id()).preferredFormat,
+        settings && settings->enableLz4,
+    };
 }
 
 void ApplicationTestAccess::closeReadyWorld(ApplicationCloseHooks hooks) {

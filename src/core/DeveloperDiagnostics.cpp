@@ -20,25 +20,31 @@ bool pathEntryExists(const std::filesystem::path& path) {
 
 void warnAboutObsoletePath(const std::filesystem::path& launchDirectory,
                            const std::filesystem::path& relativePath,
-                           bool overlay) {
+                           std::string_view replacement) {
     if (!pathEntryExists(launchDirectory / relativePath)) {
         return;
     }
 
-    if (overlay) {
-        spdlog::warn(
-            "Obsolete conditional generation overlay '{}' is ignored; "
-            "declare a complete generator definition variant in "
-            "assets/manifest.yaml and remove this file",
-            relativePath.generic_string());
-        return;
-    }
-
     spdlog::warn(
-        "Obsolete generation configuration '{}' is ignored; move generation "
-        "content to a complete definition declared in assets/manifest.yaml "
-        "and remove legacy flags and overlay declarations",
-        relativePath.generic_string());
+        "Obsolete configuration '{}' is ignored; {}",
+        relativePath.generic_string(),
+        replacement);
+}
+
+void warnAboutObsoleteDocument(
+    const std::filesystem::path& launchDirectory,
+    const std::filesystem::path& worldDirectory,
+    const std::filesystem::path& filename,
+    std::string_view replacement) {
+    const std::array<std::filesystem::path, 4> paths = {
+        std::filesystem::path("assets/config") / filename,
+        std::filesystem::path("config") / filename,
+        filename,
+        worldDirectory / filename,
+    };
+    for (const auto& path : paths) {
+        warnAboutObsoletePath(launchDirectory, path, replacement);
+    }
 }
 
 } // namespace
@@ -51,21 +57,36 @@ bool profilerEnabledFromEnvironment() noexcept {
     return profilerEnabledFromEnvironmentValue(std::getenv("RIGEL_PROFILE"));
 }
 
-void warnAboutObsoleteGenerationConfiguration(
+void warnAboutObsoleteConfiguration(
     const std::filesystem::path& launchDirectory,
     std::uint32_t activeWorldId) {
     const std::filesystem::path worldDirectory =
         std::filesystem::path("config/worlds") /
         std::to_string(activeWorldId);
-    const std::array<std::filesystem::path, 4> legacyDocuments = {
-        "assets/config/world_generation.yaml",
-        "config/world_generation.yaml",
+    warnAboutObsoleteDocument(
+        launchDirectory,
+        worldDirectory,
         "world_generation.yaml",
-        worldDirectory / "world_generation.yaml",
-    };
-    for (const auto& path : legacyDocuments) {
-        warnAboutObsoletePath(launchDirectory, path, false);
-    }
+        "declare a complete generator definition in assets/manifest.yaml "
+        "and remove legacy flags and overlays");
+    warnAboutObsoleteDocument(
+        launchDirectory,
+        worldDirectory,
+        "streaming.yaml",
+        "put View Distance in user-preferences.yaml; streaming scheduler "
+        "policy is internal");
+    warnAboutObsoleteDocument(
+        launchDirectory,
+        worldDirectory,
+        "render.yaml",
+        "put View Distance and Shadows in user-preferences.yaml; renderer "
+        "tuning is internal");
+    warnAboutObsoleteDocument(
+        launchDirectory,
+        worldDirectory,
+        "persistence.yaml",
+        "new saves use the installed CR policy and existing saves retain "
+        "their authoritative saved format");
 
     const std::array<std::filesystem::path, 6> legacyOverlays = {
         "assets/config/worldgen_overlays/no_carvers.yaml",
@@ -76,7 +97,11 @@ void warnAboutObsoleteGenerationConfiguration(
         worldDirectory / "worldgen_overlays/no_carvers.yaml",
     };
     for (const auto& path : legacyOverlays) {
-        warnAboutObsoletePath(launchDirectory, path, true);
+        warnAboutObsoletePath(
+            launchDirectory,
+            path,
+            "declare a complete generator definition variant in "
+            "assets/manifest.yaml and remove this conditional overlay");
     }
 }
 

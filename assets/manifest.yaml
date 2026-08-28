@@ -1,8 +1,5 @@
 namespace: base
 assets:
-  raw:
-    persistence_config:
-      path: config/persistence.yaml
   generator_definitions:
     default:
       path: generators/default.yaml

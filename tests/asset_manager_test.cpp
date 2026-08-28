@@ -45,7 +45,7 @@ TEST_CASE(AssetManager_LoadsEmbeddedManifest) {
 
     CHECK(!assets.exists("raw/streaming_config"));
     CHECK(!assets.exists("raw/render_config"));
-    CHECK(assets.exists("raw/persistence_config"));
+    CHECK(!assets.exists("raw/persistence_config"));
     CHECK(assets.exists("shaders/voxel"));
     CHECK(!assets.exists("blocks/dirt"));
     CHECK(assets.exists("entity_models/demo_cube"));
@@ -74,17 +74,6 @@ TEST_CASE(AssetManager_ShaderEntriesHaveRequiredStages) {
     CHECK(shaderCount > 0);
 }
 
-TEST_CASE(AssetManager_CustomLoaderBeforeManifestKeepsRawLoader) {
-    AssetManager assets;
-    assets.registerLoader("input", std::make_unique<InputLoader>());
-    assets.loadManifest("manifest.yaml");
-
-    CHECK(assets.get<InputAsset>("input/default"));
-
-    const auto raw = assets.get<RawAsset>("raw/persistence_config");
-    CHECK(!raw->data.empty());
-}
-
 TEST_CASE(AssetManager_CustomLoaderBeforeManifestKeepsGraphicsLoaders) {
     Rigel::Test::HiddenOpenGLContext context;
     context.require();
@@ -103,13 +92,10 @@ TEST_CASE(AssetManager_CustomLoaderBeforeManifestKeepsGraphicsLoaders) {
 }
 
 TEST_CASE(AssetManager_ManifestLoadingPreservesBuiltinReplacements) {
-    int rawLoads = 0;
     int textureLoads = 0;
     int shaderLoads = 0;
 
     AssetManager assets;
-    assets.registerLoader(
-        "raw", std::make_unique<CountingLoader<RawAsset>>("raw", rawLoads));
     assets.registerLoader(
         "textures",
         std::make_unique<CountingLoader<TextureAsset>>("textures", textureLoads));
@@ -118,10 +104,8 @@ TEST_CASE(AssetManager_ManifestLoadingPreservesBuiltinReplacements) {
         std::make_unique<CountingLoader<ShaderAsset>>("shaders", shaderLoads));
     assets.loadManifest("manifest.yaml");
 
-    CHECK(assets.get<RawAsset>("raw/persistence_config"));
     CHECK(assets.get<TextureAsset>("textures/entity_debug"));
     CHECK(assets.get<ShaderAsset>("shaders/voxel"));
-    CHECK_EQ(rawLoads, 1);
     CHECK_EQ(textureLoads, 1);
     CHECK_EQ(shaderLoads, 1);
 }

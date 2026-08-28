@@ -44,6 +44,11 @@ struct ApplicationCloseHooks {
     std::string persistenceRoot = "application-close-test";
 };
 
+struct ApplicationPersistencePolicyState {
+    std::string preferredFormat;
+    bool crLz4Enabled = false;
+};
+
 struct ApplicationViewDistanceState {
     PreferenceApplyResult requestResult;
     PreferenceApplyResult result;
@@ -71,6 +76,7 @@ public:
     static void constructAndRun(
         ApplicationConstructionHooks hooks,
         void (*runLoop)(Application&));
+    static ApplicationPersistencePolicyState installedPersistencePolicy();
     static void closeReadyWorld(ApplicationCloseHooks hooks);
     static void closeWithPendingResize(
         std::filesystem::path userPreferencesPath,

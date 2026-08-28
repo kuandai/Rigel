@@ -521,11 +521,42 @@ TEST_CASE(Application_ReportsObsoleteGenerationConfigurationAtStartup) {
     CHECK_THROWS(Rigel::ApplicationTestAccess::construct(std::move(hooks)));
 
     const std::string output = logs.output();
+#if defined(RIGEL_EXPECT_PROFILER_ENABLED)
     CHECK(output.find(
-              "Obsolete generation configuration "
+              "Obsolete configuration "
               "'config/world_generation.yaml' is ignored") !=
           std::string::npos);
     CHECK(output.find("assets/manifest.yaml") != std::string::npos);
+#else
+    CHECK(output.find("Obsolete configuration") == std::string::npos);
+#endif
+}
+
+TEST_CASE(Application_InstalledPersistencePolicyIgnoresWorkingDirectory) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_installed_persistence_policy");
+    const std::vector<std::filesystem::path> obsoletePaths = {
+        "persistence.yaml",
+        "config/persistence.yaml",
+        "config/worlds/0/persistence.yaml",
+    };
+    for (const auto& path : obsoletePaths) {
+        const auto absolute = directory.path() / path;
+        std::filesystem::create_directories(absolute.parent_path());
+        std::ofstream(absolute)
+            << "persistence:\n"
+               "  format: memory\n"
+               "  providers:\n"
+               "    rigel:persistence.cr:\n"
+               "      lz4: true\n";
+    }
+    ScopedCurrentDirectory currentDirectory(directory.path());
+
+    const auto policy =
+        Rigel::ApplicationTestAccess::installedPersistencePolicy();
+
+    CHECK_EQ(policy.preferredFormat, std::string("cr"));
+    CHECK(!policy.crLz4Enabled);
 }
 
 TEST_CASE(Application_InvalidPreferencesRejectBeforeMutationOrPublication) {

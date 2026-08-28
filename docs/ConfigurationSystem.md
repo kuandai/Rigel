@@ -89,10 +89,13 @@ Rigel cannot overwrite an unsupported or damaged document implicitly.
 `replaceWithRequested()` is the explicit destructive replacement operation.
 
 Writes serialize one complete document, take the sibling advisory lock, stage
-replacement bytes, and publish atomically. A definite prepublication failure
-keeps the prior requested and effective state. If replacement happened before
-directory durability became uncertain, Rigel reports that distinct result and
-keeps the newly published request and effective state.
+replacement bytes, and publish atomically. For a prepared live change, a
+definite prepublication failure keeps the prior requested state and restores
+the prior effective state; failure to restore a fallible physical display is a
+fatal error. The observation-driven manual-resize path below is the exception.
+If replacement happened before directory durability became uncertain, Rigel
+reports that distinct result and keeps the newly published request and
+effective state.
 
 ### Requested and effective display state
 
@@ -112,9 +115,18 @@ differ:
   the current desktop bounds.
 
 A supported live display change prepares the preference write before changing
-the window or swap interval. Failure retains or restores the working display.
-A manual Windowed resize changes the effective remembered size immediately and
-persists it after a short debounce; Borderless transitions never erase it.
+the window or swap interval. A reported nonfatal failure retains or restores
+the prior working display; failure of the physical rollback is fatal.
+
+A manual Windowed resize is observed after the window has already changed, so
+it changes the effective remembered size immediately and saves it after a short
+debounce. If preparation is blocked or publication definitely fails, the new
+effective size remains active while the requested and on-disk size remain
+unchanged. Definite publication failure is retried once; if that retry also
+fails, or preparation was blocked, automatic attempts stop for that size and
+the unsaved resize is reported again during close or cleanup. A distinct later
+resize starts a new persistence attempt. Borderless transitions never erase
+the remembered Window Size.
 
 ### Runtime mutability
 
@@ -123,8 +135,8 @@ changes go through the direct `Application`/`ApplicationPreferences` owner:
 
 | Setting | Current apply behavior |
 | --- | --- |
-| Display Mode and Window Size | Live main-thread window transition with rollback on failure |
-| VSync | Live swap-interval change with rollback on failure |
+| Display Mode and Window Size | Live main-thread window transition; nonfatal failure rolls back |
+| VSync | Live swap-interval change; nonfatal failure rolls back |
 | FPS Limit | Live frame-pacer change; benchmark mode still controls the effective value |
 | View Distance | Coalesced until the next application frame boundary, then one policy is applied to the active view and loader |
 | Shadows | Live active-world resource change; the complete replacement is prepared before the old resources are retired |

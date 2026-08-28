@@ -6,10 +6,11 @@ world and provides:
 * deterministic, seed-based terrain generation with climate and biome
   selection, caves, surface materials, and simple structures;
 * background chunk loading, generation, meshing, and distance-based streaming;
-* OpenGL 4.1 rendering for voxel layers and entities, with cascaded shadows,
-  temporal anti-aliasing, and debug overlays; and
-* YAML-configured assets and world settings, plus CR-format persistence for
-  chunks and entities.
+* OpenGL 4.1 rendering for voxel layers and entities, with player-controlled
+  Shadows On/Off and internal temporal anti-aliasing and debug paths; and
+* global player preferences, save-owned world identity and generator
+  snapshots, strict graph-definition assets, and CR-format chunk/entity
+  persistence.
 
 The CMake project is currently versioned `0.0.0`, and debug builds identify
 themselves as a Developer Preview. Linux with GCC is the tested build

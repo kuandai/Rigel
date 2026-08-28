@@ -1,377 +1,329 @@
-# Configuration System
+# Configuration Ownership
 
-This document describes Rigel's current preference, internal engine policy,
-persistence, and generator-definition configuration paths.
+This document describes Rigel's current configuration owners, their lifetimes,
+and their supported inputs. Configuration is deliberately split by who makes a
+decision:
 
----
-
-## Index
-
-- [Overview](#overview)
-- [Global User Preferences](#global-user-preferences)
-- [Ownership and Sources](#ownership-and-sources)
-- [Save-Owned World Identity](#save-owned-world-identity)
-- [Generator Definitions](#generator-definitions)
-- [Streaming Policy](#streaming-policy)
-- [Render Policy](#render-policy)
-- [Persistence Policy](#persistence-policy)
-- [Limitations](#limitations)
-- [Related Docs](#related-docs)
-
----
-
-## Overview
-
-Rigel separates configuration by owner and lifetime. `UserPreferences` owns
-global player requests in one platform file. A published save owns its world
-settings, generator provenance, normalized generator snapshot, and persistence
-format identity. The installed manifest supplies strict generator definitions
-only when creating a world. Streaming, renderer, and desktop persistence policy
-are internal code.
-
-There is no shared configuration source stack. Normal startup does not inspect
-the process working directory for bare YAML files, a `config/` directory, or
-numeric `config/worlds/<id>/` overrides.
-
----
-
-## Global User Preferences
-
-`Preferences::UserPreferences` is a schema-version-1 typed value with these
-shipped defaults:
-
-| Request | Default | Accepted values |
+| Owner | Lifetime | Supported source |
 | --- | --- | --- |
-| Display mode | `windowed` | `windowed`, `borderless` |
-| Remembered window size | `[800, 600]` | two dimensions from 1 through 16384 |
-| VSync | `true` | boolean |
-| FPS limit | `unlimited` | `unlimited`, or 30 through 1000 |
-| View distance | `12` chunks | 2 through 16 |
-| Shadows | `true` | boolean |
-| Vertical FOV | `60` degrees | finite value from 50 through 110 |
-| Mouse sensitivity | `0.12` | finite value from 0.01 through 1.00 |
-| Invert Y | `false` | boolean |
-| Binding overrides | none | sparse lists for supported gameplay actions |
+| Player | Global across worlds | One tolerant `UserPreferences` file |
+| Published world | Lifetime of one save | Strict `world-settings.yaml` and `generator-definition.yaml` inside the save |
+| Content author | New-world creation input | Strict named `GeneratorDefinition` assets declared by the manifest |
+| Engine | Process or world-session policy | Internal code, derived from player intent where applicable |
+| Developer or benchmark | One diagnostic or experiment | Explicit environment variables, APIs, constructors, or benchmark arguments |
 
-On Linux, the sole production path is
-`$XDG_CONFIG_HOME/rigel/user-preferences.yaml` when `XDG_CONFIG_HOME` is
-absolute, otherwise `$HOME/.config/rigel/user-preferences.yaml`. Tests and
-tools construct `UserPreferencesStore` with one explicit absolute path. A
-missing file returns defaults without creating the file.
+There is no shared configuration stack or universal configuration service.
+Normal startup does not inspect the working directory for bare YAML files, a
+`config/` directory, or numeric `config/worlds/<id>/` overrides.
 
-Supported schema-1 documents are parsed independently per field. An invalid
-leaf or section warns and uses the shipped default for only that leaf or
-section; valid siblings remain usable. Unknown fields and binding actions warn
-and are ignored. Unknown schema-1 nodes are retained when known requests are
-later saved. Binding overrides distinguish an absent action from an explicit
-empty list. Binding lists accept bounded symbolic keyboard and mouse tokens;
-raw multi-digit GLFW codes and unknown tokens invalidate only that action's
-override.
+## Player Settings
+
+`Preferences::UserPreferences` owns personal and device requests. The current
+player surface is exactly:
+
+| Section | Player setting | Default | Accepted values |
+| --- | --- | --- | --- |
+| Display | Display Mode | Windowed | Windowed or Borderless |
+| Display | Window Size | 800 x 600 | width and height from 1 through 16384 |
+| Display | VSync | On | On or Off |
+| Display | FPS Limit | Unlimited | Unlimited or an integer from 30 through 1000 |
+| Graphics | View Distance | 12 chunks | 2 through 16 chunks |
+| Graphics | Shadows | On | On or Off |
+| Camera | Field of View | 60 degrees vertical | 50 through 110 degrees vertical |
+| Controls | Mouse Sensitivity | 0.12 | 0.01 through 1.00 |
+| Controls | Invert Y | Off | On or Off |
+| Controls | Bindings | Shipped defaults | Sparse keyboard/mouse replacement lists |
+
+View Distance is the only player streaming control. Renderer range, projection,
+loading, preload, unload retention, and the shadow-distance ceiling are derived
+engine policy. Shadows has one internal On profile; its cascade and filtering
+values are not player settings.
+
+On Linux, the production file is
+`$XDG_CONFIG_HOME/rigel/user-preferences.yaml` when
+`XDG_CONFIG_HOME` is absolute, and otherwise
+`$HOME/.config/rigel/user-preferences.yaml`. A complete example is:
+
+```yaml
+schema_version: 1
+display:
+  mode: windowed
+  windowed_size: [1280, 720]
+  vsync: true
+  fps_limit: unlimited
+graphics:
+  view_distance_chunks: 12
+  shadows: true
+camera:
+  vertical_fov_degrees: 70
+input:
+  mouse_sensitivity: 0.12
+  invert_y: false
+  bindings:
+    move_forward: [W, UP]
+    remove_block: [MOUSE_LEFT]
+    place_block: [MOUSE_RIGHT]
+```
+
+The binding map is sparse. An absent action inherits the required player
+default from `assets/manifest.yaml`; an empty list explicitly unbinds that
+action. The supported actions are move forward, backward, left, and right;
+ascend; descend; sprint; remove block; and place block. See
+`docs/InputSystem.md` for symbolic token names and frame-boundary behavior.
+
+Rigel has no player settings for exclusive fullscreen, monitor or refresh-rate
+selection, anti-aliasing, shadow tiers, render or UI scale, audio, or
+controllers. TAA is an internal diagnostic path and ships Off.
+
+### Tolerant loading and atomic persistence
+
+Schema 1 is tolerant per field. An invalid known leaf warns and uses that
+leaf's shipped default without discarding valid siblings. Unknown fields and
+unknown binding actions warn and are ignored; unknown schema-1 nodes are
+retained when Rigel later saves known values. A missing file returns defaults
+without creating a file.
 
 Malformed, missing-schema, unsupported-schema, unreadable, oversized, and
-nonregular files return safe defaults without changing the existing path.
-Ordinary saves remain blocked after such a load, and also recheck the current
-file while holding a sibling `user-preferences.yaml.lock` advisory lock through
-atomic publication, so a newer schema installed by another cooperating Rigel
-writer is not overwritten. The lock file contains no preferences and is never
-read as a configuration source. It serializes cooperating writers only;
-external editors and processes that ignore the lock must not write the file
-concurrently. `replaceWithRequested()` is the explicit operation for replacing
-an unsupported document and uses the same lock.
+nonregular files also return safe defaults, but ordinary saves are blocked so
+Rigel cannot overwrite an unsupported or damaged document implicitly.
+`replaceWithRequested()` is the explicit destructive replacement operation.
 
-Writes stage complete replacement bytes and publish them atomically. Commit
-errors distinguish a definite prepublication failure from a replacement that
-was published before parent-directory durability became uncertain. Both loaded
-and serialized documents are limited to 262144 bytes; retained unknown fields
-cannot make a saved replacement exceed the load bound, and an oversized result
-leaves the previous file intact. Requested and effective preferences are
-separate values: hardware recovery may select a safe effective value, while
-persistence always writes the requested value. The store does not itself apply
-requests to window, renderer, streaming, or input consumers.
+Writes serialize one complete document, take the sibling advisory lock, stage
+replacement bytes, and publish atomically. A definite prepublication failure
+keeps the prior requested and effective state. If replacement happened before
+directory durability became uncertain, Rigel reports that distinct result and
+keeps the newly published request and effective state.
 
-`ApplicationPreferences` is the direct runtime owner for applying input,
-Shadows, and View Distance requests. Shadows are one On/Off request; the
-low-level cascade, texture, and filtering fields are not user preferences.
-Enabling validates the renderer-owned profile and prepares complete depth,
-transmittance, and framebuffer resources before swapping them into the active
-view. Disabling swaps in an empty resource set. A definite preference
-publication failure restores the prior effective resources and request;
-durability uncertainty keeps the already-published request and effective
-state. Startup preparation failure leaves the persisted request intact and
-reports Shadows as effectively Off.
+### Requested and effective display state
 
-`Application` exposes the public active-session seams for Shadows and View
-Distance. A View Distance request only replaces the pending candidate; it does
-not change requested preferences, active streaming, or rendering synchronously.
-After events are collected for the next application frame, the owner derives
-and validates one complete active-world policy, prepares the preference save,
-applies that same immutable policy to the world and loader, and publishes the
-save. Repeated requests before that boundary supersede the pending candidate.
-A definite preparation or publication failure restores the prior complete
-policy and requested value.
+The persisted display tuple is the player's requested state. The effective
+state describes the state Rigel is currently using; the two may deliberately
+differ:
 
-Sensitivity and invert-Y update the cursor callback immediately. A binding
-candidate is compiled against the required nine-action manifest asset without
-mutating the cached asset, then queued for `InputState::beginFrame()`. A
-definite preparation or publication failure retains the prior requested and
-effective state. If replacement bytes were published but directory durability
-is uncertain, the complete candidate remains requested and visible. Resetting
-controls clears only the sparse binding map, preserving sensitivity and
-invert-Y while restoring manifest inheritance.
+- Borderless uses the current desktop bounds while preserving the independent
+  remembered Window Size for a return to Windowed mode.
+- `RIGEL_CHUNK_BENCH=1` forces effective VSync Off and effective FPS Limit to
+  Unlimited without changing the persisted request.
+- If the requested startup display cannot be created, Rigel tries a fixed safe
+  800 x 600 Windowed display. It keeps the failed request on disk instead of
+  silently replacing it.
+- Startup logs the requested and effective display tuples. In Borderless mode,
+  the tuple's size remains the remembered Window Size; the actual window uses
+  the current desktop bounds.
 
----
+A supported live display change prepares the preference write before changing
+the window or swap interval. Failure retains or restores the working display.
+A manual Windowed resize changes the effective remembered size immediately and
+persists it after a short debounce; Borderless transitions never erase it.
 
-## Ownership and Sources
+### Runtime mutability
 
-- Global player requests load from the one absolute platform
-  `user-preferences.yaml` path described above.
-- The shipped manifest declares `generator_definitions/default`, backed by
-  `assets/generators/default.yaml`. New-world bootstrap resolves that creation
-  input only after confirming that no published save identity exists.
-- Published worlds load their settings and canonical generator snapshot from
-  the existing `saves/world_<id>` root. They do not enumerate installed
-  generator definitions.
-- Normal streaming, renderer, and persistence behavior comes from internal
-  policy. Tests and benchmarks inject exact typed values at their existing
-  construction seams.
+The preference file is loaded at startup and is not hot-reloaded. Runtime
+changes go through the direct `Application`/`ApplicationPreferences` owner:
 
-Debug startup checks a finite list of exact retired
-`world_generation.yaml`, `streaming.yaml`, `render.yaml`, `persistence.yaml`,
-and `worldgen_overlays/no_carvers.yaml` locations for the active world. Existing
-entries produce an actionable warning but are never parsed. Release startup
-does not perform this check. Neither path enumerates directories or treats the
-working directory as configuration authority.
+| Setting | Current apply behavior |
+| --- | --- |
+| Display Mode and Window Size | Live main-thread window transition with rollback on failure |
+| VSync | Live swap-interval change with rollback on failure |
+| FPS Limit | Live frame-pacer change; benchmark mode still controls the effective value |
+| View Distance | Coalesced until the next application frame boundary, then one policy is applied to the active view and loader |
+| Shadows | Live active-world resource change; the complete replacement is prepared before the old resources are retired |
+| Field of View | Immediate renderer update using the same vertical FOV for normal and diagnostic projections |
+| Mouse Sensitivity and Invert Y | Immediate effective input update |
+| Sparse bindings | Complete candidate compiled first, then installed at `InputState::beginFrame()` without manufactured input edges |
 
----
+Shadows and View Distance require an active world session. Reset Controls clears
+only sparse binding replacements and preserves sensitivity and Invert Y.
 
-## Save-Owned World Identity
+## Save-Owned World Settings
 
-Every newly created world publishes two format-independent files under the
-existing `saves/world_<worldId>` root:
+A published world owns its generation identity under the existing
+`saves/world_<worldId>` root:
 
-- `world-settings.yaml` owns the settings schema version, display name, actual
-  seed, generator source ID and revision, definition schema version, and
-  generator semantics version.
-- `generator-definition.yaml` is the canonical resolved generator runtime
-  snapshot.
+- `world-settings.yaml` stores World Name, the actual seed, readable generator
+  provenance, and the distinct version values.
+- `generator-definition.yaml` stores the canonical normalized generator
+  snapshot used at runtime.
+- The selected persistence backend stores its authoritative format marker.
 
-Persistence backends may repeat the display name for byte-format compatibility,
-but that copy is derived. Reload uses `world-settings.yaml` even when the
-backend copy is stale; the backend's world ID and format marker still identify
-the save and must remain valid.
+These files are strict save data, not another player-preference file. They are
+staged with the backend marker and the complete directory is published before
+the world can generate a chunk. A failed creation does not expose a partial
+final save root. A backend may repeat the display name for byte-format
+compatibility, but that copy is derived; `world-settings.yaml` remains the
+configuration authority.
 
-Both documents are durably committed in a unique sibling staging directory,
-along with the selected persistence backend's authoritative metadata marker,
-then the complete directory is atomically published without replacing an
-existing root. Failed creation never exposes a partial final root. A root
-containing only one identity file, or lacking a decodable authoritative backend
-marker, is incomplete and is not loaded or repaired from current preferences.
-When a final root exists, startup validates its settings, snapshot, referenced
-content, and backend identity before removing any deletion-authorized staging
-sibling. A missing final root may still resume a valid publication handoff.
-Markerless or ambiguous staging entries are preserved in the bounded slot
-namespace for inspection. Existing save data without both files is legacy or
-unknown and is rejected without mutation.
+### World creation
 
-The seed and source revision are deliberately absent from the generator
-snapshot. The seed and evaluator semantics version are applied from
-`WorldSettings` when the snapshot is decoded; source revision remains provenance
-only. Snapshot
-serialization also omits aliases, comments, authoring-only metadata, and graph
-nodes unreachable from runtime outputs.
-Snapshot parsing is strict and accepts only the canonical representation and
-supported schema/semantics versions.
+A player-facing world creation surface has only these inputs:
 
----
+| Creation field | Meaning |
+| --- | --- |
+| World Name | The save-owned display name |
+| Seed | The actual integer seed persisted before generation |
+| World Type | The selected definition's human-readable label and description |
 
-## Generator Definitions
+World Type does not expose a raw asset ID, revision, density graph, caves,
+structures, or pipeline stages. Installed definitions are validated before
+they can be offered by label and description.
 
-Production generation is graph-only. New-world creation selects a named
-`generator_definitions` asset; the shipped bootstrap selects `rigel:default`
-from `assets/generators/default.yaml`. An installed definition owns:
+The current prototype has no world-creation screen. When `saves/world_0` is
+absent, the application supplies World Name `world_0`, Seed `1337`, and World
+Type **Default** (`Rigel's standard continents, biomes, and caves.`). Those are
+creation inputs, not fallback values for an existing save.
 
-- schema version, namespaced ID, positive source revision, label, and
-  description;
-- finite inclusive bounds and explicit solid/water materials;
-- sea level, terrain output name, climate, biome targets, coast range,
-  per-biome `water_fill`, and surface layers;
-- the density graph, optional caves, and optional structures.
+For reference, the resulting strict settings document has this shape and uses
+the currently supported versions:
 
-Definitions are strict. Unknown or type-inapplicable fields, unknown node or
-climate types, duplicate IDs, dangling references, cycles, missing terrain or
-cave outputs, invalid biome/material references, invalid bounds, and
-incoherent cave/structure dependencies fail before staging a save. All declared
-definitions are validated as one set, and IDs are unique across that set.
+```yaml
+world:
+  schema_version: 2
+  display_name: "world_0"
+  seed: 1337
+  generator:
+    id: "rigel:default"
+    source_revision: 1
+    definition_schema_version: 2
+    semantics_version: 1
+```
 
-The canonical save snapshot contains normalized effective runtime data. It
-sorts keyed content, retains only graph nodes reachable from terrain and enabled
-cave outputs, and omits author metadata, aliases, comments, overlays, flags,
-inactive sections, and noncanonical scalar terrain forms. The evaluator consumes the
-same `GeneratorDefinitionData` represented by those bytes.
+The player-facing World Type is **Default**; `rigel:default` is stored only as
+provenance. The current application has no supported post-creation World Name,
+Seed, or World Type edit operation.
 
-Engine code derives the fixed stage sequence: global climate, local climate,
-biome resolution, terrain density, optional caves, surface rules, and optional
-structures. Authors enable caves and structures through their definition-owned
-sections; there is no author-facing pipeline or simple terrain mode.
+### Version meanings
 
----
+The version values are intentionally independent:
 
-## Streaming Policy
+- `world.schema_version` decodes the `WorldSettings` document. Rigel currently
+  supports version 2.
+- `definition_schema_version` decodes the canonical snapshot's data shape.
+  Rigel currently supports generator definition schema 2.
+- `source_revision` records the author's revision of the named installed
+  definition for provenance and diagnostics. It never overrides the snapshot.
+- `semantics_version` selects the generator evaluator behavior needed to
+  interpret the snapshot. Rigel currently supports semantics version 1.
 
-Installed startup constructs one internal automatic policy. It neither parses
-nor ships YAML for scheduler queues, frame budgets, worker partitioning,
-loader queues/caches/inflight work, prefetch, unload distance, or resident
-chunk caps. There is no player, content, or save-owned engine-policy document.
+An unknown newer settings, definition, or semantics version is a load error.
+Rigel does not reinterpret it using the closest supported version.
 
-The current topology normalizes detected logical processors to 4 through 64.
-It selects one IO worker below eight processors and two otherwise, clamps
-payload-build workers to `processors / 5` in the range 1 through 4, and assigns
-the remainder to generation/mesh scheduling in the range 2 through 12.
-`ChunkStreamer` divides those scheduler workers between its generation and
-mesh pools. Unknown host topology uses the four-processor policy.
+### Snapshot authority
 
-Current internal capacities preserve bounded startup behavior: generation and
-mesh queue limits are 128, request advancement is 4096 per update,
-generation/mesh application is 128 per category, disk payload and region
-drains are 16, the region cache and inflight owner limits are 16, and no raw
-resident-chunk cap is enabled. These are implementation policy rather than a
-supported configuration contract. Scheduler tests construct `StreamingConfig`
-directly and loader tests use explicit constructors/setters; developer
-benchmarks accept only the exact CLI inputs needed for reproducible runs.
+Installed `GeneratorDefinition` assets are creation inputs only. On reload,
+Rigel does not enumerate them or substitute an installed definition with a
+matching ID. The save-local snapshot is the sole generator definition input,
+and `WorldSettings.seed` supplies its seed.
 
-The sole player request is
-`UserPreferences.graphics.view_distance_chunks`, with a default of 12 and an
-inclusive range of 2 through 16. For an accepted radius `N`, one immutable
-active-world policy owns all dependent values:
+The snapshot is normalized runtime data. It contains sorted effective content
+and only graph nodes reachable from the terrain and enabled cave outputs. It
+does not copy comments, author labels and descriptions, aliases, overlays,
+flags, inactive sections, unreachable nodes, the seed, or source revision.
+Parsing accepts only the supported canonical representation. Referenced block
+content must still exist; a missing saved reference rejects the world instead
+of selecting a replacement material or generator.
 
-- desired/load radius: `N` chunks;
-- unload radius: `N + 1` chunks;
-- renderer culling distance and shadow-distance ceiling: `(N + 1) * 32`
-  world units;
-- projection far plane: the greater of 500 world units and the culling
-  distance plus one 32-unit chunk;
-- loader preload radius: `clamp(N / persistence-region-span, 1, 2)` regions,
-  with at most 12 speculative regions admitted for one request.
+### Clean break and legacy refusal
 
-Only `N` is persisted. The derived values and policy generation are runtime
-state. The world view, chunk streamer, asynchronous loader, frame projection,
-and shadow submission consume the same policy instance. A later streaming or
-render-config assignment cannot replace its distances.
+The ownership model is a clean break from the former shared YAML sources. A
+pre-existing root without the complete supported settings, canonical snapshot,
+and authoritative backend marker is legacy, incomplete, or unknown. Startup
+rejects it before installing a generator or mutating chunk, entity, metadata,
+or region data. Rigel does not infer a seed or provenance, trust placeholder CR
+metadata, use Seed 1337, substitute the current Default definition, or generate
+unexplored chunks. There is no legacy importer.
 
-The one-chunk hysteresis is covered by a deterministic lifecycle regression.
-It preloads a sparse radius-12 sphere with one solid boundary probe, settles to
-quiescence, moves one chunk on the X axis, settles again, reverses to the origin,
-and settles a third time. The two runs differ only in unload distance, and no
-terrain generation is involved. With unload distance 12, the move entered 441
-chunks, evicted 441, and left 7,153 resident. Reversal then reloaded 441,
-generated none, evicted 441 from the opposite side, started no remesh jobs, and
-returned to 7,153 residents. With unload distance 13, the move entered the same
-441 chunks, evicted none, and left 7,594 resident; reversal caused no loads,
-generation, eviction, or remeshing and retained 7,594 residents. This evidence
-supports radius 13 for the tested one-chunk reversal without implying general
-CPU or byte savings.
+The save root and the valid CR chunk, entity, and compressed/uncompressed
+region encodings are unchanged. Refusal leaves the existing root and its files
+in place for inspection; configuration identity compatibility is separate from
+backend byte-format readability.
 
-The immediate retention cost in that regression is 441 chunks, or 6.2% over
-the 7,153 radius-12 residents. This is not the full distance-bound increase:
-inclusive integer spheres contain 7,153 coordinates at radius 12 and 9,171 at
-radius 13, a worst increase of 2,018 coordinates, or 28.2%. A fully allocated
-chunk has 128 KiB of block arrays, so the dense block-array bounds for those
-deltas are 55.125 MiB and 252.250 MiB, respectively. Chunks allocate block
-subchunks sparsely, and these figures exclude chunk and allocator overhead,
-asynchronous copies, and currently unmetered CPU and GPU mesh memory. They are
-block-storage bounds, not measurements of total resident memory.
+## Strict Generator Definition Authoring
 
-The player view limit bounds a synchronous desired-set rebuild to 35,937 cube
-candidates and 17,077 selected sphere coordinates. Its derived one-chunk
-retention radius contains at most 20,479 sphere coordinates. Normal preload
-scans at most 124 radius-two neighboring region coordinates and admits at most
-12. These are operational ceilings for Rigel's fixed 32-cubed chunks rather
-than integer or address-space maxima.
-Tests and benchmarks may still construct `StreamingConfig` with exact view and
-unload radii or set exact loader preload inputs as explicit developer
-injection; an active application world replaces those values from its policy.
+Generator definitions are namespaced content assets declared through the
+existing manifest. The shipped declaration is:
 
-The desired set is rebuilt only when the camera enters a different chunk, a
-distance changes, or the internal streamer generator assignment changes its
-vertical clip. Increasing View Distance publishes the new policy immediately
-at the application boundary and bounded scheduler work fills the larger set.
-Decreasing it changes render culling at that boundary; load/generation
-cancellation, desired-set reconciliation, persistence-gated eviction, and
-neighbor remeshing advance during streaming updates. Retained residents are
-reconciled in deterministic batches of at most 64 per update. A newer live
-edit replaces the same pending policy transition instead of adding another
-reconciliation queue. Save-owned generator definitions are not
-live-replaceable.
-The internal request-advancement budget does not turn the desired-set rebuild
-into a partial scan.
+```yaml
+namespace: base
+assets:
+  generator_definitions:
+    default:
+      path: generators/default.yaml
+```
 
----
+`assets/generators/default.yaml` is the complete working author example. A
+definition owns its schema version, namespaced ID, positive source revision,
+human label and description, finite bounds, terrain materials, climate, biome
+targets and surfaces, density graph, caves, and structures.
 
-## Render Policy
+Authoring is graph-only. The engine derives one fixed stage order from validated
+feature sections. There is no simple-terrain mode, configurable pipeline,
+custom stage or generator plugin, inheritance, flags, conditional expression,
+or overlay mechanism. Caves and structures belong to the definition; an author
+publishes a distinct complete definition when those choices differ.
 
-Normal startup uses one code-owned `RenderProfile`. There is no render YAML,
-raw render asset, project-root override, per-world override, or saved renderer
-document. The sole player-owned renderer cost requests are View Distance and
-Shadows On/Off. `WorldView::setRenderProfileForDiagnostics()` is the explicit
-low-level replacement seam for tests and developer diagnostics; application
-startup does not call it.
+Validation is strict before save staging. Unknown or type-inapplicable fields,
+unknown graph node or climate types, duplicate definition IDs, duplicate or
+dangling graph references, cycles, missing required outputs, invalid bounds,
+incoherent feature dependencies, invalid biome filters, unavailable materials,
+and unreachable graph nodes are errors.
+There is no silent constant, temperature, zero-output, unrestricted-filter, or
+installed-default fallback.
 
-The shipped Shadows On profile uses three 6,144-pixel cascades, a 200-world-unit
-internal distance limit, a 0.25 split blend, 0.001 depth bias, 0.02 normal bias,
-near/far PCF radii of 2/3, transparent scale 1, strength 3, and fade power 1.
-The active View Distance policy independently supplies a shadow-distance
-ceiling each frame. The effective distance is the smaller of that ceiling and
-the profile limit, and the derived value is never written back into the
-profile.
+## Internal Engine Policy
 
-TAA remains an internal experiment, disabled in the shipped profile, with a
-0.95 history blend and 1.0 jitter scale. There is no anti-aliasing player or
-world setting. The sun direction `[0.5, 1.0, 0.3]`, transparent alpha `0.5`,
-clear color, and lighting weights are shipped art constants rather than an
-environment configuration domain.
+Installed Rigel has no public or shipped `EngineConfig`. Normal scheduler,
+loader, renderer, and persistence decisions are code-owned:
 
-Profiler collection is separate developer tooling. Debug builds compile the
-instrumentation, collection defaults Off, and only the exact environment value
-`RIGEL_PROFILE=1` enables it. It is absent from render, world, and player state.
+- automatic worker topology and bounded queue/application policy;
+- load/preload/unload policy derived from the player's View Distance;
+- one Shadows On profile and internal TAA, projection, and art tuning;
+- CR as the installed new-save backend policy, with existing saves always
+  using their authoritative stored format.
 
----
+Exact scheduler capacities and renderer mathematics are implementation details,
+not ordinary configuration. Their current behavior and test evidence live in
+`docs/WorldGeneration.md`, `docs/RenderingPipeline.md`, and
+`docs/DebugTooling.md`.
 
-## Persistence Policy
+## Explicit Developer and Benchmark Inputs
 
-The installed desktop application creates new saves with the CR backend and
-LZ4 region compression disabled. These are code-owned bootstrap decisions, not
-YAML settings. Once creation publishes the save, its authoritative format
-marker controls every reload even if installed policy later changes.
+Developer inputs are opt-in and do not add another source layer:
 
-The runtime persistence provider registry carries concrete dependencies such
-as the block registry and the internal CR settings object. Tests may construct
-contexts with the Memory backend or enable CR LZ4 explicitly to exercise those
-implementations. Normal startup has no persistence asset, bare-root file,
-`config/` source, or `config/worlds/<id>/` source.
+- `RIGEL_PROFILE=1` enables profiler collection when instrumentation is
+  compiled. Other values leave it Off.
+- `RIGEL_CHUNK_BENCH=1` enables application chunk statistics and removes VSync
+  and FPS pacing from the effective benchmark display without rewriting player
+  preferences.
+- `RIGEL_BUILD_TESTS` and `RIGEL_BUILD_BENCHMARKS` are build options, not
+  runtime settings.
+- Benchmark executables accept their documented exact CLI inputs for such
+  values as worker count or queue limits. Tests inject exact policy through
+  constructors and setters.
+- `WorldView::setRenderProfileForDiagnostics()` is the explicitly named
+  low-level renderer seam. Normal application startup never calls it.
+- Debug/profiler/demo input actions are fixed developer controls and remain
+  separate from player binding defaults and sparse overrides.
 
----
+These inputs are not persisted to `user-preferences.yaml` or a world save and
+are not supported as installed-game configuration. See `docs/DebugTooling.md`
+for benchmark commands and diagnostic output.
 
-## Limitations
+### Obsolete-path diagnostics
 
-- Installed persistence policy and saved world identity are resolved once at
-  startup. Supported UserPreferences changes use their direct live apply paths;
-  Shadows and View Distance require an active world session.
-- Validation is implemented by concrete owners rather than one generic schema
-  engine. Generator definitions and save-owned settings are strict;
-  UserPreferences parsing is tolerant per field.
-- Generator definitions have no inheritance, overlay, flag, or author-facing
-  stage-pipeline mechanism.
-- Shipped player binding defaults are content in the asset manifest; sparse
-  global user replacements are `UserPreferences`.
+Debug startup checks only the exact retired `world_generation.yaml`,
+`streaming.yaml`, `render.yaml`, `persistence.yaml`, and
+`worldgen_overlays/no_carvers.yaml` locations associated with the active world.
+If an entry exists, Rigel warns that it is ignored and names the current owner
+or replacement. It does not parse the entry, enumerate directories, or search
+arbitrary roots. Release startup does not perform this diagnostic.
 
----
+## Related Documentation
 
-## Related Docs
-
+- `docs/InputSystem.md`
 - `docs/WorldGeneration.md`
 - `docs/RenderingPipeline.md`
 - `docs/PersistenceAPI.md`
+- `docs/PersistenceBackends.md`
 - `docs/MultiWorld.md`
 - `docs/AssetSystem.md`
-- `docs/EmbeddedAssets.md`
-- `docs/InputSystem.md`
+- `docs/DebugTooling.md`

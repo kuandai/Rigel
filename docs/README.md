@@ -8,7 +8,8 @@ implementation and how the systems fit together.
 
 - `docs/VoxelEngine.md` for a high-level architecture overview.
 - `docs/ApplicationLifecycle.md` for the runtime flow and async paths.
-- `docs/ConfigurationSystem.md` for how configs are loaded and overridden.
+- `docs/ConfigurationSystem.md` for configuration ownership, persistence, and
+  runtime mutability.
 
 ## Major Components
 
@@ -20,7 +21,7 @@ implementation and how the systems fit together.
 
 ### Voxel + World
 
-- `docs/WorldGeneration.md` (pipeline, streaming, overlays)
+- `docs/WorldGeneration.md` (strict graph generation, pipeline, streaming)
 - `docs/RenderingPipeline.md` (voxel rendering, TAA, shadows)
 - `docs/ShaderSystem.md` (shader assets and compilation)
 - `docs/VoxelEngine.md` (block and chunk structures)

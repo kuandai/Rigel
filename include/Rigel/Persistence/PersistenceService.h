@@ -19,6 +19,10 @@ public:
         PreparedMetadata(const PreparedMetadata&) = delete;
         PreparedMetadata& operator=(const PreparedMetadata&) = delete;
 
+        const std::string& path() const noexcept {
+            return m_path;
+        }
+
     private:
         friend class PersistenceService;
 

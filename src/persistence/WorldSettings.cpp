@@ -1396,6 +1396,12 @@ static std::string publishValidatedWorldGenerationLocked(
     }
 
     try {
+        auto stagedFormat = persistence.openFormat(stagedContext);
+        auto preparedBackendMetadata =
+            persistence.prepareWorldMetadataSave(
+                backendMetadata, *stagedFormat, stagedContext);
+        validateBackendMetadataPath(
+            stagedContext, preparedBackendMetadata.path());
         writeDocument(
             storage,
             childPath(stagedContext, kGeneratorSnapshotFilename),
@@ -1404,12 +1410,8 @@ static std::string publishValidatedWorldGenerationLocked(
             storage,
             childPath(stagedContext, kWorldSettingsFilename),
             settingsDocument);
-        auto stagedFormat = persistence.openFormat(stagedContext);
-        const std::string stagedMetadataPath =
-            stagedFormat->worldMetadataCodec().metadataPath(stagedContext);
-        validateBackendMetadataPath(stagedContext, stagedMetadataPath);
-        persistence.saveWorldMetadata(
-            backendMetadata, stagedContext);
+        persistence.publishMetadataSave(
+            std::move(preparedBackendMetadata));
         if (!hasValidStagingOwnershipMarker(
                 storage, worldRoot, stagedContext) ||
             readDocument(

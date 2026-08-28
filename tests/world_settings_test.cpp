@@ -428,10 +428,12 @@ public:
     size_t failOrdinal = std::numeric_limits<size_t>::max();
     bool failAfterCommit = false;
     bool failRemovals = false;
+    std::vector<std::string> opens;
     std::vector<std::string> commits;
 
     std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
         const std::string& path) override {
+        opens.push_back(path);
         auto inner = Persistence::FilesystemBackend::openWrite(path);
         return std::make_unique<ObservedWriteSession>(
             std::move(inner),
@@ -452,6 +454,166 @@ public:
 private:
     size_t m_openOrdinal = 0;
 };
+
+enum class MetadataPreflightMode {
+    Success,
+    InvalidPath,
+    CodecFailure
+};
+
+struct MetadataPreflightState {
+    MetadataPreflightMode mode = MetadataPreflightMode::Success;
+    std::vector<std::string> events;
+};
+
+class PreflightWorldMetadataCodec final
+    : public Persistence::WorldMetadataCodec {
+public:
+    PreflightWorldMetadataCodec(
+        Persistence::WorldMetadataCodec& delegate,
+        std::shared_ptr<MetadataPreflightState> state)
+        : m_delegate(delegate)
+        , m_state(std::move(state)) {
+    }
+
+    std::string metadataPath(
+        const Persistence::PersistenceContext& context) const override {
+        m_state->events.push_back("metadata path resolved");
+        if (m_state->mode == MetadataPreflightMode::InvalidPath) {
+            return context.rootPath + "/nested/world.meta";
+        }
+        return m_delegate.metadataPath(context);
+    }
+
+    void write(const Persistence::WorldMetadata& metadata,
+               Persistence::ByteWriter& writer) override {
+        m_state->events.push_back("metadata codec started");
+        if (m_state->mode == MetadataPreflightMode::CodecFailure) {
+            throw std::runtime_error(
+                "injected metadata codec preparation failure");
+        }
+        m_delegate.write(metadata, writer);
+        m_state->events.push_back("metadata codec prepared");
+    }
+
+    Persistence::WorldMetadata read(
+        Persistence::ByteReader& reader) override {
+        return m_delegate.read(reader);
+    }
+
+private:
+    Persistence::WorldMetadataCodec& m_delegate;
+    std::shared_ptr<MetadataPreflightState> m_state;
+};
+
+class MetadataPreflightFormat final
+    : public Persistence::PersistenceFormat {
+public:
+    MetadataPreflightFormat(
+        Persistence::FormatDescriptor descriptor,
+        std::unique_ptr<Persistence::PersistenceFormat> delegate,
+        std::shared_ptr<MetadataPreflightState> state)
+        : m_descriptor(std::move(descriptor))
+        , m_delegate(std::move(delegate))
+        , m_worldCodec(
+              m_delegate->worldMetadataCodec(), std::move(state)) {
+    }
+
+    const Persistence::FormatDescriptor& descriptor() const override {
+        return m_descriptor;
+    }
+
+    Persistence::WorldMetadataCodec& worldMetadataCodec() override {
+        return m_worldCodec;
+    }
+
+    Persistence::ZoneMetadataCodec& zoneMetadataCodec() override {
+        return m_delegate->zoneMetadataCodec();
+    }
+
+    Persistence::ChunkContainer& chunkContainer() override {
+        return m_delegate->chunkContainer();
+    }
+
+    Persistence::EntityContainer& entityContainer() override {
+        return m_delegate->entityContainer();
+    }
+
+    Persistence::RegionLayout& regionLayout() override {
+        return m_delegate->regionLayout();
+    }
+
+private:
+    Persistence::FormatDescriptor m_descriptor;
+    std::unique_ptr<Persistence::PersistenceFormat> m_delegate;
+    PreflightWorldMetadataCodec m_worldCodec;
+};
+
+class MetadataPreflightStorage final : public ObservingStorage {
+public:
+    explicit MetadataPreflightStorage(
+        std::shared_ptr<MetadataPreflightState> state)
+        : m_state(std::move(state)) {
+    }
+
+    std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
+        const std::string& path) override {
+        const std::string filename =
+            std::filesystem::path(path).filename().string();
+        if (filename == "generator-definition.yaml" ||
+            filename == "world-settings.yaml" ||
+            filename == "world.meta") {
+            m_state->events.push_back("opened " + filename);
+        }
+        return ObservingStorage::openWrite(path);
+    }
+
+private:
+    std::shared_ptr<MetadataPreflightState> m_state;
+};
+
+Persistence::FormatDescriptor metadataPreflightDescriptor() {
+    Persistence::FormatDescriptor descriptor =
+        Persistence::Backends::Memory::descriptor();
+    descriptor.id = "metadata-preflight";
+    return descriptor;
+}
+
+void registerMetadataPreflightFormat(
+    Persistence::FormatRegistry& formats,
+    const std::shared_ptr<MetadataPreflightState>& state) {
+    const Persistence::FormatDescriptor descriptor =
+        metadataPreflightDescriptor();
+    const Persistence::FormatFactory memoryFactory =
+        Persistence::Backends::Memory::factory();
+    formats.registerFormat(
+        descriptor,
+        [descriptor, memoryFactory, state](
+            const Persistence::PersistenceContext& context) {
+            return std::make_unique<MetadataPreflightFormat>(
+                descriptor, memoryFactory(context), state);
+        },
+        [](Persistence::StorageBackend& storage,
+           const Persistence::PersistenceContext& context)
+            -> std::optional<Persistence::ProbeResult> {
+            if (storage.exists(context.rootPath + "/world.meta")) {
+                return Persistence::ProbeResult{0.8f, true};
+            }
+            return std::nullopt;
+        });
+}
+
+bool openedOwnerDocument(const ObservingStorage& storage) {
+    return std::any_of(
+        storage.opens.begin(),
+        storage.opens.end(),
+        [](const std::string& path) {
+            const std::string filename =
+                std::filesystem::path(path).filename().string();
+            return filename == "generator-definition.yaml" ||
+                filename == "world-settings.yaml";
+        });
+}
 
 class AfterCommitWriteSession final
     : public Persistence::AtomicWriteSession {
@@ -1357,6 +1519,119 @@ TEST_CASE(WorldSettings_publication_commits_marker_before_payload) {
     CHECK(std::filesystem::exists(worldRoot / "generator-definition.yaml"));
     CHECK(std::filesystem::exists(worldRoot / "world-settings.yaml"));
     CHECK(std::filesystem::exists(worldRoot / "world.meta"));
+}
+
+TEST_CASE(WorldSettings_backend_metadata_is_prepared_before_owner_documents) {
+    Test::TemporaryDirectory directory("rigel_world_settings");
+    const auto worldRoot =
+        directory.path() / "world_metadata_preflight_order";
+    auto state = std::make_shared<MetadataPreflightState>();
+    auto storage = std::make_shared<MetadataPreflightStorage>(state);
+    auto context = contextFor(worldRoot, storage);
+    context.preferredFormat = metadataPreflightDescriptor().id;
+    Persistence::FormatRegistry formats;
+    registerMetadataPreflightFormat(formats, state);
+    Persistence::PersistenceService persistence(formats);
+    Voxel::BlockRegistry blocks;
+    registerSavedDefinitionBlocks(blocks);
+
+    static_cast<void>(Persistence::bootstrapWorldGeneration(
+        Persistence::deferredCreationForTest(
+            creationForTest(savedSettings(), savedDefinition())),
+        persistence,
+        blocks,
+        context));
+
+    const auto pathResolved = std::find(
+        state->events.begin(),
+        state->events.end(),
+        "metadata path resolved");
+    const auto codecPrepared = std::find(
+        state->events.begin(),
+        state->events.end(),
+        "metadata codec prepared");
+    const auto snapshotOpened = std::find(
+        state->events.begin(),
+        state->events.end(),
+        "opened generator-definition.yaml");
+    const auto settingsOpened = std::find(
+        state->events.begin(),
+        state->events.end(),
+        "opened world-settings.yaml");
+    CHECK(pathResolved != state->events.end());
+    CHECK(codecPrepared != state->events.end());
+    CHECK(snapshotOpened != state->events.end());
+    CHECK(settingsOpened != state->events.end());
+    CHECK(pathResolved < codecPrepared);
+    CHECK(codecPrepared < snapshotOpened);
+    CHECK(codecPrepared < settingsOpened);
+    CHECK_EQ(
+        Persistence::inspectSavedWorldGeneration(context),
+        Persistence::SavedWorldGenerationPresence::Published);
+}
+
+TEST_CASE(WorldSettings_backend_metadata_preflight_failure_never_starts_owner_documents) {
+    for (const auto& [mode, expectedFailure] :
+         std::vector<std::pair<MetadataPreflightMode, std::string>>{
+             {MetadataPreflightMode::InvalidPath,
+              "must be a direct child"},
+             {MetadataPreflightMode::CodecFailure,
+              "injected metadata codec preparation failure"}}) {
+        Test::TemporaryDirectory directory("rigel_world_settings");
+        const auto worldRoot = directory.path() /
+            (mode == MetadataPreflightMode::InvalidPath
+                 ? "world_invalid_metadata_path"
+                 : "world_metadata_codec_failure");
+        const std::filesystem::path unownedStage =
+            std::filesystem::path(worldRoot.string() + ".staging.7");
+        std::filesystem::create_directory(unownedStage);
+        auto state = std::make_shared<MetadataPreflightState>();
+        state->mode = mode;
+        auto storage =
+            std::make_shared<MetadataPreflightStorage>(state);
+        writeText(
+            *storage,
+            unownedStage / "must-survive.txt",
+            "unowned staging data");
+        storage->opens.clear();
+        storage->commits.clear();
+        auto context = contextFor(worldRoot, storage);
+        context.preferredFormat = metadataPreflightDescriptor().id;
+        Persistence::FormatRegistry formats;
+        registerMetadataPreflightFormat(formats, state);
+        Persistence::PersistenceService persistence(formats);
+        Voxel::BlockRegistry blocks;
+        registerSavedDefinitionBlocks(blocks);
+
+        const std::string failure = exceptionMessage([&] {
+            static_cast<void>(Persistence::bootstrapWorldGeneration(
+                Persistence::deferredCreationForTest(
+                    creationForTest(savedSettings(), savedDefinition())),
+                persistence,
+                blocks,
+                context));
+        });
+
+        CHECK(failure.find(expectedFailure) != std::string::npos);
+        CHECK(!openedOwnerDocument(*storage));
+        CHECK(std::none_of(
+            storage->opens.begin(),
+            storage->opens.end(),
+            [](const std::string& path) {
+                return std::filesystem::path(path).filename() ==
+                    "world.meta";
+            }));
+        CHECK(!std::filesystem::exists(worldRoot));
+        CHECK(!std::filesystem::exists(
+            std::filesystem::path(worldRoot.string() + ".staging.0")));
+        CHECK(!std::filesystem::exists(
+            cleanupOwnershipPathForTest(
+                std::filesystem::path(
+                    worldRoot.string() + ".staging.0"))));
+        CHECK_EQ(
+            readText(*storage, unownedStage / "must-survive.txt"),
+            std::string("unowned staging data"));
+    }
 }
 
 TEST_CASE(WorldSettings_parentless_relative_root_publishes_and_reloads) {
@@ -2671,6 +2946,37 @@ TEST_CASE(WorldSettings_settings_write_failure_removes_committed_snapshot) {
         CHECK_THROWS(Persistence::bootstrapCreationForTest(
             savedSettings(), savedDefinition(), context));
         CHECK(!std::filesystem::exists(worldRoot));
+        CHECK_EQ(
+            Persistence::inspectSavedWorldGeneration(context),
+            Persistence::SavedWorldGenerationPresence::Missing);
+    }
+}
+
+TEST_CASE(WorldSettings_metadata_publication_failure_rolls_back_prepared_world) {
+    for (const bool failAfterCommit : {false, true}) {
+        Test::TemporaryDirectory directory("rigel_world_settings");
+        const auto worldRoot = directory.path() /
+            (failAfterCommit
+                 ? "world_metadata_after_commit_failure"
+                 : "world_metadata_before_commit_failure");
+        auto storage = std::make_shared<ObservingStorage>();
+        storage->failOrdinal = 4;
+        storage->failAfterCommit = failAfterCommit;
+        const auto context = contextFor(worldRoot, storage);
+
+        CHECK_THROWS(Persistence::bootstrapCreationForTest(
+            savedSettings(), savedDefinition(), context));
+
+        CHECK(openedOwnerDocument(*storage));
+        CHECK(std::any_of(
+            storage->opens.begin(),
+            storage->opens.end(),
+            [](const std::string& path) {
+                return std::filesystem::path(path).filename() ==
+                    "world.meta";
+            }));
+        CHECK(!std::filesystem::exists(worldRoot));
+        CHECK(stagingRoots(worldRoot).empty());
         CHECK_EQ(
             Persistence::inspectSavedWorldGeneration(context),
             Persistence::SavedWorldGenerationPresence::Missing);

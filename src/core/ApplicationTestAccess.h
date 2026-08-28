@@ -29,12 +29,20 @@ enum class ApplicationShutdownStage {
     RuntimeReleased,
 };
 
+struct ApplicationPersistencePolicyState {
+    std::string preferredFormat;
+    bool crSettingsPresent = false;
+    bool crLz4Enabled = false;
+};
+
 struct ApplicationConstructionHooks {
     GlfwRuntime::Api runtimeApi;
     void (*afterContextAcquired)() = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
     std::filesystem::path userPreferencesPath;
     void (*afterDisplayInitialized)(Application&) = nullptr;
+    void (*afterInstalledPersistenceContextPrepared)(
+        ApplicationPersistencePolicyState) = nullptr;
 };
 
 struct ApplicationCloseHooks {
@@ -42,11 +50,6 @@ struct ApplicationCloseHooks {
     void (*closeFailureObserved)(bool dirtyWorld) = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
     std::string persistenceRoot = "application-close-test";
-};
-
-struct ApplicationPersistencePolicyState {
-    std::string preferredFormat;
-    bool crLz4Enabled = false;
 };
 
 struct ApplicationViewDistanceState {
@@ -76,7 +79,6 @@ public:
     static void constructAndRun(
         ApplicationConstructionHooks hooks,
         void (*runLoop)(Application&));
-    static ApplicationPersistencePolicyState installedPersistencePolicy();
     static void closeReadyWorld(ApplicationCloseHooks hooks);
     static void closeWithPendingResize(
         std::filesystem::path userPreferencesPath,

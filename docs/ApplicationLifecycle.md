@@ -35,13 +35,24 @@ Shutdown persists world state and releases resources.
      rethrown.
    - Interactive runs synchronize buffer swaps to the display. Chunk benchmark
      runs disable swap synchronization so presentation does not cap throughput.
-2. Initialize GLEW and log the OpenGL version string.
-3. Register window callbacks.
+2. Prepare the installed persistence bootstrap context.
+   - Formats are registered with `WorldSet::persistenceFormats()` and the root
+     path is resolved from the world id.
+   - The active `World` is created to own the concrete persistence providers.
+   - Installed desktop policy selects uncompressed CR for new-world creation;
+     there is no persistence YAML or working-directory override.
+   - The resulting context is retained unchanged until save bootstrap. Existing
+     worlds require an authoritative saved format marker and do not consult the
+     installed new-world policy when resolving their backend.
+   - After bootstrap resolves the backend, the active world retains that format
+     for lazy loads, eviction writes, and close-time persistence.
+3. Initialize GLEW and log the OpenGL version string.
+4. Register window callbacks.
    - Framebuffer resize -> `glViewport`.
    - Key and mouse-button callbacks feed the application-owned `InputState`.
    - Cursor, focus, character, and scroll callbacks also feed camera or ImGui
      state as applicable.
-4. Load the asset manifest and register loaders.
+5. Load the asset manifest and register loaders.
    - `input`, `entity_models`, `entity_anims` loaders are registered.
    - `shaders/voxel` is required. Failure to load it aborts view creation; the
      failed candidate is not published, so a later call can retry normally.
@@ -61,21 +72,13 @@ Shutdown persists world state and releases resources.
      queued for the first input frame.
    - ImGui initialization is optional. A false result or exception emits one
      warning naming ImGui, cleans partial UI state, and continues without UI.
-5. Register persistence formats and configure persistence root.
-   - Formats are registered with `WorldSet::persistenceFormats()`.
-   - Root path is resolved from the world id.
-   - Installed desktop policy selects uncompressed CR for new-world creation;
-     there is no persistence YAML or working-directory override.
-   - Existing worlds require an authoritative saved format marker and do not
-     consult the installed new-world policy when resolving their backend.
-   - After bootstrap resolves the backend, the active world retains that
-     format for lazy loads, eviction writes, and close-time persistence.
 6. Initialize world resources.
    - Block registry, texture atlas, and other shared resources.
    - Failed block definitions, an all-air registry, or an empty texture atlas
      abort world bootstrap before spawn discovery.
    - Successful initialization records loaded block and texture counts.
-7. Load save-owned world identity and create `World` + `WorldView`.
+7. Load save-owned world identity and create the `WorldView` for the active
+   `World`.
    - For a new world, Rigel stages backend world metadata with world settings
      and the generator snapshot, verifies the authoritative format probe, and
      atomically publishes the complete save while holding the per-world

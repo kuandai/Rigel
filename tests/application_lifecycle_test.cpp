@@ -61,6 +61,7 @@ struct LifecycleCalls {
     bool closeFailureObserved = false;
     bool dirtyAtCloseFailure = false;
     bool shutdownStartedAtCloseFailure = false;
+    Rigel::ApplicationPersistencePolicyState persistencePolicy;
     std::shared_ptr<Rigel::Persistence::StorageBackend> persistenceStorage;
     std::string persistenceRoot;
 };
@@ -236,6 +237,16 @@ Rigel::GlfwRuntime::WindowSizeCallback setFramebufferSizeCallback(
 
 void failAfterContextAcquired() {
     throw std::runtime_error("required bootstrap data unavailable");
+}
+
+void observeInstalledPersistenceContext(
+    Rigel::ApplicationPersistencePolicyState state
+) {
+    g_calls->persistencePolicy = std::move(state);
+}
+
+void failAfterDisplayInitialized(Rigel::Application&) {
+    throw std::runtime_error("display initialization completed");
 }
 
 void validateInvalidApplicationPreferences(Rigel::Application& application) {
@@ -533,6 +544,8 @@ TEST_CASE(Application_ReportsObsoleteGenerationConfigurationAtStartup) {
 }
 
 TEST_CASE(Application_InstalledPersistencePolicyIgnoresWorkingDirectory) {
+    LifecycleCalls calls;
+    ScopedLifecycleCalls scopedCalls(calls);
     Rigel::Test::TemporaryDirectory directory(
         "rigel_application_installed_persistence_policy");
     const std::vector<std::filesystem::path> obsoletePaths = {
@@ -552,11 +565,28 @@ TEST_CASE(Application_InstalledPersistencePolicyIgnoresWorkingDirectory) {
     }
     ScopedCurrentDirectory currentDirectory(directory.path());
 
-    const auto policy =
-        Rigel::ApplicationTestAccess::installedPersistencePolicy();
+    Rigel::ApplicationConstructionHooks hooks;
+    hooks.runtimeApi = fakeRuntimeApi();
+    hooks.userPreferencesPath =
+        directory.path() / "user-preferences.yaml";
+    hooks.afterDisplayInitialized = &failAfterDisplayInitialized;
+    hooks.afterInstalledPersistenceContextPrepared =
+        &observeInstalledPersistenceContext;
+    CHECK_THROWS(Rigel::ApplicationTestAccess::construct(std::move(hooks)));
 
-    CHECK_EQ(policy.preferredFormat, std::string("cr"));
-    CHECK(!policy.crLz4Enabled);
+    CHECK_EQ(calls.persistencePolicy.preferredFormat, std::string("cr"));
+    CHECK(calls.persistencePolicy.crSettingsPresent);
+    CHECK(!calls.persistencePolicy.crLz4Enabled);
+    const std::vector<std::string> expectedRuntime = {
+        "initialize",
+        "create window",
+        "make context current",
+        "make context current",
+        "clear context",
+        "destroy window",
+        "terminate",
+    };
+    CHECK_EQ(calls.runtime, expectedRuntime);
 }
 
 TEST_CASE(Application_InvalidPreferencesRejectBeforeMutationOrPublication) {

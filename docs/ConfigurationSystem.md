@@ -167,22 +167,25 @@ configuration authority.
 
 ### World creation
 
-A player-facing world creation surface has only these inputs:
+New-world bootstrap has three product concepts, although the current
+application supplies them without a creation screen:
 
 | Creation field | Meaning |
 | --- | --- |
 | World Name | The save-owned display name |
 | Seed | The actual integer seed persisted before generation |
-| World Type | The selected definition's human-readable label and description |
+| World Type | The selected definition, described in product terms by its author label and description |
 
-World Type does not expose a raw asset ID, revision, density graph, caves,
-structures, or pipeline stages. Installed definitions are validated before
-they can be offered by label and description.
+World Type does not make a raw asset ID, revision, density graph, caves,
+structures, or pipeline stages part of the player mental model.
 
-The current prototype has no world-creation screen. When `saves/world_0` is
-absent, the application supplies World Name `world_0`, Seed `1337`, and World
-Type **Default** (`Rigel's standard continents, biomes, and caves.`). Those are
-creation inputs, not fallback values for an existing save.
+The current prototype has no world-creation screen, selector, or presentation
+consumer. When `saves/world_0` is absent, the application supplies World Name
+`world_0`, Seed `1337`, and the installed definition ID `rigel:default`. That
+definition's author metadata names the product concept **Default** and
+describes it as `Rigel's standard continents, biomes, and caves.`; production
+does not currently display that metadata. These are creation inputs, not
+fallback values for an existing save.
 
 For reference, the resulting strict settings document has this shape and uses
 the currently supported versions:

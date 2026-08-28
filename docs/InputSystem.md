@@ -89,9 +89,8 @@ cursor sample after capture or focus change only establishes the position
 baseline. Pitch remains clamped to -89 through 89 degrees.
 
 `setCursorCaptured()` selects disabled or normal cursor mode, enables raw mouse
-motion where supported, and resets the first-sample guard. A future normal
-pause/settings surface can replace the prototype Tab capture binding without
-putting that prototype action into player preferences.
+motion where supported, and resets the first-sample guard. The prototype Tab
+capture binding is a fixed developer action, not a player preference.
 
 ## Related Docs
 

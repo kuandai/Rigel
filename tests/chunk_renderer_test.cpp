@@ -497,6 +497,7 @@ TEST_CASE(ChunkRenderer_VisibilityTraceRequiresRealNonemptyDraw) {
     WorldRenderContext renderContext;
     renderContext.meshes = &store;
     renderContext.shader = makeShader();
+    renderContext.renderDistanceWorldUnits = 32.0f;
     ChunkRenderer renderer;
     const auto installed = store.snapshot(coord);
     CHECK(installed.has_value());

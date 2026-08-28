@@ -23,6 +23,13 @@ ImGui profiler window is toggled independently by the `imgui_overlay` action
 (F3 by default). Both start disabled; releasing the corresponding action opts
 in to that instrumentation.
 
+Debug startup also checks a fixed list of exact retired configuration paths in
+the launch directory: former root, `config/`, and active numeric-world YAML
+locations plus the former shipped `no_carvers` overlay locations. Detected
+entries are reported with their current owner or replacement. The diagnostic
+does not enumerate directories or parse those files, and Release startup does
+not run the check.
+
 ---
 
 ## 2. Toggle and Lifetime

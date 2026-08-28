@@ -64,9 +64,10 @@ Shutdown persists world state and releases resources.
 5. Register persistence formats and configure persistence root.
    - Formats are registered with `WorldSet::persistenceFormats()`.
    - Root path is resolved from the world id.
-   - Provider options come from `persistence.yaml`. Its preferred format is a
-     new-world creation input; existing worlds require an authoritative saved
-     format marker.
+   - Installed desktop policy selects uncompressed CR for new-world creation;
+     there is no persistence YAML or working-directory override.
+   - Existing worlds require an authoritative saved format marker and do not
+     consult the installed new-world policy when resolving their backend.
    - After bootstrap resolves the backend, the active world retains that
      format for lazy loads, eviction writes, and close-time persistence.
 6. Initialize world resources.

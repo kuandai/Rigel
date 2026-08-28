@@ -63,17 +63,14 @@ try {
 }
 ```
 
-### Common Embedded Configs
+### Embedded Generator Content
 
-The build embeds the persistence bootstrap config and installed generator
-definition so they can be loaded through their concrete owners:
+The build embeds `generators/default.yaml`. Production new-world generation
+resolves that named definition through the manifest. Published worlds reload
+their save-owned normalized snapshot instead.
 
-- `config/persistence.yaml`
-- `generators/default.yaml`
-
-Streaming and renderer policy are internal code and are not embedded configs.
-Production new-world generation resolves the named `generators/default.yaml`
-definition declared by the manifest.
+Streaming, renderer, and persistence policy are internal code and are not
+embedded configs.
 
 ### Example B: Loading Binary Data (OpenGL Textures)
 

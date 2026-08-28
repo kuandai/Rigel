@@ -39,7 +39,7 @@ implementation and how the systems fit together.
 
 - `docs/AssetSystem.md` (manifest and loader behavior)
 - `docs/EmbeddedAssets.md` (resource embedding)
-- `docs/ConfigurationSystem.md` (config sources and precedence)
+- `docs/ConfigurationSystem.md` (configuration ownership and lifetimes)
 
 ### Testing
 

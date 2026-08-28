@@ -73,8 +73,8 @@ Region files (`.cosmicreach`) contain:
 
 Column payloads contain encoded chunk records written by `CRChunkCodec`.
 
-LZ4 compression is optional and controlled by the typed
-`persistence.providers.rigel:persistence.cr.lz4` setting.
+LZ4 compression remains a typed CR implementation option for explicit test
+construction. Installed desktop policy leaves it disabled.
 
 ### 1.5 Chunk Encoding
 

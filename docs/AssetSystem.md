@@ -36,8 +36,8 @@ The manifest defines asset IDs and their configuration. Example:
 namespace: base
 assets:
   raw:
-    persistence_config:
-      path: config/persistence.yaml
+    lookup_table:
+      path: data/lookup.bin
   textures:
     stone:
       path: textures/blocks/stone/stone_shale.png
@@ -56,7 +56,7 @@ Manifest constraints in the current implementation:
 ## Asset IDs
 
 Asset IDs are always `category/name` (for example: `textures/stone`,
-`shaders/voxel`, `raw/persistence_config`).
+`shaders/voxel`, `raw/lookup_table`).
 
 The manifest category determines which loader handles the asset.
 

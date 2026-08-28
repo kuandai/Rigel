@@ -9,16 +9,12 @@ persistence, and generator-definition configuration paths.
 
 - [Overview](#overview)
 - [Global User Preferences](#global-user-preferences)
-- [Config Sources and Precedence](#config-sources-and-precedence)
-  - [Generator Definition Sources](#generator-definition-sources)
-  - [Persistence](#persistence)
-- [Config Providers and Sources](#config-providers-and-sources)
+- [Ownership and Sources](#ownership-and-sources)
 - [Save-Owned World Identity](#save-owned-world-identity)
 - [Generator Definitions](#generator-definitions)
 - [Streaming Policy](#streaming-policy)
 - [Render Policy](#render-policy)
-- [Persistence Config](#persistence-config)
-- [Per-World Overrides](#per-world-overrides)
+- [Persistence Policy](#persistence-policy)
 - [Limitations](#limitations)
 - [Related Docs](#related-docs)
 
@@ -26,28 +22,16 @@ persistence, and generator-definition configuration paths.
 
 ## Overview
 
-Rigel uses layered configuration for persistence bootstrap policy. Later
-sources override earlier values, and the result is read once during application
-bootstrap. Generator content is separate: a new world resolves one strict named
-asset, while an existing world loads only its save-owned canonical snapshot.
-Streaming and renderer tuning are internal code, not layered configuration.
+Rigel separates configuration by owner and lifetime. `UserPreferences` owns
+global player requests in one platform file. A published save owns its world
+settings, generator provenance, normalized generator snapshot, and persistence
+format identity. The installed manifest supplies strict generator definitions
+only when creating a world. Streaming, renderer, and desktop persistence policy
+are internal code.
 
-Fields merge according to their YAML shape:
-
-- Scalars replace the earlier value.
-- Objects and maps merge by key, so omitted keys retain their earlier values.
-- Sequences replace the earlier sequence, including when the later sequence is
-  empty.
-
-Persistence's typed CR options merge by key.
-
-`PersistenceConfig` is the remaining layered type. Its typed provider loads
-YAML with rapidyaml and remains the semantic owner of parsing and merging its
-settings. Unknown fixed keys produce a warning and are not applied.
-
-`UserPreferences` is separate from these layered providers. It owns global
-player display, graphics, camera, and input requests in one platform file and
-does not consult assets, saves, the working directory, or per-world overrides.
+There is no shared configuration source stack. Normal startup does not inspect
+the process working directory for bare YAML files, a `config/` directory, or
+numeric `config/worlds/<id>/` overrides.
 
 ---
 
@@ -137,58 +121,26 @@ invert-Y while restoring manifest inheritance.
 
 ---
 
-## Config Sources and Precedence
+## Ownership and Sources
 
-Persistence configuration has a fixed source order defined by its subsystem
-bootstrap:
+- Global player requests load from the one absolute platform
+  `user-preferences.yaml` path described above.
+- The shipped manifest declares `generator_definitions/default`, backed by
+  `assets/generators/default.yaml`. New-world bootstrap resolves that creation
+  input only after confirming that no published save identity exists.
+- Published worlds load their settings and canonical generator snapshot from
+  the existing `saves/world_<id>` root. They do not enumerate installed
+  generator definitions.
+- Normal streaming, renderer, and persistence behavior comes from internal
+  policy. Tests and benchmarks inject exact typed values at their existing
+  construction seams.
 
-1) Embedded defaults (from assets).
-2) Project-level overrides under `config/`.
-3) Project root overrides (for quick testing).
-4) Per-world overrides under `config/worlds/<worldId>/`.
-
-### Generator Definition Sources
-
-The shipped manifest declares `generator_definitions/default`, whose asset is
-`assets/generators/default.yaml`. New-world bootstrap resolves the selected
-namespaced definition only after save inspection. Published-world startup does
-not enumerate or load installed generator definitions.
-
-Installed streaming and renderer policy are internal code. Normal startup does
-not load their assets or inspect project-root or per-world files for them.
-Unavailable installed generator content is irrelevant to published-world
-reload.
-
-### Persistence
-
-Sources (in order):
-
-1. `assets/config/persistence.yaml` (embedded as `raw/persistence_config`)
-2. `config/persistence.yaml`
-3. `persistence.yaml`
-4. `config/worlds/<worldId>/persistence.yaml`
-
----
-
-## Config Providers and Sources
-
-The persistence provider aggregates neutral `Config::IConfigSource` instances:
-
-- `EmbeddedConfigSource` reads the embedded `raw/persistence_config` asset.
-- `FileConfigSource` reads a file from disk.
-
-Each source provides its complete YAML document and a name used in validation
-errors. The provider prepares and validates a replacement value for each
-available source before publishing it as the input to the next layer. There is
-no cross-file overlay path or conditional flag mechanism.
-
-At startup, migration diagnostics check a finite list of exact legacy paths:
-the former `world_generation.yaml` locations and the corresponding shipped or
-source-relative `worldgen_overlays/no_carvers.yaml` locations for the active
-world. If an entry exists, Rigel warns that it is ignored and directs authors
-to declare a complete generator definition variant in `assets/manifest.yaml`.
-The check does not enumerate directories, parse legacy documents, or interpret
-their paths, flags, or conditions.
+Debug startup checks a finite list of exact retired
+`world_generation.yaml`, `streaming.yaml`, `render.yaml`, `persistence.yaml`,
+and `worldgen_overlays/no_carvers.yaml` locations for the active world. Existing
+entries produce an actionable warning but are never parsed. Release startup
+does not perform this check. Neither path enumerates directories or treats the
+working directory as configuration authority.
 
 ---
 
@@ -384,65 +336,29 @@ instrumentation, collection defaults Off, and only the exact environment value
 
 ---
 
-## Persistence Config
+## Persistence Policy
 
-`PersistenceConfig` is loaded from YAML under the optional `persistence` root
-node. If `persistence` is absent, the root is used directly.
+The installed desktop application creates new saves with the CR backend and
+LZ4 region compression disabled. These are code-owned bootstrap decisions, not
+YAML settings. Once creation publishes the save, its authoritative format
+marker controls every reload even if installed policy later changes.
 
-Defaults below reflect the code defaults from `PersistenceConfig`. The embedded
-config (`assets/config/persistence.yaml`) may override them.
-
-### Quick Reference (Persistence)
-
-| Key | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `persistence.format` | string | `cr` | Preferred format ID. |
-| `persistence.providers` | map | - | Typed backend options by ID. |
-| `persistence.providers.rigel:persistence.cr.lz4` | bool | `false` | CR backend compression. |
-
-Key fields:
-
-- `format`: preferred format ID (default `cr`).
-- `providers`: typed backend settings keyed by provider ID. The only supported
-  configuration provider is `rigel:persistence.cr`.
-
-CR's `lz4` option uses the exact lowercase `true`/`false` contract. Invalid
-values fail with the source and
-full key before a source layer is published. Example from the shipped config:
-
-```yaml
-persistence:
-  format: cr
-  providers:
-    rigel:persistence.cr:
-      lz4: false
-```
-
-The runtime persistence provider registry remains separate from configuration;
-it carries objects such as the block registry and CR settings after bootstrap.
-
----
-
-## Per-World Overrides
-
-Per-world overrides are resolved by world ID. The default world ID is numeric
-and used directly in the override paths:
-
-- `config/worlds/<worldId>/persistence.yaml`
-
-This file is optional and only overrides fields it defines. As the last source
-layer, it has the highest precedence.
+The runtime persistence provider registry carries concrete dependencies such
+as the block registry and the internal CR settings object. Tests may construct
+contexts with the Memory backend or enable CR LZ4 explicitly to exercise those
+implementations. Normal startup has no persistence asset, bare-root file,
+`config/` source, or `config/worlds/<id>/` source.
 
 ---
 
 ## Limitations
 
-- Layered persistence config and saved world identity are loaded once at
+- Installed persistence policy and saved world identity are resolved once at
   startup. Supported UserPreferences changes use their direct live apply paths;
   Shadows and View Distance require an active world session.
 - Validation is implemented by concrete owners rather than one generic schema
-  engine. Generator definitions and save-owned settings are strict; other
-  current config domains retain their documented parsing behavior.
+  engine. Generator definitions and save-owned settings are strict;
+  UserPreferences parsing is tolerant per field.
 - Generator definitions have no inheritance, overlay, flag, or author-facing
   stage-pipeline mechanism.
 - Shipped player binding defaults are content in the asset manifest; sparse

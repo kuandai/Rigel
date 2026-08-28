@@ -103,13 +103,13 @@ The application configures those shared values for its active default world
 before loading or saving it. The root used by that boot path is
 `saves/world_<id>`.
 
-Persistence bootstrap accepts a world ID and includes the optional
-highest-precedence `config/worlds/<worldId>/persistence.yaml` file. Renderer and
-streaming policy are internal and have no per-world files. Configuration values
-are not stored as a general configuration object on `World` or `WorldSet`.
-Each published save owns `world-settings.yaml` and
-`generator-definition.yaml`, and reload does not enumerate installed generator
-definitions.
+Installed persistence policy selects CR for new saves. Existing worlds resolve
+their authoritative saved format marker; there is no bare-root, `config/`, or
+numeric per-world persistence source. Renderer and streaming policy are also
+internal and have no per-world files. Configuration values are not stored as a
+general configuration object on `World` or `WorldSet`. Each published save owns
+`world-settings.yaml` and `generator-definition.yaml`, and reload does not
+enumerate installed generator definitions.
 
 ## Current Limitations
 

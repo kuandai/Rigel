@@ -1,92 +1,107 @@
-function(target_embed_resources TARGET_NAME RESOURCE_DIR)
-    file(GLOB_RECURSE RESOURCES CONFIGURE_DEPENDS "${RESOURCE_DIR}/*")
+function(target_embed_resources TARGET_NAME)
+    set(RESOURCE_DIRS ${ARGN})
+    if(NOT RESOURCE_DIRS)
+        message(FATAL_ERROR "target_embed_resources requires at least one resource root")
+    endif()
 
-    set(GENERATED_SOURCES "")
     set(REGISTRY_ENTRIES "")
     set(REGISTRY_KEYS "")
+    set(EXTERN_DECLS "")
+    set(ASSEMBLY_CONTENT ".section .rodata\n")
+    set(RESOURCE_DEPENDENCIES "")
+    set(LOGICAL_RESOURCE_PATHS "")
 
-    foreach(FILE_PATH ${RESOURCES})
-        # Get the relative path (e.g., "subdir/image.png") for the lookup key
-        file(RELATIVE_PATH REL_PATH "${RESOURCE_DIR}" "${FILE_PATH}")
-        
-        # Create a C-safe variable name
-        string(REGEX REPLACE "[^a-zA-Z0-9]" "_" SAFE_NAME "${REL_PATH}")
-        set(SYM_START "_binary_${SAFE_NAME}_start")
-        set(SYM_END   "_binary_${SAFE_NAME}_end")
+    foreach(RESOURCE_DIR IN LISTS RESOURCE_DIRS)
+        if(NOT IS_DIRECTORY "${RESOURCE_DIR}")
+            message(FATAL_ERROR "Resource root does not exist: ${RESOURCE_DIR}")
+        endif()
+        file(GLOB_RECURSE ROOT_RESOURCES CONFIGURE_DEPENDS "${RESOURCE_DIR}/*")
+        list(SORT ROOT_RESOURCES)
 
-        # 3. Generate Assembly File
-        set(ASM_FILE "${CMAKE_CURRENT_BINARY_DIR}/embedded/${SAFE_NAME}.S")
-        file(WRITE "${ASM_FILE}" "
-.section .rodata
-.global ${SYM_START}
-.global ${SYM_END}
-.align 16
-${SYM_START}:
-    .incbin \"${FILE_PATH}\"
-${SYM_END}:
-        ")
-        # Rebuild this ASM file if the source asset changes.
-        set_source_files_properties(${ASM_FILE} PROPERTIES OBJECT_DEPENDS "${FILE_PATH}")
-        list(APPEND GENERATED_SOURCES "${ASM_FILE}")
+        foreach(FILE_PATH IN LISTS ROOT_RESOURCES)
+            if(IS_DIRECTORY "${FILE_PATH}")
+                continue()
+            endif()
+            file(RELATIVE_PATH REL_PATH "${RESOURCE_DIR}" "${FILE_PATH}")
+            list(FIND LOGICAL_RESOURCE_PATHS "${REL_PATH}" EXISTING_INDEX)
+            if(NOT EXISTING_INDEX EQUAL -1)
+                message(FATAL_ERROR
+                    "Duplicate logical resource path '${REL_PATH}' appears in multiple roots")
+            endif()
+            list(APPEND LOGICAL_RESOURCE_PATHS "${REL_PATH}")
+            list(APPEND RESOURCE_DEPENDENCIES "${FILE_PATH}")
 
-        # Add entry to the C++ map generator
-        # We store: { "filename", { start_pointer, end_pointer } }
-        string(APPEND REGISTRY_ENTRIES "    { \"${REL_PATH}\", { ${SYM_START}, ${SYM_END} } },\n")
-        string(APPEND REGISTRY_KEYS "    \"${REL_PATH}\",\n")
-        
-        # We need to declare the externs in the header so the map can see them
-        string(APPEND EXTERN_DECLS "extern const char ${SYM_START}[];\nextern const char ${SYM_END}[];\n")
+            string(REGEX REPLACE "[^a-zA-Z0-9]" "_" SAFE_NAME "${REL_PATH}")
+            string(SHA256 PATH_HASH "${REL_PATH}")
+            string(SUBSTRING "${PATH_HASH}" 0 16 SHORT_HASH)
+            set(SYMBOL_NAME "${SAFE_NAME}_${SHORT_HASH}")
+            set(SYM_START "_binary_${SYMBOL_NAME}_start")
+            set(SYM_END "_binary_${SYMBOL_NAME}_end")
+
+            string(REPLACE "\\" "\\\\" INC_PATH "${FILE_PATH}")
+            string(REPLACE "\"" "\\\"" INC_PATH "${INC_PATH}")
+            string(APPEND ASSEMBLY_CONTENT
+                ".global ${SYM_START}\n"
+                ".global ${SYM_END}\n"
+                ".align 16\n"
+                "${SYM_START}:\n"
+                "    .incbin \"${INC_PATH}\"\n"
+                "${SYM_END}:\n")
+            string(APPEND REGISTRY_ENTRIES
+                "    { \"${REL_PATH}\", { ${SYM_START}, ${SYM_END} } },\n")
+            string(APPEND REGISTRY_KEYS "    \"${REL_PATH}\",\n")
+            string(APPEND EXTERN_DECLS
+                "extern const char ${SYM_START}[];\n"
+                "extern const char ${SYM_END}[];\n")
+        endforeach()
     endforeach()
 
-    # Generate the Header File (ResourceRegistry.h)
+    set(EMBEDDED_DIR "${CMAKE_CURRENT_BINARY_DIR}/embedded")
+    file(MAKE_DIRECTORY "${EMBEDDED_DIR}")
+    set(ASM_FILE "${EMBEDDED_DIR}/${TARGET_NAME}_resources.S")
+    file(WRITE "${ASM_FILE}" "${ASSEMBLY_CONTENT}")
+    set_source_files_properties("${ASM_FILE}" PROPERTIES
+        OBJECT_DEPENDS "${RESOURCE_DEPENDENCIES}")
+
     set(HEADER_FILE "${CMAKE_CURRENT_BINARY_DIR}/include/ResourceRegistry.h")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/include")
     file(WRITE "${HEADER_FILE}" "
 #pragma once
-#include <string>
-#include <unordered_map>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
-// Forward declarations of the ASM symbols
 extern \"C\" {
-${EXTERN_DECLS}
-}
+${EXTERN_DECLS}}
 
 class ResourceRegistry {
 public:
     static std::span<const char> Get(const std::string& path) {
         static const std::unordered_map<std::string, std::pair<const char*, const char*>> registry = {
-${REGISTRY_ENTRIES}
-        };
+${REGISTRY_ENTRIES}        };
 
         auto it = registry.find(path);
         if (it == registry.end()) {
             throw std::runtime_error(\"Resource not found: \" + path);
         }
-        
-        // Return a span (view) of the memory
         return std::span<const char>(it->second.first, it->second.second - it->second.first);
     }
 
     static const std::vector<std::string_view>& Paths() {
         static const std::vector<std::string_view> paths = {
-${REGISTRY_KEYS}
-        };
+${REGISTRY_KEYS}        };
         return paths;
     }
 };
-    ")
+")
 
-    # Create an object library for these resources to avoid huge archive link lines
-    add_library(${TARGET_NAME}_resources OBJECT ${GENERATED_SOURCES})
-
-    # Allow the main target to find the generated header
-    target_include_directories(${TARGET_NAME}_resources INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/include")
-    target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/include")
-
-    # Link the resource objects into the main target
+    add_library(${TARGET_NAME}_resources OBJECT "${ASM_FILE}")
+    target_include_directories(${TARGET_NAME}_resources
+        INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/include")
+    target_include_directories(${TARGET_NAME}
+        PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/include")
     target_sources(${TARGET_NAME} PRIVATE $<TARGET_OBJECTS:${TARGET_NAME}_resources>)
-
 endfunction()

@@ -275,6 +275,13 @@ if (RIGEL_BUILD_TESTS)
     add_test(NAME Rigel_asset_manifest_validation_tests COMMAND Rigel_asset_manifest_validation_tests)
     add_test(NAME Rigel_public_header_consumer COMMAND Rigel_public_header_consumer)
     add_test(
+        NAME Rigel_resource_roots
+        COMMAND ${CMAKE_COMMAND}
+            "-DASSET_RESOURCES_MODULE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/AssetResources.cmake"
+            "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/resource-roots-test"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/resource_roots_test.cmake
+    )
+    add_test(
         NAME Rigel_tests_filtered_count
         COMMAND Rigel_tests --filter AssetHandle_Basics
     )

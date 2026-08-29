@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+import re
 import shutil
 import stat
 import sys
@@ -74,6 +75,153 @@ def indexed_archive(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
             raise AssetImportError(f"duplicate JAR entry path: {normalized}")
         entries[normalized] = info
     return entries
+
+
+def _strip_json_comments(text: str) -> str:
+    output: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    line_comment = False
+    block_comment = False
+    while index < len(text):
+        character = text[index]
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if line_comment:
+            if character in "\r\n":
+                line_comment = False
+                output.append(character)
+            index += 1
+            continue
+        if block_comment:
+            if character == "*" and following == "/":
+                block_comment = False
+                index += 2
+            else:
+                index += 1
+            continue
+        if in_string:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            output.append(character)
+            index += 1
+        elif character == "/" and following == "/":
+            line_comment = True
+            index += 2
+        elif character == "/" and following == "*":
+            block_comment = True
+            index += 2
+        else:
+            output.append(character)
+            index += 1
+    if in_string or block_comment:
+        raise AssetImportError("unterminated string or comment in JSON input")
+    return "".join(output)
+
+
+def load_relaxed_json(data: bytes, source: str) -> object:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise AssetImportError(f"{source}: JSON is not UTF-8: {error}") from error
+    cleaned = _strip_json_comments(text)
+    cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    # Cosmic Reach 0.6.1 has one known missing comma between adjacent objects in
+    # all_stairs_seamed.json. Accept that narrow legacy JSON defect; other parse
+    # errors still fail closed.
+    cleaned = re.sub(r"}(\s*){", r"},\1{", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as error:
+        raise AssetImportError(f"{source}: malformed JSON: {error}") from error
+
+
+def deterministic_json(value: object) -> bytes:
+    return (json.dumps(value, indent=2, ensure_ascii=True) + "\n").encode("utf-8")
+
+
+def _strip_base_namespace(reference: str, context: str) -> str:
+    if not reference.startswith("base:"):
+        raise AssetImportError(f"{context}: expected a base: resource, got {reference!r}")
+    path = reference.removeprefix("base:")
+    normalize_archive_path(path)
+    return path
+
+
+def normalize_entity_model(data: bytes, source: str, identifier: str) -> bytes:
+    document = load_relaxed_json(data, source)
+    if not isinstance(document, dict):
+        raise AssetImportError(f"{source}: entity model root must be an object")
+    textures = document.get("textures", {})
+    if not isinstance(textures, dict):
+        raise AssetImportError(f"{source}: entity model textures must be an object")
+    normalized_textures: dict[str, str] = {}
+    for name, reference in textures.items():
+        if not isinstance(name, str) or not isinstance(reference, str):
+            raise AssetImportError(f"{source}: entity texture entries must be strings")
+        normalized_textures[name] = _strip_base_namespace(reference, source)
+    document["id"] = identifier
+    document["lighting"] = "unlit"
+    document["textures"] = normalized_textures
+    return deterministic_json(document)
+
+
+def normalize_entity_animation(data: bytes, source: str, identifier: str) -> bytes:
+    document = load_relaxed_json(data, source)
+    if not isinstance(document, dict) or not isinstance(document.get("animations"), dict):
+        raise AssetImportError(f"{source}: animation root must contain an animations object")
+    document["id"] = identifier
+    return deterministic_json(document)
+
+
+def extract_direct_assets(
+    archive: zipfile.ZipFile,
+    entries: dict[str, zipfile.ZipInfo],
+    staging: Path,
+) -> dict[str, int]:
+    counts = {"textures": 0, "models": 0, "animations": 0, "sounds": 0}
+    for source in sorted(entries):
+        destination: str | None = None
+        transform = None
+        identifier = ""
+        if source.startswith("base/textures/") and source.endswith(".png"):
+            destination = source.removeprefix("base/")
+            counts["textures"] += 1
+        elif source.startswith("base/models/entities/") and source.endswith(".json"):
+            relative = source.removeprefix("base/models/entities/")
+            # Preserve the existing flat logical IDs for planet models.
+            if relative.startswith("planets/"):
+                relative = PurePosixPath(relative).name
+            destination = f"models/entities/{relative}"
+            identifier = PurePosixPath(relative).name.removesuffix(".json")
+            transform = normalize_entity_model
+            counts["models"] += 1
+        elif source.startswith("base/animations/entities/") and source.endswith(".json"):
+            relative = source.removeprefix("base/animations/entities/")
+            destination = f"animations/entities/{relative}"
+            identifier = PurePosixPath(relative).name.removesuffix(".animation.json")
+            transform = normalize_entity_animation
+            counts["animations"] += 1
+        elif source.startswith("base/sounds/") and source.endswith(".ogg"):
+            destination = source.removeprefix("base/")
+            counts["sounds"] += 1
+
+        if destination is None:
+            continue
+        payload = archive.read(entries[source])
+        if transform is not None:
+            payload = transform(payload, source, identifier)
+        write_output(staging, destination, payload)
+    return counts
 
 
 def output_path(root: Path, logical_path: str) -> Path:

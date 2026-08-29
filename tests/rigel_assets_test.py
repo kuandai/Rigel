@@ -155,5 +155,71 @@ class ImportFoundationTest(unittest.TestCase):
                 rigel_assets.write_output(Path(directory), "../escape", b"bad")
 
 
+class DirectExtractionTest(unittest.TestCase):
+    def test_extracts_binary_assets_and_normalizes_entity_references(self) -> None:
+        model = {
+            "texture_width": 16,
+            "texture_height": 16,
+            "textures": {"diffuse": "base:textures/entities/test.png"},
+            "bones": [],
+        }
+        animation = {"animations": {"idle": {"loop": True, "bones": {}}}}
+        entries = {
+            "base/textures/entities/test.png": b"synthetic-png",
+            "base/models/entities/test.json": json.dumps(model).encode(),
+            "base/animations/entities/test.animation.json": json.dumps(animation).encode(),
+            "base/sounds/test.ogg": b"synthetic-ogg",
+            "base/textures/source.xcf": b"not-runtime-content",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            staging = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                counts = rigel_assets.extract_direct_assets(
+                    archive, rigel_assets.indexed_archive(archive), staging
+                )
+
+            self.assertEqual(
+                counts, {"textures": 1, "models": 1, "animations": 1, "sounds": 1}
+            )
+            self.assertEqual(
+                (staging / "textures/entities/test.png").read_bytes(), b"synthetic-png"
+            )
+            self.assertEqual((staging / "sounds/test.ogg").read_bytes(), b"synthetic-ogg")
+            normalized_model = json.loads(
+                (staging / "models/entities/test.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(normalized_model["id"], "test")
+            self.assertEqual(normalized_model["lighting"], "unlit")
+            self.assertEqual(
+                normalized_model["textures"]["diffuse"], "textures/entities/test.png"
+            )
+            normalized_animation = json.loads(
+                (staging / "animations/entities/test.animation.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(normalized_animation["id"], "test")
+            self.assertFalse((staging / "textures/source.xcf").exists())
+
+    def test_relaxed_json_handles_comments_trailing_commas_and_legacy_gap(self) -> None:
+        parsed = rigel_assets.load_relaxed_json(
+            b'{"items": [{"a": 1,} /* source defect */ {"b": 2}]}', "fixture"
+        )
+        self.assertEqual(parsed, {"items": [{"a": 1}, {"b": 2}]})
+
+    def test_entity_texture_outside_base_namespace_fails_closed(self) -> None:
+        model = {
+            "textures": {"diffuse": "other:textures/entities/test.png"},
+            "bones": [],
+        }
+        with self.assertRaisesRegex(rigel_assets.AssetImportError, "expected a base:"):
+            rigel_assets.normalize_entity_model(
+                json.dumps(model).encode(), "fixture/model.json", "test"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 
 namespace Rigel::Voxel {
 
@@ -63,6 +65,9 @@ public:
      */
     BlockID registerBlock(const std::string& identifier, BlockType type);
 
+    /** Register a validated group without leaving a partial group on failure. */
+    void registerBlocks(std::vector<std::pair<std::string, BlockType>> blocks);
+
     /**
      * @brief Get block type by ID.
      *
@@ -98,6 +103,10 @@ public:
     size_t size() const { return m_types.size(); }
     /// @}
 
+    /// Prevent further registrations before concurrent readers begin.
+    void freeze() { m_frozen = true; }
+    bool frozen() const { return m_frozen; }
+
     /**
      * @brief Get the air block ID (always 0).
      */
@@ -106,6 +115,7 @@ public:
 private:
     std::vector<BlockType> m_types;
     std::unordered_map<std::string, BlockID> m_identifierMap;
+    bool m_frozen = false;
 };
 
 } // namespace Rigel::Voxel

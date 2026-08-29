@@ -18,6 +18,7 @@
 #include "Block.h"
 #include "BlockType.h"
 #include "BlockRegistry.h"
+#include "BlockModel.h"
 #include "BlockLoader.h"
 #include "GeneratorDefinition.h"
 #include "GeneratorDefinitionLoader.h"

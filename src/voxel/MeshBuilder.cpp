@@ -83,7 +83,7 @@ bool isOccluder(const BlockState& state, const BlockRegistry& registry) {
         return false;
     }
     const BlockType& type = registry.getType(state.id);
-    return type.isOpaque;
+    return type.isOpaque && type.model && type.model->isFullCube();
 }
 
 } // anonymous namespace
@@ -118,8 +118,9 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
 
                 const BlockType& type = ctx.registry.getType(state.id);
 
-                // Skip non-cube models for now (would need model system)
-                if (type.model != "cube") {
+                // Preserve the specialized full-cube path. Normalized cuboid
+                // emission is handled separately from this path.
+                if (!type.model || !type.model->isFullCube()) {
                     continue;
                 }
 
@@ -225,7 +226,8 @@ bool MeshBuilder::shouldRenderFace(
     }
 
     const BlockType& neighborType = ctx.registry.getType(neighbor.id);
-    if (neighborType.isOpaque) {
+    if (neighborType.isOpaque && neighborType.model &&
+        neighborType.model->isFullCube()) {
         return false;
     }
 

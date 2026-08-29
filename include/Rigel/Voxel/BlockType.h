@@ -9,10 +9,13 @@
  */
 
 #include "Block.h"
+#include "BlockModel.h"
 
-#include <string>
-#include <array>
 #include <any>
+#include <array>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 
 namespace Rigel::Voxel {
 
@@ -58,6 +61,30 @@ struct FaceTextures {
     void setFace(Direction dir, const std::string& path) {
         faces[static_cast<size_t>(dir)] = path;
     }
+
+    /// Bind a named texture slot used by a normalized model.
+    void bind(std::string slot, std::string path) {
+        namedSlots[std::move(slot)] = std::move(path);
+    }
+
+    /// Resolve a named model slot, including canonical cube face slots.
+    const std::string* find(std::string_view slot) const {
+        const auto named = namedSlots.find(std::string(slot));
+        if (named != namedSlots.end()) {
+            return &named->second;
+        }
+        if (const auto direction = BlockModel::directionFromName(slot)) {
+            return &forFace(*direction);
+        }
+        return nullptr;
+    }
+
+    const std::unordered_map<std::string, std::string>& named() const {
+        return namedSlots;
+    }
+
+private:
+    std::unordered_map<std::string, std::string> namedSlots;
 };
 
 /**
@@ -70,7 +97,7 @@ struct FaceTextures {
  * @code
  * BlockType stone;
  * stone.identifier = "rigel:stone";
- * stone.model = "cube";
+ * stone.model = BlockModel::fullCube();
  * stone.isOpaque = true;
  * stone.textures = FaceTextures::uniform("textures/blocks/stone.png");
  * registry.registerBlock(stone.identifier, std::move(stone));
@@ -80,8 +107,8 @@ struct BlockType {
     /// Unique identifier (e.g., "rigel:stone", "mymod:custom_block")
     std::string identifier;
 
-    /// Geometry model type ("cube", "cross", "slab", or custom model ID)
-    std::string model = "cube";
+    /// Immutable geometry shared by all blocks using the same model.
+    std::shared_ptr<const BlockModel> model = BlockModel::fullCube();
 
     /// Whether this block fully occludes adjacent faces
     bool isOpaque = true;
@@ -92,7 +119,7 @@ struct BlockType {
     /// Cull faces when adjacent to the same block type
     bool cullSameType = false;
 
-    /// Per-face texture assignments
+    /// Block-local texture bindings for the model's slots.
     FaceTextures textures;
 
     /// Rendering layer for draw order

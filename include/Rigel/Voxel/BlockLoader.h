@@ -4,15 +4,12 @@
  * @file BlockLoader.h
  * @brief Loads block definitions from asset manifests.
  *
- * BlockLoader parses block entries from logical `blocks/*.yaml` resources and
- * registers them with the BlockRegistry and TextureAtlas.
- * Each block file declares its own name or identifier.
+ * BlockLoader parses normalized `models/blocks/*.yaml` resources before
+ * logical `blocks/*.yaml` resources and publishes the complete validated set.
  */
 
 #include "BlockRegistry.h"
 #include "TextureAtlas.h"
-#include "Rigel/Util/Ryml.h"
-
 #include <Rigel/Asset/AssetManager.h>
 
 #include <cstddef>
@@ -29,6 +26,9 @@ struct BlockLoadFailure {
 };
 
 struct BlockLoadReport {
+    size_t modelsDiscovered = 0;
+    size_t modelsLoaded = 0;
+    size_t modelsFailed = 0;
     size_t discovered = 0;
     size_t loaded = 0;
     size_t failed = 0;
@@ -37,6 +37,11 @@ struct BlockLoadReport {
 };
 
 struct BlockDefinitionSource {
+    std::string_view path;
+    std::span<const char> data;
+};
+
+struct BlockModelDefinitionSource {
     std::string_view path;
     std::span<const char> data;
 };
@@ -89,7 +94,8 @@ struct BlockDefinitionSource {
  *
  * @code
  * BlockLoader loader;
- * loader.loadFromManifest(assets, registry, atlas);
+ * BlockModelRegistry models;
+ * loader.loadFromManifest(assets, models, registry, atlas);
  *
  * // After loading, block IDs can be looked up by identifier
  * auto stoneId = registry.findByIdentifier("rigel:stone");
@@ -103,10 +109,8 @@ public:
     /**
      * @brief Load all blocks from the embedded blocks directory.
      *
-     * Scans embedded resources under "blocks/" for YAML files, parses their
-     * configuration, registers them with the BlockRegistry, and loads their
-     * textures into the TextureAtlas. Production definitions are generated
-     * under the ignored .rigel asset root; callers see only logical paths.
+     * Scans embedded model and block resources, validates them as one group,
+     * then registers immutable models and blocks before loading the atlas.
      *
      * @param assets The asset manager containing the manifest
      * @param registry The block registry to register types with
@@ -116,6 +120,7 @@ public:
      */
     BlockLoadReport loadFromManifest(
         Asset::AssetManager& assets,
+        BlockModelRegistry& models,
         BlockRegistry& registry,
         TextureAtlas& atlas
     );
@@ -129,41 +134,20 @@ public:
      */
     BlockLoadReport loadDefinitions(
         std::string_view assetNamespace,
+        std::span<const BlockModelDefinitionSource> modelDefinitions,
         std::span<const BlockDefinitionSource> definitions,
+        BlockModelRegistry& models,
         BlockRegistry& registry,
         TextureAtlas& atlas
     );
 
-private:
-    /**
-     * @brief Parse a single block type from manifest config.
-     *
-     * @param id The block identifier (e.g., "stone")
-     * @param config The block config node to parse
-     * @param ns The manifest namespace (e.g., "rigel")
-     * @param atlas The texture atlas for texture loading
-     *
-     * @return Parsed BlockType
-     */
-    BlockType parseBlockType(
-        const std::string& id,
-        ryml::ConstNodeRef config,
-        const std::string& ns,
+    /** Compatibility seam for synthetic cube-only definitions. */
+    BlockLoadReport loadDefinitions(
+        std::string_view assetNamespace,
+        std::span<const BlockDefinitionSource> definitions,
+        BlockRegistry& registry,
         TextureAtlas& atlas
     );
-
-    /**
-     * @brief Parse face textures from config.
-     */
-    FaceTextures parseTextures(
-        ryml::ConstNodeRef config,
-        TextureAtlas& atlas
-    );
-
-    /**
-     * @brief Parse render layer from string.
-     */
-    RenderLayer parseRenderLayer(const std::string& str);
 };
 
 } // namespace Rigel::Voxel

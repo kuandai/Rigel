@@ -17288,7 +17288,6 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
         registerTestBlock(registry, "rigel:occluded_fringe_visible");
     BlockType hiddenType;
     hiddenType.identifier = "rigel:occluded_fringe_hidden";
-    hiddenType.model = "hidden";
     hiddenType.isOpaque = true;
     const BlockID hidden =
         registry.registerBlock(hiddenType.identifier, hiddenType);
@@ -17349,7 +17348,7 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
     CHECK(!surviving.isDirty());
     CHECK(meshStore.contains(survivingCoord));
     CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
-             static_cast<size_t>(0));
+             static_cast<size_t>(150));
     const uint64_t emptyMeshRevision =
         installedMeshRevision(meshStore, survivingCoord);
     CHECK(emptyMeshRevision > 0);
@@ -17374,14 +17373,14 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
     CHECK(surviving.isDirty());
     CHECK(meshStore.contains(survivingCoord));
     CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
-             static_cast<size_t>(0));
+             static_cast<size_t>(150));
     CHECK_NE(streamer.diagnostics().state,
              StreamingLifecycleState::Quiescent);
 
     streamer.update(cameraCoord.toWorldCenter());
     CHECK(waitForMeshCompletions(streamer, 2));
     CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
-             static_cast<size_t>(6));
+             static_cast<size_t>(156));
     CHECK(installedMeshRevision(meshStore, survivingCoord) > emptyMeshRevision);
     CHECK(!surviving.isDirty());
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));

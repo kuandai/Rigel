@@ -62,7 +62,6 @@ TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
     std::string testIdentifier = "base:test";
     Voxel::BlockType testBlock;
     testBlock.identifier = testIdentifier;
-    testBlock.model = "cube";
     testBlock.isOpaque = true;
     testBlock.isSolid = true;
     testBlock.textures = Voxel::FaceTextures::uniform("textures/blocks/test.png");
@@ -488,7 +487,6 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         Voxel::WorldResources resources;
         Voxel::BlockType firstBlock;
         firstBlock.identifier = "base:first";
-        firstBlock.model = "cube";
         firstBlock.isOpaque = true;
         firstBlock.isSolid = true;
         const std::string firstIdentifier = firstBlock.identifier;
@@ -497,7 +495,6 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
 
         Voxel::BlockType secondBlock;
         secondBlock.identifier = "base:second";
-        secondBlock.model = "cube";
         secondBlock.isOpaque = true;
         secondBlock.isSolid = true;
         const std::string secondIdentifier = secondBlock.identifier;

@@ -17,6 +17,8 @@ std::string unusableBlockAssetsMessage(
 ) {
     std::ostringstream message;
     message << "Block assets are unusable: "
+            << report.modelsLoaded << " models loaded, "
+            << report.modelsFailed << " model definitions failed; "
             << report.loaded << " definitions loaded, "
             << report.failed << " failed, "
             << report.skipped << " skipped ("
@@ -49,18 +51,22 @@ void WorldResources::initialize(Asset::AssetManager& assets) {
     }
 
     BlockLoader loader;
-    BlockLoadReport report = loader.loadFromManifest(assets, m_registry, m_textureAtlas);
+    BlockLoadReport report = loader.loadFromManifest(
+        assets, m_models, m_registry, m_textureAtlas);
     const size_t textureCount = m_textureAtlas.textureCount();
-    if (report.failed != 0 || report.loaded == 0 || m_registry.size() <= 1 ||
+    if (report.modelsFailed != 0 || report.failed != 0 || report.loaded == 0 ||
+        m_registry.size() <= 1 ||
         textureCount == 0) {
         throw std::runtime_error(unusableBlockAssetsMessage(report, textureCount));
     }
 
     m_textureAtlas.upload();
+    m_models.freeze();
+    m_registry.freeze();
     spdlog::info(
-        "world.resources blocks.loaded={} blocks.failed={} blocks.skipped={} "
-        "blocks.discovered={} textures.loaded={}",
-        report.loaded,
+        "world.resources models.loaded={} blocks.loaded={} blocks.failed={} "
+        "blocks.skipped={} blocks.discovered={} textures.loaded={}",
+        report.modelsLoaded, report.loaded,
         report.failed,
         report.skipped,
         report.discovered,

@@ -2,13 +2,15 @@
 
 #include <spdlog/spdlog.h>
 
+#include <unordered_set>
+
 namespace Rigel::Voxel {
 
 BlockRegistry::BlockRegistry() {
     // Register air as type 0
     BlockType air;
     air.identifier = "base:air";
-    air.model = "none";
+    air.model = BlockModel::empty();
     air.isOpaque = false;
     air.isSolid = false;
     air.layer = RenderLayer::Opaque;
@@ -22,6 +24,13 @@ BlockRegistry::BlockRegistry() {
 }
 
 BlockID BlockRegistry::registerBlock(const std::string& identifier, BlockType type) {
+    if (m_frozen) {
+        throw BlockRegistrationError("Block registry is frozen");
+    }
+    if (!type.model) {
+        throw BlockRegistrationError(
+            "Block registration requires explicit geometry: " + identifier);
+    }
     if (!type.identifier.empty() && type.identifier != identifier) {
         throw BlockRegistrationError(
             "Block identifier mismatch: registry '" + identifier + "' vs type '" + type.identifier + "'"
@@ -54,6 +63,51 @@ BlockID BlockRegistry::registerBlock(const std::string& identifier, BlockType ty
     spdlog::debug("Registered block: {} (ID {})", actualId, id.type);
 
     return id;
+}
+
+void BlockRegistry::registerBlocks(
+    std::vector<std::pair<std::string, BlockType>> blocks
+) {
+    if (m_frozen) {
+        throw BlockRegistrationError("Block registry is frozen");
+    }
+    if (m_types.size() + blocks.size() > 65535) {
+        throw BlockRegistrationError(
+            "Maximum block type count exceeded (65535)");
+    }
+
+    std::unordered_set<std::string> candidateIdentifiers;
+    for (const auto& [identifier, type] : blocks) {
+        if (!type.identifier.empty() && type.identifier != identifier) {
+            throw BlockRegistrationError(
+                "Block identifier mismatch: registry '" + identifier +
+                "' vs type '" + type.identifier + "'");
+        }
+        if (!type.model) {
+            throw BlockRegistrationError(
+                "Block registration requires explicit geometry: " + identifier);
+        }
+        if (hasIdentifier(identifier) ||
+            !candidateIdentifiers.insert(identifier).second) {
+            throw BlockRegistrationError(
+                "Block identifier already registered: " + identifier);
+        }
+    }
+
+    const size_t originalSize = m_types.size();
+    m_types.reserve(originalSize + blocks.size());
+    m_identifierMap.reserve(m_identifierMap.size() + blocks.size());
+    try {
+        for (auto& [identifier, type] : blocks) {
+            registerBlock(identifier, std::move(type));
+        }
+    } catch (...) {
+        for (const auto& [identifier, type] : blocks) {
+            m_identifierMap.erase(identifier);
+        }
+        m_types.resize(originalSize);
+        throw;
+    }
 }
 
 std::optional<BlockID> BlockRegistry::findByIdentifier(const std::string& identifier) const {

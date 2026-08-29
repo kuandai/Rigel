@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -222,6 +223,554 @@ def extract_direct_assets(
             payload = transform(payload, source, identifier)
         write_output(staging, destination, payload)
     return counts
+
+
+BLOCK_ROOT_KEYS = {
+    "stringId",
+    "blockStates",
+    "defaultProperties",
+    "defaultParams",
+    "blockEntityId",
+    "blockEntityParams",
+}
+BLOCK_PROPERTY_KEYS = {
+    "modelName",
+    "blockEventsId",
+    "langKey",
+    "stateGenerators",
+    "catalogHidden",
+    "tags",
+    "lightLevelRed",
+    "lightLevelGreen",
+    "lightLevelBlue",
+    "rotation",
+    "hardness",
+    "dropId",
+    "allowSwapping",
+    "lightAttenuation",
+    "canDrop",
+    "footstepSoundBank",
+    "isOpaque",
+    "dropParams",
+    "placementRules",
+    "itemIcon",
+    "intProperties",
+    "refractiveIndex",
+    "canRaycastForPlaceOn",
+    "canRaycastForReplace",
+    "walkThrough",
+    "swapGroupId",
+    "canPlace",
+    "canRaycastForBreak",
+    "bounciness",
+    "isFluid",
+    "viscosity",
+    "friction",
+}
+GENERATOR_KEYS = {"stringId", "params", "overrides", "modelName", "include"}
+GENERATOR_OVERRIDE_KEYS = BLOCK_PROPERTY_KEYS | {"rotateTopBottom"}
+MODEL_ROOT_KEYS = {
+    "textures",
+    "parent",
+    "cuboids",
+    "isTransparent",
+    "cullsSelf",
+    "planes",
+    "vertShader",
+    "fragShader",
+}
+MODEL_TEXTURE_KEYS = {"fileName", "emissivefileName", "uv"}
+MODEL_CUBOID_KEYS = {"localBounds", "faces", "inflate"}
+MODEL_FACE_KEYS = {
+    "uv",
+    "texture",
+    "ambientocclusion",
+    "cullFace",
+    "uvRotation",
+    "shadingFace",
+}
+FACE_VECTORS = {
+    "localPosX": (1, 0, 0),
+    "localNegX": (-1, 0, 0),
+    "localPosY": (0, 1, 0),
+    "localNegY": (0, -1, 0),
+    "localPosZ": (0, 0, 1),
+    "localNegZ": (0, 0, -1),
+}
+VECTOR_FACES = {
+    (1, 0, 0): "pos_x",
+    (-1, 0, 0): "neg_x",
+    (0, 1, 0): "pos_y",
+    (0, -1, 0): "neg_y",
+    (0, 0, 1): "pos_z",
+    (0, 0, -1): "neg_z",
+}
+
+
+def _expect_object(value: object, context: str) -> dict[str, object]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise AssetImportError(f"{context}: expected an object")
+    return value
+
+
+def _reject_unknown_keys(value: dict[str, object], allowed: set[str], context: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise AssetImportError(f"{context}: unsupported fields: {', '.join(unknown)}")
+
+
+def _resource_archive_path(reference: str, context: str) -> str:
+    if not isinstance(reference, str) or not reference.startswith("base:"):
+        raise AssetImportError(f"{context}: expected a base: resource reference")
+    path = f"base/{reference.removeprefix('base:')}"
+    normalize_archive_path(path)
+    return path
+
+
+def _parse_parameters(value: object, context: str) -> dict[str, str]:
+    mapping = _expect_object(value, context)
+    result: dict[str, str] = {}
+    for name, parameter in mapping.items():
+        if not isinstance(parameter, (str, int, float, bool)):
+            raise AssetImportError(f"{context}.{name}: parameter must be scalar")
+        if isinstance(parameter, bool):
+            result[name] = "true" if parameter else "false"
+        else:
+            result[name] = str(parameter)
+    return result
+
+
+def _parameters_from_state_name(name: str, context: str) -> dict[str, str]:
+    if name == "default":
+        return {}
+    result: dict[str, str] = {}
+    for assignment in name.split(","):
+        if "=" not in assignment:
+            raise AssetImportError(f"{context}: invalid state name {name!r}")
+        key, value = assignment.split("=", 1)
+        if not key or not value or key in result:
+            raise AssetImportError(f"{context}: invalid state name {name!r}")
+        result[key] = value
+    return result
+
+
+def _block_identifier(base: str, parameters: dict[str, str]) -> str:
+    if not parameters:
+        return base
+    body = ",".join(f"{key}={value}" for key, value in parameters.items())
+    return f"{base}[{body}]"
+
+
+def _generated_block_filename(identifier: str) -> str:
+    name = identifier.removeprefix("base:") if identifier.startswith("base:") else identifier.replace(":", "__", 1)
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        raise AssetImportError(f"unsafe block identifier for output: {identifier!r}")
+    return f"blocks/{name}.yaml"
+
+
+def _rotate_vector(vector: tuple[int, int, int], rotation: object, context: str) -> tuple[int, int, int]:
+    if rotation is None:
+        return vector
+    if not isinstance(rotation, list) or len(rotation) != 3:
+        raise AssetImportError(f"{context}: rotation must contain three angles")
+    try:
+        angles = tuple(int(angle) % 360 for angle in rotation)
+    except (TypeError, ValueError) as error:
+        raise AssetImportError(f"{context}: rotation angles must be integers") from error
+    if any(angle not in (0, 90, 180, 270) for angle in angles):
+        raise AssetImportError(f"{context}: only right-angle rotations are supported")
+    x, y, z = vector
+    for _ in range(angles[0] // 90):
+        y, z = -z, y
+    for _ in range(angles[1] // 90):
+        x, z = z, -x
+    for _ in range(angles[2] // 90):
+        x, y = -y, x
+    return x, y, z
+
+
+@dataclass(frozen=True)
+class ResolvedModel:
+    textures: dict[str, str]
+    face_aliases: dict[str, str]
+    transparent: bool
+    culls_self: bool
+    empty: bool
+
+
+class BlockModelResolver:
+    def __init__(
+        self,
+        archive: zipfile.ZipFile,
+        entries: dict[str, zipfile.ZipInfo],
+    ) -> None:
+        self.archive = archive
+        self.entries = entries
+        self.cache: dict[str, ResolvedModel] = {}
+        self.active: set[str] = set()
+
+    def resolve(self, reference: str) -> ResolvedModel:
+        source = _resource_archive_path(reference, "block model")
+        if source in self.cache:
+            return self.cache[source]
+        if source in self.active:
+            raise AssetImportError(f"block model parent cycle at {source}")
+        info = self.entries.get(source)
+        if info is None:
+            raise AssetImportError(f"missing block model: {source}")
+        self.active.add(source)
+        try:
+            document = _expect_object(
+                load_relaxed_json(self.archive.read(info), source), source
+            )
+            _reject_unknown_keys(document, MODEL_ROOT_KEYS, source)
+            parent = ResolvedModel({}, {}, False, False, True)
+            if "parent" in document:
+                parent = self.resolve(str(document["parent"]))
+
+            textures = dict(parent.textures)
+            texture_entries = _expect_object(document.get("textures", {}), f"{source}.textures")
+            for alias, raw_entry in texture_entries.items():
+                entry = _expect_object(raw_entry, f"{source}.textures.{alias}")
+                _reject_unknown_keys(entry, MODEL_TEXTURE_KEYS, f"{source}.textures.{alias}")
+                file_name = entry.get("fileName")
+                if file_name is not None:
+                    if not isinstance(file_name, str):
+                        raise AssetImportError(f"{source}.textures.{alias}.fileName must be a string")
+                    textures[alias] = _strip_base_namespace(file_name, source)
+                emissive = entry.get("emissivefileName")
+                if emissive is not None and not isinstance(emissive, str):
+                    raise AssetImportError(
+                        f"{source}.textures.{alias}.emissivefileName must be a string"
+                    )
+
+            face_aliases = dict(parent.face_aliases)
+            empty = parent.empty
+            if "cuboids" in document:
+                cuboids = document["cuboids"]
+                if not isinstance(cuboids, list):
+                    raise AssetImportError(f"{source}.cuboids must be an array")
+                empty = len(cuboids) == 0 and not document.get("planes")
+                representative: dict[str, object] | None = None
+                for index, raw_cuboid in enumerate(cuboids):
+                    cuboid = _expect_object(raw_cuboid, f"{source}.cuboids[{index}]")
+                    _reject_unknown_keys(cuboid, MODEL_CUBOID_KEYS, f"{source}.cuboids[{index}]")
+                    bounds = cuboid.get("localBounds")
+                    if not isinstance(bounds, list) or len(bounds) != 6 or not all(
+                        isinstance(item, (int, float)) for item in bounds
+                    ):
+                        raise AssetImportError(f"{source}.cuboids[{index}].localBounds is invalid")
+                    if representative is None or bounds == [0, 0, 0, 16, 16, 16]:
+                        representative = cuboid
+                        if bounds == [0, 0, 0, 16, 16, 16]:
+                            break
+                face_aliases = {}
+                if representative is not None:
+                    faces = _expect_object(
+                        representative.get("faces", {}), f"{source}.cuboid.faces"
+                    )
+                    for face_name, raw_face in faces.items():
+                        if face_name not in FACE_VECTORS:
+                            raise AssetImportError(f"{source}: unsupported model face {face_name!r}")
+                        face = _expect_object(raw_face, f"{source}.faces.{face_name}")
+                        _reject_unknown_keys(face, MODEL_FACE_KEYS, f"{source}.faces.{face_name}")
+                        alias = face.get("texture")
+                        if not isinstance(alias, str):
+                            raise AssetImportError(f"{source}.faces.{face_name}: texture must be a string")
+                        face_aliases[face_name] = alias
+
+            transparent = document.get("isTransparent", parent.transparent)
+            culls_self = document.get("cullsSelf", parent.culls_self)
+            if not isinstance(transparent, bool) or not isinstance(culls_self, bool):
+                raise AssetImportError(f"{source}: transparency/culling values must be booleans")
+            result = ResolvedModel(textures, face_aliases, transparent, culls_self, empty)
+            self.cache[source] = result
+            return result
+        finally:
+            self.active.remove(source)
+
+
+@dataclass(frozen=True)
+class GeneratorLeaf:
+    parameters: dict[str, str]
+    overrides: dict[str, object]
+    model_name: str | None
+
+
+class StateGeneratorResolver:
+    def __init__(self, archive: zipfile.ZipFile, entries: dict[str, zipfile.ZipInfo]) -> None:
+        self.definitions: dict[str, dict[str, object]] = {}
+        self.cache: dict[str, list[GeneratorLeaf]] = {}
+        self.active: set[str] = set()
+        for source in sorted(entries):
+            if not source.startswith("base/block_state_generators/") or not source.endswith(".json"):
+                continue
+            document = _expect_object(
+                load_relaxed_json(archive.read(entries[source]), source), source
+            )
+            raw_generators = document.get("generators")
+            if set(document) != {"generators"} or not isinstance(raw_generators, list):
+                raise AssetImportError(f"{source}: expected one generators array")
+            for index, raw_generator in enumerate(raw_generators):
+                generator = _expect_object(raw_generator, f"{source}.generators[{index}]")
+                _reject_unknown_keys(generator, GENERATOR_KEYS, f"{source}.generators[{index}]")
+                identifier = generator.get("stringId")
+                if not isinstance(identifier, str) or not identifier.startswith("base:"):
+                    raise AssetImportError(f"{source}.generators[{index}]: invalid stringId")
+                if identifier in self.definitions:
+                    raise AssetImportError(f"duplicate state generator ID: {identifier}")
+                self.definitions[identifier] = generator
+
+    def resolve(self, identifier: str) -> list[GeneratorLeaf]:
+        if identifier in self.cache:
+            return self.cache[identifier]
+        if identifier in self.active:
+            raise AssetImportError(f"state generator include cycle at {identifier}")
+        generator = self.definitions.get(identifier)
+        if generator is None:
+            raise AssetImportError(f"missing state generator: {identifier}")
+        self.active.add(identifier)
+        try:
+            includes = generator.get("include", [])
+            if not isinstance(includes, list) or not all(isinstance(item, str) for item in includes):
+                raise AssetImportError(f"state generator {identifier}: include must be a string array")
+            leaves: list[GeneratorLeaf] = []
+            for included in includes:
+                leaves.extend(self.resolve(included))
+            has_leaf_data = any(key in generator for key in ("params", "overrides", "modelName"))
+            if has_leaf_data:
+                parameters = _parse_parameters(
+                    generator.get("params", {}), f"state generator {identifier}.params"
+                )
+                overrides = _expect_object(
+                    generator.get("overrides", {}), f"state generator {identifier}.overrides"
+                )
+                _reject_unknown_keys(
+                    overrides, GENERATOR_OVERRIDE_KEYS, f"state generator {identifier}.overrides"
+                )
+                model_name = generator.get("modelName")
+                if model_name is not None and not isinstance(model_name, str):
+                    raise AssetImportError(f"state generator {identifier}.modelName must be a string")
+                leaves.append(GeneratorLeaf(parameters, overrides, model_name))
+            if not leaves:
+                raise AssetImportError(f"state generator {identifier} resolves to no states")
+            self.cache[identifier] = leaves
+            return leaves
+        finally:
+            self.active.remove(identifier)
+
+
+def _validate_block_properties(properties: dict[str, object], context: str) -> None:
+    _reject_unknown_keys(properties, BLOCK_PROPERTY_KEYS, context)
+    for key in ("isOpaque", "walkThrough"):
+        if key in properties and not isinstance(properties[key], bool):
+            raise AssetImportError(f"{context}.{key} must be a boolean")
+    for key in ("lightAttenuation", "lightLevelRed", "lightLevelGreen", "lightLevelBlue"):
+        if key in properties:
+            value = properties[key]
+            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 15:
+                raise AssetImportError(f"{context}.{key} must be an integer from 0 to 15")
+    if "modelName" in properties and not isinstance(properties["modelName"], str):
+        raise AssetImportError(f"{context}.modelName must be a string")
+
+
+def _texture_from_alias(model: ResolvedModel, alias: str, context: str) -> str:
+    if alias.startswith("base:"):
+        return _strip_base_namespace(alias, context)
+    if alias in model.textures:
+        return model.textures[alias]
+    for suffix, fallback_alias in (
+        ("_side", "side"),
+        ("_top", "top"),
+        ("_bottom", "bottom"),
+    ):
+        if alias.endswith(suffix) and fallback_alias in model.textures:
+            return model.textures[fallback_alias]
+    if "all" in model.textures:
+        return model.textures["all"]
+    if alias.endswith(".png"):
+        return alias if alias.startswith("textures/") else f"textures/blocks/{alias}"
+    raise AssetImportError(f"{context}: model texture alias {alias!r} is unresolved")
+
+
+def _resolved_face_textures(
+    model: ResolvedModel, rotation: object, context: str
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for source_face, alias in model.face_aliases.items():
+        vector = _rotate_vector(FACE_VECTORS[source_face], rotation, context)
+        destination_face = VECTOR_FACES[vector]
+        texture = _texture_from_alias(model, alias, context)
+        previous = result.get(destination_face)
+        if previous is not None and previous != texture:
+            raise AssetImportError(
+                f"{context}: representative model has conflicting {destination_face} textures"
+            )
+        result[destination_face] = texture
+    if not result and model.textures:
+        if "all" in model.textures:
+            return {face: model.textures["all"] for face in VECTOR_FACES.values()}
+        first = next(iter(model.textures.values()))
+        return {face: first for face in VECTOR_FACES.values()}
+    if result and set(result) != set(VECTOR_FACES.values()):
+        fallback = model.textures.get("all") or next(iter(result.values()), None)
+        if fallback is None:
+            raise AssetImportError(f"{context}: model has no usable face texture")
+        for face in VECTOR_FACES.values():
+            result.setdefault(face, fallback)
+    return result
+
+
+def _yaml_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=True)
+
+
+def render_block_yaml(
+    identifier: str,
+    properties: dict[str, object],
+    models: BlockModelResolver,
+    context: str,
+    texture_model_reference: str | None = None,
+) -> bytes:
+    _validate_block_properties(properties, context)
+    model_reference = properties.get("modelName")
+    if not isinstance(model_reference, str):
+        raise AssetImportError(f"{context}: block state has no modelName")
+    model = models.resolve(model_reference)
+    if texture_model_reference is not None and texture_model_reference != model_reference:
+        texture_model = models.resolve(texture_model_reference)
+        textures = dict(model.textures)
+        textures.update(texture_model.textures)
+        model = ResolvedModel(
+            textures,
+            model.face_aliases,
+            model.transparent or texture_model.transparent,
+            model.culls_self or texture_model.culls_self,
+            model.empty,
+        )
+    opaque = properties.get("isOpaque", True)
+    solid = not properties.get("walkThrough", False)
+    if not isinstance(opaque, bool) or not isinstance(solid, bool):
+        raise AssetImportError(f"{context}: opacity/solidity values are invalid")
+    texture_faces = _resolved_face_textures(model, properties.get("rotation"), context)
+    lines = [
+        f"id: {_yaml_string(identifier)}",
+        f"model: {'none' if model.empty else 'cube'}",
+        f"opaque: {'true' if opaque else 'false'}",
+        f"solid: {'true' if solid else 'false'}",
+    ]
+    if model.culls_self:
+        lines.append("cull_same_type: true")
+    layer = "opaque" if model.empty or (opaque and not model.transparent) else "transparent"
+    lines.append(f"layer: {layer}")
+    emitted = max(
+        int(properties.get("lightLevelRed", 0)),
+        int(properties.get("lightLevelGreen", 0)),
+        int(properties.get("lightLevelBlue", 0)),
+    )
+    if emitted:
+        lines.append(f"emits_light: {emitted}")
+    attenuation = int(properties.get("lightAttenuation", 15))
+    if attenuation != 15:
+        lines.append(f"light_attenuation: {attenuation}")
+    if texture_faces:
+        lines.append("textures:")
+        values = set(texture_faces.values())
+        if len(values) == 1:
+            lines.append(f"  all: {_yaml_string(next(iter(values)))}")
+        elif (
+            texture_faces["pos_x"] == texture_faces["neg_x"]
+            == texture_faces["pos_z"] == texture_faces["neg_z"]
+        ):
+            lines.append(f"  top: {_yaml_string(texture_faces['pos_y'])}")
+            lines.append(f"  bottom: {_yaml_string(texture_faces['neg_y'])}")
+            lines.append(f"  sides: {_yaml_string(texture_faces['pos_x'])}")
+        else:
+            for face in ("pos_x", "neg_x", "pos_y", "neg_y", "pos_z", "neg_z"):
+                lines.append(f"  {face}: {_yaml_string(texture_faces[face])}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def compile_blocks(
+    archive: zipfile.ZipFile,
+    entries: dict[str, zipfile.ZipInfo],
+    staging: Path,
+) -> int:
+    models = BlockModelResolver(archive, entries)
+    generators = StateGeneratorResolver(archive, entries)
+    generated: dict[str, tuple[bytes, str]] = {}
+    for source in sorted(entries):
+        if not source.startswith("base/blocks/") or not source.endswith(".json"):
+            continue
+        document = _expect_object(load_relaxed_json(archive.read(entries[source]), source), source)
+        _reject_unknown_keys(document, BLOCK_ROOT_KEYS, source)
+        base_identifier = document.get("stringId")
+        if not isinstance(base_identifier, str) or ":" not in base_identifier:
+            raise AssetImportError(f"{source}: invalid stringId")
+        defaults = _expect_object(document.get("defaultProperties", {}), f"{source}.defaultProperties")
+        _validate_block_properties(defaults, f"{source}.defaultProperties")
+        default_parameters = _parse_parameters(
+            document.get("defaultParams", {}), f"{source}.defaultParams"
+        )
+        states = _expect_object(document.get("blockStates"), f"{source}.blockStates")
+        if not states:
+            raise AssetImportError(f"{source}: blockStates must not be empty")
+        for state_name, raw_state in states.items():
+            state = _expect_object(raw_state, f"{source}.blockStates.{state_name}")
+            _validate_block_properties(state, f"{source}.blockStates.{state_name}")
+            parameters = (
+                dict(default_parameters)
+                if state_name == "default"
+                else _parameters_from_state_name(state_name, source)
+            )
+            properties = dict(defaults)
+            properties.update(state)
+            generator_ids = properties.pop("stateGenerators", [])
+            if isinstance(generator_ids, str):
+                generator_ids = [generator_ids]
+            if not isinstance(generator_ids, list) or not all(
+                isinstance(item, str) for item in generator_ids
+            ):
+                raise AssetImportError(f"{source}.{state_name}: stateGenerators must be strings")
+
+            variants: list[tuple[dict[str, str], dict[str, object], str | None]] = [
+                (parameters, properties, None)
+            ]
+            base_model_name = properties.get("modelName")
+            if not isinstance(base_model_name, str):
+                raise AssetImportError(f"{source}.{state_name}: block state has no modelName")
+            for generator_id in generator_ids:
+                for leaf in generators.resolve(generator_id):
+                    generated_parameters = dict(parameters)
+                    generated_parameters.update(leaf.parameters)
+                    generated_properties = dict(properties)
+                    generated_properties.update(leaf.overrides)
+                    generated_properties.pop("rotateTopBottom", None)
+                    if leaf.model_name is not None:
+                        generated_properties["modelName"] = leaf.model_name
+                    variants.append(
+                        (generated_parameters, generated_properties, base_model_name)
+                    )
+
+            for variant_parameters, variant_properties, texture_model in variants:
+                identifier = _block_identifier(base_identifier, variant_parameters)
+                output = _generated_block_filename(identifier)
+                payload = render_block_yaml(
+                    identifier,
+                    variant_properties,
+                    models,
+                    source,
+                    texture_model,
+                )
+                if identifier in generated:
+                    previous_source = generated[identifier][1]
+                    raise AssetImportError(
+                        f"duplicate generated block identifier {identifier}: "
+                        f"{previous_source} and {source}"
+                    )
+                generated[identifier] = (payload, source)
+                write_output(staging, output, payload)
+    return len(generated)
 
 
 def output_path(root: Path, logical_path: str) -> Path:

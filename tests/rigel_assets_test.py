@@ -22,6 +22,69 @@ def write_jar(path: Path, entries: dict[str, bytes] | None = None) -> None:
             archive.writestr(name, data)
 
 
+def encoded_json(value: object) -> bytes:
+    return json.dumps(value).encode("utf-8")
+
+
+def synthetic_block_entries() -> dict[str, bytes]:
+    return {
+        "base/models/blocks/cube.json": encoded_json(
+            {
+                "textures": {
+                    "all": {"fileName": "base:textures/blocks/test_stone.png"}
+                },
+                "cuboids": [
+                    {
+                        "localBounds": [0, 0, 0, 16, 16, 16],
+                        "faces": {
+                            name: {
+                                "uv": [0, 0, 16, 16],
+                                "ambientocclusion": True,
+                                "cullFace": True,
+                                "texture": "all",
+                            }
+                            for name in rigel_assets.FACE_VECTORS
+                        },
+                    }
+                ],
+            }
+        ),
+        "base/block_state_generators/variants.json": encoded_json(
+            {
+                "generators": [
+                    {
+                        "stringId": "base:test_variants",
+                        "include": ["base:test_variant_full"],
+                    },
+                    {
+                        "stringId": "base:test_variant_full",
+                        "params": {"shape": "full"},
+                        "modelName": "base:models/blocks/cube.json",
+                        "overrides": {"isOpaque": False, "lightAttenuation": 2},
+                    },
+                ]
+            }
+        ),
+        "base/blocks/test_stone.json": encoded_json(
+            {
+                "stringId": "test:stone",
+                "defaultProperties": {
+                    "modelName": "base:models/blocks/cube.json",
+                    "stateGenerators": ["base:test_variants"],
+                },
+                "blockStates": {
+                    "default": {},
+                    "kind=bright": {
+                        "lightLevelRed": 7,
+                        "walkThrough": True,
+                    },
+                },
+            }
+        ),
+        "base/textures/blocks/test_stone.png": b"synthetic-png",
+    }
+
+
 class ProvisioningTest(unittest.TestCase):
     def test_stage_copies_valid_jar_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -219,6 +282,65 @@ class DirectExtractionTest(unittest.TestCase):
             rigel_assets.normalize_entity_model(
                 json.dumps(model).encode(), "fixture/model.json", "test"
             )
+
+
+class BlockCompilerTest(unittest.TestCase):
+    def test_compiles_explicit_and_included_generated_states(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            output = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                count = rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), output
+                )
+
+            self.assertEqual(count, 4)
+            base = (output / "blocks/test__stone.yaml").read_text(encoding="utf-8")
+            self.assertIn('id: "test:stone"', base)
+            self.assertIn('all: "textures/blocks/test_stone.png"', base)
+            generated = (
+                output / "blocks/test__stone[shape=full].yaml"
+            ).read_text(encoding="utf-8")
+            self.assertIn('id: "test:stone[shape=full]"', generated)
+            self.assertIn("opaque: false", generated)
+            self.assertIn("light_attenuation: 2", generated)
+            bright = (
+                output / "blocks/test__stone[kind=bright].yaml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("solid: false", bright)
+            self.assertIn("emits_light: 7", bright)
+
+    def test_unknown_meaningful_block_field_fails_closed(self) -> None:
+        entries = synthetic_block_entries()
+        block = json.loads(entries["base/blocks/test_stone.json"])
+        block["blockStates"]["default"]["unknownCollisionMode"] = "ghost"
+        entries["base/blocks/test_stone.json"] = encoded_json(block)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive:
+                with self.assertRaisesRegex(
+                    rigel_assets.AssetImportError, "unknownCollisionMode"
+                ):
+                    rigel_assets.compile_blocks(
+                        archive, rigel_assets.indexed_archive(archive), root / "output"
+                    )
+
+    def test_missing_generator_reference_fails_closed(self) -> None:
+        entries = synthetic_block_entries()
+        del entries["base/block_state_generators/variants.json"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive:
+                with self.assertRaisesRegex(rigel_assets.AssetImportError, "missing state generator"):
+                    rigel_assets.compile_blocks(
+                        archive, rigel_assets.indexed_archive(archive), root / "output"
+                    )
 
 
 if __name__ == "__main__":

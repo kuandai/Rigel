@@ -256,6 +256,7 @@ class DirectExtractionTest(unittest.TestCase):
             )
             self.assertEqual(normalized_model["id"], "test")
             self.assertEqual(normalized_model["lighting"], "unlit")
+            self.assertEqual(normalized_model["model_scale"], 0.0625)
             self.assertEqual(
                 normalized_model["textures"]["diffuse"], "textures/entities/test.png"
             )

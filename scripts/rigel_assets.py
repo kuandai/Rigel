@@ -48,6 +48,40 @@ LEGACY_DEFAULT_STATE_ALIASES = {
     "base:stone_limestone": {"axis": "Y"},
     "base:tree_log": {"axis": "Y"},
 }
+ENTITY_MODEL_COMPATIBILITY: dict[str, dict[str, object]] = {
+    "drone_laser": {
+        "hitbox": {"min": [-0.4, -0.4, -0.4], "max": [0.4, 0.8, 0.4]},
+    },
+    "incinerator": {
+        "hitbox": {"min": [-0.45, 0.0, -0.45], "max": [0.45, 1.45, 0.45]},
+    },
+    "model_bullet_projectile": {
+        "hitbox": {"min": [-0.1, -0.1, -0.1], "max": [0.1, 0.1, 0.1]},
+    },
+    "model_drone_interceptor": {
+        "animation_set": "entity_anims/drone_interceptor",
+        "default_animation": "animation.drone-interceptor.idle",
+        "hitbox": {"min": [-0.5, -0.5, -0.5], "max": [0.5, 0.5, 0.5]},
+        "render_offset": [0.0, -0.375, 0.0],
+    },
+    "model_drone_interceptor_trap": {
+        "animation_set": "entity_anims/drone_interceptor_trap",
+        "default_animation": "animation.drone-interceptor-trap.idle",
+        "hitbox": {"min": [-0.5, 0.0, -0.5], "max": [0.5, 0.5, 0.5]},
+    },
+    "model_flame_projectile": {
+        "hitbox": {"min": [-0.4, -0.4, -0.4], "max": [0.4, 0.4, 0.4]},
+    },
+    "model_laser_projectile": {
+        "hitbox": {"min": [-0.1, -0.1, -0.1], "max": [0.1, 0.1, 0.1]},
+    },
+    "planteater": {
+        "hitbox": {"min": [-0.4, 0.0, -0.4], "max": [0.4, 0.75, 0.4]},
+    },
+    "player": {
+        "hitbox": {"min": [-0.25, 0.0, -0.25], "max": [0.25, 1.9, 0.25]},
+    },
+}
 
 
 class AssetImportError(RuntimeError):
@@ -194,7 +228,9 @@ def normalize_entity_model(data: bytes, source: str, identifier: str) -> bytes:
         normalized_textures[name] = _strip_base_namespace(reference, source)
     document["id"] = identifier
     document["lighting"] = "unlit"
+    document["model_scale"] = 0.0625
     document["textures"] = normalized_textures
+    document.update(ENTITY_MODEL_COMPATIBILITY.get(identifier, {}))
     return deterministic_json(document)
 
 
@@ -225,7 +261,7 @@ def extract_direct_assets(
             if relative.startswith("planets/"):
                 relative = PurePosixPath(relative).name
             destination = f"models/entities/{relative}"
-            identifier = PurePosixPath(relative).name.removesuffix(".json")
+            identifier = relative.removesuffix(".json")
             transform = normalize_entity_model
         elif source.startswith("base/animations/entities/") and source.endswith(".json"):
             relative = source.removeprefix("base/animations/entities/")

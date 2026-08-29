@@ -33,6 +33,21 @@ REQUIRED_BLOCK_IDENTIFIERS = (
     "base:stone_shale",
     "base:water[type=source]",
 )
+# The pre-import Rigel snapshot exposed these bare IDs. Cosmic Reach 0.6.1
+# spells their current default state with parameters; retaining an explicit
+# alias prevents existing Rigel saves and code from losing a known block ID.
+LEGACY_DEFAULT_STATE_ALIASES = {
+    "base:hazard": {"type": "hazard"},
+    "base:ice": {"axis": "Y"},
+    "base:magma": {"axis": "Y"},
+    "base:sandstone": {"axis": "Y"},
+    "base:snow": {"axis": "Y"},
+    "base:stone_basalt": {"axis": "Y"},
+    "base:stone_gabbro": {"axis": "Y"},
+    "base:stone_komatiite": {"axis": "Y"},
+    "base:stone_limestone": {"axis": "Y"},
+    "base:tree_log": {"axis": "Y"},
+}
 
 
 class AssetImportError(RuntimeError):
@@ -676,7 +691,7 @@ def render_block_yaml(
             model.culls_self or texture_model.culls_self,
             model.empty,
         )
-    opaque = properties.get("isOpaque", True)
+    opaque = properties.get("isOpaque", not model.transparent)
     solid = not properties.get("walkThrough", False)
     if not isinstance(opaque, bool) or not isinstance(solid, bool):
         raise AssetImportError(f"{context}: opacity/solidity values are invalid")
@@ -687,7 +702,7 @@ def render_block_yaml(
         f"opaque: {'true' if opaque else 'false'}",
         f"solid: {'true' if solid else 'false'}",
     ]
-    if model.culls_self:
+    if model.culls_self or properties.get("isFluid", False):
         lines.append("cull_same_type: true")
     layer = "opaque" if model.empty or (opaque and not model.transparent) else "transparent"
     lines.append(f"layer: {layer}")
@@ -781,23 +796,26 @@ def compile_blocks(
                     )
 
             for variant_parameters, variant_properties, texture_model in variants:
-                identifier = _block_identifier(base_identifier, variant_parameters)
-                output = _generated_block_filename(identifier)
-                payload = render_block_yaml(
-                    identifier,
-                    variant_properties,
-                    models,
-                    source,
-                    texture_model,
-                )
-                if identifier in generated:
-                    previous_source = generated[identifier][1]
-                    raise AssetImportError(
-                        f"duplicate generated block identifier {identifier}: "
-                        f"{previous_source} and {source}"
+                identifiers = [_block_identifier(base_identifier, variant_parameters)]
+                if LEGACY_DEFAULT_STATE_ALIASES.get(base_identifier) == variant_parameters:
+                    identifiers.append(base_identifier)
+                for identifier in identifiers:
+                    output = _generated_block_filename(identifier)
+                    payload = render_block_yaml(
+                        identifier,
+                        variant_properties,
+                        models,
+                        source,
+                        texture_model,
                     )
-                generated[identifier] = (payload, source)
-                write_output(staging, output, payload)
+                    if identifier in generated:
+                        previous_source = generated[identifier][1]
+                        raise AssetImportError(
+                            f"duplicate generated block identifier {identifier}: "
+                            f"{previous_source} and {source}"
+                        )
+                    generated[identifier] = (payload, source)
+                    write_output(staging, output, payload)
     return len(generated)
 
 

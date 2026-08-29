@@ -329,6 +329,18 @@ class BlockCompilerTest(unittest.TestCase):
                         archive, rigel_assets.indexed_archive(archive), root / "output"
                     )
 
+    def test_model_transparency_and_fluid_self_culling_map_to_runtime_fields(self) -> None:
+        resolver = _TransparentModelResolver()
+        output = rigel_assets.render_block_yaml(
+            "test:fluid",
+            {"modelName": "unused", "isFluid": True},
+            resolver,
+            "fixture",
+        ).decode()
+        self.assertIn("opaque: false", output)
+        self.assertIn("layer: transparent", output)
+        self.assertIn("cull_same_type: true", output)
+
     def test_missing_generator_reference_fails_closed(self) -> None:
         entries = synthetic_block_entries()
         del entries["base/block_state_generators/variants.json"]
@@ -446,6 +458,17 @@ class _MissingTextureModelResolver:
             {"all": "textures/blocks/missing.png"},
             {},
             False,
+            False,
+            False,
+        )
+
+
+class _TransparentModelResolver:
+    def resolve(self, reference: str) -> rigel_assets.ResolvedModel:
+        return rigel_assets.ResolvedModel(
+            {"all": "textures/blocks/test.png"},
+            {},
+            True,
             False,
             False,
         )

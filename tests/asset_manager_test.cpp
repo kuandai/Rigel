@@ -74,7 +74,7 @@ TEST_CASE(AssetManager_ShaderEntriesHaveRequiredStages) {
     CHECK(shaderCount > 0);
 }
 
-TEST_CASE(AssetManager_CustomLoaderBeforeManifestKeepsGraphicsLoaders) {
+TEST_CASE(AssetManager_CustomLoaderBeforeManifestKeepsShaderLoader) {
     Rigel::Test::HiddenOpenGLContext context;
     context.require();
 
@@ -82,30 +82,19 @@ TEST_CASE(AssetManager_CustomLoaderBeforeManifestKeepsGraphicsLoaders) {
     assets.registerLoader("input", std::make_unique<InputLoader>());
     assets.loadManifest("manifest.yaml");
 
-    const auto texture = assets.get<TextureAsset>("textures/entity_debug");
-    CHECK_NE(texture->id, 0u);
-    CHECK(texture->width > 0);
-    CHECK(texture->height > 0);
-
     const auto shader = assets.get<ShaderAsset>("shaders/voxel");
     CHECK_NE(shader->program, 0u);
 }
 
 TEST_CASE(AssetManager_ManifestLoadingPreservesBuiltinReplacements) {
-    int textureLoads = 0;
     int shaderLoads = 0;
 
     AssetManager assets;
-    assets.registerLoader(
-        "textures",
-        std::make_unique<CountingLoader<TextureAsset>>("textures", textureLoads));
     assets.registerLoader(
         "shaders",
         std::make_unique<CountingLoader<ShaderAsset>>("shaders", shaderLoads));
     assets.loadManifest("manifest.yaml");
 
-    CHECK(assets.get<TextureAsset>("textures/entity_debug"));
     CHECK(assets.get<ShaderAsset>("shaders/voxel"));
-    CHECK_EQ(textureLoads, 1);
     CHECK_EQ(shaderLoads, 1);
 }

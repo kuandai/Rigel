@@ -22,8 +22,9 @@ std::string unusableBlockAssetsMessage(
             << report.skipped << " skipped ("
             << report.discovered << " discovered); "
             << textureCount << " textures loaded. "
-            << "Ensure imported block textures are present under assets/textures/ "
-               "before configuring the build.";
+            << "Cosmic Reach runtime assets have not been prepared or are invalid. "
+               "Run 'python3 scripts/rigel_assets.py stage /path/to/Cosmic-Reach.jar' "
+               "and reconfigure Rigel.";
 
     if (!report.representativeFailures.empty()) {
         message << " Representative failures: ";

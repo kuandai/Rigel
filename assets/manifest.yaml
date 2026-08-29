@@ -3,10 +3,6 @@ assets:
   generator_definitions:
     default:
       path: generators/default.yaml
-  textures:
-    entity_debug:
-      path: textures/blocks/stone/stone_shale.png
-      filter: nearest
   input:
     default:
       bindings:

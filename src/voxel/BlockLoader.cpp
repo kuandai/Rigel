@@ -15,10 +15,12 @@ namespace Rigel::Voxel {
 namespace {
     constexpr size_t kRepresentativeFailureLimit = 3;
 
-    ryml::Tree loadBlockConfigTree(const std::string& path) {
-        auto data = ResourceRegistry::Get(path);
+    ryml::Tree loadBlockConfigTree(
+        std::string_view path,
+        std::span<const char> data
+    ) {
         return ryml::parse_in_arena(
-            ryml::to_csubstr(path.c_str()),
+            ryml::csubstr(path.data(), path.size()),
             ryml::csubstr(data.data(), data.size())
         );
     }
@@ -72,24 +74,37 @@ BlockLoadReport BlockLoader::loadFromManifest(
     BlockRegistry& registry,
     TextureAtlas& atlas
 ) {
-    BlockLoadReport report;
     const std::string& ns = assets.ns();
-
     spdlog::info("Loading block definitions from blocks directory...");
 
-    std::vector<std::string> blockPaths;
+    std::vector<BlockDefinitionSource> definitions;
     for (std::string_view path : ResourceRegistry::Paths()) {
         if (!startsWith(path, "blocks/") || !endsWith(path, ".yaml")) {
             continue;
         }
-        blockPaths.emplace_back(path);
+        definitions.push_back({path, ResourceRegistry::Get(std::string(path))});
     }
-    std::sort(blockPaths.begin(), blockPaths.end());
-    report.discovered = blockPaths.size();
+    return loadDefinitions(ns, definitions, registry, atlas);
+}
 
-    for (const auto& path : blockPaths) {
+BlockLoadReport BlockLoader::loadDefinitions(
+    std::string_view assetNamespace,
+    std::span<const BlockDefinitionSource> definitions,
+    BlockRegistry& registry,
+    TextureAtlas& atlas
+) {
+    BlockLoadReport report;
+    std::vector<BlockDefinitionSource> ordered(definitions.begin(), definitions.end());
+    std::sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
+        return left.path < right.path;
+    });
+    report.discovered = ordered.size();
+    const std::string ns(assetNamespace);
+
+    for (const auto& definition : ordered) {
+        const std::string path(definition.path);
         try {
-            ryml::Tree blockTree = loadBlockConfigTree(path);
+            ryml::Tree blockTree = loadBlockConfigTree(path, definition.data);
             ryml::ConstNodeRef config = blockTree.rootref();
             std::string name = blockNameFromPath(path);
             BlockType blockType = parseBlockType(name, config, ns, atlas);

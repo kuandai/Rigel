@@ -24,7 +24,7 @@ TEST_CASE(WorldResources_RejectsMissingBlockTexture) {
     CHECK(diagnostic.find("0 definitions loaded") != std::string::npos);
     CHECK(diagnostic.find("1 failed") != std::string::npos);
     CHECK(diagnostic.find("0 textures loaded") != std::string::npos);
-    CHECK(diagnostic.find("assets/textures/") != std::string::npos);
+    CHECK(diagnostic.find("scripts/rigel_assets.py stage") != std::string::npos);
     CHECK(diagnostic.find("blocks/required_block.yaml") != std::string::npos);
     CHECK(diagnostic.find("textures/blocks/required.png") != std::string::npos);
 }

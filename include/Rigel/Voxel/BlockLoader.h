@@ -16,7 +16,9 @@
 #include <Rigel/Asset/AssetManager.h>
 
 #include <cstddef>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Rigel::Voxel {
@@ -32,6 +34,11 @@ struct BlockLoadReport {
     size_t failed = 0;
     size_t skipped = 0;
     std::vector<BlockLoadFailure> representativeFailures;
+};
+
+struct BlockDefinitionSource {
+    std::string_view path;
+    std::span<const char> data;
 };
 
 /**
@@ -108,6 +115,20 @@ public:
      */
     BlockLoadReport loadFromManifest(
         Asset::AssetManager& assets,
+        BlockRegistry& registry,
+        TextureAtlas& atlas
+    );
+
+    /**
+     * @brief Parse an explicit set of normalized block definitions.
+     *
+     * The embedded-resource entry point delegates to this typed seam. Tests
+     * can therefore use small invented definitions without depending on the
+     * generated Cosmic Reach runtime asset tree.
+     */
+    BlockLoadReport loadDefinitions(
+        std::string_view assetNamespace,
+        std::span<const BlockDefinitionSource> definitions,
         BlockRegistry& registry,
         TextureAtlas& atlas
     );

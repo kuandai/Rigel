@@ -34,16 +34,43 @@ Ensure you have the following installed:
 
 ### Interactive Runtime Assets
 
-The interactive runtime requires the separately supplied block texture tree at
-`assets/textures/`. The tracked definitions under `assets/blocks/` refer to
-files in that tree, and startup rejects missing or invalid block inputs instead
-of creating an all-air world.
+Git contains Rigel-owned assets only. The interactive runtime also needs assets
+generated from a developer-provided Cosmic Reach JAR; Rigel does not download
+or redistribute that JAR.
 
-Populate `assets/textures/` before configuring CMake so the resource-embedding
-step discovers the files. Reconfigure and rebuild after changing imported
-assets. A source-only checkout without the imported textures can still build
-and run `Rigel_tests`; representative block/material tests use in-memory pixel
-data and do not require production textures.
+After obtaining the JAR legitimately, stage and synchronize it with:
+
+```bash
+python3 scripts/rigel_assets.py stage ~/Downloads/Cosmic-Reach.jar
+python3 scripts/rigel_assets.py sync
+```
+
+Both the staged source and deterministic output live under the ignored
+`.rigel/` directory. `status` reports whether the output matches the current
+JAR and importer, while `validate` checks the generated tree and provenance:
+
+```bash
+python3 scripts/rigel_assets.py status
+python3 scripts/rigel_assets.py validate
+```
+
+CMake synchronizes before enumerating embedded resources whenever it finds a
+JAR. An automated environment can provide an absolute path without staging:
+
+```bash
+cmake -S . -B build-release \
+  -DRIGEL_COSMIC_REACH_JAR=/absolute/path/Cosmic-Reach.jar \
+  ...
+```
+
+The `RIGEL_COSMIC_REACH_JAR` environment variable is also supported. Resolution
+priority is the CMake cache path, the environment variable, then
+`.rigel/source/Cosmic-Reach.jar`.
+
+A source-only checkout with no JAR still configures, builds, and runs the unit
+tests. Attempting interactive world startup without generated CR assets fails
+with preparation instructions rather than silently creating an incomplete
+world.
 
 ### One-Time Setup
 

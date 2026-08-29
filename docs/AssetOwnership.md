@@ -54,3 +54,26 @@ imported air definition supplies the corresponding source semantics.
 - `.rigel/cosmic-reach-import.json` records source and output identity.
 - Cosmic Reach content is neither downloaded nor discovered by the runtime.
 - Source-only builds and tests do not require proprietary content.
+
+## Local workflow
+
+The cohesive importer CLI supports four operations:
+
+```bash
+python3 scripts/rigel_assets.py stage /path/to/Cosmic-Reach.jar
+python3 scripts/rigel_assets.py sync
+python3 scripts/rigel_assets.py status
+python3 scripts/rigel_assets.py validate
+```
+
+`sync` constructs and validates a complete staging tree, then atomically
+replaces `.rigel/assets/`. A failed import preserves the previous valid tree;
+removed source assets disappear on the next successful import. Provenance
+records the source JAR SHA-256, importer schema and source hash, deterministic
+output-tree SHA-256, source prefix, and category counts without timestamps or
+machine-specific paths.
+
+CMake resolves a JAR in this order: explicit `RIGEL_COSMIC_REACH_JAR` cache
+path, the environment variable of the same name, then the canonical staged
+file. It invokes `sync` before enumerating resources and skips reconstruction
+when the JAR, importer, and generated-tree hashes are current.

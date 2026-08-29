@@ -41,9 +41,6 @@ conan.lock
 *.log
 __pycache__/
 
-# Binary assets
-assets/textures/
-
 # Developer-provided Cosmic Reach source and deterministic imported assets
 .rigel/
 

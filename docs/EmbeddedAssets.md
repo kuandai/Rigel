@@ -1,11 +1,22 @@
 # Embedded Asset System (ResourceRegistry)
 
-The `ResourceRegistry` allows the `Rigel` application to access static assets (images, shaders, config files) that have been compiled directly into the executable binary. This removes the need for distributing loose files and prevents I/O errors at runtime.
+The `ResourceRegistry` allows Rigel to access static assets compiled directly
+into the executable. It combines Rigel-owned source assets with locally
+generated Cosmic Reach derivatives without exposing their physical roots at
+runtime.
 
-Asset paths start at the root of the `assets/` directory.
+Logical paths start at the root of either physical input:
+
+- tracked `assets/` for Rigel-owned content;
+- ignored `.rigel/assets/` for importer-owned CR content.
+
+The physical prefix is never part of the logical path.
 
 * **Wrong:** `ResourceRegistry::Get("assets/logo.png");`
 * **Correct:** `ResourceRegistry::Get("logo.png");`
+
+If the same logical path appears in both roots, CMake fails. Neither root
+silently overrides the other.
 
 ## Relationship to AssetManager
 
@@ -13,13 +24,22 @@ Asset paths start at the root of the `assets/` directory.
 manifest entries. The registry handles build-time embedding; the asset system
 handles runtime parsing, loading, and caching.
 
-## 1. Adding Assets
+## 1. Preparing Assets
 
-To add a file to the application:
+For a Rigel-owned asset, place the file under tracked `assets/` and reconfigure
+or build. CMake watches both resource trees for additions and removals.
 
-1. Place the file anywhere inside the **`assets/`** directory in the project root.
-   * You can use subdirectories (e.g., `assets/textures/logo.png`).
-2. Run CMake or compile. The build system automatically detects new files.
+Do not copy Cosmic Reach content into `assets/`. Instead run:
+
+```bash
+python3 scripts/rigel_assets.py stage /path/to/Cosmic-Reach.jar
+python3 scripts/rigel_assets.py sync
+```
+
+CMake also synchronizes automatically, before it enumerates resources, when a
+JAR is supplied by `-DRIGEL_COSMIC_REACH_JAR=...`, the matching environment
+variable, or the canonical staged path. When none is available, only the
+Rigel-owned root is embedded and source-only tests remain supported.
 
 ## 2. Accessing Assets in C++
 
@@ -38,7 +58,7 @@ Use the static `Get` method to retrieve a view of the file contents.
 Retrieves a memory view of an embedded file.
 
 * **Parameters:**
-  * `path`: The relative path to the file inside the `assets/` directory. Use forward slashes (`/`).
+  * `path`: The logical path relative to either resource root. Use forward slashes (`/`).
 * **Returns:**
   * `std::span<const char>`: A lightweight view of the memory. The data is read-only and lives for the lifetime of the application (static storage).
 * **Throws:**
@@ -92,4 +112,5 @@ unsigned char* img = stbi_load_from_memory(
 ## Related Docs
 
 - `docs/AssetSystem.md`
+- `docs/AssetOwnership.md`
 - `docs/ConfigurationSystem.md`

@@ -40,6 +40,8 @@ implementation and how the systems fit together.
 
 - `docs/AssetSystem.md` (manifest and loader behavior)
 - `docs/EmbeddedAssets.md` (resource embedding)
+- `docs/AssetOwnership.md` (Git/JAR/generated-content ownership and workflow)
+- `docs/CosmicReachImportParity.md` (real-JAR migration evidence)
 - `docs/ConfigurationSystem.md` (configuration ownership and lifetimes)
 
 ### Testing
@@ -50,7 +52,8 @@ implementation and how the systems fit together.
 
 - `src/`: engine code
 - `include/`: public headers
-- `assets/`: embedded assets and configs
+- `assets/`: tracked Rigel-owned embedded assets and configs
+- `.rigel/`: ignored staged/imported Cosmic Reach content
 - `tests/`: unit tests
 - `docs/`: system documentation
 

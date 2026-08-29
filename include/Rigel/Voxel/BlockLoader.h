@@ -4,8 +4,8 @@
  * @file BlockLoader.h
  * @brief Loads block definitions from asset manifests.
  *
- * BlockLoader parses block entries from per-block YAML files in
- * "assets/blocks" and registers them with the BlockRegistry and TextureAtlas.
+ * BlockLoader parses block entries from logical `blocks/*.yaml` resources and
+ * registers them with the BlockRegistry and TextureAtlas.
  * Each block file declares its own name or identifier.
  */
 
@@ -105,7 +105,8 @@ public:
      *
      * Scans embedded resources under "blocks/" for YAML files, parses their
      * configuration, registers them with the BlockRegistry, and loads their
-     * textures into the TextureAtlas.
+     * textures into the TextureAtlas. Production definitions are generated
+     * under the ignored .rigel asset root; callers see only logical paths.
      *
      * @param assets The asset manager containing the manifest
      * @param registry The block registry to register types with

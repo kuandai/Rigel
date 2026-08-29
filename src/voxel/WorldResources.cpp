@@ -64,7 +64,6 @@ void WorldResources::initialize(Asset::AssetManager& assets) {
     }
 
     textureAtlas.upload();
-    models.freeze();
     registry.freeze();
     spdlog::info(
         "world.resources models.loaded={} blocks.loaded={} blocks.failed={} "
@@ -75,7 +74,6 @@ void WorldResources::initialize(Asset::AssetManager& assets) {
         report.discovered,
         textureCount
     );
-    m_models.swap(models);
     m_registry.swap(registry);
     m_textureAtlas.swap(textureAtlas);
     m_initialized = true;

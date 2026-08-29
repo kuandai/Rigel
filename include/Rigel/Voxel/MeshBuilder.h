@@ -89,6 +89,8 @@ private:
      * @param y Local Y coordinate
      * @param z Local Z coordinate
      * @param face The face direction to check
+     * @param cullAgainstOpaqueNeighbor Whether a full-cell opaque neighbor
+     *        may hide this face
      * @return True if face should be rendered
      */
     bool shouldRenderFace(
@@ -96,7 +98,8 @@ private:
         int x, int y, int z,
         Direction face,
         const BlockState& state,
-        const BlockType& type
+        const BlockType& type,
+        bool cullAgainstOpaqueNeighbor = true
     ) const;
 
     /**

@@ -95,7 +95,6 @@ TEST_CASE(WorldResources_PostLoadRejectionIsPristineAndRetryable) {
 
     CHECK(!firstDiagnostic.empty());
     CHECK(!resources.initialized());
-    CHECK_EQ(resources.modelRegistry().size(), static_cast<size_t>(2));
     CHECK_EQ(resources.registry().size(), static_cast<size_t>(1));
     CHECK_EQ(resources.textureAtlas().textureCount(), static_cast<size_t>(0));
 
@@ -107,7 +106,6 @@ TEST_CASE(WorldResources_PostLoadRejectionIsPristineAndRetryable) {
 
     CHECK_EQ(secondDiagnostic, firstDiagnostic);
     CHECK(!resources.initialized());
-    CHECK_EQ(resources.modelRegistry().size(), static_cast<size_t>(2));
     CHECK_EQ(resources.registry().size(), static_cast<size_t>(1));
     CHECK_EQ(resources.textureAtlas().textureCount(), static_cast<size_t>(0));
 }

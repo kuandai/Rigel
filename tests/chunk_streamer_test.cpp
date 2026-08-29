@@ -17284,28 +17284,19 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
     BlockRegistry registry;
     WorldMeshStore meshStore;
     auto generator = makeGenerator(registry);
-    const BlockID visible =
-        registerTestBlock(registry, "rigel:occluded_fringe_visible");
-    BlockType hiddenType;
-    hiddenType.identifier = "rigel:occluded_fringe_hidden";
-    hiddenType.isOpaque = true;
-    const BlockID hidden =
-        registry.registerBlock(hiddenType.identifier, hiddenType);
+    const BlockID solid =
+        registerTestBlock(registry, "rigel:occluded_fringe_solid");
 
     const ChunkCoord survivingCoord{0, 0, 0};
     const ChunkCoord removedCoord{1, 0, 0};
     const ChunkCoord cameraCoord{-2, 0, 0};
     Chunk& surviving = manager.getOrCreateChunk(survivingCoord);
-    surviving.setBlock(
-        Chunk::SIZE - 1, 16, 16, BlockState{visible}, registry);
-    for (const auto& local : std::array<glm::ivec3, 5>{
-             glm::ivec3{Chunk::SIZE - 2, 16, 16},
-             glm::ivec3{Chunk::SIZE - 1, 15, 16},
-             glm::ivec3{Chunk::SIZE - 1, 17, 16},
-             glm::ivec3{Chunk::SIZE - 1, 16, 15},
-             glm::ivec3{Chunk::SIZE - 1, 16, 17}}) {
-        surviving.setBlock(
-            local.x, local.y, local.z, BlockState{hidden}, registry);
+    for (int z = 0; z < Chunk::SIZE; ++z) {
+        for (int y = 0; y < Chunk::SIZE; ++y) {
+            for (int x = 0; x < Chunk::SIZE; ++x) {
+                surviving.setBlock(x, y, z, BlockState{solid}, registry);
+            }
+        }
     }
     surviving.setWorldGenVersion(generator->semanticsVersion());
     surviving.setLoadedFromDisk(true);
@@ -17320,8 +17311,21 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
         const ChunkCoord neighborCoord =
             survivingCoord.offset(dx, dy, dz);
         Chunk& neighbor = manager.getOrCreateChunk(neighborCoord);
-        if (neighborCoord == removedCoord) {
-            neighbor.setBlock(0, 16, 16, BlockState{hidden}, registry);
+        for (int first = 0; first < Chunk::SIZE; ++first) {
+            for (int second = 0; second < Chunk::SIZE; ++second) {
+                int x = first;
+                int y = first;
+                int z = second;
+                if (dx != 0) {
+                    x = dx > 0 ? 0 : Chunk::SIZE - 1;
+                } else if (dy != 0) {
+                    y = dy > 0 ? 0 : Chunk::SIZE - 1;
+                } else {
+                    y = second;
+                    z = dz > 0 ? 0 : Chunk::SIZE - 1;
+                }
+                neighbor.setBlock(x, y, z, BlockState{solid}, registry);
+            }
         }
         neighbor.setWorldGenVersion(generator->semanticsVersion());
         neighbor.setLoadedFromDisk(true);
@@ -17348,7 +17352,7 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
     CHECK(!surviving.isDirty());
     CHECK(meshStore.contains(survivingCoord));
     CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
-             static_cast<size_t>(150));
+             static_cast<size_t>(0));
     const uint64_t emptyMeshRevision =
         installedMeshRevision(meshStore, survivingCoord);
     CHECK(emptyMeshRevision > 0);
@@ -17373,14 +17377,14 @@ TEST_CASE(ChunkStreamer_ExposesOccludedFringeMeshAfterNeighborEviction) {
     CHECK(surviving.isDirty());
     CHECK(meshStore.contains(survivingCoord));
     CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
-             static_cast<size_t>(150));
+             static_cast<size_t>(0));
     CHECK_NE(streamer.diagnostics().state,
              StreamingLifecycleState::Quiescent);
 
     streamer.update(cameraCoord.toWorldCenter());
     CHECK(waitForMeshCompletions(streamer, 2));
     CHECK_EQ(installedMeshIndexCount(meshStore, survivingCoord),
-             static_cast<size_t>(156));
+             static_cast<size_t>(5 * Chunk::SIZE * Chunk::SIZE * 6));
     CHECK(installedMeshRevision(meshStore, survivingCoord) > emptyMeshRevision);
     CHECK(!surviving.isDirty());
     CHECK_EQ(streamer.workMetrics().meshJobsStarted, static_cast<uint64_t>(2));

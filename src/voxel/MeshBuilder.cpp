@@ -31,6 +31,35 @@ constexpr float FACE_UVS[4][2] = {
     {0, 0}, {0, 1}, {1, 1}, {1, 0}
 };
 
+std::array<std::array<float, 2>, 4> modelFaceUvs(
+    const BlockModelFace& face
+) {
+    const std::array<std::array<float, 2>, 4> base = {{
+        {face.uv.u0, face.uv.v0},
+        {face.uv.u0, face.uv.v1},
+        {face.uv.u1, face.uv.v1},
+        {face.uv.u1, face.uv.v0},
+    }};
+    std::array<std::array<float, 2>, 4> rotated{};
+    const size_t quarterTurns = static_cast<size_t>(face.rotation);
+    for (size_t vertex = 0; vertex < rotated.size(); ++vertex) {
+        rotated[vertex] = base[(vertex + quarterTurns) % base.size()];
+    }
+    return rotated;
+}
+
+uint8_t textureLayer(
+    const TextureAtlas* atlas, const std::string* texturePath
+) {
+    if (!atlas || !texturePath || texturePath->empty()) {
+        return 0;
+    }
+    const TextureHandle handle = atlas->findTexture(*texturePath);
+    return handle.isValid()
+        ? static_cast<uint8_t>(atlas->getLayer(handle))
+        : 0;
+}
+
 // Quad indices (two triangles per face)
 constexpr std::array<uint32_t, 6> QUAD_INDICES = {0, 1, 2, 0, 2, 3};
 constexpr std::array<uint32_t, 6> QUAD_INDICES_FLIPPED = {0, 1, 3, 1, 2, 3};
@@ -118,63 +147,127 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
 
                 const BlockType& type = ctx.registry.getType(state.id);
 
-                // Preserve the specialized full-cube path. Normalized cuboid
-                // emission is handled separately from this path.
-                if (!type.model || !type.model->isFullCube()) {
+                if (!type.model) {
                     continue;
                 }
 
                 // Get layer for this block type
                 size_t layerIdx = static_cast<size_t>(type.layer);
 
-                // Append faces for this block
-                for (size_t faceIdx = 0; faceIdx < DirectionCount; faceIdx++) {
-                    Direction face = static_cast<Direction>(faceIdx);
+                if (type.model->isFullCube()) {
+                    // Keep the canonical cube on its specialized path.
+                    for (size_t faceIdx = 0; faceIdx < DirectionCount; faceIdx++) {
+                        Direction face = static_cast<Direction>(faceIdx);
 
-                    if (!shouldRenderFace(ctx, x, y, z, face, state, type)) {
-                        continue;
-                    }
+                        if (!shouldRenderFace(ctx, x, y, z, face, state, type)) {
+                            continue;
+                        }
 
-                    std::array<uint8_t, 4> aoLevels{};
-                    for (size_t v = 0; v < 4; ++v) {
-                        aoLevels[v] = calculateAO(ctx, x, y, z, face, static_cast<int>(v));
-                    }
+                        std::array<uint8_t, 4> aoLevels{};
+                        for (size_t v = 0; v < 4; ++v) {
+                            aoLevels[v] = calculateAO(
+                                ctx, x, y, z, face, static_cast<int>(v));
+                        }
 
-                    // Add vertices for this face
-                    uint32_t baseVertex = static_cast<uint32_t>(layerVertices[layerIdx].size());
+                        uint32_t baseVertex = static_cast<uint32_t>(
+                            layerVertices[layerIdx].size());
+                        const uint8_t faceTextureLayer = textureLayer(
+                            ctx.atlas, &type.textures.forFace(face));
 
-                    // Look up texture layer for this face
-                    uint16_t textureLayer = 0;
-                    if (ctx.atlas) {
-                        const std::string& texturePath = type.textures.forFace(face);
-                        if (!texturePath.empty()) {
-                            TextureHandle handle = ctx.atlas->findTexture(texturePath);
-                            if (handle.isValid()) {
-                                textureLayer = static_cast<uint16_t>(ctx.atlas->getLayer(handle));
-                            }
+                        for (size_t v = 0; v < 4; v++) {
+                            VoxelVertex vertex;
+                            vertex.x = static_cast<float>(x) + FACE_POSITIONS[faceIdx][v][0];
+                            vertex.y = static_cast<float>(y) + FACE_POSITIONS[faceIdx][v][1];
+                            vertex.z = static_cast<float>(z) + FACE_POSITIONS[faceIdx][v][2];
+                            vertex.u = FACE_UVS[v][0];
+                            vertex.v = FACE_UVS[v][1];
+                            vertex.normalIndex = static_cast<uint8_t>(faceIdx);
+                            vertex.aoLevel = aoLevels[v];
+                            vertex.textureLayer = faceTextureLayer;
+                            vertex.flags = 0;
+
+                            layerVertices[layerIdx].push_back(vertex);
+                        }
+
+                        bool flipDiagonal = (aoLevels[0] + aoLevels[2]) >
+                            (aoLevels[1] + aoLevels[3]);
+                        const auto& indices = flipDiagonal
+                            ? QUAD_INDICES_FLIPPED
+                            : QUAD_INDICES;
+                        for (uint32_t idx : indices) {
+                            layerIndices[layerIdx].push_back(baseVertex + idx);
                         }
                     }
+                    continue;
+                }
 
-                    for (size_t v = 0; v < 4; v++) {
-                        VoxelVertex vertex;
-                        vertex.x = static_cast<float>(x) + FACE_POSITIONS[faceIdx][v][0];
-                        vertex.y = static_cast<float>(y) + FACE_POSITIONS[faceIdx][v][1];
-                        vertex.z = static_cast<float>(z) + FACE_POSITIONS[faceIdx][v][2];
-                        vertex.u = FACE_UVS[v][0];
-                        vertex.v = FACE_UVS[v][1];
-                        vertex.normalIndex = static_cast<uint8_t>(faceIdx);
-                        vertex.aoLevel = aoLevels[v];
-                        vertex.textureLayer = textureLayer;
-                        vertex.flags = 0;
+                for (const BlockModelCuboid& cuboid : type.model->cuboids()) {
+                    for (size_t faceIdx = 0; faceIdx < DirectionCount; ++faceIdx) {
+                        const auto& optionalFace = cuboid.faces[faceIdx];
+                        if (!optionalFace) {
+                            continue;
+                        }
+                        const Direction direction =
+                            static_cast<Direction>(faceIdx);
+                        const BlockModelFace& face = *optionalFace;
+                        if (!shouldRenderFace(
+                                ctx, x, y, z, direction, state, type,
+                                face.cullAgainstOpaqueNeighbor)) {
+                            continue;
+                        }
 
-                        layerVertices[layerIdx].push_back(vertex);
-                    }
+                        std::array<uint8_t, 4> aoLevels{};
+                        aoLevels.fill(3);
+                        if (face.ambientOcclusion) {
+                            for (size_t vertex = 0; vertex < aoLevels.size(); ++vertex) {
+                                aoLevels[vertex] = calculateAO(
+                                    ctx, x, y, z, direction,
+                                    static_cast<int>(vertex));
+                            }
+                        }
 
-                    // Add indices for this face (two triangles)
-                    bool flipDiagonal = (aoLevels[0] + aoLevels[2]) > (aoLevels[1] + aoLevels[3]);
-                    const auto& indices = flipDiagonal ? QUAD_INDICES_FLIPPED : QUAD_INDICES;
-                    for (uint32_t idx : indices) {
-                        layerIndices[layerIdx].push_back(baseVertex + idx);
+                        const uint32_t baseVertex = static_cast<uint32_t>(
+                            layerVertices[layerIdx].size());
+                        const std::array<std::array<float, 2>, 4> uvs =
+                            modelFaceUvs(face);
+                        const uint8_t faceTextureLayer = textureLayer(
+                            ctx.atlas, type.textures.find(face.textureSlot));
+
+                        for (size_t vertexIndex = 0; vertexIndex < 4;
+                             ++vertexIndex) {
+                            const float* unitPosition =
+                                FACE_POSITIONS[faceIdx][vertexIndex];
+                            VoxelVertex vertex;
+                            vertex.x = static_cast<float>(x) +
+                                (unitPosition[0] == 0.0f
+                                     ? cuboid.bounds.min[0]
+                                     : cuboid.bounds.max[0]);
+                            vertex.y = static_cast<float>(y) +
+                                (unitPosition[1] == 0.0f
+                                     ? cuboid.bounds.min[1]
+                                     : cuboid.bounds.max[1]);
+                            vertex.z = static_cast<float>(z) +
+                                (unitPosition[2] == 0.0f
+                                     ? cuboid.bounds.min[2]
+                                     : cuboid.bounds.max[2]);
+                            vertex.u = uvs[vertexIndex][0];
+                            vertex.v = uvs[vertexIndex][1];
+                            vertex.normalIndex = static_cast<uint8_t>(faceIdx);
+                            vertex.aoLevel = aoLevels[vertexIndex];
+                            vertex.textureLayer = faceTextureLayer;
+                            vertex.flags = 0;
+                            layerVertices[layerIdx].push_back(vertex);
+                        }
+
+                        const bool flipDiagonal =
+                            (aoLevels[0] + aoLevels[2]) >
+                            (aoLevels[1] + aoLevels[3]);
+                        const auto& indices = flipDiagonal
+                            ? QUAD_INDICES_FLIPPED
+                            : QUAD_INDICES;
+                        for (const uint32_t index : indices) {
+                            layerIndices[layerIdx].push_back(baseVertex + index);
+                        }
                     }
                 }
             }
@@ -211,7 +304,8 @@ bool MeshBuilder::shouldRenderFace(
     int x, int y, int z,
     Direction face,
     const BlockState& state,
-    const BlockType& type
+    const BlockType& type,
+    bool cullAgainstOpaqueNeighbor
 ) const {
     // Get offset for this direction
     int dx, dy, dz;
@@ -226,7 +320,7 @@ bool MeshBuilder::shouldRenderFace(
     }
 
     const BlockType& neighborType = ctx.registry.getType(neighbor.id);
-    if (neighborType.isOpaque && neighborType.model &&
+    if (cullAgainstOpaqueNeighbor && neighborType.isOpaque && neighborType.model &&
         neighborType.model->isFullCube()) {
         return false;
     }

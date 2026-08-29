@@ -1,6 +1,5 @@
 #pragma once
 
-#include "BlockModel.h"
 #include "BlockRegistry.h"
 #include "TextureAtlas.h"
 
@@ -15,9 +14,6 @@ public:
     BlockRegistry& registry() { return m_registry; }
     const BlockRegistry& registry() const { return m_registry; }
 
-    BlockModelRegistry& modelRegistry() { return m_models; }
-    const BlockModelRegistry& modelRegistry() const { return m_models; }
-
     TextureAtlas& textureAtlas() { return m_textureAtlas; }
     const TextureAtlas& textureAtlas() const { return m_textureAtlas; }
 
@@ -26,7 +22,7 @@ public:
     void releaseRenderResources();
 
 private:
-    BlockModelRegistry m_models;
+    // Block registrations transitively retain their immutable shared models.
     BlockRegistry m_registry;
     TextureAtlas m_textureAtlas;
     bool m_initialized = false;

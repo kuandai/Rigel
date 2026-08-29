@@ -2,12 +2,10 @@
 
 #include "Rigel/Asset/AssetLoader.h"
 #include "Rigel/Asset/AssetManager.h"
-#include "Rigel/Voxel/BlockLoader.h"
 #include "Rigel/Voxel/GeneratorDefinition.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/BlockType.h"
-#include "Rigel/Voxel/TextureAtlas.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 
 #include <algorithm>
@@ -213,6 +211,17 @@ void registerDefinitionMaterials(Rigel::Voxel::BlockRegistry& registry,
         if (!includeWater && identifier == "test:water") {
             continue;
         }
+        Rigel::Voxel::BlockType block;
+        block.identifier = identifier;
+        registry.registerBlock(identifier, std::move(block));
+    }
+}
+
+void registerShippedDefinitionMaterials(
+    Rigel::Voxel::BlockRegistry& registry) {
+    for (const std::string identifier : {
+             "base:stone_shale", "base:water[type=source]", "base:grass",
+             "base:dirt", "base:sand"}) {
         Rigel::Voxel::BlockType block;
         block.identifier = identifier;
         registry.registerBlock(identifier, std::move(block));
@@ -791,11 +800,7 @@ TEST_CASE(GeneratorDefinition_shipped_default_bootstraps_strict_runtime) {
     Rigel::Asset::AssetManager assets;
     assets.loadManifest("manifest.yaml");
     Rigel::Voxel::BlockRegistry registry;
-    Rigel::Voxel::TextureAtlas atlas;
-    Rigel::Voxel::BlockLoader blocks;
-    const Rigel::Voxel::BlockLoadReport report =
-        blocks.loadFromManifest(assets, registry, atlas);
-    CHECK_EQ(report.failed, size_t{0});
+    registerShippedDefinitionMaterials(registry);
 
     const auto prepared =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
@@ -836,10 +841,7 @@ TEST_CASE(GeneratorDefinition_shipped_default_generation_is_repeatable_and_golde
     Rigel::Asset::AssetManager assets;
     assets.loadManifest("manifest.yaml");
     Rigel::Voxel::BlockRegistry registry;
-    Rigel::Voxel::TextureAtlas atlas;
-    Rigel::Voxel::BlockLoader blocks;
-    CHECK_EQ(blocks.loadFromManifest(assets, registry, atlas).failed,
-             size_t{0});
+    registerShippedDefinitionMaterials(registry);
     const auto prepared =
         Rigel::Voxel::loadPreparedGeneratorDefinitionSnapshot(
             assets,

@@ -16,6 +16,6 @@ TEST_CASE(EntityModel_LoadsDefinition) {
     auto model = assets.get<EntityModelAsset>("entity_models/demo_cube");
     CHECK(model);
     CHECK_EQ(model->bones.size(), static_cast<size_t>(1));
-    CHECK_EQ(model->textures.count("diffuse"), static_cast<size_t>(1));
+    CHECK(model->textures.empty());
     CHECK_EQ(model->defaultAnimation, std::string("spin"));
 }

@@ -206,11 +206,15 @@ if (RIGEL_BUILD_TESTS)
     set(PUBLIC_HEADER_CONSUMER_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/public_header_consumer.cpp
     )
+    set(GENERATED_ASSET_INTEGRATION_TEST_SOURCE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/generated_asset_integration_test.cpp
+    )
     list(REMOVE_ITEM TEST_SOURCES
         ${PROFILER_TEST_SOURCE}
         ${BLOCK_ASSET_FAILURE_TEST_SOURCE}
         ${ASSET_MANIFEST_VALIDATION_TEST_SOURCE}
         ${PUBLIC_HEADER_CONSUMER_SOURCE}
+        ${GENERATED_ASSET_INTEGRATION_TEST_SOURCE}
     )
 
     add_executable(Rigel_tests
@@ -319,18 +323,39 @@ if (RIGEL_BUILD_TESTS)
     )
     target_link_libraries(Rigel_public_header_consumer PRIVATE RigelLib)
 
+    if(RIGEL_RESOLVED_COSMIC_REACH_JAR)
+        add_executable(Rigel_generated_asset_integration_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/TestFramework.cpp
+            ${GENERATED_ASSET_INTEGRATION_TEST_SOURCE}
+        )
+        target_include_directories(Rigel_generated_asset_integration_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+        target_compile_definitions(Rigel_generated_asset_integration_tests PRIVATE
+            RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(Rigel_generated_asset_integration_tests PRIVATE RigelLib)
+    endif()
+
     add_dependencies(Rigel_tests
         Rigel_profiler_tests
         Rigel_block_asset_failure_tests
         Rigel_asset_manifest_validation_tests
         Rigel_public_header_consumer
     )
+    if(TARGET Rigel_generated_asset_integration_tests)
+        add_dependencies(Rigel_tests Rigel_generated_asset_integration_tests)
+    endif()
 
     add_test(NAME Rigel_tests COMMAND Rigel_tests)
     add_test(NAME Rigel_profiler_tests COMMAND Rigel_profiler_tests)
     add_test(NAME Rigel_block_asset_failure_tests COMMAND Rigel_block_asset_failure_tests)
     add_test(NAME Rigel_asset_manifest_validation_tests COMMAND Rigel_asset_manifest_validation_tests)
     add_test(NAME Rigel_public_header_consumer COMMAND Rigel_public_header_consumer)
+    if(TARGET Rigel_generated_asset_integration_tests)
+        add_test(
+            NAME Rigel_generated_asset_integration_tests
+            COMMAND Rigel_generated_asset_integration_tests)
+    endif()
     add_test(
         NAME Rigel_resource_roots
         COMMAND ${CMAKE_COMMAND}

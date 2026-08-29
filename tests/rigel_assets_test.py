@@ -6,9 +6,11 @@ import io
 import json
 import os
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import unittest
+import zlib
 import zipfile
 
 
@@ -24,6 +26,24 @@ def write_jar(path: Path, entries: dict[str, bytes] | None = None) -> None:
 
 def encoded_json(value: object) -> bytes:
     return json.dumps(value).encode("utf-8")
+
+
+def synthetic_png(width: int = 16, height: int = 16) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    pixels = b"".join(b"\0" + b"\xff\xff\xff\xff" * width for _ in range(height))
+    return (
+        rigel_assets.PNG_SIGNATURE
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(pixels))
+        + chunk(b"IEND", b"")
+    )
 
 
 def synthetic_block_entries() -> dict[str, bytes]:
@@ -81,7 +101,7 @@ def synthetic_block_entries() -> dict[str, bytes]:
                 },
             }
         ),
-        "base/textures/blocks/test_stone.png": b"synthetic-png",
+        "base/textures/blocks/test_stone.png": synthetic_png(),
     }
 
 
@@ -287,9 +307,12 @@ class DirectExtractionTest(unittest.TestCase):
 
     def test_relaxed_json_handles_comments_trailing_commas_and_legacy_gap(self) -> None:
         parsed = rigel_assets.load_relaxed_json(
-            b'{"items": [{"a": 1,} /* source defect */ {"b": 2}]}', "fixture"
+            b'{"text": "} {,]", "items": [{"a": 1,} /* source defect */ {"b": 2}]}',
+            "fixture",
         )
-        self.assertEqual(parsed, {"items": [{"a": 1}, {"b": 2}]})
+        self.assertEqual(
+            parsed, {"text": "} {,]", "items": [{"a": 1}, {"b": 2}]}
+        )
 
     def test_entity_texture_outside_base_namespace_fails_closed(self) -> None:
         model = {
@@ -373,6 +396,29 @@ class BlockCompilerTest(unittest.TestCase):
                     rigel_assets.compile_blocks(
                         archive, rigel_assets.indexed_archive(archive), root / "output"
                     )
+
+    def test_unsupported_block_texture_dimensions_are_omitted_visibly(self) -> None:
+        entries = synthetic_block_entries()
+        entries["base/textures/blocks/test_stone.png"] = synthetic_png(64, 16)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            output = root / "output"
+            diagnostics: list[str] = []
+            with zipfile.ZipFile(jar) as archive:
+                indexed = rigel_assets.indexed_archive(archive)
+                rigel_assets.extract_direct_assets(archive, indexed, output)
+                rigel_assets.compile_blocks(archive, indexed, output)
+
+            omitted = rigel_assets.omit_blocks_with_unsupported_textures(
+                output, diagnostics
+            )
+
+            self.assertEqual(omitted, 4)
+            self.assertFalse(any((output / "blocks").glob("*.yaml")))
+            self.assertEqual(len(diagnostics), 1)
+            self.assertIn("64x16", diagnostics[0])
 
 
 class SynchronizationTest(unittest.TestCase):

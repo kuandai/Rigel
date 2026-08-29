@@ -10,9 +10,9 @@ import json
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
-import re
 import shutil
 import stat
+import struct
 import sys
 import tempfile
 import zipfile
@@ -26,6 +26,8 @@ PROVENANCE_RELATIVE_PATH = Path(".rigel/cosmic-reach-import.json")
 PROVENANCE_SCHEMA = 1
 IMPORTER_SCHEMA = 1
 SOURCE_PREFIX = "base/"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+BLOCK_TEXTURE_SIZE = (16, 16)
 REQUIRED_BLOCK_IDENTIFIERS = (
     "base:dirt",
     "base:grass",
@@ -185,17 +187,52 @@ def _strip_json_comments(text: str) -> str:
     return "".join(output)
 
 
+def _normalize_relaxed_json_punctuation(text: str) -> str:
+    output: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        character = text[index]
+        if in_string:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            output.append(character)
+            index += 1
+            continue
+
+        lookahead = index + 1
+        while lookahead < len(text) and text[lookahead].isspace():
+            lookahead += 1
+        following = text[lookahead] if lookahead < len(text) else ""
+        if character == "," and following in ("}", "]"):
+            index += 1
+            continue
+        output.append(character)
+        if character == "}" and following == "{":
+            output.append(",")
+        index += 1
+    return "".join(output)
+
+
 def load_relaxed_json(data: bytes, source: str) -> object:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
         raise AssetImportError(f"{source}: JSON is not UTF-8: {error}") from error
-    cleaned = _strip_json_comments(text)
-    cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    cleaned = _normalize_relaxed_json_punctuation(_strip_json_comments(text))
     # Cosmic Reach 0.6.1 has one known missing comma between adjacent objects in
     # all_stairs_seamed.json. Accept that narrow legacy JSON defect; other parse
     # errors still fail closed.
-    cleaned = re.sub(r"}(\s*){", r"},\1{", cleaned)
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError as error:
@@ -204,6 +241,20 @@ def load_relaxed_json(data: bytes, source: str) -> object:
 
 def deterministic_json(value: object) -> bytes:
     return (json.dumps(value, indent=2, ensure_ascii=True) + "\n").encode("utf-8")
+
+
+def png_dimensions(data: bytes, source: str) -> tuple[int, int]:
+    if (
+        len(data) < 24
+        or data[:8] != PNG_SIGNATURE
+        or data[8:12] != b"\x00\x00\x00\r"
+        or data[12:16] != b"IHDR"
+    ):
+        raise AssetImportError(f"{source}: malformed PNG header")
+    width, height = struct.unpack(">II", data[16:24])
+    if width == 0 or height == 0:
+        raise AssetImportError(f"{source}: PNG dimensions must be non-zero")
+    return width, height
 
 
 def _strip_base_namespace(reference: str, context: str) -> str:
@@ -971,6 +1022,41 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
     return result
 
 
+def omit_blocks_with_unsupported_textures(
+    root: Path, diagnostics: list[str] | None = None
+) -> int:
+    omitted: list[str] = []
+    unsupported: set[str] = set()
+    for path in sorted((root / "blocks").glob("*.yaml")):
+        logical = path.relative_to(root).as_posix()
+        block = parse_generated_block(path.read_bytes(), logical)
+        textures = block.get("textures", {})
+        if not isinstance(textures, dict):
+            continue
+        incompatible = False
+        for reference in textures.values():
+            texture = root / str(reference)
+            if not texture.is_file():
+                continue
+            dimensions = png_dimensions(texture.read_bytes(), str(reference))
+            if dimensions != BLOCK_TEXTURE_SIZE:
+                incompatible = True
+                unsupported.add(
+                    f"{reference} ({dimensions[0]}x{dimensions[1]})"
+                )
+        if incompatible:
+            omitted.append(str(block["id"]))
+            path.unlink()
+
+    if omitted and diagnostics is not None:
+        diagnostics.append(
+            f"omitted {len(omitted)} blocks whose textures are not "
+            f"{BLOCK_TEXTURE_SIZE[0]}x{BLOCK_TEXTURE_SIZE[1]}: "
+            + ", ".join(sorted(unsupported))
+        )
+    return len(omitted)
+
+
 def validate_generated_tree(
     root: Path,
     required_identifiers: tuple[str, ...] = REQUIRED_BLOCK_IDENTIFIERS,
@@ -985,6 +1071,12 @@ def validate_generated_tree(
         if logical in logical_paths:
             raise AssetImportError(f"duplicate generated logical path: {logical}")
         logical_paths.add(logical)
+
+    for logical in sorted(
+        path for path in logical_paths
+        if path.startswith("textures/") and path.endswith(".png")
+    ):
+        png_dimensions((root / logical).read_bytes(), logical)
 
     block_identifiers: dict[str, str] = {}
     referenced_textures: dict[str, str] = {}
@@ -1106,6 +1198,7 @@ def synchronize(
                 raise AssetImportError("JAR has no Cosmic Reach base/blocks definitions")
             extract_direct_assets(archive, entries, staging, diagnostics)
             compile_blocks(archive, entries, staging, diagnostics)
+            omit_blocks_with_unsupported_textures(staging, diagnostics)
             version = source_version(archive, entries)
         counts = validate_generated_tree(staging, required_identifiers)
         provenance: dict[str, object] = {

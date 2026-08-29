@@ -10,8 +10,8 @@ intentional compatibility rules that remain in the importer.
 - Source JAR SHA-256:
   `58a2cc3b79b5413cfa0f2e4ae3b37f44ed7f11a5e828de57f9f3f71599ac570e`
 - Generated tree SHA-256 at the parity gate:
-  `0ffceb00e2b79c438504a2dcadbfa3658f3766492c8eb26178abc7906e7075ed`
-- Generated counts: 437 blocks, 438 textures, 16 entity models,
+  `f71bc35a71d9d02b6768db9d2796412a61e1ed163603d5562e00b9ebc726a227`
+- Generated counts: 431 blocks, 438 textures, 16 entity models,
   7 animation sets, and 59 sounds
 
 The source JAR is not part of the repository. Its digest, rather than its
@@ -83,6 +83,15 @@ generated states. Those are validated through the generator include graph but
 omitted with a provenance warning instead of being falsely published as
 cubes. Supporting those shapes would be a separate block-model/meshing
 project, outside this asset-hygiene migration.
+
+Six additional 0.6.1 block states reference 64×16 animated sprites or a 64×64
+entity texture. Rigel's block atlas accepts 16×16 tiles and cannot represent
+the source animation metadata. None of these states existed in the 249-file
+legacy snapshot. The importer validates their source definitions, omits the six
+unsupported runtime states with a provenance warning, and validates every
+published block texture dimension. Publishing definitions that later fail
+`WorldResources` initialization would be misleading; adding animated or
+non-tile block textures is a separate renderer feature.
 
 CR model emission texture maps also remain outside the current normalized
 block contract. Scalar emitted light is preserved. The importer recognizes

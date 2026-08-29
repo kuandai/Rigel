@@ -1,7 +1,0 @@
-id: ladder_iron[direction=NegZ]
-model: cube
-opaque: false
-solid: true
-layer: transparent
-textures:
-  all: textures/blocks/furniture/ladder_iron.png

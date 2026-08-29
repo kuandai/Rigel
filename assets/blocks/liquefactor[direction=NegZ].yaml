@@ -1,8 +1,0 @@
-id: liquefactor[direction=NegZ]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  pos_x: textures/blocks/machines/liquefactor_side.png
-  pos_y: textures/blocks/machines/liquefactor_top.png

@@ -1,7 +1,0 @@
-id: lunar_soil_packed
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/lunar_soil_packed.png

@@ -1,8 +1,0 @@
-id: leaves_fir[dist=2,type=decaying]
-model: cube
-opaque: false
-solid: true
-layer: transparent
-light_attenuation: 2
-textures:
-  all: textures/blocks/foliage/leaves_fir.png

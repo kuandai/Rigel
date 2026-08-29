@@ -1,7 +1,0 @@
-id: pixel_display[color=black,type=wall,direction=PosZ]
-model: cube
-opaque: false
-solid: true
-layer: transparent
-textures:
-  all: textures/blocks/boombox_top.png

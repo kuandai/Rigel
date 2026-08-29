@@ -1,7 +1,0 @@
-id: debug
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/debug.png

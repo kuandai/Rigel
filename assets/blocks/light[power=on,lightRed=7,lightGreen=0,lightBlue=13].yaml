@@ -1,8 +1,0 @@
-id: light[power=on,lightRed=7,lightGreen=0,lightBlue=13]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-emits_light: 13
-textures:
-  all: textures/blocks/lights/light_violet.png

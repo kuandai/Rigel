@@ -1,7 +1,0 @@
-id: stone_komatiite
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/stone/stone_komatiite.png

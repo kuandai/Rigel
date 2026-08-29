@@ -1,9 +1,0 @@
-id: grass
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  top: textures/blocks/foliage/grass_top.png
-  bottom: textures/blocks/dirt.png
-  sides: textures/blocks/foliage/grass_side.png

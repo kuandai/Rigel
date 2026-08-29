@@ -1,8 +1,0 @@
-id: sapling_poplar[growth=0]
-model: cube
-opaque: false
-solid: false
-layer: transparent
-light_attenuation: 0
-textures:
-  all: textures/blocks/foliage/sapling_poplar.png

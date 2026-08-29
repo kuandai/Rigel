@@ -1,7 +1,0 @@
-id: ore_iron
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/ores/ore_iron.png

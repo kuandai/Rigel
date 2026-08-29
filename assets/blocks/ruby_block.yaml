@@ -1,7 +1,0 @@
-id: ruby_block
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/ores/ruby/ruby_block.png

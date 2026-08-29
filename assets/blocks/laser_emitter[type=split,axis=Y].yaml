@@ -1,9 +1,0 @@
-id: laser_emitter[type=split,axis=Y]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  top: textures/blocks/machines/laser_emitter_top.png
-  bottom: textures/blocks/hazard.png
-  sides: textures/blocks/machines/laser_emitter_side.png

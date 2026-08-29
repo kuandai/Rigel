@@ -1,7 +1,0 @@
-id: gold_block
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/gold_block.png

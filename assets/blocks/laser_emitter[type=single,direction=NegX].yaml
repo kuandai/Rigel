@@ -1,8 +1,0 @@
-id: laser_emitter[type=single,direction=NegX]
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  pos_x: textures/blocks/machines/laser_emitter_front.png
-  neg_y: textures/blocks/hazard.png

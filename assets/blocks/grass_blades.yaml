@@ -1,8 +1,0 @@
-id: grass_blades
-model: cube
-opaque: false
-solid: false
-layer: transparent
-light_attenuation: 0
-textures:
-  all: textures/blocks/foliage/grass_blades.png

@@ -1,7 +1,0 @@
-id: hazard
-model: cube
-opaque: true
-solid: true
-layer: opaque
-textures:
-  all: textures/blocks/hazard.png

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -78,6 +80,79 @@ class ProvisioningTest(unittest.TestCase):
             source.write_text("not a zip", encoding="utf-8")
             with self.assertRaisesRegex(rigel_assets.AssetImportError, "not a readable"):
                 rigel_assets.stage_jar(root, source)
+
+
+class ImportFoundationTest(unittest.TestCase):
+    def test_archive_rejects_traversal_duplicate_and_symlink_entries(self) -> None:
+        cases: list[tuple[str, callable]] = [
+            ("../escape", lambda archive: archive.writestr("../escape", b"bad")),
+            (
+                "duplicate",
+                lambda archive: (
+                    archive.writestr("base/value", b"one"),
+                    archive.writestr("base/value", b"two"),
+                ),
+            ),
+        ]
+        for label, populate in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                jar = Path(directory) / "fixture.jar"
+                with zipfile.ZipFile(jar, "w") as archive:
+                    populate(archive)
+                with zipfile.ZipFile(jar) as archive:
+                    with self.assertRaises(rigel_assets.AssetImportError):
+                        rigel_assets.indexed_archive(archive)
+
+        with tempfile.TemporaryDirectory() as directory:
+            jar = Path(directory) / "fixture.jar"
+            info = zipfile.ZipInfo("base/link")
+            info.create_system = 3
+            info.external_attr = (0o120777 << 16)
+            with zipfile.ZipFile(jar, "w") as archive:
+                archive.writestr(info, b"target")
+            with zipfile.ZipFile(jar) as archive:
+                with self.assertRaisesRegex(rigel_assets.AssetImportError, "symbolic-link"):
+                    rigel_assets.indexed_archive(archive)
+
+    def test_tree_hash_is_path_and_content_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
+            first = Path(first_dir)
+            second = Path(second_dir)
+            rigel_assets.write_output(first, "z/item.bin", b"last")
+            rigel_assets.write_output(first, "a/item.bin", b"first")
+            rigel_assets.write_output(second, "a/item.bin", b"first")
+            rigel_assets.write_output(second, "z/item.bin", b"last")
+            self.assertEqual(rigel_assets.sha256_tree(first), rigel_assets.sha256_tree(second))
+            (second / "z/item.bin").write_bytes(b"changed")
+            self.assertNotEqual(rigel_assets.sha256_tree(first), rigel_assets.sha256_tree(second))
+
+    def test_publish_replaces_stale_tree_and_writes_deterministic_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            rigel_assets.write_output(old, "stale.txt", b"stale")
+            staging = root / ".rigel/staging"
+            rigel_assets.write_output(staging, "fresh.txt", b"fresh")
+            provenance = {
+                "schema": 1,
+                "jar_sha256": hashlib.sha256(b"jar").hexdigest(),
+                "output_tree_sha256": rigel_assets.sha256_tree(staging),
+            }
+
+            rigel_assets.publish_generated_tree(root, staging, provenance)
+
+            self.assertFalse((old / "stale.txt").exists())
+            self.assertEqual((old / "fresh.txt").read_bytes(), b"fresh")
+            persisted = json.loads(
+                (root / rigel_assets.PROVENANCE_RELATIVE_PATH).read_text(encoding="utf-8")
+            )
+            self.assertEqual(persisted, provenance)
+            self.assertFalse(any((root / ".rigel").glob(".assets-previous-*")))
+
+    def test_output_path_rejects_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(rigel_assets.AssetImportError):
+                rigel_assets.write_output(Path(directory), "../escape", b"bad")
 
 
 if __name__ == "__main__":

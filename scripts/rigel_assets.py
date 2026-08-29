@@ -8,7 +8,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import shutil
+import stat
 import sys
 import tempfile
 import zipfile
@@ -19,6 +21,9 @@ JAR_ENVIRONMENT_VARIABLE = "RIGEL_COSMIC_REACH_JAR"
 STAGED_JAR_RELATIVE_PATH = Path(".rigel/source/Cosmic-Reach.jar")
 GENERATED_ASSETS_RELATIVE_PATH = Path(".rigel/assets")
 PROVENANCE_RELATIVE_PATH = Path(".rigel/cosmic-reach-import.json")
+PROVENANCE_SCHEMA = 1
+IMPORTER_SCHEMA = 1
+SOURCE_PREFIX = "base/"
 
 
 class AssetImportError(RuntimeError):
@@ -35,6 +40,141 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def importer_sha256() -> str:
+    return sha256_file(Path(__file__).resolve())
+
+
+def normalize_archive_path(raw_name: str) -> PurePosixPath:
+    if not raw_name or "\\" in raw_name or "\x00" in raw_name:
+        raise AssetImportError(f"unsafe JAR entry path: {raw_name!r}")
+    if raw_name.startswith("/"):
+        raise AssetImportError(f"unsafe absolute JAR entry path: {raw_name!r}")
+    name = raw_name[:-1] if raw_name.endswith("/") else raw_name
+    path = PurePosixPath(name)
+    if not path.parts or any(part in ("", ".", "..") for part in path.parts):
+        raise AssetImportError(f"unsafe JAR entry path: {raw_name!r}")
+    if ":" in path.parts[0]:
+        raise AssetImportError(f"unsafe drive-qualified JAR entry path: {raw_name!r}")
+    return path
+
+
+def indexed_archive(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
+    entries: dict[str, zipfile.ZipInfo] = {}
+    for info in archive.infolist():
+        path = normalize_archive_path(info.filename)
+        normalized = path.as_posix()
+        if info.is_dir():
+            continue
+        mode = info.external_attr >> 16
+        if mode and stat.S_ISLNK(mode):
+            raise AssetImportError(f"symbolic-link JAR entry is not supported: {normalized}")
+        if normalized in entries:
+            raise AssetImportError(f"duplicate JAR entry path: {normalized}")
+        entries[normalized] = info
+    return entries
+
+
+def output_path(root: Path, logical_path: str) -> Path:
+    normalized = normalize_archive_path(logical_path)
+    destination = root.joinpath(*normalized.parts)
+    if destination == root or root not in destination.parents:
+        raise AssetImportError(f"unsafe generated asset path: {logical_path!r}")
+    return destination
+
+
+def write_output(root: Path, logical_path: str, data: bytes) -> None:
+    destination = output_path(root, logical_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+
+
+def sha256_tree(root: Path) -> str:
+    digest = hashlib.sha256()
+    if not root.is_dir():
+        raise AssetImportError(f"generated asset tree does not exist: {root}")
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        data = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def atomic_write_json(destination: Path, value: dict[str, object]) -> None:
+    data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def publish_generated_tree(root: Path, staging: Path, provenance: dict[str, object]) -> None:
+    destination = root / GENERATED_ASSETS_RELATIVE_PATH
+    provenance_path = root / PROVENANCE_RELATIVE_PATH
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    backup = Path(
+        tempfile.mkdtemp(prefix=".assets-previous-", dir=destination.parent)
+    )
+    backup.rmdir()
+    previous_provenance = provenance_path.read_bytes() if provenance_path.is_file() else None
+    moved_previous = False
+    try:
+        if destination.exists():
+            os.replace(destination, backup)
+            moved_previous = True
+        os.replace(staging, destination)
+        try:
+            atomic_write_json(provenance_path, provenance)
+        except Exception:
+            failed = destination.with_name(f".{destination.name}.failed")
+            if failed.exists():
+                shutil.rmtree(failed)
+            os.replace(destination, failed)
+            if moved_previous:
+                os.replace(backup, destination)
+            if previous_provenance is None:
+                provenance_path.unlink(missing_ok=True)
+            else:
+                provenance_path.write_bytes(previous_provenance)
+            shutil.rmtree(failed)
+            raise
+        if moved_previous:
+            shutil.rmtree(backup)
+    except Exception:
+        if moved_previous and backup.exists() and not destination.exists():
+            os.replace(backup, destination)
+        raise
+
+
+def current_import_matches(root: Path, jar_digest: str) -> bool:
+    provenance = read_provenance(root)
+    assets = root / GENERATED_ASSETS_RELATIVE_PATH
+    if not provenance or not assets.is_dir():
+        return False
+    if (
+        provenance.get("schema") != PROVENANCE_SCHEMA
+        or provenance.get("importer_schema") != IMPORTER_SCHEMA
+        or provenance.get("importer_sha256") != importer_sha256()
+        or provenance.get("jar_sha256") != jar_digest
+    ):
+        return False
+    try:
+        return provenance.get("output_tree_sha256") == sha256_tree(assets)
+    except (AssetImportError, OSError):
+        return False
 
 
 def validate_jar(path: Path) -> Path:

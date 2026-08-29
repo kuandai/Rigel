@@ -461,6 +461,7 @@ class _MissingTextureModelResolver:
             False,
             False,
             False,
+            True,
         )
 
 
@@ -472,6 +473,7 @@ class _TransparentModelResolver:
             True,
             False,
             False,
+            True,
         )
 
 

@@ -475,6 +475,7 @@ class ResolvedModel:
     transparent: bool
     culls_self: bool
     empty: bool
+    full_cube: bool
 
 
 class BlockModelResolver:
@@ -503,7 +504,7 @@ class BlockModelResolver:
                 load_relaxed_json(self.archive.read(info), source), source
             )
             _reject_unknown_keys(document, MODEL_ROOT_KEYS, source)
-            parent = ResolvedModel({}, {}, False, False, True)
+            parent = ResolvedModel({}, {}, False, False, True, False)
             if "parent" in document:
                 parent = self.resolve(str(document["parent"]))
 
@@ -525,11 +526,13 @@ class BlockModelResolver:
 
             face_aliases = dict(parent.face_aliases)
             empty = parent.empty
+            full_cube = parent.full_cube
             if "cuboids" in document:
                 cuboids = document["cuboids"]
                 if not isinstance(cuboids, list):
                     raise AssetImportError(f"{source}.cuboids must be an array")
                 empty = len(cuboids) == 0 and not document.get("planes")
+                full_cube = False
                 representative: dict[str, object] | None = None
                 for index, raw_cuboid in enumerate(cuboids):
                     cuboid = _expect_object(raw_cuboid, f"{source}.cuboids[{index}]")
@@ -543,6 +546,11 @@ class BlockModelResolver:
                         representative = cuboid
                         if bounds == [0, 0, 0, 16, 16, 16]:
                             break
+                full_cube = (
+                    len(cuboids) == 1
+                    and representative is not None
+                    and representative.get("localBounds") == [0, 0, 0, 16, 16, 16]
+                )
                 face_aliases = {}
                 if representative is not None:
                     faces = _expect_object(
@@ -562,7 +570,9 @@ class BlockModelResolver:
             culls_self = document.get("cullsSelf", parent.culls_self)
             if not isinstance(transparent, bool) or not isinstance(culls_self, bool):
                 raise AssetImportError(f"{source}: transparency/culling values must be booleans")
-            result = ResolvedModel(textures, face_aliases, transparent, culls_self, empty)
+            result = ResolvedModel(
+                textures, face_aliases, transparent, culls_self, empty, full_cube
+            )
             self.cache[source] = result
             return result
         finally:
@@ -726,6 +736,7 @@ def render_block_yaml(
             model.transparent or texture_model.transparent,
             model.culls_self or texture_model.culls_self,
             model.empty,
+            model.full_cube,
         )
     opaque = properties.get("isOpaque", not model.transparent)
     solid = not properties.get("walkThrough", False)
@@ -774,10 +785,12 @@ def compile_blocks(
     archive: zipfile.ZipFile,
     entries: dict[str, zipfile.ZipInfo],
     staging: Path,
+    diagnostics: list[str] | None = None,
 ) -> int:
     models = BlockModelResolver(archive, entries)
     generators = StateGeneratorResolver(archive, entries)
     generated: dict[str, tuple[bytes, str]] = {}
+    omitted_non_cube_variants = 0
     for source in sorted(entries):
         if not source.startswith("base/blocks/") or not source.endswith(".json"):
             continue
@@ -827,6 +840,13 @@ def compile_blocks(
                     generated_properties.pop("rotateTopBottom", None)
                     if leaf.model_name is not None:
                         generated_properties["modelName"] = leaf.model_name
+                    generated_model_name = generated_properties.get("modelName")
+                    if (
+                        not isinstance(generated_model_name, str)
+                        or not models.resolve(generated_model_name).full_cube
+                    ):
+                        omitted_non_cube_variants += 1
+                        continue
                     variants.append(
                         (generated_parameters, generated_properties, base_model_name)
                     )
@@ -852,6 +872,11 @@ def compile_blocks(
                         )
                     generated[identifier] = (payload, source)
                     write_output(staging, output, payload)
+    if omitted_non_cube_variants and diagnostics is not None:
+        diagnostics.append(
+            f"omitted {omitted_non_cube_variants} generated non-cube block states: "
+            "Rigel's current normalized block model supports cube/none geometry"
+        )
     return len(generated)
 
 
@@ -1080,7 +1105,7 @@ def synchronize(
             ):
                 raise AssetImportError("JAR has no Cosmic Reach base/blocks definitions")
             extract_direct_assets(archive, entries, staging, diagnostics)
-            compile_blocks(archive, entries, staging)
+            compile_blocks(archive, entries, staging, diagnostics)
             version = source_version(archive, entries)
         counts = validate_generated_tree(staging, required_identifiers)
         provenance: dict[str, object] = {

@@ -1323,13 +1323,7 @@ def status(root: Path, explicit: str | Path | None = None) -> int:
         return 1
 
     jar_digest = sha256_file(jar)
-    provenance = read_provenance(root)
-    generated = root / GENERATED_ASSETS_RELATIVE_PATH
-    synchronized = (
-        generated.is_dir()
-        and provenance is not None
-        and provenance.get("jar_sha256") == jar_digest
-    )
+    synchronized = current_import_matches(root, jar_digest)
     print(f"Cosmic Reach JAR: {jar} ({source})")
     print(f"JAR SHA-256: {jar_digest}")
     print(f"Generated assets: {'current' if synchronized else 'not synchronized'}")

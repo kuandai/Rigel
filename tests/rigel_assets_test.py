@@ -144,6 +144,23 @@ class ProvisioningTest(unittest.TestCase):
             with self.assertRaisesRegex(rigel_assets.AssetImportError, "not a readable"):
                 rigel_assets.stage_jar(root, source)
 
+    def test_status_rejects_tampered_generated_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            rigel_assets.synchronize(root, jar, required_identifiers=("test:stone",))
+            (root / ".rigel/assets/blocks/test__stone.yaml").write_text(
+                "tampered", encoding="utf-8"
+            )
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = rigel_assets.status(root, jar)
+
+            self.assertEqual(result, 2)
+            self.assertIn("Generated assets: not synchronized", output.getvalue())
+
 
 class ImportFoundationTest(unittest.TestCase):
     def test_archive_rejects_traversal_duplicate_and_symlink_entries(self) -> None:

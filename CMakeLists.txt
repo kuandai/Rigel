@@ -4,6 +4,8 @@ project(Rigel VERSION 0.0.0 LANGUAGES CXX ASM)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type (Debug or Release)" FORCE)
 endif()
@@ -19,8 +21,63 @@ list(REMOVE_ITEM SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
 )
 
-# Asset embed
+# Asset preparation and embedding
 include(cmake/AssetResources.cmake)
+
+set(RIGEL_COSMIC_REACH_JAR "" CACHE FILEPATH
+    "Absolute path to a developer-provided Cosmic Reach JAR")
+set(RIGEL_RESOURCE_ROOTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+set(RIGEL_RESOLVED_COSMIC_REACH_JAR "")
+set(RIGEL_COSMIC_REACH_JAR_SOURCE "")
+
+if(RIGEL_COSMIC_REACH_JAR)
+    set(RIGEL_RESOLVED_COSMIC_REACH_JAR "${RIGEL_COSMIC_REACH_JAR}")
+    set(RIGEL_COSMIC_REACH_JAR_SOURCE "RIGEL_COSMIC_REACH_JAR")
+elseif(DEFINED ENV{RIGEL_COSMIC_REACH_JAR} AND
+       NOT "$ENV{RIGEL_COSMIC_REACH_JAR}" STREQUAL "")
+    set(RIGEL_RESOLVED_COSMIC_REACH_JAR "$ENV{RIGEL_COSMIC_REACH_JAR}")
+    set(RIGEL_COSMIC_REACH_JAR_SOURCE "environment variable")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.rigel/source/Cosmic-Reach.jar")
+    set(RIGEL_RESOLVED_COSMIC_REACH_JAR
+        "${CMAKE_CURRENT_SOURCE_DIR}/.rigel/source/Cosmic-Reach.jar")
+    set(RIGEL_COSMIC_REACH_JAR_SOURCE "staged file")
+endif()
+
+if(RIGEL_RESOLVED_COSMIC_REACH_JAR)
+    if(NOT IS_ABSOLUTE "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")
+        message(FATAL_ERROR
+            "Cosmic Reach JAR path must be absolute: "
+            "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py")
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py"
+            --root "${CMAKE_CURRENT_SOURCE_DIR}"
+            sync --jar "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
+        RESULT_VARIABLE RIGEL_ASSET_SYNC_RESULT
+        OUTPUT_VARIABLE RIGEL_ASSET_SYNC_OUTPUT
+        ERROR_VARIABLE RIGEL_ASSET_SYNC_ERROR)
+    if(NOT RIGEL_ASSET_SYNC_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Cosmic Reach asset synchronization failed.\n"
+            "${RIGEL_ASSET_SYNC_OUTPUT}${RIGEL_ASSET_SYNC_ERROR}")
+    endif()
+    message(STATUS
+        "Cosmic Reach assets prepared from ${RIGEL_COSMIC_REACH_JAR_SOURCE}: "
+        "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")
+    list(APPEND RIGEL_RESOURCE_ROOTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/.rigel/assets")
+else()
+    message(STATUS
+        "Cosmic Reach runtime assets have not been prepared. Source-only builds "
+        "and tests remain available. To prepare interactive runtime assets, run:\n"
+        "  python3 scripts/rigel_assets.py stage /path/to/Cosmic-Reach.jar\n"
+        "then reconfigure Rigel, or configure with:\n"
+        "  -DRIGEL_COSMIC_REACH_JAR=/absolute/path/Cosmic-Reach.jar")
+endif()
 
 add_library(RigelLib ${SOURCES})
 
@@ -29,7 +86,7 @@ target_compile_definitions(RigelLib PRIVATE
     $<$<CONFIG:Debug>:RIGEL_ENABLE_PROFILER>
 )
 
-target_embed_resources(RigelLib "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_embed_resources(RigelLib ${RIGEL_RESOURCE_ROOTS})
 
 target_include_directories(RigelLib
     PUBLIC
@@ -281,6 +338,13 @@ if (RIGEL_BUILD_TESTS)
             "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/resource-roots-test"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/resource_roots_test.cmake
     )
+    add_test(
+        NAME Rigel_asset_importer_tests
+        COMMAND "${Python3_EXECUTABLE}" -m unittest -v
+            tests/rigel_assets_test.py
+    )
+    set_tests_properties(Rigel_asset_importer_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(
         NAME Rigel_tests_filtered_count
         COMMAND Rigel_tests --filter AssetHandle_Basics

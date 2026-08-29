@@ -644,43 +644,54 @@ BlockLoadReport BlockLoader::loadDefinitions(
         return report;
     }
 
-    for (const ParsedBlock& block : stagedBlocks) {
-        try {
-            for (const std::string& path : block.texturePaths) {
-                atlas.addTextureFromResource(path);
-            }
-        } catch (const std::exception& error) {
-            ++report.failed;
-            addFailure(report, block.source, error.what());
-        }
-    }
-    if (report.failed != 0) {
-        report.skipped += stagedBlocks.size() - report.failed;
-        return report;
-    }
-
-    if (models.frozen()) {
-        throw BlockModelRegistrationError("Block model registry is frozen");
-    }
-    if (registry.frozen()) {
-        throw BlockRegistrationError("Block registry is frozen");
-    }
-    models.registerModels(stagedModels);
+    BlockModelRegistry preparedModels = models;
+    BlockRegistry preparedRegistry = registry;
+    preparedModels.registerModels(stagedModels);
     std::vector<std::pair<std::string, BlockType>> registrations;
     registrations.reserve(stagedBlocks.size());
     for (ParsedBlock& block : stagedBlocks) {
         registrations.emplace_back(
             block.identifier, std::move(block.type));
     }
-    registry.registerBlocks(std::move(registrations));
+    preparedRegistry.registerBlocks(std::move(registrations));
+
+    const size_t originalTextureCount = atlas.textureCount();
+    try {
+        for (const ParsedBlock& block : stagedBlocks) {
+            try {
+                for (const std::string& path : block.texturePaths) {
+                    atlas.addTextureFromResource(path);
+                }
+            } catch (const std::exception& error) {
+                ++report.failed;
+                addFailure(report, block.source, error.what());
+            }
+        }
+    } catch (...) {
+        atlas.rollbackTo(originalTextureCount);
+        throw;
+    }
+    if (report.failed != 0) {
+        atlas.rollbackTo(originalTextureCount);
+        report.skipped += stagedBlocks.size() - report.failed;
+        return report;
+    }
+
     report.modelsLoaded = stagedModels.size();
     report.loaded = stagedBlocks.size();
 
-    spdlog::info(
-        "Block assets: {} models and {} blocks loaded ({} model failures, "
-        "{} block failures, {} blocks skipped)",
-        report.modelsLoaded, report.loaded, report.modelsFailed,
-        report.failed, report.skipped);
+    try {
+        spdlog::info(
+            "Block assets: {} models and {} blocks loaded ({} model failures, "
+            "{} block failures, {} blocks skipped)",
+            report.modelsLoaded, report.loaded, report.modelsFailed,
+            report.failed, report.skipped);
+    } catch (...) {
+        atlas.rollbackTo(originalTextureCount);
+        throw;
+    }
+    models.swap(preparedModels);
+    registry.swap(preparedRegistry);
     return report;
 }
 

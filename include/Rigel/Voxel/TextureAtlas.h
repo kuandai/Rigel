@@ -104,6 +104,9 @@ public:
     TextureAtlas(TextureAtlas&& other) noexcept;
     TextureAtlas& operator=(TextureAtlas&& other) noexcept;
 
+    /** Exchange complete CPU and GPU atlas states. */
+    void swap(TextureAtlas& other) noexcept;
+
     /**
      * @brief Add a texture from raw pixel data.
      *
@@ -191,6 +194,10 @@ public:
     void releaseGPU();
 
 private:
+    friend class BlockLoader;
+
+    void rollbackTo(size_t textureCount) noexcept;
+
     Config m_config;
     GLuint m_textureArray = 0;
     GLuint m_tintArray = 0;

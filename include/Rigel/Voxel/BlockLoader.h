@@ -109,8 +109,8 @@ public:
     /**
      * @brief Load all blocks from the embedded blocks directory.
      *
-     * Scans embedded model and block resources, validates them as one group,
-     * then registers immutable models and blocks before loading the atlas.
+     * Scans embedded model, block, and texture resources, validates them as
+     * one group, then publishes the immutable models and blocks atomically.
      *
      * @param assets The asset manager containing the manifest
      * @param registry The block registry to register types with

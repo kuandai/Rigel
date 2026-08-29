@@ -107,6 +107,9 @@ public:
     void freeze() { m_frozen = true; }
     bool frozen() const { return m_frozen; }
 
+    /** Exchange complete registry states without invalid intermediate state. */
+    void swap(BlockRegistry& other) noexcept;
+
     /**
      * @brief Get the air block ID (always 0).
      */

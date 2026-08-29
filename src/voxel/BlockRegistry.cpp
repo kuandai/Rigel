@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <unordered_set>
+#include <utility>
 
 namespace Rigel::Voxel {
 
@@ -108,6 +109,12 @@ void BlockRegistry::registerBlocks(
         m_types.resize(originalSize);
         throw;
     }
+}
+
+void BlockRegistry::swap(BlockRegistry& other) noexcept {
+    m_types.swap(other.m_types);
+    m_identifierMap.swap(other.m_identifierMap);
+    std::swap(m_frozen, other.m_frozen);
 }
 
 std::optional<BlockID> BlockRegistry::findByIdentifier(const std::string& identifier) const {

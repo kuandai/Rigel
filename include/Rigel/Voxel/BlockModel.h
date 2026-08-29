@@ -192,6 +192,11 @@ public:
     bool frozen() const { return m_frozen; }
     void freeze() { m_frozen = true; }
 
+    void swap(BlockModelRegistry& other) noexcept {
+        m_models.swap(other.m_models);
+        std::swap(m_frozen, other.m_frozen);
+    }
+
 private:
     std::unordered_map<std::string, std::shared_ptr<const BlockModel>> m_models;
     bool m_frozen = false;

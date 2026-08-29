@@ -3,8 +3,9 @@
 
 #include <stb_image.h>
 #include <spdlog/spdlog.h>
-#include <stdexcept>
 #include <cstring>
+#include <stdexcept>
+#include <utility>
 
 namespace Rigel::Voxel {
 
@@ -74,6 +75,15 @@ TextureAtlas& TextureAtlas::operator=(TextureAtlas&& other) noexcept {
     return *this;
 }
 
+void TextureAtlas::swap(TextureAtlas& other) noexcept {
+    using std::swap;
+    swap(m_config, other.m_config);
+    swap(m_textureArray, other.m_textureArray);
+    swap(m_tintArray, other.m_tintArray);
+    m_entries.swap(other.m_entries);
+    m_pathToHandle.swap(other.m_pathToHandle);
+}
+
 TextureHandle TextureAtlas::addTexture(const std::string& path, const unsigned char* pixels) {
     // Check if already added
     auto it = m_pathToHandle.find(path);
@@ -100,11 +110,23 @@ TextureHandle TextureAtlas::addTexture(const std::string& path, const unsigned c
 
     TextureHandle handle{static_cast<uint16_t>(m_entries.size())};
     m_entries.push_back(std::move(entry));
-    m_pathToHandle[path] = handle;
+    try {
+        m_pathToHandle.emplace(path, handle);
+    } catch (...) {
+        m_entries.pop_back();
+        throw;
+    }
 
     spdlog::debug("TextureAtlas: added texture {} at layer {}", path, handle.index);
 
     return handle;
+}
+
+void TextureAtlas::rollbackTo(size_t textureCount) noexcept {
+    while (m_entries.size() > textureCount) {
+        m_pathToHandle.erase(m_entries.back().path);
+        m_entries.pop_back();
+    }
 }
 
 TextureHandle TextureAtlas::addTextureFromResource(const std::string& path) {

@@ -3,6 +3,7 @@
 #include "Rigel/Voxel/BlockLoader.h"
 #include <array>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -311,4 +312,43 @@ textures:
     CHECK(!blocks.findByIdentifier("test:incomplete"));
     CHECK(report.representativeFailures.front().reason.find("second") !=
           std::string::npos);
+}
+
+TEST_CASE(BlockLoader_BlockCapacityFailureDoesNotPublishModels) {
+    constexpr std::string_view modelYaml = R"(
+id: capacity_model
+texture_slots: []
+cuboids:
+  - bounds: [0, 0, 0, 1, 1, 1]
+    faces: {}
+)";
+    constexpr std::string_view blockYaml = R"(
+id: over_capacity
+model: capacity_model
+textures: {}
+)";
+    const std::array modelDefinitions = {
+        modelDefinition("models/blocks/capacity_model.yaml", modelYaml)};
+    const std::array blockDefinitions = {
+        definition("blocks/over_capacity.yaml", blockYaml)};
+    BlockModelRegistry models;
+    BlockRegistry blocks;
+    TextureAtlas atlas;
+    for (size_t index = blocks.size(); index < 65535; ++index) {
+        BlockType type;
+        type.model = BlockModel::empty();
+        blocks.registerBlock("test:filler_" + std::to_string(index),
+                             std::move(type));
+    }
+    const size_t originalBlockCount = blocks.size();
+
+    BlockLoader loader;
+    CHECK_THROWS(loader.loadDefinitions(
+        "test", modelDefinitions, blockDefinitions, models, blocks, atlas));
+
+    CHECK_EQ(models.size(), static_cast<size_t>(2));
+    CHECK_EQ(blocks.size(), originalBlockCount);
+    CHECK_EQ(atlas.textureCount(), static_cast<size_t>(0));
+    CHECK(!models.find("test:capacity_model"));
+    CHECK(!blocks.findByIdentifier("test:over_capacity"));
 }

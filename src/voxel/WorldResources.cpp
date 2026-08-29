@@ -50,19 +50,22 @@ void WorldResources::initialize(Asset::AssetManager& assets) {
         return;
     }
 
+    BlockModelRegistry models;
+    BlockRegistry registry;
+    TextureAtlas textureAtlas;
     BlockLoader loader;
     BlockLoadReport report = loader.loadFromManifest(
-        assets, m_models, m_registry, m_textureAtlas);
-    const size_t textureCount = m_textureAtlas.textureCount();
+        assets, models, registry, textureAtlas);
+    const size_t textureCount = textureAtlas.textureCount();
     if (report.modelsFailed != 0 || report.failed != 0 || report.loaded == 0 ||
-        m_registry.size() <= 1 ||
+        registry.size() <= 1 ||
         textureCount == 0) {
         throw std::runtime_error(unusableBlockAssetsMessage(report, textureCount));
     }
 
-    m_textureAtlas.upload();
-    m_models.freeze();
-    m_registry.freeze();
+    textureAtlas.upload();
+    models.freeze();
+    registry.freeze();
     spdlog::info(
         "world.resources models.loaded={} blocks.loaded={} blocks.failed={} "
         "blocks.skipped={} blocks.discovered={} textures.loaded={}",
@@ -72,6 +75,9 @@ void WorldResources::initialize(Asset::AssetManager& assets) {
         report.discovered,
         textureCount
     );
+    m_models.swap(models);
+    m_registry.swap(registry);
+    m_textureAtlas.swap(textureAtlas);
     m_initialized = true;
 }
 

@@ -26,6 +26,13 @@ PROVENANCE_RELATIVE_PATH = Path(".rigel/cosmic-reach-import.json")
 PROVENANCE_SCHEMA = 1
 IMPORTER_SCHEMA = 1
 SOURCE_PREFIX = "base/"
+REQUIRED_BLOCK_IDENTIFIERS = (
+    "base:dirt",
+    "base:grass",
+    "base:sand",
+    "base:stone_shale",
+    "base:water[type=source]",
+)
 
 
 class AssetImportError(RuntimeError):
@@ -188,6 +195,7 @@ def extract_direct_assets(
     archive: zipfile.ZipFile,
     entries: dict[str, zipfile.ZipInfo],
     staging: Path,
+    diagnostics: list[str] | None = None,
 ) -> dict[str, int]:
     counts = {"textures": 0, "models": 0, "animations": 0, "sounds": 0}
     for source in sorted(entries):
@@ -196,7 +204,6 @@ def extract_direct_assets(
         identifier = ""
         if source.startswith("base/textures/") and source.endswith(".png"):
             destination = source.removeprefix("base/")
-            counts["textures"] += 1
         elif source.startswith("base/models/entities/") and source.endswith(".json"):
             relative = source.removeprefix("base/models/entities/")
             # Preserve the existing flat logical IDs for planet models.
@@ -205,23 +212,44 @@ def extract_direct_assets(
             destination = f"models/entities/{relative}"
             identifier = PurePosixPath(relative).name.removesuffix(".json")
             transform = normalize_entity_model
-            counts["models"] += 1
         elif source.startswith("base/animations/entities/") and source.endswith(".json"):
             relative = source.removeprefix("base/animations/entities/")
             destination = f"animations/entities/{relative}"
             identifier = PurePosixPath(relative).name.removesuffix(".animation.json")
             transform = normalize_entity_animation
-            counts["animations"] += 1
         elif source.startswith("base/sounds/") and source.endswith(".ogg"):
             destination = source.removeprefix("base/")
-            counts["sounds"] += 1
 
         if destination is None:
             continue
         payload = archive.read(entries[source])
         if transform is not None:
             payload = transform(payload, source, identifier)
+        if source.startswith("base/models/entities/"):
+            model = _expect_object(load_relaxed_json(payload, source), source)
+            textures = _expect_object(model.get("textures", {}), f"{source}.textures")
+            missing = sorted(
+                reference
+                for reference in textures.values()
+                if isinstance(reference, str) and f"base/{reference}" not in entries
+            )
+            if missing:
+                message = (
+                    f"omitted optional entity model {source}: source JAR lacks "
+                    + ", ".join(missing)
+                )
+                if diagnostics is not None:
+                    diagnostics.append(message)
+                continue
         write_output(staging, destination, payload)
+        if destination.startswith("textures/"):
+            counts["textures"] += 1
+        elif destination.startswith("models/entities/"):
+            counts["models"] += 1
+        elif destination.startswith("animations/entities/"):
+            counts["animations"] += 1
+        elif destination.startswith("sounds/"):
+            counts["sounds"] += 1
     return counts
 
 
@@ -773,6 +801,270 @@ def compile_blocks(
     return len(generated)
 
 
+def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
+    try:
+        lines = data.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise AssetImportError(f"{source}: generated block YAML is not UTF-8") from error
+    result: dict[str, object] = {}
+    textures: dict[str, str] = {}
+    in_textures = False
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line.startswith("  "):
+            if not in_textures or ":" not in line:
+                raise AssetImportError(f"{source}:{line_number}: malformed generated YAML")
+            key, raw_value = line.strip().split(":", 1)
+            try:
+                value = json.loads(raw_value.strip())
+            except json.JSONDecodeError as error:
+                raise AssetImportError(
+                    f"{source}:{line_number}: texture path must be quoted"
+                ) from error
+            if key in textures or not isinstance(value, str):
+                raise AssetImportError(f"{source}:{line_number}: invalid texture entry")
+            textures[key] = value
+            continue
+        in_textures = False
+        if ":" not in line:
+            raise AssetImportError(f"{source}:{line_number}: malformed generated YAML")
+        key, raw_value = line.split(":", 1)
+        if key in result:
+            raise AssetImportError(f"{source}:{line_number}: duplicate field {key}")
+        value = raw_value.strip()
+        if key == "textures":
+            if value:
+                raise AssetImportError(f"{source}:{line_number}: textures must be a map")
+            in_textures = True
+            result[key] = textures
+        elif key == "id":
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError as error:
+                raise AssetImportError(f"{source}:{line_number}: id must be quoted") from error
+            if not isinstance(decoded, str):
+                raise AssetImportError(f"{source}:{line_number}: id must be a string")
+            result[key] = decoded
+        elif key in ("opaque", "solid", "cull_same_type"):
+            if value not in ("true", "false"):
+                raise AssetImportError(f"{source}:{line_number}: {key} must be boolean")
+            result[key] = value == "true"
+        elif key in ("emits_light", "light_attenuation"):
+            try:
+                result[key] = int(value)
+            except ValueError as error:
+                raise AssetImportError(f"{source}:{line_number}: {key} must be integer") from error
+        else:
+            result[key] = value
+    allowed = {
+        "id", "model", "opaque", "solid", "cull_same_type", "layer",
+        "emits_light", "light_attenuation", "textures",
+    }
+    _reject_unknown_keys(result, allowed, source)
+    required = {"id", "model", "opaque", "solid", "layer"}
+    missing = sorted(required - set(result))
+    if missing:
+        raise AssetImportError(f"{source}: missing generated fields: {', '.join(missing)}")
+    if result["model"] not in ("cube", "none"):
+        raise AssetImportError(f"{source}: invalid model {result['model']!r}")
+    if result["layer"] not in ("opaque", "cutout", "transparent", "emissive"):
+        raise AssetImportError(f"{source}: invalid render layer {result['layer']!r}")
+    for key in ("emits_light", "light_attenuation"):
+        if key in result and not 0 <= int(result[key]) <= 15:
+            raise AssetImportError(f"{source}: {key} is outside 0..15")
+    allowed_texture_keys = {
+        "all", "top", "bottom", "sides", "default", "pos_x", "neg_x",
+        "pos_y", "neg_y", "pos_z", "neg_z",
+    }
+    if textures:
+        _reject_unknown_keys(textures, allowed_texture_keys, f"{source}.textures")
+        pattern_valid = (
+            set(textures) == {"all"}
+            or set(textures) == {"top", "bottom", "sides"}
+            or set(textures)
+            == {"pos_x", "neg_x", "pos_y", "neg_y", "pos_z", "neg_z"}
+        )
+        if not pattern_valid:
+            raise AssetImportError(f"{source}: generated texture mapping is incomplete")
+    elif result["model"] != "none":
+        raise AssetImportError(f"{source}: cube model has no textures")
+    return result
+
+
+def validate_generated_tree(
+    root: Path,
+    required_identifiers: tuple[str, ...] = REQUIRED_BLOCK_IDENTIFIERS,
+) -> dict[str, int]:
+    if not root.is_dir():
+        raise AssetImportError(f"generated tree does not exist: {root}")
+    files = sorted(path for path in root.rglob("*") if path.is_file())
+    logical_paths: set[str] = set()
+    for path in files:
+        logical = path.relative_to(root).as_posix()
+        normalize_archive_path(logical)
+        if logical in logical_paths:
+            raise AssetImportError(f"duplicate generated logical path: {logical}")
+        logical_paths.add(logical)
+
+    block_identifiers: dict[str, str] = {}
+    referenced_textures: dict[str, str] = {}
+    block_paths = sorted(
+        path for path in logical_paths
+        if path.startswith("blocks/") and path.endswith(".yaml")
+    )
+    for logical in block_paths:
+        block = parse_generated_block((root / logical).read_bytes(), logical)
+        identifier = str(block["id"])
+        if identifier in block_identifiers:
+            raise AssetImportError(
+                f"duplicate generated block identifier {identifier}: "
+                f"{block_identifiers[identifier]} and {logical}"
+            )
+        block_identifiers[identifier] = logical
+        textures = block.get("textures", {})
+        if isinstance(textures, dict):
+            for texture in textures.values():
+                referenced_textures[str(texture)] = logical
+
+    missing_required = sorted(set(required_identifiers) - set(block_identifiers))
+    if missing_required:
+        raise AssetImportError(
+            "generated block registry lacks required runtime materials: "
+            + ", ".join(missing_required)
+        )
+
+    model_paths = sorted(
+        path for path in logical_paths
+        if path.startswith("models/entities/") and path.endswith(".json")
+    )
+    for logical in model_paths:
+        model = _expect_object(
+            load_relaxed_json((root / logical).read_bytes(), logical), logical
+        )
+        textures = _expect_object(model.get("textures", {}), f"{logical}.textures")
+        for reference in textures.values():
+            if not isinstance(reference, str):
+                raise AssetImportError(f"{logical}: entity texture reference must be a string")
+            referenced_textures[reference] = logical
+
+    animation_paths = sorted(
+        path for path in logical_paths
+        if path.startswith("animations/entities/") and path.endswith(".json")
+    )
+    for logical in animation_paths:
+        document = load_relaxed_json((root / logical).read_bytes(), logical)
+        if not isinstance(document, dict) or not isinstance(document.get("animations"), dict):
+            raise AssetImportError(f"{logical}: animation file has no animations object")
+
+    missing_textures = sorted(
+        f"{reference} (from {consumer})"
+        for reference, consumer in referenced_textures.items()
+        if reference not in logical_paths
+    )
+    if missing_textures:
+        preview = "; ".join(missing_textures[:8])
+        remainder = len(missing_textures) - min(len(missing_textures), 8)
+        suffix = f"; and {remainder} more" if remainder else ""
+        raise AssetImportError(f"generated texture references are unresolved: {preview}{suffix}")
+
+    return {
+        "blocks": len(block_identifiers),
+        "textures": sum(
+            path.startswith("textures/") and path.endswith(".png")
+            for path in logical_paths
+        ),
+        "models": len(model_paths),
+        "animations": len(animation_paths),
+        "sounds": sum(
+            path.startswith("sounds/") and path.endswith(".ogg")
+            for path in logical_paths
+        ),
+    }
+
+
+def source_version(
+    archive: zipfile.ZipFile, entries: dict[str, zipfile.ZipInfo]
+) -> str | None:
+    for candidate in ("build_assets/version.txt", "base/version.txt"):
+        info = entries.get(candidate)
+        if info is None:
+            continue
+        try:
+            version = archive.read(info).decode("utf-8").strip()
+        except UnicodeDecodeError:
+            continue
+        if version and len(version) <= 128:
+            return version
+    return None
+
+
+def synchronize(
+    root: Path,
+    explicit_jar: str | Path | None = None,
+    *,
+    force: bool = False,
+    required_identifiers: tuple[str, ...] = REQUIRED_BLOCK_IDENTIFIERS,
+) -> tuple[dict[str, object], bool]:
+    jar, _ = resolve_jar(root, explicit_jar)
+    jar_digest = sha256_file(jar)
+    if not force and current_import_matches(root, jar_digest):
+        provenance = read_provenance(root)
+        assert provenance is not None
+        return provenance, False
+
+    workspace = root / ".rigel"
+    workspace.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".assets-staging-", dir=workspace))
+    diagnostics: list[str] = []
+    try:
+        with zipfile.ZipFile(jar) as archive:
+            entries = indexed_archive(archive)
+            if not any(
+                path.startswith("base/blocks/") and path.endswith(".json")
+                for path in entries
+            ):
+                raise AssetImportError("JAR has no Cosmic Reach base/blocks definitions")
+            extract_direct_assets(archive, entries, staging, diagnostics)
+            compile_blocks(archive, entries, staging)
+            version = source_version(archive, entries)
+        counts = validate_generated_tree(staging, required_identifiers)
+        provenance: dict[str, object] = {
+            "schema": PROVENANCE_SCHEMA,
+            "jar_sha256": jar_digest,
+            "importer_schema": IMPORTER_SCHEMA,
+            "importer_sha256": importer_sha256(),
+            "source_prefix": SOURCE_PREFIX,
+            "output_tree_sha256": sha256_tree(staging),
+            "counts": counts,
+        }
+        if version is not None:
+            provenance["source_version"] = version
+        if diagnostics:
+            provenance["source_omissions"] = diagnostics
+        publish_generated_tree(root, staging, provenance)
+        return provenance, True
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
+def validate_existing_import(root: Path) -> dict[str, object]:
+    provenance = read_provenance(root)
+    if provenance is None:
+        raise AssetImportError("generated asset provenance is missing or malformed")
+    if provenance.get("schema") != PROVENANCE_SCHEMA:
+        raise AssetImportError("generated asset provenance schema is unsupported")
+    assets = root / GENERATED_ASSETS_RELATIVE_PATH
+    counts = validate_generated_tree(assets)
+    actual_hash = sha256_tree(assets)
+    if provenance.get("output_tree_sha256") != actual_hash:
+        raise AssetImportError("generated asset tree does not match provenance")
+    if provenance.get("counts") != counts:
+        raise AssetImportError("generated asset counts do not match provenance")
+    return provenance
+
+
 def output_path(root: Path, logical_path: str) -> Path:
     normalized = normalize_archive_path(logical_path)
     destination = root.joinpath(*normalized.parts)
@@ -981,6 +1273,16 @@ def build_parser() -> argparse.ArgumentParser:
         "status", help="report JAR and generated-tree state"
     )
     status_parser.add_argument("--jar", type=Path)
+
+    sync_parser = subparsers.add_parser(
+        "sync", help="synchronize .rigel/assets from a developer-provided JAR"
+    )
+    sync_parser.add_argument("--jar", type=Path)
+    sync_parser.add_argument("--force", action="store_true")
+
+    subparsers.add_parser(
+        "validate", help="validate the generated tree and its provenance"
+    )
     return parser
 
 
@@ -996,6 +1298,27 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "status":
             return status(root, args.jar)
+        if args.command == "sync":
+            provenance, changed = synchronize(root, args.jar, force=args.force)
+            action = "Synchronized" if changed else "Already current"
+            print(f"{action}: {root / GENERATED_ASSETS_RELATIVE_PATH}")
+            print(f"JAR SHA-256: {provenance['jar_sha256']}")
+            print(f"Output SHA-256: {provenance['output_tree_sha256']}")
+            counts = provenance["counts"]
+            if isinstance(counts, dict):
+                print(
+                    "Assets: "
+                    + ", ".join(f"{name}={counts[name]}" for name in sorted(counts))
+                )
+            omissions = provenance.get("source_omissions", [])
+            if isinstance(omissions, list):
+                for omission in omissions:
+                    print(f"Warning: {omission}", file=sys.stderr)
+            return 0
+        if args.command == "validate":
+            provenance = validate_existing_import(root)
+            print(f"Generated assets are valid: {provenance['output_tree_sha256']}")
+            return 0
     except AssetImportError as error:
         print(f"{TOOL_NAME}: {error}", file=sys.stderr)
         return 1

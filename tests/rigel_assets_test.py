@@ -337,10 +337,118 @@ class BlockCompilerTest(unittest.TestCase):
             jar = root / "fixture.jar"
             write_jar(jar, entries)
             with zipfile.ZipFile(jar) as archive:
-                with self.assertRaisesRegex(rigel_assets.AssetImportError, "missing state generator"):
+                with self.assertRaisesRegex(
+                    rigel_assets.AssetImportError, "missing state generator"
+                ):
                     rigel_assets.compile_blocks(
                         archive, rigel_assets.indexed_archive(archive), root / "output"
                     )
+
+
+class SynchronizationTest(unittest.TestCase):
+    def test_sync_is_idempotent_and_records_provenance(self) -> None:
+        entries = synthetic_block_entries()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+
+            first, first_changed = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+            second, second_changed = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+
+            self.assertTrue(first_changed)
+            self.assertFalse(second_changed)
+            self.assertEqual(first, second)
+            self.assertEqual(first["schema"], 1)
+            self.assertEqual(first["importer_schema"], 1)
+            self.assertEqual(first["counts"]["blocks"], 4)
+            self.assertEqual(
+                first["output_tree_sha256"],
+                rigel_assets.sha256_tree(root / ".rigel/assets"),
+            )
+
+    def test_source_change_replaces_tree_instead_of_accumulating(self) -> None:
+        first_entries = synthetic_block_entries()
+        first_entries["base/sounds/stale.ogg"] = b"old"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, first_entries)
+            rigel_assets.synchronize(root, jar, required_identifiers=("test:stone",))
+            stale = root / ".rigel/assets/sounds/stale.ogg"
+            self.assertTrue(stale.is_file())
+
+            second_entries = synthetic_block_entries()
+            second_entries["base/version.txt"] = b"second"
+            write_jar(jar, second_entries)
+            _, changed = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+
+            self.assertTrue(changed)
+            self.assertFalse(stale.exists())
+
+    def test_failed_sync_preserves_previous_valid_tree_and_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            good_jar = root / "good.jar"
+            write_jar(good_jar, synthetic_block_entries())
+            rigel_assets.synchronize(
+                root, good_jar, required_identifiers=("test:stone",)
+            )
+            previous_hash = rigel_assets.sha256_tree(root / ".rigel/assets")
+            previous_provenance = (
+                root / rigel_assets.PROVENANCE_RELATIVE_PATH
+            ).read_bytes()
+
+            bad_entries = synthetic_block_entries()
+            block = json.loads(bad_entries["base/blocks/test_stone.json"])
+            block["blockStates"]["default"]["futurePhysics"] = True
+            bad_entries["base/blocks/test_stone.json"] = encoded_json(block)
+            bad_jar = root / "bad.jar"
+            write_jar(bad_jar, bad_entries)
+            with self.assertRaisesRegex(rigel_assets.AssetImportError, "futurePhysics"):
+                rigel_assets.synchronize(
+                    root, bad_jar, required_identifiers=("test:stone",)
+                )
+
+            self.assertEqual(
+                previous_hash, rigel_assets.sha256_tree(root / ".rigel/assets")
+            )
+            self.assertEqual(
+                previous_provenance,
+                (root / rigel_assets.PROVENANCE_RELATIVE_PATH).read_bytes(),
+            )
+
+    def test_validation_rejects_missing_texture_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            block = rigel_assets.render_block_yaml(
+                "test:stone",
+                {"modelName": "unused"},
+                _MissingTextureModelResolver(),
+                "fixture",
+            )
+            rigel_assets.write_output(root, "blocks/test__stone.yaml", block)
+            with self.assertRaisesRegex(rigel_assets.AssetImportError, "unresolved"):
+                rigel_assets.validate_generated_tree(
+                    root, required_identifiers=("test:stone",)
+                )
+
+
+class _MissingTextureModelResolver:
+    def resolve(self, reference: str) -> rigel_assets.ResolvedModel:
+        return rigel_assets.ResolvedModel(
+            {"all": "textures/blocks/missing.png"},
+            {},
+            False,
+            False,
+            False,
+        )
 
 
 if __name__ == "__main__":

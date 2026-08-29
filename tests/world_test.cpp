@@ -350,16 +350,29 @@ TEST_CASE(WorldView_ViewPolicyDrivesFrameProjectionAndShadowCeiling) {
     Rigel::Asset::AssetManager assets;
     assets.loadManifest("manifest.yaml");
     WorldResources resources;
-    resources.initialize(assets);
+    constexpr std::string_view texturePath =
+        "textures/test/world_view_policy.png";
+    const std::vector<unsigned char> pixels(
+        static_cast<size_t>(
+            resources.textureAtlas().tileSize() *
+            resources.textureAtlas().tileSize() * 4),
+        255);
+    resources.textureAtlas().addTexture(
+        std::string(texturePath), pixels.data());
+    resources.textureAtlas().upload();
+    BlockType solid;
+    solid.identifier = "test:world_view_policy_solid";
+    solid.isOpaque = true;
+    solid.isSolid = true;
+    solid.textures = FaceTextures::uniform(std::string(texturePath));
+    const BlockID solidId =
+        resources.registry().registerBlock(solid.identifier, solid);
     World world(resources);
     WorldView view(world, resources);
     view.initialize(assets);
 
-    const auto solidId =
-        resources.registry().findByIdentifier("base:stone_shale");
-    CHECK(solidId.has_value());
     GeneratorDefinitionData generation =
-        testDefinition("base:stone_shale", "base:stone_shale");
+        testDefinition(solid.identifier, solid.identifier);
     auto generator = Rigel::Test::makeWorldGeneratorFixture(
         resources.registry(), generation, 1u);
     world.setGenerator(generator);
@@ -379,7 +392,7 @@ TEST_CASE(WorldView_ViewPolicyDrivesFrameProjectionAndShadowCeiling) {
     const ChunkCoord coord{0, 0, 0};
     Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
     chunk.setBlock(
-        0, 0, 0, BlockState{*solidId}, resources.registry());
+        0, 0, 0, BlockState{solidId}, resources.registry());
     chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
     view.updateStreaming(coord.toWorldCenter());

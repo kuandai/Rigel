@@ -3,6 +3,7 @@
 #include "Rigel/Core/Profiler.h"
 #include "Rigel/Render/ChunkDebugPresentation.h"
 #include "Rigel/Render/OpenGLRuntime.h"
+#include "Rigel/Voxel/BlockGalleryTargetPresentation.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -378,6 +379,54 @@ void renderChunkDebugLegend(
 #else
     (void)enabled;
     (void)detail;
+#endif
+}
+
+void renderBlockGalleryTarget(
+    const Voxel::BlockGalleryTargetPresentation* target) {
+#if defined(RIGEL_ENABLE_IMGUI)
+    if (!g_initialized) {
+        return;
+    }
+
+    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(
+        ImVec2(std::max(12.0f, displaySize.x - 12.0f), 12.0f),
+        ImGuiCond_Always,
+        ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.75f);
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav;
+    ImGui::Begin("Block gallery target", nullptr, flags);
+    if (!target) {
+        ImGui::TextUnformatted("No catalog specimen targeted.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextUnformatted(target->blockStateIdentifier.c_str());
+    ImGui::Separator();
+    ImGui::Text(
+        "Catalog: %zu / %zu",
+        target->catalogPosition,
+        target->catalogSize);
+    ImGui::Text(
+        "Grid: (%zu, %zu)",
+        target->gridCoordinate.column,
+        target->gridCoordinate.row);
+    ImGui::Text("Model: %s", target->modelIdentifier.c_str());
+    ImGui::Text("Cuboids: %zu", target->cuboidCount);
+    ImGui::Text("Orientation: %s", target->orientation.c_str());
+    ImGui::Text("Render layer: %s", target->renderLayer.c_str());
+    ImGui::Text("Opaque: %s", target->opaque ? "true" : "false");
+    ImGui::Text("Solid: %s", target->solid ? "true" : "false");
+    ImGui::Text("Texture bindings: %zu", target->textureBindingCount);
+    ImGui::End();
+#else
+    (void)target;
 #endif
 }
 

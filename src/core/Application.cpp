@@ -21,6 +21,8 @@
 #include "Rigel/Voxel/ChunkBenchmark.h"
 #include "Rigel/Voxel/BlockGalleryCatalog.h"
 #include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
+#include "Rigel/Voxel/BlockGalleryTargetPresentation.h"
+#include "Rigel/Voxel/BlockTargeting.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
 #include "Rigel/Voxel/WorldSet.h"
@@ -64,6 +66,7 @@ constexpr std::string_view kInstalledPersistenceFormat = "cr";
 constexpr std::string_view kBlockGalleryPersistenceFormat = "memory";
 constexpr std::string_view kBlockGalleryVirtualRoot =
     "developer/block-gallery";
+constexpr float kBlockGalleryTargetDistance = 8.0f;
 
 void applyInstalledPersistencePolicy(
     Voxel::WorldSet& worldSet,
@@ -205,6 +208,8 @@ struct BlockGalleryLaunchLifecycleProbe {
     glm::vec3 movementStart{};
     bool specimenSelected = false;
     bool movementStarted = false;
+    bool targetingStarted = false;
+    bool mutationInputsQueued = false;
 };
 
 BlockGalleryLaunchLifecycleProbe* g_blockGalleryLaunchLifecycleProbe = nullptr;
@@ -294,8 +299,11 @@ struct Application::Impl {
         Voxel::World* world = nullptr;
         Voxel::WorldView* worldView = nullptr;
         std::shared_ptr<Persistence::AsyncChunkLoader> chunkLoader;
+        std::unique_ptr<const Voxel::BlockGalleryCatalog> galleryCatalog;
         std::shared_ptr<const Voxel::BlockGalleryChunkGenerator>
             galleryGenerator;
+        std::optional<Voxel::BlockGalleryTargetPresentation>
+            galleryTargetPresentation;
         std::optional<Persistence::WorldSettings> settings;
         bool ready = false;
         bool streamingLifecycleLogged = false;
@@ -608,12 +616,14 @@ void Application::initialize() {
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
         if (blockGallery) {
-            const Voxel::BlockGalleryCatalog galleryCatalog(
-                m_impl->world.worldSet.resources().registry());
+            auto galleryCatalog =
+                std::make_unique<const Voxel::BlockGalleryCatalog>(
+                    m_impl->world.worldSet.resources().registry());
             m_impl->world.galleryGenerator =
                 std::make_shared<const Voxel::BlockGalleryChunkGenerator>(
                     m_impl->world.worldSet.resources().registry(),
-                    galleryCatalog);
+                    *galleryCatalog);
+            m_impl->world.galleryCatalog = std::move(galleryCatalog);
         }
 
         m_impl->playerDefaultBindings =
@@ -919,8 +929,10 @@ void Application::Impl::shutdown() noexcept {
             activeView->releaseRenderResources();
         }
     }
-    world.worldSet.clear();
+    world.galleryTargetPresentation.reset();
     world.galleryGenerator.reset();
+    world.galleryCatalog.reset();
+    world.worldSet.clear();
     world.worldView = nullptr;
     world.world = nullptr;
     world.ready = false;
@@ -1145,7 +1157,7 @@ void ApplicationTestAccess::observeBlockGalleryLaunchInitialized(
     observed.decodedWorldMode = impl.worldMode;
     if (impl.worldMode != WorldMode::BlockGallery ||
         !impl.world.world || !impl.world.worldView ||
-        !impl.world.galleryGenerator) {
+        !impl.world.galleryCatalog || !impl.world.galleryGenerator) {
         return;
     }
 
@@ -1158,7 +1170,7 @@ void ApplicationTestAccess::observeBlockGalleryLaunchInitialized(
 
     Voxel::WorldResources& resources = impl.world.worldSet.resources();
     const Voxel::BlockRegistry& registry = resources.registry();
-    const Voxel::BlockGalleryCatalog catalog(registry);
+    const Voxel::BlockGalleryCatalog& catalog = *impl.world.galleryCatalog;
     observed.resourcesInitialized = resources.initialized();
     observed.runtimeRegistrationCount = registry.size();
     observed.gallerySpecimenCount = catalog.entries().size();
@@ -1247,6 +1259,55 @@ void ApplicationTestAccess::observeBlockGalleryLaunchFrame(
         observed.specimenMeshSubmitted =
             observed.specimenLoadedThroughAsyncLoader &&
             mesh.has_value() && !mesh->empty;
+
+        if (observed.freeFlyMoved &&
+            observed.specimenLoadedThroughAsyncLoader &&
+            !probe.targetingStarted) {
+            impl.camera.position = {
+                static_cast<float>(position.x) + 0.5f,
+                static_cast<float>(position.y) + 0.5f,
+                static_cast<float>(position.z) + 2.5f,
+            };
+            impl.camera.yaw = -90.0f;
+            impl.camera.pitch = 0.0f;
+            impl.camera.forward = {0.0f, 0.0f, -1.0f};
+            impl.camera.target = impl.camera.position + impl.camera.forward;
+            probe.targetingStarted = true;
+        }
+
+        if (probe.targetingStarted &&
+            impl.world.galleryTargetPresentation) {
+            const auto& presentation =
+                *impl.world.galleryTargetPresentation;
+            observed.specimenTargetPresented =
+                presentation.blockStateIdentifier ==
+                    impl.world.world->blockRegistry()
+                        .getType(probe.specimenId).identifier;
+        }
+
+        if (observed.specimenTargetPresented &&
+            !probe.mutationInputsQueued) {
+            impl.input.handleMouseButtonEvent(
+                GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS);
+            impl.input.handleMouseButtonEvent(
+                GLFW_MOUSE_BUTTON_RIGHT, GLFW_PRESS);
+            impl.input.handleKeyEvent(GLFW_KEY_F2, GLFW_PRESS);
+            probe.mutationInputsQueued = true;
+        } else if (probe.mutationInputsQueued &&
+                   !observed.galleryMutationsSuppressed) {
+            observed.galleryMutationsSuppressed =
+                impl.world.world->getBlock(
+                    position.x, position.y, position.z).id ==
+                    probe.specimenId &&
+                impl.world.world->getBlock(
+                    position.x, position.y, position.z + 1).isAir() &&
+                impl.world.world->entities().size() == 0;
+            impl.input.handleMouseButtonEvent(
+                GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE);
+            impl.input.handleMouseButtonEvent(
+                GLFW_MOUSE_BUTTON_RIGHT, GLFW_RELEASE);
+            impl.input.handleKeyEvent(GLFW_KEY_F2, GLFW_RELEASE);
+        }
     }
 
     const bool complete =
@@ -1254,6 +1315,8 @@ void ApplicationTestAccess::observeBlockGalleryLaunchFrame(
         observed.freeFlyMoved &&
         observed.specimenLoadedThroughAsyncLoader &&
         observed.specimenMeshSubmitted &&
+        observed.specimenTargetPresented &&
+        observed.galleryMutationsSuppressed &&
         observed.chunkLoadsStarted > 0;
     if (complete || observed.renderedFrames >= 600) {
         impl.runtime.requestWindowClose();
@@ -1449,6 +1512,19 @@ void Application::run() {
                         *m_impl->world.worldView,
                         m_impl->world.placeBlock,
                         mutationMode);
+                    if (m_impl->world.galleryCatalog) {
+                        const auto target = Voxel::raycastBlock(
+                            *m_impl->world.world,
+                            m_impl->camera.position,
+                            m_impl->camera.forward,
+                            kBlockGalleryTargetDistance);
+                        m_impl->world.galleryTargetPresentation = target
+                            ? Voxel::makeBlockGalleryTargetPresentation(
+                                  *m_impl->world.galleryCatalog,
+                                  m_impl->world.world->blockRegistry(),
+                                  *target)
+                            : std::nullopt;
+                    }
                     m_impl->world.world->tickEntities(deltaTime);
                 }
 
@@ -1599,6 +1675,12 @@ void Application::run() {
                     UI::renderChunkDebugLegend(
                         m_impl->renderer.debugOverlayEnabled(),
                         m_impl->renderer.chunkDebugDetail());
+                    if (m_impl->worldMode == WorldMode::BlockGallery) {
+                        UI::renderBlockGalleryTarget(
+                            m_impl->world.galleryTargetPresentation
+                                ? &*m_impl->world.galleryTargetPresentation
+                                : nullptr);
+                    }
 #else
                     (void)width;
                     (void)height;

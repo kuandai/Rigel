@@ -67,9 +67,13 @@ loaded opaque full cube is available, and a separate culling diagnostic area
 through ordinary chunks. `WorldView`, mesh workers, the texture atlas, render
 layers, lighting, culling, and `FrameRenderer` remain the rendering path. The
 camera starts at a deterministic overview and retains the standard free-fly
-controls. Block editing and demo mutations are disabled in this mode; all
-gallery state is discarded when the process exits and can be regenerated from
-the frozen runtime registry.
+controls. Aiming at a specimen uses the same whole-cell DDA as normal block
+editing and shows its full block-state identifier, catalog and grid positions,
+model shape and orientation, render layer and flags, and resolved texture
+binding count in an ImGui overlay. Floor and culling-diagnostic cells are not
+catalog specimens and leave the overlay in its no-target state. Block editing
+and demo mutations are disabled in this mode; all gallery state is discarded
+when the process exits and can be regenerated from the frozen runtime registry.
 
 There are three model paths: built-in `cube`, built-in empty `none`, and
 reusable axis-aligned cuboid assets. A normalized model owns one or more cuboid

@@ -206,6 +206,8 @@ TEST_CASE(Application_BlockGalleryLaunchUsesProductionLifecycle) {
     CHECK(observed.freeFlyMoved);
     CHECK(observed.specimenLoadedThroughAsyncLoader);
     CHECK(observed.specimenMeshSubmitted);
+    CHECK(observed.specimenTargetPresented);
+    CHECK(observed.galleryMutationsSuppressed);
     CHECK(observed.frameRendererSubmitted);
     CHECK(observed.chunkLoadsStarted > 0);
     CHECK(observed.renderedFrames >= 2);

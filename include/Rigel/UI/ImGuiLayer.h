@@ -5,6 +5,9 @@ struct GLFWwindow;
 namespace Rigel::Render {
 struct ChunkDebugDetailPresentation;
 }
+namespace Rigel::Voxel {
+struct BlockGalleryTargetPresentation;
+}
 
 namespace Rigel::UI {
 
@@ -18,6 +21,8 @@ void renderProfilerWindow(bool enabled);
 void renderChunkDebugLegend(
     bool enabled,
     const Render::ChunkDebugDetailPresentation* detail);
+void renderBlockGalleryTarget(
+    const Voxel::BlockGalleryTargetPresentation* target);
 
 bool wantsCaptureKeyboard();
 bool wantsCaptureMouse();

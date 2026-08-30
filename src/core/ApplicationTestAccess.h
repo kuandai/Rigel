@@ -94,6 +94,8 @@ struct ApplicationBlockGalleryLifecycleState {
     bool freeFlyMoved = false;
     bool specimenLoadedThroughAsyncLoader = false;
     bool specimenMeshSubmitted = false;
+    bool specimenTargetPresented = false;
+    bool galleryMutationsSuppressed = false;
     bool frameRendererSubmitted = false;
     bool generatedChunkPersistedOnClose = false;
     uint64_t chunkLoadsStarted = 0;

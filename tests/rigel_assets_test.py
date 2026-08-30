@@ -105,6 +105,118 @@ def synthetic_block_entries() -> dict[str, bytes]:
     }
 
 
+def synthetic_cuboid_entries() -> dict[str, bytes]:
+    return {
+        "base/models/blocks/post.json": encoded_json(
+            {
+                "textures": {
+                    "surface": {
+                        "fileName": "base:textures/blocks/default_surface.png"
+                    },
+                    "accent": {
+                        "fileName": "base:textures/blocks/default_accent.png"
+                    },
+                },
+                "isTransparent": True,
+                "cullsSelf": True,
+                "cuboids": [
+                    {
+                        "localBounds": [-1, 0, 4, 17, 8, 12],
+                        "inflate": 0.5,
+                        "faces": {
+                            "localPosX": {
+                                "uv": [12, 2, 4, 14],
+                                "texture": "surface",
+                                "uvRotation": 270,
+                                "ambientocclusion": True,
+                                "cullFace": False,
+                                "shadingFace": "localPosY",
+                            }
+                        },
+                    },
+                    {
+                        "localBounds": [4, 8, 4, 12, 16, 12],
+                        "faces": {
+                            "localPosY": {
+                                "uv": [1, 15, 15, 1],
+                                "texture": "accent",
+                                "uvRotation": 90,
+                                "ambientocclusion": False,
+                                "cullFace": True,
+                            },
+                            "localNegY": {
+                                "uv": [15, 0, 16, 0],
+                                "texture": "surface",
+                                "ambientocclusion": False,
+                                "cullFace": False,
+                            }
+                        },
+                    },
+                ],
+            }
+        ),
+        "base/models/blocks/red_post.json": encoded_json(
+            {
+                "parent": "base:models/blocks/post.json",
+                "textures": {
+                    "surface": {
+                        "fileName": "base:textures/blocks/red_surface.png"
+                    },
+                    "accent": {
+                        "fileName": "base:textures/blocks/red_accent.png"
+                    },
+                },
+            }
+        ),
+        "base/models/blocks/blue_post.json": encoded_json(
+            {
+                "parent": "base:models/blocks/red_post.json",
+                "textures": {
+                    "surface": {
+                        "fileName": "base:textures/blocks/blue_surface.png"
+                    },
+                    "accent": {
+                        "fileName": "base:textures/blocks/blue_accent.png"
+                    },
+                },
+            }
+        ),
+        "base/block_state_generators/posts.json": encoded_json(
+            {
+                "generators": [
+                    {
+                        "stringId": "base:test_post_variant",
+                        "params": {"shape": "generated"},
+                        "modelName": "base:models/blocks/post.json",
+                        "overrides": {"rotation": [0, 90, 0]},
+                    }
+                ]
+            }
+        ),
+        "base/blocks/test_post.json": encoded_json(
+            {
+                "stringId": "test:post",
+                "defaultProperties": {
+                    "modelName": "base:models/blocks/red_post.json"
+                },
+                "blockStates": {
+                    "default": {"stateGenerators": ["base:test_post_variant"]},
+                    "color=blue": {
+                        "modelName": "base:models/blocks/blue_post.json"
+                    },
+                },
+            }
+        ),
+        **{
+            f"base/textures/blocks/{name}.png": synthetic_png()
+            for name in (
+                "default_surface", "default_accent", "red_surface",
+                "red_accent", "blue_surface", "blue_accent",
+            )
+        },
+    }
+
+
 class ProvisioningTest(unittest.TestCase):
     def test_stage_copies_valid_jar_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -133,13 +245,13 @@ class ProvisioningTest(unittest.TestCase):
             try:
                 self.assertEqual(rigel_assets.resolve_jar(root)[0], environment)
                 self.assertEqual(rigel_assets.resolve_jar(root, explicit)[0], explicit)
+                os.environ.pop(rigel_assets.JAR_ENVIRONMENT_VARIABLE)
+                self.assertEqual(rigel_assets.resolve_jar(root)[0], staged)
             finally:
                 if previous is None:
                     os.environ.pop(rigel_assets.JAR_ENVIRONMENT_VARIABLE, None)
                 else:
                     os.environ[rigel_assets.JAR_ENVIRONMENT_VARIABLE] = previous
-
-            self.assertEqual(rigel_assets.resolve_jar(root)[0], staged)
 
     def test_missing_jar_diagnostic_is_actionable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -432,6 +544,176 @@ class BlockCompilerTest(unittest.TestCase):
                 "fixture",
             )
 
+    def test_compiles_inherited_cuboids_and_reuses_normalized_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_cuboid_entries())
+            output = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                indexed = rigel_assets.indexed_archive(archive)
+                rigel_assets.extract_direct_assets(archive, indexed, output)
+                count = rigel_assets.compile_blocks(
+                    archive, indexed, output
+                )
+
+            self.assertEqual(count, 3)
+            model_path = output / "models/blocks/post.yaml"
+            model = rigel_assets.parse_generated_model(
+                model_path.read_bytes(), "models/blocks/post.yaml"
+            )
+            self.assertEqual(model["id"], "base:block_model/post")
+            self.assertEqual(model["texture_slots"], ["accent", "surface"])
+            self.assertEqual(len(model["cuboids"]), 2)
+            first = model["cuboids"][0]
+            self.assertEqual(
+                first["bounds"],
+                [-0.09375, -0.03125, 0.21875, 1.09375, 0.53125, 0.78125],
+            )
+            self.assertEqual(set(first["faces"]), {"pos_x"})
+            face = first["faces"]["pos_x"]
+            self.assertEqual(face["uv"], [0.75, 0.125, 0.25, 0.875])
+            self.assertEqual(face["rotation"], 270)
+            self.assertTrue(face["ambient_occlusion"])
+            self.assertFalse(face["cull"])
+            self.assertEqual(face["shading"], "pos_y")
+            self.assertEqual(
+                model["cuboids"][1]["faces"]["neg_y"]["uv"],
+                [0.9375, 0.0, 1.0, 0.0],
+            )
+            self.assertFalse(
+                (output / "models/blocks/red_post.yaml").exists()
+            )
+            self.assertFalse(
+                (output / "models/blocks/blue_post.yaml").exists()
+            )
+
+            red = rigel_assets.parse_generated_block(
+                (output / "blocks/test__post.yaml").read_bytes(), "red.yaml"
+            )
+            generated = rigel_assets.parse_generated_block(
+                (output / "blocks/test__post[shape=generated].yaml").read_bytes(),
+                "generated.yaml",
+            )
+            blue = rigel_assets.parse_generated_block(
+                (output / "blocks/test__post[color=blue].yaml").read_bytes(),
+                "blue.yaml",
+            )
+            for block in (red, generated, blue):
+                self.assertEqual(block["model"], "base:block_model/post")
+                self.assertFalse(block["opaque"])
+                self.assertTrue(block["cull_same_type"])
+            self.assertEqual(
+                red["textures"],
+                {
+                    "accent": "textures/blocks/red_accent.png",
+                    "surface": "textures/blocks/red_surface.png",
+                },
+            )
+            self.assertEqual(generated["textures"], red["textures"])
+            self.assertEqual(generated["orientation"], [0, 90, 0])
+            self.assertEqual(
+                blue["textures"]["surface"],
+                "textures/blocks/blue_surface.png",
+            )
+            counts = rigel_assets.validate_generated_tree(
+                output, required_identifiers=("test:post",)
+            )
+            self.assertEqual(counts["block_models"], 1)
+
+    def test_empty_geometry_remains_builtin_none(self) -> None:
+        entries = {
+            "base/models/blocks/empty.json": encoded_json({"cuboids": []}),
+            "base/blocks/empty.json": encoded_json(
+                {
+                    "stringId": "test:empty",
+                    "defaultProperties": {
+                        "modelName": "base:models/blocks/empty.json"
+                    },
+                    "blockStates": {"default": {}},
+                }
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            output = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), output
+                )
+            block = rigel_assets.parse_generated_block(
+                (output / "blocks/test__empty.yaml").read_bytes(), "empty.yaml"
+            )
+            self.assertEqual(block["model"], "none")
+            self.assertFalse((output / "models/blocks/empty.yaml").exists())
+
+    def test_explicit_planes_are_omitted_with_precise_diagnostic(self) -> None:
+        entries = synthetic_cuboid_entries()
+        model = json.loads(entries["base/models/blocks/post.json"])
+        model["planes"] = [
+            {
+                "vertices": [0, 0, 0, 16, 0, 0, 16, 16, 0, 0, 16, 0],
+                "texture": "surface",
+            }
+        ]
+        entries["base/models/blocks/post.json"] = encoded_json(model)
+        diagnostics: list[str] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            output = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                count = rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), output,
+                    diagnostics,
+                )
+
+            self.assertEqual(count, 0)
+            self.assertFalse(any((output / "blocks").glob("*.yaml")))
+            self.assertFalse((output / "models/blocks/post.yaml").exists())
+            self.assertEqual(len(diagnostics), 1)
+            self.assertIn("3 block states", diagnostics[0])
+            self.assertIn("explicit plane geometry", diagnostics[0])
+            self.assertIn("base/models/blocks/post.json", diagnostics[0])
+
+    def test_malformed_cuboid_fields_fail_closed(self) -> None:
+        cases = {
+            "finite number": lambda cuboid, face: cuboid.update(
+                {"localBounds": [False, 0, 0, 16, 16, 16]}
+            ),
+            "inflate": lambda cuboid, face: cuboid.update({"inflate": "wide"}),
+            "four coordinates": lambda cuboid, face: face.update({"uv": [0, 1, 2]}),
+            "quarter turn": lambda cuboid, face: face.update({"uvRotation": 45}),
+            "ambientocclusion": lambda cuboid, face: face.update(
+                {"ambientocclusion": "yes"}
+            ),
+            "cullFace": lambda cuboid, face: face.update({"cullFace": 1}),
+            "shadingFace": lambda cuboid, face: face.update(
+                {"shadingFace": "localDiagonal"}
+            ),
+        }
+        for message, mutate in cases.items():
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                entries = synthetic_cuboid_entries()
+                model = json.loads(entries["base/models/blocks/post.json"])
+                cuboid = model["cuboids"][0]
+                face = cuboid["faces"]["localPosX"]
+                mutate(cuboid, face)
+                entries["base/models/blocks/post.json"] = encoded_json(model)
+                jar = Path(directory) / "fixture.jar"
+                write_jar(jar, entries)
+                with zipfile.ZipFile(jar) as archive, self.assertRaisesRegex(
+                    rigel_assets.AssetImportError, message
+                ):
+                    rigel_assets.compile_blocks(
+                        archive,
+                        rigel_assets.indexed_archive(archive),
+                        Path(directory) / "output",
+                    )
+
     def test_unknown_meaningful_block_field_fails_closed(self) -> None:
         entries = synthetic_block_entries()
         block = json.loads(entries["base/blocks/test_stone.json"])
@@ -499,6 +781,27 @@ class BlockCompilerTest(unittest.TestCase):
             self.assertEqual(len(diagnostics), 1)
             self.assertIn("64x16", diagnostics[0])
 
+    def test_texture_omission_prunes_unreferenced_normalized_models(self) -> None:
+        entries = synthetic_cuboid_entries()
+        for path in list(entries):
+            if path.startswith("base/textures/blocks/"):
+                entries[path] = synthetic_png(64, 16)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            output = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                indexed = rigel_assets.indexed_archive(archive)
+                rigel_assets.extract_direct_assets(archive, indexed, output)
+                rigel_assets.compile_blocks(archive, indexed, output)
+
+            omitted = rigel_assets.omit_blocks_with_unsupported_textures(output)
+
+            self.assertEqual(omitted, 3)
+            self.assertFalse(any((output / "blocks").glob("*.yaml")))
+            self.assertFalse((output / "models/blocks/post.yaml").exists())
+
 
 class SynchronizationTest(unittest.TestCase):
     def test_sync_is_idempotent_and_records_provenance(self) -> None:
@@ -519,7 +822,7 @@ class SynchronizationTest(unittest.TestCase):
             self.assertFalse(second_changed)
             self.assertEqual(first, second)
             self.assertEqual(first["schema"], 1)
-            self.assertEqual(first["importer_schema"], 2)
+            self.assertEqual(first["importer_schema"], 3)
             self.assertEqual(first["counts"]["blocks"], 4)
             self.assertEqual(
                 first["output_tree_sha256"],

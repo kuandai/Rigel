@@ -72,26 +72,29 @@ references without retaining the old asset files.
 
 ## Current renderer boundary
 
-Rigel's normalized block loader supports only `cube` and `none` geometry.
-The old snapshot already approximated explicit doors, plants, machines, and
-other CR models as cubes. The importer preserves that existing boundary for
-explicit states while resolving their face textures more accurately.
+Rigel's normalized block loader supports reusable axis-aligned cuboid models in
+addition to the specialized `cube` and `none` paths. The importer resolves the
+0.6.1 model parent graph and texture aliases, emits inherited geometry once,
+and binds texture-only substitutions in each block definition. Declared bounds,
+inflation, missing faces, reversed or cropped UV rectangles, UV quarter-turns,
+and face shading/culling metadata are preserved. Right-angle block-state
+orientation remains a closed measured set.
 
-State-generator outputs whose geometry is itself a full cube are imported.
-The 0.6.1 source also describes 1,607 slab, stair, plane, or other non-cube
-generated states. Those are validated through the generator include graph but
-omitted with a provenance warning instead of being falsely published as
-cubes. Supporting those shapes would be a separate block-model/meshing
-project, outside this asset-hygiene migration.
+The 0.6.1 source describes 1,607 generated non-cube states. Cuboids recover
+1,601 geometrically, and 1,590 of those are publishable with the current 16×16
+block atlas. Supported non-cubic base registrations now reference the same
+normalized assets instead of retaining their earlier cube approximation. A
+current import emits 51 shared normalized cuboid definitions and 2,021 block
+definitions in total, an increase of exactly 1,590 blocks over the original
+parity output.
 
-Six additional 0.6.1 block states reference 64×16 animated sprites or a 64×64
-entity texture. Rigel's block atlas accepts 16×16 tiles and cannot represent
-the source animation metadata. None of these states existed in the 249-file
-legacy snapshot. The importer validates their source definitions, omits the six
-unsupported runtime states with a provenance warning, and validates every
-published block texture dimension. Publishing definitions that later fail
-`WorldResources` initialization would be misleading; adding animated or
-non-tile block textures is a separate renderer feature.
+Explicit plane primitives remain outside the normalized model contract. Six
+generated variants use cuboid-plus-plane geometry; together with three base
+registrations they are visibly omitted with one provenance diagnostic. The
+64×16 conveyor and splitter textures likewise remain unsupported, producing a
+separate texture-dimension diagnostic. Animated textures, generalized planes,
+collision-shape fidelity, and model-accurate raycasting remain outside the
+runtime boundary.
 
 CR model emission texture maps also remain outside the current normalized
 block contract. Scalar emitted light is preserved. The importer recognizes

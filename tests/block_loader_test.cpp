@@ -144,6 +144,7 @@ cuboids:
         cull: false
       neg_x:
         texture: cap
+        uv: [0, 0, 1, 0]
   - bounds: [0.25, 0.75, 0.25, 0.75, 1.25, 0.75]
     faces:
       pos_y:
@@ -194,6 +195,10 @@ textures:
     CHECK_EQ(face.shadingFace, Direction::PosY);
     CHECK(!face.ambientOcclusion);
     CHECK(!face.cullAgainstOpaqueNeighbor);
+    CHECK_EQ(
+        model->cuboids()[0]
+            .faces[static_cast<size_t>(Direction::NegX)]->uv.v1,
+        0.0f);
 
     const BlockType& block =
         blocks.getType(*blocks.findByIdentifier("test:post_block"));

@@ -366,9 +366,6 @@ std::shared_ptr<const BlockModel> parseModel(
                              "coordinates must be within [0, 1]");
                     }
                 }
-                if (uv[0] == uv[2] || uv[1] == uv[3]) {
-                    fail(source, facePath + ".uv", "rectangle must have non-zero area");
-                }
                 face.uv = {uv[0], uv[1], uv[2], uv[3]};
             }
             if (faceNode.has_child("rotation")) {

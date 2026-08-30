@@ -105,9 +105,16 @@ entries. `BlockLoader` separately discovers normalized
 the complete reusable-model, block-definition, and referenced-texture set
 before publishing the block registry. Failed aggregate loads also discard atlas
 entries added by that load. Blocks bind their own texture paths to immutable
-model texture slots. A block registration may orient its shared model with one
-of the measured right-angle turns: X 90/270, Y 90/180/270, or Z 90. Other angle
-triples and multi-axis compositions are rejected. Positive 90-degree turns
+model texture slots. The importer resolves source model parents and texture
+aliases before publication. Texture-only children share one normalized cuboid
+asset and retain block-local texture bindings; runtime code never reads the
+source model format. Bounds and inflation are converted to cell units without
+clamping, and only declared faces are emitted with their UV, AO, culling, and
+shading metadata. Explicit plane geometry and incompatible texture dimensions
+are omitted with provenance diagnostics. A block registration may orient its
+shared model with one of the measured right-angle turns: X 90/270, Y 90/180/270,
+or Z 90. Other angle triples and multi-axis compositions are rejected. Positive
+90-degree turns
 map `+Y` to `-Z` around X, `+X` to `+Z` around Y, and `+X` to `-Y` around Z.
 The optional `rotate_top_bottom` field preserves the separately authored UV
 correction for X 90 and Z 90 registrations. It is not inferred from model

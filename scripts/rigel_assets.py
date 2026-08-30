@@ -7,6 +7,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -24,7 +25,7 @@ STAGED_JAR_RELATIVE_PATH = Path(".rigel/source/Cosmic-Reach.jar")
 GENERATED_ASSETS_RELATIVE_PATH = Path(".rigel/assets")
 PROVENANCE_RELATIVE_PATH = Path(".rigel/cosmic-reach-import.json")
 PROVENANCE_SCHEMA = 1
-IMPORTER_SCHEMA = 2
+IMPORTER_SCHEMA = 3
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 BLOCK_TEXTURE_SIZE = (16, 16)
@@ -531,6 +532,40 @@ def _block_orientation(value: object, context: str) -> tuple[int, int, int]:
 
 
 @dataclass(frozen=True)
+class ResolvedFace:
+    texture_alias: str
+    uv: tuple[float, float, float, float]
+    rotation: int
+    ambient_occlusion: bool
+    cull_face: bool
+    shading_face: str | None
+
+
+@dataclass(frozen=True)
+class ResolvedCuboid:
+    bounds: tuple[float, float, float, float, float, float]
+    faces: tuple[tuple[str, ResolvedFace], ...]
+
+
+@dataclass(frozen=True)
+class ResolvedGeometry:
+    identifier: str
+    output_path: str
+    source: str
+    cuboids: tuple[ResolvedCuboid, ...]
+    plane_count: int = 0
+
+    def texture_aliases(self) -> tuple[str, ...]:
+        return tuple(sorted(
+            {
+                face.texture_alias
+                for cuboid in self.cuboids
+                for unused_name, face in cuboid.faces
+            }
+        ))
+
+
+@dataclass(frozen=True)
 class ResolvedModel:
     textures: dict[str, str]
     face_aliases: dict[str, str]
@@ -538,6 +573,163 @@ class ResolvedModel:
     culls_self: bool
     empty: bool
     full_cube: bool
+    geometry: ResolvedGeometry | None = None
+
+
+def _finite_number(value: object, context: str) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+    ):
+        raise AssetImportError(f"{context} must be a finite number")
+    return float(value)
+
+
+def _normalized_geometry_location(source: str) -> tuple[str, str]:
+    prefix = "base/models/blocks/"
+    suffix = ".json"
+    if not source.startswith(prefix) or not source.endswith(suffix):
+        raise AssetImportError(f"unsupported block model location: {source}")
+    relative = source[len(prefix):-len(suffix)]
+    normalize_archive_path(relative)
+    return f"base:block_model/{relative}", f"models/blocks/{relative}.yaml"
+
+
+def _parse_model_face(
+    raw_face: object, source: str, cuboid_index: int, face_name: str
+) -> ResolvedFace:
+    context = f"{source}.cuboids[{cuboid_index}].faces.{face_name}"
+    if face_name not in FACE_VECTORS:
+        raise AssetImportError(f"{context}: unsupported model face")
+    face = _expect_object(raw_face, context)
+    _reject_unknown_keys(face, MODEL_FACE_KEYS, context)
+    alias = face.get("texture")
+    if not isinstance(alias, str) or not alias:
+        raise AssetImportError(f"{context}.texture must be a non-empty string")
+    raw_uv = face.get("uv")
+    if not isinstance(raw_uv, list) or len(raw_uv) != 4:
+        raise AssetImportError(f"{context}.uv must contain four coordinates")
+    uv = tuple(
+        _finite_number(value, f"{context}.uv[{index}]") / 16.0
+        for index, value in enumerate(raw_uv)
+    )
+    if any(value < 0.0 or value > 1.0 for value in uv):
+        raise AssetImportError(f"{context}.uv coordinates must be within 0..16")
+    rotation = face.get("uvRotation", 0)
+    if (
+        not isinstance(rotation, int)
+        or isinstance(rotation, bool)
+        or rotation not in (0, 90, 180, 270)
+    ):
+        raise AssetImportError(f"{context}.uvRotation must be a quarter turn")
+    ambient_occlusion = face.get("ambientocclusion", False)
+    cull_face = face.get("cullFace", False)
+    if not isinstance(ambient_occlusion, bool):
+        raise AssetImportError(f"{context}.ambientocclusion must be a boolean")
+    if not isinstance(cull_face, bool):
+        raise AssetImportError(f"{context}.cullFace must be a boolean")
+    raw_shading = face.get("shadingFace")
+    if raw_shading is not None and raw_shading not in FACE_VECTORS:
+        raise AssetImportError(f"{context}.shadingFace must be a cardinal face")
+    shading_face = (
+        VECTOR_FACES[FACE_VECTORS[raw_shading]]
+        if isinstance(raw_shading, str)
+        else None
+    )
+    return ResolvedFace(
+        alias, uv, rotation, ambient_occlusion, cull_face, shading_face
+    )
+
+
+def _parse_model_geometry(
+    document: dict[str, object], source: str
+) -> ResolvedGeometry:
+    raw_cuboids = document.get("cuboids", [])
+    raw_planes = document.get("planes", [])
+    if not isinstance(raw_cuboids, list):
+        raise AssetImportError(f"{source}.cuboids must be an array")
+    if not isinstance(raw_planes, list):
+        raise AssetImportError(f"{source}.planes must be an array")
+    cuboids: list[ResolvedCuboid] = []
+    for cuboid_index, raw_cuboid in enumerate(raw_cuboids):
+        context = f"{source}.cuboids[{cuboid_index}]"
+        cuboid = _expect_object(raw_cuboid, context)
+        _reject_unknown_keys(cuboid, MODEL_CUBOID_KEYS, context)
+        raw_bounds = cuboid.get("localBounds")
+        if not isinstance(raw_bounds, list) or len(raw_bounds) != 6:
+            raise AssetImportError(
+                f"{context}.localBounds must contain six coordinates"
+            )
+        source_bounds = tuple(
+            _finite_number(value, f"{context}.localBounds[{index}]")
+            for index, value in enumerate(raw_bounds)
+        )
+        inflate = _finite_number(cuboid.get("inflate", 0), f"{context}.inflate")
+        bounds = tuple(
+            (value + (-inflate if index < 3 else inflate)) / 16.0
+            for index, value in enumerate(source_bounds)
+        )
+        for axis in range(3):
+            if bounds[axis] > bounds[axis + 3]:
+                raise AssetImportError(
+                    f"{context}.localBounds minimum exceeds maximum"
+                )
+        raw_faces = _expect_object(cuboid.get("faces"), f"{context}.faces")
+        faces: list[tuple[str, ResolvedFace]] = []
+        for face_name in FACE_VECTORS:
+            if face_name not in raw_faces:
+                continue
+            face = _parse_model_face(
+                raw_faces[face_name], source, cuboid_index, face_name
+            )
+            direction = VECTOR_FACES[FACE_VECTORS[face_name]]
+            normal_axis = next(
+                index
+                for index, component in enumerate(FACE_VECTORS[face_name])
+                if component
+            )
+            for axis in range(3):
+                if axis != normal_axis and bounds[axis] == bounds[axis + 3]:
+                    raise AssetImportError(
+                        f"{context}.faces.{face_name} has zero area"
+                    )
+            faces.append((direction, face))
+        unknown_faces = sorted(set(raw_faces) - set(FACE_VECTORS))
+        if unknown_faces:
+            raise AssetImportError(
+                f"{context}.faces has unsupported faces: {', '.join(unknown_faces)}"
+            )
+        if not faces and any(
+            bounds[axis] == bounds[axis + 3] for axis in range(3)
+        ):
+            raise AssetImportError(
+                f"{context}: zero-thickness cuboid has no visible face"
+            )
+        cuboids.append(ResolvedCuboid(bounds, tuple(faces)))
+    identifier, output_path = _normalized_geometry_location(source)
+    return ResolvedGeometry(
+        identifier, output_path, source, tuple(cuboids), len(raw_planes)
+    )
+
+
+def _is_builtin_full_cube(geometry: ResolvedGeometry) -> bool:
+    if geometry.plane_count or len(geometry.cuboids) != 1:
+        return False
+    cuboid = geometry.cuboids[0]
+    if cuboid.bounds != (0.0, 0.0, 0.0, 1.0, 1.0, 1.0):
+        return False
+    faces = dict(cuboid.faces)
+    if set(faces) != set(VECTOR_FACES.values()):
+        return False
+    return all(
+        face.uv == (0.0, 0.0, 1.0, 1.0)
+        and face.rotation == 0
+        and face.ambient_occlusion
+        and face.cull_face
+        and (face.shading_face is None or face.shading_face == face_name)
+        for face_name, face in faces.items()
+    )
 
 
 class BlockModelResolver:
@@ -568,13 +760,20 @@ class BlockModelResolver:
             _reject_unknown_keys(document, MODEL_ROOT_KEYS, source)
             parent = ResolvedModel({}, {}, False, False, True, False)
             if "parent" in document:
-                parent = self.resolve(str(document["parent"]))
+                parent_reference = document["parent"]
+                if not isinstance(parent_reference, str):
+                    raise AssetImportError(f"{source}.parent must be a string")
+                parent = self.resolve(parent_reference)
 
             textures = dict(parent.textures)
-            texture_entries = _expect_object(document.get("textures", {}), f"{source}.textures")
+            texture_entries = _expect_object(
+                document.get("textures", {}), f"{source}.textures"
+            )
             for alias, raw_entry in texture_entries.items():
                 entry = _expect_object(raw_entry, f"{source}.textures.{alias}")
-                _reject_unknown_keys(entry, MODEL_TEXTURE_KEYS, f"{source}.textures.{alias}")
+                _reject_unknown_keys(
+                    entry, MODEL_TEXTURE_KEYS, f"{source}.textures.{alias}"
+                )
                 file_name = entry.get("fileName")
                 if file_name is not None:
                     if not isinstance(file_name, str):
@@ -585,55 +784,48 @@ class BlockModelResolver:
                     raise AssetImportError(
                         f"{source}.textures.{alias}.emissivefileName must be a string"
                     )
-
-            face_aliases = dict(parent.face_aliases)
-            empty = parent.empty
-            full_cube = parent.full_cube
-            if "cuboids" in document:
-                cuboids = document["cuboids"]
-                if not isinstance(cuboids, list):
-                    raise AssetImportError(f"{source}.cuboids must be an array")
-                empty = len(cuboids) == 0 and not document.get("planes")
-                full_cube = False
-                representative: dict[str, object] | None = None
-                for index, raw_cuboid in enumerate(cuboids):
-                    cuboid = _expect_object(raw_cuboid, f"{source}.cuboids[{index}]")
-                    _reject_unknown_keys(cuboid, MODEL_CUBOID_KEYS, f"{source}.cuboids[{index}]")
-                    bounds = cuboid.get("localBounds")
-                    if not isinstance(bounds, list) or len(bounds) != 6 or not all(
-                        isinstance(item, (int, float)) for item in bounds
+                raw_texture_uv = entry.get("uv")
+                if raw_texture_uv is not None:
+                    if (
+                        not isinstance(raw_texture_uv, list)
+                        or len(raw_texture_uv) != 2
                     ):
-                        raise AssetImportError(f"{source}.cuboids[{index}].localBounds is invalid")
-                    if representative is None or bounds == [0, 0, 0, 16, 16, 16]:
-                        representative = cuboid
-                        if bounds == [0, 0, 0, 16, 16, 16]:
-                            break
-                full_cube = (
-                    len(cuboids) == 1
-                    and representative is not None
-                    and representative.get("localBounds") == [0, 0, 0, 16, 16, 16]
-                )
-                face_aliases = {}
-                if representative is not None:
-                    faces = _expect_object(
-                        representative.get("faces", {}), f"{source}.cuboid.faces"
-                    )
-                    for face_name, raw_face in faces.items():
-                        if face_name not in FACE_VECTORS:
-                            raise AssetImportError(f"{source}: unsupported model face {face_name!r}")
-                        face = _expect_object(raw_face, f"{source}.faces.{face_name}")
-                        _reject_unknown_keys(face, MODEL_FACE_KEYS, f"{source}.faces.{face_name}")
-                        alias = face.get("texture")
-                        if not isinstance(alias, str):
-                            raise AssetImportError(f"{source}.faces.{face_name}: texture must be a string")
-                        face_aliases[face_name] = alias
+                        raise AssetImportError(
+                            f"{source}.textures.{alias}.uv must contain two coordinates"
+                        )
+                    for index, value in enumerate(raw_texture_uv):
+                        _finite_number(
+                            value, f"{source}.textures.{alias}.uv[{index}]"
+                        )
+
+            geometry = parent.geometry
+            if "cuboids" in document or "planes" in document:
+                geometry = _parse_model_geometry(document, source)
+            face_aliases: dict[str, str] = {}
+            if geometry is not None and len(geometry.cuboids) == 1:
+                face_aliases = {
+                    face_name: face.texture_alias
+                    for face_name, face in geometry.cuboids[0].faces
+                }
+            empty = geometry is None or (
+                not geometry.cuboids and geometry.plane_count == 0
+            )
+            full_cube = geometry is not None and _is_builtin_full_cube(geometry)
+
+            for shader_key in ("vertShader", "fragShader"):
+                if (
+                    shader_key in document
+                    and not isinstance(document[shader_key], str)
+                ):
+                    raise AssetImportError(f"{source}.{shader_key} must be a string")
 
             transparent = document.get("isTransparent", parent.transparent)
             culls_self = document.get("cullsSelf", parent.culls_self)
             if not isinstance(transparent, bool) or not isinstance(culls_self, bool):
                 raise AssetImportError(f"{source}: transparency/culling values must be booleans")
             result = ResolvedModel(
-                textures, face_aliases, transparent, culls_self, empty, full_cube
+                textures, face_aliases, transparent, culls_self,
+                empty, full_cube, geometry
             )
             self.cache[source] = result
             return result
@@ -757,7 +949,11 @@ def _resolved_face_textures(
 ) -> dict[str, str]:
     result: dict[str, str] = {}
     for source_face, alias in model.face_aliases.items():
-        destination_face = VECTOR_FACES[FACE_VECTORS[source_face]]
+        destination_face = (
+            source_face
+            if source_face in VECTOR_FACES.values()
+            else VECTOR_FACES[FACE_VECTORS[source_face]]
+        )
         texture = _texture_from_alias(model, alias, context)
         previous = result.get(destination_face)
         if previous is not None and previous != texture:
@@ -783,6 +979,48 @@ def _yaml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=True)
 
 
+def _yaml_mapping_key(value: str) -> str:
+    if value and all(
+        character.isalnum() or character in "_-" for character in value
+    ):
+        return value
+    return _yaml_string(value)
+
+
+def render_model_yaml(geometry: ResolvedGeometry) -> bytes:
+    cuboids: list[dict[str, object]] = []
+    for cuboid in geometry.cuboids:
+        faces: dict[str, object] = {}
+        for face_name, face in cuboid.faces:
+            normalized: dict[str, object] = {
+                "texture": face.texture_alias,
+                "uv": list(face.uv),
+                "rotation": face.rotation,
+                "ambient_occlusion": face.ambient_occlusion,
+                "cull": face.cull_face,
+            }
+            if face.shading_face is not None:
+                normalized["shading"] = face.shading_face
+            faces[face_name] = normalized
+        cuboids.append({"bounds": list(cuboid.bounds), "faces": faces})
+    return deterministic_json({
+        "id": geometry.identifier,
+        "texture_slots": list(geometry.texture_aliases()),
+        "cuboids": cuboids,
+    })
+
+
+def _resolved_model_textures(
+    model: ResolvedModel, context: str
+) -> dict[str, str]:
+    if model.geometry is None:
+        return {}
+    return {
+        alias: _texture_from_alias(model, alias, context)
+        for alias in model.geometry.texture_aliases()
+    }
+
+
 def render_block_yaml(
     identifier: str,
     properties: dict[str, object],
@@ -806,6 +1044,11 @@ def render_block_yaml(
             model.culls_self or texture_model.culls_self,
             model.empty,
             model.full_cube,
+            model.geometry,
+        )
+    if model.geometry is not None and model.geometry.plane_count:
+        raise AssetImportError(
+            f"{context}: explicit plane geometry is not supported"
         )
     opaque = properties.get("isOpaque", not model.transparent)
     solid = not properties.get("walkThrough", False)
@@ -813,10 +1056,20 @@ def render_block_yaml(
         raise AssetImportError(f"{context}: opacity/solidity values are invalid")
     orientation = _block_orientation(properties.get("rotation"), f"{context}.rotation")
     rotate_top_bottom = bool(properties.get("rotateTopBottom", False))
-    texture_faces = _resolved_face_textures(model, context)
+    texture_bindings = (
+        _resolved_face_textures(model, context)
+        if model.full_cube
+        else _resolved_model_textures(model, context)
+    )
+    model_identifier = (
+        "none" if model.empty
+        else "cube" if model.full_cube
+        else model.geometry.identifier if model.geometry is not None
+        else "cube"
+    )
     lines = [
         f"id: {_yaml_string(identifier)}",
-        f"model: {'none' if model.empty else 'cube'}",
+        f"model: {model_identifier}",
         f"opaque: {'true' if opaque else 'false'}",
         f"solid: {'true' if solid else 'false'}",
     ]
@@ -840,21 +1093,23 @@ def render_block_yaml(
     attenuation = int(properties.get("lightAttenuation", 15))
     if attenuation != 15:
         lines.append(f"light_attenuation: {attenuation}")
-    if texture_faces:
+    if texture_bindings:
         lines.append("textures:")
-        values = set(texture_faces.values())
-        if len(values) == 1:
+        values = set(texture_bindings.values())
+        if model.full_cube and len(values) == 1:
             lines.append(f"  all: {_yaml_string(next(iter(values)))}")
-        elif (
-            texture_faces["pos_x"] == texture_faces["neg_x"]
-            == texture_faces["pos_z"] == texture_faces["neg_z"]
+        elif model.full_cube and (
+            texture_bindings["pos_x"] == texture_bindings["neg_x"]
+            == texture_bindings["pos_z"] == texture_bindings["neg_z"]
         ):
-            lines.append(f"  top: {_yaml_string(texture_faces['pos_y'])}")
-            lines.append(f"  bottom: {_yaml_string(texture_faces['neg_y'])}")
-            lines.append(f"  sides: {_yaml_string(texture_faces['pos_x'])}")
+            lines.append(f"  top: {_yaml_string(texture_bindings['pos_y'])}")
+            lines.append(f"  bottom: {_yaml_string(texture_bindings['neg_y'])}")
+            lines.append(f"  sides: {_yaml_string(texture_bindings['pos_x'])}")
         else:
-            for face in ("pos_x", "neg_x", "pos_y", "neg_y", "pos_z", "neg_z"):
-                lines.append(f"  {face}: {_yaml_string(texture_faces[face])}")
+            for slot, texture in texture_bindings.items():
+                lines.append(
+                    f"  {_yaml_mapping_key(slot)}: {_yaml_string(texture)}"
+                )
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
@@ -867,7 +1122,8 @@ def compile_blocks(
     models = BlockModelResolver(archive, entries)
     generators = StateGeneratorResolver(archive, entries)
     generated: dict[str, tuple[bytes, str]] = {}
-    omitted_non_cube_variants = 0
+    used_geometries: dict[str, ResolvedGeometry] = {}
+    omitted_plane_states: list[tuple[str, str]] = []
     for source in sorted(entries):
         if not source.startswith("base/blocks/") or not source.endswith(".json"):
             continue
@@ -916,13 +1172,6 @@ def compile_blocks(
                     generated_properties.update(leaf.overrides)
                     if leaf.model_name is not None:
                         generated_properties["modelName"] = leaf.model_name
-                    generated_model_name = generated_properties.get("modelName")
-                    if (
-                        not isinstance(generated_model_name, str)
-                        or not models.resolve(generated_model_name).full_cube
-                    ):
-                        omitted_non_cube_variants += 1
-                        continue
                     variants.append(
                         (generated_parameters, generated_properties, base_model_name)
                     )
@@ -931,6 +1180,35 @@ def compile_blocks(
                 identifiers = [_block_identifier(base_identifier, variant_parameters)]
                 if LEGACY_DEFAULT_STATE_ALIASES.get(base_identifier) == variant_parameters:
                     identifiers.append(base_identifier)
+                model_reference = variant_properties.get("modelName")
+                if not isinstance(model_reference, str):
+                    raise AssetImportError(
+                        f"{source}: block state has no modelName"
+                    )
+                resolved_model = models.resolve(model_reference)
+                if (
+                    resolved_model.geometry is not None
+                    and resolved_model.geometry.plane_count
+                ):
+                    omitted_plane_states.extend(
+                        (identifier, resolved_model.geometry.source)
+                        for identifier in identifiers
+                    )
+                    continue
+                if (
+                    not resolved_model.empty
+                    and not resolved_model.full_cube
+                    and resolved_model.geometry is not None
+                ):
+                    previous = used_geometries.setdefault(
+                        resolved_model.geometry.identifier,
+                        resolved_model.geometry,
+                    )
+                    if previous != resolved_model.geometry:
+                        raise AssetImportError(
+                            "conflicting normalized block model identifier: "
+                            + resolved_model.geometry.identifier
+                        )
                 for identifier in identifiers:
                     output = _generated_block_filename(identifier)
                     payload = render_block_yaml(
@@ -948,10 +1226,17 @@ def compile_blocks(
                         )
                     generated[identifier] = (payload, source)
                     write_output(staging, output, payload)
-    if omitted_non_cube_variants and diagnostics is not None:
+    for geometry in sorted(
+        used_geometries.values(), key=lambda value: value.output_path
+    ):
+        write_output(staging, geometry.output_path, render_model_yaml(geometry))
+    if omitted_plane_states and diagnostics is not None:
+        sources = sorted({
+            source for unused_identifier, source in omitted_plane_states
+        })
         diagnostics.append(
-            f"omitted {omitted_non_cube_variants} generated non-cube block states: "
-            "Rigel's current normalized block model supports cube/none geometry"
+            f"omitted {len(omitted_plane_states)} block states with explicit "
+            f"plane geometry (unsupported): {', '.join(sources)}"
         )
     return len(generated)
 
@@ -970,14 +1255,26 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
         if line.startswith("  "):
             if not in_textures or ":" not in line:
                 raise AssetImportError(f"{source}:{line_number}: malformed generated YAML")
-            key, raw_value = line.strip().split(":", 1)
+            stripped = line.strip()
             try:
-                value = json.loads(raw_value.strip())
+                if stripped.startswith('"'):
+                    entry = json.loads("{" + stripped + "}")
+                    if not isinstance(entry, dict) or len(entry) != 1:
+                        raise json.JSONDecodeError("invalid entry", stripped, 0)
+                    key, value = next(iter(entry.items()))
+                else:
+                    key, raw_value = stripped.split(":", 1)
+                    value = json.loads(raw_value.strip())
             except json.JSONDecodeError as error:
                 raise AssetImportError(
-                    f"{source}:{line_number}: texture path must be quoted"
+                    f"{source}:{line_number}: malformed texture entry"
                 ) from error
-            if key in textures or not isinstance(value, str):
+            if (
+                not isinstance(key, str)
+                or not key
+                or key in textures
+                or not isinstance(value, str)
+            ):
                 raise AssetImportError(f"{source}:{line_number}: invalid texture entry")
             textures[key] = value
             continue
@@ -1032,7 +1329,7 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
     missing = sorted(required - set(result))
     if missing:
         raise AssetImportError(f"{source}: missing generated fields: {', '.join(missing)}")
-    if result["model"] not in ("cube", "none"):
+    if not isinstance(result["model"], str) or not result["model"]:
         raise AssetImportError(f"{source}: invalid model {result['model']!r}")
     if result["layer"] not in ("opaque", "cutout", "transparent", "emissive"):
         raise AssetImportError(f"{source}: invalid render layer {result['layer']!r}")
@@ -1046,11 +1343,11 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
     for key in ("emits_light", "light_attenuation"):
         if key in result and not 0 <= int(result[key]) <= 15:
             raise AssetImportError(f"{source}: {key} is outside 0..15")
-    allowed_texture_keys = {
-        "all", "top", "bottom", "sides", "default", "pos_x", "neg_x",
-        "pos_y", "neg_y", "pos_z", "neg_z",
-    }
-    if textures:
+    if textures and result["model"] == "cube":
+        allowed_texture_keys = {
+            "all", "top", "bottom", "sides", "default", "pos_x", "neg_x",
+            "pos_y", "neg_y", "pos_z", "neg_z",
+        }
         _reject_unknown_keys(textures, allowed_texture_keys, f"{source}.textures")
         pattern_valid = (
             set(textures) == {"all"}
@@ -1060,9 +1357,136 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
         )
         if not pattern_valid:
             raise AssetImportError(f"{source}: generated texture mapping is incomplete")
-    elif result["model"] != "none":
+    elif result["model"] == "cube":
         raise AssetImportError(f"{source}: cube model has no textures")
+    elif result["model"] == "none" and textures:
+        raise AssetImportError(f"{source}: empty model must not bind textures")
     return result
+
+
+def parse_generated_model(data: bytes, source: str) -> dict[str, object]:
+    document = _expect_object(load_relaxed_json(data, source), source)
+    _reject_unknown_keys(document, {"id", "texture_slots", "cuboids"}, source)
+    missing = {"id", "texture_slots", "cuboids"} - set(document)
+    if missing:
+        raise AssetImportError(
+            f"{source}: missing normalized model fields: {', '.join(sorted(missing))}"
+        )
+    identifier = document["id"]
+    if not isinstance(identifier, str) or not identifier:
+        raise AssetImportError(f"{source}.id must be a non-empty string")
+    slots = document["texture_slots"]
+    if (
+        not isinstance(slots, list)
+        or not all(isinstance(slot, str) and slot for slot in slots)
+        or len(set(slots)) != len(slots)
+    ):
+        raise AssetImportError(
+            f"{source}.texture_slots must contain unique non-empty strings"
+        )
+    cuboids = document["cuboids"]
+    if not isinstance(cuboids, list) or not cuboids:
+        raise AssetImportError(f"{source}.cuboids must be a non-empty array")
+    for cuboid_index, raw_cuboid in enumerate(cuboids):
+        context = f"{source}.cuboids[{cuboid_index}]"
+        cuboid = _expect_object(raw_cuboid, context)
+        _reject_unknown_keys(cuboid, {"bounds", "faces"}, context)
+        if set(cuboid) != {"bounds", "faces"}:
+            raise AssetImportError(f"{context} requires bounds and faces")
+        bounds = cuboid["bounds"]
+        if not isinstance(bounds, list) or len(bounds) != 6:
+            raise AssetImportError(f"{context}.bounds must contain six coordinates")
+        numeric_bounds = tuple(
+            _finite_number(value, f"{context}.bounds[{index}]")
+            for index, value in enumerate(bounds)
+        )
+        for axis in range(3):
+            if numeric_bounds[axis] > numeric_bounds[axis + 3]:
+                raise AssetImportError(f"{context}.bounds minimum exceeds maximum")
+        faces = _expect_object(cuboid["faces"], f"{context}.faces")
+        for face_name, raw_face in faces.items():
+            if face_name not in VECTOR_FACES.values():
+                raise AssetImportError(
+                    f"{context}.faces.{face_name}: invalid cardinal face"
+                )
+            face_context = f"{context}.faces.{face_name}"
+            face = _expect_object(raw_face, face_context)
+            allowed = {
+                "texture", "uv", "rotation", "shading",
+                "ambient_occlusion", "cull",
+            }
+            _reject_unknown_keys(face, allowed, face_context)
+            required = allowed - {"shading"}
+            if not required.issubset(face):
+                raise AssetImportError(f"{face_context}: missing face metadata")
+            if (
+                not isinstance(face["texture"], str)
+                or face["texture"] not in slots
+            ):
+                raise AssetImportError(
+                    f"{face_context}.texture is not a declared slot"
+                )
+            uv = face["uv"]
+            if not isinstance(uv, list) or len(uv) != 4:
+                raise AssetImportError(f"{face_context}.uv must contain four coordinates")
+            numeric_uv = tuple(
+                _finite_number(value, f"{face_context}.uv[{index}]")
+                for index, value in enumerate(uv)
+            )
+            if any(value < 0.0 or value > 1.0 for value in numeric_uv):
+                raise AssetImportError(f"{face_context}.uv is outside 0..1")
+            rotation = face["rotation"]
+            if (
+                not isinstance(rotation, int)
+                or isinstance(rotation, bool)
+                or rotation not in (0, 90, 180, 270)
+            ):
+                raise AssetImportError(f"{face_context}.rotation is not a quarter turn")
+            for key in ("ambient_occlusion", "cull"):
+                if not isinstance(face[key], bool):
+                    raise AssetImportError(f"{face_context}.{key} must be a boolean")
+            if (
+                "shading" in face
+                and face["shading"] not in VECTOR_FACES.values()
+            ):
+                raise AssetImportError(
+                    f"{face_context}.shading must be a cardinal face"
+                )
+            direction_index = tuple(VECTOR_FACES.values()).index(face_name)
+            normal_axis = direction_index // 2
+            for axis in range(3):
+                if (
+                    axis != normal_axis
+                    and numeric_bounds[axis] == numeric_bounds[axis + 3]
+                ):
+                    raise AssetImportError(f"{face_context} has zero area")
+        if not faces and any(
+            numeric_bounds[axis] == numeric_bounds[axis + 3]
+            for axis in range(3)
+        ):
+            raise AssetImportError(
+                f"{context}: zero-thickness cuboid has no visible face"
+            )
+    return document
+
+
+def prune_unused_block_models(root: Path) -> int:
+    referenced: set[str] = set()
+    for path in sorted((root / "blocks").glob("*.yaml")):
+        block = parse_generated_block(
+            path.read_bytes(), path.relative_to(root).as_posix()
+        )
+        if block["model"] not in ("cube", "none"):
+            referenced.add(str(block["model"]))
+    removed = 0
+    model_root = root / "models/blocks"
+    for path in sorted(model_root.rglob("*.yaml")) if model_root.is_dir() else []:
+        logical = path.relative_to(root).as_posix()
+        model = parse_generated_model(path.read_bytes(), logical)
+        if model["id"] not in referenced:
+            path.unlink()
+            removed += 1
+    return removed
 
 
 def omit_blocks_with_unsupported_textures(
@@ -1097,6 +1521,7 @@ def omit_blocks_with_unsupported_textures(
             f"{BLOCK_TEXTURE_SIZE[0]}x{BLOCK_TEXTURE_SIZE[1]}: "
             + ", ".join(sorted(unsupported))
         )
+    prune_unused_block_models(root)
     return len(omitted)
 
 
@@ -1121,6 +1546,23 @@ def validate_generated_tree(
     ):
         png_dimensions((root / logical).read_bytes(), logical)
 
+    normalized_models: dict[str, tuple[str, set[str]]] = {}
+    block_model_paths = sorted(
+        path for path in logical_paths
+        if path.startswith("models/blocks/") and path.endswith(".yaml")
+    )
+    for logical in block_model_paths:
+        model = parse_generated_model((root / logical).read_bytes(), logical)
+        identifier = str(model["id"])
+        if identifier in normalized_models:
+            raise AssetImportError(
+                f"duplicate normalized block model identifier {identifier}: "
+                f"{normalized_models[identifier][0]} and {logical}"
+            )
+        normalized_models[identifier] = (
+            logical, set(str(slot) for slot in model["texture_slots"])
+        )
+
     block_identifiers: dict[str, str] = {}
     referenced_textures: dict[str, str] = {}
     block_paths = sorted(
@@ -1137,6 +1579,17 @@ def validate_generated_tree(
             )
         block_identifiers[identifier] = logical
         textures = block.get("textures", {})
+        model_identifier = str(block["model"])
+        if model_identifier not in ("cube", "none"):
+            normalized = normalized_models.get(model_identifier)
+            if normalized is None:
+                raise AssetImportError(
+                    f"{logical}: unresolved normalized block model {model_identifier}"
+                )
+            if not isinstance(textures, dict) or set(textures) != normalized[1]:
+                raise AssetImportError(
+                    f"{logical}: texture bindings do not match model {model_identifier}"
+                )
         if isinstance(textures, dict):
             for texture in textures.values():
                 referenced_textures[str(texture)] = logical
@@ -1189,6 +1642,7 @@ def validate_generated_tree(
             for path in logical_paths
         ),
         "models": len(model_paths),
+        "block_models": len(block_model_paths),
         "animations": len(animation_paths),
         "sounds": sum(
             path.startswith("sounds/") and path.endswith(".ogg")

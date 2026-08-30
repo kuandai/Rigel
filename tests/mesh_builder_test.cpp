@@ -109,6 +109,32 @@ void checkMeshesEqual(const ChunkMesh& first, const ChunkMesh& second) {
     }
 }
 
+size_t countFacesOnPlane(
+    const ChunkMesh& mesh,
+    Direction direction,
+    size_t axis,
+    float coordinate
+) {
+    CHECK_EQ(mesh.vertices.size() % 4, static_cast<size_t>(0));
+    size_t count = 0;
+    for (size_t firstVertex = 0;
+         firstVertex < mesh.vertices.size(); firstVertex += 4) {
+        bool matches = true;
+        for (size_t vertex = 0; vertex < 4; ++vertex) {
+            const VoxelVertex& candidate = mesh.vertices[firstVertex + vertex];
+            const std::array<float, 3> position = {
+                candidate.x, candidate.y, candidate.z};
+            if (candidate.normalIndex != static_cast<uint8_t>(direction) ||
+                position[axis] != coordinate) {
+                matches = false;
+                break;
+            }
+        }
+        count += matches ? 1 : 0;
+    }
+    return count;
+}
+
 BlockModelCuboid completeCuboid(
     BlockModelBounds bounds, std::string textureSlot,
     bool ambientOcclusion = false, bool cull = false
@@ -1147,7 +1173,7 @@ TEST_CASE(MeshBuilder_CullsOnlyMatchingSameTypeCuboidBoundaryFaces) {
     slabType.cullSameType = true;
     const BlockID slabId = registry.registerBlock(slabType.identifier, slabType);
 
-    auto adjacentIndexCount = [&](BlockID left, BlockID right) {
+    auto buildAdjacent = [&](BlockID left, BlockID right) {
         Chunk chunk({0, 0, 0});
         chunk.setBlock(1, 1, 1, BlockState{left});
         chunk.setBlock(2, 1, 1, BlockState{right});
@@ -1156,12 +1182,30 @@ TEST_CASE(MeshBuilder_CullsOnlyMatchingSameTypeCuboidBoundaryFaces) {
             .registry = registry,
             .atlas = nullptr,
             .neighbors = {},
-        }).indices.size();
+        });
     };
 
-    CHECK_EQ(adjacentIndexCount(stoneId, slabId), static_cast<size_t>(66));
-    CHECK_EQ(adjacentIndexCount(slabId, stoneId), static_cast<size_t>(66));
-    CHECK_EQ(adjacentIndexCount(slabId, slabId), static_cast<size_t>(60));
+    const ChunkMesh cubeThenSlab = buildAdjacent(stoneId, slabId);
+    CHECK_EQ(cubeThenSlab.indices.size(), static_cast<size_t>(66));
+    CHECK_EQ(
+        countFacesOnPlane(cubeThenSlab, Direction::PosX, 0, 2.0f),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        countFacesOnPlane(cubeThenSlab, Direction::NegX, 0, 2.0f),
+        static_cast<size_t>(0));
+
+    const ChunkMesh slabThenCube = buildAdjacent(slabId, stoneId);
+    CHECK_EQ(slabThenCube.indices.size(), static_cast<size_t>(66));
+    CHECK_EQ(
+        countFacesOnPlane(slabThenCube, Direction::PosX, 0, 2.0f),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        countFacesOnPlane(slabThenCube, Direction::NegX, 0, 2.0f),
+        static_cast<size_t>(1));
+
+    CHECK_EQ(
+        buildAdjacent(slabId, slabId).indices.size(),
+        static_cast<size_t>(60));
 
     BlockModelCuboid upper;
     upper.bounds = {{0.25f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}};
@@ -1178,7 +1222,9 @@ TEST_CASE(MeshBuilder_CullsOnlyMatchingSameTypeCuboidBoundaryFaces) {
     const BlockID disjointId = registry.registerBlock(
         disjointType.identifier, disjointType);
 
-    CHECK_EQ(adjacentIndexCount(disjointId, disjointId), static_cast<size_t>(24));
+    CHECK_EQ(
+        buildAdjacent(disjointId, disjointId).indices.size(),
+        static_cast<size_t>(24));
 
     BlockModelCuboid smallPositive;
     smallPositive.bounds = {{0.5f, 0.25f, 0.25f}, {1.0f, 0.75f, 0.75f}};
@@ -1198,9 +1244,17 @@ TEST_CASE(MeshBuilder_CullsOnlyMatchingSameTypeCuboidBoundaryFaces) {
     const BlockID asymmetricId = registry.registerBlock(
         asymmetricType.identifier, asymmetricType);
 
+    const ChunkMesh asymmetricNeighbors = buildAdjacent(
+        asymmetricId, asymmetricId);
+    CHECK_EQ(asymmetricNeighbors.indices.size(), static_cast<size_t>(18));
     CHECK_EQ(
-        adjacentIndexCount(asymmetricId, asymmetricId),
-        static_cast<size_t>(18));
+        countFacesOnPlane(
+            asymmetricNeighbors, Direction::PosX, 0, 2.0f),
+        static_cast<size_t>(0));
+    CHECK_EQ(
+        countFacesOnPlane(
+            asymmetricNeighbors, Direction::NegX, 0, 2.0f),
+        static_cast<size_t>(1));
 }
 
 TEST_CASE(MeshBuilder_CullsModelBoundariesAcrossChunkEdges) {

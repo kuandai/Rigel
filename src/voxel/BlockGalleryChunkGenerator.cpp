@@ -211,6 +211,14 @@ BlockGalleryChunkGenerator::placements() const {
     return result;
 }
 
+void BlockGalleryChunkGenerator::validateGeneratorBounds(
+    GeneratorDefinitionData::Bounds bounds) const {
+    if (bounds != worldBounds()) {
+        throw std::invalid_argument(
+            "Block gallery bounds must match its published generator identity");
+    }
+}
+
 bool BlockGalleryChunkGenerator::containsChunk(ChunkCoord coord) const {
     return m_placementsByChunk.contains(coord);
 }

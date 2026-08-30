@@ -1,5 +1,7 @@
 #include "WorldGenerationBootstrap.h"
 
+#include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
+
 #include <stdexcept>
 #include <utility>
 
@@ -40,9 +42,19 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     validateRuntimeTargets(worldSet, worldId, world, worldView);
 
     const Voxel::BlockRegistry& registry = worldSet.resources().registry();
+    Persistence::NewWorldGenerationFactory compatibleCreationFactory =
+        creationFactory;
+    if (blockGallery && creationFactory) {
+        compatibleCreationFactory = [&creationFactory, &blockGallery] {
+            Persistence::NewWorldGeneration creation = creationFactory();
+            blockGallery->validateGeneratorBounds(
+                creation.definition.data.bounds);
+            return creation;
+        };
+    }
     Persistence::BootstrappedWorldGeneration bootstrapped =
         Persistence::bootstrapWorldGeneration(
-            creationFactory,
+            compatibleCreationFactory,
             worldSet.persistenceService(),
             registry,
             context);

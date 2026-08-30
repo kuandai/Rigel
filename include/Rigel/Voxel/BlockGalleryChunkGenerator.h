@@ -51,6 +51,8 @@ public:
     std::vector<BlockGalleryBlockPlacement> placements() const;
     BlockGalleryOverview overview() const { return m_overview; }
     GeneratorDefinitionData::Bounds worldBounds() const { return {0, 2}; }
+    void validateGeneratorBounds(
+        GeneratorDefinitionData::Bounds bounds) const;
 
     bool containsChunk(ChunkCoord coord) const;
     void generate(ChunkCoord coord, ChunkBuffer& out) const;

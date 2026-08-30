@@ -5,6 +5,8 @@
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/Storage.h"
+#include "Rigel/Voxel/BlockGalleryCatalog.h"
+#include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/GeneratorDefinition.h"
 
@@ -230,6 +232,33 @@ private:
     std::mutex m_mutex;
     std::condition_variable m_changed;
     size_t m_lockAttempts = 0;
+};
+
+class PublicationObservingStorage final
+    : public Persistence::FilesystemBackend {
+public:
+    bool createDirectoryExclusive(const std::string& path) override {
+        ++m_directoryReservationAttempts;
+        return Persistence::FilesystemBackend::createDirectoryExclusive(path);
+    }
+
+    void publishDirectory(
+        const std::string& stagedPath,
+        const std::string& finalPath) override {
+        ++m_publicationAttempts;
+        Persistence::FilesystemBackend::publishDirectory(
+            stagedPath, finalPath);
+    }
+
+    size_t directoryReservationAttempts() const {
+        return m_directoryReservationAttempts;
+    }
+
+    size_t publicationAttempts() const { return m_publicationAttempts; }
+
+private:
+    size_t m_directoryReservationAttempts = 0;
+    size_t m_publicationAttempts = 0;
 };
 
 } // namespace
@@ -664,6 +693,61 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_creation_starts_no_generat
     CHECK(view.generator() == nullptr);
     CHECK(!std::filesystem::exists(root));
     CHECK_EQ(view.streamingMetrics().generationJobsStarted, uint64_t{0});
+}
+
+TEST_CASE(ApplicationWorldGenerationBootstrap_gallery_bounds_reject_before_publication) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_bootstrap_gallery_bounds");
+    const auto root = directory.path() / "world_1";
+    auto storage =
+        std::make_shared<PublicationObservingStorage>();
+    Rigel::Voxel::WorldSet worldSet;
+    configureWorldSet(worldSet, root, storage, "memory");
+    worldSet.resources().registry().freeze();
+    auto catalog =
+        std::make_shared<const Rigel::Voxel::BlockGalleryCatalog>(
+            worldSet.resources().registry());
+    auto gallery =
+        std::make_shared<const Rigel::Voxel::BlockGalleryChunkGenerator>(
+            worldSet.resources().registry(), std::move(catalog));
+    Rigel::Voxel::World& world = worldSet.createWorld(1);
+    Rigel::Voxel::WorldView view(world, worldSet.resources());
+    const auto context = worldSet.persistenceContext(1);
+    worldSet.setPersistenceActiveFormat(1, "cr");
+    const auto before = view.streamingMetrics();
+    size_t resolverCalls = 0;
+    Rigel::Persistence::NewWorldGenerationFactory resolver = [&] {
+        ++resolverCalls;
+        return creation(601u, 0.25f, "incompatible gallery");
+    };
+
+    CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+        worldSet,
+        1,
+        world,
+        view,
+        resolver,
+        context,
+        gallery));
+
+    CHECK_EQ(resolverCalls, size_t{1});
+    CHECK_EQ(storage->directoryReservationAttempts(), size_t{0});
+    CHECK_EQ(storage->publicationAttempts(), size_t{0});
+    CHECK(!std::filesystem::exists(root));
+    for (const auto& entry : std::filesystem::directory_iterator(
+             directory.path())) {
+        CHECK(!entry.path().filename().string().starts_with(
+            "world_1.staging."));
+    }
+    CHECK_EQ(
+        Rigel::Persistence::inspectSavedWorldGeneration(context),
+        Rigel::Persistence::SavedWorldGenerationPresence::Missing);
+    CHECK_EQ(
+        worldSet.persistenceContext(1).preferredFormat,
+        std::string("cr"));
+    CHECK(world.generator() == nullptr);
+    CHECK(view.generator() == nullptr);
+    checkStreamingMetricsEqual(view.streamingMetrics(), before);
 }
 
 TEST_CASE(ApplicationWorldGenerationBootstrap_markerless_save_fails_unchanged) {

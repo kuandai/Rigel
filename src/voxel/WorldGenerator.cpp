@@ -1039,10 +1039,8 @@ WorldGenerator::WorldGenerator(const BlockRegistry& registry,
       m_stages(buildStages(
           m_definition, m_seed, m_registry, m_densityGraph)),
       m_blockGallery(std::move(blockGallery)) {
-    if (m_blockGallery &&
-        m_blockGallery->worldBounds() != m_definition.bounds) {
-        throw std::invalid_argument(
-            "Block gallery bounds must match its published generator identity");
+    if (m_blockGallery) {
+        m_blockGallery->validateGeneratorBounds(m_definition.bounds);
     }
 }
 

@@ -1238,6 +1238,16 @@ def _validate_block_properties(properties: dict[str, object], context: str) -> N
             value = properties[key]
             if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 15:
                 raise AssetImportError(f"{context}.{key} must be an integer from 0 to 15")
+    if "refractiveIndex" in properties:
+        refractive_index = properties["refractiveIndex"]
+        if (
+            not isinstance(refractive_index, (int, float))
+            or isinstance(refractive_index, bool)
+            or not math.isfinite(refractive_index)
+        ):
+            raise AssetImportError(
+                f"{context}.refractiveIndex must be a finite number"
+            )
     if "modelName" in properties and not isinstance(properties["modelName"], str):
         raise AssetImportError(f"{context}.modelName must be a string")
     orientation = _block_orientation(properties.get("rotation"), f"{context}.rotation")
@@ -1406,15 +1416,36 @@ def render_block_yaml(
         lines.append("rotate_top_bottom: true")
     if model.culls_self or properties.get("isFluid", False):
         lines.append("cull_same_type: true")
+    transparent_slots = tuple(sorted(
+        slot
+        for slot, texture in texture_bindings.items()
+        if models.any_texture_has_transparent_texels((texture,), context)
+    ))
+    texture_render_layers: dict[str, str] = {}
     if not model.empty and model.transparent:
         layer = "transparent"
-    elif models.any_texture_has_transparent_texels(
-        tuple(texture_bindings.values()), context
-    ):
-        layer = "cutout"
+    elif transparent_slots:
+        alpha_layer = (
+            "transparent"
+            if "refractiveIndex" in properties
+            else "cutout"
+        )
+        if not model.full_cube and len(transparent_slots) < len(texture_bindings):
+            layer = "opaque"
+            texture_render_layers = {
+                slot: alpha_layer for slot in transparent_slots
+            }
+        else:
+            layer = alpha_layer
     else:
         layer = "opaque"
     lines.append(f"layer: {layer}")
+    if texture_render_layers:
+        lines.append("texture_render_layers:")
+        for slot, render_layer in texture_render_layers.items():
+            lines.append(
+                f"  {_yaml_mapping_key(slot)}: {_yaml_string(render_layer)}"
+            )
     emitted = max(
         int(properties.get("lightLevelRed", 0)),
         int(properties.get("lightLevelGreen", 0)),
@@ -1599,13 +1630,16 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
     except UnicodeDecodeError as error:
         raise AssetImportError(f"{source}: generated block YAML is not UTF-8") from error
     result: dict[str, object] = {}
-    textures: dict[str, str] = {}
-    in_textures = False
+    mappings: dict[str, dict[str, str]] = {
+        "textures": {},
+        "texture_render_layers": {},
+    }
+    active_mapping: str | None = None
     for line_number, line in enumerate(lines, start=1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if line.startswith("  "):
-            if not in_textures or ":" not in line:
+            if active_mapping is None or ":" not in line:
                 raise AssetImportError(f"{source}:{line_number}: malformed generated YAML")
             stripped = line.strip()
             try:
@@ -1619,29 +1653,30 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
                     value = json.loads(raw_value.strip())
             except json.JSONDecodeError as error:
                 raise AssetImportError(
-                    f"{source}:{line_number}: malformed texture entry"
+                    f"{source}:{line_number}: malformed mapping entry"
                 ) from error
+            mapping = mappings[active_mapping]
             if (
                 not isinstance(key, str)
                 or not key
-                or key in textures
+                or key in mapping
                 or not isinstance(value, str)
             ):
-                raise AssetImportError(f"{source}:{line_number}: invalid texture entry")
-            textures[key] = value
+                raise AssetImportError(f"{source}:{line_number}: invalid mapping entry")
+            mapping[key] = value
             continue
-        in_textures = False
+        active_mapping = None
         if ":" not in line:
             raise AssetImportError(f"{source}:{line_number}: malformed generated YAML")
         key, raw_value = line.split(":", 1)
         if key in result:
             raise AssetImportError(f"{source}:{line_number}: duplicate field {key}")
         value = raw_value.strip()
-        if key == "textures":
+        if key in mappings:
             if value:
-                raise AssetImportError(f"{source}:{line_number}: textures must be a map")
-            in_textures = True
-            result[key] = textures
+                raise AssetImportError(f"{source}:{line_number}: {key} must be a map")
+            active_mapping = key
+            result[key] = mappings[key]
         elif key == "id":
             try:
                 decoded = json.loads(value)
@@ -1674,7 +1709,7 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
     allowed = {
         "id", "model", "opaque", "solid", "cull_same_type", "layer",
         "emits_light", "light_attenuation", "orientation",
-        "rotate_top_bottom", "textures",
+        "rotate_top_bottom", "textures", "texture_render_layers",
     }
     _reject_unknown_keys(result, allowed, source)
     required = {"id", "model", "opaque", "solid", "layer"}
@@ -1685,6 +1720,16 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
         raise AssetImportError(f"{source}: invalid model {result['model']!r}")
     if result["layer"] not in ("opaque", "cutout", "transparent", "emissive"):
         raise AssetImportError(f"{source}: invalid render layer {result['layer']!r}")
+    texture_render_layers = mappings["texture_render_layers"]
+    for slot, render_layer in texture_render_layers.items():
+        if slot not in mappings["textures"]:
+            raise AssetImportError(
+                f"{source}: render-layer slot {slot!r} has no texture binding"
+            )
+        if render_layer not in ("opaque", "cutout", "transparent", "emissive"):
+            raise AssetImportError(
+                f"{source}: invalid texture render layer {render_layer!r}"
+            )
     orientation = tuple(result.get("orientation", (0, 0, 0)))
     if result.get("rotate_top_bottom", False) and orientation not in (
         (90, 0, 0), (0, 0, 90)
@@ -1695,6 +1740,11 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
     for key in ("emits_light", "light_attenuation"):
         if key in result and not 0 <= int(result[key]) <= 15:
             raise AssetImportError(f"{source}: {key} is outside 0..15")
+    textures = mappings["textures"]
+    if texture_render_layers and result["model"] in ("cube", "none"):
+        raise AssetImportError(
+            f"{source}: texture render layers require a normalized model"
+        )
     if textures and result["model"] == "cube":
         allowed_texture_keys = {
             "all", "top", "bottom", "sides", "default", "pos_x", "neg_x",

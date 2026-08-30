@@ -90,6 +90,10 @@ struct BlockModelDefinitionSource {
  * textures:
  *   all: textures/blocks/glass.png
  *
+ * # Named slots in normalized models may override the block render layer.
+ * # texture_render_layers:
+ * #   glass: transparent
+ *
  * # Orientation is registration-local. Supported angle triples are identity,
  * # X 90/270, Y 90/180/270, and Z 90. rotate_top_bottom is an explicit UV
  * # correction accepted only for X 90 and Z 90 registrations.

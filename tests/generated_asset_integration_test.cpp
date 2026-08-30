@@ -451,6 +451,51 @@ void checkAlphaCutoutRevealsFloor(const FramebufferCapture& capture) {
     CHECK(openingDepth > rightDepth);
 }
 
+void checkMixedTableMaterials(const FramebufferCapture& capture) {
+    const auto colorOffset = [&](int x, int topDownY) {
+        const int y = capture.height - 1 - topDownY;
+        return static_cast<size_t>(x + y * capture.width) * 4;
+    };
+    const auto depthAt = [&](int x, int topDownY) {
+        const int y = capture.height - 1 - topDownY;
+        return capture.depth[static_cast<size_t>(x + y * capture.width)];
+    };
+
+    // The cropped glass texture contributes low partial alpha over the wood at
+    // this fixed production-camera sample. In the cutout regression it matched
+    // the opaque wood reference because the glass texel was discarded.
+    const size_t glassOverWood = colorOffset(103, 104);
+    const size_t woodBorder = colorOffset(128, 110);
+    CHECK(capture.rgba[glassOverWood] >=
+          capture.rgba[woodBorder] + 8);
+    CHECK(capture.rgba[glassOverWood + 1] >=
+          capture.rgba[woodBorder + 1] + 15);
+    CHECK(capture.rgba[glassOverWood + 2] >=
+          capture.rgba[woodBorder + 2] + 20);
+    CHECK(capture.rgba[glassOverWood] < 145);
+    CHECK(capture.rgba[glassOverWood + 2] < 110);
+
+    // A second partial-alpha glass sample remains visibly blended instead of
+    // being either discarded to the pale floor or drawn as opaque cyan.
+    const size_t glassOverFloor = colorOffset(148, 104);
+    CHECK(capture.rgba[glassOverFloor] >= 115);
+    CHECK(capture.rgba[glassOverFloor] <= 145);
+    CHECK(capture.rgba[glassOverFloor + 1] >= 100);
+    CHECK(capture.rgba[glassOverFloor + 1] <= 135);
+    CHECK(capture.rgba[glassOverFloor + 2] >= 90);
+    CHECK(capture.rgba[glassOverFloor + 2] <= 120);
+
+    const auto checkOpaqueWood = [&](int x, int topDownY) {
+        const size_t color = colorOffset(x, topDownY);
+        CHECK(capture.rgba[color] >= capture.rgba[color + 1] + 20);
+        CHECK(capture.rgba[color] >= capture.rgba[color + 2] + 40);
+    };
+    checkOpaqueWood(128, 110);
+    checkOpaqueWood(128, 145);
+    CHECK(depthAt(128, 110) + 0.005f < depthAt(180, 110));
+    CHECK(depthAt(128, 145) + 0.001f < depthAt(180, 145));
+}
+
 bool pathIsWithin(
     const std::filesystem::path& path,
     const std::filesystem::path& directory
@@ -610,10 +655,13 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     const BlockType& ladder = requireBlock(resources.registry(), LadderId);
     const BlockType& alphaCutout =
         requireBlock(resources.registry(), AlphaCutoutId);
+    const BlockType& mixedTable =
+        requireBlock(resources.registry(), MultiCuboidId);
     const BlockType& pistonHead =
         requireBlock(resources.registry(), PistonHeadId);
     for (const BlockType* block : {
-             &slab, &stair, &door, &ladder, &alphaCutout, &pistonHead}) {
+             &slab, &stair, &door, &ladder, &alphaCutout, &mixedTable,
+             &pistonHead}) {
         CHECK(!block->model->isFullCube());
         checkTextureBindings(*block, resources.textureAtlas());
     }
@@ -664,6 +712,26 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
         resources.registry(), resources.textureAtlas(), AlphaCutoutId);
     checkMeshCardinality(
         alphaCutoutMesh, 16, 24, RenderLayer::Cutout);
+
+    CHECK_EQ(mixedTable.layer, RenderLayer::Opaque);
+    CHECK_EQ(
+        mixedTable.renderLayerForTextureSlot("border"),
+        RenderLayer::Opaque);
+    CHECK_EQ(
+        mixedTable.renderLayerForTextureSlot("top"),
+        RenderLayer::Transparent);
+    const ChunkMesh mixedTableMesh = buildOne(
+        resources.registry(), resources.textureAtlas(), MultiCuboidId);
+    CHECK_EQ(mixedTableMesh.vertexCount(), static_cast<size_t>(144));
+    CHECK_EQ(mixedTableMesh.indexCount(), static_cast<size_t>(216));
+    CHECK_EQ(
+        mixedTableMesh.layers[
+            static_cast<size_t>(RenderLayer::Opaque)].indexCount,
+        static_cast<uint32_t>(180));
+    CHECK_EQ(
+        mixedTableMesh.layers[
+            static_cast<size_t>(RenderLayer::Transparent)].indexCount,
+        static_cast<uint32_t>(36));
 
     const ChunkMesh pistonMesh = buildOne(
         resources.registry(), resources.textureAtlas(), PistonHeadId);
@@ -899,7 +967,15 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     CHECK(!requireBlock(resources.registry(), MultiCuboidId).isOpaque);
     CHECK_EQ(
         requireBlock(resources.registry(), MultiCuboidId).layer,
-        RenderLayer::Cutout);
+        RenderLayer::Opaque);
+    CHECK_EQ(
+        requireBlock(resources.registry(), MultiCuboidId)
+            .renderLayerForTextureSlot("border"),
+        RenderLayer::Opaque);
+    CHECK_EQ(
+        requireBlock(resources.registry(), MultiCuboidId)
+            .renderLayerForTextureSlot("top"),
+        RenderLayer::Transparent);
     CHECK(hasOutOfCellGeometry(
         *requireBlock(resources.registry(), PistonHeadId).model.geometry));
 
@@ -953,6 +1029,9 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
         }
         if (representative.identifier == AlphaCutoutId) {
             checkAlphaCutoutRevealsFloor(capture);
+        }
+        if (representative.identifier == MultiCuboidId) {
+            checkMixedTableMaterials(capture);
         }
         if (captureDirectory) {
             captures.push_back({

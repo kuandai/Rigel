@@ -125,6 +125,15 @@ struct BlockType {
     /// Rendering layer for draw order
     RenderLayer layer = RenderLayer::Opaque;
 
+    /// Render-layer overrides for named texture slots in normalized models.
+    std::unordered_map<std::string, RenderLayer> textureRenderLayers;
+
+    RenderLayer renderLayerForTextureSlot(const std::string& slot) const {
+        if (textureRenderLayers.empty()) return layer;
+        const auto found = textureRenderLayers.find(slot);
+        return found == textureRenderLayers.end() ? layer : found->second;
+    }
+
     /// Light emission level (0-15, 0 = no light)
     uint8_t emittedLight = 0;
 

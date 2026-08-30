@@ -128,6 +128,18 @@ std::optional<std::string> optionalScalar(
                   std::string(path) + "." + std::string(key));
 }
 
+RenderLayer renderLayerValue(
+    std::string_view value,
+    std::string_view source,
+    std::string_view path
+) {
+    if (value == "opaque") return RenderLayer::Opaque;
+    if (value == "cutout") return RenderLayer::Cutout;
+    if (value == "transparent") return RenderLayer::Transparent;
+    if (value == "emissive") return RenderLayer::Emissive;
+    fail(source, path, "unknown render layer '" + std::string(value) + "'");
+}
+
 bool booleanValue(
     ryml::ConstNodeRef node, std::string_view source, std::string_view path
 ) {
@@ -446,6 +458,29 @@ std::unordered_map<std::string, std::string> parseTextureMap(
     return result;
 }
 
+std::unordered_map<std::string, RenderLayer> parseTextureRenderLayerMap(
+    ryml::ConstNodeRef node, std::string_view source
+) {
+    if (!node.readable() || !node.is_map()) {
+        fail(source, "block.texture_render_layers", "expected a mapping");
+    }
+    std::unordered_map<std::string, RenderLayer> result;
+    for (const ryml::ConstNodeRef binding : node.children()) {
+        std::string slot = Util::toStdString(binding.key());
+        if (slot.empty()) {
+            fail(source, "block.texture_render_layers",
+                 "expected a non-empty texture slot");
+        }
+        const std::string path = "block.texture_render_layers." + slot;
+        const RenderLayer layer = renderLayerValue(
+            scalar(binding, source, path), source, path);
+        if (!result.emplace(slot, layer).second) {
+            fail(source, path, "duplicate texture render layer");
+        }
+    }
+    return result;
+}
+
 FaceTextures bindCubeTextures(
     const std::unordered_map<std::string, std::string>& bindings,
     std::string_view source
@@ -512,7 +547,8 @@ ParsedBlock parseBlock(
         root, source, "block",
         {"id", "identifier", "name", "model", "opaque", "solid",
          "cull_same_type", "layer", "emits_light", "light_attenuation",
-         "orientation", "rotate_top_bottom", "textures"});
+         "orientation", "rotate_top_bottom", "textures",
+         "texture_render_layers"});
 
     size_t explicitNames = 0;
     std::string identifier;
@@ -569,11 +605,7 @@ ParsedBlock parseBlock(
         type.cullSameType = *value;
     }
     if (const auto layer = optionalScalar(root, "layer", source, "block")) {
-        if (*layer == "opaque") type.layer = RenderLayer::Opaque;
-        else if (*layer == "cutout") type.layer = RenderLayer::Cutout;
-        else if (*layer == "transparent") type.layer = RenderLayer::Transparent;
-        else if (*layer == "emissive") type.layer = RenderLayer::Emissive;
-        else fail(source, "block.layer", "unknown render layer '" + *layer + "'");
+        type.layer = renderLayerValue(*layer, source, "block.layer");
     }
     for (const auto [key, destination] : {
              std::pair{"emits_light", &type.emittedLight},
@@ -609,6 +641,22 @@ ParsedBlock parseBlock(
             if (required.contains(slot)) {
                 fail(source, "block.textures." + slot,
                      "unresolved texture slot for model '" + modelId + "'");
+            }
+        }
+    }
+
+    if (root.has_child("texture_render_layers")) {
+        if (model->isFullCube()) {
+            fail(source, "block.texture_render_layers",
+                 "named texture render layers require a normalized model");
+        }
+        type.textureRenderLayers = parseTextureRenderLayerMap(
+            root["texture_render_layers"], source);
+        for (const auto& entry : type.textureRenderLayers) {
+            const std::string& slot = entry.first;
+            if (!type.textures.find(slot)) {
+                fail(source, "block.texture_render_layers." + slot,
+                     "texture slot is not declared by model '" + modelId + "'");
             }
         }
     }

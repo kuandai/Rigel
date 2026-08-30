@@ -962,6 +962,48 @@ TEST_CASE(MeshBuilder_BatchesMultipleCuboidsByBlockRenderLayer) {
     checkFaceWinding(mesh, 40, Direction::NegZ);
 }
 
+TEST_CASE(MeshBuilder_BatchesNormalizedModelFacesByTextureRenderLayer) {
+    BlockRegistry registry = makeRegistry();
+
+    BlockModelCuboid cuboid;
+    cuboid.bounds.max = {1.0f, 1.0f, 1.0f};
+    cuboid.faces[static_cast<size_t>(Direction::PosY)] =
+        modelFace("frame");
+    cuboid.faces[static_cast<size_t>(Direction::NegY)] =
+        modelFace("glass");
+    BlockType mixed;
+    mixed.identifier = "test:mixed_material";
+    mixed.model = makeModel(
+        "test:mixed_material_geometry", {"frame", "glass"}, {cuboid});
+    mixed.layer = RenderLayer::Opaque;
+    mixed.textureRenderLayers.emplace("glass", RenderLayer::Transparent);
+    const BlockID mixedId = registry.registerBlock(mixed.identifier, mixed);
+
+    Chunk chunk({0, 0, 0});
+    chunk.setBlock(1, 1, 1, BlockState{mixedId});
+    const ChunkMesh mesh = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = {},
+    });
+
+    CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(8));
+    CHECK_EQ(mesh.indices.size(), static_cast<size_t>(12));
+    CHECK_EQ(
+        mesh.layers[static_cast<size_t>(RenderLayer::Opaque)].indexCount,
+        static_cast<uint32_t>(6));
+    CHECK_EQ(
+        mesh.layers[static_cast<size_t>(RenderLayer::Cutout)].indexCount,
+        static_cast<uint32_t>(0));
+    CHECK_EQ(
+        mesh.layers[static_cast<size_t>(RenderLayer::Transparent)].indexStart,
+        static_cast<uint32_t>(6));
+    CHECK_EQ(
+        mesh.layers[static_cast<size_t>(RenderLayer::Transparent)].indexCount,
+        static_cast<uint32_t>(6));
+}
+
 TEST_CASE(MeshBuilder_PreservesTextureLayersAcrossByteBoundary) {
     TextureAtlas atlas;
     for (size_t layer = 0; layer < 255; ++layer) {

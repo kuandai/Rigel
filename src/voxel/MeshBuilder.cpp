@@ -268,10 +268,8 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                     continue;
                 }
 
-                // Get layer for this block type
-                size_t layerIdx = static_cast<size_t>(type.layer);
-
                 if (type.model->isFullCube()) {
+                    const size_t layerIdx = static_cast<size_t>(type.layer);
                     // Keep the canonical cube on its specialized path.
                     constexpr BlockModelBounds unitCellBounds = {
                         {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
@@ -357,6 +355,8 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                             type.model.orientation);
                         const size_t faceIdx = static_cast<size_t>(direction);
                         const BlockModelFace& face = *optionalFace;
+                        const size_t layerIdx = static_cast<size_t>(
+                            type.renderLayerForTextureSlot(face.textureSlot));
                         if (!shouldRenderFace(
                                 ctx, x, y, z, direction, bounds, state, type,
                                 face.cullAgainstOpaqueNeighbor)) {

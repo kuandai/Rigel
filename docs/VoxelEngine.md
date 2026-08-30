@@ -30,7 +30,8 @@ byte containing sky and block light nibbles.
 - Identifier and an immutable model instance
 - Opacity, solidity, and same-type face-culling flags
 - Full-cube face textures or named normalized-model texture bindings
-- `Opaque`, `Cutout`, `Transparent`, or `Emissive` render layer
+- `Opaque`, `Cutout`, `Transparent`, or `Emissive` default render layer, with
+  named-slot overrides for normalized models that combine materials
 - Emitted-light and attenuation values
 
 `BlockRegistry` assigns sequential IDs and supports lookup by ID or identifier.
@@ -79,9 +80,10 @@ There are three model paths: built-in `cube`, built-in empty `none`, and
 reusable axis-aligned cuboid assets. A normalized model owns one or more cuboid
 bounds plus only its declared cardinal faces. Each face selects a named texture
 slot and preserves its UV rectangle, quarter-turn rotation, shading direction,
-AO request, and culling request. Block registrations bind those slots and may
-apply only the measured right-angle X/Y/Z orientations. Cuboid bounds are in
-cell units and may extend outside `[0, 1]`.
+AO request, and culling request. Block registrations bind those slots, may
+assign a render-layer override to a slot, and may apply only the measured
+right-angle X/Y/Z orientations. Cuboid bounds are in cell units and may extend
+outside `[0, 1]`.
 
 ## Chunk Storage and Coordinates
 

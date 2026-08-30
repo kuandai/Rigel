@@ -143,11 +143,12 @@ and draw submission:
 | `base:wood_planks[stair_type=bottom_PosX]` | Four cuboids, ten faces, quarter-turned UVs |
 | `base:door_steel[part=bottom,power=on,direction=PosX]` | Y-oriented one-eighth-cell thickness |
 | `base:ladder_steel[direction=PosX]` | Y-oriented two-face thin geometry |
+| `base:table_pedestal_wood` | Opaque wood frame and pedestal plus alpha-blended glass top |
 | `base:piston[direction=PosX,type=advancing,part=head]` | Two cuboids, cropped/reversed/rotated UVs, and an authored bound of 1.25 |
 | `base:maize[type=farm,growth=4,part=bottom]` | Alpha-cutout crossed cuboids preserve transparent color and depth holes |
 
 The final tree identity is
-`f3bf6afb7244dc7e8bf6c85470b77c7c6d1b1a3ca98c6bbd70646b90668bdba9`.
+`f087345162f222962752a28aa3e8ee8e6ab94506bce04754daf46c5bd0d711d8`.
 A forced second import from the JAR digest recorded above reproduced both this
 tree hash and the provenance bytes exactly.
 

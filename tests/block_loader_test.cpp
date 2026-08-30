@@ -187,6 +187,9 @@ id: post_block
 model: post
 opaque: false
 solid: true
+layer: opaque
+texture_render_layers:
+  cap: transparent
 textures:
   side: textures/test/post_side.png
   cap: textures/test/post_cap.png
@@ -233,6 +236,47 @@ textures:
     CHECK_EQ(block.model.get(), model.get());
     CHECK_EQ(*block.textures.find("side"), "textures/test/post_side.png");
     CHECK_EQ(*block.textures.find("cap"), "textures/test/post_cap.png");
+    CHECK_EQ(
+        block.renderLayerForTextureSlot("side"), RenderLayer::Opaque);
+    CHECK_EQ(
+        block.renderLayerForTextureSlot("cap"), RenderLayer::Transparent);
+}
+
+TEST_CASE(BlockLoader_RejectsRenderLayerForUndeclaredModelSlot) {
+    constexpr std::string_view modelYaml = R"(
+id: post
+texture_slots: [surface]
+cuboids:
+  - bounds: [0, 0, 0, 1, 1, 1]
+    faces:
+      pos_y: {texture: surface}
+)";
+    constexpr std::string_view blockYaml = R"(
+id: bad_post
+model: post
+layer: opaque
+texture_render_layers:
+  missing: transparent
+textures:
+  surface: textures/test/post.png
+)";
+    TextureAtlas atlas;
+    addSyntheticTexture(atlas, "textures/test/post.png");
+    BlockModelRegistry models;
+    BlockRegistry blocks;
+    const std::array modelDefinitions = {
+        modelDefinition("models/blocks/post.yaml", modelYaml)};
+    const std::array blockDefinitions = {
+        definition("blocks/bad_post.yaml", blockYaml)};
+
+    const BlockLoadReport report = BlockLoader{}.loadDefinitions(
+        "test", modelDefinitions, blockDefinitions, models, blocks, atlas);
+
+    CHECK_EQ(report.failed, static_cast<size_t>(1));
+    CHECK_EQ(report.modelsLoaded, static_cast<size_t>(0));
+    CHECK_EQ(report.loaded, static_cast<size_t>(0));
+    CHECK(report.representativeFailures.front().reason.find("missing") !=
+          std::string::npos);
 }
 
 TEST_CASE(BlockLoader_LoadsImportedSingleCuboidFixture) {

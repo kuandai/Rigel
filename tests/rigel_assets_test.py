@@ -2167,6 +2167,39 @@ class BlockCompilerTest(unittest.TestCase):
             self.assertFalse(generated["opaque"])
             self.assertEqual(generated["layer"], "cutout")
 
+    def test_refractive_mixed_model_preserves_per_texture_materials(self) -> None:
+        entries = synthetic_cuboid_entries()
+        model = json.loads(entries["base/models/blocks/post.json"])
+        model["isTransparent"] = False
+        entries["base/models/blocks/post.json"] = encoded_json(model)
+        block = json.loads(entries["base/blocks/test_post.json"])
+        block["defaultProperties"].update(
+            {"isOpaque": False, "refractiveIndex": 1.6}
+        )
+        entries["base/blocks/test_post.json"] = encoded_json(block)
+        entries["base/textures/blocks/red_accent.png"] = synthetic_png(
+            transparent_pixels={(0, 0), (8, 8)}
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), root
+                )
+
+            generated = rigel_assets.parse_generated_block(
+                (root / "blocks/test__post.yaml").read_bytes(),
+                "blocks/test__post.yaml",
+            )
+            self.assertEqual(generated["layer"], "opaque")
+            self.assertEqual(
+                generated["texture_render_layers"],
+                {"accent": "transparent"},
+            )
+
     def test_preserves_generator_orientation_and_top_bottom_uv_behavior(self) -> None:
         entries = synthetic_block_entries()
         generators = json.loads(
@@ -3234,7 +3267,7 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
             self.assertEqual(textures["base_approximation_states"], 3)
             self.assertEqual(
                 first["output_tree_sha256"],
-                "f3bf6afb7244dc7e8bf6c85470b77c7c6d1b1a3ca98c6bbd70646b90668bdba9",
+                "f087345162f222962752a28aa3e8ee8e6ab94506bce04754daf46c5bd0d711d8",
             )
 
 

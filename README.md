@@ -60,7 +60,9 @@ consumes those generated assets, not Cosmic Reach JSON. The supported boundary
 is intentionally limited to the measured axis-aligned cuboid and right-angle
 block-state cases; see
 [`docs/AssetSystem.md`](docs/AssetSystem.md#normalized-block-models) for the
-format and rendering limits.
+format and rendering limits. Developers can inspect every successfully loaded
+renderable registration in the read-only, ephemeral
+[`block gallery`](docs/BlockGallery.md).
 
 CMake synchronizes before enumerating embedded resources whenever it finds a
 JAR. An automated environment can provide an absolute path without staging:

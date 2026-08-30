@@ -21,6 +21,7 @@ implementation and how the systems fit together.
 
 ### Voxel + World
 
+- `docs/BlockGallery.md` (developer launch, navigation, catalog, and visual review)
 - `docs/WorldGeneration.md` (strict graph generation, pipeline, streaming)
 - `docs/RenderingPipeline.md` (voxel rendering, TAA, shadows)
 - `docs/ShaderSystem.md` (shader assets and compilation)

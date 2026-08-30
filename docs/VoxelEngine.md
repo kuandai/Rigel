@@ -54,27 +54,12 @@ are the catalog's only exclusions. They are reported by identifier and
 `BlockID`, so air and any other intentional empty geometry remain accounted for
 even when the renderable count is zero.
 
-Launch the developer gallery with `--world-mode block-gallery`, or set
-`RIGEL_WORLD_MODE=block-gallery` when no command-line selection is present.
-The normal world remains the default. After normal asset loading freezes the
-registry, gallery startup builds the catalog and publishes a minimal empty
-generator identity into process-private memory. The same in-memory backend
-receives dirty chunk evictions and reloads, so bootstrap, asynchronous loading,
-streaming, and close follow the normal lifecycle without creating a save or
-modifying an existing world.
-
-The gallery generator places catalog specimens, a reference floor when a
-loaded opaque full cube is available, and a separate culling diagnostic area
-through ordinary chunks. `WorldView`, mesh workers, the texture atlas, render
-layers, lighting, culling, and `FrameRenderer` remain the rendering path. The
-camera starts at a deterministic overview and retains the standard free-fly
-controls. Aiming at a specimen uses the same whole-cell DDA as normal block
-editing and shows its full block-state identifier, catalog and grid positions,
-model shape and orientation, render layer and flags, and resolved texture
-binding count in an ImGui overlay. Floor and culling-diagnostic cells are not
-catalog specimens and leave the overlay in its no-target state. Block editing
-and demo mutations are disabled in this mode; all gallery state is discarded
-when the process exits and can be regenerated from the frozen runtime registry.
+The developer gallery places those entries, a reference floor, and culling
+diagnostics through ordinary chunks. It retains the production streaming,
+meshing, rendering, targeting, and close lifecycles while process-private memory
+isolates all gallery world persistence. `docs/BlockGallery.md` gives the exact
+launch, navigation, coordinate, read-only, importer-boundary, and framebuffer
+review workflow.
 
 There are three model paths: built-in `cube`, built-in empty `none`, and
 reusable axis-aligned cuboid assets. A normalized model owns one or more cuboid
@@ -268,6 +253,7 @@ cuboid coverage.
 
 ## Related Docs
 
+- `docs/BlockGallery.md`
 - `docs/ApplicationLifecycle.md`
 - `docs/WorldGeneration.md`
 - `docs/RenderingPipeline.md`

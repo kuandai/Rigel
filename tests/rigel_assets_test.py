@@ -2450,6 +2450,104 @@ class GeneratedTreeClosureTest(unittest.TestCase):
 
 
 class SynchronizationTest(unittest.TestCase):
+    def test_sync_records_block_model_recovery_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_cuboid_entries())
+
+            provenance, changed = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:post",)
+            )
+
+            self.assertTrue(changed)
+            self.assertEqual(provenance["counts"]["block_models"], 1)
+            self.assertEqual(
+                provenance["block_model_import"],
+                {
+                    "schema": rigel_assets.BLOCK_MODEL_SUPPORT_SCHEMA,
+                    "candidate_states": 1,
+                    "newly_recovered_states": 1,
+                    "base_approximation_states": 2,
+                    "corrected_approximations": 2,
+                    "omissions": {
+                        "plane_or_mixed_geometry": {
+                            "block_states": [],
+                            "candidate_states": 0,
+                            "base_approximation_states": 0,
+                            "other_states": 0,
+                        },
+                        "nonstandard_texture_dimensions": {
+                            "block_states": [],
+                            "candidate_states": 0,
+                            "base_approximation_states": 0,
+                            "other_states": 0,
+                        },
+                    },
+                },
+            )
+
+    def test_block_model_omission_reasons_are_disjoint_and_precise(self) -> None:
+        cases: list[tuple[str, dict[str, bytes], str]] = []
+        plane_entries = synthetic_cuboid_entries()
+        plane_model = json.loads(plane_entries["base/models/blocks/post.json"])
+        plane_model["planes"] = [{"invented": "unsupported"}]
+        plane_entries["base/models/blocks/post.json"] = encoded_json(plane_model)
+        cases.append(("plane_or_mixed_geometry", plane_entries, "explicit plane"))
+
+        texture_entries = synthetic_cuboid_entries()
+        for path in tuple(texture_entries):
+            if path.startswith("base/textures/blocks/"):
+                texture_entries[path] = synthetic_png(64, 16)
+        cases.append(
+            (
+                "nonstandard_texture_dimensions",
+                texture_entries,
+                "not 16x16",
+            )
+        )
+
+        for reason, entries, diagnostic in cases:
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                jar = root / "fixture.jar"
+                write_jar(jar, entries)
+                output = root / "output"
+                messages: list[str] = []
+                audit = rigel_assets.BlockModelImportAudit()
+                with zipfile.ZipFile(jar) as archive:
+                    indexed = rigel_assets.indexed_archive(archive)
+                    rigel_assets.extract_direct_assets(archive, indexed, output)
+                    rigel_assets.compile_blocks(
+                        archive, indexed, output, messages, audit
+                    )
+                rigel_assets.omit_blocks_with_unsupported_textures(
+                    output, messages, audit
+                )
+
+                report = audit.provenance()
+                self.assertEqual(report["candidate_states"], 1)
+                self.assertEqual(report["newly_recovered_states"], 0)
+                self.assertEqual(report["base_approximation_states"], 2)
+                self.assertEqual(report["corrected_approximations"], 0)
+                self.assertEqual(
+                    report["omissions"][reason]["block_states"],
+                    [
+                        "test:post",
+                        "test:post[color=blue]",
+                        "test:post[shape=generated]",
+                    ],
+                )
+                other_reason = (
+                    "nonstandard_texture_dimensions"
+                    if reason == "plane_or_mixed_geometry"
+                    else "plane_or_mixed_geometry"
+                )
+                self.assertEqual(
+                    report["omissions"][other_reason]["block_states"], []
+                )
+                self.assertTrue(any(diagnostic in message for message in messages))
+
     def test_sync_is_idempotent_and_records_provenance(self) -> None:
         entries = synthetic_block_entries()
         with tempfile.TemporaryDirectory() as directory:
@@ -2468,11 +2566,62 @@ class SynchronizationTest(unittest.TestCase):
             self.assertFalse(second_changed)
             self.assertEqual(first, second)
             self.assertEqual(first["schema"], 1)
-            self.assertEqual(first["importer_schema"], 3)
+            self.assertEqual(first["importer_schema"], rigel_assets.IMPORTER_SCHEMA)
             self.assertEqual(first["counts"]["blocks"], 4)
             self.assertEqual(
                 first["output_tree_sha256"],
                 rigel_assets.sha256_tree(root / ".rigel/assets"),
+            )
+
+    def test_block_model_support_schema_invalidates_synchronization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            first, _ = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+            updated_schema = rigel_assets.BLOCK_MODEL_SUPPORT_SCHEMA + 1
+
+            with mock.patch.object(
+                rigel_assets, "BLOCK_MODEL_SUPPORT_SCHEMA", updated_schema
+            ):
+                self.assertFalse(
+                    rigel_assets.current_import_matches(
+                        root, str(first["jar_sha256"])
+                    )
+                )
+                rebuilt, changed = rigel_assets.synchronize(
+                    root, jar, required_identifiers=("test:stone",)
+                )
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                rebuilt["block_model_import"]["schema"], updated_schema
+            )
+
+    def test_existing_import_rejects_inconsistent_model_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_cuboid_entries())
+            provenance, _ = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:post",)
+            )
+            provenance["block_model_import"]["corrected_approximations"] = 1
+            rigel_assets.atomic_write_json(
+                root / rigel_assets.PROVENANCE_RELATIVE_PATH, provenance
+            )
+
+            with self.assertRaisesRegex(
+                rigel_assets.AssetImportError,
+                "approximation correction count is inconsistent",
+            ):
+                rigel_assets.validate_existing_import(root)
+            self.assertFalse(
+                rigel_assets.current_import_matches(
+                    root, str(provenance["jar_sha256"])
+                )
             )
 
     def test_forced_rebuild_is_byte_deterministic(self) -> None:
@@ -2785,15 +2934,22 @@ class SynchronizationTest(unittest.TestCase):
                 )
 
     def test_source_change_replaces_tree_instead_of_accumulating(self) -> None:
-        first_entries = synthetic_block_entries()
+        first_entries = synthetic_cuboid_entries()
         first_entries["base/sounds/stale.ogg"] = b"old"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             jar = root / "fixture.jar"
             write_jar(jar, first_entries)
-            rigel_assets.synchronize(root, jar, required_identifiers=("test:stone",))
+            rigel_assets.synchronize(root, jar, required_identifiers=("test:post",))
             stale = root / ".rigel/assets/sounds/stale.ogg"
+            stale_model = root / ".rigel/assets/models/blocks/post.yaml"
+            stale_variant = (
+                root
+                / ".rigel/assets/blocks/test__post[shape=generated].yaml"
+            )
             self.assertTrue(stale.is_file())
+            self.assertTrue(stale_model.is_file())
+            self.assertTrue(stale_variant.is_file())
 
             second_entries = synthetic_block_entries()
             second_entries["base/version.txt"] = b"second"
@@ -2804,6 +2960,9 @@ class SynchronizationTest(unittest.TestCase):
 
             self.assertTrue(changed)
             self.assertFalse(stale.exists())
+            self.assertFalse(stale_model.exists())
+            self.assertFalse(stale_variant.exists())
+            self.assertFalse(any((root / ".rigel/assets/blocks").glob("*post*")))
 
     def test_failed_sync_preserves_previous_valid_tree_and_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2851,6 +3010,74 @@ class SynchronizationTest(unittest.TestCase):
                 rigel_assets.validate_generated_tree(
                     root, required_identifiers=("test:stone",)
                 )
+
+
+class RealJarBlockModelClosureTest(unittest.TestCase):
+    def test_cosmic_reach_0_6_1_model_closure(self) -> None:
+        configured_jar = os.environ.get(rigel_assets.JAR_ENVIRONMENT_VARIABLE)
+        if not configured_jar:
+            self.skipTest(
+                f"{rigel_assets.JAR_ENVIRONMENT_VARIABLE} does not select a real JAR"
+            )
+        jar = rigel_assets.validate_jar(Path(configured_jar))
+        with zipfile.ZipFile(jar) as archive:
+            version = rigel_assets.source_version(
+                archive, rigel_assets.indexed_archive(archive)
+            )
+        if version != "0.6.1":
+            self.skipTest(f"configured Cosmic Reach JAR is version {version!r}")
+
+        self.assertEqual(
+            rigel_assets.sha256_file(jar),
+            "58a2cc3b79b5413cfa0f2e4ae3b37f44ed7f11a5e828de57f9f3f71599ac570e",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, changed = rigel_assets.synchronize(root, jar)
+            first_provenance = (
+                root / rigel_assets.PROVENANCE_RELATIVE_PATH
+            ).read_bytes()
+            rebuilt, rebuilt_changed = rigel_assets.synchronize(
+                root, jar, force=True
+            )
+
+            self.assertTrue(changed)
+            self.assertTrue(rebuilt_changed)
+            self.assertEqual(rebuilt, first)
+            self.assertEqual(
+                (root / rigel_assets.PROVENANCE_RELATIVE_PATH).read_bytes(),
+                first_provenance,
+            )
+            self.assertEqual(
+                first["counts"],
+                {
+                    "blocks": 2021,
+                    "textures": 438,
+                    "models": 16,
+                    "block_models": 51,
+                    "animations": 7,
+                    "sounds": 59,
+                },
+            )
+            report = first["block_model_import"]
+            self.assertEqual(report["candidate_states"], 1607)
+            self.assertEqual(report["newly_recovered_states"], 1590)
+            self.assertEqual(report["base_approximation_states"], 106)
+            self.assertEqual(report["corrected_approximations"], 100)
+            plane = report["omissions"]["plane_or_mixed_geometry"]
+            self.assertEqual(len(plane["block_states"]), 9)
+            self.assertEqual(plane["candidate_states"], 6)
+            self.assertEqual(plane["base_approximation_states"], 3)
+            textures = report["omissions"][
+                "nonstandard_texture_dimensions"
+            ]
+            self.assertEqual(len(textures["block_states"]), 14)
+            self.assertEqual(textures["candidate_states"], 11)
+            self.assertEqual(textures["base_approximation_states"], 3)
+            self.assertEqual(
+                first["output_tree_sha256"],
+                "e4d1c653f6cd36b876b033e8d359d188779261e4829adfc01ee6f8b62b4e81f3",
+            )
 
 
 class _MissingTextureModelResolver:

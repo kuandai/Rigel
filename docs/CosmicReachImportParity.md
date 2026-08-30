@@ -86,7 +86,11 @@ block atlas. Supported non-cubic base registrations now reference the same
 normalized assets instead of retaining their earlier cube approximation. A
 current import emits 51 shared normalized cuboid definitions and 2,021 block
 definitions in total, an increase of exactly 1,590 blocks over the original
-parity output.
+parity output. Of 106 geometrically non-cubic base registrations in the source,
+100 are corrected from the earlier cube approximation; the remaining six are
+split evenly between the independent geometry and texture omissions below.
+The resulting tree SHA-256 is
+`e4d1c653f6cd36b876b033e8d359d188779261e4829adfc01ee6f8b62b4e81f3`.
 
 Explicit plane primitives remain outside the normalized model contract. Six
 generated variants use cuboid-plus-plane geometry; together with three base
@@ -95,6 +99,13 @@ registrations they are visibly omitted with one provenance diagnostic. The
 separate texture-dimension diagnostic. Animated textures, generalized planes,
 collision-shape fidelity, and model-accurate raycasting remain outside the
 runtime boundary.
+
+Import provenance retains the model-support schema and closure census. The
+1,607 candidates divide into 1,590 recovered states, six plane/mixed omissions,
+and eleven nonstandard-texture omissions. The same disjoint reasons record the
+three plus three omitted base approximations, including sorted block-state IDs,
+so the 106-state base census closes independently. Repeating a forced import of
+the same JAR produces the same tree hash and provenance bytes.
 
 CR model emission texture maps also remain outside the current normalized
 block contract. Scalar emitted light is preserved. The importer recognizes

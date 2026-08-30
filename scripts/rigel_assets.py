@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import fcntl
 import hashlib
 import json
@@ -34,7 +34,8 @@ SNAPSHOT_LOCK_FILENAME = ".snapshot.lock"
 SNAPSHOT_ACTIVE_GENERATION_FILENAME = ".active-generation.json"
 SNAPSHOT_STAGING_SUFFIX = ".staging"
 PROVENANCE_SCHEMA = 1
-IMPORTER_SCHEMA = 3
+IMPORTER_SCHEMA = 4
+BLOCK_MODEL_SUPPORT_SCHEMA = 1
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 BLOCK_TEXTURE_SIZE = (16, 16)
@@ -615,6 +616,103 @@ class ResolvedModel:
     geometry: ResolvedGeometry | None = None
 
 
+@dataclass
+class BlockModelImportAudit:
+    candidate_states: set[str] = field(default_factory=set)
+    base_approximation_states: set[str] = field(default_factory=set)
+    plane_or_mixed_omissions: set[str] = field(default_factory=set)
+    nonstandard_texture_omissions: set[str] = field(default_factory=set)
+
+    def record_geometry(
+        self,
+        identifiers: list[str],
+        *,
+        generated_candidate: bool,
+        requires_cuboid_model: bool,
+        has_planes: bool,
+    ) -> None:
+        if requires_cuboid_model:
+            target = (
+                self.candidate_states
+                if generated_candidate
+                else self.base_approximation_states
+            )
+            target.update(identifiers)
+        if has_planes:
+            self.plane_or_mixed_omissions.update(identifiers)
+
+    def record_nonstandard_textures(self, identifiers: list[str]) -> None:
+        self.nonstandard_texture_omissions.update(identifiers)
+
+    def provenance(self) -> dict[str, object]:
+        overlapping_states = (
+            self.candidate_states & self.base_approximation_states
+        )
+        if overlapping_states:
+            raise AssetImportError(
+                "block states were classified as both generated candidates and "
+                "base approximations: " + ", ".join(sorted(overlapping_states))
+            )
+        overlapping_omissions = (
+            self.plane_or_mixed_omissions
+            & self.nonstandard_texture_omissions
+        )
+        if overlapping_omissions:
+            raise AssetImportError(
+                "block model omission reasons overlap: "
+                + ", ".join(sorted(overlapping_omissions))
+            )
+
+        omitted = (
+            self.plane_or_mixed_omissions
+            | self.nonstandard_texture_omissions
+        )
+
+        def omission(reason_states: set[str]) -> dict[str, object]:
+            candidate_count = len(reason_states & self.candidate_states)
+            base_count = len(reason_states & self.base_approximation_states)
+            return {
+                "block_states": sorted(reason_states),
+                "candidate_states": candidate_count,
+                "base_approximation_states": base_count,
+                "other_states": len(reason_states) - candidate_count - base_count,
+            }
+
+        report: dict[str, object] = {
+            "schema": BLOCK_MODEL_SUPPORT_SCHEMA,
+            "candidate_states": len(self.candidate_states),
+            "newly_recovered_states": len(self.candidate_states - omitted),
+            "base_approximation_states": len(self.base_approximation_states),
+            "corrected_approximations": len(
+                self.base_approximation_states - omitted
+            ),
+            "omissions": {
+                "plane_or_mixed_geometry": omission(
+                    self.plane_or_mixed_omissions
+                ),
+                "nonstandard_texture_dimensions": omission(
+                    self.nonstandard_texture_omissions
+                ),
+            },
+        }
+        validate_block_model_import_report(report)
+        return report
+
+
+def _requires_geometric_cuboid_model(model: ResolvedModel) -> bool:
+    geometry = model.geometry
+    return (
+        not model.empty
+        and geometry is not None
+        and (
+            geometry.plane_count != 0
+            or len(geometry.cuboids) != 1
+            or geometry.cuboids[0].bounds
+            != (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        )
+    )
+
+
 def _finite_number(value: object, context: str) -> float:
     if (
         not isinstance(value, (int, float))
@@ -1157,6 +1255,7 @@ def compile_blocks(
     entries: dict[str, zipfile.ZipInfo],
     staging: Path,
     diagnostics: list[str] | None = None,
+    model_audit: BlockModelImportAudit | None = None,
 ) -> int:
     models = BlockModelResolver(archive, entries)
     generators = StateGeneratorResolver(archive, entries)
@@ -1226,10 +1325,20 @@ def compile_blocks(
                         f"{source}: block state has no modelName"
                     )
                 resolved_model = models.resolve(model_reference)
-                if (
+                has_planes = (
                     resolved_model.geometry is not None
-                    and resolved_model.geometry.plane_count
-                ):
+                    and resolved_model.geometry.plane_count != 0
+                )
+                if model_audit is not None:
+                    model_audit.record_geometry(
+                        identifiers,
+                        generated_candidate=texture_model is not None,
+                        requires_cuboid_model=_requires_geometric_cuboid_model(
+                            resolved_model
+                        ),
+                        has_planes=has_planes,
+                    )
+                if has_planes:
                     omitted_plane_states.extend(
                         (identifier, resolved_model.geometry.source)
                         for identifier in identifiers
@@ -1557,7 +1666,9 @@ def prune_unused_block_models(root: Path) -> int:
 
 
 def omit_blocks_with_unsupported_textures(
-    root: Path, diagnostics: list[str] | None = None
+    root: Path,
+    diagnostics: list[str] | None = None,
+    model_audit: BlockModelImportAudit | None = None,
 ) -> int:
     omitted: list[str] = []
     unsupported: set[str] = set()
@@ -1588,8 +1699,108 @@ def omit_blocks_with_unsupported_textures(
             f"{BLOCK_TEXTURE_SIZE[0]}x{BLOCK_TEXTURE_SIZE[1]}: "
             + ", ".join(sorted(unsupported))
         )
+    if model_audit is not None:
+        model_audit.record_nonstandard_textures(omitted)
     prune_unused_block_models(root)
     return len(omitted)
+
+
+def validate_block_model_import_report(value: object) -> dict[str, object]:
+    report = _expect_object(value, "block_model_import")
+    required = {
+        "schema",
+        "candidate_states",
+        "newly_recovered_states",
+        "base_approximation_states",
+        "corrected_approximations",
+        "omissions",
+    }
+    if set(report) != required:
+        raise AssetImportError(
+            "block_model_import must contain the complete supported report"
+        )
+
+    def count(mapping: dict[str, object], key: str, context: str) -> int:
+        result = mapping.get(key)
+        if (
+            not isinstance(result, int)
+            or isinstance(result, bool)
+            or result < 0
+        ):
+            raise AssetImportError(f"{context}.{key} must be a non-negative integer")
+        return result
+
+    schema = count(report, "schema", "block_model_import")
+    if schema != BLOCK_MODEL_SUPPORT_SCHEMA:
+        raise AssetImportError("block_model_import schema is unsupported")
+    candidates = count(report, "candidate_states", "block_model_import")
+    recovered = count(report, "newly_recovered_states", "block_model_import")
+    base_states = count(
+        report, "base_approximation_states", "block_model_import"
+    )
+    corrected = count(
+        report, "corrected_approximations", "block_model_import"
+    )
+    if recovered > candidates or corrected > base_states:
+        raise AssetImportError("block_model_import recovery counts are inconsistent")
+
+    omissions = _expect_object(report["omissions"], "block_model_import.omissions")
+    expected_reasons = {
+        "plane_or_mixed_geometry",
+        "nonstandard_texture_dimensions",
+    }
+    if set(omissions) != expected_reasons:
+        raise AssetImportError(
+            "block_model_import omissions must use the supported disjoint reasons"
+        )
+    omitted_candidates = 0
+    omitted_base_states = 0
+    omitted_identifiers: set[str] = set()
+    for reason in sorted(expected_reasons):
+        context = f"block_model_import.omissions.{reason}"
+        summary = _expect_object(omissions[reason], context)
+        if set(summary) != {
+            "block_states",
+            "candidate_states",
+            "base_approximation_states",
+            "other_states",
+        }:
+            raise AssetImportError(f"{context} has incomplete omission metadata")
+        states = summary["block_states"]
+        if (
+            not isinstance(states, list)
+            or not all(isinstance(state, str) and state for state in states)
+            or states != sorted(set(states))
+        ):
+            raise AssetImportError(
+                f"{context}.block_states must be sorted unique identifiers"
+            )
+        overlap = omitted_identifiers & set(states)
+        if overlap:
+            raise AssetImportError(
+                "block_model_import omission reasons overlap: "
+                + ", ".join(sorted(overlap))
+            )
+        omitted_identifiers.update(states)
+        reason_candidates = count(summary, "candidate_states", context)
+        reason_base_states = count(
+            summary, "base_approximation_states", context
+        )
+        reason_other = count(summary, "other_states", context)
+        if reason_candidates + reason_base_states + reason_other != len(states):
+            raise AssetImportError(f"{context} omission counts are inconsistent")
+        omitted_candidates += reason_candidates
+        omitted_base_states += reason_base_states
+
+    if candidates != recovered + omitted_candidates:
+        raise AssetImportError(
+            "block_model_import candidate recovery count is inconsistent"
+        )
+    if base_states != corrected + omitted_base_states:
+        raise AssetImportError(
+            "block_model_import approximation correction count is inconsistent"
+        )
+    return report
 
 
 def validate_generated_tree(
@@ -1783,6 +1994,7 @@ def synchronize(
 
             with _generated_tree_staging(root) as staging:
                 diagnostics: list[str] = []
+                model_audit = BlockModelImportAudit()
                 with zipfile.ZipFile(jar_snapshot) as archive:
                     entries = indexed_archive(archive)
                     if not any(
@@ -1793,8 +2005,12 @@ def synchronize(
                             "JAR has no Cosmic Reach base/blocks definitions"
                         )
                     extract_direct_assets(archive, entries, staging, diagnostics)
-                    compile_blocks(archive, entries, staging, diagnostics)
-                    omit_blocks_with_unsupported_textures(staging, diagnostics)
+                    compile_blocks(
+                        archive, entries, staging, diagnostics, model_audit
+                    )
+                    omit_blocks_with_unsupported_textures(
+                        staging, diagnostics, model_audit
+                    )
                     version = source_version(archive, entries)
                 counts = validate_generated_tree(staging, required_identifiers)
                 provenance = {
@@ -1805,6 +2021,7 @@ def synchronize(
                     "source_prefix": SOURCE_PREFIX,
                     "output_tree_sha256": sha256_tree(staging),
                     "counts": counts,
+                    "block_model_import": model_audit.provenance(),
                 }
                 if version is not None:
                     provenance["source_version"] = version
@@ -1836,6 +2053,11 @@ def _validate_existing_import(root: Path) -> dict[str, object]:
         raise AssetImportError("generated asset provenance is missing or malformed")
     if provenance.get("schema") != PROVENANCE_SCHEMA:
         raise AssetImportError("generated asset provenance schema is unsupported")
+    if provenance.get("importer_schema") != IMPORTER_SCHEMA:
+        raise AssetImportError("generated asset importer schema is unsupported")
+    if provenance.get("importer_sha256") != importer_sha256():
+        raise AssetImportError("generated assets require synchronization with this importer")
+    validate_block_model_import_report(provenance.get("block_model_import"))
     assets = root / GENERATED_ASSETS_RELATIVE_PATH
     counts = validate_generated_tree(assets)
     actual_hash = sha256_tree(assets)
@@ -2535,6 +2757,10 @@ def _import_matches(
         or provenance.get("jar_sha256") != jar_digest
     ):
         return False
+    try:
+        validate_block_model_import_report(provenance.get("block_model_import"))
+    except AssetImportError:
+        return False
     return _tree_matches_provenance(assets, provenance)
 
 
@@ -2698,6 +2924,33 @@ def main(argv: list[str] | None = None) -> int:
                     "Assets: "
                     + ", ".join(f"{name}={counts[name]}" for name in sorted(counts))
                 )
+            model_report = provenance.get("block_model_import")
+            if isinstance(model_report, dict):
+                print(
+                    "Block model import: "
+                    + ", ".join(
+                        f"{name}={model_report[name]}"
+                        for name in (
+                            "candidate_states",
+                            "newly_recovered_states",
+                            "base_approximation_states",
+                            "corrected_approximations",
+                        )
+                    )
+                )
+                model_omissions = model_report.get("omissions")
+                if isinstance(model_omissions, dict):
+                    for reason in sorted(model_omissions):
+                        summary = model_omissions[reason]
+                        if isinstance(summary, dict):
+                            states = summary.get("block_states", [])
+                            print(
+                                f"Block model omission {reason}: "
+                                f"states={len(states) if isinstance(states, list) else 0}, "
+                                f"candidate_states={summary.get('candidate_states')}, "
+                                "base_approximation_states="
+                                f"{summary.get('base_approximation_states')}"
+                            )
             omissions = provenance.get("source_omissions", [])
             if isinstance(omissions, list):
                 for omission in omissions:

@@ -78,7 +78,11 @@ when publication is interrupted. A failed import preserves the previous valid
 tree; removed source assets disappear on the next successful import. Provenance
 records the source JAR SHA-256, importer schema and source hash, deterministic
 output-tree SHA-256, source prefix, and category counts without timestamps or
-machine-specific paths.
+machine-specific paths. Block-model provenance also records the support-schema
+version, generated geometric candidates, recovered states, corrected base
+approximations, and sorted state identifiers under disjoint plane/mixed and
+nonstandard-texture omission reasons. Changing the support schema makes an
+otherwise coherent import non-current and forces regeneration.
 
 CMake resolves a JAR in this order: explicit `RIGEL_COSMIC_REACH_JAR` cache
 path, the environment variable of the same name, then the canonical staged

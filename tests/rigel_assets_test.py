@@ -2102,6 +2102,32 @@ class BlockCompilerTest(unittest.TestCase):
             )
             self.assertEqual(counts["block_models"], 1)
 
+    def test_nontransparent_partial_model_keeps_opaque_render_layer(self) -> None:
+        entries = single_cuboid_fixture.entries()
+        model = json.loads(entries["base/models/blocks/ledge.json"])
+        model["isTransparent"] = False
+        entries["base/models/blocks/ledge.json"] = encoded_json(model)
+        block = json.loads(entries["base/blocks/ledge.json"])
+        block["defaultProperties"]["isOpaque"] = False
+        entries["base/blocks/ledge.json"] = encoded_json(block)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), root
+                )
+
+            generated = rigel_assets.parse_generated_block(
+                (root / "blocks/test__ledge.yaml").read_bytes(),
+                "blocks/test__ledge.yaml",
+            )
+            self.assertEqual(generated["model"], "base:block_model/ledge")
+            self.assertFalse(generated["opaque"])
+            self.assertEqual(generated["layer"], "opaque")
+
     def test_preserves_generator_orientation_and_top_bottom_uv_behavior(self) -> None:
         entries = synthetic_block_entries()
         generators = json.loads(
@@ -3169,7 +3195,7 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
             self.assertEqual(textures["base_approximation_states"], 3)
             self.assertEqual(
                 first["output_tree_sha256"],
-                "e4d1c653f6cd36b876b033e8d359d188779261e4829adfc01ee6f8b62b4e81f3",
+                "b4ef7504b57f04d3366a0bc005315819db821142ebd44b7d2f15ed0ce3c5cc65",
             )
 
 

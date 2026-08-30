@@ -1218,7 +1218,7 @@ def render_block_yaml(
         lines.append("rotate_top_bottom: true")
     if model.culls_self or properties.get("isFluid", False):
         lines.append("cull_same_type: true")
-    layer = "opaque" if model.empty or (opaque and not model.transparent) else "transparent"
+    layer = "transparent" if not model.empty and model.transparent else "opaque"
     lines.append(f"layer: {layer}")
     emitted = max(
         int(properties.get("lightLevelRed", 0)),

@@ -399,6 +399,19 @@ size_t countRenderedCenterPixels(const FramebufferCapture& capture) {
     return rendered;
 }
 
+void checkOpaqueWoodOccludesFloor(const FramebufferCapture& capture) {
+    const size_t offset = static_cast<size_t>(
+        capture.width / 2 + capture.height / 2 * capture.width) * 4;
+    const int red = capture.rgba[offset];
+    const int green = capture.rgba[offset + 1];
+    const int blue = capture.rgba[offset + 2];
+
+    // The floor is pale blue while the slab is saturated brown. Applying the
+    // transparent pass to the slab blends those colors at its covered center.
+    CHECK(red - green >= 20);
+    CHECK(red - blue >= 40);
+}
+
 bool pathIsWithin(
     const std::filesystem::path& path,
     const std::filesystem::path& directory
@@ -608,18 +621,18 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
 
     const ChunkMesh slabMesh = buildOne(
         resources.registry(), resources.textureAtlas(), SlabId);
-    checkMeshCardinality(slabMesh, 24, 36, RenderLayer::Transparent);
+    checkMeshCardinality(slabMesh, 24, 36, RenderLayer::Opaque);
     const PositionRange slabRange = positionRange(slabMesh);
     CHECK_EQ(slabRange.min[1], 1.0f);
     CHECK_EQ(slabRange.max[1], 1.5f);
 
     const ChunkMesh stairMesh = buildOne(
         resources.registry(), resources.textureAtlas(), StairId);
-    checkMeshCardinality(stairMesh, 40, 60, RenderLayer::Transparent);
+    checkMeshCardinality(stairMesh, 40, 60, RenderLayer::Opaque);
 
     const ChunkMesh doorMesh = buildOne(
         resources.registry(), resources.textureAtlas(), DoorId);
-    checkMeshCardinality(doorMesh, 24, 36, RenderLayer::Transparent);
+    checkMeshCardinality(doorMesh, 24, 36, RenderLayer::Opaque);
     const PositionRange doorRange = positionRange(doorMesh);
     CHECK_NEAR(doorRange.max[2] - doorRange.min[2], 0.125f, 0.00001f);
 
@@ -665,10 +678,10 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     CHECK_EQ(mesh.indexCount(), static_cast<size_t>(216));
     CHECK_EQ(
         mesh.layers[static_cast<size_t>(RenderLayer::Opaque)].indexCount,
-        static_cast<uint32_t>(72));
+        static_cast<uint32_t>(204));
     CHECK_EQ(
         mesh.layers[static_cast<size_t>(RenderLayer::Transparent)].indexCount,
-        static_cast<uint32_t>(144));
+        static_cast<uint32_t>(12));
 
     const std::array<std::string_view, 5> expectedTextures = {
         "textures/blocks/foliage/wood_planks.png",
@@ -838,6 +851,22 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     CHECK_EQ(
         requireBlock(resources.registry(), TransparentId).layer,
         RenderLayer::Transparent);
+    CHECK(!requireBlock(resources.registry(), SlabId).isOpaque);
+    CHECK_EQ(
+        requireBlock(resources.registry(), SlabId).layer,
+        RenderLayer::Opaque);
+    CHECK(!requireBlock(resources.registry(), StairId).isOpaque);
+    CHECK_EQ(
+        requireBlock(resources.registry(), StairId).layer,
+        RenderLayer::Opaque);
+    CHECK(!requireBlock(resources.registry(), DoorId).isOpaque);
+    CHECK_EQ(
+        requireBlock(resources.registry(), DoorId).layer,
+        RenderLayer::Opaque);
+    CHECK(!requireBlock(resources.registry(), MultiCuboidId).isOpaque);
+    CHECK_EQ(
+        requireBlock(resources.registry(), MultiCuboidId).layer,
+        RenderLayer::Opaque);
     CHECK(hasOutOfCellGeometry(
         *requireBlock(resources.registry(), PistonHeadId).model.geometry));
 
@@ -882,6 +911,9 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
         const FramebufferCapture capture = readFramebuffer(
             GalleryCaptureWidth, GalleryCaptureHeight);
         CHECK(countRenderedCenterPixels(capture) >= static_cast<size_t>(4));
+        if (representative.identifier == SlabId) {
+            checkOpaqueWoodOccludesFloor(capture);
+        }
         if (captureDirectory) {
             writeFramebufferCapture(
                 capture,

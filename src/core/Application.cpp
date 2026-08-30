@@ -997,12 +997,41 @@ int runApplication(ApplicationMain applicationMain) noexcept {
     return EXIT_FAILURE;
 }
 
-int runApplication() noexcept {
-    return runApplication([] {
+int runApplication(
+    int argc,
+    const char* const* argv,
+    LaunchApplicationMain applicationMain
+) noexcept {
+    try {
+        const LaunchOptions launchOptions = decodeLaunchOptions(argc, argv);
+        applicationMain(launchOptions);
+        spdlog::info("Application terminated successfully");
+        return EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        spdlog::error("Application error: {}", e.what());
+    } catch (...) {
+        spdlog::error("Application error: unknown failure");
+    }
+    return EXIT_FAILURE;
+}
+
+int runApplication(int argc, const char* const* argv) noexcept {
+    return runApplication(argc, argv, [](const LaunchOptions& launchOptions) {
+        if (launchOptions.worldMode == WorldMode::BlockGallery) {
+            throw std::runtime_error(
+                "World mode 'block-gallery' is not available in this build; "
+                "use '--world-mode normal' or omit the option.");
+        }
+
         Application application;
         application.run();
         application.close();
     });
+}
+
+int runApplication() noexcept {
+    const char* argv[] = {"Rigel"};
+    return runApplication(1, argv);
 }
 
 void Application::run() {

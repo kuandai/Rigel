@@ -1,5 +1,5 @@
 #include "core/ApplicationEntry.h"
 
-int main() {
-    return Rigel::runApplication();
+int main(int argc, char** argv) {
+    return Rigel::runApplication(argc, argv);
 }

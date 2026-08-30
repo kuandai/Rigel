@@ -1779,6 +1779,24 @@ def atomic_write_json(destination: Path, value: dict[str, object]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _retry_replace(source: Path, destination: Path) -> None:
+    try:
+        os.replace(source, destination)
+    except OSError:
+        if not source.exists() and destination.exists():
+            return
+        os.replace(source, destination)
+
+
+def _retry_remove_tree(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        shutil.rmtree(path)
+
+
 def publish_generated_tree(root: Path, staging: Path, provenance: dict[str, object]) -> None:
     destination = root / GENERATED_ASSETS_RELATIVE_PATH
     provenance_path = root / PROVENANCE_RELATIVE_PATH
@@ -1786,35 +1804,43 @@ def publish_generated_tree(root: Path, staging: Path, provenance: dict[str, obje
     backup = Path(
         tempfile.mkdtemp(prefix=".assets-previous-", dir=destination.parent)
     )
-    backup.rmdir()
-    previous_provenance = provenance_path.read_bytes() if provenance_path.is_file() else None
-    moved_previous = False
+    previous_assets = backup / "assets"
+    previous_provenance = backup / provenance_path.name
+    discarded_assets = backup / "discarded-assets"
+    had_previous_provenance = provenance_path.is_file()
+    provenance_publication_started = False
     try:
+        if had_previous_provenance:
+            atomic_copy(provenance_path, previous_provenance)
         if destination.exists():
-            os.replace(destination, backup)
-            moved_previous = True
+            os.replace(destination, previous_assets)
         os.replace(staging, destination)
-        try:
-            atomic_write_json(provenance_path, provenance)
-        except Exception:
-            failed = destination.with_name(f".{destination.name}.failed")
-            if failed.exists():
-                shutil.rmtree(failed)
-            os.replace(destination, failed)
-            if moved_previous:
-                os.replace(backup, destination)
-            if previous_provenance is None:
-                provenance_path.unlink(missing_ok=True)
-            else:
-                provenance_path.write_bytes(previous_provenance)
-            shutil.rmtree(failed)
-            raise
-        if moved_previous:
-            shutil.rmtree(backup)
+        provenance_publication_started = True
+        atomic_write_json(provenance_path, provenance)
     except Exception:
-        if moved_previous and backup.exists() and not destination.exists():
-            os.replace(backup, destination)
+        try:
+            if not staging.exists() and destination.exists():
+                _retry_replace(destination, discarded_assets)
+            if provenance_publication_started:
+                if had_previous_provenance:
+                    _retry_replace(previous_provenance, provenance_path)
+                else:
+                    provenance_path.unlink(missing_ok=True)
+            if previous_assets.exists():
+                _retry_replace(previous_assets, destination)
+            _retry_remove_tree(staging)
+            _retry_remove_tree(backup)
+        except Exception as recovery_error:
+            raise AssetImportError(
+                "generated asset publication failed and rollback was incomplete"
+            ) from recovery_error
         raise
+    try:
+        _retry_remove_tree(backup)
+    except OSError:
+        # The installed tree and provenance are already coherent. A cleanup
+        # failure must not turn a committed publication into a reported failure.
+        pass
 
 
 def current_import_matches(root: Path, jar_digest: str) -> bool:

@@ -10,6 +10,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zlib
 import zipfile
 
@@ -295,6 +296,34 @@ class ProvisioningTest(unittest.TestCase):
 
 
 class ImportFoundationTest(unittest.TestCase):
+    def _prepare_publication(self, root: Path) -> tuple[Path, dict[str, object]]:
+        assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+        rigel_assets.write_output(assets, "old.txt", b"old")
+        rigel_assets.atomic_write_json(
+            root / rigel_assets.PROVENANCE_RELATIVE_PATH,
+            {"generation": "old"},
+        )
+        staging = root / ".rigel/.assets-staging-fixture"
+        rigel_assets.write_output(staging, "new.txt", b"new")
+        return staging, {"generation": "new"}
+
+    def _assert_publication(self, root: Path, generation: str) -> None:
+        assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+        provenance = json.loads(
+            (root / rigel_assets.PROVENANCE_RELATIVE_PATH).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(provenance, {"generation": generation})
+        self.assertEqual(
+            (assets / f"{generation}.txt").read_bytes(), generation.encode()
+        )
+        other = "new" if generation == "old" else "old"
+        self.assertFalse((assets / f"{other}.txt").exists())
+        self.assertFalse(any((root / ".rigel").glob(".assets-previous-*")))
+        self.assertFalse(any((root / ".rigel").glob(".assets-staging-*")))
+        self.assertFalse(any((root / ".rigel").glob(".assets.failed")))
+
     def test_archive_rejects_traversal_duplicate_and_symlink_entries(self) -> None:
         cases: list[tuple[str, callable]] = [
             ("../escape", lambda archive: archive.writestr("../escape", b"bad")),
@@ -360,6 +389,146 @@ class ImportFoundationTest(unittest.TestCase):
             )
             self.assertEqual(persisted, provenance)
             self.assertFalse(any((root / ".rigel").glob(".assets-previous-*")))
+
+    def test_publish_recovers_when_moving_previous_tree_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging, provenance = self._prepare_publication(root)
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            real_replace = os.replace
+
+            def fail_move_previous(source: object, destination: object) -> None:
+                if Path(source) == assets:
+                    raise OSError("injected previous-tree move failure")
+                real_replace(source, destination)
+
+            with mock.patch.object(
+                rigel_assets.os, "replace", side_effect=fail_move_previous
+            ):
+                with self.assertRaisesRegex(OSError, "previous-tree"):
+                    rigel_assets.publish_generated_tree(root, staging, provenance)
+
+            self._assert_publication(root, "old")
+
+    def test_publish_recovers_when_installing_staging_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging, provenance = self._prepare_publication(root)
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            real_replace = os.replace
+
+            def fail_install(source: object, destination: object) -> None:
+                if Path(source) == staging and Path(destination) == assets:
+                    raise OSError("injected staging install failure")
+                real_replace(source, destination)
+
+            with mock.patch.object(rigel_assets.os, "replace", side_effect=fail_install):
+                with self.assertRaisesRegex(OSError, "staging install"):
+                    rigel_assets.publish_generated_tree(root, staging, provenance)
+
+            self._assert_publication(root, "old")
+
+    def test_publish_recovers_when_provenance_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging, provenance = self._prepare_publication(root)
+
+            with mock.patch.object(
+                rigel_assets,
+                "atomic_write_json",
+                side_effect=OSError("injected provenance write failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "provenance write"):
+                    rigel_assets.publish_generated_tree(root, staging, provenance)
+
+            self._assert_publication(root, "old")
+
+    def test_publish_restores_provenance_with_atomic_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging, provenance = self._prepare_publication(root)
+            provenance_path = root / rigel_assets.PROVENANCE_RELATIVE_PATH
+            real_atomic_write = rigel_assets.atomic_write_json
+            real_replace = os.replace
+            restoration_attempts = 0
+
+            def publish_then_fail(destination: Path, value: dict[str, object]) -> None:
+                real_atomic_write(destination, value)
+                raise OSError("injected post-publication failure")
+
+            def fail_first_restore(source: object, destination: object) -> None:
+                nonlocal restoration_attempts
+                source_path = Path(source)
+                if (
+                    Path(destination) == provenance_path
+                    and source_path.parent.name.startswith(".assets-previous-")
+                ):
+                    restoration_attempts += 1
+                    if restoration_attempts == 1:
+                        raise OSError("injected provenance restore failure")
+                real_replace(source, destination)
+
+            with mock.patch.object(
+                rigel_assets, "atomic_write_json", side_effect=publish_then_fail
+            ), mock.patch.object(
+                rigel_assets.os, "replace", side_effect=fail_first_restore
+            ):
+                with self.assertRaisesRegex(OSError, "post-publication"):
+                    rigel_assets.publish_generated_tree(root, staging, provenance)
+
+            self.assertGreaterEqual(restoration_attempts, 2)
+            self._assert_publication(root, "old")
+
+    def test_publish_retries_rollback_directory_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging, provenance = self._prepare_publication(root)
+            real_rmtree = rigel_assets.shutil.rmtree
+            cleanup_attempts = 0
+
+            def fail_first_cleanup(path: object, *args: object, **kwargs: object) -> None:
+                nonlocal cleanup_attempts
+                if Path(path).name.startswith(".assets-previous-"):
+                    cleanup_attempts += 1
+                    if cleanup_attempts == 1:
+                        raise OSError("injected rollback cleanup failure")
+                real_rmtree(path, *args, **kwargs)
+
+            with mock.patch.object(
+                rigel_assets,
+                "atomic_write_json",
+                side_effect=OSError("injected provenance write failure"),
+            ), mock.patch.object(
+                rigel_assets.shutil, "rmtree", side_effect=fail_first_cleanup
+            ):
+                with self.assertRaisesRegex(OSError, "provenance write"):
+                    rigel_assets.publish_generated_tree(root, staging, provenance)
+
+            self.assertGreaterEqual(cleanup_attempts, 2)
+            self._assert_publication(root, "old")
+
+    def test_publish_retries_committed_backup_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging, provenance = self._prepare_publication(root)
+            real_rmtree = rigel_assets.shutil.rmtree
+            cleanup_attempts = 0
+
+            def fail_first_cleanup(path: object, *args: object, **kwargs: object) -> None:
+                nonlocal cleanup_attempts
+                if Path(path).name.startswith(".assets-previous-"):
+                    cleanup_attempts += 1
+                    if cleanup_attempts == 1:
+                        raise OSError("injected backup cleanup failure")
+                real_rmtree(path, *args, **kwargs)
+
+            with mock.patch.object(
+                rigel_assets.shutil, "rmtree", side_effect=fail_first_cleanup
+            ):
+                rigel_assets.publish_generated_tree(root, staging, provenance)
+
+            self.assertGreaterEqual(cleanup_attempts, 2)
+            self._assert_publication(root, "new")
 
     def test_output_path_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

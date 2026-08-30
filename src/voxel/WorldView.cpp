@@ -66,10 +66,8 @@ void WorldView::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
         throw std::invalid_argument(
             "WorldView requires a world-owned generator");
     }
-    if (!generator || !worldGenerator->matchesGenerationInputs(
-            generator->definition(),
-            generator->seed(),
-            generator->semanticsVersion())) {
+    if (!generator ||
+        !worldGenerator->matchesRuntimeGenerator(*generator)) {
         throw std::invalid_argument(
             "WorldView generator must match the world-owned generator");
     }

@@ -67,6 +67,12 @@ PersistenceContext validatedPublishedContext(
             "generator-definition.yaml for world save '" +
             context.rootPath + "'");
     }
+    if (generator && world.generator() &&
+        !world.generator()->matchesRuntimeGenerator(*generator)) {
+        throw std::runtime_error(
+            "Runtime generator does not match the world-owned generator for "
+            "world save '" + context.rootPath + "'");
+    }
     context.preferredFormat = published.persistenceFormat;
     context.discoverExistingFormat = false;
     return context;

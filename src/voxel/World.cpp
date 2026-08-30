@@ -77,10 +77,8 @@ BlockState World::getBlock(int wx, int wy, int wz) const {
 
 void World::setGenerator(std::shared_ptr<const WorldGenerator> generator) {
     if (m_generator) {
-        if (!generator || !m_generator->matchesGenerationInputs(
-                generator->definition(),
-                generator->seed(),
-                generator->semanticsVersion())) {
+        if (!generator ||
+            !m_generator->matchesRuntimeGenerator(*generator)) {
             throw std::invalid_argument(
                 "World generator cannot change after it is set");
         }

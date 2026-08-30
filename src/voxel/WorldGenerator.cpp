@@ -1053,6 +1053,16 @@ bool WorldGenerator::matchesGenerationInputs(
         m_definition == definition;
 }
 
+bool WorldGenerator::matchesRuntimeGenerator(
+    const WorldGenerator& other) const {
+    return matchesGenerationInputs(
+               other.definition(),
+               other.seed(),
+               other.semanticsVersion()) &&
+        static_cast<bool>(m_blockGallery) ==
+            static_cast<bool>(other.m_blockGallery);
+}
+
 bool WorldGenerator::shouldPersistGeneratedChunk(ChunkCoord coord) const {
     return m_blockGallery && m_blockGallery->containsChunk(coord);
 }

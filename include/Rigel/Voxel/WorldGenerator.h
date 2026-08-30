@@ -75,10 +75,13 @@ public:
     const GeneratorDefinitionData& definition() const { return m_definition; }
     uint32_t seed() const { return m_seed; }
     uint32_t semanticsVersion() const { return m_semanticsVersion; }
+    // Compares the serialized inputs published with a world save.
     bool matchesGenerationInputs(
         const GeneratorDefinitionData& definition,
         uint32_t seed,
         uint32_t semanticsVersion) const;
+    // Also compares process-local generation behavior that is not serialized.
+    bool matchesRuntimeGenerator(const WorldGenerator& other) const;
     bool shouldPersistGeneratedChunk(ChunkCoord coord) const;
 
     void generate(ChunkCoord coord, ChunkBuffer& out,

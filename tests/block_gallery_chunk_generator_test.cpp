@@ -418,7 +418,8 @@ TEST_CASE(BlockGalleryChunkGenerator_AccountsAcrossChunkBoundaries) {
 }
 
 TEST_CASE(BlockGalleryChunkGenerator_PublishesMinimalEmptyIdentity) {
-    BlockRegistry registry;
+    WorldResources resources;
+    BlockRegistry& registry = resources.registry();
     populateGalleryRegistry(registry, 4);
     registry.freeze();
     auto catalog = std::make_shared<const BlockGalleryCatalog>(registry);
@@ -433,27 +434,45 @@ TEST_CASE(BlockGalleryChunkGenerator_PublishesMinimalEmptyIdentity) {
     CHECK(!identity.data.caves.enabled);
     CHECK(!identity.data.structures.enabled);
 
-    WorldGenerator emptyGenerator(registry, identity.data, 0);
+    auto emptyGenerator = std::make_shared<const WorldGenerator>(
+        registry, identity.data, 0);
     ChunkBuffer normalOutput;
-    emptyGenerator.generate({0, 0, 0}, normalOutput);
+    emptyGenerator->generate({0, 0, 0}, normalOutput);
     CHECK(std::all_of(
         normalOutput.blocks.begin(),
         normalOutput.blocks.end(),
         [](BlockState state) { return state.isAir(); }));
 
-    WorldGenerator galleryGenerator(registry, identity.data, 0, 1, gallery);
+    auto galleryGenerator = std::make_shared<const WorldGenerator>(
+        registry, identity.data, 0, 1, gallery);
     const ChunkCoord occupied = worldToChunk(
         catalog->entries().front().specimenPosition.x,
         catalog->entries().front().specimenPosition.y,
         catalog->entries().front().specimenPosition.z);
-    CHECK(galleryGenerator.shouldPersistGeneratedChunk(occupied));
-    CHECK(!galleryGenerator.shouldPersistGeneratedChunk({100, 0, 100}));
+    CHECK(galleryGenerator->shouldPersistGeneratedChunk(occupied));
+    CHECK(!galleryGenerator->shouldPersistGeneratedChunk({100, 0, 100}));
+    CHECK(emptyGenerator->matchesGenerationInputs(
+        galleryGenerator->definition(),
+        galleryGenerator->seed(),
+        galleryGenerator->semanticsVersion()));
+    CHECK(!emptyGenerator->matchesRuntimeGenerator(*galleryGenerator));
+    CHECK(!galleryGenerator->matchesRuntimeGenerator(*emptyGenerator));
     ChunkBuffer galleryOutput;
-    galleryGenerator.generate(occupied, galleryOutput);
+    galleryGenerator->generate(occupied, galleryOutput);
     CHECK(std::any_of(
         galleryOutput.blocks.begin(),
         galleryOutput.blocks.end(),
         [](BlockState state) { return !state.isAir(); }));
+
+    World world(resources);
+    WorldView view(world, resources);
+    world.setGenerator(emptyGenerator);
+    view.setGenerator(emptyGenerator);
+
+    CHECK_THROWS(world.setGenerator(galleryGenerator));
+    CHECK_EQ(world.generator(), emptyGenerator);
+    CHECK_THROWS(view.setGenerator(galleryGenerator));
+    CHECK_EQ(view.generator(), emptyGenerator);
 }
 
 TEST_CASE(BlockGalleryChunkGenerator_DirtyEvictionReloadsFromRam) {
@@ -501,6 +520,25 @@ TEST_CASE(BlockGalleryChunkGenerator_DirtyEvictionReloadsFromRam) {
         gallery);
     world.setGenerator(runtimeGenerator);
     view.setGenerator(runtimeGenerator);
+
+    auto emptyRuntimeGenerator = std::make_shared<const WorldGenerator>(
+        resources.registry(),
+        bootstrapped.generation.definition,
+        bootstrapped.generation.settings.seed,
+        bootstrapped.generation.settings.generator.semanticsVersion);
+    CHECK(emptyRuntimeGenerator->matchesGenerationInputs(
+        runtimeGenerator->definition(),
+        runtimeGenerator->seed(),
+        runtimeGenerator->semanticsVersion()));
+    CHECK_THROWS((void)Persistence::AsyncChunkLoader(
+        persistence,
+        context,
+        world,
+        runtimeGenerator->semanticsVersion(),
+        0,
+        0,
+        emptyRuntimeGenerator));
+    CHECK_EQ(world.generator(), runtimeGenerator);
 
     auto loader = std::make_shared<Persistence::AsyncChunkLoader>(
         persistence,

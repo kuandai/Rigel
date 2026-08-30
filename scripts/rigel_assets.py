@@ -27,6 +27,7 @@ STAGED_JAR_RELATIVE_PATH = Path(".rigel/source/Cosmic-Reach.jar")
 GENERATED_ASSETS_RELATIVE_PATH = Path(".rigel/assets")
 PROVENANCE_RELATIVE_PATH = Path(".rigel/cosmic-reach-import.json")
 PUBLICATION_LOCK_RELATIVE_PATH = Path(".rigel/assets-publication.lock")
+SYNCHRONIZATION_LOCK_PREFIX = ".assets-synchronization-"
 STAGING_PREFIX = ".assets-staging-"
 STAGING_LEASE_SUFFIX = ".lock"
 PROVENANCE_SCHEMA = 1
@@ -1681,42 +1682,57 @@ def synchronize(
 ) -> tuple[dict[str, object], bool]:
     jar, _ = resolve_jar(root, explicit_jar)
     jar_digest = sha256_file(jar)
-    with _publication_guard(root):
-        if not force:
-            provenance = _read_provenance(root)
-            if _import_matches(root, provenance, jar_digest):
-                assert provenance is not None
-                return provenance, False
+    with _synchronization_lock(root, jar_digest):
+        with _publication_guard(root):
+            if not force:
+                provenance = _read_provenance(root)
+                if _import_matches(root, provenance, jar_digest):
+                    assert provenance is not None
+                    return provenance, False
+            starting_publication = _publication_token(root)
 
-    with _generated_tree_staging(root) as staging:
-        diagnostics: list[str] = []
-        with zipfile.ZipFile(jar) as archive:
-            entries = indexed_archive(archive)
-            if not any(
-                path.startswith("base/blocks/") and path.endswith(".json")
-                for path in entries
-            ):
-                raise AssetImportError("JAR has no Cosmic Reach base/blocks definitions")
-            extract_direct_assets(archive, entries, staging, diagnostics)
-            compile_blocks(archive, entries, staging, diagnostics)
-            omit_blocks_with_unsupported_textures(staging, diagnostics)
-            version = source_version(archive, entries)
-        counts = validate_generated_tree(staging, required_identifiers)
-        provenance = {
-            "schema": PROVENANCE_SCHEMA,
-            "jar_sha256": jar_digest,
-            "importer_schema": IMPORTER_SCHEMA,
-            "importer_sha256": importer_sha256(),
-            "source_prefix": SOURCE_PREFIX,
-            "output_tree_sha256": sha256_tree(staging),
-            "counts": counts,
-        }
-        if version is not None:
-            provenance["source_version"] = version
-        if diagnostics:
-            provenance["source_omissions"] = diagnostics
-        publish_generated_tree(root, staging, provenance)
-        return provenance, True
+        with _generated_tree_staging(root) as staging:
+            diagnostics: list[str] = []
+            with zipfile.ZipFile(jar) as archive:
+                entries = indexed_archive(archive)
+                if not any(
+                    path.startswith("base/blocks/") and path.endswith(".json")
+                    for path in entries
+                ):
+                    raise AssetImportError(
+                        "JAR has no Cosmic Reach base/blocks definitions"
+                    )
+                extract_direct_assets(archive, entries, staging, diagnostics)
+                compile_blocks(archive, entries, staging, diagnostics)
+                omit_blocks_with_unsupported_textures(staging, diagnostics)
+                version = source_version(archive, entries)
+            counts = validate_generated_tree(staging, required_identifiers)
+            provenance = {
+                "schema": PROVENANCE_SCHEMA,
+                "jar_sha256": jar_digest,
+                "importer_schema": IMPORTER_SCHEMA,
+                "importer_sha256": importer_sha256(),
+                "source_prefix": SOURCE_PREFIX,
+                "output_tree_sha256": sha256_tree(staging),
+                "counts": counts,
+            }
+            if version is not None:
+                provenance["source_version"] = version
+            if diagnostics:
+                provenance["source_omissions"] = diagnostics
+
+            with _publication_guard(root, reap_staging=False):
+                if _publication_token(root) != starting_publication:
+                    current = _read_provenance(root)
+                    if _import_matches(root, current, jar_digest):
+                        assert current is not None
+                        return current, False
+                    raise AssetImportError(
+                        "generated assets changed while synchronization was "
+                        "in progress; retry the synchronization"
+                    )
+                _publish_generated_tree(root, staging, provenance)
+            return provenance, True
 
 
 def validate_existing_import(root: Path) -> dict[str, object]:
@@ -1880,12 +1896,40 @@ def _publication_lock(root: Path):
 
 
 @contextmanager
+def _synchronization_lock(root: Path, jar_digest: str):
+    workspace = root / ".rigel"
+    workspace.mkdir(parents=True, exist_ok=True)
+    lock_path = workspace / f"{SYNCHRONIZATION_LOCK_PREFIX}{jar_digest}.lock"
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
 def _publication_guard(root: Path, *, reap_staging: bool = True):
     with _publication_lock(root):
         _recover_interrupted_publication(root)
         if reap_staging:
             _reap_abandoned_staging(root)
         yield
+
+
+def _filesystem_entry_token(path: Path) -> str | None:
+    if path.is_dir():
+        return "tree:" + sha256_tree(path)
+    if path.is_file():
+        return "file:" + sha256_file(path)
+    return "other" if path.exists() else None
+
+
+def _publication_token(root: Path) -> tuple[str | None, str | None]:
+    return (
+        _filesystem_entry_token(root / GENERATED_ASSETS_RELATIVE_PATH),
+        _filesystem_entry_token(root / PROVENANCE_RELATIVE_PATH),
+    )
 
 
 def _tree_matches_provenance(
@@ -1917,6 +1961,82 @@ def _retry_atomic_copy(source: Path, destination: Path) -> None:
         atomic_copy(source, destination)
 
 
+def _tree_matches_sha256(path: Path, expected: object) -> bool:
+    if not isinstance(expected, str) or not path.is_dir():
+        return False
+    try:
+        return sha256_tree(path) == expected
+    except (AssetImportError, OSError):
+        return False
+
+
+def _file_matches_sha256(path: Path, expected: object) -> bool:
+    if not isinstance(expected, str) or not path.is_file():
+        return False
+    try:
+        return sha256_file(path) == expected
+    except OSError:
+        return False
+
+
+def _restore_recorded_previous_publication(
+    root: Path, backup: Path, transaction: dict[str, object]
+) -> None:
+    destination = root / GENERATED_ASSETS_RELATIVE_PATH
+    provenance_path = root / PROVENANCE_RELATIVE_PATH
+    previous_assets = backup / "assets"
+    previous_provenance = backup / provenance_path.name
+    discarded_assets = backup / "discarded-assets"
+    had_previous_assets = transaction["had_previous_assets"]
+    had_previous_provenance = transaction["had_previous_provenance"]
+    assets_sha256 = transaction["previous_assets_sha256"]
+    provenance_sha256 = transaction["previous_provenance_sha256"]
+
+    if had_previous_assets:
+        if _tree_matches_sha256(previous_assets, assets_sha256):
+            if (
+                destination.exists()
+                and not _tree_matches_sha256(destination, assets_sha256)
+            ):
+                _retry_remove_tree(discarded_assets)
+                _retry_replace(destination, discarded_assets)
+            if not _tree_matches_sha256(destination, assets_sha256):
+                _retry_replace(previous_assets, destination)
+        elif not _tree_matches_sha256(destination, assets_sha256):
+            raise AssetImportError(
+                "cannot locate the generated asset tree retained for rollback"
+            )
+    elif destination.exists():
+        _retry_remove_tree(discarded_assets)
+        _retry_replace(destination, discarded_assets)
+
+    if had_previous_provenance:
+        if _file_matches_sha256(previous_provenance, provenance_sha256):
+            _retry_atomic_copy(previous_provenance, provenance_path)
+        elif not _file_matches_sha256(provenance_path, provenance_sha256):
+            raise AssetImportError(
+                "cannot locate the generated asset provenance retained for rollback"
+            )
+    else:
+        provenance_path.unlink(missing_ok=True)
+
+    assets_restored = (
+        _tree_matches_sha256(destination, assets_sha256)
+        if had_previous_assets
+        else not destination.exists()
+    )
+    provenance_restored = (
+        _file_matches_sha256(provenance_path, provenance_sha256)
+        if had_previous_provenance
+        else not provenance_path.exists()
+    )
+    if not assets_restored or not provenance_restored:
+        raise AssetImportError(
+            "generated asset publication recovery did not restore its prior state"
+        )
+    _retry_remove_tree(backup)
+
+
 def _restore_previous_publication(root: Path, backup: Path) -> None:
     destination = root / GENERATED_ASSETS_RELATIVE_PATH
     provenance_path = root / PROVENANCE_RELATIVE_PATH
@@ -1924,6 +2044,17 @@ def _restore_previous_publication(root: Path, backup: Path) -> None:
     previous_provenance = backup / provenance_path.name
     discarded_assets = backup / "discarded-assets"
     transaction = _transaction_state(backup)
+    recorded_state = (
+        transaction is not None
+        and isinstance(transaction.get("had_previous_assets"), bool)
+        and isinstance(transaction.get("had_previous_provenance"), bool)
+        and "previous_assets_sha256" in transaction
+        and "previous_provenance_sha256" in transaction
+    )
+    if recorded_state:
+        assert transaction is not None
+        _restore_recorded_previous_publication(root, backup, transaction)
+        return
     had_previous_assets = (
         transaction.get("had_previous_assets") if transaction else None
     )
@@ -2010,22 +2141,35 @@ def _publish_generated_tree(
     destination = root / GENERATED_ASSETS_RELATIVE_PATH
     provenance_path = root / PROVENANCE_RELATIVE_PATH
     destination.parent.mkdir(parents=True, exist_ok=True)
+    had_previous_assets = destination.exists()
+    had_previous_provenance = provenance_path.is_file()
+    previous_assets_sha256 = (
+        sha256_tree(destination) if had_previous_assets else None
+    )
+    previous_provenance_sha256 = (
+        sha256_file(provenance_path) if had_previous_provenance else None
+    )
     backup = Path(
         tempfile.mkdtemp(prefix=".assets-previous-", dir=destination.parent)
     )
     previous_assets = backup / "assets"
     previous_provenance = backup / provenance_path.name
     transaction_path = backup / "transaction.json"
-    had_previous_assets = destination.exists()
-    had_previous_provenance = provenance_path.is_file()
     try:
         atomic_write_json(
             transaction_path,
             {
                 "had_previous_assets": had_previous_assets,
                 "had_previous_provenance": had_previous_provenance,
+                "previous_assets_sha256": previous_assets_sha256,
+                "previous_provenance_sha256": previous_provenance_sha256,
             },
         )
+    except BaseException:
+        _retry_remove_tree(backup)
+        _retry_remove_tree(staging)
+        raise
+    try:
         if had_previous_provenance:
             atomic_copy(provenance_path, previous_provenance)
         if had_previous_assets:

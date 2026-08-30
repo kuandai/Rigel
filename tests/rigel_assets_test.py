@@ -1633,6 +1633,221 @@ class SynchronizationTest(unittest.TestCase):
                 rigel_assets.sha256_tree(root / ".rigel/assets"),
             )
 
+    def test_equivalent_concurrent_syncs_share_completed_import(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            first_started = threading.Event()
+            continue_first = threading.Event()
+            second_started = threading.Event()
+            results: list[bool] = []
+            errors: list[BaseException] = []
+            extraction_count = 0
+            real_extract = rigel_assets.extract_direct_assets
+
+            def pause_first_extract(*args: object, **kwargs: object) -> object:
+                nonlocal extraction_count
+                extraction_count += 1
+                if extraction_count == 1:
+                    first_started.set()
+                    if not continue_first.wait(timeout=5):
+                        raise AssertionError("equivalent synchronization did not start")
+                return real_extract(*args, **kwargs)
+
+            def synchronize() -> None:
+                try:
+                    _, changed = rigel_assets.synchronize(
+                        root, jar, required_identifiers=("test:stone",)
+                    )
+                    results.append(changed)
+                except BaseException as error:
+                    errors.append(error)
+
+            def synchronize_second() -> None:
+                second_started.set()
+                synchronize()
+
+            with mock.patch.object(
+                rigel_assets,
+                "extract_direct_assets",
+                side_effect=pause_first_extract,
+            ):
+                first = threading.Thread(target=synchronize)
+                second = threading.Thread(target=synchronize_second)
+                first.start()
+                self.assertTrue(first_started.wait(timeout=5))
+                second.start()
+                self.assertTrue(second_started.wait(timeout=5))
+                continue_first.set()
+                first.join(timeout=5)
+                second.join(timeout=5)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(sorted(results), [False, True])
+            self.assertEqual(extraction_count, 1)
+
+    def test_older_concurrent_sync_cannot_replace_newer_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            older_jar = root / "older.jar"
+            newer_jar = root / "newer.jar"
+            older_entries = synthetic_block_entries()
+            older_entries["base/version.txt"] = b"older"
+            newer_entries = synthetic_block_entries()
+            newer_entries["base/version.txt"] = b"newer"
+            write_jar(older_jar, older_entries)
+            write_jar(newer_jar, newer_entries)
+            older_ready = threading.Event()
+            continue_older = threading.Event()
+            older_errors: list[BaseException] = []
+            real_validate = rigel_assets.validate_generated_tree
+
+            def pause_older_validation(*args: object, **kwargs: object) -> object:
+                if threading.current_thread().name == "older-synchronization":
+                    older_ready.set()
+                    if not continue_older.wait(timeout=5):
+                        raise AssertionError("newer synchronization did not complete")
+                return real_validate(*args, **kwargs)
+
+            def synchronize_older() -> None:
+                try:
+                    rigel_assets.synchronize(
+                        root,
+                        older_jar,
+                        required_identifiers=("test:stone",),
+                    )
+                except BaseException as error:
+                    older_errors.append(error)
+
+            with mock.patch.object(
+                rigel_assets,
+                "validate_generated_tree",
+                side_effect=pause_older_validation,
+            ):
+                older = threading.Thread(
+                    target=synchronize_older,
+                    name="older-synchronization",
+                )
+                older.start()
+                self.assertTrue(older_ready.wait(timeout=5))
+                newer, changed = rigel_assets.synchronize(
+                    root,
+                    newer_jar,
+                    required_identifiers=("test:stone",),
+                )
+                continue_older.set()
+                older.join(timeout=5)
+
+            self.assertFalse(older.is_alive())
+            self.assertTrue(changed)
+            self.assertEqual(newer.get("source_version"), "newer")
+            self.assertEqual(len(older_errors), 1)
+            self.assertIsInstance(older_errors[0], rigel_assets.AssetImportError)
+            self.assertIn("changed while synchronization", str(older_errors[0]))
+            published = rigel_assets.read_provenance(root)
+            self.assertIsNotNone(published)
+            assert published is not None
+            self.assertEqual(published.get("source_version"), "newer")
+            self.assertTrue(
+                rigel_assets.current_import_matches(
+                    root, rigel_assets.sha256_file(newer_jar)
+                )
+            )
+
+    def test_failed_repair_of_tampered_publication_can_be_retried(self) -> None:
+        for phase in ("previous-tree move", "staging install", "provenance write"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                first_jar = root / "first.jar"
+                replacement_jar = root / "replacement.jar"
+                write_jar(first_jar, synthetic_block_entries())
+                replacement_entries = synthetic_block_entries()
+                replacement_entries["base/version.txt"] = b"replacement"
+                write_jar(replacement_jar, replacement_entries)
+                rigel_assets.synchronize(
+                    root, first_jar, required_identifiers=("test:stone",)
+                )
+                assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+                provenance_path = root / rigel_assets.PROVENANCE_RELATIVE_PATH
+                (assets / "textures/blocks/test_stone.png").write_bytes(b"tampered")
+                tampered_hash = rigel_assets.sha256_tree(assets)
+                previous_provenance = provenance_path.read_bytes()
+
+                if phase == "provenance write":
+                    real_atomic_write = rigel_assets.atomic_write_json
+
+                    def fail_publication_provenance(
+                        destination: Path, value: dict[str, object]
+                    ) -> None:
+                        if destination == provenance_path:
+                            raise OSError("injected provenance write failure")
+                        real_atomic_write(destination, value)
+
+                    failure = mock.patch.object(
+                        rigel_assets,
+                        "atomic_write_json",
+                        side_effect=fail_publication_provenance,
+                    )
+                else:
+                    real_replace = os.replace
+
+                    def fail_publication_move(
+                        source: object, destination: object
+                    ) -> None:
+                        source_path = Path(source)
+                        destination_path = Path(destination)
+                        moving_previous = (
+                            source_path == assets
+                            and destination_path.name == "assets"
+                            and destination_path.parent.name.startswith(
+                                ".assets-previous-"
+                            )
+                        )
+                        installing_staging = (
+                            source_path.name.startswith(
+                                rigel_assets.STAGING_PREFIX
+                            )
+                            and destination_path == assets
+                        )
+                        if (
+                            phase == "previous-tree move" and moving_previous
+                        ) or (phase == "staging install" and installing_staging):
+                            raise OSError(f"injected {phase} failure")
+                        real_replace(source, destination)
+
+                    failure = mock.patch.object(
+                        rigel_assets.os,
+                        "replace",
+                        side_effect=fail_publication_move,
+                    )
+
+                with failure, self.assertRaisesRegex(OSError, phase):
+                    rigel_assets.synchronize(
+                        root,
+                        replacement_jar,
+                        required_identifiers=("test:stone",),
+                    )
+
+                self.assertEqual(rigel_assets.sha256_tree(assets), tampered_hash)
+                self.assertEqual(provenance_path.read_bytes(), previous_provenance)
+                self.assertFalse(any((root / ".rigel").glob(".assets-previous-*")))
+
+                replacement, changed = rigel_assets.synchronize(
+                    root,
+                    replacement_jar,
+                    required_identifiers=("test:stone",),
+                )
+                self.assertTrue(changed)
+                self.assertEqual(replacement.get("source_version"), "replacement")
+                self.assertTrue(
+                    rigel_assets.current_import_matches(
+                        root, rigel_assets.sha256_file(replacement_jar)
+                    )
+                )
+
     def test_source_change_replaces_tree_instead_of_accumulating(self) -> None:
         first_entries = synthetic_block_entries()
         first_entries["base/sounds/stale.ogg"] = b"old"

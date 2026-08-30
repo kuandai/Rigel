@@ -20,8 +20,9 @@ function(rigel_snapshot_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIRECTOR
     set(${OUTPUT_VARIABLE} "${SNAPSHOT_PATH}" PARENT_SCOPE)
 endfunction()
 
-function(rigel_synchronize_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIRECTORY
-        PYTHON_EXECUTABLE IMPORTER_SCRIPT SOURCE_JAR CONSUMER_FILE)
+function(rigel_synchronize_generated_resources OUTPUT_VARIABLE
+        JAR_SHA256_OUTPUT_VARIABLE ROOT OUTPUT_DIRECTORY PYTHON_EXECUTABLE
+        IMPORTER_SCRIPT SOURCE_JAR CONSUMER_FILE)
     execute_process(
         COMMAND "${PYTHON_EXECUTABLE}" "${IMPORTER_SCRIPT}"
             --root "${ROOT}" sync --jar "${SOURCE_JAR}"
@@ -51,6 +52,41 @@ function(rigel_synchronize_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIREC
         "${EXPECTED_JAR_SHA256}"
         "${CONSUMER_FILE}")
     set(${OUTPUT_VARIABLE} "${SNAPSHOT_ROOT}" PARENT_SCOPE)
+    set(${JAR_SHA256_OUTPUT_VARIABLE} "${EXPECTED_JAR_SHA256}" PARENT_SCOPE)
+endfunction()
+
+function(rigel_snapshot_synchronized_source_jar OUTPUT_VARIABLE SOURCE_JAR
+        EXPECTED_JAR_SHA256 OUTPUT_DIRECTORY)
+    string(LENGTH "${EXPECTED_JAR_SHA256}" JAR_DIGEST_LENGTH)
+    if(NOT JAR_DIGEST_LENGTH EQUAL 64 OR
+       NOT EXPECTED_JAR_SHA256 MATCHES "^[0-9a-f]+$")
+        message(FATAL_ERROR
+            "Cannot snapshot a synchronized source JAR without a valid digest")
+    endif()
+
+    file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
+    set(SNAPSHOT_PATH "${OUTPUT_DIRECTORY}/${EXPECTED_JAR_SHA256}.jar")
+    if(EXISTS "${SNAPSHOT_PATH}")
+        file(SHA256 "${SNAPSHOT_PATH}" SNAPSHOT_JAR_SHA256)
+        if(NOT SNAPSHOT_JAR_SHA256 STREQUAL EXPECTED_JAR_SHA256)
+            message(FATAL_ERROR
+                "Synchronized source JAR snapshot has invalid content: "
+                "${SNAPSHOT_PATH}")
+        endif()
+    else()
+        set(STAGING_PATH "${SNAPSHOT_PATH}.new")
+        file(REMOVE "${STAGING_PATH}")
+        configure_file("${SOURCE_JAR}" "${STAGING_PATH}" COPYONLY)
+        file(SHA256 "${STAGING_PATH}" SNAPSHOT_JAR_SHA256)
+        if(NOT SNAPSHOT_JAR_SHA256 STREQUAL EXPECTED_JAR_SHA256)
+            file(REMOVE "${STAGING_PATH}")
+            message(FATAL_ERROR
+                "Source JAR changed after asset synchronization and snapshot "
+                "handoff: ${SOURCE_JAR}")
+        endif()
+        file(RENAME "${STAGING_PATH}" "${SNAPSHOT_PATH}")
+    endif()
+    set(${OUTPUT_VARIABLE} "${SNAPSHOT_PATH}" PARENT_SCOPE)
 endfunction()
 
 function(rigel_retire_generated_resource_snapshots OUTPUT_DIRECTORY RETAINED_SNAPSHOT

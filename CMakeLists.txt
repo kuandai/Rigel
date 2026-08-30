@@ -3,6 +3,7 @@ project(Rigel VERSION 0.0.0 LANGUAGES CXX ASM)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(RIGEL_BUILD_TESTS "Build Rigel tests" ON)
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
@@ -29,6 +30,9 @@ set(RIGEL_COSMIC_REACH_JAR "" CACHE FILEPATH
 set(RIGEL_RESOURCE_ROOTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 set(RIGEL_RESOLVED_COSMIC_REACH_JAR "")
 set(RIGEL_COSMIC_REACH_JAR_SOURCE "")
+set(RIGEL_SYNCHRONIZED_COSMIC_REACH_JAR_SHA256 "")
+set(RIGEL_SYNCHRONIZED_COSMIC_REACH_JAR "")
+set(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS OFF)
 
 if(RIGEL_COSMIC_REACH_JAR)
     set(RIGEL_RESOLVED_COSMIC_REACH_JAR "${RIGEL_COSMIC_REACH_JAR}")
@@ -54,12 +58,24 @@ if(RIGEL_RESOLVED_COSMIC_REACH_JAR)
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py")
     rigel_synchronize_generated_resources(
         RIGEL_GENERATED_RESOURCE_ROOT
+        RIGEL_SYNCHRONIZED_COSMIC_REACH_JAR_SHA256
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_BINARY_DIR}/generated-resource-snapshots"
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py"
         "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
         "${CMAKE_CURRENT_BINARY_DIR}/embedded/RigelLib_resources.S")
+    if(RIGEL_SYNCHRONIZED_COSMIC_REACH_JAR_SHA256 STREQUAL
+       "58a2cc3b79b5413cfa0f2e4ae3b37f44ed7f11a5e828de57f9f3f71599ac570e")
+        set(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS ON)
+        if(RIGEL_BUILD_TESTS)
+            rigel_snapshot_synchronized_source_jar(
+                RIGEL_SYNCHRONIZED_COSMIC_REACH_JAR
+                "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
+                "${RIGEL_SYNCHRONIZED_COSMIC_REACH_JAR_SHA256}"
+                "${CMAKE_CURRENT_BINARY_DIR}/synchronized-source-jars")
+        endif()
+    endif()
     message(STATUS
         "Cosmic Reach assets prepared from ${RIGEL_COSMIC_REACH_JAR_SOURCE}: "
         "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")
@@ -189,9 +205,12 @@ endif()
 
 get_target_property(RIGEL_LIBRARY_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
 
-option(RIGEL_BUILD_TESTS "Build Rigel tests" ON)
 if (RIGEL_BUILD_TESTS)
     enable_testing()
+
+    if(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS AND UNIX AND NOT APPLE)
+        find_package(OpenGL REQUIRED COMPONENTS EGL)
+    endif()
 
     file(GLOB_RECURSE TEST_SOURCES
         CONFIGURE_DEPENDS
@@ -347,10 +366,7 @@ if (RIGEL_BUILD_TESTS)
             target_compile_definitions(
                 Rigel_generated_asset_integration_tests PRIVATE RIGEL_TEST_HAS_EGL)
         endif()
-        file(SHA256 "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
-            RIGEL_RESOLVED_COSMIC_REACH_JAR_SHA256)
-        if(RIGEL_RESOLVED_COSMIC_REACH_JAR_SHA256 STREQUAL
-           "58a2cc3b79b5413cfa0f2e4ae3b37f44ed7f11a5e828de57f9f3f71599ac570e")
+        if(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS)
             target_compile_definitions(
                 Rigel_generated_asset_integration_tests PRIVATE
                 RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS)
@@ -376,7 +392,19 @@ if (RIGEL_BUILD_TESTS)
         add_test(
             NAME Rigel_generated_asset_integration_tests
             COMMAND Rigel_generated_asset_integration_tests)
-        if(UNIX AND NOT APPLE)
+        if(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS)
+            set_tests_properties(
+                Rigel_generated_asset_integration_tests PROPERTIES
+                PASS_REGULAR_EXPRESSION
+                    "Ran [1-9][0-9]* tests, 0 failed, 0 skipped\\."
+            )
+        endif()
+        if(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS AND UNIX AND NOT APPLE)
+            set_tests_properties(
+                Rigel_generated_asset_integration_tests PROPERTIES
+                ENVIRONMENT
+                    "DISPLAY=;WAYLAND_DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1")
+        elseif(UNIX AND NOT APPLE)
             set_tests_properties(
                 Rigel_generated_asset_integration_tests PROPERTIES
                 ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1")
@@ -395,12 +423,13 @@ if (RIGEL_BUILD_TESTS)
             tests/rigel_assets_test.py
     )
     set_tests_properties(Rigel_asset_importer_tests PROPERTIES
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    if(RIGEL_RESOLVED_COSMIC_REACH_JAR)
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        ENVIRONMENT "RIGEL_COSMIC_REACH_JAR=")
+    if(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS)
         add_test(
             NAME Rigel_real_asset_importer_tests
             COMMAND ${CMAKE_COMMAND} -E env
-                "RIGEL_COSMIC_REACH_JAR=${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
+                "RIGEL_COSMIC_REACH_JAR=${RIGEL_SYNCHRONIZED_COSMIC_REACH_JAR}"
                 "${Python3_EXECUTABLE}" -m unittest -v
                 tests.rigel_assets_test.RealJarBlockModelClosureTest)
         set_tests_properties(Rigel_real_asset_importer_tests PROPERTIES

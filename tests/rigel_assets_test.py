@@ -1794,6 +1794,7 @@ project(GeneratedResourceHandoff NONE)
 include("{asset_resources}")
 rigel_synchronize_generated_resources(
     GENERATED_ROOT
+    GENERATED_JAR_SHA256
     "{root}"
     "{snapshots}"
     "{sys.executable}"
@@ -1822,6 +1823,98 @@ rigel_synchronize_generated_resources(
             assert published is not None
             self.assertEqual(published.get("source_version"), "replacement")
             self.assertFalse(snapshots.exists())
+
+    def test_cmake_rejects_source_jar_replaced_after_snapshot_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            test_root = Path(directory)
+            root = test_root / "asset-root"
+            project = test_root / "project"
+            build = test_root / "build"
+            snapshots = build / "generated-resource-snapshots"
+            jar_snapshots = build / "synchronized-source-jars"
+            source_jar = test_root / "source.jar"
+            replacement_jar = test_root / "replacement.jar"
+            source_entries = synthetic_block_entries()
+            source_entries["base/version.txt"] = b"first"
+            replacement_entries = synthetic_block_entries()
+            replacement_entries["base/version.txt"] = b"replacement"
+            write_jar(source_jar, source_entries)
+            write_jar(replacement_jar, replacement_entries)
+            source_digest = rigel_assets.sha256_file(source_jar)
+            project.mkdir()
+
+            importer = Path(rigel_assets.__file__).resolve()
+            asset_resources = importer.parent.parent / "cmake/AssetResources.cmake"
+            wrapper = test_root / "replace_after_handoff.py"
+            wrapper.write_text(
+                f"""import sys
+from pathlib import Path
+sys.path.insert(0, {str(importer.parent)!r})
+import rigel_assets
+
+arguments = sys.argv[1:]
+if "sync" in arguments:
+    root = Path(arguments[arguments.index("--root") + 1]).resolve()
+    jar = Path(arguments[arguments.index("--jar") + 1]).resolve()
+    provenance, changed = rigel_assets.synchronize(
+        root, jar, required_identifiers=("test:stone",))
+    action = "Synchronized" if changed else "Already current"
+    print(f"{{action}}: {{root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH}}")
+    print(f"JAR SHA-256: {{provenance['jar_sha256']}}")
+    print(f"Output SHA-256: {{provenance['output_tree_sha256']}}")
+    raise SystemExit(0)
+
+result = rigel_assets.main(arguments)
+if result == 0 and "snapshot" in arguments:
+    source = Path({str(source_jar)!r})
+    replacement = Path({str(replacement_jar)!r})
+    source.write_bytes(replacement.read_bytes())
+raise SystemExit(result)
+""",
+                encoding="utf-8",
+            )
+            (project / "CMakeLists.txt").write_text(
+                f"""cmake_minimum_required(VERSION 3.20)
+project(SynchronizedSourceJarHandoff NONE)
+include("{asset_resources}")
+rigel_synchronize_generated_resources(
+    GENERATED_ROOT
+    GENERATED_JAR_SHA256
+    "{root}"
+    "{snapshots}"
+    "{sys.executable}"
+    "{wrapper}"
+    "{source_jar}"
+    "{build / 'embedded/Dummy_resources.S'}")
+if(NOT GENERATED_JAR_SHA256 STREQUAL "{source_digest}")
+    message(FATAL_ERROR "Synchronization digest output changed")
+endif()
+rigel_snapshot_synchronized_source_jar(
+    SNAPSHOT_JAR
+    "{source_jar}"
+    "${{GENERATED_JAR_SHA256}}"
+    "{jar_snapshots}")
+""",
+                encoding="utf-8",
+            )
+            cmake = shutil.which("cmake")
+            self.assertIsNotNone(cmake)
+            assert cmake is not None
+            configured = subprocess.run(
+                [cmake, "-S", str(project), "-B", str(build)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertNotEqual(configured.returncode, 0)
+            diagnostic = configured.stdout + configured.stderr
+            self.assertIn(
+                "Source JAR changed after asset synchronization and snapshot handoff",
+                diagnostic,
+            )
+            self.assertTrue(any(snapshots.iterdir()))
+            self.assertFalse(jar_snapshots.exists() and any(jar_snapshots.iterdir()))
 
     def test_output_path_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

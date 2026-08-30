@@ -108,11 +108,12 @@ rather than silently omitting it.
 On Unix builds where CMake provides EGL, the shared OpenGL fixture uses a
 surfaceless pbuffer when no X11 or Wayland display is available. This executes
 the same OpenGL upload and draw calls without a window or swap-control path.
-The generated-asset integration entry also selects software OpenGL for a
-repeatable noninteractive gate. When a JAR is configured, CTest adds a focused
-real-source importer entry with its resolved path so the closure and repeated
-synchronization checks run without changing the synthetic importer suite's
-environment.
+On Linux, the exact generated-asset integration gate requires EGL, clears both
+display variables, selects software OpenGL, and requires zero skipped cases.
+Its focused real-source importer entry reads a digest-addressed JAR snapshot
+from the build tree, keeping the closure and repeated-synchronization checks
+coupled to the embedded generated-resource snapshot. The synthetic importer
+suite always runs without a real-JAR environment selection.
 
 Run the main suite via CTest:
 

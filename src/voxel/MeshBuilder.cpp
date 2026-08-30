@@ -36,19 +36,37 @@ constexpr float FACE_UVS[4][2] = {
 };
 
 std::array<std::array<float, 2>, 4> modelFaceUvs(
-    const BlockModelFace& face, size_t additionalQuarterTurns = 0
+    const BlockModelFace& face,
+    Direction destination,
+    size_t additionalQuarterTurns = 0
 ) {
-    const std::array<std::array<float, 2>, 4> base = {{
-        {face.uv.u0, face.uv.v0},
-        {face.uv.u0, face.uv.v1},
-        {face.uv.u1, face.uv.v1},
-        {face.uv.u1, face.uv.v0},
-    }};
+    const float v0 = 1.0f - face.uv.v0;
+    const float v1 = 1.0f - face.uv.v1;
+    std::array<std::array<float, 2>, 4> base{};
+    switch (destination) {
+        case Direction::PosY:
+        case Direction::NegY:
+            base = {{{face.uv.u0, v0}, {face.uv.u1, v0},
+                     {face.uv.u1, v1}, {face.uv.u0, v1}}};
+            break;
+        case Direction::PosX:
+        case Direction::NegX:
+        case Direction::PosZ:
+        case Direction::NegZ:
+            base = {{{face.uv.u0, v1}, {face.uv.u0, v0},
+                     {face.uv.u1, v0}, {face.uv.u1, v1}}};
+            break;
+    }
     std::array<std::array<float, 2>, 4> rotated{};
     const size_t quarterTurns =
         (static_cast<size_t>(face.rotation) + additionalQuarterTurns) % 4;
     for (size_t vertex = 0; vertex < rotated.size(); ++vertex) {
-        rotated[vertex] = base[(vertex + quarterTurns) % base.size()];
+        // Normalized model UVs use a face-local A <- B quarter-turn
+        // convention. Rigel's face windings traverse that corner cycle in the
+        // opposite direction on every cardinal face.
+        const size_t sourceVertex =
+            (vertex + base.size() - quarterTurns) % base.size();
+        rotated[vertex] = base[sourceVertex];
     }
     return rotated;
 }
@@ -504,7 +522,7 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                         const auto& modelFace = *type.model->cuboids().front()
                             .faces[sourceFaceIdx];
                         const auto orientedUvs = modelFaceUvs(
-                            modelFace, uvQuarterTurns);
+                            modelFace, face, uvQuarterTurns);
 
                         for (size_t v = 0; v < 4; v++) {
                             VoxelVertex vertex;
@@ -578,7 +596,7 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                             layerVertices[layerIdx].size());
                         const std::array<std::array<float, 2>, 4> uvs =
                             modelFaceUvs(
-                                face, orientedUvQuarterTurns(
+                                face, direction, orientedUvQuarterTurns(
                                     type.model, direction));
                         const uint16_t faceTextureLayer = textureLayer(
                             ctx.atlas, type.textures.find(face.textureSlot));

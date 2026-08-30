@@ -149,6 +149,8 @@ cuboids:
   `[u0, v0, u1, v1]` rectangle, a 0/90/180/270-degree UV rotation, a separate
   shading direction, and authored AO and neighbor-culling flags. UV endpoints
   may be reversed, so cropping, mirroring, and quarter turns survive import.
+  Rotation follows the normalized face-local convention; the mesher maps its
+  face-specific corner order through Rigel's vertically flipped texture atlas.
   Defaults are the full UV rectangle, no rotation, geometric face shading,
   conservative AO, and no neighbor culling.
 

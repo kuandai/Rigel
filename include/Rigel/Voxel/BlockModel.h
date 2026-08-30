@@ -33,7 +33,8 @@ struct BlockModelUvRect {
 };
 
 enum class BlockModelUvRotation : uint8_t {
-    // Clockwise quarter turns applied after selecting the UV rectangle.
+    // Quarter turns in the normalized block-model face convention, applied
+    // after selecting the UV rectangle.
     None = 0,
     Quarter = 1,
     Half = 2,

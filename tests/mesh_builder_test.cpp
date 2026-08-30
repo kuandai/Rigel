@@ -618,15 +618,21 @@ TEST_CASE(MeshBuilder_OrientsFullCubeTexturesAndExplicitTopBottomUvs) {
     constexpr std::array<Direction, DirectionCount> expectedDirections = {
         Direction::NegY, Direction::PosY, Direction::PosX,
         Direction::NegX, Direction::PosZ, Direction::NegZ};
-    constexpr std::array<size_t, DirectionCount> expectedUvTurns = {
-        3, 1, 1, 3, 1, 3};
+    constexpr std::array<std::array<std::array<float, 2>, 4>, DirectionCount>
+        expectedUvs = {{
+            {{{1, 1}, {1, 0}, {0, 0}, {0, 1}}},
+            {{{0, 0}, {0, 1}, {1, 1}, {1, 0}}},
+            {{{1, 0}, {0, 0}, {0, 1}, {1, 1}}},
+            {{{0, 1}, {1, 1}, {1, 0}, {0, 0}}},
+            {{{1, 0}, {0, 0}, {0, 1}, {1, 1}}},
+            {{{0, 1}, {1, 1}, {1, 0}, {0, 0}}},
+        }};
     CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(24));
     for (size_t source = 0; source < DirectionCount; ++source) {
         const size_t firstVertex = source * 4;
         for (size_t vertex = 0; vertex < 4; ++vertex) {
             const VoxelVertex& actual = mesh.vertices[firstVertex + vertex];
-            const auto& expectedUv =
-                kCubeUvs[(vertex + expectedUvTurns[source]) % 4];
+            const auto& expectedUv = expectedUvs[source][vertex];
             CHECK_EQ(actual.normalIndex,
                      static_cast<uint8_t>(expectedDirections[source]));
             CHECK_EQ(actual.textureLayer, textures[source].index);
@@ -673,6 +679,79 @@ TEST_CASE(MeshBuilder_ComposesOrientedCroppedAndReversedFaceUvs) {
                  static_cast<uint8_t>(Direction::PosX));
     }
     checkFaceWinding(mesh, 0, Direction::PosX);
+}
+
+TEST_CASE(MeshBuilder_MatchesCosmicReachFaceUvConvention) {
+    using Uvs = std::array<std::array<float, 2>, 4>;
+    struct Case {
+        Direction source;
+        Direction destination;
+        BlockModelUvRotation authoredRotation;
+        BlockModelOrientation orientation;
+        Uvs expected;
+    };
+    constexpr BlockModelUvRect uv = {0.125f, 0.25f, 0.75f, 0.875f};
+    const std::array<Case, 6> cases = {{
+        {Direction::PosX, Direction::PosX, BlockModelUvRotation::Quarter,
+         BlockModelOrientation::Identity,
+         {{{0.75f, 0.125f}, {0.125f, 0.125f},
+           {0.125f, 0.75f}, {0.75f, 0.75f}}}},
+        {Direction::PosY, Direction::PosY, BlockModelUvRotation::Quarter,
+         BlockModelOrientation::Identity,
+         {{{0.125f, 0.125f}, {0.125f, 0.75f},
+           {0.75f, 0.75f}, {0.75f, 0.125f}}}},
+        {Direction::NegY, Direction::NegY, BlockModelUvRotation::Quarter,
+         BlockModelOrientation::Identity,
+         {{{0.125f, 0.125f}, {0.125f, 0.75f},
+           {0.75f, 0.75f}, {0.75f, 0.125f}}}},
+        {Direction::PosY, Direction::PosY, BlockModelUvRotation::None,
+         BlockModelOrientation::RotateY90,
+         {{{0.125f, 0.125f}, {0.125f, 0.75f},
+           {0.75f, 0.75f}, {0.75f, 0.125f}}}},
+        {Direction::PosY, Direction::NegZ, BlockModelUvRotation::None,
+         BlockModelOrientation::RotateX90,
+         {{{0.75f, 0.75f}, {0.75f, 0.125f},
+           {0.125f, 0.125f}, {0.125f, 0.75f}}}},
+        {Direction::PosX, Direction::PosX, BlockModelUvRotation::None,
+         BlockModelOrientation::RotateX90,
+         {{{0.75f, 0.125f}, {0.125f, 0.125f},
+           {0.125f, 0.75f}, {0.75f, 0.75f}}}},
+    }};
+
+    for (size_t caseIndex = 0; caseIndex < cases.size(); ++caseIndex) {
+        const Case& item = cases[caseIndex];
+        BlockModelCuboid cuboid;
+        cuboid.bounds = {{0.125f, 0.25f, 0.375f},
+                         {0.75f, 0.875f, 0.9375f}};
+        cuboid.faces[static_cast<size_t>(item.source)] =
+            modelFace("surface", uv, item.authoredRotation);
+
+        BlockType block;
+        block.identifier = "test:cr_uv_" + std::to_string(caseIndex);
+        block.model.geometry = makeModel(
+            block.identifier + "_model", {"surface"}, {cuboid});
+        block.model.orientation = item.orientation;
+        BlockRegistry registry = makeRegistry();
+        const BlockID blockId = registry.registerBlock(
+            block.identifier, block);
+        Chunk chunk({0, 0, 0});
+        chunk.setBlock(1, 1, 1, BlockState{blockId});
+
+        const ChunkMesh mesh = MeshBuilder{}.build({
+            .chunk = chunk,
+            .registry = registry,
+            .atlas = nullptr,
+            .neighbors = {},
+        });
+        CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(4));
+        for (size_t vertex = 0; vertex < 4; ++vertex) {
+            CHECK_EQ(mesh.vertices[vertex].u, item.expected[vertex][0]);
+            CHECK_EQ(mesh.vertices[vertex].v, item.expected[vertex][1]);
+            CHECK_EQ(mesh.vertices[vertex].normalIndex,
+                     static_cast<uint8_t>(item.destination));
+        }
+        checkFaceWinding(mesh, 0, item.destination);
+    }
 }
 
 TEST_CASE(MeshBuilder_RotatesBoundaryCullingDirection) {
@@ -783,16 +862,16 @@ TEST_CASE(MeshBuilder_ResolvesNamedTexturesAndTransformsModelUvs) {
     const std::array<std::array<std::array<float, 2>, 4>, 4> expectedUvs = {{
         {{{0.125f, 0.25f}, {0.125f, 0.75f},
           {0.875f, 0.75f}, {0.875f, 0.25f}}},
-        {{{0.875f, 0.25f}, {0.125f, 0.25f},
-          {0.125f, 0.75f}, {0.875f, 0.75f}}},
-        {{{0.7f, 0.1f}, {0.7f, 0.8f}, {0.2f, 0.8f}, {0.2f, 0.1f}}},
-        {{{0.9f, 0.2f}, {0.1f, 0.2f}, {0.1f, 0.6f}, {0.9f, 0.6f}}},
+        {{{0.125f, 0.75f}, {0.875f, 0.75f},
+          {0.875f, 0.25f}, {0.125f, 0.25f}}},
+        {{{0.7f, 0.9f}, {0.2f, 0.9f}, {0.2f, 0.2f}, {0.7f, 0.2f}}},
+        {{{0.9f, 0.8f}, {0.9f, 0.4f}, {0.1f, 0.4f}, {0.1f, 0.8f}}},
     }};
     for (size_t face = 0; face < handles.size(); ++face) {
         for (size_t vertex = 0; vertex < 4; ++vertex) {
             const VoxelVertex& actual = mesh.vertices[face * 4 + vertex];
-            CHECK_EQ(actual.u, expectedUvs[face][vertex][0]);
-            CHECK_EQ(actual.v, expectedUvs[face][vertex][1]);
+            CHECK_NEAR(actual.u, expectedUvs[face][vertex][0], 0.000001f);
+            CHECK_NEAR(actual.v, expectedUvs[face][vertex][1], 0.000001f);
             CHECK_EQ(actual.textureLayer, handles[face].index);
         }
         checkFaceWinding(mesh, face * 4, static_cast<Direction>(face));

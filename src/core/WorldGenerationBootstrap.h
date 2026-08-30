@@ -20,6 +20,7 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     Voxel::World& world,
     Voxel::WorldView& worldView,
     const Persistence::NewWorldGenerationFactory& creationFactory,
-    const Persistence::PersistenceContext& context);
+    const Persistence::PersistenceContext& context,
+    std::shared_ptr<const Voxel::BlockGalleryChunkGenerator> blockGallery = {});
 
 } // namespace Rigel::detail

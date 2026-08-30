@@ -1,5 +1,6 @@
 #include "Rigel/Voxel/WorldGenerator.h"
 
+#include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 #include "Rigel/Voxel/DensityFunction.h"
 #include "Rigel/Voxel/Noise.h"
 #include "Rigel/Voxel/WorldGenStages.h"
@@ -1022,7 +1023,9 @@ BlockID resolveRequiredBlock(const BlockRegistry& registry,
 WorldGenerator::WorldGenerator(const BlockRegistry& registry,
                                GeneratorDefinitionData definition,
                                uint32_t seed,
-                               uint32_t semanticsVersion)
+                               uint32_t semanticsVersion,
+                               std::shared_ptr<const BlockGalleryChunkGenerator>
+                                   blockGallery)
     : m_registry(registry),
       m_definition(validateGeneratorDefinitionData(
           registry, std::move(definition))),
@@ -1034,7 +1037,14 @@ WorldGenerator::WorldGenerator(const BlockRegistry& registry,
           registry, m_definition.terrain.waterMaterial, "water")),
       m_densityGraph(validateAndBuildDensityGraph(m_registry, m_definition)),
       m_stages(buildStages(
-          m_definition, m_seed, m_registry, m_densityGraph)) {}
+          m_definition, m_seed, m_registry, m_densityGraph)),
+      m_blockGallery(std::move(blockGallery)) {
+    if (m_blockGallery &&
+        m_blockGallery->worldBounds() != m_definition.bounds) {
+        throw std::invalid_argument(
+            "Block gallery bounds must match its published generator identity");
+    }
+}
 
 bool WorldGenerator::matchesGenerationInputs(
     const GeneratorDefinitionData& definition,
@@ -1045,12 +1055,24 @@ bool WorldGenerator::matchesGenerationInputs(
         m_definition == definition;
 }
 
+bool WorldGenerator::shouldPersistGeneratedChunk(ChunkCoord coord) const {
+    return m_blockGallery && m_blockGallery->containsChunk(coord);
+}
+
 void WorldGenerator::generate(ChunkCoord coord, ChunkBuffer& out,
                               const std::atomic_bool* cancel) const {
     const LocalWorldYRange worldYRange =
         localWorldYRange(coord, m_definition.bounds);
     if (worldYRange.empty()) {
         out.blocks.fill(BlockState{});
+        return;
+    }
+    if (m_blockGallery) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) {
+            out.blocks.fill(BlockState{});
+            return;
+        }
+        m_blockGallery->generate(coord, out);
         return;
     }
     requireSupportedChunkCoordinates(

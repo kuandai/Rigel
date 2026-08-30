@@ -4,7 +4,9 @@
 #include "ResourceRegistry.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Asset/Types.h"
+#include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Voxel/BlockGalleryCatalog.h"
+#include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 #include "Rigel/Voxel/BlockLoader.h"
 #include "Rigel/Voxel/BlockModel.h"
 #include "Rigel/Voxel/BlockRegistry.h"
@@ -16,6 +18,7 @@
 #include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldMeshStore.h"
 #include "Rigel/Voxel/WorldResources.h"
+#include "Rigel/Voxel/WorldView.h"
 
 #include <algorithm>
 #include <array>
@@ -24,6 +27,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <glm/geometric.hpp>
 
 namespace {
 using namespace Rigel::Voxel;
@@ -185,6 +190,47 @@ void checkMeshCardinality(
     CHECK_EQ(
         mesh.layers[static_cast<size_t>(layer)].indexCount,
         static_cast<uint32_t>(indexCount));
+}
+
+const BlockGalleryCatalogEntry& requireGalleryEntry(
+    const BlockGalleryCatalog& catalog,
+    const BlockRegistry& registry,
+    std::string_view identifier
+) {
+    const BlockGalleryCatalogEntry* entry =
+        catalog.findByBlockId(requireBlockId(registry, identifier));
+    if (!entry) {
+        throw Rigel::Test::TestFailure(
+            "Missing representative gallery specimen: " +
+            std::string(identifier));
+    }
+    return *entry;
+}
+
+size_t countRenderedCenterPixels() {
+    constexpr int Width = 64;
+    constexpr int Height = 64;
+    std::array<uint8_t, Width * Height * 4> pixels{};
+    glFinish();
+    glReadPixels(
+        0, 0, Width, Height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+
+    size_t rendered = 0;
+    for (int y = 20; y < 44; ++y) {
+        for (int x = 20; x < 44; ++x) {
+            const size_t offset = static_cast<size_t>(x + y * Width) * 4;
+            const int red = pixels[offset];
+            const int green = pixels[offset + 1];
+            const int blue = pixels[offset + 2];
+            if (std::abs(red - 51) > 3 ||
+                std::abs(green - 77) > 3 ||
+                std::abs(blue - 77) > 3) {
+                ++rendered;
+            }
+        }
+    }
+    return rendered;
 }
 
 } // namespace
@@ -432,6 +478,108 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
 
     renderer.releaseResources();
+    resources.releaseRenderResources();
+#endif
+}
+
+TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
+#ifndef RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS
+    SKIP_TEST("representative model expectations target Cosmic Reach 0.6.1");
+#else
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    WorldResources resources;
+    resources.initialize(assets);
+
+    auto catalog = std::make_shared<const BlockGalleryCatalog>(
+        resources.registry());
+    auto gallery = std::make_shared<const BlockGalleryChunkGenerator>(
+        resources.registry(), catalog);
+    for (const BlockGalleryPlacementKind kind : {
+             BlockGalleryPlacementKind::OpaqueCullingDiagnostic,
+             BlockGalleryPlacementKind::SameTypeCullingDiagnostic,
+             BlockGalleryPlacementKind::CoverageCullingDiagnostic}) {
+        CHECK_EQ(
+            std::count_if(
+                gallery->placements().begin(),
+                gallery->placements().end(),
+                [kind](const BlockGalleryBlockPlacement& placement) {
+                    return placement.kind == kind;
+                }),
+            static_cast<std::ptrdiff_t>(2));
+    }
+    const PreparedGeneratorDefinitionSnapshot identity =
+        prepareBlockGalleryGeneratorIdentity(
+            resources.registry(), gallery->worldBounds());
+    auto generator = std::make_shared<const WorldGenerator>(
+        resources.registry(), identity.data, 0, 1, gallery);
+
+    World world(resources);
+    world.setGenerator(generator);
+    WorldView view(world, resources);
+    view.initialize(assets);
+    view.setGenerator(generator);
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 1;
+    streaming.unloadDistanceChunks = 64;
+    streaming.workerThreads = 0;
+    view.setStreamConfig(streaming);
+    view.markSpawnDiscoveryComplete();
+
+    Rigel::Render::FrameRenderer renderer;
+    renderer.initialize(assets);
+    renderer.setVerticalFovDegrees(70.0);
+
+    constexpr std::array<std::string_view, 6> representatives = {
+        "base:stone_shale",
+        SlabId,
+        StairId,
+        DoorId,
+        LadderId,
+        PistonHeadId,
+    };
+    for (const std::string_view identifier : representatives) {
+        const BlockGalleryCatalogEntry& entry = requireGalleryEntry(
+            *catalog, resources.registry(), identifier);
+        const glm::vec3 target{
+            static_cast<float>(entry.specimenPosition.x) + 0.5f,
+            static_cast<float>(entry.specimenPosition.y) + 0.5f,
+            static_cast<float>(entry.specimenPosition.z) + 0.5f,
+        };
+        const glm::vec3 camera = target + glm::vec3{2.5f, 1.5f, 2.5f};
+        const ChunkCoord chunk = worldToChunk(
+            entry.specimenPosition.x,
+            entry.specimenPosition.y,
+            entry.specimenPosition.z);
+        for (size_t attempt = 0;
+             attempt < 24 && !view.meshStore().snapshot(chunk);
+             ++attempt) {
+            view.updateStreaming(camera);
+            view.updateMeshes();
+        }
+        const auto installed = view.meshStore().snapshot(chunk);
+        CHECK(installed.has_value());
+        CHECK(!installed->empty);
+
+        renderer.render({
+            .world = world,
+            .worldView = view,
+            .cameraPosition = camera,
+            .cameraTarget = target,
+            .cameraForward = glm::normalize(target - camera),
+            .viewportWidth = 64,
+            .viewportHeight = 64,
+            .deltaTime = 1.0f / 60.0f,
+        });
+        CHECK(countRenderedCenterPixels() >= static_cast<size_t>(4));
+    }
+
+    renderer.release();
+    view.clear();
+    view.releaseRenderResources();
     resources.releaseRenderResources();
 #endif
 }

@@ -31,8 +31,10 @@ enum class ApplicationShutdownStage {
 
 struct ApplicationPersistencePolicyState {
     std::string preferredFormat;
+    std::string rootPath;
     bool crSettingsPresent = false;
     bool crLz4Enabled = false;
+    bool processPrivateStorage = false;
 };
 
 struct ApplicationConstructionHooks {
@@ -43,6 +45,7 @@ struct ApplicationConstructionHooks {
     void (*afterDisplayInitialized)(Application&) = nullptr;
     void (*afterInstalledPersistenceContextPrepared)(
         ApplicationPersistencePolicyState) = nullptr;
+    WorldMode worldMode = WorldMode::Normal;
 };
 
 struct ApplicationCloseHooks {

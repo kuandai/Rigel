@@ -330,6 +330,7 @@ if (RIGEL_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/ZoneIdentifier.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/backends/memory/MemoryFormat.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/BlockRegistry.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/BlockGalleryChunkGenerator.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/Chunk.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/ChunkManager.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/DensityFunction.cpp

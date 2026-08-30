@@ -45,15 +45,3 @@ TEST_CASE(ApplicationEntry_RejectsOptionsBeforeLaunching) {
     CHECK(logs.output().find("normal") != std::string::npos);
     CHECK(logs.output().find("block-gallery") != std::string::npos);
 }
-
-TEST_CASE(ApplicationEntry_DoesNotSilentlyLaunchGalleryAsNormalWorld) {
-    const char* arguments[] = {"Rigel", "--world-mode=block-gallery"};
-    Rigel::Test::LogCapture logs("application-entry-gallery-unavailable");
-
-    const int result = Rigel::runApplication(2, arguments);
-
-    CHECK_EQ(result, EXIT_FAILURE);
-    CHECK(logs.output().find("World mode 'block-gallery' is not available") !=
-          std::string::npos);
-    CHECK(logs.output().find("--world-mode normal") != std::string::npos);
-}

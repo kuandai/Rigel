@@ -2427,7 +2427,9 @@ void ChunkStreamer::applyGenCompletions(size_t budget) {
         } else {
             chunk.copyFrom(genResult.blocks);
         }
-        chunk.clearPersistDirty();
+        if (!m_generator->shouldPersistGeneratedChunk(genResult.coord)) {
+            chunk.clearPersistDirty();
+        }
         chunk.setLoadedFromDisk(false);
         chunk.setWorldGenVersion(genResult.worldGenVersion);
         if (genResult.visibilityTracer && genResult.visibilityTrace) {

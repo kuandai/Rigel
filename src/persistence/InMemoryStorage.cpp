@@ -197,29 +197,30 @@ struct InMemoryStorageBackend::State {
     std::map<std::string, Entry> entries;
     std::mutex bootstrapMutexesMutex;
     std::map<std::string, std::shared_ptr<std::mutex>> bootstrapMutexes;
+
+    StorageEntryKind entryKindLocked(const std::string& path) const;
+    void makeDirectoriesLocked(const std::string& requestedPath);
+
+    class AtomicWriteSession;
 };
 
-namespace {
-
-StorageEntryKind entryKindLocked(
-    const InMemoryStorageBackend::State& state,
-    const std::string& path) {
+StorageEntryKind InMemoryStorageBackend::State::entryKindLocked(
+    const std::string& path) const {
     if (isRootPath(path)) {
         return StorageEntryKind::Directory;
     }
-    const auto found = state.entries.find(path);
-    return found == state.entries.end()
+    const auto found = entries.find(path);
+    return found == entries.end()
         ? StorageEntryKind::Missing
         : found->second.kind;
 }
 
-void makeDirectoriesLocked(
-    InMemoryStorageBackend::State& state,
+void InMemoryStorageBackend::State::makeDirectoriesLocked(
     const std::string& requestedPath) {
     std::string current = requestedPath;
     std::vector<std::string> missing;
     while (!isRootPath(current)) {
-        const StorageEntryKind kind = entryKindLocked(state, current);
+        const StorageEntryKind kind = entryKindLocked(current);
         if (kind == StorageEntryKind::Directory) {
             break;
         }
@@ -237,17 +238,17 @@ void makeDirectoriesLocked(
         current = parent;
     }
     for (auto it = missing.rbegin(); it != missing.rend(); ++it) {
-        state.entries.emplace(
+        entries.emplace(
             *it,
-            InMemoryStorageBackend::State::Entry{
-                StorageEntryKind::Directory, {}});
+            Entry{StorageEntryKind::Directory, {}});
     }
 }
 
-class InMemoryAtomicWriteSession final : public AtomicWriteSession {
+class InMemoryStorageBackend::State::AtomicWriteSession final
+    : public Rigel::Persistence::AtomicWriteSession {
 public:
-    InMemoryAtomicWriteSession(
-        std::shared_ptr<InMemoryStorageBackend::State> state,
+    AtomicWriteSession(
+        std::shared_ptr<State> state,
         std::string path)
         : m_state(std::move(state))
         , m_path(std::move(path))
@@ -261,8 +262,8 @@ public:
     void commit() override {
         requireActive();
         std::unique_lock lock(m_state->entriesMutex);
-        makeDirectoriesLocked(*m_state, parentPath(m_path));
-        if (entryKindLocked(*m_state, m_path) ==
+        m_state->makeDirectoriesLocked(parentPath(m_path));
+        if (m_state->entryKindLocked(m_path) ==
             StorageEntryKind::Directory) {
             throw AtomicFilePublicationError(
                 AtomicFilePublicationState::NotPublished,
@@ -270,7 +271,7 @@ public:
                     m_path);
         }
         auto replacement = m_state->entries;
-        replacement[m_path] = InMemoryStorageBackend::State::Entry{
+        replacement[m_path] = State::Entry{
             StorageEntryKind::RegularFile, std::move(m_bytes)};
         m_state->entries.swap(replacement);
         m_active = false;
@@ -289,12 +290,14 @@ private:
         }
     }
 
-    std::shared_ptr<InMemoryStorageBackend::State> m_state;
+    std::shared_ptr<State> m_state;
     std::string m_path;
     std::vector<uint8_t> m_bytes;
     VectorByteWriter m_writer;
     bool m_active = true;
 };
+
+namespace {
 
 class InMemoryBootstrapLock final : public WorldGenerationBootstrapLock {
 public:
@@ -332,15 +335,15 @@ std::unique_ptr<AtomicWriteSession> InMemoryStorageBackend::openWrite(
     const std::string normalized = normalizedPath(path);
     {
         std::unique_lock lock(m_state->entriesMutex);
-        makeDirectoriesLocked(*m_state, parentPath(normalized));
-        if (entryKindLocked(*m_state, normalized) ==
+        m_state->makeDirectoriesLocked(parentPath(normalized));
+        if (m_state->entryKindLocked(normalized) ==
             StorageEntryKind::Directory) {
             throw std::runtime_error(
                 "Cannot open an in-memory directory for writing: " +
                 normalized);
         }
     }
-    return std::make_unique<InMemoryAtomicWriteSession>(m_state, normalized);
+    return std::make_unique<State::AtomicWriteSession>(m_state, normalized);
 }
 
 bool InMemoryStorageBackend::exists(const std::string& path) {
@@ -350,7 +353,7 @@ bool InMemoryStorageBackend::exists(const std::string& path) {
 StorageEntryKind InMemoryStorageBackend::entryKind(const std::string& path) {
     const std::string normalized = normalizedPath(path);
     std::shared_lock lock(m_state->entriesMutex);
-    return entryKindLocked(*m_state, normalized);
+    return m_state->entryKindLocked(normalized);
 }
 
 void InMemoryStorageBackend::forEachEntry(
@@ -360,7 +363,7 @@ void InMemoryStorageBackend::forEachEntry(
     std::vector<std::string> children;
     {
         std::shared_lock lock(m_state->entriesMutex);
-        if (entryKindLocked(*m_state, normalized) !=
+        if (m_state->entryKindLocked(normalized) !=
             StorageEntryKind::Directory) {
             return;
         }
@@ -381,7 +384,7 @@ void InMemoryStorageBackend::forEachEntry(
 void InMemoryStorageBackend::mkdirs(const std::string& path) {
     const std::string normalized = normalizedPath(path);
     std::unique_lock lock(m_state->entriesMutex);
-    makeDirectoriesLocked(*m_state, normalized);
+    m_state->makeDirectoriesLocked(normalized);
 }
 
 bool InMemoryStorageBackend::createDirectoryExclusive(
@@ -391,8 +394,8 @@ bool InMemoryStorageBackend::createDirectoryExclusive(
         return false;
     }
     std::unique_lock lock(m_state->entriesMutex);
-    makeDirectoriesLocked(*m_state, parentPath(normalized));
-    if (entryKindLocked(*m_state, normalized) != StorageEntryKind::Missing) {
+    m_state->makeDirectoriesLocked(parentPath(normalized));
+    if (m_state->entryKindLocked(normalized) != StorageEntryKind::Missing) {
         return false;
     }
     m_state->entries.emplace(
@@ -410,8 +413,8 @@ bool InMemoryStorageBackend::createFileExclusive(
             "In-memory storage file exceeds the supported size limit");
     }
     std::unique_lock lock(m_state->entriesMutex);
-    makeDirectoriesLocked(*m_state, parentPath(normalized));
-    if (entryKindLocked(*m_state, normalized) != StorageEntryKind::Missing) {
+    m_state->makeDirectoriesLocked(parentPath(normalized));
+    if (m_state->entryKindLocked(normalized) != StorageEntryKind::Missing) {
         return false;
     }
     m_state->entries.emplace(
@@ -478,12 +481,12 @@ void InMemoryStorageBackend::publishDirectory(
     }
 
     std::unique_lock lock(m_state->entriesMutex);
-    if (entryKindLocked(*m_state, staged) != StorageEntryKind::Directory) {
+    if (m_state->entryKindLocked(staged) != StorageEntryKind::Directory) {
         throw DirectoryPublicationError(
             DirectoryPublicationState::NotPublished,
             "In-memory staged publication is not a directory: " + staged);
     }
-    if (entryKindLocked(*m_state, final) != StorageEntryKind::Missing) {
+    if (m_state->entryKindLocked(final) != StorageEntryKind::Missing) {
         throw DirectoryPublicationError(
             DirectoryPublicationState::NotPublished,
             "In-memory publication destination already exists: " + final);

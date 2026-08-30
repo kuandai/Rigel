@@ -13,11 +13,14 @@
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
 #include "Rigel/Persistence/Backends/CR/CRSettings.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
+#include "Rigel/Persistence/InMemoryStorage.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/WorldSettings.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Render/OpenGLRuntime.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
+#include "Rigel/Voxel/BlockGalleryCatalog.h"
+#include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
 #include "Rigel/Voxel/WorldSet.h"
@@ -58,6 +61,9 @@ constexpr float kMaxFrameTime = 0.05f;
 constexpr uint32_t kDefaultWorldSeed = 1337;
 constexpr std::string_view kDefaultGeneratorDefinitionId = "rigel:default";
 constexpr std::string_view kInstalledPersistenceFormat = "cr";
+constexpr std::string_view kBlockGalleryPersistenceFormat = "memory";
+constexpr std::string_view kBlockGalleryVirtualRoot =
+    "developer/block-gallery";
 
 void applyInstalledPersistencePolicy(
     Voxel::WorldSet& worldSet,
@@ -68,6 +74,34 @@ void applyInstalledPersistencePolicy(
         Persistence::Backends::CR::kCRSettingsProviderId,
         std::make_shared<
             Persistence::Backends::CR::CRPersistenceSettings>());
+}
+
+void applyBlockGalleryPersistencePolicy(Voxel::WorldSet& worldSet) {
+    worldSet.setPersistencePreferredFormat(
+        std::string(kBlockGalleryPersistenceFormat));
+}
+
+void applyBlockGalleryOverview(
+    Input::CameraState& camera,
+    const Voxel::BlockGalleryOverview& overview) {
+    camera.position = {
+        overview.centerX + overview.cameraDistance,
+        overview.cameraHeight,
+        overview.centerZ + overview.cameraDistance,
+    };
+    const glm::vec3 focus{
+        overview.centerX,
+        static_cast<float>(Voxel::BlockGalleryCatalog::SpecimenHeight),
+        overview.centerZ,
+    };
+    camera.forward = glm::normalize(focus - camera.position);
+    camera.target = focus;
+    camera.yaw = glm::degrees(std::atan2(
+        camera.forward.z, camera.forward.x));
+    camera.pitch = glm::degrees(std::asin(camera.forward.y));
+    camera.right = glm::normalize(glm::cross(
+        camera.forward, glm::vec3{0.0f, 1.0f, 0.0f}));
+    camera.up = glm::normalize(glm::cross(camera.right, camera.forward));
 }
 
 bool initializeOptionalUserInterface(
@@ -198,6 +232,9 @@ struct Application::Impl {
         Voxel::World* world = nullptr;
         Voxel::WorldView* worldView = nullptr;
         std::shared_ptr<Persistence::AsyncChunkLoader> chunkLoader;
+        std::shared_ptr<const Voxel::BlockGalleryCatalog> galleryCatalog;
+        std::shared_ptr<const Voxel::BlockGalleryChunkGenerator>
+            galleryGenerator;
         std::optional<Persistence::WorldSettings> settings;
         bool ready = false;
         bool streamingLifecycleLogged = false;
@@ -223,6 +260,7 @@ struct Application::Impl {
     Input::InputCallbackContext inputCallbacks;
     bool openGLInitialized = false;
     bool shutDown = false;
+    WorldMode worldMode = WorldMode::Normal;
     void (*afterContextAcquired)() = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
     void (*afterDisplayInitialized)(Application&) = nullptr;
@@ -230,9 +268,12 @@ struct Application::Impl {
         ApplicationPersistencePolicyState) = nullptr;
 
     Impl() = default;
+    explicit Impl(WorldMode mode)
+        : worldMode(mode) {}
     explicit Impl(ApplicationConstructionHooks hooks)
         : runtime(hooks.runtimeApi)
         , preferencesPath(std::move(hooks.userPreferencesPath))
+        , worldMode(hooks.worldMode)
         , afterContextAcquired(hooks.afterContextAcquired)
         , shutdownStageCompleted(hooks.shutdownStageCompleted)
         , afterDisplayInitialized(hooks.afterDisplayInitialized)
@@ -258,6 +299,10 @@ struct Application::Impl {
 
 Application::Application()
     : Application(std::make_unique<Impl>()) {
+}
+
+Application::Application(LaunchOptions launchOptions)
+    : Application(std::make_unique<Impl>(launchOptions.worldMode)) {
 }
 
 Application::Application(std::unique_ptr<Impl> impl)
@@ -347,14 +392,27 @@ void Application::initialize() {
         Persistence::Backends::Memory::descriptor(),
         Persistence::Backends::Memory::factory(),
         Persistence::Backends::Memory::probe());
-    m_impl->world.worldSet.setPersistenceStorage(
-        std::make_shared<Persistence::FilesystemBackend>());
-    m_impl->world.worldSet.setPersistenceRoot(
-        Persistence::mainWorldRootPath(m_impl->world.activeWorldId));
+    const bool blockGallery =
+        m_impl->worldMode == WorldMode::BlockGallery;
+    if (blockGallery) {
+        m_impl->world.worldSet.setPersistenceStorage(
+            std::make_shared<Persistence::InMemoryStorageBackend>());
+        m_impl->world.worldSet.setPersistenceRoot(
+            std::string(kBlockGalleryVirtualRoot));
+    } else {
+        m_impl->world.worldSet.setPersistenceStorage(
+            std::make_shared<Persistence::FilesystemBackend>());
+        m_impl->world.worldSet.setPersistenceRoot(
+            Persistence::mainWorldRootPath(m_impl->world.activeWorldId));
+    }
     m_impl->world.world = &m_impl->world.worldSet.createWorld(
         m_impl->world.activeWorldId);
-    applyInstalledPersistencePolicy(
-        m_impl->world.worldSet, *m_impl->world.world);
+    if (blockGallery) {
+        applyBlockGalleryPersistencePolicy(m_impl->world.worldSet);
+    } else {
+        applyInstalledPersistencePolicy(
+            m_impl->world.worldSet, *m_impl->world.world);
+    }
     const Persistence::PersistenceContext bootstrapPersistenceContext =
         m_impl->world.worldSet.persistenceContext(
             m_impl->world.activeWorldId);
@@ -364,8 +422,11 @@ void Application::initialize() {
                 Persistence::Backends::CR::kCRSettingsProviderId);
         m_impl->afterInstalledPersistenceContextPrepared({
             bootstrapPersistenceContext.preferredFormat,
+            bootstrapPersistenceContext.rootPath,
             settings != nullptr,
             settings && settings->enableLz4,
+            dynamic_cast<Persistence::InMemoryStorageBackend*>(
+                bootstrapPersistenceContext.storage.get()) != nullptr,
         });
     }
     if (m_impl->afterDisplayInitialized) {
@@ -457,6 +518,16 @@ void Application::initialize() {
             streamingPolicy.streamer;
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
+        if (blockGallery) {
+            m_impl->world.galleryCatalog =
+                std::make_shared<const Voxel::BlockGalleryCatalog>(
+                    m_impl->world.worldSet.resources().registry());
+            m_impl->world.galleryGenerator =
+                std::make_shared<const Voxel::BlockGalleryChunkGenerator>(
+                    m_impl->world.worldSet.resources().registry(),
+                    m_impl->world.galleryCatalog);
+        }
+
         m_impl->playerDefaultBindings =
             Input::loadPlayerDefaultBindings(m_impl->assets);
         m_impl->preferences->initializeInput(
@@ -469,6 +540,14 @@ void Application::initialize() {
 
         m_impl->world.worldView = &m_impl->world.worldSet.createView(m_impl->world.activeWorldId, m_impl->assets);
         Persistence::NewWorldGenerationFactory creationFactory = [&] {
+            if (m_impl->world.galleryGenerator) {
+                return Persistence::NewWorldGeneration{
+                    "Block gallery",
+                    0,
+                    Voxel::prepareBlockGalleryGeneratorIdentity(
+                        m_impl->world.worldSet.resources().registry(),
+                        m_impl->world.galleryGenerator->worldBounds())};
+            }
             return Persistence::NewWorldGeneration{
                 "world_" + std::to_string(m_impl->world.activeWorldId),
                 kDefaultWorldSeed,
@@ -485,7 +564,8 @@ void Application::initialize() {
                 *m_impl->world.world,
                 *m_impl->world.worldView,
                 creationFactory,
-                bootstrapPersistenceContext);
+                bootstrapPersistenceContext,
+                m_impl->world.galleryGenerator);
         auto generator = std::move(bootstrapped.generator);
         m_impl->world.settings = std::move(bootstrapped.settings);
         Persistence::PersistenceContext persistenceContext =
@@ -595,11 +675,19 @@ void Application::initialize() {
             m_impl->world.placeBlock = Voxel::BlockID{1};
         }
 
-        int spawnX = static_cast<int>(std::floor(m_impl->camera.position.x));
-        int spawnZ = static_cast<int>(std::floor(m_impl->camera.position.z));
-        int spawnY = Voxel::findFirstAirY(
-            *generator, spawnX, spawnZ);
-        m_impl->camera.position.y = static_cast<float>(spawnY) + 0.5f;
+        if (m_impl->world.galleryGenerator) {
+            applyBlockGalleryOverview(
+                m_impl->camera,
+                m_impl->world.galleryGenerator->overview());
+        } else {
+            int spawnX = static_cast<int>(
+                std::floor(m_impl->camera.position.x));
+            int spawnZ = static_cast<int>(
+                std::floor(m_impl->camera.position.z));
+            int spawnY = Voxel::findFirstAirY(
+                *generator, spawnX, spawnZ);
+            m_impl->camera.position.y = static_cast<float>(spawnY) + 0.5f;
+        }
         m_impl->world.worldView->markSpawnDiscoveryComplete();
 
         m_impl->renderer.initialize(m_impl->assets);
@@ -1017,13 +1105,7 @@ int runApplication(
 
 int runApplication(int argc, const char* const* argv) noexcept {
     return runApplication(argc, argv, [](const LaunchOptions& launchOptions) {
-        if (launchOptions.worldMode == WorldMode::BlockGallery) {
-            throw std::runtime_error(
-                "World mode 'block-gallery' is not available in this build; "
-                "use '--world-mode normal' or omit the option.");
-        }
-
-        Application application;
+        Application application(launchOptions);
         application.run();
         application.close();
     });
@@ -1145,13 +1227,20 @@ void Application::run() {
                 {
                     PROFILE_SCOPE("Simulation");
                     Input::updateCamera(m_impl->input, m_impl->camera, deltaTime);
-                    Input::handleDemoSpawn(m_impl->input, m_impl->assets, *m_impl->world.world, m_impl->camera);
-                    Input::handleBlockEdits(m_impl->input,
-                                            m_impl->window,
-                                            m_impl->camera,
-                                            *m_impl->world.world,
-                                            *m_impl->world.worldView,
-                                            m_impl->world.placeBlock);
+                    if (m_impl->worldMode != WorldMode::BlockGallery) {
+                        Input::handleDemoSpawn(
+                            m_impl->input,
+                            m_impl->assets,
+                            *m_impl->world.world,
+                            m_impl->camera);
+                        Input::handleBlockEdits(
+                            m_impl->input,
+                            m_impl->window,
+                            m_impl->camera,
+                            *m_impl->world.world,
+                            *m_impl->world.worldView,
+                            m_impl->world.placeBlock);
+                    }
                     m_impl->world.world->tickEntities(deltaTime);
                 }
 

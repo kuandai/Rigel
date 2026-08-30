@@ -13,8 +13,6 @@ namespace Rigel::Persistence {
  */
 class InMemoryStorageBackend final : public StorageBackend {
 public:
-    struct State;
-
     InMemoryStorageBackend();
     ~InMemoryStorageBackend() override;
 
@@ -42,6 +40,7 @@ public:
         const std::string& finalPath) override;
 
 private:
+    struct State;
     std::shared_ptr<State> m_state;
 };
 

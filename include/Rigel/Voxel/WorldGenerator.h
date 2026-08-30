@@ -15,6 +15,8 @@
 
 namespace Rigel::Voxel {
 
+class BlockGalleryChunkGenerator;
+
 struct ChunkBuffer {
     std::array<BlockState, Chunk::VOLUME> blocks{};
 
@@ -66,7 +68,9 @@ public:
     WorldGenerator(const BlockRegistry& registry,
                    GeneratorDefinitionData definition,
                    uint32_t seed,
-                   uint32_t semanticsVersion = kGeneratorSemanticsVersion);
+                   uint32_t semanticsVersion = kGeneratorSemanticsVersion,
+                   std::shared_ptr<const BlockGalleryChunkGenerator>
+                       blockGallery = {});
 
     const GeneratorDefinitionData& definition() const { return m_definition; }
     uint32_t seed() const { return m_seed; }
@@ -75,6 +79,7 @@ public:
         const GeneratorDefinitionData& definition,
         uint32_t seed,
         uint32_t semanticsVersion) const;
+    bool shouldPersistGeneratedChunk(ChunkCoord coord) const;
 
     void generate(ChunkCoord coord, ChunkBuffer& out,
                   const std::atomic_bool* cancel = nullptr) const;
@@ -88,6 +93,7 @@ private:
     const BlockID m_waterBlock;
     const DensityGraph m_densityGraph;
     const std::vector<std::unique_ptr<const WorldGenStage>> m_stages;
+    const std::shared_ptr<const BlockGalleryChunkGenerator> m_blockGallery;
 };
 
 } // namespace Rigel::Voxel

@@ -5,6 +5,7 @@
 #include "Rigel/Application.h"
 #include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
+#include "Rigel/Persistence/InMemoryStorage.h"
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/UI/ImGuiLayer.h"
@@ -575,8 +576,10 @@ TEST_CASE(Application_InstalledPersistencePolicyIgnoresWorkingDirectory) {
     CHECK_THROWS(Rigel::ApplicationTestAccess::construct(std::move(hooks)));
 
     CHECK_EQ(calls.persistencePolicy.preferredFormat, std::string("cr"));
+    CHECK_EQ(calls.persistencePolicy.rootPath, std::string("saves/world_0"));
     CHECK(calls.persistencePolicy.crSettingsPresent);
     CHECK(!calls.persistencePolicy.crLz4Enabled);
+    CHECK(!calls.persistencePolicy.processPrivateStorage);
     const std::vector<std::string> expectedRuntime = {
         "initialize",
         "create window",
@@ -587,6 +590,78 @@ TEST_CASE(Application_InstalledPersistencePolicyIgnoresWorkingDirectory) {
         "terminate",
     };
     CHECK_EQ(calls.runtime, expectedRuntime);
+}
+
+TEST_CASE(Application_BlockGalleryUsesProcessPrivatePersistence) {
+    LifecycleCalls calls;
+    ScopedLifecycleCalls scopedCalls(calls);
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_block_gallery_persistence");
+    ScopedCurrentDirectory currentDirectory(directory.path());
+
+    Rigel::ApplicationConstructionHooks hooks;
+    hooks.runtimeApi = fakeRuntimeApi();
+    hooks.userPreferencesPath =
+        directory.path() / "user-preferences.yaml";
+    hooks.afterDisplayInitialized = &failAfterDisplayInitialized;
+    hooks.afterInstalledPersistenceContextPrepared =
+        &observeInstalledPersistenceContext;
+    hooks.worldMode = Rigel::WorldMode::BlockGallery;
+    CHECK_THROWS(Rigel::ApplicationTestAccess::construct(std::move(hooks)));
+
+    CHECK_EQ(calls.persistencePolicy.preferredFormat, std::string("memory"));
+    CHECK_EQ(
+        calls.persistencePolicy.rootPath,
+        std::string("developer/block-gallery"));
+    CHECK(!calls.persistencePolicy.crSettingsPresent);
+    CHECK(!calls.persistencePolicy.crLz4Enabled);
+    CHECK(calls.persistencePolicy.processPrivateStorage);
+    CHECK(!std::filesystem::exists(directory.path() / "saves"));
+    CHECK(!std::filesystem::exists(directory.path() / "developer"));
+}
+
+TEST_CASE(Application_ProcessPrivateStorageSupportsNormalClosePersistence) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_process_private_close");
+    ScopedCurrentDirectory currentDirectory(directory.path());
+    const std::filesystem::path existingSave =
+        directory.path() / "saves/world_0";
+    std::filesystem::create_directories(existingSave);
+    std::ofstream(existingSave / "marker.txt") << "unchanged";
+    auto storage =
+        std::make_shared<Rigel::Persistence::InMemoryStorageBackend>();
+
+    Rigel::Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Rigel::Persistence::Backends::Memory::descriptor(),
+        Rigel::Persistence::Backends::Memory::factory(),
+        Rigel::Persistence::Backends::Memory::probe());
+    Rigel::Persistence::PersistenceService service(formats);
+    Rigel::Persistence::PersistenceContext context;
+    context.rootPath = "developer/block-gallery";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+    Rigel::Test::installSavedWorldGenerationFixture(
+        service,
+        context,
+        Rigel::Test::savedWorldSettingsFixture("Block gallery"));
+
+    Rigel::ApplicationTestAccess::closeReadyWorld({
+        storage,
+        nullptr,
+        nullptr,
+        context.rootPath,
+    });
+
+    CHECK(storage->exists(
+        "developer/block-gallery/zones/rigel/default/regions/"
+        "region_0_0_0.mem"));
+    std::ifstream marker(existingSave / "marker.txt");
+    std::string markerContents;
+    marker >> markerContents;
+    CHECK_EQ(markerContents, std::string("unchanged"));
+    CHECK(!std::filesystem::exists(existingSave / "zones"));
+    CHECK(!std::filesystem::exists(directory.path() / "developer"));
 }
 
 TEST_CASE(Application_InvalidPreferencesRejectBeforeMutationOrPublication) {

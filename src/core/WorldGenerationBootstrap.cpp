@@ -35,7 +35,8 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     Voxel::World& world,
     Voxel::WorldView& worldView,
     const Persistence::NewWorldGenerationFactory& creationFactory,
-    const Persistence::PersistenceContext& context) {
+    const Persistence::PersistenceContext& context,
+    std::shared_ptr<const Voxel::BlockGalleryChunkGenerator> blockGallery) {
     validateRuntimeTargets(worldSet, worldId, world, worldView);
 
     const Voxel::BlockRegistry& registry = worldSet.resources().registry();
@@ -53,7 +54,8 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
         registry,
         std::move(bootstrapped.generation.definition),
         bootstrapped.generation.settings.seed,
-        bootstrapped.generation.settings.generator.semanticsVersion);
+        bootstrapped.generation.settings.generator.semanticsVersion,
+        std::move(blockGallery));
 
     worldSet.setPersistenceActiveFormat(
         worldId, bootstrapped.persistenceFormat);

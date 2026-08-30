@@ -1,4 +1,5 @@
 #pragma once
+#include "Rigel/LaunchOptions.h"
 #include "Rigel/Preferences/UserPreferences.h"
 
 #include <memory>
@@ -30,6 +31,7 @@ enum class WindowedSizeIntent {
 class Application {
 public:
     Application();
+    explicit Application(LaunchOptions launchOptions);
     ~Application();
 
     void run();

@@ -174,6 +174,78 @@ TAA, so they are stable.
   - Generated, processed, meshed counts and rates.
   - Timing breakdown for generation and meshing.
 
+### 7.1 Block model meshing benchmark
+
+`Rigel_block_model_meshing_benchmark` measures the CPU-side production
+`MeshBuilder` without entering the player, renderer, or streaming scheduler.
+It is available only when `RIGEL_BUILD_BENCHMARKS=ON`, which defaults to
+`OFF`. The executable does not read or change player configuration.
+
+The deterministic fixture uses invented normalized geometry and a 32x16x32
+occupied region in each chunk:
+
+- `all_cube` contains 16,384 opaque built-in full cubes. Its expected exterior
+  mesh is 16,384 vertices and 24,576 indices.
+- `representative_mixed` contains 12,288 cubes, 2,048 single cuboids, and
+  2,048 two-cuboid models. Its expected mesh is 189,440 vertices and 284,160
+  indices.
+- `non_cube_heavy` contains 10,240 single cuboids and 6,144 two-cuboid models.
+  Its expected mesh is 540,672 vertices and 811,008 indices.
+
+The model registrations distribute both invented models across every
+supported right-angle orientation. Single- and multiple-cuboid geometry uses
+different render layers so validation also checks layer batching. The fixture
+registry is frozen before any build, and two invented CPU-resident atlas
+entries exercise the normal texture-layer lookup without requiring OpenGL.
+Before warmup or timing, the executable builds and validates every mesh,
+including exact vertex, index, and layer ranges. It also requires the all-cube
+registration to reference the built-in full-cube singleton with
+`isFullCube() == true`; this is the condition used by `MeshBuilder` to select
+the specialized cube branch.
+
+Use a Release build for performance evidence:
+
+```bash
+rigel_release_build=../Rigel-build-release
+conan install . --output-folder="$rigel_release_build" --build=missing \
+  -s build_type=Release
+cmake -S . -B "$rigel_release_build" \
+  -DCMAKE_TOOLCHAIN_FILE="$rigel_release_build/conan_toolchain.cmake" \
+  -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DRIGEL_BUILD_BENCHMARKS=ON
+cmake --build "$rigel_release_build" --parallel \
+  --target Rigel_block_model_meshing_benchmark
+"$rigel_release_build/Rigel_block_model_meshing_benchmark" \
+  --iterations 30 --warmup 5
+```
+
+Iteration count is limited to 1-100 and warmup count to 0-20. The default is
+20 timed and three warmup builds per workload. `--validate-only` checks the
+fixture without producing timing evidence. Output reports the build type,
+compiler, system, processor, hardware concurrency, steady-clock resolution,
+fixture dimensions, iteration bounds, nearest-rank P50/P95, mean/min/max/total
+build time, and exact mesh counts.
+
+A Release capture on 2026-08-30 used GNU 16.1.1 on Linux x86_64 with a 12th
+Gen Intel Core i7-12700, 20 reported hardware threads, and a steady clock
+reporting a one-nanosecond period. The exact command was the final command
+above. Results were:
+
+| Workload | Vertices | Indices | Mean | P50 | P95 | Min | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `all_cube` | 16,384 | 24,576 | 0.977 ms | 0.976 ms | 1.002 ms | 0.952 ms | 1.002 ms |
+| `representative_mixed` | 189,440 | 284,160 | 3.192 ms | 3.184 ms | 3.295 ms | 3.080 ms | 3.372 ms |
+| `non_cube_heavy` | 540,672 | 811,008 | 18.203 ms | 18.164 ms | 19.424 ms | 17.766 ms | 19.470 ms |
+
+This benchmark addition does not alter `MeshBuilder`. The pre-timing identity
+check reports `canonical_cube_fast_path=true`, and the ordinary 16,384-block
+cube fixture remained approximately one millisecond on the capture host. The
+measurement therefore provides no indication of a material cube-path
+regression. Cross-machine or cross-revision comparisons should use the same
+fixture and command; model-heavy time should be interpreted with its much
+larger emitted mesh counts rather than compared as equal output.
+
 ---
 
 ## 8. Streaming Lifecycle Signal

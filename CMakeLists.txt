@@ -179,6 +179,17 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 
 option(RIGEL_BUILD_BENCHMARKS "Build Rigel performance benchmarks" OFF)
 if (RIGEL_BUILD_BENCHMARKS)
+    add_executable(Rigel_block_model_meshing_benchmark
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/block_model_meshing_benchmark.cpp
+    )
+    target_compile_definitions(Rigel_block_model_meshing_benchmark PRIVATE
+        RIGEL_BENCHMARK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+        RIGEL_BENCHMARK_COMPILER="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}"
+        RIGEL_BENCHMARK_SYSTEM="${CMAKE_SYSTEM_NAME}"
+        RIGEL_BENCHMARK_PROCESSOR="${CMAKE_SYSTEM_PROCESSOR}"
+    )
+    target_link_libraries(Rigel_block_model_meshing_benchmark PRIVATE RigelLib)
+
     add_executable(Rigel_near_camera_visibility_benchmark
         ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/NearCameraVisibilityBenchmark.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/near_camera_visibility_benchmark.cpp
@@ -443,6 +454,12 @@ if (RIGEL_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "Ran 1 tests, 0 failed, 0 skipped\\."
     )
     if (RIGEL_BUILD_BENCHMARKS)
+        add_test(
+            NAME Rigel_block_model_meshing_benchmark_options
+            COMMAND ${CMAKE_COMMAND}
+                "-DBENCHMARK_EXECUTABLE=$<TARGET_FILE:Rigel_block_model_meshing_benchmark>"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/block_model_meshing_benchmark_options.cmake
+        )
         add_test(
             NAME Rigel_near_camera_visibility_cadence_options
             COMMAND ${CMAKE_COMMAND}

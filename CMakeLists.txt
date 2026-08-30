@@ -68,8 +68,13 @@ if(RIGEL_RESOLVED_COSMIC_REACH_JAR)
     message(STATUS
         "Cosmic Reach assets prepared from ${RIGEL_COSMIC_REACH_JAR_SOURCE}: "
         "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")
-    list(APPEND RIGEL_RESOURCE_ROOTS
-        "${CMAKE_CURRENT_SOURCE_DIR}/.rigel/assets")
+    rigel_snapshot_generated_resources(
+        RIGEL_GENERATED_RESOURCE_ROOT
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated-resource-snapshots"
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py")
+    list(APPEND RIGEL_RESOURCE_ROOTS "${RIGEL_GENERATED_RESOURCE_ROOT}")
 else()
     message(STATUS
         "Cosmic Reach runtime assets have not been prepared. Source-only builds "

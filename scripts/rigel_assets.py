@@ -27,6 +27,8 @@ STAGED_JAR_RELATIVE_PATH = Path(".rigel/source/Cosmic-Reach.jar")
 GENERATED_ASSETS_RELATIVE_PATH = Path(".rigel/assets")
 PROVENANCE_RELATIVE_PATH = Path(".rigel/cosmic-reach-import.json")
 PUBLICATION_LOCK_RELATIVE_PATH = Path(".rigel/assets-publication.lock")
+STAGING_PREFIX = ".assets-staging-"
+STAGING_LEASE_SUFFIX = ".lock"
 PROVENANCE_SCHEMA = 1
 IMPORTER_SCHEMA = 3
 SOURCE_PREFIX = "base/"
@@ -1679,16 +1681,15 @@ def synchronize(
 ) -> tuple[dict[str, object], bool]:
     jar, _ = resolve_jar(root, explicit_jar)
     jar_digest = sha256_file(jar)
-    if not force:
-        provenance = _matching_import_provenance(root, jar_digest)
-        if provenance is not None:
-            return provenance, False
+    with _publication_guard(root):
+        if not force:
+            provenance = _read_provenance(root)
+            if _import_matches(root, provenance, jar_digest):
+                assert provenance is not None
+                return provenance, False
 
-    workspace = root / ".rigel"
-    workspace.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".assets-staging-", dir=workspace))
-    diagnostics: list[str] = []
-    try:
+    with _generated_tree_staging(root) as staging:
+        diagnostics: list[str] = []
         with zipfile.ZipFile(jar) as archive:
             entries = indexed_archive(archive)
             if not any(
@@ -1701,7 +1702,7 @@ def synchronize(
             omit_blocks_with_unsupported_textures(staging, diagnostics)
             version = source_version(archive, entries)
         counts = validate_generated_tree(staging, required_identifiers)
-        provenance: dict[str, object] = {
+        provenance = {
             "schema": PROVENANCE_SCHEMA,
             "jar_sha256": jar_digest,
             "importer_schema": IMPORTER_SCHEMA,
@@ -1716,9 +1717,6 @@ def synchronize(
             provenance["source_omissions"] = diagnostics
         publish_generated_tree(root, staging, provenance)
         return provenance, True
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
 
 
 def validate_existing_import(root: Path) -> dict[str, object]:
@@ -1805,6 +1803,70 @@ def _retry_remove_tree(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _staging_lease_path(staging: Path) -> Path:
+    return staging.with_name(staging.name + STAGING_LEASE_SUFFIX)
+
+
+@contextmanager
+def _generated_tree_staging(root: Path):
+    workspace = root / ".rigel"
+    workspace.mkdir(parents=True, exist_ok=True)
+    descriptor, lease_name = tempfile.mkstemp(
+        prefix=STAGING_PREFIX, suffix=STAGING_LEASE_SUFFIX, dir=workspace
+    )
+    lease = Path(lease_name)
+    staging = lease.with_name(lease.name[: -len(STAGING_LEASE_SUFFIX)])
+    try:
+        with os.fdopen(descriptor, "a+b") as lease_file:
+            fcntl.flock(lease_file.fileno(), fcntl.LOCK_EX)
+            staging.mkdir()
+            try:
+                yield staging
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging)
+                fcntl.flock(lease_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        lease.unlink(missing_ok=True)
+
+
+def _reap_abandoned_staging(root: Path) -> None:
+    workspace = root / ".rigel"
+    for staging in sorted(
+        path for path in workspace.glob(f"{STAGING_PREFIX}*") if path.is_dir()
+    ):
+        lease = _staging_lease_path(staging)
+        with lease.open("a+b") as lease_file:
+            try:
+                fcntl.flock(
+                    lease_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                )
+            except BlockingIOError:
+                continue
+            try:
+                _retry_remove_tree(staging)
+            finally:
+                fcntl.flock(lease_file.fileno(), fcntl.LOCK_UN)
+        lease.unlink(missing_ok=True)
+    for lease in sorted(workspace.glob(f"{STAGING_PREFIX}*{STAGING_LEASE_SUFFIX}")):
+        staging = lease.with_name(
+            lease.name[: -len(STAGING_LEASE_SUFFIX)]
+        )
+        if staging.exists():
+            continue
+        try:
+            with lease.open("r+b") as lease_file:
+                try:
+                    fcntl.flock(
+                        lease_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                    )
+                except BlockingIOError:
+                    continue
+                lease.unlink(missing_ok=True)
+        except FileNotFoundError:
+            continue
+
+
 @contextmanager
 def _publication_lock(root: Path):
     lock_path = root / PUBLICATION_LOCK_RELATIVE_PATH
@@ -1818,9 +1880,11 @@ def _publication_lock(root: Path):
 
 
 @contextmanager
-def _publication_guard(root: Path):
+def _publication_guard(root: Path, *, reap_staging: bool = True):
     with _publication_lock(root):
         _recover_interrupted_publication(root)
+        if reap_staging:
+            _reap_abandoned_staging(root)
         yield
 
 
@@ -1936,7 +2000,7 @@ def _recover_interrupted_publication(root: Path) -> None:
 
 
 def publish_generated_tree(root: Path, staging: Path, provenance: dict[str, object]) -> None:
-    with _publication_guard(root):
+    with _publication_guard(root, reap_staging=False):
         _publish_generated_tree(root, staging, provenance)
 
 
@@ -1997,6 +2061,42 @@ def _matching_import_provenance(
 
 def current_import_matches(root: Path, jar_digest: str) -> bool:
     return _matching_import_provenance(root, jar_digest) is not None
+
+
+def snapshot_generated_assets(root: Path, output: Path) -> Path:
+    output = output.expanduser().resolve()
+    with _publication_guard(root):
+        provenance = _read_provenance(root)
+        assets = root / GENERATED_ASSETS_RELATIVE_PATH
+        if not _tree_matches_provenance(assets, provenance):
+            raise AssetImportError(
+                "cannot snapshot generated assets without a coherent tree and provenance"
+            )
+        assert provenance is not None
+        tree_hash = provenance["output_tree_sha256"]
+        assert isinstance(tree_hash, str)
+        output.mkdir(parents=True, exist_ok=True)
+        destination = output / tree_hash
+        if destination.exists():
+            if destination.is_dir() and sha256_tree(destination) == tree_hash:
+                return destination
+            raise AssetImportError(
+                f"generated asset snapshot is not coherent: {destination}"
+            )
+
+        staging = output / f".{tree_hash}.staging"
+        _retry_remove_tree(staging)
+        try:
+            shutil.copytree(assets, staging)
+            if sha256_tree(staging) != tree_hash:
+                raise AssetImportError(
+                    "generated assets changed while creating a build snapshot"
+                )
+            os.replace(staging, destination)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+        return destination
 
 
 def _import_matches(
@@ -2131,6 +2231,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--jar", type=Path)
     sync_parser.add_argument("--force", action="store_true")
 
+    snapshot_parser = subparsers.add_parser(
+        "snapshot", help="copy a coherent generated tree for resource embedding"
+    )
+    snapshot_parser.add_argument("--output", type=Path, required=True)
+
     subparsers.add_parser(
         "validate", help="validate the generated tree and its provenance"
     )
@@ -2165,6 +2270,9 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(omissions, list):
                 for omission in omissions:
                     print(f"Warning: {omission}", file=sys.stderr)
+            return 0
+        if args.command == "snapshot":
+            print(snapshot_generated_assets(root, args.output))
             return 0
         if args.command == "validate":
             provenance = validate_existing_import(root)

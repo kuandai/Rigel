@@ -7,10 +7,13 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 import zlib
@@ -829,6 +832,99 @@ class ImportFoundationTest(unittest.TestCase):
                 )
             )
 
+    def test_interrupted_staging_is_reclaimed_before_the_next_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            previous, _ = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+
+            for _ in range(3):
+                staging_populated = multiprocessing.Event()
+
+                def stop_before_publication() -> None:
+                    real_validate = rigel_assets.validate_generated_tree
+
+                    def wait_with_populated_staging(
+                        staging: Path,
+                        required_identifiers: tuple[str, ...],
+                    ) -> dict[str, int]:
+                        if staging.name.startswith(rigel_assets.STAGING_PREFIX):
+                            staging_populated.set()
+                            threading.Event().wait()
+                        return real_validate(staging, required_identifiers)
+
+                    with mock.patch.object(
+                        rigel_assets,
+                        "validate_generated_tree",
+                        side_effect=wait_with_populated_staging,
+                    ):
+                        rigel_assets.synchronize(
+                            root,
+                            jar,
+                            force=True,
+                            required_identifiers=("test:stone",),
+                        )
+
+                process = multiprocessing.get_context("fork").Process(
+                    target=stop_before_publication
+                )
+                process.start()
+                self.assertTrue(staging_populated.wait(timeout=10))
+                observed = rigel_assets.read_provenance(root)
+                self.assertIsNotNone(observed)
+                assert observed is not None
+                self.assertEqual(
+                    observed["output_tree_sha256"],
+                    previous["output_tree_sha256"],
+                )
+                self.assertEqual(
+                    len(
+                        list(
+                            (root / ".rigel").glob(
+                                f"{rigel_assets.STAGING_PREFIX}*"
+                            )
+                        )
+                    ),
+                    2,
+                )
+                process.kill()
+                process.join(timeout=10)
+
+                self.assertFalse(process.is_alive())
+                self.assertLess(process.exitcode or 0, 0)
+                self.assertEqual(
+                    len(
+                        list(
+                            (root / ".rigel").glob(
+                                f"{rigel_assets.STAGING_PREFIX}*"
+                            )
+                        )
+                    ),
+                    2,
+                )
+
+            recovered = rigel_assets.read_provenance(root)
+
+            self.assertIsNotNone(recovered)
+            assert recovered is not None
+            self.assertEqual(
+                recovered["output_tree_sha256"], previous["output_tree_sha256"]
+            )
+            self.assertEqual(
+                rigel_assets.sha256_tree(
+                    root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+                ),
+                previous["output_tree_sha256"],
+            )
+            self.assertFalse(
+                any(
+                    (root / ".rigel").glob(f"{rigel_assets.STAGING_PREFIX}*")
+                )
+            )
+
     def test_reader_waits_for_tree_and_provenance_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -920,6 +1016,154 @@ class ImportFoundationTest(unittest.TestCase):
                 rigel_assets.read_provenance(root).get("source_version"), "next"
             )
             self.assertTrue((assets / "sounds/new.ogg").is_file())
+
+    def test_cmake_embeds_a_locked_immutable_generated_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            test_root = Path(directory)
+            root = test_root / "asset-root"
+            project = test_root / "project"
+            build = test_root / "build"
+            snapshots = build / "generated-resource-snapshots"
+            project.mkdir()
+            staging, provenance = self._prepare_publication(root)
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            publication_paused = multiprocessing.Event()
+            continue_publication = multiprocessing.Event()
+
+            def pause_with_public_tree_absent() -> None:
+                real_replace = os.replace
+
+                def pause_after_previous_tree_move(
+                    source: object, destination: object
+                ) -> None:
+                    source_path = Path(source)
+                    destination_path = Path(destination)
+                    real_replace(source, destination)
+                    if (
+                        source_path == assets
+                        and destination_path.name == "assets"
+                        and destination_path.parent.name.startswith(
+                            ".assets-previous-"
+                        )
+                    ):
+                        publication_paused.set()
+                        if not continue_publication.wait(timeout=15):
+                            os._exit(74)
+
+                with mock.patch.object(
+                    rigel_assets.os,
+                    "replace",
+                    side_effect=pause_after_previous_tree_move,
+                ):
+                    rigel_assets.publish_generated_tree(
+                        root, staging, provenance
+                    )
+
+            cmake = shutil.which("cmake")
+            self.assertIsNotNone(cmake)
+            assert cmake is not None
+            build_environment = dict(os.environ)
+            build_environment["CCACHE_DISABLE"] = "true"
+            importer = Path(rigel_assets.__file__).resolve()
+            asset_resources = importer.parent.parent / "cmake/AssetResources.cmake"
+            (project / "dummy.cpp").write_text(
+                "int generated_resource_dummy() { return 0; }\n",
+                encoding="utf-8",
+            )
+            (project / "CMakeLists.txt").write_text(
+                f"""cmake_minimum_required(VERSION 3.20)
+project(GeneratedResourceSnapshot LANGUAGES CXX ASM)
+include("{asset_resources}")
+add_library(Dummy STATIC dummy.cpp)
+rigel_snapshot_generated_resources(
+    GENERATED_ROOT
+    "{root}"
+    "{snapshots}"
+    "{sys.executable}"
+    "{importer}")
+target_embed_resources(Dummy "${{GENERATED_ROOT}}")
+""",
+                encoding="utf-8",
+            )
+
+            publisher = multiprocessing.get_context("fork").Process(
+                target=pause_with_public_tree_absent
+            )
+            configure: subprocess.Popen[str] | None = None
+            try:
+                publisher.start()
+                self.assertTrue(publication_paused.wait(timeout=10))
+                self.assertFalse(assets.exists())
+                configure = subprocess.Popen(
+                    [cmake, "-S", str(project), "-B", str(build)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=build_environment,
+                )
+
+                deadline = time.monotonic() + 10
+                snapshot_reader_waiting = False
+                children_path = Path(
+                    f"/proc/{configure.pid}/task/{configure.pid}/children"
+                )
+                while time.monotonic() < deadline and configure.poll() is None:
+                    try:
+                        child_pids = children_path.read_text(
+                            encoding="utf-8"
+                        ).split()
+                    except FileNotFoundError:
+                        child_pids = []
+                    for child_pid in child_pids:
+                        try:
+                            command = Path(f"/proc/{child_pid}/cmdline").read_bytes()
+                        except FileNotFoundError:
+                            continue
+                        if b"rigel_assets.py" in command and b"snapshot" in command:
+                            snapshot_reader_waiting = True
+                            break
+                    if snapshot_reader_waiting:
+                        break
+                    time.sleep(0.01)
+
+                self.assertTrue(snapshot_reader_waiting)
+                self.assertIsNone(configure.poll())
+                self.assertFalse(snapshots.exists())
+                continue_publication.set()
+                configure_output, configure_error = configure.communicate(timeout=15)
+                self.assertEqual(
+                    configure.returncode,
+                    0,
+                    configure_output + configure_error,
+                )
+            finally:
+                continue_publication.set()
+                if configure is not None and configure.poll() is None:
+                    configure.kill()
+                    configure.communicate()
+                publisher.join(timeout=10)
+                if publisher.is_alive():
+                    publisher.kill()
+                    publisher.join(timeout=10)
+
+            self.assertEqual(publisher.exitcode, 0)
+            snapshot = snapshots / str(provenance["output_tree_sha256"])
+            self.assertEqual((snapshot / "new.txt").read_bytes(), b"new")
+            assembly = (build / "embedded/Dummy_resources.S").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(str(snapshot / "new.txt"), assembly)
+            self.assertNotIn(str(assets), assembly)
+
+            os.replace(assets, root / ".rigel/detached-assets")
+            built = subprocess.run(
+                [cmake, "--build", str(build), "--target", "Dummy_resources"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=build_environment,
+            )
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
 
     def test_output_path_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

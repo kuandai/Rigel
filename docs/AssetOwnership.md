@@ -57,26 +57,30 @@ imported air definition supplies the corresponding source semantics.
 
 ## Local workflow
 
-The cohesive importer CLI supports four operations:
+The cohesive importer CLI supports five operations:
 
 ```bash
 python3 scripts/rigel_assets.py stage /path/to/Cosmic-Reach.jar
 python3 scripts/rigel_assets.py sync
 python3 scripts/rigel_assets.py status
 python3 scripts/rigel_assets.py validate
+python3 scripts/rigel_assets.py snapshot --output /path/to/build/snapshots
 ```
 
 `sync` constructs and validates a complete staging tree, then publishes it with
-its provenance under an interprocess lock. Status, validation, and synchronization
-checks use the same lock, and a retained previous generation restores a coherent
-tree and provenance pair when publication is interrupted. A failed import
-preserves the previous valid tree;
-removed source assets disappear on the next successful import. Provenance
+its provenance under an interprocess lock. Status, validation, snapshot, and
+synchronization checks use the same lock. Abandoned staging trees are reclaimed,
+and a retained previous generation restores a coherent tree and provenance pair
+when publication is interrupted. A failed import preserves the previous valid
+tree; removed source assets disappear on the next successful import. Provenance
 records the source JAR SHA-256, importer schema and source hash, deterministic
 output-tree SHA-256, source prefix, and category counts without timestamps or
 machine-specific paths.
 
 CMake resolves a JAR in this order: explicit `RIGEL_COSMIC_REACH_JAR` cache
 path, the environment variable of the same name, then the canonical staged
-file. It invokes `sync` before enumerating resources and skips reconstruction
-when the JAR, importer, and generated-tree hashes are current.
+file. It invokes `sync`, then copies the coherent generated tree under the lock
+to a content-addressed build-directory snapshot before enumerating resources.
+Assembly inputs remain on that immutable snapshot if a later import publishes a
+new generation. Synchronization skips reconstruction when the JAR, importer,
+and generated-tree hashes are current.

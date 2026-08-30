@@ -1,3 +1,23 @@
+function(rigel_snapshot_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIRECTORY
+        PYTHON_EXECUTABLE IMPORTER_SCRIPT)
+    execute_process(
+        COMMAND "${PYTHON_EXECUTABLE}" "${IMPORTER_SCRIPT}"
+            --root "${ROOT}" snapshot --output "${OUTPUT_DIRECTORY}"
+        RESULT_VARIABLE SNAPSHOT_RESULT
+        OUTPUT_VARIABLE SNAPSHOT_PATH
+        ERROR_VARIABLE SNAPSHOT_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT SNAPSHOT_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Generated asset snapshot failed:\n${SNAPSHOT_PATH}${SNAPSHOT_ERROR}")
+    endif()
+    if(NOT IS_DIRECTORY "${SNAPSHOT_PATH}")
+        message(FATAL_ERROR
+            "Generated asset snapshot did not produce a resource root: ${SNAPSHOT_PATH}")
+    endif()
+    set(${OUTPUT_VARIABLE} "${SNAPSHOT_PATH}" PARENT_SCOPE)
+endfunction()
+
 function(target_embed_resources TARGET_NAME)
     set(RESOURCE_DIRS ${ARGN})
     if(NOT RESOURCE_DIRS)

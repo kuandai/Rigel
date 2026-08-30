@@ -14,6 +14,10 @@ Rigel uses a minimal in-tree test harness located in `tests/`:
   profiler implementation so test instrumentation does not change `RigelLib`.
 - Block asset failure coverage is compiled into
   `Rigel_block_asset_failure_tests` with a fixed embedded-resource fixture.
+- A configured Cosmic Reach JAR adds
+  `Rigel_generated_asset_integration_tests`, which exercises the generated
+  registry, chunk mesh, texture upload, and render-submission path without
+  storing generated content in Git.
 - `Rigel_public_header_consumer` compiles and links representative public
   headers using only `RigelLib`'s declared interface.
 - The harness is implemented in `tests/TestFramework.h` and
@@ -46,6 +50,8 @@ When enabled, CMake adds:
 - `Rigel_profiler_tests` (profiler test executable)
 - `Rigel_block_asset_failure_tests` (missing-resource test executable)
 - `Rigel_public_header_consumer` (public dependency interface check)
+- `Rigel_generated_asset_integration_tests` (only when a Cosmic Reach JAR is
+  configured)
 
 ### 2.3 Running Tests
 
@@ -98,6 +104,15 @@ filtered-run entry verifies the runner's executed-test summary. Adding,
 renaming, or reformatting a `TEST_CASE` does not change aggregate suite coverage;
 if the case selected by the filtered-run check is renamed, that check fails
 rather than silently omitting it.
+
+On Unix builds where CMake provides EGL, the shared OpenGL fixture uses a
+surfaceless pbuffer when no X11 or Wayland display is available. This executes
+the same OpenGL upload and draw calls without a window or swap-control path.
+The generated-asset integration entry also selects software OpenGL for a
+repeatable noninteractive gate. When a JAR is configured, CTest adds a focused
+real-source importer entry with its resolved path so the closure and repeated
+synchronization checks run without changing the synthetic importer suite's
+environment.
 
 Run the main suite via CTest:
 

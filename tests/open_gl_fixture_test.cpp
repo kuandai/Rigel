@@ -15,6 +15,8 @@ TEST_CASE(OpenGLFixture_OnlyMissingDisplayCanSkip) {
         OpenGLContextFailure::ContextCreation));
     CHECK(!Rigel::Test::detail::canSkipOpenGLContextFailure(
         OpenGLContextFailure::GlewInitialization));
+    CHECK(!Rigel::Test::detail::canSkipOpenGLContextFailure(
+        OpenGLContextFailure::EglInitialization));
 }
 
 TEST_CASE(OpenGLFixture_RecognizesOnlyExplicitMissingDisplayErrors) {

@@ -231,6 +231,10 @@ if (RIGEL_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     target_link_libraries(Rigel_tests PRIVATE RigelLib)
+    if(TARGET OpenGL::EGL)
+        target_link_libraries(Rigel_tests PRIVATE OpenGL::EGL)
+        target_compile_definitions(Rigel_tests PRIVATE RIGEL_TEST_HAS_EGL)
+    endif()
     target_compile_definitions(Rigel_tests PRIVATE
         $<$<CONFIG:Debug>:RIGEL_EXPECT_PROFILER_ENABLED>
         RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
@@ -337,6 +341,20 @@ if (RIGEL_BUILD_TESTS)
         target_compile_definitions(Rigel_generated_asset_integration_tests PRIVATE
             RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(Rigel_generated_asset_integration_tests PRIVATE RigelLib)
+        if(TARGET OpenGL::EGL)
+            target_link_libraries(
+                Rigel_generated_asset_integration_tests PRIVATE OpenGL::EGL)
+            target_compile_definitions(
+                Rigel_generated_asset_integration_tests PRIVATE RIGEL_TEST_HAS_EGL)
+        endif()
+        file(SHA256 "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
+            RIGEL_RESOLVED_COSMIC_REACH_JAR_SHA256)
+        if(RIGEL_RESOLVED_COSMIC_REACH_JAR_SHA256 STREQUAL
+           "58a2cc3b79b5413cfa0f2e4ae3b37f44ed7f11a5e828de57f9f3f71599ac570e")
+            target_compile_definitions(
+                Rigel_generated_asset_integration_tests PRIVATE
+                RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS)
+        endif()
     endif()
 
     add_dependencies(Rigel_tests
@@ -358,6 +376,11 @@ if (RIGEL_BUILD_TESTS)
         add_test(
             NAME Rigel_generated_asset_integration_tests
             COMMAND Rigel_generated_asset_integration_tests)
+        if(UNIX AND NOT APPLE)
+            set_tests_properties(
+                Rigel_generated_asset_integration_tests PROPERTIES
+                ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1")
+        endif()
     endif()
     add_test(
         NAME Rigel_resource_roots
@@ -373,6 +396,16 @@ if (RIGEL_BUILD_TESTS)
     )
     set_tests_properties(Rigel_asset_importer_tests PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(RIGEL_RESOLVED_COSMIC_REACH_JAR)
+        add_test(
+            NAME Rigel_real_asset_importer_tests
+            COMMAND ${CMAKE_COMMAND} -E env
+                "RIGEL_COSMIC_REACH_JAR=${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
+                "${Python3_EXECUTABLE}" -m unittest -v
+                tests.rigel_assets_test.RealJarBlockModelClosureTest)
+        set_tests_properties(Rigel_real_asset_importer_tests PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
     add_test(
         NAME Rigel_tests_filtered_count
         COMMAND Rigel_tests --filter AssetHandle_Basics

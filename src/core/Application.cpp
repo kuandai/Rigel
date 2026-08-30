@@ -1431,20 +1431,24 @@ void Application::run() {
                 {
                     PROFILE_SCOPE("Simulation");
                     Input::updateCamera(m_impl->input, m_impl->camera, deltaTime);
-                    if (m_impl->worldMode != WorldMode::BlockGallery) {
-                        Input::handleDemoSpawn(
-                            m_impl->input,
-                            m_impl->assets,
-                            *m_impl->world.world,
-                            m_impl->camera);
-                        Input::handleBlockEdits(
-                            m_impl->input,
-                            m_impl->window,
-                            m_impl->camera,
-                            *m_impl->world.world,
-                            *m_impl->world.worldView,
-                            m_impl->world.placeBlock);
-                    }
+                    const Input::GameplayMutationMode mutationMode =
+                        m_impl->worldMode == WorldMode::BlockGallery
+                            ? Input::GameplayMutationMode::ReadOnly
+                            : Input::GameplayMutationMode::ReadWrite;
+                    Input::handleDemoSpawn(
+                        m_impl->input,
+                        m_impl->assets,
+                        *m_impl->world.world,
+                        m_impl->camera,
+                        mutationMode);
+                    Input::handleBlockEdits(
+                        m_impl->input,
+                        m_impl->window,
+                        m_impl->camera,
+                        *m_impl->world.world,
+                        *m_impl->world.worldView,
+                        m_impl->world.placeBlock,
+                        mutationMode);
                     m_impl->world.world->tickEntities(deltaTime);
                 }
 

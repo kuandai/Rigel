@@ -38,6 +38,11 @@ struct CameraState {
     float moveSpeed = 10.0f;
 };
 
+enum class GameplayMutationMode {
+    ReadWrite,
+    ReadOnly,
+};
+
 struct DebugOverlayListener : InputListener {
     bool* enabled = nullptr;
 
@@ -94,14 +99,16 @@ void updateCamera(const InputState& input, CameraState& camera, float dt);
 void handleDemoSpawn(const InputState& input,
                      Asset::AssetManager& assets,
                      Voxel::World& world,
-                     const CameraState& camera);
+                     const CameraState& camera,
+                     GameplayMutationMode mode);
 
 void handleBlockEdits(const InputState& input,
                       const WindowState& window,
                       const CameraState& camera,
                       Voxel::World& world,
                       Voxel::WorldView& worldView,
-                      Voxel::BlockID placeBlock);
+                      Voxel::BlockID placeBlock,
+                      GameplayMutationMode mode);
 
 } // namespace Input
 } // namespace Rigel

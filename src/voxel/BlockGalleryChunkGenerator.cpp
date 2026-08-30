@@ -50,21 +50,20 @@ GeneratorDefinitionData::Biome emptyBiome(
 
 BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
     const BlockRegistry& registry,
-    std::shared_ptr<const BlockGalleryCatalog> catalog)
-    : m_catalog(std::move(catalog)) {
-    if (!m_catalog) {
-        throw std::invalid_argument(
-            "Block gallery chunk generation requires a catalog");
-    }
+    const BlockGalleryCatalog& catalog) {
     if (!registry.frozen()) {
         throw std::invalid_argument(
             "Block gallery chunk generation requires a frozen registry");
+    }
+    if (catalog.m_sourceRegistry != &registry) {
+        throw std::invalid_argument(
+            "Block gallery catalog does not belong to the supplied registry");
     }
 
     const BlockGalleryCatalogEntry* coverageDiagnostic = nullptr;
     const BlockGalleryCatalogEntry* sameTypeDiagnostic = nullptr;
     std::optional<BlockID> referenceFloorBlock;
-    for (const BlockGalleryCatalogEntry& entry : m_catalog->entries()) {
+    for (const BlockGalleryCatalogEntry& entry : catalog.entries()) {
         const BlockType& type = registry.getType(entry.blockId);
         if (!referenceFloorBlock && suitableReferenceFloor(type)) {
             referenceFloorBlock = entry.blockId;
@@ -82,7 +81,7 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
     }
 
     const BlockGalleryGridDimensions dimensions =
-        m_catalog->gridDimensions();
+        catalog.gridDimensions();
     const int galleryMaxX = dimensions.columns == 0
         ? 0
         : static_cast<int>(dimensions.columns - 1) *
@@ -92,7 +91,7 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
         : static_cast<int>(dimensions.rows - 1) *
             BlockGalleryCatalog::SpecimenSpacing;
 
-    if (referenceFloorBlock && !m_catalog->entries().empty()) {
+    if (referenceFloorBlock && !catalog.entries().empty()) {
         const int floorMinX = -kFloorBorder;
         const int floorMaxX = galleryMaxX + kFloorBorder;
         const int floorMinZ = -kFloorBorder;
@@ -102,17 +101,15 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
                 addPlacement({
                     {x, 0, z},
                     *referenceFloorBlock,
-                    BlockGalleryPlacementKind::ReferenceFloor,
                 });
             }
         }
     }
 
-    for (const BlockGalleryCatalogEntry& entry : m_catalog->entries()) {
+    for (const BlockGalleryCatalogEntry& entry : catalog.entries()) {
         addPlacement({
             entry.specimenPosition,
             entry.blockId,
-            BlockGalleryPlacementKind::Specimen,
         });
     }
 
@@ -123,21 +120,19 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
     };
     int diagnosticX = diagnosticOrigin.x;
     const auto addPair = [&](BlockID blockId,
-                             BlockGalleryPlacementKind kind,
                              int x,
                              int z,
                              auto&& add) {
-        add(BlockGalleryBlockPlacement{{x, 1, z}, blockId, kind});
-        add(BlockGalleryBlockPlacement{{x + 1, 1, z}, blockId, kind});
+        add(BlockPlacement{{x, 1, z}, blockId});
+        add(BlockPlacement{{x + 1, 1, z}, blockId});
     };
 
     if (referenceFloorBlock) {
         addPair(
             *referenceFloorBlock,
-            BlockGalleryPlacementKind::OpaqueCullingDiagnostic,
             diagnosticX,
             diagnosticOrigin.z,
-            [this](BlockGalleryBlockPlacement placement) {
+            [this](BlockPlacement placement) {
                 addPlacement(std::move(placement));
             });
         diagnosticX += kDiagnosticGroupSpacing;
@@ -145,10 +140,9 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
     if (sameTypeDiagnostic) {
         addPair(
             sameTypeDiagnostic->blockId,
-            BlockGalleryPlacementKind::SameTypeCullingDiagnostic,
             diagnosticX,
             diagnosticOrigin.z,
-            [this](BlockGalleryBlockPlacement placement) {
+            [this](BlockPlacement placement) {
                 addPlacement(std::move(placement));
             });
         diagnosticX += kDiagnosticGroupSpacing;
@@ -156,10 +150,9 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
     if (coverageDiagnostic) {
         addPair(
             coverageDiagnostic->blockId,
-            BlockGalleryPlacementKind::CoverageCullingDiagnostic,
             diagnosticX,
             diagnosticOrigin.z,
-            [this](BlockGalleryBlockPlacement placement) {
+            [this](BlockPlacement placement) {
                 addPlacement(std::move(placement));
             });
     }
@@ -169,7 +162,6 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
             addPlacement({
                 {x, 0, diagnosticOrigin.z},
                 *referenceFloorBlock,
-                BlockGalleryPlacementKind::ReferenceFloor,
             });
         }
     }
@@ -187,7 +179,7 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
 }
 
 void BlockGalleryChunkGenerator::addPlacement(
-    BlockGalleryBlockPlacement placement) {
+    BlockPlacement placement) {
     const ChunkCoord chunk = worldToChunk(
         placement.position.x,
         placement.position.y,
@@ -195,20 +187,9 @@ void BlockGalleryChunkGenerator::addPlacement(
     m_placementsByChunk[chunk].push_back(std::move(placement));
 }
 
-std::vector<BlockGalleryBlockPlacement>
-BlockGalleryChunkGenerator::placements() const {
-    size_t placementCount = 0;
-    for (const auto& [coord, placements] : m_placementsByChunk) {
-        static_cast<void>(coord);
-        placementCount += placements.size();
-    }
-    std::vector<BlockGalleryBlockPlacement> result;
-    result.reserve(placementCount);
-    for (const auto& [coord, placements] : m_placementsByChunk) {
-        static_cast<void>(coord);
-        result.insert(result.end(), placements.begin(), placements.end());
-    }
-    return result;
+bool BlockGalleryChunkGenerator::matchesRuntimeBehavior(
+    const BlockGalleryChunkGenerator& other) const {
+    return m_placementsByChunk == other.m_placementsByChunk;
 }
 
 void BlockGalleryChunkGenerator::validateGeneratorBounds(
@@ -231,7 +212,7 @@ void BlockGalleryChunkGenerator::generate(
     if (found == m_placementsByChunk.end()) {
         return;
     }
-    for (const BlockGalleryBlockPlacement& placement : found->second) {
+    for (const BlockPlacement& placement : found->second) {
         int localX = 0;
         int localY = 0;
         int localZ = 0;

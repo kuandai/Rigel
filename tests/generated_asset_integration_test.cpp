@@ -207,27 +207,77 @@ const BlockGalleryCatalogEntry& requireGalleryEntry(
     return *entry;
 }
 
-std::vector<BlockGalleryBlockPlacement> diagnosticPair(
+struct GeneratedGalleryBlock {
+    BlockGalleryWorldPosition position;
+    BlockID blockId;
+};
+
+using GeneratedGalleryPair = std::array<GeneratedGalleryBlock, 2>;
+
+BlockState generatedGalleryBlock(
     const BlockGalleryChunkGenerator& gallery,
-    BlockGalleryPlacementKind kind
+    BlockGalleryWorldPosition position
 ) {
-    const std::vector<BlockGalleryBlockPlacement> placements =
-        gallery.placements();
-    std::vector<BlockGalleryBlockPlacement> pair;
-    std::copy_if(
-        placements.begin(),
-        placements.end(),
-        std::back_inserter(pair),
-        [kind](const BlockGalleryBlockPlacement& placement) {
-            return placement.kind == kind;
-        });
-    return pair;
+    const ChunkCoord coord = worldToChunk(
+        position.x, position.y, position.z);
+    ChunkBuffer buffer;
+    gallery.generate(coord, buffer);
+    int localX = 0;
+    int localY = 0;
+    int localZ = 0;
+    worldToLocal(
+        position.x,
+        position.y,
+        position.z,
+        localX,
+        localY,
+        localZ);
+    return buffer.at(localX, localY, localZ);
+}
+
+std::vector<GeneratedGalleryPair> generatedDiagnosticPairs(
+    const BlockGalleryChunkGenerator& gallery,
+    const BlockGalleryCatalog& catalog
+) {
+    const BlockGalleryGridDimensions dimensions = catalog.gridDimensions();
+    const int galleryMaxZ = dimensions.rows == 0
+        ? 0
+        : static_cast<int>(dimensions.rows - 1) *
+            BlockGalleryCatalog::SpecimenSpacing;
+    std::vector<GeneratedGalleryPair> result;
+    for (int z = galleryMaxZ + 1; z < galleryMaxZ + Chunk::SIZE; ++z) {
+        for (int x = 0; x < Chunk::SIZE - 1; ++x) {
+            const BlockGalleryWorldPosition leftPosition{
+                x, BlockGalleryCatalog::SpecimenHeight, z};
+            const BlockGalleryWorldPosition rightPosition{
+                x + 1, BlockGalleryCatalog::SpecimenHeight, z};
+            const BlockState left = generatedGalleryBlock(
+                gallery, leftPosition);
+            const BlockState right = generatedGalleryBlock(
+                gallery, rightPosition);
+            if (left.isAir() || left.id != right.id) {
+                continue;
+            }
+            if (x > 0 &&
+                generatedGalleryBlock(
+                    gallery,
+                    {x - 1, BlockGalleryCatalog::SpecimenHeight, z}).id ==
+                    left.id) {
+                continue;
+            }
+            result.push_back({{
+                {leftPosition, left.id},
+                {rightPosition, right.id},
+            }});
+        }
+    }
+    return result;
 }
 
 size_t countSharedXPlaneFaces(
     const ChunkMesh& mesh,
     ChunkCoord chunk,
-    const std::vector<BlockGalleryBlockPlacement>& pair
+    const GeneratedGalleryPair& pair
 ) {
     CHECK_EQ(pair.size(), static_cast<size_t>(2));
     const float planeX = static_cast<float>(
@@ -541,36 +591,25 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     WorldResources resources;
     resources.initialize(assets);
 
-    auto catalog = std::make_shared<const BlockGalleryCatalog>(
-        resources.registry());
+    const BlockGalleryCatalog catalog(resources.registry());
     auto gallery = std::make_shared<const BlockGalleryChunkGenerator>(
         resources.registry(), catalog);
-    const std::vector<BlockGalleryBlockPlacement> placements =
-        gallery->placements();
-    for (const BlockGalleryPlacementKind kind : {
-             BlockGalleryPlacementKind::OpaqueCullingDiagnostic,
-             BlockGalleryPlacementKind::SameTypeCullingDiagnostic,
-             BlockGalleryPlacementKind::CoverageCullingDiagnostic}) {
-        CHECK_EQ(
-            std::count_if(
-                placements.begin(),
-                placements.end(),
-                [kind](const BlockGalleryBlockPlacement& placement) {
-                    return placement.kind == kind;
-                }),
-            static_cast<std::ptrdiff_t>(2));
-    }
+    const std::vector<GeneratedGalleryPair> diagnosticPairs =
+        generatedDiagnosticPairs(*gallery, catalog);
+    CHECK_EQ(diagnosticPairs.size(), static_cast<size_t>(3));
     const PreparedGeneratorDefinitionSnapshot identity =
         prepareBlockGalleryGeneratorIdentity(
             resources.registry(), gallery->worldBounds());
     auto generator = std::make_shared<const WorldGenerator>(
         resources.registry(), identity.data, 0, 1, gallery);
 
-    for (const BlockGalleryPlacementKind kind : {
-             BlockGalleryPlacementKind::SameTypeCullingDiagnostic,
-             BlockGalleryPlacementKind::CoverageCullingDiagnostic}) {
-        const std::vector<BlockGalleryBlockPlacement> pair = diagnosticPair(
-            *gallery, kind);
+    size_t partialDiagnosticCount = 0;
+    for (const GeneratedGalleryPair& pair : diagnosticPairs) {
+        if (resources.registry().getType(pair.front().blockId)
+                .model->isFullCube()) {
+            continue;
+        }
+        ++partialDiagnosticCount;
         CHECK_EQ(pair.size(), static_cast<size_t>(2));
         const ChunkCoord chunkCoord = worldToChunk(
             pair.front().position.x,
@@ -621,6 +660,7 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
                     isolatedMesh, chunkCoord, pair) > 0);
         }
     }
+    CHECK_EQ(partialDiagnosticCount, static_cast<size_t>(2));
 
     World world(resources);
     world.setGenerator(generator);
@@ -648,7 +688,7 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     };
     for (const std::string_view identifier : representatives) {
         const BlockGalleryCatalogEntry& entry = requireGalleryEntry(
-            *catalog, resources.registry(), identifier);
+            catalog, resources.registry(), identifier);
         const glm::vec3 target{
             static_cast<float>(entry.specimenPosition.x) + 0.5f,
             static_cast<float>(entry.specimenPosition.y) + 0.5f,

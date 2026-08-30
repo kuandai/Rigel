@@ -518,13 +518,12 @@ void Application::initialize() {
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
         if (blockGallery) {
-            auto galleryCatalog =
-                std::make_shared<const Voxel::BlockGalleryCatalog>(
-                    m_impl->world.worldSet.resources().registry());
+            const Voxel::BlockGalleryCatalog galleryCatalog(
+                m_impl->world.worldSet.resources().registry());
             m_impl->world.galleryGenerator =
                 std::make_shared<const Voxel::BlockGalleryChunkGenerator>(
                     m_impl->world.worldSet.resources().registry(),
-                    std::move(galleryCatalog));
+                    galleryCatalog);
         }
 
         m_impl->playerDefaultBindings =

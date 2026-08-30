@@ -5,29 +5,12 @@
 #include "GeneratorDefinition.h"
 
 #include <map>
-#include <memory>
 #include <vector>
 
 namespace Rigel::Voxel {
 
 class BlockRegistry;
 struct ChunkBuffer;
-
-enum class BlockGalleryPlacementKind {
-    ReferenceFloor,
-    Specimen,
-    OpaqueCullingDiagnostic,
-    SameTypeCullingDiagnostic,
-    CoverageCullingDiagnostic,
-};
-
-struct BlockGalleryBlockPlacement {
-    BlockGalleryWorldPosition position;
-    BlockID blockId;
-    BlockGalleryPlacementKind kind = BlockGalleryPlacementKind::Specimen;
-
-    bool operator==(const BlockGalleryBlockPlacement&) const = default;
-};
 
 struct BlockGalleryOverview {
     float centerX = 0.0f;
@@ -46,9 +29,8 @@ class BlockGalleryChunkGenerator final {
 public:
     BlockGalleryChunkGenerator(
         const BlockRegistry& registry,
-        std::shared_ptr<const BlockGalleryCatalog> catalog);
+        const BlockGalleryCatalog& catalog);
 
-    std::vector<BlockGalleryBlockPlacement> placements() const;
     BlockGalleryOverview overview() const { return m_overview; }
     GeneratorDefinitionData::Bounds worldBounds() const { return {0, 2}; }
     void validateGeneratorBounds(
@@ -58,11 +40,20 @@ public:
     void generate(ChunkCoord coord, ChunkBuffer& out) const;
 
 private:
-    void addPlacement(BlockGalleryBlockPlacement placement);
+    friend class WorldGenerator;
 
-    std::shared_ptr<const BlockGalleryCatalog> m_catalog;
-    std::map<ChunkCoord, std::vector<BlockGalleryBlockPlacement>>
-        m_placementsByChunk;
+    struct BlockPlacement {
+        BlockGalleryWorldPosition position;
+        BlockID blockId;
+
+        bool operator==(const BlockPlacement&) const = default;
+    };
+
+    void addPlacement(BlockPlacement placement);
+    bool matchesRuntimeBehavior(
+        const BlockGalleryChunkGenerator& other) const;
+
+    std::map<ChunkCoord, std::vector<BlockPlacement>> m_placementsByChunk;
     BlockGalleryOverview m_overview;
 };
 

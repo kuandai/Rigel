@@ -9,6 +9,7 @@
 namespace Rigel::Voxel {
 
 class BlockRegistry;
+class BlockGalleryChunkGenerator;
 
 struct BlockGalleryGridCoordinate {
     size_t column = 0;
@@ -87,8 +88,11 @@ public:
         BlockGalleryWorldPosition position) const;
 
 private:
+    friend class BlockGalleryChunkGenerator;
+
     static constexpr size_t MissingIndex = static_cast<size_t>(-1);
 
+    const BlockRegistry* m_sourceRegistry = nullptr;
     std::vector<BlockGalleryCatalogEntry> m_entries;
     std::vector<BlockGalleryEmptyGeometryExclusion> m_emptyGeometryExclusions;
     std::vector<size_t> m_blockIdToCatalogIndex;

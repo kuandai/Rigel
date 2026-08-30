@@ -98,7 +98,8 @@ size_t squareGridWidth(size_t entryCount) {
 
 } // namespace
 
-BlockGalleryCatalog::BlockGalleryCatalog(const BlockRegistry& registry) {
+BlockGalleryCatalog::BlockGalleryCatalog(const BlockRegistry& registry)
+    : m_sourceRegistry(&registry) {
     if (!registry.frozen()) {
         throw std::invalid_argument(
             "Block gallery catalog requires a frozen block registry");

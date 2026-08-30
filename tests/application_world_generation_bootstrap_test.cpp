@@ -704,12 +704,11 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_gallery_bounds_reject_before_publi
     Rigel::Voxel::WorldSet worldSet;
     configureWorldSet(worldSet, root, storage, "memory");
     worldSet.resources().registry().freeze();
-    auto catalog =
-        std::make_shared<const Rigel::Voxel::BlockGalleryCatalog>(
-            worldSet.resources().registry());
+    const Rigel::Voxel::BlockGalleryCatalog catalog(
+        worldSet.resources().registry());
     auto gallery =
         std::make_shared<const Rigel::Voxel::BlockGalleryChunkGenerator>(
-            worldSet.resources().registry(), std::move(catalog));
+            worldSet.resources().registry(), catalog);
     Rigel::Voxel::World& world = worldSet.createWorld(1);
     Rigel::Voxel::WorldView view(world, worldSet.resources());
     const auto context = worldSet.persistenceContext(1);

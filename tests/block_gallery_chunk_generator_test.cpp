@@ -2,6 +2,7 @@
 
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
+#include "Rigel/Persistence/ChunkSerializer.h"
 #include "Rigel/Persistence/InMemoryStorage.h"
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/WorldSettings.h"
@@ -15,6 +16,7 @@
 #include "Rigel/Voxel/WorldView.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -116,27 +118,123 @@ void populateGalleryRegistry(BlockRegistry& registry, size_t numberedCount) {
     }
 }
 
-std::vector<BlockGalleryBlockPlacement> diagnosticPair(
+struct GeneratedBlockPlacement {
+    BlockGalleryWorldPosition position;
+    BlockID blockId;
+
+    bool operator==(const GeneratedBlockPlacement&) const = default;
+};
+
+using GeneratedBlockPair = std::array<GeneratedBlockPlacement, 2>;
+
+int galleryLastZ(const BlockGalleryCatalog& catalog) {
+    const BlockGalleryGridDimensions dimensions = catalog.gridDimensions();
+    return dimensions.rows == 0
+        ? 0
+        : static_cast<int>(dimensions.rows - 1) *
+            BlockGalleryCatalog::SpecimenSpacing;
+}
+
+std::vector<GeneratedBlockPlacement> generatedPlacements(
     const BlockGalleryChunkGenerator& generator,
-    BlockGalleryPlacementKind kind
+    const BlockGalleryCatalog& catalog
 ) {
-    const std::vector<BlockGalleryBlockPlacement> placements =
-        generator.placements();
-    std::vector<BlockGalleryBlockPlacement> pair;
-    std::copy_if(
-        placements.begin(),
-        placements.end(),
-        std::back_inserter(pair),
-        [kind](const BlockGalleryBlockPlacement& placement) {
-            return placement.kind == kind;
+    const BlockGalleryGridDimensions dimensions = catalog.gridDimensions();
+    const int galleryMaxX = dimensions.columns == 0
+        ? 0
+        : static_cast<int>(dimensions.columns - 1) *
+            BlockGalleryCatalog::SpecimenSpacing;
+    const int maxX = std::max(galleryMaxX + 1, Chunk::SIZE - 1);
+    const int maxZ = galleryLastZ(catalog) + Chunk::SIZE;
+    const ChunkCoord first = worldToChunk(-1, 0, -1);
+    const ChunkCoord last = worldToChunk(maxX, 1, maxZ);
+
+    std::vector<GeneratedBlockPlacement> result;
+    for (int chunkZ = first.z; chunkZ <= last.z; ++chunkZ) {
+        for (int chunkX = first.x; chunkX <= last.x; ++chunkX) {
+            const ChunkCoord coord{chunkX, 0, chunkZ};
+            ChunkBuffer buffer;
+            generator.generate(coord, buffer);
+            for (int z = 0; z < Chunk::SIZE; ++z) {
+                for (int y = 0; y < Chunk::SIZE; ++y) {
+                    for (int x = 0; x < Chunk::SIZE; ++x) {
+                        const BlockState state = buffer.at(x, y, z);
+                        if (state.isAir()) {
+                            continue;
+                        }
+                        result.push_back({
+                            {
+                                chunkX * Chunk::SIZE + x,
+                                y,
+                                chunkZ * Chunk::SIZE + z,
+                            },
+                            state.id,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
+
+std::vector<GeneratedBlockPair> diagnosticPairs(
+    const std::vector<GeneratedBlockPlacement>& placements,
+    const BlockGalleryCatalog& catalog
+) {
+    std::vector<GeneratedBlockPair> result;
+    const int lastSpecimenZ = galleryLastZ(catalog);
+    for (const GeneratedBlockPlacement& left : placements) {
+        if (left.position.y != BlockGalleryCatalog::SpecimenHeight ||
+            left.position.z <= lastSpecimenZ) {
+            continue;
+        }
+        const auto right = std::find_if(
+            placements.begin(), placements.end(),
+            [&](const GeneratedBlockPlacement& candidate) {
+                return candidate.blockId == left.blockId &&
+                    candidate.position == BlockGalleryWorldPosition{
+                        left.position.x + 1,
+                        left.position.y,
+                        left.position.z,
+                    };
+            });
+        const auto previous = std::find_if(
+            placements.begin(), placements.end(),
+            [&](const GeneratedBlockPlacement& candidate) {
+                return candidate.blockId == left.blockId &&
+                    candidate.position == BlockGalleryWorldPosition{
+                        left.position.x - 1,
+                        left.position.y,
+                        left.position.z,
+                    };
+            });
+        if (right != placements.end() && previous == placements.end()) {
+            result.push_back({left, *right});
+        }
+    }
+    return result;
+}
+
+const GeneratedBlockPair& diagnosticPairFor(
+    const std::vector<GeneratedBlockPair>& pairs,
+    BlockID blockId
+) {
+    const auto found = std::find_if(
+        pairs.begin(), pairs.end(), [&](const GeneratedBlockPair& pair) {
+            return pair.front().blockId == blockId;
         });
-    return pair;
+    if (found == pairs.end()) {
+        throw Rigel::Test::TestFailure(
+            "Missing generated block-gallery diagnostic pair");
+    }
+    return *found;
 }
 
 size_t countSharedXPlaneFaces(
     const ChunkMesh& mesh,
     ChunkCoord chunk,
-    const std::vector<BlockGalleryBlockPlacement>& pair
+    const GeneratedBlockPair& pair
 ) {
     CHECK_EQ(pair.size(), static_cast<size_t>(2));
     const float planeX = static_cast<float>(
@@ -166,7 +264,7 @@ size_t countSharedXPlaneFaces(
 ChunkMesh buildGeneratedDiagnosticChunk(
     const BlockGalleryChunkGenerator& generator,
     const BlockRegistry& registry,
-    const std::vector<BlockGalleryBlockPlacement>& pair
+    const GeneratedBlockPair& pair
 ) {
     const ChunkCoord chunkCoord = worldToChunk(
         pair.front().position.x,
@@ -216,13 +314,13 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
     BlockRegistry registry;
     populateGalleryRegistry(registry, 100);
     registry.freeze();
-    auto catalog = std::make_shared<const BlockGalleryCatalog>(registry);
+    const BlockGalleryCatalog catalog(registry);
     const BlockGalleryChunkGenerator generator(registry, catalog);
     const BlockGalleryChunkGenerator repeated(registry, catalog);
-    const std::vector<BlockGalleryBlockPlacement> placements =
-        generator.placements();
+    const std::vector<GeneratedBlockPlacement> placements =
+        generatedPlacements(generator, catalog);
 
-    CHECK_EQ(placements, repeated.placements());
+    CHECK_EQ(placements, generatedPlacements(repeated, catalog));
     CHECK_EQ(generator.overview(), repeated.overview());
     CHECK(generator.overview().cameraDistance > 0.0f);
     CHECK(generator.overview().cameraHeight > 0.0f);
@@ -239,7 +337,7 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
     CHECK(std::any_of(
         placements.begin(),
         placements.end(),
-        [&](const BlockGalleryBlockPlacement& placement) {
+        [&](const GeneratedBlockPlacement& placement) {
             const ChunkCoord placementChunk = worldToChunk(
                 placement.position.x,
                 placement.position.y,
@@ -250,11 +348,13 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
             return dx * dx + dy * dy + dz * dz <= 4;
         }));
 
+    const BlockID referenceFloorBlock =
+        *registry.findByIdentifier("invented:floor");
     const auto referenceFloor = std::find_if(
         placements.begin(), placements.end(),
-        [](const BlockGalleryBlockPlacement& placement) {
+        [referenceFloorBlock](const GeneratedBlockPlacement& placement) {
             return placement.position == BlockGalleryWorldPosition{-1, 0, -1} &&
-                placement.kind == BlockGalleryPlacementKind::ReferenceFloor;
+                placement.blockId == referenceFloorBlock;
         });
     CHECK(referenceFloor != placements.end());
     CHECK_EQ(
@@ -262,8 +362,9 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
         std::string("invented:floor"));
     int floorMinX = 0;
     int floorMinZ = 0;
-    for (const BlockGalleryBlockPlacement& placement : placements) {
-        if (placement.kind != BlockGalleryPlacementKind::ReferenceFloor) {
+    for (const GeneratedBlockPlacement& placement : placements) {
+        if (placement.position.y != 0 ||
+            placement.blockId != referenceFloorBlock) {
             continue;
         }
         floorMinX = std::min(floorMinX, placement.position.x);
@@ -272,7 +373,7 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
     CHECK_EQ(floorMinX, -1);
     CHECK_EQ(floorMinZ, -1);
 
-    for (const BlockGalleryCatalogEntry& entry : catalog->entries()) {
+    for (const BlockGalleryCatalogEntry& entry : catalog.entries()) {
         const BlockState state = generatedBlock(
             generator, entry.specimenPosition);
         CHECK_EQ(state.id, entry.blockId);
@@ -282,36 +383,16 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
         generatedBlock(generator, {-1, 0, -1}).id,
         referenceFloor->blockId);
 
-    const int galleryLastZ = static_cast<int>(
-        catalog->gridDimensions().rows - 1) *
-        BlockGalleryCatalog::SpecimenSpacing;
-    size_t opaqueDiagnostics = 0;
-    size_t sameTypeDiagnostics = 0;
-    size_t coverageDiagnostics = 0;
-    for (const BlockGalleryBlockPlacement& placement : placements) {
-        opaqueDiagnostics += placement.kind ==
-            BlockGalleryPlacementKind::OpaqueCullingDiagnostic;
-        sameTypeDiagnostics += placement.kind ==
-            BlockGalleryPlacementKind::SameTypeCullingDiagnostic;
-        coverageDiagnostics += placement.kind ==
-            BlockGalleryPlacementKind::CoverageCullingDiagnostic;
-    }
-    CHECK_EQ(opaqueDiagnostics, static_cast<size_t>(2));
-    CHECK_EQ(sameTypeDiagnostics, static_cast<size_t>(2));
-    CHECK_EQ(coverageDiagnostics, static_cast<size_t>(2));
+    const std::vector<GeneratedBlockPair> pairs =
+        diagnosticPairs(placements, catalog);
+    CHECK_EQ(pairs.size(), static_cast<size_t>(3));
 
-    const auto opaquePair = diagnosticPair(
-        generator, BlockGalleryPlacementKind::OpaqueCullingDiagnostic);
-    CHECK_EQ(opaquePair.size(), static_cast<size_t>(2));
+    const GeneratedBlockPair& opaquePair =
+        diagnosticPairFor(pairs, referenceFloorBlock);
     const int diagnosticZ = opaquePair.front().position.z;
-    CHECK(diagnosticZ > galleryLastZ);
+    CHECK(diagnosticZ > galleryLastZ(catalog));
 
-    for (const BlockGalleryPlacementKind kind : {
-             BlockGalleryPlacementKind::OpaqueCullingDiagnostic,
-             BlockGalleryPlacementKind::SameTypeCullingDiagnostic,
-             BlockGalleryPlacementKind::CoverageCullingDiagnostic}) {
-        const std::vector<BlockGalleryBlockPlacement> pair = diagnosticPair(
-            generator, kind);
+    for (const GeneratedBlockPair& pair : pairs) {
         CHECK_EQ(pair.size(), static_cast<size_t>(2));
         CHECK_EQ(pair[0].position.z, diagnosticZ);
         CHECK_EQ(pair[1].position.z, diagnosticZ);
@@ -321,16 +402,10 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
         CHECK_EQ(pair[0].blockId, pair[1].blockId);
     }
 
-    const auto sameTypePair = diagnosticPair(
-        generator, BlockGalleryPlacementKind::SameTypeCullingDiagnostic);
-    const auto coveragePair = diagnosticPair(
-        generator, BlockGalleryPlacementKind::CoverageCullingDiagnostic);
-    CHECK_EQ(
-        registry.getType(sameTypePair.front().blockId).identifier,
-        std::string("invented:joined"));
-    CHECK_EQ(
-        registry.getType(coveragePair.front().blockId).identifier,
-        std::string("invented:coverage"));
+    const GeneratedBlockPair& sameTypePair = diagnosticPairFor(
+        pairs, *registry.findByIdentifier("invented:joined"));
+    const GeneratedBlockPair& coveragePair = diagnosticPairFor(
+        pairs, *registry.findByIdentifier("invented:coverage"));
 
     for (const auto* pair : {&sameTypePair, &coveragePair}) {
         const ChunkCoord chunk = worldToChunk(
@@ -356,12 +431,10 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
             .atlas = nullptr,
             .neighbors = {},
         });
-        const std::vector<BlockGalleryBlockPlacement> mismatchedPair = {
-            {{1, 1, 1}, blockId,
-             BlockGalleryPlacementKind::CoverageCullingDiagnostic},
-            {{2, 1, 1}, blockId,
-             BlockGalleryPlacementKind::CoverageCullingDiagnostic},
-        };
+        const GeneratedBlockPair mismatchedPair = {{
+            {{1, 1, 1}, blockId},
+            {{2, 1, 1}, blockId},
+        }};
         CHECK_EQ(
             countSharedXPlaneFaces(mesh, {0, 0, 0}, mismatchedPair),
             static_cast<size_t>(2));
@@ -372,12 +445,12 @@ TEST_CASE(BlockGalleryChunkGenerator_AccountsAcrossChunkBoundaries) {
     BlockRegistry registry;
     populateGalleryRegistry(registry, 100);
     registry.freeze();
-    auto catalog = std::make_shared<const BlockGalleryCatalog>(registry);
+    const BlockGalleryCatalog catalog(registry);
     const BlockGalleryChunkGenerator gallery(registry, catalog);
-    const std::vector<BlockGalleryBlockPlacement> placements =
-        gallery.placements();
+    const std::vector<GeneratedBlockPlacement> placements =
+        generatedPlacements(gallery, catalog);
     std::map<ChunkCoord, size_t> expectedCounts;
-    for (const BlockGalleryBlockPlacement& placement : placements) {
+    for (const GeneratedBlockPlacement& placement : placements) {
         ++expectedCounts[worldToChunk(
             placement.position.x,
             placement.position.y,
@@ -391,13 +464,14 @@ TEST_CASE(BlockGalleryChunkGenerator_AccountsAcrossChunkBoundaries) {
         }));
 
     for (const auto& [coord, expected] : expectedCounts) {
+        CHECK(gallery.containsChunk(coord));
         ChunkBuffer buffer;
         gallery.generate(coord, buffer);
         Chunk chunk(coord);
         chunk.copyFrom(buffer.blocks, registry);
         CHECK_EQ(chunk.nonAirCount(), expected);
         size_t expectedOpaque = 0;
-        for (const BlockGalleryBlockPlacement& placement : placements) {
+        for (const GeneratedBlockPlacement& placement : placements) {
             if (worldToChunk(
                     placement.position.x,
                     placement.position.y,
@@ -410,6 +484,7 @@ TEST_CASE(BlockGalleryChunkGenerator_AccountsAcrossChunkBoundaries) {
     }
 
     ChunkBuffer empty;
+    CHECK(!gallery.containsChunk({100, 0, 100}));
     gallery.generate({100, 0, 100}, empty);
     CHECK(std::all_of(
         empty.blocks.begin(), empty.blocks.end(), [](BlockState state) {
@@ -422,7 +497,7 @@ TEST_CASE(BlockGalleryChunkGenerator_PublishesMinimalEmptyIdentity) {
     BlockRegistry& registry = resources.registry();
     populateGalleryRegistry(registry, 4);
     registry.freeze();
-    auto catalog = std::make_shared<const BlockGalleryCatalog>(registry);
+    const BlockGalleryCatalog catalog(registry);
     auto gallery = std::make_shared<const BlockGalleryChunkGenerator>(
         registry, catalog);
     const PreparedGeneratorDefinitionSnapshot identity =
@@ -446,9 +521,9 @@ TEST_CASE(BlockGalleryChunkGenerator_PublishesMinimalEmptyIdentity) {
     auto galleryGenerator = std::make_shared<const WorldGenerator>(
         registry, identity.data, 0, 1, gallery);
     const ChunkCoord occupied = worldToChunk(
-        catalog->entries().front().specimenPosition.x,
-        catalog->entries().front().specimenPosition.y,
-        catalog->entries().front().specimenPosition.z);
+        catalog.entries().front().specimenPosition.x,
+        catalog.entries().front().specimenPosition.y,
+        catalog.entries().front().specimenPosition.z);
     CHECK(galleryGenerator->shouldPersistGeneratedChunk(occupied));
     CHECK(!galleryGenerator->shouldPersistGeneratedChunk({100, 0, 100}));
     CHECK(emptyGenerator->matchesGenerationInputs(
@@ -457,6 +532,12 @@ TEST_CASE(BlockGalleryChunkGenerator_PublishesMinimalEmptyIdentity) {
         galleryGenerator->semanticsVersion()));
     CHECK(!emptyGenerator->matchesRuntimeGenerator(*galleryGenerator));
     CHECK(!galleryGenerator->matchesRuntimeGenerator(*emptyGenerator));
+    auto equivalentGallery =
+        std::make_shared<const BlockGalleryChunkGenerator>(registry, catalog);
+    auto equivalentGalleryGenerator = std::make_shared<const WorldGenerator>(
+        registry, identity.data, 0, 1, equivalentGallery);
+    CHECK(galleryGenerator->matchesRuntimeGenerator(
+        *equivalentGalleryGenerator));
     ChunkBuffer galleryOutput;
     galleryGenerator->generate(occupied, galleryOutput);
     CHECK(std::any_of(
@@ -475,14 +556,180 @@ TEST_CASE(BlockGalleryChunkGenerator_PublishesMinimalEmptyIdentity) {
     CHECK_EQ(view.generator(), emptyGenerator);
 }
 
+TEST_CASE(BlockGalleryChunkGenerator_RejectsCatalogFromAnotherRegistry) {
+    BlockRegistry registry;
+    populateGalleryRegistry(registry, 1);
+    registry.freeze();
+    BlockRegistry otherRegistry;
+    populateGalleryRegistry(otherRegistry, 1);
+    otherRegistry.freeze();
+    const BlockGalleryCatalog otherCatalog(otherRegistry);
+
+    CHECK_THROWS((void)BlockGalleryChunkGenerator(registry, otherCatalog));
+}
+
+TEST_CASE(BlockGalleryChunkGenerator_RuntimeIdentityProtectsPartialSpanFill) {
+    WorldResources resources;
+    populateGalleryRegistry(resources.registry(), 100);
+    resources.registry().freeze();
+    const BlockGalleryCatalog catalog(resources.registry());
+    auto gallery = std::make_shared<const BlockGalleryChunkGenerator>(
+        resources.registry(), catalog);
+
+    WorldResources alternateResources;
+    populateGalleryRegistry(alternateResources.registry(), 0);
+    alternateResources.registry().freeze();
+    const BlockGalleryCatalog alternateCatalog(alternateResources.registry());
+    auto alternateGallery =
+        std::make_shared<const BlockGalleryChunkGenerator>(
+            alternateResources.registry(), alternateCatalog);
+
+    const PreparedGeneratorDefinitionSnapshot identity =
+        prepareBlockGalleryGeneratorIdentity(
+            resources.registry(), gallery->worldBounds());
+    Persistence::FormatRegistry formats;
+    formats.registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    Persistence::PersistenceService persistence(formats);
+    auto storage =
+        std::make_shared<Persistence::InMemoryStorageBackend>();
+    World world(resources);
+    WorldView view(world, resources);
+    Persistence::PersistenceContext context;
+    context.rootPath = "virtual/runtime-identity";
+    context.preferredFormat = "memory";
+    context.storage = storage;
+    context.providers = world.persistenceProvidersHandle();
+    const Persistence::BootstrappedWorldGeneration bootstrapped =
+        Persistence::bootstrapWorldGeneration(
+            [&] {
+                return Persistence::NewWorldGeneration{
+                    "Block gallery", 0, identity};
+            },
+            persistence,
+            resources.registry(),
+            context);
+    context.preferredFormat = bootstrapped.persistenceFormat;
+
+    auto runtimeGenerator = std::make_shared<const WorldGenerator>(
+        resources.registry(),
+        bootstrapped.generation.definition,
+        bootstrapped.generation.settings.seed,
+        bootstrapped.generation.settings.generator.semanticsVersion,
+        gallery);
+    auto alternateGenerator = std::make_shared<const WorldGenerator>(
+        alternateResources.registry(),
+        bootstrapped.generation.definition,
+        bootstrapped.generation.settings.seed,
+        bootstrapped.generation.settings.generator.semanticsVersion,
+        alternateGallery);
+    CHECK(alternateGenerator->matchesGenerationInputs(
+        runtimeGenerator->definition(),
+        runtimeGenerator->seed(),
+        runtimeGenerator->semanticsVersion()));
+    CHECK(!runtimeGenerator->matchesRuntimeGenerator(*alternateGenerator));
+    CHECK(!alternateGenerator->matchesRuntimeGenerator(*runtimeGenerator));
+
+    const BlockGalleryCatalogEntry& specimen = catalog.entries().back();
+    const ChunkCoord specimenChunk = worldToChunk(
+        specimen.specimenPosition.x,
+        specimen.specimenPosition.y,
+        specimen.specimenPosition.z);
+    ChunkBuffer expectedBase;
+    ChunkBuffer alternateBase;
+    runtimeGenerator->generate(specimenChunk, expectedBase);
+    alternateGenerator->generate(specimenChunk, alternateBase);
+    int localX = 0;
+    int localY = 0;
+    int localZ = 0;
+    worldToLocal(
+        specimen.specimenPosition.x,
+        specimen.specimenPosition.y,
+        specimen.specimenPosition.z,
+        localX,
+        localY,
+        localZ);
+    CHECK_EQ(expectedBase.at(localX, localY, localZ).id, specimen.blockId);
+    CHECK_NE(
+        alternateBase.at(localX, localY, localZ).id,
+        expectedBase.at(localX, localY, localZ).id);
+
+    world.setGenerator(runtimeGenerator);
+    view.setGenerator(runtimeGenerator);
+    CHECK_THROWS(world.setGenerator(alternateGenerator));
+    CHECK_EQ(world.generator(), runtimeGenerator);
+    CHECK_THROWS(view.setGenerator(alternateGenerator));
+    CHECK_EQ(view.generator(), runtimeGenerator);
+    CHECK_THROWS((void)Persistence::AsyncChunkLoader(
+        persistence,
+        context,
+        world,
+        runtimeGenerator->semanticsVersion(),
+        0,
+        0,
+        alternateGenerator));
+
+    Persistence::ChunkSpan partialSpan;
+    partialSpan.chunkX = specimenChunk.x;
+    partialSpan.chunkY = specimenChunk.y;
+    partialSpan.chunkZ = specimenChunk.z;
+    partialSpan.offsetX = Chunk::SIZE - 1;
+    partialSpan.offsetY = Chunk::SIZE - 1;
+    partialSpan.offsetZ = Chunk::SIZE - 1;
+    partialSpan.sizeX = 1;
+    partialSpan.sizeY = 1;
+    partialSpan.sizeZ = 1;
+    const Chunk partialChunk(specimenChunk);
+    const Persistence::ChunkData partialData =
+        Persistence::serializeChunkSpan(partialChunk, partialSpan);
+    auto format = persistence.openFormat(context);
+    const std::string zoneId = "rigel:default";
+    Persistence::ChunkRegionSnapshot region;
+    region.key = format->regionLayout().regionForChunk(
+        zoneId, specimenChunk);
+    region.chunks.push_back({
+        {zoneId, specimenChunk.x, specimenChunk.y, specimenChunk.z},
+        partialData,
+        {},
+    });
+    format->chunkContainer().saveRegion(region);
+    CHECK(format->descriptor().capabilities.fillMissingChunkSpans);
+
+    Persistence::AsyncChunkLoader loader(
+        persistence,
+        context,
+        world,
+        runtimeGenerator->semanticsVersion(),
+        0,
+        0,
+        runtimeGenerator);
+    CHECK_EQ(
+        loader.request({specimenChunk, 1}),
+        ChunkLoadRequestResult::Queued);
+    const std::vector<ChunkLoadCompletion> completions =
+        loader.drainCompletions(1);
+    CHECK_EQ(completions.size(), static_cast<size_t>(1));
+    CHECK_EQ(completions.front().outcome, ChunkLoadOutcome::Loaded);
+    const Chunk* loaded = world.chunkManager().getChunk(specimenChunk);
+    CHECK(loaded);
+    CHECK(loaded->loadedFromDisk());
+    CHECK_EQ(
+        world.getBlock(
+            specimen.specimenPosition.x,
+            specimen.specimenPosition.y,
+            specimen.specimenPosition.z).id,
+        specimen.blockId);
+}
+
 TEST_CASE(BlockGalleryChunkGenerator_DirtyEvictionReloadsFromRam) {
     WorldResources resources;
     populateGalleryRegistry(resources.registry(), 100);
     resources.registry().freeze();
     World world(resources);
     WorldView view(world, resources);
-    auto catalog = std::make_shared<const BlockGalleryCatalog>(
-        resources.registry());
+    const BlockGalleryCatalog catalog(resources.registry());
     auto gallery = std::make_shared<const BlockGalleryChunkGenerator>(
         resources.registry(), catalog);
     const PreparedGeneratorDefinitionSnapshot identity =
@@ -577,8 +824,8 @@ TEST_CASE(BlockGalleryChunkGenerator_DirtyEvictionReloadsFromRam) {
     view.setStreamConfig(streaming);
     view.markSpawnDiscoveryComplete();
 
-    const BlockGalleryCatalogEntry& first = catalog->entries().front();
-    const BlockGalleryCatalogEntry& last = catalog->entries().back();
+    const BlockGalleryCatalogEntry& first = catalog.entries().front();
+    const BlockGalleryCatalogEntry& last = catalog.entries().back();
     const ChunkCoord firstChunk = worldToChunk(
         first.specimenPosition.x,
         first.specimenPosition.y,

@@ -1055,12 +1055,19 @@ bool WorldGenerator::matchesGenerationInputs(
 
 bool WorldGenerator::matchesRuntimeGenerator(
     const WorldGenerator& other) const {
-    return matchesGenerationInputs(
-               other.definition(),
-               other.seed(),
-               other.semanticsVersion()) &&
-        static_cast<bool>(m_blockGallery) ==
-            static_cast<bool>(other.m_blockGallery);
+    if (!matchesGenerationInputs(
+            other.definition(),
+            other.seed(),
+            other.semanticsVersion())) {
+        return false;
+    }
+    if (m_blockGallery == other.m_blockGallery) {
+        return true;
+    }
+    if (!m_blockGallery || !other.m_blockGallery) {
+        return false;
+    }
+    return m_blockGallery->matchesRuntimeBehavior(*other.m_blockGallery);
 }
 
 bool WorldGenerator::shouldPersistGeneratedChunk(ChunkCoord coord) const {

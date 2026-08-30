@@ -51,6 +51,22 @@ function(rigel_synchronize_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIREC
     set(${OUTPUT_VARIABLE} "${SNAPSHOT_ROOT}" PARENT_SCOPE)
 endfunction()
 
+function(rigel_retire_generated_resource_snapshots OUTPUT_DIRECTORY RETAINED_SNAPSHOT
+        PYTHON_EXECUTABLE IMPORTER_SCRIPT)
+    execute_process(
+        COMMAND "${PYTHON_EXECUTABLE}" "${IMPORTER_SCRIPT}"
+            retire-snapshots --output "${OUTPUT_DIRECTORY}"
+            --retain "${RETAINED_SNAPSHOT}"
+        RESULT_VARIABLE RETIRE_RESULT
+        OUTPUT_VARIABLE RETIRE_OUTPUT
+        ERROR_VARIABLE RETIRE_ERROR)
+    if(NOT RETIRE_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Generated asset snapshot retirement failed:\n"
+            "${RETIRE_OUTPUT}${RETIRE_ERROR}")
+    endif()
+endfunction()
+
 function(target_embed_resources TARGET_NAME)
     set(RESOURCE_DIRS ${ARGN})
     if(NOT RESOURCE_DIRS)

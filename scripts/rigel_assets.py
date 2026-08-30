@@ -30,6 +30,9 @@ PUBLICATION_LOCK_RELATIVE_PATH = Path(".rigel/assets-publication.lock")
 SYNCHRONIZATION_LOCK_PREFIX = ".assets-synchronization-"
 STAGING_PREFIX = ".assets-staging-"
 STAGING_LEASE_SUFFIX = ".lock"
+SNAPSHOT_LOCK_FILENAME = ".snapshot.lock"
+SNAPSHOT_ACTIVE_GENERATION_FILENAME = ".active-generation.json"
+SNAPSHOT_STAGING_SUFFIX = ".staging"
 PROVENANCE_SCHEMA = 1
 IMPORTER_SCHEMA = 3
 SOURCE_PREFIX = "base/"
@@ -2244,10 +2247,90 @@ def current_import_matches(root: Path, jar_digest: str) -> bool:
     return _matching_import_provenance(root, jar_digest) is not None
 
 
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
+def _resolve_snapshot_output(root: Path, output: Path) -> Path:
+    resolved_output = output.expanduser().resolve()
+    assets = (root.expanduser().resolve() / GENERATED_ASSETS_RELATIVE_PATH).resolve()
+    if (
+        resolved_output == assets
+        or assets in resolved_output.parents
+        or resolved_output in assets.parents
+    ):
+        raise AssetImportError(
+            "generated asset snapshot output must not overlap the generated asset tree"
+        )
+    return resolved_output
+
+
+@contextmanager
+def _snapshot_output_guard(output: Path, create: bool = False):
+    if create:
+        output.mkdir(parents=True, exist_ok=True)
+    if not output.is_dir():
+        raise AssetImportError(
+            f"generated asset snapshot output does not exist: {output}"
+        )
+    lock_path = output / SNAPSHOT_LOCK_FILENAME
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _active_snapshot_hash(output: Path) -> str | None:
+    marker = output / SNAPSHOT_ACTIVE_GENERATION_FILENAME
+    if not marker.exists():
+        return None
+    try:
+        document = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AssetImportError(
+            f"generated asset snapshot handoff marker is invalid: {marker}"
+        ) from error
+    active_hash = document.get("tree_sha256") if isinstance(document, dict) else None
+    if not isinstance(active_hash, str) or not _is_sha256(active_hash):
+        raise AssetImportError(
+            f"generated asset snapshot handoff marker is invalid: {marker}"
+        )
+    active = output / active_hash
+    if (
+        active.is_symlink()
+        or not active.is_dir()
+        or sha256_tree(active) != active_hash
+    ):
+        raise AssetImportError(
+            f"active generated asset snapshot is not coherent: {active}"
+        )
+    return active_hash
+
+
+def _retire_snapshot_candidates(output: Path, retained_hashes: set[str]) -> None:
+    for path in sorted(output.iterdir()):
+        name = path.name
+        is_generation = _is_sha256(name)
+        is_staging = (
+            name.startswith(".")
+            and name.endswith(SNAPSHOT_STAGING_SUFFIX)
+            and _is_sha256(name[1 : -len(SNAPSHOT_STAGING_SUFFIX)])
+        )
+        if not is_staging and (not is_generation or name in retained_hashes):
+            continue
+        if path.is_symlink() or not path.is_dir():
+            raise AssetImportError(f"unsafe generated asset snapshot entry: {path}")
+        _retry_remove_tree(path)
+
+
 def snapshot_generated_assets(
     root: Path, output: Path, expected_jar_digest: str
 ) -> Path:
-    output = output.expanduser().resolve()
+    output = _resolve_snapshot_output(root, output)
     with _publication_guard(root):
         provenance = _read_provenance(root)
         assets = root / GENERATED_ASSETS_RELATIVE_PATH
@@ -2265,28 +2348,66 @@ def snapshot_generated_assets(
             )
         tree_hash = provenance["output_tree_sha256"]
         assert isinstance(tree_hash, str)
-        output.mkdir(parents=True, exist_ok=True)
-        destination = output / tree_hash
-        if destination.exists():
-            if destination.is_dir() and sha256_tree(destination) == tree_hash:
-                return destination
-            raise AssetImportError(
-                f"generated asset snapshot is not coherent: {destination}"
-            )
-
-        staging = output / f".{tree_hash}.staging"
-        _retry_remove_tree(staging)
-        try:
-            shutil.copytree(assets, staging)
-            if sha256_tree(staging) != tree_hash:
-                raise AssetImportError(
-                    "generated assets changed while creating a build snapshot"
+        with _snapshot_output_guard(output, create=True):
+            active_hash = _active_snapshot_hash(output)
+            retained_hashes = {tree_hash}
+            if active_hash is None:
+                retained_hashes.update(
+                    path.name for path in output.iterdir() if _is_sha256(path.name)
                 )
-            os.replace(staging, destination)
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
-        return destination
+            else:
+                retained_hashes.add(active_hash)
+            _retire_snapshot_candidates(output, retained_hashes)
+
+            destination = output / tree_hash
+            if destination.exists():
+                if (
+                    not destination.is_symlink()
+                    and destination.is_dir()
+                    and sha256_tree(destination) == tree_hash
+                ):
+                    return destination
+                raise AssetImportError(
+                    f"generated asset snapshot is not coherent: {destination}"
+                )
+
+            staging = output / f".{tree_hash}{SNAPSHOT_STAGING_SUFFIX}"
+            _retry_remove_tree(staging)
+            try:
+                shutil.copytree(assets, staging)
+                if sha256_tree(staging) != tree_hash:
+                    raise AssetImportError(
+                        "generated assets changed while creating a build snapshot"
+                    )
+                os.replace(staging, destination)
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging)
+            return destination
+
+
+def retire_generated_asset_snapshots(output: Path, retained: Path) -> None:
+    output = output.expanduser().resolve()
+    retained = retained.expanduser().resolve()
+    if retained.parent != output or not _is_sha256(retained.name):
+        raise AssetImportError(
+            "retained generated asset snapshot must be a content-addressed "
+            "child of the snapshot output"
+        )
+    with _snapshot_output_guard(output):
+        if (
+            retained.is_symlink()
+            or not retained.is_dir()
+            or sha256_tree(retained) != retained.name
+        ):
+            raise AssetImportError(
+                f"retained generated asset snapshot is not coherent: {retained}"
+            )
+        atomic_write_json(
+            output / SNAPSHOT_ACTIVE_GENERATION_FILENAME,
+            {"tree_sha256": retained.name},
+        )
+        _retire_snapshot_candidates(output, {retained.name})
 
 
 def _import_matches(
@@ -2427,6 +2548,13 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot_parser.add_argument("--output", type=Path, required=True)
     snapshot_parser.add_argument("--jar-sha256", required=True)
 
+    retire_parser = subparsers.add_parser(
+        "retire-snapshots",
+        help="retire generated snapshots after resource inputs are handed off",
+    )
+    retire_parser.add_argument("--output", type=Path, required=True)
+    retire_parser.add_argument("--retain", type=Path, required=True)
+
     subparsers.add_parser(
         "validate", help="validate the generated tree and its provenance"
     )
@@ -2464,6 +2592,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "snapshot":
             print(snapshot_generated_assets(root, args.output, args.jar_sha256))
+            return 0
+        if args.command == "retire-snapshots":
+            retire_generated_asset_snapshots(args.output, args.retain)
             return 0
         if args.command == "validate":
             provenance = validate_existing_import(root)

@@ -1113,6 +1113,55 @@ class ImportFoundationTest(unittest.TestCase):
             )
             self.assertTrue((assets / "sounds/new.ogg").is_file())
 
+    def test_snapshot_rejects_generated_tree_outputs_without_mutation(self) -> None:
+        for output_suffix in (Path(), Path("build-snapshots")):
+            with self.subTest(output_suffix=output_suffix):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self._prepare_publication(root)
+                    assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+                    provenance_path = root / rigel_assets.PROVENANCE_RELATIVE_PATH
+                    provenance = rigel_assets.read_provenance(root)
+                    self.assertIsNotNone(provenance)
+                    assert provenance is not None
+                    before_hash = rigel_assets.sha256_tree(assets)
+                    before_provenance = provenance_path.read_bytes()
+                    before_files = {
+                        path.relative_to(assets): path.read_bytes()
+                        for path in assets.rglob("*")
+                        if path.is_file()
+                    }
+                    output = assets / output_suffix
+
+                    error = io.StringIO()
+                    with contextlib.redirect_stderr(error):
+                        result = rigel_assets.main(
+                            [
+                                "--root",
+                                str(root),
+                                "snapshot",
+                                "--output",
+                                str(output),
+                                "--jar-sha256",
+                                str(provenance["jar_sha256"]),
+                            ]
+                        )
+
+                    self.assertEqual(result, 1)
+                    self.assertIn("must not overlap", error.getvalue())
+                    self.assertEqual(rigel_assets.sha256_tree(assets), before_hash)
+                    self.assertEqual(provenance_path.read_bytes(), before_provenance)
+                    self.assertEqual(
+                        {
+                            path.relative_to(assets): path.read_bytes()
+                            for path in assets.rglob("*")
+                            if path.is_file()
+                        },
+                        before_files,
+                    )
+                    if output_suffix.parts:
+                        self.assertFalse(output.exists())
+
     def test_cmake_embeds_a_locked_immutable_generated_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             test_root = Path(directory)
@@ -1261,6 +1310,164 @@ target_embed_resources(Dummy "${{GENERATED_ROOT}}")
                 env=build_environment,
             )
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+
+    def test_cmake_retires_previous_snapshot_after_resource_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            test_root = Path(directory)
+            root = test_root / "asset-root"
+            project = test_root / "project"
+            build = test_root / "build"
+            snapshots = build / "generated-resource-snapshots"
+            project.mkdir()
+            next_staging, next_provenance = self._prepare_publication(root)
+            first_provenance = rigel_assets.read_provenance(root)
+            self.assertIsNotNone(first_provenance)
+            assert first_provenance is not None
+            first_hash = str(first_provenance["output_tree_sha256"])
+            abandoned_hash = str(next_provenance["output_tree_sha256"])
+            legacy_staging = test_root / "legacy-snapshot"
+            rigel_assets.write_output(legacy_staging, "legacy.txt", b"legacy")
+            legacy_hash = rigel_assets.sha256_tree(legacy_staging)
+            snapshots.mkdir(parents=True)
+            os.replace(legacy_staging, snapshots / legacy_hash)
+            importer = Path(rigel_assets.__file__).resolve()
+            asset_resources = importer.parent.parent / "cmake/AssetResources.cmake"
+            wrapper = test_root / "observe_snapshot_handoff.py"
+            handoff_observed = test_root / "handoff-observed"
+            wrapper.write_text(
+                f"""import sys
+from pathlib import Path
+sys.path.insert(0, {str(importer.parent)!r})
+import rigel_assets
+
+arguments = sys.argv[1:]
+if "retire-snapshots" in arguments:
+    output = Path(arguments[arguments.index("--output") + 1]).resolve()
+    retained = Path(arguments[arguments.index("--retain") + 1]).resolve()
+    assembly = Path({str(build / "embedded/Dummy_resources.S")!r})
+    if not assembly.is_file() or str(retained) not in assembly.read_text(encoding="utf-8"):
+        raise SystemExit("snapshot retirement preceded the resource handoff")
+    first = output / {first_hash!r}
+    legacy = output / {legacy_hash!r}
+    if retained.name == {first_hash!r} and not legacy.is_dir():
+        raise SystemExit("unhanded predecessor was retired before the resource handoff")
+    if retained.name != {first_hash!r}:
+        if not first.is_dir():
+            raise SystemExit("previous snapshot was retired before the resource handoff")
+        Path({str(handoff_observed)!r}).write_text(retained.name, encoding="utf-8")
+raise SystemExit(rigel_assets.main(arguments))
+""",
+                encoding="utf-8",
+            )
+            (project / "dummy.cpp").write_text(
+                "int generated_resource_dummy() { return 0; }\n",
+                encoding="utf-8",
+            )
+
+            def write_project(expected_jar_hash: str) -> None:
+                (project / "CMakeLists.txt").write_text(
+                    f"""cmake_minimum_required(VERSION 3.20)
+project(GeneratedResourceRetirement LANGUAGES CXX ASM)
+include("{asset_resources}")
+add_library(Dummy STATIC dummy.cpp)
+rigel_snapshot_generated_resources(
+    GENERATED_ROOT
+    "{root}"
+    "{snapshots}"
+    "{sys.executable}"
+    "{wrapper}"
+    "{expected_jar_hash}")
+target_embed_resources(Dummy "${{GENERATED_ROOT}}")
+rigel_retire_generated_resource_snapshots(
+    "{snapshots}"
+    "${{GENERATED_ROOT}}"
+    "{sys.executable}"
+    "{wrapper}")
+""",
+                    encoding="utf-8",
+                )
+
+            cmake = shutil.which("cmake")
+            self.assertIsNotNone(cmake)
+            assert cmake is not None
+            build_environment = dict(os.environ)
+            build_environment["CCACHE_DISABLE"] = "true"
+            write_project(str(first_provenance["jar_sha256"]))
+            first_configure = subprocess.run(
+                [cmake, "-S", str(project), "-B", str(build)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=build_environment,
+            )
+            self.assertEqual(
+                first_configure.returncode,
+                0,
+                first_configure.stdout + first_configure.stderr,
+            )
+            self.assertEqual(
+                sorted(
+                    path.name
+                    for path in snapshots.iterdir()
+                    if path.is_dir()
+                ),
+                [first_hash],
+            )
+
+            rigel_assets.write_output(next_staging, "new.txt", b"new")
+            rigel_assets.publish_generated_tree(
+                root, next_staging, next_provenance
+            )
+            rigel_assets.snapshot_generated_assets(
+                root,
+                snapshots,
+                str(next_provenance["jar_sha256"]),
+            )
+            self.assertEqual(
+                sorted(
+                    path.name
+                    for path in snapshots.iterdir()
+                    if path.is_dir()
+                ),
+                sorted([first_hash, abandoned_hash]),
+            )
+
+            final_staging = root / ".rigel/.assets-staging-final"
+            rigel_assets.write_output(final_staging, "final.txt", b"final")
+            final_provenance = {
+                "generation": "final",
+                "jar_sha256": hashlib.sha256(b"final-source").hexdigest(),
+                "output_tree_sha256": rigel_assets.sha256_tree(final_staging),
+            }
+            final_hash = str(final_provenance["output_tree_sha256"])
+            rigel_assets.publish_generated_tree(
+                root, final_staging, final_provenance
+            )
+            write_project(str(final_provenance["jar_sha256"]))
+            second_configure = subprocess.run(
+                [cmake, "-S", str(project), "-B", str(build)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=build_environment,
+            )
+            self.assertEqual(
+                second_configure.returncode,
+                0,
+                second_configure.stdout + second_configure.stderr,
+            )
+            self.assertEqual(handoff_observed.read_text(encoding="utf-8"), final_hash)
+            self.assertFalse((snapshots / first_hash).exists())
+            self.assertFalse((snapshots / abandoned_hash).exists())
+            self.assertTrue((snapshots / final_hash).is_dir())
+            self.assertEqual(
+                sorted(
+                    path.name
+                    for path in snapshots.iterdir()
+                    if path.is_dir()
+                ),
+                [final_hash],
+            )
 
     def test_cmake_rejects_a_generation_replaced_after_synchronization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -81,6 +81,14 @@ target_compile_definitions(RigelLib PRIVATE
 
 target_embed_resources(RigelLib ${RIGEL_RESOURCE_ROOTS})
 
+if(RIGEL_GENERATED_RESOURCE_ROOT)
+    rigel_retire_generated_resource_snapshots(
+        "${CMAKE_CURRENT_BINARY_DIR}/generated-resource-snapshots"
+        "${RIGEL_GENERATED_RESOURCE_ROOT}"
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py")
+endif()
+
 target_include_directories(RigelLib
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include

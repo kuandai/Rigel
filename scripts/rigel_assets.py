@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 import hashlib
 import json
 import math
@@ -24,6 +26,7 @@ JAR_ENVIRONMENT_VARIABLE = "RIGEL_COSMIC_REACH_JAR"
 STAGED_JAR_RELATIVE_PATH = Path(".rigel/source/Cosmic-Reach.jar")
 GENERATED_ASSETS_RELATIVE_PATH = Path(".rigel/assets")
 PROVENANCE_RELATIVE_PATH = Path(".rigel/cosmic-reach-import.json")
+PUBLICATION_LOCK_RELATIVE_PATH = Path(".rigel/assets-publication.lock")
 PROVENANCE_SCHEMA = 1
 IMPORTER_SCHEMA = 3
 SOURCE_PREFIX = "base/"
@@ -1797,10 +1800,50 @@ def _retry_remove_tree(path: Path) -> None:
         shutil.rmtree(path)
 
 
+@contextmanager
+def _publication_lock(root: Path):
+    lock_path = root / PUBLICATION_LOCK_RELATIVE_PATH
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _reap_committed_backups(root: Path, workspace: Path) -> None:
+    backups = sorted(workspace.glob(".assets-previous-*"))
+    if not backups:
+        return
+    provenance = read_provenance(root)
+    assets = root / GENERATED_ASSETS_RELATIVE_PATH
+    expected_hash = provenance.get("output_tree_sha256") if provenance else None
+    if (
+        not isinstance(expected_hash, str)
+        or not assets.is_dir()
+        or sha256_tree(assets) != expected_hash
+    ):
+        raise AssetImportError(
+            "cannot reclaim a prior asset backup while the published tree "
+            "and provenance are not coherent"
+        )
+    for backup in backups:
+        _retry_remove_tree(backup)
+
+
 def publish_generated_tree(root: Path, staging: Path, provenance: dict[str, object]) -> None:
+    with _publication_lock(root):
+        _publish_generated_tree(root, staging, provenance)
+
+
+def _publish_generated_tree(
+    root: Path, staging: Path, provenance: dict[str, object]
+) -> None:
     destination = root / GENERATED_ASSETS_RELATIVE_PATH
     provenance_path = root / PROVENANCE_RELATIVE_PATH
     destination.parent.mkdir(parents=True, exist_ok=True)
+    _reap_committed_backups(root, destination.parent)
     backup = Path(
         tempfile.mkdtemp(prefix=".assets-previous-", dir=destination.parent)
     )

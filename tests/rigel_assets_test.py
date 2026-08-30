@@ -9,6 +9,7 @@ from pathlib import Path
 import struct
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 import zlib
@@ -428,6 +429,33 @@ class ImportFoundationTest(unittest.TestCase):
 
             self._assert_publication(root, "old")
 
+    def test_failed_first_install_leaves_no_public_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging = root / ".rigel/.assets-staging-fixture"
+            rigel_assets.write_output(staging, "new.txt", b"new")
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            provenance_path = root / rigel_assets.PROVENANCE_RELATIVE_PATH
+            real_replace = os.replace
+
+            def fail_install(source: object, destination: object) -> None:
+                if Path(source) == staging and Path(destination) == assets:
+                    raise OSError("injected first staging install failure")
+                real_replace(source, destination)
+
+            with mock.patch.object(
+                rigel_assets.os, "replace", side_effect=fail_install
+            ):
+                with self.assertRaisesRegex(OSError, "first staging install"):
+                    rigel_assets.publish_generated_tree(
+                        root, staging, {"generation": "new"}
+                    )
+
+            self.assertFalse(assets.exists())
+            self.assertFalse(provenance_path.exists())
+            self.assertFalse(any((root / ".rigel").glob(".assets-previous-*")))
+            self.assertFalse(any((root / ".rigel").glob(".assets-staging-*")))
+
     def test_publish_recovers_when_provenance_write_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -442,6 +470,29 @@ class ImportFoundationTest(unittest.TestCase):
                     rigel_assets.publish_generated_tree(root, staging, provenance)
 
             self._assert_publication(root, "old")
+
+    def test_failed_first_provenance_write_leaves_no_public_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging = root / ".rigel/.assets-staging-fixture"
+            rigel_assets.write_output(staging, "new.txt", b"new")
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            provenance_path = root / rigel_assets.PROVENANCE_RELATIVE_PATH
+
+            with mock.patch.object(
+                rigel_assets,
+                "atomic_write_json",
+                side_effect=OSError("injected first provenance write failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "first provenance write"):
+                    rigel_assets.publish_generated_tree(
+                        root, staging, {"generation": "new"}
+                    )
+
+            self.assertFalse(assets.exists())
+            self.assertFalse(provenance_path.exists())
+            self.assertFalse(any((root / ".rigel").glob(".assets-previous-*")))
+            self.assertFalse(any((root / ".rigel").glob(".assets-staging-*")))
 
     def test_publish_restores_provenance_with_atomic_rename(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -529,6 +580,148 @@ class ImportFoundationTest(unittest.TestCase):
 
             self.assertGreaterEqual(cleanup_attempts, 2)
             self._assert_publication(root, "new")
+
+    def test_publish_reaps_committed_backup_after_persistent_cleanup_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging, provenance = self._prepare_publication(root)
+            provenance["output_tree_sha256"] = rigel_assets.sha256_tree(staging)
+            real_rmtree = rigel_assets.shutil.rmtree
+
+            def fail_cleanup(path: object, *args: object, **kwargs: object) -> None:
+                if Path(path).name.startswith(".assets-previous-"):
+                    raise OSError("injected persistent backup cleanup failure")
+                real_rmtree(path, *args, **kwargs)
+
+            with mock.patch.object(
+                rigel_assets.shutil, "rmtree", side_effect=fail_cleanup
+            ):
+                rigel_assets.publish_generated_tree(root, staging, provenance)
+
+            backups = list((root / ".rigel").glob(".assets-previous-*"))
+            self.assertEqual(len(backups), 1)
+
+            next_staging = root / ".rigel/.assets-staging-next"
+            rigel_assets.write_output(next_staging, "latest.txt", b"latest")
+            next_provenance = {
+                "generation": "latest",
+                "output_tree_sha256": rigel_assets.sha256_tree(next_staging),
+            }
+            with mock.patch.object(
+                rigel_assets.shutil, "rmtree", side_effect=fail_cleanup
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "persistent backup cleanup"
+                ):
+                    rigel_assets.publish_generated_tree(
+                        root, next_staging, next_provenance
+                    )
+
+            self.assertEqual(
+                len(list((root / ".rigel").glob(".assets-previous-*"))), 1
+            )
+            rigel_assets.publish_generated_tree(
+                root, next_staging, next_provenance
+            )
+
+            self.assertFalse(any((root / ".rigel").glob(".assets-previous-*")))
+            self.assertEqual(
+                (root / ".rigel/assets/latest.txt").read_bytes(), b"latest"
+            )
+            self.assertEqual(
+                json.loads(
+                    (root / rigel_assets.PROVENANCE_RELATIVE_PATH).read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                next_provenance,
+            )
+
+    def test_concurrent_publications_keep_tree_and_provenance_together(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_staging = root / ".rigel/.assets-staging-first"
+            second_staging = root / ".rigel/.assets-staging-second"
+            rigel_assets.write_output(first_staging, "first.txt", b"first")
+            rigel_assets.write_output(second_staging, "second.txt", b"second")
+            first_provenance = {
+                "generation": "first",
+                "output_tree_sha256": rigel_assets.sha256_tree(first_staging),
+            }
+            second_provenance = {
+                "generation": "second",
+                "output_tree_sha256": rigel_assets.sha256_tree(second_staging),
+            }
+            first_at_provenance = threading.Event()
+            second_lock_attempted = threading.Event()
+            errors: list[BaseException] = []
+            real_lock = rigel_assets._publication_lock
+            real_atomic_write = rigel_assets.atomic_write_json
+
+            @contextlib.contextmanager
+            def observed_lock(lock_root: Path):
+                if threading.current_thread().name == "second-publisher":
+                    second_lock_attempted.set()
+                with real_lock(lock_root):
+                    yield
+
+            def coordinated_write(
+                destination: Path, value: dict[str, object]
+            ) -> None:
+                if value.get("generation") == "first":
+                    first_at_provenance.set()
+                    if not second_lock_attempted.wait(timeout=5):
+                        raise AssertionError(
+                            "second publisher did not contend for publication"
+                        )
+                real_atomic_write(destination, value)
+
+            def publish(
+                staging: Path, provenance: dict[str, object]
+            ) -> None:
+                try:
+                    rigel_assets.publish_generated_tree(root, staging, provenance)
+                except BaseException as error:
+                    errors.append(error)
+
+            with mock.patch.object(
+                rigel_assets, "_publication_lock", side_effect=observed_lock
+            ), mock.patch.object(
+                rigel_assets, "atomic_write_json", side_effect=coordinated_write
+            ):
+                first = threading.Thread(
+                    target=publish,
+                    args=(first_staging, first_provenance),
+                    name="first-publisher",
+                )
+                second = threading.Thread(
+                    target=publish,
+                    args=(second_staging, second_provenance),
+                    name="second-publisher",
+                )
+                first.start()
+                self.assertTrue(first_at_provenance.wait(timeout=5))
+                second.start()
+                first.join(timeout=5)
+                second.join(timeout=5)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            published = json.loads(
+                (root / rigel_assets.PROVENANCE_RELATIVE_PATH).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                published["output_tree_sha256"],
+                rigel_assets.sha256_tree(assets),
+            )
+            self.assertEqual(published["generation"], "second")
+            self.assertTrue((assets / "second.txt").is_file())
 
     def test_output_path_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -25,15 +25,24 @@ void VoxelVertex::setupAttributes() {
         reinterpret_cast<void*>(offsetof(VoxelVertex, u))
     );
 
-    // Packed data: location 2, vec4 (as normalized ubyte)
+    // Face data: location 2, uvec2
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(
+    glVertexAttribIPointer(
         2,                              // location
-        4,                              // size (normalIndex, aoLevel, textureLayer, flags)
+        2,                              // size (normalIndex, aoLevel)
         GL_UNSIGNED_BYTE,               // type
-        GL_FALSE,                       // normalized (we'll handle in shader)
         sizeof(VoxelVertex),            // stride
         reinterpret_cast<void*>(offsetof(VoxelVertex, normalIndex))
+    );
+
+    // Texture layer: location 3, uint sourced from an unsigned short
+    glEnableVertexAttribArray(3);
+    glVertexAttribIPointer(
+        3,                              // location
+        1,                              // size (textureLayer)
+        GL_UNSIGNED_SHORT,              // type
+        sizeof(VoxelVertex),            // stride
+        reinterpret_cast<void*>(offsetof(VoxelVertex, textureLayer))
     );
 }
 

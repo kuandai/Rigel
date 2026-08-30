@@ -225,11 +225,11 @@ TEST_CASE(MeshBuilder_ResolvesNamedTexturesAndTransformsModelUvs) {
     CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(8));
     for (size_t vertex = 0; vertex < 4; ++vertex) {
         CHECK_EQ(mesh.vertices[vertex].textureLayer,
-                 static_cast<uint8_t>(first.index));
+                 first.index);
     }
     for (size_t vertex = 4; vertex < 8; ++vertex) {
         CHECK_EQ(mesh.vertices[vertex].textureLayer,
-                 static_cast<uint8_t>(second.index));
+                 second.index);
     }
 
     CHECK_EQ(mesh.vertices[4].u, 0.875f);
@@ -240,6 +240,50 @@ TEST_CASE(MeshBuilder_ResolvesNamedTexturesAndTransformsModelUvs) {
     CHECK_EQ(mesh.vertices[6].v, 0.75f);
     CHECK_EQ(mesh.vertices[7].u, 0.875f);
     CHECK_EQ(mesh.vertices[7].v, 0.75f);
+}
+
+TEST_CASE(MeshBuilder_PreservesTextureLayersAcrossByteBoundary) {
+    TextureAtlas atlas;
+    for (size_t layer = 0; layer < 255; ++layer) {
+        addTexture(atlas, "textures/test/filler_" + std::to_string(layer));
+    }
+    const TextureHandle belowBoundary =
+        addTexture(atlas, "textures/test/layer_255.png");
+    const TextureHandle aboveBoundary =
+        addTexture(atlas, "textures/test/layer_256.png");
+
+    BlockModelCuboid cuboid;
+    cuboid.bounds.max = {1.0f, 1.0f, 1.0f};
+    cuboid.faces[static_cast<size_t>(Direction::PosX)] = modelFace("below");
+    cuboid.faces[static_cast<size_t>(Direction::NegX)] = modelFace("above");
+
+    BlockRegistry registry = makeRegistry();
+    BlockType panel;
+    panel.identifier = "test:wide_texture_layers";
+    panel.model = makeModel(
+        "test:wide_texture_layers_model", {"below", "above"}, {cuboid});
+    panel.textures.bind("below", "textures/test/layer_255.png");
+    panel.textures.bind("above", "textures/test/layer_256.png");
+    const BlockID panelId = registry.registerBlock(panel.identifier, panel);
+
+    Chunk chunk({0, 0, 0});
+    chunk.setBlock(1, 1, 1, BlockState{panelId});
+    const ChunkMesh mesh = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = &atlas,
+        .neighbors = {},
+    });
+
+    CHECK_EQ(belowBoundary.index, static_cast<uint16_t>(255));
+    CHECK_EQ(aboveBoundary.index, static_cast<uint16_t>(256));
+    CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(8));
+    for (size_t vertex = 0; vertex < 4; ++vertex) {
+        CHECK_EQ(mesh.vertices[vertex].textureLayer, belowBoundary.index);
+    }
+    for (size_t vertex = 4; vertex < 8; ++vertex) {
+        CHECK_EQ(mesh.vertices[vertex].textureLayer, aboveBoundary.index);
+    }
 }
 
 TEST_CASE(MeshBuilder_ModelFaceCullingIsControlledByFaceMetadata) {
@@ -329,7 +373,7 @@ TEST_CASE(MeshBuilder_ModelFacesUseAmbientOcclusionOnlyWhenRequested) {
         });
         std::vector<uint8_t> levels;
         for (const VoxelVertex& vertex : mesh.vertices) {
-            if (vertex.textureLayer == static_cast<uint8_t>(surface.index)) {
+            if (vertex.textureLayer == surface.index) {
                 levels.push_back(vertex.aoLevel);
             }
         }

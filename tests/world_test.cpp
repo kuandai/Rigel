@@ -712,7 +712,7 @@ TEST_CASE(WorldView_EditDrivenMeshingMatchesInitialStreaming) {
         CHECK(lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z);
         CHECK(lhs.u == rhs.u && lhs.v == rhs.v);
         CHECK(lhs.normalIndex == rhs.normalIndex && lhs.aoLevel == rhs.aoLevel);
-        CHECK(lhs.textureLayer == rhs.textureLayer && lhs.flags == rhs.flags);
+        CHECK(lhs.textureLayer == rhs.textureLayer);
     }
     for (size_t i = 0; i < edited.mesh.layers.size(); ++i) {
         CHECK_EQ(edited.mesh.layers[i].indexStart, streamed.mesh.layers[i].indexStart);

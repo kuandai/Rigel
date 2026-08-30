@@ -9,6 +9,7 @@
  */
 
 #include <array>
+#include <limits>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -77,7 +78,7 @@ public:
      */
     struct Config {
         int tileSize = 16;        ///< Pixels per tile (width and height)
-        int maxLayers = 256;      ///< Maximum array texture depth
+        int maxLayers = std::numeric_limits<uint16_t>::max(); ///< CPU layer limit
         bool generateMipmaps = true;  ///< Generate mipmaps for minification
     };
 

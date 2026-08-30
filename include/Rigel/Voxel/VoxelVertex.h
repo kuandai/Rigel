@@ -9,6 +9,7 @@
  * lighting, and ambient occlusion.
  */
 
+#include <cstddef>
 #include <cstdint>
 #include <GL/glew.h>
 
@@ -22,7 +23,12 @@ namespace Rigel::Voxel {
  * Layout matches shader attributes:
  * - location 0: vec3 a_position (x, y, z)
  * - location 1: vec2 a_uv (u, v)
- * - location 2: vec4 a_packedData (normalIndex, aoLevel, textureLayer, flags)
+ * - location 2: uvec2 a_faceData (normalIndex, aoLevel)
+ * - location 3: uint a_textureLayer (16-bit array texture layer)
+ *
+ * The final four bytes deliberately use two one-byte face fields and one
+ * two-byte texture layer. This keeps the established 24-byte stride while
+ * allowing every valid TextureHandle to reach the shaders without narrowing.
  */
 struct VoxelVertex {
     // Position (12 bytes)
@@ -34,8 +40,7 @@ struct VoxelVertex {
     // Packed data (4 bytes)
     uint8_t normalIndex;    ///< 0-5 for axis-aligned directions
     uint8_t aoLevel;        ///< Ambient occlusion level 0-3
-    uint8_t textureLayer;   ///< Array texture layer index
-    uint8_t flags;          ///< Reserved for future use
+    uint16_t textureLayer;  ///< Array texture layer index
 
     /**
      * @brief Setup vertex attribute pointers for a VAO.
@@ -48,5 +53,8 @@ struct VoxelVertex {
 
 // Ensure struct is packed as expected
 static_assert(sizeof(VoxelVertex) == 24, "VoxelVertex must be 24 bytes");
+static_assert(
+    offsetof(VoxelVertex, textureLayer) == 22,
+    "VoxelVertex texture layer must occupy the final two bytes");
 
 } // namespace Rigel::Voxel

@@ -91,9 +91,22 @@ TextureHandle TextureAtlas::addTexture(const std::string& path, const unsigned c
         return it->second;
     }
 
-    // Check layer limit
-    if (m_entries.size() >= static_cast<size_t>(m_config.maxLayers)) {
-        throw std::runtime_error("TextureAtlas: maximum layer count exceeded");
+    // The invalid uint16_t sentinel leaves 65,535 representable layer indices.
+    constexpr size_t handleLayerCapacity =
+        static_cast<size_t>(std::numeric_limits<uint16_t>::max());
+    if (m_entries.size() >= handleLayerCapacity) {
+        throw std::runtime_error(
+            "TextureAtlas: texture handle layer capacity of " +
+            std::to_string(handleLayerCapacity) + " exceeded");
+    }
+
+    const size_t configuredMaxLayers = m_config.maxLayers > 0
+        ? static_cast<size_t>(m_config.maxLayers)
+        : 0;
+    if (m_entries.size() >= configuredMaxLayers) {
+        throw std::runtime_error(
+            "TextureAtlas: configured maximum layer count of " +
+            std::to_string(m_config.maxLayers) + " exceeded");
     }
 
     // Create entry
@@ -212,6 +225,23 @@ void TextureAtlas::upload() {
     if (m_entries.empty()) {
         spdlog::warn("TextureAtlas: no textures to upload");
         return;
+    }
+
+    GLint hardwareMaxLayers = 0;
+    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &hardwareMaxLayers);
+    if (hardwareMaxLayers <= 0) {
+        throw std::runtime_error(
+            "TextureAtlas: OpenGL did not report a usable "
+            "GL_MAX_ARRAY_TEXTURE_LAYERS value");
+    }
+    if (m_entries.size() > static_cast<size_t>(hardwareMaxLayers)) {
+        throw std::runtime_error(
+            "TextureAtlas: cannot upload " + std::to_string(m_entries.size()) +
+            " texture layers because this OpenGL context supports " +
+            std::to_string(hardwareMaxLayers) +
+            " array layers (GL_MAX_ARRAY_TEXTURE_LAYERS). Reduce the generated "
+            "block texture set or use a GPU with a higher array-texture layer "
+            "limit.");
     }
 
     // Create texture if needed

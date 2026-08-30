@@ -1186,7 +1186,7 @@ bool meshesMatch(const ChunkMesh& lhs, const ChunkMesh& rhs) {
         if (a.x != b.x || a.y != b.y || a.z != b.z ||
             a.u != b.u || a.v != b.v ||
             a.normalIndex != b.normalIndex || a.aoLevel != b.aoLevel ||
-            a.textureLayer != b.textureLayer || a.flags != b.flags) {
+            a.textureLayer != b.textureLayer) {
             return false;
         }
     }
@@ -5782,9 +5782,9 @@ TEST_CASE(ChunkStreamer_SameVersionGeneratorReplacementSupersedesOutstandingGene
         CHECK(!entry.mesh.vertices.empty());
         for (const VoxelVertex& vertex : entry.mesh.vertices) {
             CHECK_EQ(vertex.textureLayer,
-                     static_cast<uint8_t>(replacementTextureHandle.index));
+                     replacementTextureHandle.index);
             CHECK(vertex.textureLayer !=
-                  static_cast<uint8_t>(originalTextureHandle.index));
+                  originalTextureHandle.index);
         }
     });
     CHECK(foundMesh);
@@ -19291,9 +19291,9 @@ TEST_CASE(ChunkStreamer_GeneratorReplacementInstallsOnlyCurrentMesh) {
         CHECK(!entry.mesh.vertices.empty());
         for (const VoxelVertex& vertex : entry.mesh.vertices) {
             CHECK_EQ(vertex.textureLayer,
-                     static_cast<uint8_t>(replacementTextureHandle.index));
+                     replacementTextureHandle.index);
             CHECK(vertex.textureLayer !=
-                  static_cast<uint8_t>(originalTextureHandle.index));
+                  originalTextureHandle.index);
         }
     });
     CHECK(foundMesh);

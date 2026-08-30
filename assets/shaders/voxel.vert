@@ -3,7 +3,8 @@
 // Vertex attributes
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec2 a_uv;
-layout(location = 2) in vec4 a_packedData;  // normalIndex, aoLevel, textureLayer, flags
+layout(location = 2) in uvec2 a_faceData;  // normalIndex, aoLevel
+layout(location = 3) in uint a_textureLayer;
 
 // Uniforms
 uniform mat4 u_viewProjection;
@@ -38,9 +39,9 @@ void main() {
     v_uv = a_uv;
 
     // Unpack data
-    int normalIndex = int(a_packedData.x);
-    v_ao = a_packedData.y / 3.0;  // 0-3 -> 0-1
-    v_textureLayer = int(a_packedData.z);
+    int normalIndex = int(a_faceData.x);
+    v_ao = float(a_faceData.y) / 3.0;  // 0-3 -> 0-1
+    v_textureLayer = int(a_textureLayer);
 
     // Look up normal from table
     v_normal = NORMALS[clamp(normalIndex, 0, 5)];

@@ -48,7 +48,7 @@ std::array<std::array<float, 2>, 4> modelFaceUvs(
     return rotated;
 }
 
-uint8_t textureLayer(
+uint16_t textureLayer(
     const TextureAtlas* atlas, const std::string* texturePath
 ) {
     if (!atlas || !texturePath || texturePath->empty()) {
@@ -56,7 +56,7 @@ uint8_t textureLayer(
     }
     const TextureHandle handle = atlas->findTexture(*texturePath);
     return handle.isValid()
-        ? static_cast<uint8_t>(atlas->getLayer(handle))
+        ? static_cast<uint16_t>(atlas->getLayer(handle))
         : 0;
 }
 
@@ -171,7 +171,7 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
 
                         uint32_t baseVertex = static_cast<uint32_t>(
                             layerVertices[layerIdx].size());
-                        const uint8_t faceTextureLayer = textureLayer(
+                        const uint16_t faceTextureLayer = textureLayer(
                             ctx.atlas, &type.textures.forFace(face));
 
                         for (size_t v = 0; v < 4; v++) {
@@ -184,7 +184,6 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                             vertex.normalIndex = static_cast<uint8_t>(faceIdx);
                             vertex.aoLevel = aoLevels[v];
                             vertex.textureLayer = faceTextureLayer;
-                            vertex.flags = 0;
 
                             layerVertices[layerIdx].push_back(vertex);
                         }
@@ -230,7 +229,7 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                             layerVertices[layerIdx].size());
                         const std::array<std::array<float, 2>, 4> uvs =
                             modelFaceUvs(face);
-                        const uint8_t faceTextureLayer = textureLayer(
+                        const uint16_t faceTextureLayer = textureLayer(
                             ctx.atlas, type.textures.find(face.textureSlot));
 
                         for (size_t vertexIndex = 0; vertexIndex < 4;
@@ -255,7 +254,6 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                             vertex.normalIndex = static_cast<uint8_t>(faceIdx);
                             vertex.aoLevel = aoLevels[vertexIndex];
                             vertex.textureLayer = faceTextureLayer;
-                            vertex.flags = 0;
                             layerVertices[layerIdx].push_back(vertex);
                         }
 

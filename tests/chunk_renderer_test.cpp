@@ -3,6 +3,7 @@
 
 #include "ApplicationPreferences.h"
 #include "ApplicationTestAccess.h"
+#include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Asset/ShaderCompiler.h"
 #include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Voxel/ChunkRenderer.h"
@@ -14,8 +15,10 @@
 
 #include <array>
 #include <atomic>
+#include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 using namespace Rigel::Voxel;
@@ -65,6 +68,69 @@ GLint boundArrayBufferSize() {
     GLint size = 0;
     glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE, &size);
     return size;
+}
+
+ChunkMesh makeWideTextureLayerMesh() {
+    ChunkMesh mesh;
+    auto appendQuad = [&](float minX, float maxX, uint16_t textureLayer) {
+        const uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+        const std::array<std::array<float, 2>, 4> positions{{
+            {minX, -1.0f},
+            {minX, 1.0f},
+            {maxX, 1.0f},
+            {maxX, -1.0f},
+        }};
+        for (const auto& position : positions) {
+            VoxelVertex vertex{};
+            vertex.x = position[0];
+            vertex.y = position[1];
+            vertex.u = 0.5f;
+            vertex.v = 0.5f;
+            vertex.normalIndex = static_cast<uint8_t>(Direction::PosY);
+            vertex.aoLevel = 3;
+            vertex.textureLayer = textureLayer;
+            mesh.vertices.push_back(vertex);
+        }
+        constexpr std::array<uint32_t, 6> indices = {0, 1, 2, 0, 2, 3};
+        for (const uint32_t index : indices) {
+            mesh.indices.push_back(base + index);
+        }
+    };
+
+    appendQuad(-1.0f, 0.0f, 255);
+    appendQuad(0.0f, 1.0f, 256);
+    mesh.layers[static_cast<size_t>(RenderLayer::Opaque)].indexCount =
+        static_cast<uint32_t>(mesh.indices.size());
+    return mesh;
+}
+
+void checkWideLayerShaderAttribute(GLuint program) {
+    CHECK_EQ(glGetAttribLocation(program, "a_textureLayer"), 3);
+
+    GLint attributeCount = 0;
+    glGetProgramiv(program, GL_ACTIVE_ATTRIBUTES, &attributeCount);
+    for (GLint index = 0; index < attributeCount; ++index) {
+        std::array<GLchar, 64> name{};
+        GLsizei nameLength = 0;
+        GLint size = 0;
+        GLenum type = 0;
+        glGetActiveAttrib(
+            program,
+            static_cast<GLuint>(index),
+            static_cast<GLsizei>(name.size()),
+            &nameLength,
+            &size,
+            &type,
+            name.data());
+        if (std::string_view(name.data(), static_cast<size_t>(nameLength)) ==
+            "a_textureLayer") {
+            CHECK_EQ(size, 1);
+            CHECK_EQ(type, GL_UNSIGNED_INT);
+            return;
+        }
+    }
+    throw Rigel::Test::TestFailure(
+        "wide texture layer shader attribute was not active");
 }
 
 } // namespace
@@ -444,6 +510,76 @@ TEST_CASE(ChunkRenderer_ReinsertUploadsWhenRemovalWasNotRendered) {
     CHECK_EQ(
         boundArrayBufferSize(),
         static_cast<GLint>(6 * sizeof(VoxelVertex)));
+}
+
+TEST_CASE(ChunkRenderer_PreservesTextureLayersAcrossByteBoundary) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+
+    GLint hardwareMaxLayers = 0;
+    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &hardwareMaxLayers);
+    if (hardwareMaxLayers < 257) {
+        SKIP_TEST(
+            "OpenGL context exposes fewer than 257 array texture layers");
+    }
+
+    TextureAtlas atlas({
+        .tileSize = 1,
+        .maxLayers = std::numeric_limits<uint16_t>::max(),
+        .generateMipmaps = false,
+    });
+    constexpr std::array<unsigned char, 4> filler = {0, 0, 255, 255};
+    constexpr std::array<unsigned char, 4> belowBoundary = {255, 0, 0, 255};
+    constexpr std::array<unsigned char, 4> aboveBoundary = {0, 255, 0, 255};
+    for (size_t layer = 0; layer <= 256; ++layer) {
+        const unsigned char* pixels = filler.data();
+        if (layer == 255) {
+            pixels = belowBoundary.data();
+        } else if (layer == 256) {
+            pixels = aboveBoundary.data();
+        }
+        atlas.addTexture(
+            "textures/test/render_layer_" + std::to_string(layer), pixels);
+    }
+    atlas.upload();
+
+    Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    const auto voxelShader = assets.get<Asset::ShaderAsset>("shaders/voxel");
+    const auto shadowDepthShader =
+        assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_depth");
+    const auto shadowTransmitShader =
+        assets.get<Asset::ShaderAsset>("shaders/voxel_shadow_transmit");
+    checkWideLayerShaderAttribute(voxelShader->program);
+    checkWideLayerShaderAttribute(shadowDepthShader->program);
+    checkWideLayerShaderAttribute(shadowTransmitShader->program);
+
+    WorldMeshStore store;
+    store.set({0, 0, 0}, makeWideTextureLayerMesh());
+    WorldRenderContext renderContext;
+    renderContext.meshes = &store;
+    renderContext.atlas = &atlas;
+    renderContext.shader = voxelShader;
+    renderContext.renderDistanceWorldUnits = 32.0f;
+
+    glViewport(0, 0, 64, 64);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    ChunkRenderer renderer;
+    renderer.render(renderContext);
+
+    std::array<unsigned char, 4> belowPixel{};
+    std::array<unsigned char, 4> abovePixel{};
+    glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, belowPixel.data());
+    glReadPixels(48, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, abovePixel.data());
+    CHECK(belowPixel[0] > 180);
+    CHECK(belowPixel[1] < 20);
+    CHECK(belowPixel[2] < 20);
+    CHECK(abovePixel[0] < 20);
+    CHECK(abovePixel[1] > 180);
+    CHECK(abovePixel[2] < 20);
+    CHECK_EQ(glGetError(), GL_NO_ERROR);
 }
 
 TEST_CASE(ChunkRenderer_EmptyInstalledMeshReleasesCachedGeometry) {

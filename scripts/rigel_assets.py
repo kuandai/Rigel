@@ -332,6 +332,7 @@ def extract_direct_assets(
     diagnostics: list[str] | None = None,
 ) -> dict[str, int]:
     counts = {"textures": 0, "models": 0, "animations": 0, "sounds": 0}
+    destinations: dict[str, str] = {}
     for source in sorted(entries):
         destination: str | None = None
         transform = None
@@ -356,6 +357,13 @@ def extract_direct_assets(
 
         if destination is None:
             continue
+        previous_source = destinations.get(destination)
+        if previous_source is not None:
+            raise AssetImportError(
+                f"duplicate generated logical path {destination}: "
+                f"{previous_source} and {source}"
+            )
+        destinations[destination] = source
         payload = archive.read(entries[source])
         if transform is not None:
             payload = transform(payload, source, identifier)
@@ -1153,6 +1161,7 @@ def compile_blocks(
     models = BlockModelResolver(archive, entries)
     generators = StateGeneratorResolver(archive, entries)
     generated: dict[str, tuple[bytes, str]] = {}
+    generated_paths: dict[str, tuple[str, str]] = {}
     used_geometries: dict[str, ResolvedGeometry] = {}
     omitted_plane_states: list[tuple[str, str]] = []
     for source in sorted(entries):
@@ -1242,6 +1251,19 @@ def compile_blocks(
                         )
                 for identifier in identifiers:
                     output = _generated_block_filename(identifier)
+                    if identifier in generated:
+                        previous_source = generated[identifier][1]
+                        raise AssetImportError(
+                            f"duplicate generated block identifier {identifier}: "
+                            f"{previous_source} and {source}"
+                        )
+                    previous_output = generated_paths.get(output)
+                    if previous_output is not None:
+                        raise AssetImportError(
+                            f"duplicate generated logical path {output}: "
+                            f"{previous_output[0]} from {previous_output[1]} and "
+                            f"{identifier} from {source}"
+                        )
                     payload = render_block_yaml(
                         identifier,
                         variant_properties,
@@ -1249,13 +1271,8 @@ def compile_blocks(
                         source,
                         texture_model,
                     )
-                    if identifier in generated:
-                        previous_source = generated[identifier][1]
-                        raise AssetImportError(
-                            f"duplicate generated block identifier {identifier}: "
-                            f"{previous_source} and {source}"
-                        )
                     generated[identifier] = (payload, source)
+                    generated_paths[output] = (identifier, source)
                     write_output(staging, output, payload)
     for geometry in sorted(
         used_geometries.values(), key=lambda value: value.output_path
@@ -1433,7 +1450,9 @@ def parse_generated_model(data: bytes, source: str) -> dict[str, object]:
         )
         for axis in range(3):
             if numeric_bounds[axis] > numeric_bounds[axis + 3]:
-                raise AssetImportError(f"{context}.bounds minimum exceeds maximum")
+                raise AssetImportError(
+                    f"{context}.bounds minimum exceeds maximum"
+                )
         faces = _expect_object(cuboid["faces"], f"{context}.faces")
         for face_name, raw_face in faces.items():
             if face_name not in VECTOR_FACES.values():
@@ -1491,14 +1510,31 @@ def parse_generated_model(data: bytes, source: str) -> dict[str, object]:
                     and numeric_bounds[axis] == numeric_bounds[axis + 3]
                 ):
                     raise AssetImportError(f"{face_context} has zero area")
-        if not faces and any(
-            numeric_bounds[axis] == numeric_bounds[axis + 3]
-            for axis in range(3)
-        ):
+        if not faces:
             raise AssetImportError(
-                f"{context}: zero-thickness cuboid has no visible face"
+                f"{context}.faces must contain at least one visible face"
             )
     return document
+
+
+def _validate_generated_texture_reference(reference: object, context: str) -> str:
+    if not isinstance(reference, str):
+        raise AssetImportError(f"{context}: texture reference must be a string")
+    try:
+        normalized = normalize_archive_path(reference).as_posix()
+    except AssetImportError as error:
+        raise AssetImportError(
+            f"{context}: invalid generated texture reference {reference!r}"
+        ) from error
+    if (
+        normalized != reference
+        or not reference.startswith("textures/")
+        or not reference.endswith(".png")
+    ):
+        raise AssetImportError(
+            f"{context}: invalid generated texture reference {reference!r}"
+        )
+    return reference
 
 
 def prune_unused_block_models(root: Path) -> int:
@@ -1585,6 +1621,11 @@ def validate_generated_tree(
     for logical in block_model_paths:
         model = parse_generated_model((root / logical).read_bytes(), logical)
         identifier = str(model["id"])
+        if identifier in ("cube", "none"):
+            raise AssetImportError(
+                f"{logical}: normalized block model identifier collides with "
+                f"built-in model {identifier}"
+            )
         if identifier in normalized_models:
             raise AssetImportError(
                 f"duplicate normalized block model identifier {identifier}: "
@@ -1622,8 +1663,20 @@ def validate_generated_tree(
                     f"{logical}: texture bindings do not match model {model_identifier}"
                 )
         if isinstance(textures, dict):
-            for texture in textures.values():
-                referenced_textures[str(texture)] = logical
+            for slot, texture in textures.items():
+                reference = _validate_generated_texture_reference(
+                    texture, f"{logical}.textures.{slot}"
+                )
+                referenced_textures[reference] = logical
+
+    namespace_collisions = sorted(
+        set(block_identifiers) & set(normalized_models)
+    )
+    if namespace_collisions:
+        raise AssetImportError(
+            "block/model identifier namespace collision: "
+            + ", ".join(namespace_collisions)
+        )
 
     missing_required = sorted(set(required_identifiers) - set(block_identifiers))
     if missing_required:
@@ -1636,14 +1689,26 @@ def validate_generated_tree(
         path for path in logical_paths
         if path.startswith("models/entities/") and path.endswith(".json")
     )
+    entity_model_identifiers: dict[str, str] = {}
     for logical in model_paths:
         model = _expect_object(
             load_relaxed_json((root / logical).read_bytes(), logical), logical
         )
+        identifier = model.get("id")
+        if not isinstance(identifier, str) or not identifier:
+            raise AssetImportError(f"{logical}: entity model has no logical ID")
+        previous_model = entity_model_identifiers.get(identifier)
+        if previous_model is not None:
+            raise AssetImportError(
+                f"duplicate entity model identifier {identifier}: "
+                f"{previous_model} and {logical}"
+            )
+        entity_model_identifiers[identifier] = logical
         textures = _expect_object(model.get("textures", {}), f"{logical}.textures")
-        for reference in textures.values():
-            if not isinstance(reference, str):
-                raise AssetImportError(f"{logical}: entity texture reference must be a string")
+        for slot, texture in textures.items():
+            reference = _validate_generated_texture_reference(
+                texture, f"{logical}.textures.{slot}"
+            )
             referenced_textures[reference] = logical
 
     animation_paths = sorted(

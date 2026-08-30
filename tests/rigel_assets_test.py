@@ -224,6 +224,17 @@ def synthetic_cuboid_entries() -> dict[str, bytes]:
     }
 
 
+def compile_cuboid_fixture(root: Path) -> Path:
+    jar = root / "fixture.jar"
+    write_jar(jar, synthetic_cuboid_entries())
+    output = root / "output"
+    with zipfile.ZipFile(jar) as archive:
+        indexed = rigel_assets.indexed_archive(archive)
+        rigel_assets.extract_direct_assets(archive, indexed, output)
+        rigel_assets.compile_blocks(archive, indexed, output)
+    return output
+
+
 class ProvisioningTest(unittest.TestCase):
     def test_stage_copies_valid_jar_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1887,6 +1898,33 @@ class DirectExtractionTest(unittest.TestCase):
                 json.dumps(model).encode(), "fixture/model.json", "test"
             )
 
+    def test_normalized_direct_asset_paths_cannot_overwrite_each_other(self) -> None:
+        model = lambda texture: encoded_json(
+            {"textures": {"diffuse": texture}, "bones": []}
+        )
+        entries = {
+            "base/models/entities/shared.json": model(
+                "base:textures/entities/shared.png"
+            ),
+            "base/models/entities/planets/shared.json": model(
+                "base:textures/entities/planets/shared.png"
+            ),
+            "base/textures/entities/shared.png": synthetic_png(),
+            "base/textures/entities/planets/shared.png": synthetic_png(),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            jar = Path(directory) / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive, self.assertRaisesRegex(
+                rigel_assets.AssetImportError,
+                "duplicate generated logical path.*models/entities/shared.json",
+            ):
+                rigel_assets.extract_direct_assets(
+                    archive,
+                    rigel_assets.indexed_archive(archive),
+                    Path(directory) / "output",
+                )
+
 
 class BlockCompilerTest(unittest.TestCase):
     def test_compiles_explicit_and_included_generated_states(self) -> None:
@@ -2307,6 +2345,108 @@ class BlockCompilerTest(unittest.TestCase):
             self.assertEqual(omitted, 3)
             self.assertFalse(any((output / "blocks").glob("*.yaml")))
             self.assertFalse((output / "models/blocks/post.yaml").exists())
+
+
+class GeneratedTreeClosureTest(unittest.TestCase):
+    def test_rejects_incomplete_or_ambiguous_block_model_closure(self) -> None:
+        def duplicate_model(output: Path) -> None:
+            shutil.copyfile(
+                output / "models/blocks/post.yaml",
+                output / "models/blocks/duplicate.yaml",
+            )
+
+        def malformed_primitive(output: Path) -> None:
+            path = output / "models/blocks/post.yaml"
+            model = json.loads(path.read_bytes())
+            model["cuboids"][0]["faces"] = {}
+            path.write_bytes(encoded_json(model))
+
+        def unresolved_model(output: Path) -> None:
+            path = output / "blocks/test__post.yaml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "base:block_model/post", "test:missing"
+                ),
+                encoding="utf-8",
+            )
+
+        def unresolved_slot(output: Path) -> None:
+            path = output / "blocks/test__post.yaml"
+            lines = path.read_text(encoding="utf-8").splitlines()
+            path.write_text(
+                "\n".join(line for line in lines if not line.startswith("  accent:"))
+                + "\n",
+                encoding="utf-8",
+            )
+
+        def missing_texture(output: Path) -> None:
+            (output / "textures/blocks/red_surface.png").unlink()
+
+        def invalid_orientation(output: Path) -> None:
+            path = output / "blocks/test__post.yaml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "layer:", "orientation: [90, 90, 0]\nlayer:"
+                ),
+                encoding="utf-8",
+            )
+
+        def namespace_collision(output: Path) -> None:
+            model_path = output / "models/blocks/post.yaml"
+            model = json.loads(model_path.read_bytes())
+            model["id"] = "test:post"
+            model_path.write_bytes(encoded_json(model))
+            for block_path in (output / "blocks").glob("*.yaml"):
+                block_path.write_text(
+                    block_path.read_text(encoding="utf-8").replace(
+                        "base:block_model/post", "test:post"
+                    ),
+                    encoding="utf-8",
+                )
+
+        def duplicate_entity_model_id(output: Path) -> None:
+            rigel_assets.write_output(
+                output,
+                "models/entities/first.json",
+                encoded_json({"id": "shared", "textures": {}}),
+            )
+            rigel_assets.write_output(
+                output,
+                "models/entities/second.json",
+                encoded_json({"id": "shared", "textures": {}}),
+            )
+
+        def nontexture_resource(output: Path) -> None:
+            block_path = output / "blocks/test__post.yaml"
+            block_path.write_text(
+                block_path.read_text(encoding="utf-8").replace(
+                    "textures/blocks/red_surface.png", "sounds/not-a-texture.ogg"
+                ),
+                encoding="utf-8",
+            )
+            rigel_assets.write_output(output, "sounds/not-a-texture.ogg", b"sound")
+
+        cases = (
+            ("duplicate normalized block model identifier", duplicate_model),
+            ("at least one visible face", malformed_primitive),
+            ("unresolved normalized block model", unresolved_model),
+            ("texture bindings do not match model", unresolved_slot),
+            ("texture references are unresolved", missing_texture),
+            ("supported block-state set", invalid_orientation),
+            ("block/model identifier namespace collision", namespace_collision),
+            ("duplicate entity model identifier", duplicate_entity_model_id),
+            ("invalid generated texture reference", nontexture_resource),
+        )
+        for diagnostic, mutate in cases:
+            with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                output = compile_cuboid_fixture(Path(directory))
+                mutate(output)
+                with self.assertRaisesRegex(
+                    rigel_assets.AssetImportError, diagnostic
+                ):
+                    rigel_assets.validate_generated_tree(
+                        output, required_identifiers=("test:post",)
+                    )
 
 
 class SynchronizationTest(unittest.TestCase):

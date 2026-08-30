@@ -95,6 +95,40 @@ TEST_CASE(InMemoryStorage_PublishesDirectoryTreesWithoutReplacement) {
         StorageEntryKind::Directory);
 }
 
+TEST_CASE(InMemoryStorage_RejectsImplicitRootsAsStagedDirectories) {
+    InMemoryStorageBackend storage;
+    writeText(storage, "staged/child/value.bin", "relative root child");
+    writeText(storage, "/absolute/child/value.bin", "absolute root child");
+
+    const auto rejectedState = [&](const std::string& staged,
+                                   const std::string& final) {
+        try {
+            storage.publishDirectory(staged, final);
+        } catch (const DirectoryPublicationError& failure) {
+            return failure.state();
+        }
+        throw Rigel::Test::TestFailure(
+            "Expected implicit-root directory publication to fail");
+    };
+    CHECK_EQ(
+        rejectedState(".", "published"),
+        DirectoryPublicationState::NotPublished);
+    CHECK_EQ(
+        rejectedState("/", "/published"),
+        DirectoryPublicationState::NotPublished);
+
+    CHECK_EQ(
+        storage.entryKind("published"), StorageEntryKind::Missing);
+    CHECK_EQ(
+        storage.entryKind("/published"), StorageEntryKind::Missing);
+    CHECK_EQ(
+        readText(storage, "staged/child/value.bin"),
+        std::string("relative root child"));
+    CHECK_EQ(
+        readText(storage, "/absolute/child/value.bin"),
+        std::string("absolute root child"));
+}
+
 TEST_CASE(InMemoryStorage_ConcurrentFilesRemainIndependent) {
     InMemoryStorageBackend storage;
     constexpr size_t WriterCount = 8;

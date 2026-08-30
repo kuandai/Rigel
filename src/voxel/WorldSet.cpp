@@ -33,6 +33,19 @@ World& WorldSet::createWorld(WorldId id) {
     return it->second->world;
 }
 
+WorldView& WorldSet::createView(WorldId id) {
+    World& world = createWorld(id);
+    WorldEntry& entry = *m_worlds.at(id);
+    if (!entry.view) {
+        auto candidate = std::make_unique<WorldView>(world, m_resources);
+        if (world.generator()) {
+            candidate->setGenerator(world.generator());
+        }
+        entry.view = std::move(candidate);
+    }
+    return *entry.view;
+}
+
 WorldView& WorldSet::createView(WorldId id, Asset::AssetManager& assets) {
     World& world = createWorld(id);
     WorldEntry& entry = *m_worlds.at(id);

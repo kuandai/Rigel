@@ -3,6 +3,7 @@
 #include "GlfwRuntime.h"
 #include "Rigel/Application.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -16,6 +17,7 @@ class AsyncChunkLoader;
 class StorageBackend;
 }
 namespace Voxel {
+class BlockRegistry;
 class WorldView;
 }
 
@@ -76,6 +78,19 @@ struct ApplicationViewDistanceState {
     uint64_t worldWorkCoordinatesInspected = 0;
 };
 
+struct ApplicationBlockGalleryLifecycleState {
+    int exitCode = 0;
+    WorldMode decodedWorldMode = WorldMode::Normal;
+    std::string persistenceRoot;
+    bool processPrivateStorage = false;
+    bool worldBootstrapped = false;
+    bool overviewInstalled = false;
+    bool freeFlyMoved = false;
+    bool specimenLoadedThroughAsyncLoader = false;
+    bool generatedChunkPersistedOnClose = false;
+    uint64_t chunkLoadsStarted = 0;
+};
+
 class ApplicationTestAccess {
 public:
     static void construct(ApplicationConstructionHooks hooks);
@@ -96,6 +111,11 @@ public:
         int initialChunks,
         int candidateChunks,
         bool activeSession);
+    static ApplicationBlockGalleryLifecycleState
+    runBlockGalleryLaunchLifecycle(
+        int argc,
+        const char* const* argv,
+        void (*populateRegistry)(Voxel::BlockRegistry&));
     static std::optional<PreferenceApplyResult>
     consumeViewDistanceOwnerForTesting(
         ApplicationPreferences& preferences,
@@ -104,6 +124,10 @@ public:
     static bool initializeOptionalUserInterface(
         GLFWwindow* window,
         bool (*initialize)(GLFWwindow*)) noexcept;
+
+private:
+    static void exerciseBlockGalleryLaunchLifecycle(
+        const LaunchOptions& options);
 };
 
 } // namespace Rigel

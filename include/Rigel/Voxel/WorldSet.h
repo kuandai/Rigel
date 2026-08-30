@@ -11,6 +11,10 @@
 #include <memory>
 #include <unordered_map>
 
+namespace Rigel {
+class ApplicationTestAccess;
+}
+
 namespace Rigel::Voxel {
 
 namespace Persistence = ::Rigel::Persistence;
@@ -64,6 +68,10 @@ public:
     static constexpr WorldId defaultWorldId() { return kDefaultWorldId; }
 
 private:
+    friend class ::Rigel::ApplicationTestAccess;
+
+    WorldView& createView(WorldId id);
+
     struct WorldEntry {
         World world;
         std::unique_ptr<WorldView> view;

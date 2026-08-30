@@ -474,6 +474,11 @@ void InMemoryStorageBackend::publishDirectory(
     const std::string& finalPath) {
     const std::string staged = normalizedPath(stagedPath);
     const std::string final = normalizedPath(finalPath);
+    if (isRootPath(staged)) {
+        throw DirectoryPublicationError(
+            DirectoryPublicationState::NotPublished,
+            "Cannot publish an implicit in-memory storage root");
+    }
     if (parentPath(staged) != parentPath(final)) {
         throw DirectoryPublicationError(
             DirectoryPublicationState::NotPublished,

@@ -49,6 +49,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -104,6 +105,54 @@ void applyBlockGalleryOverview(
     camera.up = glm::normalize(glm::cross(camera.right, camera.forward));
 }
 
+void connectChunkLoader(
+    Voxel::WorldView& view,
+    const std::shared_ptr<Persistence::AsyncChunkLoader>& loader) {
+    view.setChunkLoader([loader](Voxel::ChunkLoadRequest request) {
+        return loader
+            ? loader->request(request)
+            : Voxel::ChunkLoadRequestResult::Missing;
+    });
+    view.setChunkPendingCallback([loader](Voxel::ChunkCoord coord) {
+        return loader ? loader->isPending(coord) : false;
+    });
+    view.setChunkLoadDrain([loader](size_t budget) {
+        if (loader) {
+            return loader->drainCompletions(budget);
+        }
+        return std::vector<Voxel::ChunkLoadCompletion>{};
+    });
+    view.setChunkLoadCancel([loader](Voxel::ChunkCoord coord) {
+        if (loader) {
+            loader->cancel(coord);
+        }
+    });
+    view.setChunkLoadDiagnosticsCallback([loader]() {
+        return loader
+            ? loader->diagnostics()
+            : Voxel::ChunkLoadDiagnosticSnapshot{};
+    });
+    view.setChunkLoadExecutionStateCallback(
+        [loader](Voxel::ChunkCoord coord) {
+            return loader
+                ? loader->executionState(coord)
+                : std::optional<Voxel::ChunkLoadExecutionState>{};
+        });
+    view.setChunkEvictionCallback([loader](Voxel::ChunkCoord coord) {
+        return loader ? loader->persistChunk(coord) : false;
+    });
+}
+
+void disconnectChunkLoader(Voxel::WorldView& view) {
+    view.setChunkLoader({});
+    view.setChunkPendingCallback({});
+    view.setChunkLoadDrain({});
+    view.setChunkLoadCancel({});
+    view.setChunkLoadDiagnosticsCallback({});
+    view.setChunkLoadExecutionStateCallback({});
+    view.setChunkEvictionCallback({});
+}
+
 bool initializeOptionalUserInterface(
     GLFWwindow* window,
     bool (*initialize)(GLFWwindow*)) noexcept {
@@ -146,6 +195,7 @@ struct ViewDistanceBoundaryProbe {
 };
 
 ViewDistanceBoundaryProbe* g_viewDistanceBoundaryProbe = nullptr;
+LaunchApplicationMain g_applicationLaunchOverrideForTesting = nullptr;
 
 double viewDistanceBoundaryTime() {
     return 0.0;
@@ -595,45 +645,8 @@ void Application::initialize() {
             streamingPolicy.loadMaxCachedRegions);
         m_impl->world.chunkLoader->setMaxInFlightRegions(
             streamingPolicy.loadMaxInFlightRegions);
-        m_impl->world.worldView->setChunkLoader(
-            [loader = m_impl->world.chunkLoader](Voxel::ChunkLoadRequest request) {
-                return loader
-                    ? loader->request(request)
-                    : Voxel::ChunkLoadRequestResult::Missing;
-            });
-        m_impl->world.worldView->setChunkPendingCallback(
-            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
-                return loader ? loader->isPending(coord) : false;
-            });
-        m_impl->world.worldView->setChunkLoadDrain(
-            [loader = m_impl->world.chunkLoader](size_t budget) {
-                if (loader) {
-                    return loader->drainCompletions(budget);
-                }
-                return std::vector<Voxel::ChunkLoadCompletion>{};
-            });
-        m_impl->world.worldView->setChunkLoadCancel(
-            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
-                if (loader) {
-                    loader->cancel(coord);
-                }
-            });
-        m_impl->world.worldView->setChunkLoadDiagnosticsCallback(
-            [loader = m_impl->world.chunkLoader]() {
-                return loader
-                    ? loader->diagnostics()
-                    : Voxel::ChunkLoadDiagnosticSnapshot{};
-            });
-        m_impl->world.worldView->setChunkLoadExecutionStateCallback(
-            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
-                return loader
-                    ? loader->executionState(coord)
-                    : std::optional<Voxel::ChunkLoadExecutionState>{};
-            });
-        m_impl->world.worldView->setChunkEvictionCallback(
-            [loader = m_impl->world.chunkLoader](Voxel::ChunkCoord coord) {
-                return loader ? loader->persistChunk(coord) : false;
-            });
+        connectChunkLoader(
+            *m_impl->world.worldView, m_impl->world.chunkLoader);
 
         Core::Profiler::setEnabled(
             detail::profilerEnabledFromEnvironment());
@@ -854,13 +867,7 @@ void Application::Impl::shutdown() noexcept {
         activeView = world.worldSet.findView(world.activeWorldId);
     }
     if (activeView) {
-        activeView->setChunkLoader({});
-        activeView->setChunkPendingCallback({});
-        activeView->setChunkLoadDrain({});
-        activeView->setChunkLoadCancel({});
-        activeView->setChunkLoadDiagnosticsCallback({});
-        activeView->setChunkLoadExecutionStateCallback({});
-        activeView->setChunkEvictionCallback({});
+        disconnectChunkLoader(*activeView);
     }
     world.chunkLoader.reset();
     completeShutdownStage(ApplicationShutdownStage::AsyncLoadingStopped);
@@ -902,6 +909,186 @@ void Application::close() {
     if (m_impl) {
         m_impl->close();
     }
+}
+
+namespace {
+
+struct BlockGalleryLaunchLifecycleProbe {
+    ApplicationBlockGalleryLifecycleState* state = nullptr;
+    void (*populateRegistry)(Voxel::BlockRegistry&) = nullptr;
+};
+
+BlockGalleryLaunchLifecycleProbe* g_blockGalleryLaunchLifecycleProbe = nullptr;
+
+} // namespace
+
+void ApplicationTestAccess::exerciseBlockGalleryLaunchLifecycle(
+    const LaunchOptions& options
+) {
+    BlockGalleryLaunchLifecycleProbe& probe =
+        *g_blockGalleryLaunchLifecycleProbe;
+    ApplicationBlockGalleryLifecycleState& observed = *probe.state;
+    observed.decodedWorldMode = options.worldMode;
+    if (options.worldMode != WorldMode::BlockGallery) {
+        throw std::invalid_argument(
+            "Block-gallery lifecycle exercise received another world mode");
+    }
+    if (!probe.populateRegistry) {
+        throw std::invalid_argument(
+            "Block-gallery lifecycle exercise requires registry data");
+    }
+
+    auto impl = std::make_unique<Application::Impl>(options.worldMode);
+    Voxel::WorldSet& worldSet = impl->world.worldSet;
+    worldSet.persistenceFormats().registerFormat(
+        Persistence::Backends::Memory::descriptor(),
+        Persistence::Backends::Memory::factory(),
+        Persistence::Backends::Memory::probe());
+    auto storage =
+        std::make_shared<Persistence::InMemoryStorageBackend>();
+    worldSet.setPersistenceStorage(storage);
+    worldSet.setPersistenceRoot(std::string(kBlockGalleryVirtualRoot));
+    applyBlockGalleryPersistencePolicy(worldSet);
+
+    Voxel::World& world = worldSet.createWorld(
+        Voxel::WorldSet::defaultWorldId());
+    impl->world.world = &world;
+    Persistence::PersistenceContext bootstrapContext =
+        worldSet.persistenceContext(world.id());
+    observed.persistenceRoot = bootstrapContext.rootPath;
+    observed.processPrivateStorage =
+        dynamic_cast<Persistence::InMemoryStorageBackend*>(
+            bootstrapContext.storage.get()) != nullptr;
+
+    probe.populateRegistry(worldSet.resources().registry());
+    worldSet.resources().registry().freeze();
+    const Voxel::BlockGalleryCatalog catalog(
+        worldSet.resources().registry());
+    if (catalog.entries().empty()) {
+        throw std::runtime_error(
+            "Block-gallery lifecycle exercise has no specimens");
+    }
+    auto gallery =
+        std::make_shared<const Voxel::BlockGalleryChunkGenerator>(
+            worldSet.resources().registry(), catalog);
+    impl->world.galleryGenerator = gallery;
+    Voxel::WorldView& view = worldSet.createView(world.id());
+    impl->world.worldView = &view;
+
+    detail::ApplicationWorldGenerationBootstrapResult bootstrapped =
+        detail::bootstrapApplicationWorldGeneration(
+            worldSet,
+            world.id(),
+            world,
+            view,
+            [&] {
+                return Persistence::NewWorldGeneration{
+                    "Block gallery",
+                    0,
+                    Voxel::prepareBlockGalleryGeneratorIdentity(
+                        worldSet.resources().registry(),
+                        gallery->worldBounds())};
+            },
+            bootstrapContext,
+            gallery);
+    observed.worldBootstrapped =
+        bootstrapped.generator &&
+        world.generator() == bootstrapped.generator &&
+        view.generator() == bootstrapped.generator;
+    impl->world.settings = std::move(bootstrapped.settings);
+
+    Persistence::PersistenceContext runtimeContext = bootstrapContext;
+    runtimeContext.preferredFormat = bootstrapped.persistenceFormat;
+    runtimeContext.discoverExistingFormat = false;
+    impl->world.chunkLoader =
+        std::make_shared<Persistence::AsyncChunkLoader>(
+            worldSet.persistenceService(),
+            runtimeContext,
+            world,
+            bootstrapped.generator->semanticsVersion(),
+            1,
+            1,
+            bootstrapped.generator);
+    connectChunkLoader(view, impl->world.chunkLoader);
+    Persistence::AsyncChunkLoader* loader =
+        impl->world.chunkLoader.get();
+
+    Voxel::StreamingConfig streaming;
+    streaming.viewDistanceChunks = 0;
+    streaming.unloadDistanceChunks = 1;
+    streaming.workerThreads = 0;
+    streaming.maxResidentChunks = 8;
+    view.setStreamConfig(streaming);
+    view.markSpawnDiscoveryComplete();
+
+    const Voxel::BlockGalleryOverview overview = gallery->overview();
+    applyBlockGalleryOverview(impl->camera, overview);
+    const glm::vec3 expectedPosition{
+        overview.centerX + overview.cameraDistance,
+        overview.cameraHeight,
+        overview.centerZ + overview.cameraDistance,
+    };
+    const glm::vec3 expectedTarget{
+        overview.centerX,
+        static_cast<float>(Voxel::BlockGalleryCatalog::SpecimenHeight),
+        overview.centerZ,
+    };
+    observed.overviewInstalled =
+        glm::distance(impl->camera.position, expectedPosition) < 0.0001f &&
+        glm::distance(impl->camera.target, expectedTarget) < 0.0001f;
+
+    auto bindings = std::make_shared<Input::InputBindings>();
+    bindings->bind("move_forward", GLFW_KEY_W);
+    impl->input.setBindings(bindings);
+    impl->world.ready = true;
+    Application application(
+        std::move(impl), Application::Initialization::Skip);
+
+    application.m_impl->input.beginFrame();
+    application.m_impl->input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
+    application.m_impl->input.beginFrame();
+    const glm::vec3 cameraBeforeMovement =
+        application.m_impl->camera.position;
+    Input::updateCamera(
+        application.m_impl->input,
+        application.m_impl->camera,
+        0.25f);
+    observed.freeFlyMoved =
+        glm::distance(
+            application.m_impl->camera.position,
+            cameraBeforeMovement) > 0.1f;
+
+    const Voxel::BlockGalleryCatalogEntry& specimen =
+        catalog.entries().front();
+    const Voxel::ChunkCoord specimenChunk = Voxel::worldToChunk(
+        specimen.specimenPosition.x,
+        specimen.specimenPosition.y,
+        specimen.specimenPosition.z);
+    for (size_t attempt = 0; attempt < 1024; ++attempt) {
+        view.updateStreaming(specimenChunk.toWorldCenter());
+        view.updateMeshes();
+        const Voxel::Chunk* chunk =
+            world.chunkManager().getChunk(specimenChunk);
+        if (chunk &&
+            world.getBlock(
+                specimen.specimenPosition.x,
+                specimen.specimenPosition.y,
+                specimen.specimenPosition.z).id == specimen.blockId) {
+            observed.specimenLoadedThroughAsyncLoader = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+    observed.chunkLoadsStarted = loader->diagnostics().work.started;
+    if (!observed.specimenLoadedThroughAsyncLoader) {
+        throw std::runtime_error(
+            "Block-gallery specimen did not stream through the chunk loader");
+    }
+
+    application.close();
+    observed.generatedChunkPersistedOnClose = storage->exists(
+        std::string(kBlockGalleryVirtualRoot) +
+        "/zones/rigel/default/regions");
 }
 
 void ApplicationTestAccess::construct(ApplicationConstructionHooks hooks) {
@@ -1056,6 +1243,30 @@ ApplicationTestAccess::applyViewDistanceAtFrameBoundary(
     return observed;
 }
 
+ApplicationBlockGalleryLifecycleState
+ApplicationTestAccess::runBlockGalleryLaunchLifecycle(
+    int argc,
+    const char* const* argv,
+    void (*populateRegistry)(Voxel::BlockRegistry&)
+) {
+    if (g_applicationLaunchOverrideForTesting ||
+        g_blockGalleryLaunchLifecycleProbe) {
+        throw std::logic_error(
+            "An application launch lifecycle exercise is already active");
+    }
+
+    ApplicationBlockGalleryLifecycleState observed;
+    BlockGalleryLaunchLifecycleProbe probe{
+        &observed, populateRegistry};
+    g_blockGalleryLaunchLifecycleProbe = &probe;
+    g_applicationLaunchOverrideForTesting =
+        &ApplicationTestAccess::exerciseBlockGalleryLaunchLifecycle;
+    observed.exitCode = runApplication(argc, argv);
+    g_applicationLaunchOverrideForTesting = nullptr;
+    g_blockGalleryLaunchLifecycleProbe = nullptr;
+    return observed;
+}
+
 std::optional<PreferenceApplyResult>
 ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
     ApplicationPreferences& preferences,
@@ -1104,6 +1315,10 @@ int runApplication(
 
 int runApplication(int argc, const char* const* argv) noexcept {
     return runApplication(argc, argv, [](const LaunchOptions& launchOptions) {
+        if (g_applicationLaunchOverrideForTesting) {
+            g_applicationLaunchOverrideForTesting(launchOptions);
+            return;
+        }
         Application application(launchOptions);
         application.run();
         application.close();

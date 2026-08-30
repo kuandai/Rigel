@@ -9,6 +9,8 @@
 #include "Rigel/Persistence/PersistenceService.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/UI/ImGuiLayer.h"
+#include "Rigel/Voxel/BlockModel.h"
+#include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "WorldGenerationTestFixture.h"
 
@@ -289,6 +291,28 @@ public:
 
 void recordRunLoopEntry(Rigel::Application&) {
     g_calls->runLoopEntered = true;
+}
+
+void populateApplicationGalleryRegistry(
+    Rigel::Voxel::BlockRegistry& registry) {
+    Rigel::Voxel::BlockType floor;
+    floor.identifier = "invented:neutral_floor";
+    floor.model = Rigel::Voxel::BlockModel::fullCube();
+    floor.isOpaque = true;
+    floor.layer = Rigel::Voxel::RenderLayer::Opaque;
+    const std::string floorIdentifier = floor.identifier;
+    registry.registerBlock(floorIdentifier, std::move(floor));
+
+    for (size_t index = 0; index < 20; ++index) {
+        Rigel::Voxel::BlockType specimen;
+        specimen.identifier =
+            "invented:specimen[state=" + std::to_string(index) + "]";
+        specimen.model = Rigel::Voxel::BlockModel::fullCube();
+        specimen.isOpaque = true;
+        specimen.layer = Rigel::Voxel::RenderLayer::Opaque;
+        const std::string specimenIdentifier = specimen.identifier;
+        registry.registerBlock(specimenIdentifier, std::move(specimen));
+    }
 }
 
 void recordShutdownStage(Rigel::ApplicationShutdownStage stage) noexcept {
@@ -660,6 +684,42 @@ TEST_CASE(Application_ProcessPrivateStorageSupportsNormalClosePersistence) {
     std::string markerContents;
     marker >> markerContents;
     CHECK_EQ(markerContents, std::string("unchanged"));
+    CHECK(!std::filesystem::exists(existingSave / "zones"));
+    CHECK(!std::filesystem::exists(directory.path() / "developer"));
+}
+
+TEST_CASE(Application_BlockGalleryProductionLaunchRunsEphemeralLifecycle) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_block_gallery_launch_lifecycle");
+    ScopedCurrentDirectory currentDirectory(directory.path());
+    const std::filesystem::path existingSave =
+        directory.path() / "saves/world_0";
+    std::filesystem::create_directories(existingSave);
+    std::ofstream(existingSave / "marker.txt") << "preserved";
+    const char* arguments[] = {
+        "Rigel", "--world-mode", "block-gallery"};
+
+    const Rigel::ApplicationBlockGalleryLifecycleState observed =
+        Rigel::ApplicationTestAccess::runBlockGalleryLaunchLifecycle(
+            3, arguments, &populateApplicationGalleryRegistry);
+
+    CHECK_EQ(observed.exitCode, EXIT_SUCCESS);
+    CHECK_EQ(observed.decodedWorldMode, Rigel::WorldMode::BlockGallery);
+    CHECK_EQ(
+        observed.persistenceRoot,
+        std::string("developer/block-gallery"));
+    CHECK(observed.processPrivateStorage);
+    CHECK(observed.worldBootstrapped);
+    CHECK(observed.overviewInstalled);
+    CHECK(observed.freeFlyMoved);
+    CHECK(observed.specimenLoadedThroughAsyncLoader);
+    CHECK(observed.chunkLoadsStarted > 0);
+    CHECK(observed.generatedChunkPersistedOnClose);
+
+    std::ifstream marker(existingSave / "marker.txt");
+    std::string markerContents;
+    marker >> markerContents;
+    CHECK_EQ(markerContents, std::string("preserved"));
     CHECK(!std::filesystem::exists(existingSave / "zones"));
     CHECK(!std::filesystem::exists(directory.path() / "developer"));
 }

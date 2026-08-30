@@ -1,5 +1,6 @@
 #include "Rigel/Voxel/MeshBuilder.h"
 
+#include <algorithm>
 #include <array>
 
 namespace Rigel::Voxel {
@@ -233,6 +234,12 @@ bool isFullCellOccluder(const BlockType& type) {
         return true;
     }
     for (const BlockModelCuboid& cuboid : type.model->cuboids()) {
+        const bool hasClosedSurface = std::all_of(
+            cuboid.faces.begin(), cuboid.faces.end(),
+            [](const auto& face) { return face.has_value(); });
+        if (!hasClosedSurface) {
+            continue;
+        }
         bool coversCell = true;
         for (size_t axis = 0; axis < 3; ++axis) {
             if (cuboid.bounds.min[axis] > 0.0f ||

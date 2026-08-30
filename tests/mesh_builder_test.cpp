@@ -971,6 +971,35 @@ TEST_CASE(MeshBuilder_OpaqueNormalizedFullCellModelsOccludeNeighbors) {
         static_cast<size_t>(60));
 }
 
+TEST_CASE(MeshBuilder_FullCellModelMissingBoundaryFaceDoesNotOcclude) {
+    BlockRegistry registry = makeRegistry();
+    const BlockID stoneId = *registry.findByIdentifier("rigel:stone");
+
+    BlockModelCuboid openCube = completeCuboid(
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}, "surface",
+        false, true);
+    openCube.faces[static_cast<size_t>(Direction::NegX)] = std::nullopt;
+    BlockType openType;
+    openType.identifier = "test:open_full_cell";
+    openType.model = makeModel(
+        "test:open_full_cell_model", {"surface"}, {std::move(openCube)});
+    openType.isOpaque = true;
+    const BlockID openId = registry.registerBlock(
+        openType.identifier, openType);
+
+    Chunk chunk({0, 0, 0});
+    chunk.setBlock(1, 1, 1, BlockState{stoneId});
+    chunk.setBlock(2, 1, 1, BlockState{openId});
+    const ChunkMesh mesh = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = {},
+    });
+
+    CHECK_EQ(mesh.indices.size(), static_cast<size_t>(66));
+}
+
 TEST_CASE(MeshBuilder_CullsOnlyMatchingSameTypeCuboidBoundaryFaces) {
     BlockRegistry registry = makeRegistry();
     const BlockID stoneId = *registry.findByIdentifier("rigel:stone");

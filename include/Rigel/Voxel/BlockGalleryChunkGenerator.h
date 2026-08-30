@@ -6,7 +6,6 @@
 
 #include <map>
 #include <memory>
-#include <optional>
 #include <vector>
 
 namespace Rigel::Voxel {
@@ -30,16 +29,6 @@ struct BlockGalleryBlockPlacement {
     bool operator==(const BlockGalleryBlockPlacement&) const = default;
 };
 
-struct BlockGalleryFloorBounds {
-    int minX = 0;
-    int maxX = -1;
-    int minZ = 0;
-    int maxZ = -1;
-
-    bool empty() const { return minX > maxX || minZ > maxZ; }
-    bool operator==(const BlockGalleryFloorBounds&) const = default;
-};
-
 struct BlockGalleryOverview {
     float centerX = 0.0f;
     float centerZ = 0.0f;
@@ -59,19 +48,7 @@ public:
         const BlockRegistry& registry,
         std::shared_ptr<const BlockGalleryCatalog> catalog);
 
-    const std::shared_ptr<const BlockGalleryCatalog>& catalog() const {
-        return m_catalog;
-    }
-    const std::vector<BlockGalleryBlockPlacement>& placements() const {
-        return m_placements;
-    }
-    std::optional<BlockID> referenceFloorBlock() const {
-        return m_referenceFloorBlock;
-    }
-    BlockGalleryFloorBounds floorBounds() const { return m_floorBounds; }
-    BlockGalleryWorldPosition diagnosticOrigin() const {
-        return m_diagnosticOrigin;
-    }
+    std::vector<BlockGalleryBlockPlacement> placements() const;
     BlockGalleryOverview overview() const { return m_overview; }
     GeneratorDefinitionData::Bounds worldBounds() const { return {0, 2}; }
 
@@ -82,12 +59,8 @@ private:
     void addPlacement(BlockGalleryBlockPlacement placement);
 
     std::shared_ptr<const BlockGalleryCatalog> m_catalog;
-    std::vector<BlockGalleryBlockPlacement> m_placements;
     std::map<ChunkCoord, std::vector<BlockGalleryBlockPlacement>>
         m_placementsByChunk;
-    std::optional<BlockID> m_referenceFloorBlock;
-    BlockGalleryFloorBounds m_floorBounds;
-    BlockGalleryWorldPosition m_diagnosticOrigin;
     BlockGalleryOverview m_overview;
 };
 

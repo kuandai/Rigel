@@ -1,12 +1,14 @@
 #include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 
+#include "BlockModelGeometry.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <stdexcept>
-#include <string_view>
+#include <utility>
 
 namespace Rigel::Voxel {
 namespace {
@@ -20,20 +22,6 @@ constexpr float kMaximumOverviewHeight = 48.0f;
 bool suitableReferenceFloor(const BlockType& type) {
     return type.isOpaque && type.layer == RenderLayer::Opaque &&
         type.model->isFullCube();
-}
-
-bool hasCullableFace(const BlockType& type) {
-    return std::any_of(
-        type.model->cuboids().begin(),
-        type.model->cuboids().end(),
-        [](const BlockModelCuboid& cuboid) {
-            return std::any_of(
-                cuboid.faces.begin(),
-                cuboid.faces.end(),
-                [](const auto& face) {
-                    return face && face->cullAgainstOpaqueNeighbor;
-                });
-        });
 }
 
 GeneratorDefinitionData::Noise zeroNoise() {
@@ -75,17 +63,20 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
 
     const BlockGalleryCatalogEntry* coverageDiagnostic = nullptr;
     const BlockGalleryCatalogEntry* sameTypeDiagnostic = nullptr;
+    std::optional<BlockID> referenceFloorBlock;
     for (const BlockGalleryCatalogEntry& entry : m_catalog->entries()) {
         const BlockType& type = registry.getType(entry.blockId);
-        if (!m_referenceFloorBlock && suitableReferenceFloor(type)) {
-            m_referenceFloorBlock = entry.blockId;
+        if (!referenceFloorBlock && suitableReferenceFloor(type)) {
+            referenceFloorBlock = entry.blockId;
         }
-        if (!sameTypeDiagnostic && type.cullSameType) {
+        if (!sameTypeDiagnostic &&
+            detail::identicalPairCullsBothXBoundaries(
+                type, detail::BoundaryCullReason::SameType)) {
             sameTypeDiagnostic = &entry;
         }
-        if (!coverageDiagnostic && type.isOpaque &&
-            !type.model->isFullCube() &&
-            hasCullableFace(type)) {
+        if (!coverageDiagnostic && !type.model->isFullCube() &&
+            detail::identicalPairCullsBothXBoundaries(
+                type, detail::BoundaryCullReason::OpaqueCoverage)) {
             coverageDiagnostic = &entry;
         }
     }
@@ -101,18 +92,16 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
         : static_cast<int>(dimensions.rows - 1) *
             BlockGalleryCatalog::SpecimenSpacing;
 
-    if (m_referenceFloorBlock && !m_catalog->entries().empty()) {
-        m_floorBounds = {
-            -kFloorBorder,
-            galleryMaxX + kFloorBorder,
-            -kFloorBorder,
-            galleryMaxZ + kFloorBorder,
-        };
-        for (int z = m_floorBounds.minZ; z <= m_floorBounds.maxZ; ++z) {
-            for (int x = m_floorBounds.minX; x <= m_floorBounds.maxX; ++x) {
+    if (referenceFloorBlock && !m_catalog->entries().empty()) {
+        const int floorMinX = -kFloorBorder;
+        const int floorMaxX = galleryMaxX + kFloorBorder;
+        const int floorMinZ = -kFloorBorder;
+        const int floorMaxZ = galleryMaxZ + kFloorBorder;
+        for (int z = floorMinZ; z <= floorMaxZ; ++z) {
+            for (int x = floorMinX; x <= floorMaxX; ++x) {
                 addPlacement({
                     {x, 0, z},
-                    *m_referenceFloorBlock,
+                    *referenceFloorBlock,
                     BlockGalleryPlacementKind::ReferenceFloor,
                 });
             }
@@ -127,12 +116,12 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
         });
     }
 
-    m_diagnosticOrigin = {
+    const BlockGalleryWorldPosition diagnosticOrigin = {
         0,
         BlockGalleryCatalog::SpecimenHeight,
         galleryMaxZ + kDiagnosticSeparation,
     };
-    int diagnosticX = m_diagnosticOrigin.x;
+    int diagnosticX = diagnosticOrigin.x;
     const auto addPair = [&](BlockID blockId,
                              BlockGalleryPlacementKind kind,
                              int x,
@@ -142,12 +131,12 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
         add(BlockGalleryBlockPlacement{{x + 1, 1, z}, blockId, kind});
     };
 
-    if (m_referenceFloorBlock) {
+    if (referenceFloorBlock) {
         addPair(
-            *m_referenceFloorBlock,
+            *referenceFloorBlock,
             BlockGalleryPlacementKind::OpaqueCullingDiagnostic,
             diagnosticX,
-            m_diagnosticOrigin.z,
+            diagnosticOrigin.z,
             [this](BlockGalleryBlockPlacement placement) {
                 addPlacement(std::move(placement));
             });
@@ -158,7 +147,7 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
             sameTypeDiagnostic->blockId,
             BlockGalleryPlacementKind::SameTypeCullingDiagnostic,
             diagnosticX,
-            m_diagnosticOrigin.z,
+            diagnosticOrigin.z,
             [this](BlockGalleryBlockPlacement placement) {
                 addPlacement(std::move(placement));
             });
@@ -169,17 +158,17 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
             coverageDiagnostic->blockId,
             BlockGalleryPlacementKind::CoverageCullingDiagnostic,
             diagnosticX,
-            m_diagnosticOrigin.z,
+            diagnosticOrigin.z,
             [this](BlockGalleryBlockPlacement placement) {
                 addPlacement(std::move(placement));
             });
     }
 
-    if (m_referenceFloorBlock) {
-        for (int x = m_diagnosticOrigin.x; x <= diagnosticX + 1; ++x) {
+    if (referenceFloorBlock) {
+        for (int x = diagnosticOrigin.x; x <= diagnosticX + 1; ++x) {
             addPlacement({
-                {x, 0, m_diagnosticOrigin.z},
-                *m_referenceFloorBlock,
+                {x, 0, diagnosticOrigin.z},
+                *referenceFloorBlock,
                 BlockGalleryPlacementKind::ReferenceFloor,
             });
         }
@@ -187,7 +176,7 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
 
     const int diagnosticMaxX = diagnosticX + 1;
     const int extentX = std::max(galleryMaxX, diagnosticMaxX);
-    const int extentZ = std::max(galleryMaxZ, m_diagnosticOrigin.z);
+    const int extentZ = std::max(galleryMaxZ, diagnosticOrigin.z);
     m_overview.centerX = static_cast<float>(extentX) * 0.5f;
     m_overview.centerZ = static_cast<float>(extentZ) * 0.5f;
     const float span = static_cast<float>(std::max(extentX, extentZ) + 1);
@@ -203,8 +192,23 @@ void BlockGalleryChunkGenerator::addPlacement(
         placement.position.x,
         placement.position.y,
         placement.position.z);
-    m_placements.push_back(placement);
     m_placementsByChunk[chunk].push_back(std::move(placement));
+}
+
+std::vector<BlockGalleryBlockPlacement>
+BlockGalleryChunkGenerator::placements() const {
+    size_t placementCount = 0;
+    for (const auto& [coord, placements] : m_placementsByChunk) {
+        static_cast<void>(coord);
+        placementCount += placements.size();
+    }
+    std::vector<BlockGalleryBlockPlacement> result;
+    result.reserve(placementCount);
+    for (const auto& [coord, placements] : m_placementsByChunk) {
+        static_cast<void>(coord);
+        result.insert(result.end(), placements.begin(), placements.end());
+    }
+    return result;
 }
 
 bool BlockGalleryChunkGenerator::containsChunk(ChunkCoord coord) const {

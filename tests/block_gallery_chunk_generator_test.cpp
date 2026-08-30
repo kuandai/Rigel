@@ -8,6 +8,7 @@
 #include "Rigel/Voxel/BlockGalleryCatalog.h"
 #include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 #include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/MeshBuilder.h"
 #include "Rigel/Voxel/StreamingConfig.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
@@ -40,7 +41,49 @@ std::shared_ptr<const BlockModel> partialModel(bool cullBoundary) {
         std::vector<BlockModelCuboid>{cuboid});
 }
 
+std::shared_ptr<const BlockModel> mismatchedXBoundaryModel(
+    std::string identifier, bool cullBoundary
+) {
+    BlockModelCuboid positive;
+    positive.bounds = {{0.0f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}};
+    positive.faces[static_cast<size_t>(Direction::PosX)] = BlockModelFace{
+        .textureSlot = "surface",
+        .cullAgainstOpaqueNeighbor = cullBoundary,
+    };
+    BlockModelCuboid negative;
+    negative.bounds = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}};
+    negative.faces[static_cast<size_t>(Direction::NegX)] = BlockModelFace{
+        .textureSlot = "surface",
+        .cullAgainstOpaqueNeighbor = cullBoundary,
+    };
+    return std::make_shared<const BlockModel>(
+        std::move(identifier),
+        std::vector<std::string>{"surface"},
+        std::vector<BlockModelCuboid>{
+            std::move(positive), std::move(negative)});
+}
+
 void populateGalleryRegistry(BlockRegistry& registry, size_t numberedCount) {
+    BlockType mismatchedCoverage;
+    mismatchedCoverage.identifier = "invented:aaa_coverage_mismatch";
+    mismatchedCoverage.model = mismatchedXBoundaryModel(
+        "invented:aaa_coverage_mismatch_model", true);
+    mismatchedCoverage.isOpaque = true;
+    const std::string mismatchedCoverageId =
+        mismatchedCoverage.identifier;
+    registry.registerBlock(
+        mismatchedCoverageId, std::move(mismatchedCoverage));
+
+    BlockType mismatchedSameType;
+    mismatchedSameType.identifier = "invented:aab_joined_mismatch";
+    mismatchedSameType.model = mismatchedXBoundaryModel(
+        "invented:aab_joined_mismatch_model", false);
+    mismatchedSameType.cullSameType = true;
+    const std::string mismatchedSameTypeId =
+        mismatchedSameType.identifier;
+    registry.registerBlock(
+        mismatchedSameTypeId, std::move(mismatchedSameType));
+
     BlockType floor;
     floor.identifier = "invented:floor";
     floor.model = BlockModel::fullCube();
@@ -73,6 +116,80 @@ void populateGalleryRegistry(BlockRegistry& registry, size_t numberedCount) {
     }
 }
 
+std::vector<BlockGalleryBlockPlacement> diagnosticPair(
+    const BlockGalleryChunkGenerator& generator,
+    BlockGalleryPlacementKind kind
+) {
+    const std::vector<BlockGalleryBlockPlacement> placements =
+        generator.placements();
+    std::vector<BlockGalleryBlockPlacement> pair;
+    std::copy_if(
+        placements.begin(),
+        placements.end(),
+        std::back_inserter(pair),
+        [kind](const BlockGalleryBlockPlacement& placement) {
+            return placement.kind == kind;
+        });
+    return pair;
+}
+
+size_t countSharedXPlaneFaces(
+    const ChunkMesh& mesh,
+    ChunkCoord chunk,
+    const std::vector<BlockGalleryBlockPlacement>& pair
+) {
+    CHECK_EQ(pair.size(), static_cast<size_t>(2));
+    const float planeX = static_cast<float>(
+        pair[1].position.x - chunk.x * Chunk::SIZE);
+    const float minY = static_cast<float>(
+        pair[0].position.y - chunk.y * Chunk::SIZE);
+    const float minZ = static_cast<float>(
+        pair[0].position.z - chunk.z * Chunk::SIZE);
+    CHECK_EQ(mesh.vertices.size() % 4, static_cast<size_t>(0));
+    size_t count = 0;
+    for (size_t first = 0; first < mesh.vertices.size(); first += 4) {
+        bool matches = true;
+        for (size_t vertex = 0; vertex < 4; ++vertex) {
+            const VoxelVertex& candidate = mesh.vertices[first + vertex];
+            if (candidate.x != planeX ||
+                candidate.y < minY || candidate.y > minY + 1.0f ||
+                candidate.z < minZ || candidate.z > minZ + 1.0f) {
+                matches = false;
+                break;
+            }
+        }
+        count += matches ? 1 : 0;
+    }
+    return count;
+}
+
+ChunkMesh buildGeneratedDiagnosticChunk(
+    const BlockGalleryChunkGenerator& generator,
+    const BlockRegistry& registry,
+    const std::vector<BlockGalleryBlockPlacement>& pair
+) {
+    const ChunkCoord chunkCoord = worldToChunk(
+        pair.front().position.x,
+        pair.front().position.y,
+        pair.front().position.z);
+    CHECK_EQ(
+        worldToChunk(
+            pair.back().position.x,
+            pair.back().position.y,
+            pair.back().position.z),
+        chunkCoord);
+    ChunkBuffer buffer;
+    generator.generate(chunkCoord, buffer);
+    Chunk chunk(chunkCoord);
+    chunk.copyFrom(buffer.blocks, registry);
+    return MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = {},
+    });
+}
+
 BlockState generatedBlock(
     const BlockGalleryChunkGenerator& generator,
     BlockGalleryWorldPosition position) {
@@ -102,10 +219,10 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
     auto catalog = std::make_shared<const BlockGalleryCatalog>(registry);
     const BlockGalleryChunkGenerator generator(registry, catalog);
     const BlockGalleryChunkGenerator repeated(registry, catalog);
+    const std::vector<BlockGalleryBlockPlacement> placements =
+        generator.placements();
 
-    CHECK_EQ(generator.placements(), repeated.placements());
-    CHECK_EQ(generator.floorBounds(), repeated.floorBounds());
-    CHECK_EQ(generator.diagnosticOrigin(), repeated.diagnosticOrigin());
+    CHECK_EQ(placements, repeated.placements());
     CHECK_EQ(generator.overview(), repeated.overview());
     CHECK(generator.overview().cameraDistance > 0.0f);
     CHECK(generator.overview().cameraHeight > 0.0f);
@@ -120,8 +237,8 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
             generator.overview().centerZ +
             generator.overview().cameraDistance)));
     CHECK(std::any_of(
-        generator.placements().begin(),
-        generator.placements().end(),
+        placements.begin(),
+        placements.end(),
         [&](const BlockGalleryBlockPlacement& placement) {
             const ChunkCoord placementChunk = worldToChunk(
                 placement.position.x,
@@ -133,13 +250,27 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
             return dx * dx + dy * dy + dz * dz <= 4;
         }));
 
-    CHECK(generator.referenceFloorBlock().has_value());
+    const auto referenceFloor = std::find_if(
+        placements.begin(), placements.end(),
+        [](const BlockGalleryBlockPlacement& placement) {
+            return placement.position == BlockGalleryWorldPosition{-1, 0, -1} &&
+                placement.kind == BlockGalleryPlacementKind::ReferenceFloor;
+        });
+    CHECK(referenceFloor != placements.end());
     CHECK_EQ(
-        registry.getType(*generator.referenceFloorBlock()).identifier,
+        registry.getType(referenceFloor->blockId).identifier,
         std::string("invented:floor"));
-    CHECK(!generator.floorBounds().empty());
-    CHECK_EQ(generator.floorBounds().minX, -1);
-    CHECK_EQ(generator.floorBounds().minZ, -1);
+    int floorMinX = 0;
+    int floorMinZ = 0;
+    for (const BlockGalleryBlockPlacement& placement : placements) {
+        if (placement.kind != BlockGalleryPlacementKind::ReferenceFloor) {
+            continue;
+        }
+        floorMinX = std::min(floorMinX, placement.position.x);
+        floorMinZ = std::min(floorMinZ, placement.position.z);
+    }
+    CHECK_EQ(floorMinX, -1);
+    CHECK_EQ(floorMinZ, -1);
 
     for (const BlockGalleryCatalogEntry& entry : catalog->entries()) {
         const BlockState state = generatedBlock(
@@ -149,17 +280,15 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
     }
     CHECK_EQ(
         generatedBlock(generator, {-1, 0, -1}).id,
-        *generator.referenceFloorBlock());
+        referenceFloor->blockId);
 
     const int galleryLastZ = static_cast<int>(
         catalog->gridDimensions().rows - 1) *
         BlockGalleryCatalog::SpecimenSpacing;
-    CHECK(generator.diagnosticOrigin().z > galleryLastZ);
     size_t opaqueDiagnostics = 0;
     size_t sameTypeDiagnostics = 0;
     size_t coverageDiagnostics = 0;
-    for (const BlockGalleryBlockPlacement& placement :
-         generator.placements()) {
+    for (const BlockGalleryBlockPlacement& placement : placements) {
         opaqueDiagnostics += placement.kind ==
             BlockGalleryPlacementKind::OpaqueCullingDiagnostic;
         sameTypeDiagnostics += placement.kind ==
@@ -171,25 +300,71 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
     CHECK_EQ(sameTypeDiagnostics, static_cast<size_t>(2));
     CHECK_EQ(coverageDiagnostics, static_cast<size_t>(2));
 
+    const auto opaquePair = diagnosticPair(
+        generator, BlockGalleryPlacementKind::OpaqueCullingDiagnostic);
+    CHECK_EQ(opaquePair.size(), static_cast<size_t>(2));
+    const int diagnosticZ = opaquePair.front().position.z;
+    CHECK(diagnosticZ > galleryLastZ);
+
     for (const BlockGalleryPlacementKind kind : {
              BlockGalleryPlacementKind::OpaqueCullingDiagnostic,
              BlockGalleryPlacementKind::SameTypeCullingDiagnostic,
              BlockGalleryPlacementKind::CoverageCullingDiagnostic}) {
-        std::vector<BlockGalleryBlockPlacement> pair;
-        std::copy_if(
-            generator.placements().begin(),
-            generator.placements().end(),
-            std::back_inserter(pair),
-            [kind](const BlockGalleryBlockPlacement& placement) {
-                return placement.kind == kind;
-            });
+        const std::vector<BlockGalleryBlockPlacement> pair = diagnosticPair(
+            generator, kind);
         CHECK_EQ(pair.size(), static_cast<size_t>(2));
-        CHECK_EQ(pair[0].position.z, generator.diagnosticOrigin().z);
-        CHECK_EQ(pair[1].position.z, generator.diagnosticOrigin().z);
+        CHECK_EQ(pair[0].position.z, diagnosticZ);
+        CHECK_EQ(pair[1].position.z, diagnosticZ);
         CHECK_EQ(pair[0].position.y, BlockGalleryCatalog::SpecimenHeight);
         CHECK_EQ(pair[1].position.y, BlockGalleryCatalog::SpecimenHeight);
         CHECK_EQ(pair[1].position.x, pair[0].position.x + 1);
         CHECK_EQ(pair[0].blockId, pair[1].blockId);
+    }
+
+    const auto sameTypePair = diagnosticPair(
+        generator, BlockGalleryPlacementKind::SameTypeCullingDiagnostic);
+    const auto coveragePair = diagnosticPair(
+        generator, BlockGalleryPlacementKind::CoverageCullingDiagnostic);
+    CHECK_EQ(
+        registry.getType(sameTypePair.front().blockId).identifier,
+        std::string("invented:joined"));
+    CHECK_EQ(
+        registry.getType(coveragePair.front().blockId).identifier,
+        std::string("invented:coverage"));
+
+    for (const auto* pair : {&sameTypePair, &coveragePair}) {
+        const ChunkCoord chunk = worldToChunk(
+            pair->front().position.x,
+            pair->front().position.y,
+            pair->front().position.z);
+        const ChunkMesh mesh = buildGeneratedDiagnosticChunk(
+            generator, registry, *pair);
+        CHECK_EQ(countSharedXPlaneFaces(mesh, chunk, *pair),
+                 static_cast<size_t>(0));
+    }
+
+    for (const std::string& identifier : {
+             std::string("invented:aaa_coverage_mismatch"),
+             std::string("invented:aab_joined_mismatch")}) {
+        const BlockID blockId = *registry.findByIdentifier(identifier);
+        Chunk chunk({0, 0, 0});
+        chunk.setBlock(1, 1, 1, BlockState{blockId});
+        chunk.setBlock(2, 1, 1, BlockState{blockId});
+        const ChunkMesh mesh = MeshBuilder{}.build({
+            .chunk = chunk,
+            .registry = registry,
+            .atlas = nullptr,
+            .neighbors = {},
+        });
+        const std::vector<BlockGalleryBlockPlacement> mismatchedPair = {
+            {{1, 1, 1}, blockId,
+             BlockGalleryPlacementKind::CoverageCullingDiagnostic},
+            {{2, 1, 1}, blockId,
+             BlockGalleryPlacementKind::CoverageCullingDiagnostic},
+        };
+        CHECK_EQ(
+            countSharedXPlaneFaces(mesh, {0, 0, 0}, mismatchedPair),
+            static_cast<size_t>(2));
     }
 }
 
@@ -199,8 +374,10 @@ TEST_CASE(BlockGalleryChunkGenerator_AccountsAcrossChunkBoundaries) {
     registry.freeze();
     auto catalog = std::make_shared<const BlockGalleryCatalog>(registry);
     const BlockGalleryChunkGenerator gallery(registry, catalog);
+    const std::vector<BlockGalleryBlockPlacement> placements =
+        gallery.placements();
     std::map<ChunkCoord, size_t> expectedCounts;
-    for (const BlockGalleryBlockPlacement& placement : gallery.placements()) {
+    for (const BlockGalleryBlockPlacement& placement : placements) {
         ++expectedCounts[worldToChunk(
             placement.position.x,
             placement.position.y,
@@ -220,8 +397,7 @@ TEST_CASE(BlockGalleryChunkGenerator_AccountsAcrossChunkBoundaries) {
         chunk.copyFrom(buffer.blocks, registry);
         CHECK_EQ(chunk.nonAirCount(), expected);
         size_t expectedOpaque = 0;
-        for (const BlockGalleryBlockPlacement& placement :
-             gallery.placements()) {
+        for (const BlockGalleryBlockPlacement& placement : placements) {
             if (worldToChunk(
                     placement.position.x,
                     placement.position.y,

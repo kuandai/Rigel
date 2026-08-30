@@ -232,7 +232,6 @@ struct Application::Impl {
         Voxel::World* world = nullptr;
         Voxel::WorldView* worldView = nullptr;
         std::shared_ptr<Persistence::AsyncChunkLoader> chunkLoader;
-        std::shared_ptr<const Voxel::BlockGalleryCatalog> galleryCatalog;
         std::shared_ptr<const Voxel::BlockGalleryChunkGenerator>
             galleryGenerator;
         std::optional<Persistence::WorldSettings> settings;
@@ -519,13 +518,13 @@ void Application::initialize() {
         m_impl->world.worldSet.initializeResources(m_impl->assets);
 
         if (blockGallery) {
-            m_impl->world.galleryCatalog =
+            auto galleryCatalog =
                 std::make_shared<const Voxel::BlockGalleryCatalog>(
                     m_impl->world.worldSet.resources().registry());
             m_impl->world.galleryGenerator =
                 std::make_shared<const Voxel::BlockGalleryChunkGenerator>(
                     m_impl->world.worldSet.resources().registry(),
-                    m_impl->world.galleryCatalog);
+                    std::move(galleryCatalog));
         }
 
         m_impl->playerDefaultBindings =
@@ -874,6 +873,7 @@ void Application::Impl::shutdown() noexcept {
         }
     }
     world.worldSet.clear();
+    world.galleryGenerator.reset();
     world.worldView = nullptr;
     world.world = nullptr;
     world.ready = false;

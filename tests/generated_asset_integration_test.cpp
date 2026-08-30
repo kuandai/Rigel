@@ -207,6 +207,53 @@ const BlockGalleryCatalogEntry& requireGalleryEntry(
     return *entry;
 }
 
+std::vector<BlockGalleryBlockPlacement> diagnosticPair(
+    const BlockGalleryChunkGenerator& gallery,
+    BlockGalleryPlacementKind kind
+) {
+    const std::vector<BlockGalleryBlockPlacement> placements =
+        gallery.placements();
+    std::vector<BlockGalleryBlockPlacement> pair;
+    std::copy_if(
+        placements.begin(),
+        placements.end(),
+        std::back_inserter(pair),
+        [kind](const BlockGalleryBlockPlacement& placement) {
+            return placement.kind == kind;
+        });
+    return pair;
+}
+
+size_t countSharedXPlaneFaces(
+    const ChunkMesh& mesh,
+    ChunkCoord chunk,
+    const std::vector<BlockGalleryBlockPlacement>& pair
+) {
+    CHECK_EQ(pair.size(), static_cast<size_t>(2));
+    const float planeX = static_cast<float>(
+        pair[1].position.x - chunk.x * Chunk::SIZE);
+    const float minY = static_cast<float>(
+        pair[0].position.y - chunk.y * Chunk::SIZE);
+    const float minZ = static_cast<float>(
+        pair[0].position.z - chunk.z * Chunk::SIZE);
+    CHECK_EQ(mesh.vertices.size() % 4, static_cast<size_t>(0));
+    size_t count = 0;
+    for (size_t first = 0; first < mesh.vertices.size(); first += 4) {
+        bool matches = true;
+        for (size_t vertex = 0; vertex < 4; ++vertex) {
+            const VoxelVertex& candidate = mesh.vertices[first + vertex];
+            if (candidate.x != planeX ||
+                candidate.y < minY || candidate.y > minY + 1.0f ||
+                candidate.z < minZ || candidate.z > minZ + 1.0f) {
+                matches = false;
+                break;
+            }
+        }
+        count += matches ? 1 : 0;
+    }
+    return count;
+}
+
 size_t countRenderedCenterPixels() {
     constexpr int Width = 64;
     constexpr int Height = 64;
@@ -498,14 +545,16 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
         resources.registry());
     auto gallery = std::make_shared<const BlockGalleryChunkGenerator>(
         resources.registry(), catalog);
+    const std::vector<BlockGalleryBlockPlacement> placements =
+        gallery->placements();
     for (const BlockGalleryPlacementKind kind : {
              BlockGalleryPlacementKind::OpaqueCullingDiagnostic,
              BlockGalleryPlacementKind::SameTypeCullingDiagnostic,
              BlockGalleryPlacementKind::CoverageCullingDiagnostic}) {
         CHECK_EQ(
             std::count_if(
-                gallery->placements().begin(),
-                gallery->placements().end(),
+                placements.begin(),
+                placements.end(),
                 [kind](const BlockGalleryBlockPlacement& placement) {
                     return placement.kind == kind;
                 }),
@@ -516,6 +565,62 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
             resources.registry(), gallery->worldBounds());
     auto generator = std::make_shared<const WorldGenerator>(
         resources.registry(), identity.data, 0, 1, gallery);
+
+    for (const BlockGalleryPlacementKind kind : {
+             BlockGalleryPlacementKind::SameTypeCullingDiagnostic,
+             BlockGalleryPlacementKind::CoverageCullingDiagnostic}) {
+        const std::vector<BlockGalleryBlockPlacement> pair = diagnosticPair(
+            *gallery, kind);
+        CHECK_EQ(pair.size(), static_cast<size_t>(2));
+        const ChunkCoord chunkCoord = worldToChunk(
+            pair.front().position.x,
+            pair.front().position.y,
+            pair.front().position.z);
+        CHECK_EQ(
+            worldToChunk(
+                pair.back().position.x,
+                pair.back().position.y,
+                pair.back().position.z),
+            chunkCoord);
+
+        ChunkBuffer generated;
+        generator->generate(chunkCoord, generated);
+        Chunk chunk(chunkCoord);
+        chunk.copyFrom(generated.blocks, resources.registry());
+        const ChunkMesh mesh = MeshBuilder{}.build({
+            .chunk = chunk,
+            .registry = resources.registry(),
+            .atlas = &resources.textureAtlas(),
+            .neighbors = {},
+        });
+        CHECK_EQ(
+            countSharedXPlaneFaces(mesh, chunkCoord, pair),
+            static_cast<size_t>(0));
+
+        const int localY = pair.front().position.y -
+            chunkCoord.y * Chunk::SIZE;
+        const int localZ = pair.front().position.z -
+            chunkCoord.z * Chunk::SIZE;
+        const int leftX = pair.front().position.x -
+            chunkCoord.x * Chunk::SIZE;
+        const int rightX = pair.back().position.x -
+            chunkCoord.x * Chunk::SIZE;
+        for (const int localX : {leftX, rightX}) {
+            Chunk isolated(chunkCoord);
+            isolated.setBlock(
+                localX, localY, localZ,
+                BlockState{pair.front().blockId});
+            const ChunkMesh isolatedMesh = MeshBuilder{}.build({
+                .chunk = isolated,
+                .registry = resources.registry(),
+                .atlas = &resources.textureAtlas(),
+                .neighbors = {},
+            });
+            CHECK(
+                countSharedXPlaneFaces(
+                    isolatedMesh, chunkCoord, pair) > 0);
+        }
+    }
 
     World world(resources);
     world.setGenerator(generator);

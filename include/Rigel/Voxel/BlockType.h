@@ -107,8 +107,8 @@ struct BlockType {
     /// Unique identifier (e.g., "rigel:stone", "mymod:custom_block")
     std::string identifier;
 
-    /// Immutable geometry shared by all blocks using the same model.
-    std::shared_ptr<const BlockModel> model = BlockModel::fullCube();
+    /// Immutable geometry reference and constrained per-registration orientation.
+    BlockModelInstance model;
 
     /// Whether this block fully occludes adjacent faces
     bool isOpaque = true;

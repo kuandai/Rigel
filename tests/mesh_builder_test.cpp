@@ -87,6 +87,28 @@ void checkFaceWinding(
     CHECK(cross[0] * nx + cross[1] * ny + cross[2] * nz < 0.0f);
 }
 
+void checkMeshesEqual(const ChunkMesh& first, const ChunkMesh& second) {
+    CHECK_EQ(first.vertices.size(), second.vertices.size());
+    CHECK_EQ(first.indices, second.indices);
+    CHECK_EQ(first.layers.size(), second.layers.size());
+    for (size_t layer = 0; layer < first.layers.size(); ++layer) {
+        CHECK_EQ(first.layers[layer].indexStart, second.layers[layer].indexStart);
+        CHECK_EQ(first.layers[layer].indexCount, second.layers[layer].indexCount);
+    }
+    for (size_t index = 0; index < first.vertices.size(); ++index) {
+        const VoxelVertex& left = first.vertices[index];
+        const VoxelVertex& right = second.vertices[index];
+        CHECK_EQ(left.x, right.x);
+        CHECK_EQ(left.y, right.y);
+        CHECK_EQ(left.z, right.z);
+        CHECK_EQ(left.u, right.u);
+        CHECK_EQ(left.v, right.v);
+        CHECK_EQ(left.normalIndex, right.normalIndex);
+        CHECK_EQ(left.aoLevel, right.aoLevel);
+        CHECK_EQ(left.textureLayer, right.textureLayer);
+    }
+}
+
 BlockModelCuboid completeCuboid(
     BlockModelBounds bounds, std::string textureSlot,
     bool ambientOcclusion = false, bool cull = false
@@ -410,6 +432,217 @@ TEST_CASE(MeshBuilder_EmitsNormalizedCuboidsWithMissingFacesAndExtendedBounds) {
         }
         checkFaceWinding(mesh, face * 4, expectedDirections[face]);
     }
+}
+
+TEST_CASE(MeshBuilder_OrientsPartialBoundsAndFacesForEveryMeasuredTurn) {
+    TextureAtlas atlas;
+    addTexture(atlas, "textures/test/dummy.png");
+    const TextureHandle east = addTexture(atlas, "textures/test/east.png");
+    const TextureHandle top = addTexture(atlas, "textures/test/top.png");
+
+    BlockModelCuboid cuboid;
+    cuboid.bounds = {{-0.25f, 0.125f, 0.25f},
+                     {0.75f, 0.625f, 1.25f}};
+    cuboid.faces[static_cast<size_t>(Direction::PosX)] = modelFace("east");
+    cuboid.faces[static_cast<size_t>(Direction::PosY)] = modelFace("top");
+    const auto sharedModel = makeModel(
+        "test:oriented_partial", {"east", "top"}, {cuboid});
+
+    struct OrientationCase {
+        BlockModelOrientation orientation;
+        BlockModelBounds bounds;
+        std::array<Direction, 2> directions;
+    };
+    constexpr std::array cases = {
+        OrientationCase{
+            BlockModelOrientation::Identity,
+            {{-0.25f, 0.125f, 0.25f}, {0.75f, 0.625f, 1.25f}},
+            {Direction::PosX, Direction::PosY}},
+        OrientationCase{
+            BlockModelOrientation::RotateX90,
+            {{-0.25f, 0.25f, 0.375f}, {0.75f, 1.25f, 0.875f}},
+            {Direction::PosX, Direction::NegZ}},
+        OrientationCase{
+            BlockModelOrientation::RotateX270,
+            {{-0.25f, -0.25f, 0.125f}, {0.75f, 0.75f, 0.625f}},
+            {Direction::PosX, Direction::PosZ}},
+        OrientationCase{
+            BlockModelOrientation::RotateY90,
+            {{-0.25f, 0.125f, -0.25f}, {0.75f, 0.625f, 0.75f}},
+            {Direction::PosZ, Direction::PosY}},
+        OrientationCase{
+            BlockModelOrientation::RotateY180,
+            {{0.25f, 0.125f, -0.25f}, {1.25f, 0.625f, 0.75f}},
+            {Direction::NegX, Direction::PosY}},
+        OrientationCase{
+            BlockModelOrientation::RotateY270,
+            {{0.25f, 0.125f, 0.25f}, {1.25f, 0.625f, 1.25f}},
+            {Direction::NegZ, Direction::PosY}},
+        OrientationCase{
+            BlockModelOrientation::RotateZ90,
+            {{0.125f, 0.25f, 0.25f}, {0.625f, 1.25f, 1.25f}},
+            {Direction::NegY, Direction::PosX}},
+    };
+
+    for (size_t caseIndex = 0; caseIndex < cases.size(); ++caseIndex) {
+        const OrientationCase& item = cases[caseIndex];
+        BlockRegistry registry = makeRegistry();
+        BlockType block;
+        block.identifier = "test:oriented_" + std::to_string(caseIndex);
+        block.model.geometry = sharedModel;
+        block.model.orientation = item.orientation;
+        block.textures.bind("east", "textures/test/east.png");
+        block.textures.bind("top", "textures/test/top.png");
+        const BlockID blockId = registry.registerBlock(block.identifier, block);
+        Chunk chunk({0, 0, 0});
+        chunk.setBlock(2, 3, 4, BlockState{blockId});
+
+        const MeshBuilder builder;
+        const MeshBuilder::BuildContext context{
+            .chunk = chunk,
+            .registry = registry,
+            .atlas = &atlas,
+            .neighbors = {},
+        };
+        const ChunkMesh mesh = builder.build(context);
+        const ChunkMesh repeated = builder.build(context);
+        checkMeshesEqual(mesh, repeated);
+
+        CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(8));
+        const std::array<TextureHandle, 2> textures = {east, top};
+        for (size_t face = 0; face < 2; ++face) {
+            const Direction direction = item.directions[face];
+            const size_t directionIndex = static_cast<size_t>(direction);
+            for (size_t vertex = 0; vertex < 4; ++vertex) {
+                const auto& unit = kCubeFacePositions[directionIndex][vertex];
+                const VoxelVertex& actual = mesh.vertices[face * 4 + vertex];
+                CHECK_EQ(actual.x, 2.0f + (unit[0] == 0.0f
+                    ? item.bounds.min[0] : item.bounds.max[0]));
+                CHECK_EQ(actual.y, 3.0f + (unit[1] == 0.0f
+                    ? item.bounds.min[1] : item.bounds.max[1]));
+                CHECK_EQ(actual.z, 4.0f + (unit[2] == 0.0f
+                    ? item.bounds.min[2] : item.bounds.max[2]));
+                CHECK_EQ(actual.normalIndex, static_cast<uint8_t>(direction));
+                CHECK_EQ(actual.textureLayer, textures[face].index);
+                CHECK_EQ(actual.aoLevel, static_cast<uint8_t>(3));
+            }
+            checkFaceWinding(mesh, face * 4, direction);
+        }
+    }
+}
+
+TEST_CASE(MeshBuilder_OrientsFullCubeTexturesAndExplicitTopBottomUvs) {
+    TextureAtlas atlas;
+    addTexture(atlas, "textures/test/dummy.png");
+    std::array<TextureHandle, DirectionCount> textures;
+    BlockType cube;
+    cube.identifier = "test:oriented_cube";
+    cube.model.orientation = BlockModelOrientation::RotateZ90;
+    cube.model.rotateTopBottomUv = true;
+    for (size_t source = 0; source < DirectionCount; ++source) {
+        const std::string path =
+            "textures/test/oriented_" + std::to_string(source) + ".png";
+        textures[source] = addTexture(atlas, path);
+        cube.textures.setFace(static_cast<Direction>(source), path);
+    }
+    BlockRegistry registry;
+    const BlockID cubeId = registry.registerBlock(cube.identifier, cube);
+    Chunk chunk({0, 0, 0});
+    chunk.setBlock(1, 1, 1, BlockState{cubeId});
+
+    const ChunkMesh mesh = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = &atlas,
+        .neighbors = {},
+    });
+
+    constexpr std::array<Direction, DirectionCount> expectedDirections = {
+        Direction::NegY, Direction::PosY, Direction::PosX,
+        Direction::NegX, Direction::PosZ, Direction::NegZ};
+    constexpr std::array<size_t, DirectionCount> expectedUvTurns = {
+        3, 1, 1, 3, 1, 3};
+    CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(24));
+    for (size_t source = 0; source < DirectionCount; ++source) {
+        const size_t firstVertex = source * 4;
+        for (size_t vertex = 0; vertex < 4; ++vertex) {
+            const VoxelVertex& actual = mesh.vertices[firstVertex + vertex];
+            const auto& expectedUv =
+                kCubeUvs[(vertex + expectedUvTurns[source]) % 4];
+            CHECK_EQ(actual.normalIndex,
+                     static_cast<uint8_t>(expectedDirections[source]));
+            CHECK_EQ(actual.textureLayer, textures[source].index);
+            CHECK_EQ(actual.u, expectedUv[0]);
+            CHECK_EQ(actual.v, expectedUv[1]);
+        }
+        checkFaceWinding(mesh, firstVertex, expectedDirections[source]);
+    }
+}
+
+TEST_CASE(MeshBuilder_ComposesOrientedCroppedAndReversedFaceUvs) {
+    BlockModelCuboid cuboid;
+    cuboid.bounds = {{0.25f, 0.0f, 0.125f}, {0.75f, 1.0f, 0.875f}};
+    cuboid.faces[static_cast<size_t>(Direction::PosY)] = modelFace(
+        "top", {1.0f, 0.25f, 0.0f, 0.75f},
+        BlockModelUvRotation::Quarter);
+    BlockType block;
+    block.identifier = "test:oriented_uv";
+    block.model.geometry = makeModel(
+        "test:oriented_uv_model", {"top"}, {cuboid});
+    block.model.orientation = BlockModelOrientation::RotateZ90;
+    block.model.rotateTopBottomUv = true;
+    BlockRegistry registry = makeRegistry();
+    const BlockID blockId = registry.registerBlock(block.identifier, block);
+    Chunk chunk({0, 0, 0});
+    chunk.setBlock(1, 1, 1, BlockState{blockId});
+
+    const ChunkMesh mesh = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = {},
+    });
+
+    constexpr std::array<std::array<float, 2>, 4> expectedUvs = {{
+        {0.0f, 0.75f}, {0.0f, 0.25f},
+        {1.0f, 0.25f}, {1.0f, 0.75f},
+    }};
+    CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(4));
+    for (size_t vertex = 0; vertex < 4; ++vertex) {
+        CHECK_EQ(mesh.vertices[vertex].u, expectedUvs[vertex][0]);
+        CHECK_EQ(mesh.vertices[vertex].v, expectedUvs[vertex][1]);
+        CHECK_EQ(mesh.vertices[vertex].normalIndex,
+                 static_cast<uint8_t>(Direction::PosX));
+    }
+    checkFaceWinding(mesh, 0, Direction::PosX);
+}
+
+TEST_CASE(MeshBuilder_RotatesBoundaryCullingDirection) {
+    BlockModelCuboid cuboid;
+    cuboid.bounds = {{0.0f, 0.25f, 0.0f}, {1.0f, 0.75f, 1.0f}};
+    cuboid.faces[static_cast<size_t>(Direction::PosX)] =
+        modelFace("surface", {}, BlockModelUvRotation::None, false, true);
+    BlockType panel;
+    panel.identifier = "test:oriented_boundary";
+    panel.model.geometry = makeModel(
+        "test:oriented_boundary_model", {"surface"}, {cuboid});
+    panel.model.orientation = BlockModelOrientation::RotateZ90;
+
+    BlockRegistry registry = makeRegistry();
+    const BlockID panelId = registry.registerBlock(panel.identifier, panel);
+    const BlockID stoneId = *registry.findByIdentifier("rigel:stone");
+    Chunk chunk({0, 0, 0});
+    chunk.setBlock(2, 2, 2, BlockState{panelId});
+    chunk.setBlock(2, 1, 2, BlockState{stoneId});
+
+    const ChunkMesh mesh = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = {},
+    });
+    CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(24));
+    CHECK_EQ(mesh.indices.size(), static_cast<size_t>(36));
 }
 
 TEST_CASE(MeshBuilder_ResolvesNamedTexturesAndTransformsModelUvs) {

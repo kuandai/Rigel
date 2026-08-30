@@ -196,6 +196,144 @@ textures:
     CHECK_EQ(*block.textures.find("cap"), "textures/test/post_cap.png");
 }
 
+TEST_CASE(BlockLoader_LoadsMeasuredOrientationsAsSharedModelInstances) {
+    constexpr std::string_view modelYaml = R"(
+id: directional
+texture_slots: []
+cuboids:
+  - bounds: [-0.25, 0.125, 0.25, 0.75, 0.625, 1.25]
+    faces: {}
+)";
+    struct OrientationCase {
+        std::array<int, 3> angles;
+        BlockModelOrientation expected;
+        bool rotateTopBottom;
+    };
+    constexpr std::array cases = {
+        OrientationCase{{0, 0, 0}, BlockModelOrientation::Identity, false},
+        OrientationCase{{90, 0, 0}, BlockModelOrientation::RotateX90, true},
+        OrientationCase{{270, 0, 0}, BlockModelOrientation::RotateX270, false},
+        OrientationCase{{0, 90, 0}, BlockModelOrientation::RotateY90, false},
+        OrientationCase{{0, 180, 0}, BlockModelOrientation::RotateY180, false},
+        OrientationCase{{0, 270, 0}, BlockModelOrientation::RotateY270, false},
+        OrientationCase{{0, 0, 90}, BlockModelOrientation::RotateZ90, true},
+    };
+
+    std::vector<std::string> yaml;
+    yaml.reserve(cases.size());
+    std::vector<BlockDefinitionSource> blockDefinitions;
+    blockDefinitions.reserve(cases.size());
+    for (size_t index = 0; index < cases.size(); ++index) {
+        const auto& item = cases[index];
+        yaml.push_back(
+            "id: oriented_" + std::to_string(index) +
+            "\nmodel: directional\norientation: [" +
+            std::to_string(item.angles[0]) + ", " +
+            std::to_string(item.angles[1]) + ", " +
+            std::to_string(item.angles[2]) + "]\nrotate_top_bottom: " +
+            (item.rotateTopBottom ? "true" : "false") +
+            "\ntextures: {}\n");
+        blockDefinitions.push_back(definition(
+            "blocks/oriented.yaml", yaml.back()));
+    }
+
+    BlockModelRegistry models;
+    BlockRegistry blocks;
+    TextureAtlas atlas;
+    const std::array modelDefinitions = {
+        modelDefinition("models/blocks/directional.yaml", modelYaml)};
+    const BlockLoadReport report = BlockLoader{}.loadDefinitions(
+        "test", modelDefinitions, blockDefinitions, models, blocks, atlas);
+
+    CHECK_EQ(report.loaded, cases.size());
+    const auto sharedModel = models.find("test:directional");
+    CHECK(sharedModel);
+    for (size_t index = 0; index < cases.size(); ++index) {
+        const BlockType& block = blocks.getType(
+            *blocks.findByIdentifier("test:oriented_" + std::to_string(index)));
+        CHECK_EQ(block.model.get(), sharedModel.get());
+        CHECK_EQ(block.model.orientation, cases[index].expected);
+        CHECK_EQ(block.model.rotateTopBottomUv, cases[index].rotateTopBottom);
+    }
+}
+
+TEST_CASE(BlockLoader_RejectsUnmeasuredAndComposedOrientationsAtomically) {
+    constexpr std::string_view modelYaml = R"(
+id: directional
+texture_slots: []
+cuboids: [{bounds: [0, 0, 0, 1, 1, 1], faces: {}}]
+)";
+    constexpr std::array<std::string_view, 9> invalidBlocks = {
+        R"(id: bad
+model: directional
+orientation: 90
+textures: {}
+)",
+        R"(id: bad
+model: directional
+orientation: [90, 0]
+textures: {}
+)",
+        R"(id: bad
+model: directional
+orientation: [east, 0, 0]
+textures: {}
+)",
+        R"(id: bad
+model: directional
+orientation: [45, 0, 0]
+textures: {}
+)",
+        R"(id: bad
+model: directional
+orientation: [180, 0, 0]
+textures: {}
+)",
+        R"(id: bad
+model: directional
+orientation: [0, 0, 270]
+textures: {}
+)",
+        R"(id: bad
+model: directional
+orientation: [90, 90, 0]
+textures: {}
+)",
+        R"(id: bad
+model: directional
+orientation: [0, 0, 90]
+rotate_top_bottom: quarter
+textures: {}
+)",
+        R"(id: bad
+model: directional
+orientation: [0, 0, 0]
+rotate_top_bottom: true
+textures: {}
+)",
+    };
+
+    for (size_t index = 0; index < invalidBlocks.size(); ++index) {
+        BlockModelRegistry models;
+        BlockRegistry blocks;
+        TextureAtlas atlas;
+        const std::array modelDefinitions = {
+            modelDefinition("models/blocks/directional.yaml", modelYaml)};
+        const std::array blockDefinitions = {definition(
+            "blocks/bad.yaml", invalidBlocks[index])};
+        const BlockLoadReport report = BlockLoader{}.loadDefinitions(
+            "test", modelDefinitions, blockDefinitions, models, blocks, atlas);
+
+        CHECK_EQ(report.failed, static_cast<size_t>(1));
+        CHECK_EQ(report.loaded, static_cast<size_t>(0));
+        CHECK_EQ(report.modelsLoaded, static_cast<size_t>(0));
+        CHECK_EQ(models.size(), static_cast<size_t>(2));
+        CHECK_EQ(blocks.size(), static_cast<size_t>(1));
+        CHECK(!models.find("test:directional"));
+        CHECK(!blocks.findByIdentifier("test:bad"));
+    }
+}
+
 TEST_CASE(BlockLoader_RejectsMalformedNormalizedModelsAtomically) {
     constexpr std::array<std::string_view, 7> invalidModels = {
         R"(id: bad

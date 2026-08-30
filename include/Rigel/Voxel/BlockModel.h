@@ -128,6 +128,43 @@ private:
     bool m_builtinFullCube = false;
 };
 
+/** Right-angle orientations present in normalized block registrations. */
+enum class BlockModelOrientation : uint8_t {
+    Identity,
+    RotateX90,
+    RotateX270,
+    RotateY90,
+    RotateY180,
+    RotateY270,
+    RotateZ90,
+};
+
+/**
+ * A registration's immutable reference to reusable visual geometry.
+ *
+ * Orientation is deliberately a closed set rather than a general transform.
+ * rotateTopBottomUv preserves the source-authored top/bottom UV correction
+ * independently from the geometric orientation.
+ */
+struct BlockModelInstance {
+    std::shared_ptr<const BlockModel> geometry = BlockModel::fullCube();
+    BlockModelOrientation orientation = BlockModelOrientation::Identity;
+    bool rotateTopBottomUv = false;
+
+    BlockModelInstance() = default;
+    BlockModelInstance(std::shared_ptr<const BlockModel> value)
+        : geometry(std::move(value)) {}
+
+    BlockModelInstance& operator=(std::shared_ptr<const BlockModel> value) {
+        geometry = std::move(value);
+        return *this;
+    }
+
+    explicit operator bool() const { return static_cast<bool>(geometry); }
+    const BlockModel* operator->() const { return geometry.get(); }
+    const BlockModel* get() const { return geometry.get(); }
+};
+
 class BlockModelRegistrationError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;

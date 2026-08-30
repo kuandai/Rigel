@@ -178,6 +178,43 @@ int integerValue(
     return parsed;
 }
 
+BlockModelOrientation orientationValue(
+    ryml::ConstNodeRef node, std::string_view source, std::string_view path
+) {
+    requireSequence(node, source, path);
+    if (node.num_children() != 3) {
+        fail(source, path, "expected three rotation angles");
+    }
+    const std::array<int, 3> angles = {
+        integerValue(node[0], source, std::string(path) + "[0]"),
+        integerValue(node[1], source, std::string(path) + "[1]"),
+        integerValue(node[2], source, std::string(path) + "[2]"),
+    };
+    if (angles == std::array{0, 0, 0}) {
+        return BlockModelOrientation::Identity;
+    }
+    if (angles == std::array{90, 0, 0}) {
+        return BlockModelOrientation::RotateX90;
+    }
+    if (angles == std::array{270, 0, 0}) {
+        return BlockModelOrientation::RotateX270;
+    }
+    if (angles == std::array{0, 90, 0}) {
+        return BlockModelOrientation::RotateY90;
+    }
+    if (angles == std::array{0, 180, 0}) {
+        return BlockModelOrientation::RotateY180;
+    }
+    if (angles == std::array{0, 270, 0}) {
+        return BlockModelOrientation::RotateY270;
+    }
+    if (angles == std::array{0, 0, 90}) {
+        return BlockModelOrientation::RotateZ90;
+    }
+    fail(source, path,
+         "orientation is not present in the supported block-state set");
+}
+
 std::string qualify(std::string identifier, std::string_view assetNamespace) {
     if (!identifier.empty() && identifier.find(':') == std::string::npos &&
         !assetNamespace.empty()) {
@@ -451,7 +488,7 @@ ParsedBlock parseBlock(
         root, source, "block",
         {"id", "identifier", "name", "model", "opaque", "solid",
          "cull_same_type", "layer", "emits_light", "light_attenuation",
-         "textures"});
+         "orientation", "rotate_top_bottom", "textures"});
 
     size_t explicitNames = 0;
     std::string identifier;
@@ -484,6 +521,20 @@ ParsedBlock parseBlock(
     BlockType type;
     type.identifier = identifier;
     type.model = model;
+    if (root.has_child("orientation")) {
+        type.model.orientation = orientationValue(
+            root["orientation"], source, "block.orientation");
+    }
+    if (const auto value = optionalBool(
+            root, "rotate_top_bottom", source, "block")) {
+        type.model.rotateTopBottomUv = *value;
+    }
+    if (type.model.rotateTopBottomUv &&
+        type.model.orientation != BlockModelOrientation::RotateX90 &&
+        type.model.orientation != BlockModelOrientation::RotateZ90) {
+        fail(source, "block.rotate_top_bottom",
+             "requires orientation [90, 0, 0] or [0, 0, 90]");
+    }
     if (const auto value = optionalBool(root, "opaque", source, "block")) {
         type.isOpaque = *value;
     }

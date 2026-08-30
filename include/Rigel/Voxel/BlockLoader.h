@@ -83,11 +83,16 @@ struct BlockModelDefinitionSource {
  * # assets/blocks/glass.yaml
  * id: glass
  * model: cube
+ * orientation: [0, 90, 0]
  * opaque: false
  * solid: true
  * layer: transparent
  * textures:
  *   all: textures/blocks/glass.png
+ *
+ * # Orientation is registration-local. Supported angle triples are identity,
+ * # X 90/270, Y 90/180/270, and Z 90. rotate_top_bottom is an explicit UV
+ * # correction accepted only for X 90 and Z 90 registrations.
  * @endcode
  *
  * @section usage Usage

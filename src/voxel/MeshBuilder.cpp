@@ -32,7 +32,7 @@ constexpr float FACE_UVS[4][2] = {
 };
 
 std::array<std::array<float, 2>, 4> modelFaceUvs(
-    const BlockModelFace& face
+    const BlockModelFace& face, size_t additionalQuarterTurns = 0
 ) {
     const std::array<std::array<float, 2>, 4> base = {{
         {face.uv.u0, face.uv.v0},
@@ -41,7 +41,8 @@ std::array<std::array<float, 2>, 4> modelFaceUvs(
         {face.uv.u1, face.uv.v0},
     }};
     std::array<std::array<float, 2>, 4> rotated{};
-    const size_t quarterTurns = static_cast<size_t>(face.rotation);
+    const size_t quarterTurns =
+        (static_cast<size_t>(face.rotation) + additionalQuarterTurns) % 4;
     for (size_t vertex = 0; vertex < rotated.size(); ++vertex) {
         rotated[vertex] = base[(vertex + quarterTurns) % base.size()];
     }
@@ -78,6 +79,123 @@ constexpr Axis FACE_NORMALS[6] = {
     { 0,  0,  1},  // PosZ
     { 0,  0, -1}   // NegZ
 };
+
+Direction orientedDirection(
+    Direction source, BlockModelOrientation orientation
+) {
+    constexpr std::array<Direction, DirectionCount> identity = {
+        Direction::PosX, Direction::NegX, Direction::PosY,
+        Direction::NegY, Direction::PosZ, Direction::NegZ};
+    constexpr std::array<Direction, DirectionCount> rotateX90 = {
+        Direction::PosX, Direction::NegX, Direction::NegZ,
+        Direction::PosZ, Direction::PosY, Direction::NegY};
+    constexpr std::array<Direction, DirectionCount> rotateX270 = {
+        Direction::PosX, Direction::NegX, Direction::PosZ,
+        Direction::NegZ, Direction::NegY, Direction::PosY};
+    constexpr std::array<Direction, DirectionCount> rotateY90 = {
+        Direction::PosZ, Direction::NegZ, Direction::PosY,
+        Direction::NegY, Direction::NegX, Direction::PosX};
+    constexpr std::array<Direction, DirectionCount> rotateY180 = {
+        Direction::NegX, Direction::PosX, Direction::PosY,
+        Direction::NegY, Direction::NegZ, Direction::PosZ};
+    constexpr std::array<Direction, DirectionCount> rotateY270 = {
+        Direction::NegZ, Direction::PosZ, Direction::PosY,
+        Direction::NegY, Direction::PosX, Direction::NegX};
+    constexpr std::array<Direction, DirectionCount> rotateZ90 = {
+        Direction::NegY, Direction::PosY, Direction::PosX,
+        Direction::NegX, Direction::PosZ, Direction::NegZ};
+
+    const auto& directions = [&]() -> const auto& {
+        switch (orientation) {
+            case BlockModelOrientation::Identity: return identity;
+            case BlockModelOrientation::RotateX90: return rotateX90;
+            case BlockModelOrientation::RotateX270: return rotateX270;
+            case BlockModelOrientation::RotateY90: return rotateY90;
+            case BlockModelOrientation::RotateY180: return rotateY180;
+            case BlockModelOrientation::RotateY270: return rotateY270;
+            case BlockModelOrientation::RotateZ90: return rotateZ90;
+        }
+        return identity;
+    }();
+    return directions[static_cast<size_t>(source)];
+}
+
+BlockModelBounds orientedBounds(
+    const BlockModelBounds& source, BlockModelOrientation orientation
+) {
+    const auto& min = source.min;
+    const auto& max = source.max;
+    switch (orientation) {
+        case BlockModelOrientation::Identity:
+            return source;
+        case BlockModelOrientation::RotateX90:
+            return {{min[0], min[2], 1.0f - max[1]},
+                    {max[0], max[2], 1.0f - min[1]}};
+        case BlockModelOrientation::RotateX270:
+            return {{min[0], 1.0f - max[2], min[1]},
+                    {max[0], 1.0f - min[2], max[1]}};
+        case BlockModelOrientation::RotateY90:
+            return {{1.0f - max[2], min[1], min[0]},
+                    {1.0f - min[2], max[1], max[0]}};
+        case BlockModelOrientation::RotateY180:
+            return {{1.0f - max[0], min[1], 1.0f - max[2]},
+                    {1.0f - min[0], max[1], 1.0f - min[2]}};
+        case BlockModelOrientation::RotateY270:
+            return {{min[2], min[1], 1.0f - max[0]},
+                    {max[2], max[1], 1.0f - min[0]}};
+        case BlockModelOrientation::RotateZ90:
+            return {{min[1], 1.0f - max[0], min[2]},
+                    {max[1], 1.0f - min[0], max[2]}};
+    }
+    return source;
+}
+
+std::array<int, 3> orientationQuarterTurns(
+    BlockModelOrientation orientation
+) {
+    switch (orientation) {
+        case BlockModelOrientation::Identity: return {0, 0, 0};
+        case BlockModelOrientation::RotateX90: return {1, 0, 0};
+        case BlockModelOrientation::RotateX270: return {3, 0, 0};
+        case BlockModelOrientation::RotateY90: return {0, 1, 0};
+        case BlockModelOrientation::RotateY180: return {0, 2, 0};
+        case BlockModelOrientation::RotateY270: return {0, 3, 0};
+        case BlockModelOrientation::RotateZ90: return {0, 0, 1};
+    }
+    return {0, 0, 0};
+}
+
+size_t orientedUvQuarterTurns(
+    const BlockModelInstance& instance, Direction destination
+) {
+    // UV adjustment is part of the normalized orientation convention. It is
+    // applied after remapping the face, with the top/bottom correction kept
+    // as independent authored state rather than inferred from the turn.
+    const auto [x, y, z] = orientationQuarterTurns(instance.orientation);
+    int adjustment = 0;
+    switch (destination) {
+        case Direction::PosX: adjustment += x; break;
+        case Direction::NegX: adjustment -= x; break;
+        case Direction::PosY: adjustment += y; break;
+        case Direction::NegY: adjustment -= y; break;
+        case Direction::PosZ: adjustment += z; break;
+        case Direction::NegZ:
+            adjustment -= z;
+            if (x == 1 || x == 3) adjustment += 2;
+            break;
+    }
+    if (instance.rotateTopBottomUv && z != 0) {
+        switch (destination) {
+            case Direction::PosX:
+            case Direction::PosY: adjustment += z; break;
+            case Direction::NegX:
+            case Direction::NegY: adjustment -= z; break;
+            case Direction::PosZ:
+            case Direction::NegZ: break;
+        }
+    }
+    return static_cast<size_t>((adjustment % 4 + 4) % 4);
+}
 
 constexpr Axis FACE_U_AXES[6] = {
     {0, 1, 0},  // PosX
@@ -198,8 +316,13 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
 
                 if (type.model->isFullCube()) {
                     // Keep the canonical cube on its specialized path.
-                    for (size_t faceIdx = 0; faceIdx < DirectionCount; faceIdx++) {
-                        Direction face = static_cast<Direction>(faceIdx);
+                    for (size_t sourceFaceIdx = 0;
+                         sourceFaceIdx < DirectionCount; ++sourceFaceIdx) {
+                        const Direction sourceFace =
+                            static_cast<Direction>(sourceFaceIdx);
+                        const Direction face = orientedDirection(
+                            sourceFace, type.model.orientation);
+                        const size_t faceIdx = static_cast<size_t>(face);
 
                         if (!shouldRenderFace(ctx, x, y, z, face, state, type)) {
                             continue;
@@ -214,15 +337,27 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                         uint32_t baseVertex = static_cast<uint32_t>(
                             layerVertices[layerIdx].size());
                         const uint16_t faceTextureLayer = textureLayer(
-                            ctx.atlas, &type.textures.forFace(face));
+                            ctx.atlas, &type.textures.forFace(sourceFace));
+                        const size_t uvQuarterTurns = orientedUvQuarterTurns(
+                            type.model, face);
+                        const auto& modelFace = *type.model->cuboids().front()
+                            .faces[sourceFaceIdx];
+                        const auto orientedUvs = modelFaceUvs(
+                            modelFace, uvQuarterTurns);
 
                         for (size_t v = 0; v < 4; v++) {
                             VoxelVertex vertex;
                             vertex.x = static_cast<float>(x) + FACE_POSITIONS[faceIdx][v][0];
                             vertex.y = static_cast<float>(y) + FACE_POSITIONS[faceIdx][v][1];
                             vertex.z = static_cast<float>(z) + FACE_POSITIONS[faceIdx][v][2];
-                            vertex.u = FACE_UVS[v][0];
-                            vertex.v = FACE_UVS[v][1];
+                            vertex.u = type.model.orientation ==
+                                    BlockModelOrientation::Identity
+                                ? FACE_UVS[v][0]
+                                : orientedUvs[v][0];
+                            vertex.v = type.model.orientation ==
+                                    BlockModelOrientation::Identity
+                                ? FACE_UVS[v][1]
+                                : orientedUvs[v][1];
                             vertex.normalIndex = static_cast<uint8_t>(faceIdx);
                             vertex.aoLevel = aoLevels[v];
                             vertex.textureLayer = faceTextureLayer;
@@ -243,17 +378,24 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                 }
 
                 for (const BlockModelCuboid& cuboid : type.model->cuboids()) {
-                    for (size_t faceIdx = 0; faceIdx < DirectionCount; ++faceIdx) {
-                        const auto& optionalFace = cuboid.faces[faceIdx];
+                    const BlockModelBounds bounds = orientedBounds(
+                        cuboid.bounds, type.model.orientation);
+                    for (size_t sourceFaceIdx = 0;
+                         sourceFaceIdx < DirectionCount; ++sourceFaceIdx) {
+                        const auto& optionalFace = cuboid.faces[sourceFaceIdx];
                         if (!optionalFace) {
                             continue;
                         }
+                        const Direction sourceDirection =
+                            static_cast<Direction>(sourceFaceIdx);
                         const Direction direction =
-                            static_cast<Direction>(faceIdx);
+                            orientedDirection(
+                                sourceDirection, type.model.orientation);
+                        const size_t faceIdx = static_cast<size_t>(direction);
                         const BlockModelFace& face = *optionalFace;
                         const bool coveredByFullNeighbor =
                             isCoveredByFullCellNeighbor(
-                                cuboid.bounds, direction);
+                                bounds, direction);
                         if (!shouldRenderFace(
                                 ctx, x, y, z, direction, state, type,
                                 face.cullAgainstOpaqueNeighbor &&
@@ -265,7 +407,7 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                         std::array<uint8_t, 4> aoLevels{};
                         aoLevels.fill(3);
                         if (face.ambientOcclusion &&
-                            isCubeAoCompatibleFace(cuboid.bounds, direction)) {
+                            isCubeAoCompatibleFace(bounds, direction)) {
                             for (size_t vertex = 0; vertex < aoLevels.size(); ++vertex) {
                                 aoLevels[vertex] = calculateAO(
                                     ctx, x, y, z, direction,
@@ -276,7 +418,9 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                         const uint32_t baseVertex = static_cast<uint32_t>(
                             layerVertices[layerIdx].size());
                         const std::array<std::array<float, 2>, 4> uvs =
-                            modelFaceUvs(face);
+                            modelFaceUvs(
+                                face, orientedUvQuarterTurns(
+                                    type.model, direction));
                         const uint16_t faceTextureLayer = textureLayer(
                             ctx.atlas, type.textures.find(face.textureSlot));
 
@@ -287,16 +431,16 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                             VoxelVertex vertex;
                             vertex.x = static_cast<float>(x) +
                                 (unitPosition[0] == 0.0f
-                                     ? cuboid.bounds.min[0]
-                                     : cuboid.bounds.max[0]);
+                                     ? bounds.min[0]
+                                     : bounds.max[0]);
                             vertex.y = static_cast<float>(y) +
                                 (unitPosition[1] == 0.0f
-                                     ? cuboid.bounds.min[1]
-                                     : cuboid.bounds.max[1]);
+                                     ? bounds.min[1]
+                                     : bounds.max[1]);
                             vertex.z = static_cast<float>(z) +
                                 (unitPosition[2] == 0.0f
-                                     ? cuboid.bounds.min[2]
-                                     : cuboid.bounds.max[2]);
+                                     ? bounds.min[2]
+                                     : bounds.max[2]);
                             vertex.u = uvs[vertexIndex][0];
                             vertex.v = uvs[vertexIndex][1];
                             vertex.normalIndex = static_cast<uint8_t>(faceIdx);

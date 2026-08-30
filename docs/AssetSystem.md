@@ -105,8 +105,14 @@ entries. `BlockLoader` separately discovers normalized
 the complete reusable-model, block-definition, and referenced-texture set
 before publishing the block registry. Failed aggregate loads also discard atlas
 entries added by that load. Blocks bind their own texture paths to immutable
-model texture slots; the built-in full cube remains the specialized default,
-while normalized cuboids are emitted into the same render-layer chunk batches.
+model texture slots. A block registration may orient its shared model with one
+of the measured right-angle turns: X 90/270, Y 90/180/270, or Z 90. Other angle
+triples and multi-axis compositions are rejected. Positive 90-degree turns
+map `+Y` to `-Z` around X, `+X` to `+Z` around Y, and `+X` to `-Y` around Z.
+The optional `rotate_top_bottom` field preserves the separately authored UV
+correction for X 90 and Z 90 registrations. It is not inferred from model
+orientation. The built-in full cube remains the specialized default, while
+normalized cuboids are emitted into the same render-layer chunk batches.
 Cube-style AO is used only when a model face requests it and spans a full
 unit-cell boundary. All other model faces use conservative unoccluded vertex
 values. Non-boundary model faces are not culled from cell-neighbor occupancy,

@@ -677,6 +677,38 @@ TEST_CASE(MeshBuilder_RotatesBoundaryCullingDirection) {
     CHECK_EQ(mesh.indices.size(), static_cast<size_t>(36));
 }
 
+TEST_CASE(MeshBuilder_UsesRotatedNeighborBoundaryCoverageForCulling) {
+    BlockModelCuboid cuboid;
+    cuboid.bounds = {{0.0f, 0.0f, 0.0f}, {0.5f, 1.0f, 1.0f}};
+    cuboid.faces[static_cast<size_t>(Direction::NegX)] = modelFace("surface");
+
+    BlockType rotated;
+    rotated.identifier = "test:rotated_occluder";
+    rotated.model.geometry = makeModel(
+        "test:rotated_occluder_model", {"surface"}, {cuboid});
+    rotated.model.orientation = BlockModelOrientation::RotateZ90;
+    rotated.isOpaque = true;
+
+    BlockRegistry registry = makeRegistry();
+    const BlockID rotatedId = registry.registerBlock(
+        rotated.identifier, rotated);
+    const BlockID stoneId = *registry.findByIdentifier("rigel:stone");
+
+    Chunk chunk({0, 0, 0});
+    chunk.setBlock(2, 2, 2, BlockState{stoneId});
+    chunk.setBlock(2, 1, 2, BlockState{rotatedId});
+
+    const ChunkMesh mesh = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = {},
+    });
+
+    CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(24));
+    CHECK_EQ(mesh.indices.size(), static_cast<size_t>(36));
+}
+
 TEST_CASE(MeshBuilder_ResolvesNamedTexturesAndTransformsModelUvs) {
     TextureAtlas atlas;
     const TextureHandle first = addTexture(atlas, "textures/test/first.png");
@@ -971,6 +1003,107 @@ TEST_CASE(MeshBuilder_OpaqueNormalizedFullCellModelsOccludeNeighbors) {
         static_cast<size_t>(60));
 }
 
+TEST_CASE(MeshBuilder_OpaqueBoundaryCoverageMaySpanMultipleCuboids) {
+    BlockModelCuboid source;
+    source.bounds = {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
+    source.faces[static_cast<size_t>(Direction::PosX)] =
+        modelFace("surface", {}, BlockModelUvRotation::None, false, true);
+
+    auto boundaryHalf = [](float minY, float maxY) {
+        BlockModelCuboid cuboid;
+        cuboid.bounds = {{0.0f, minY, 0.0f}, {0.5f, maxY, 1.0f}};
+        cuboid.faces[static_cast<size_t>(Direction::NegX)] =
+            modelFace("surface");
+        return cuboid;
+    };
+
+    BlockRegistry registry = makeRegistry();
+    BlockType sourceType;
+    sourceType.identifier = "test:coverage_source";
+    sourceType.model = makeModel(
+        "test:coverage_source_model", {"surface"}, {source});
+    const BlockID sourceId = registry.registerBlock(
+        sourceType.identifier, sourceType);
+
+    BlockType joined;
+    joined.identifier = "test:joined_boundary";
+    joined.model = makeModel(
+        "test:joined_boundary_model", {"surface"},
+        {boundaryHalf(0.0f, 0.5f), boundaryHalf(0.5f, 1.0f)});
+    joined.isOpaque = true;
+    const BlockID joinedId = registry.registerBlock(joined.identifier, joined);
+
+    BlockType separated = joined;
+    separated.identifier = "test:separated_boundary";
+    separated.model = makeModel(
+        "test:separated_boundary_model", {"surface"},
+        {boundaryHalf(0.0f, 0.375f), boundaryHalf(0.625f, 1.0f)});
+    const BlockID separatedId = registry.registerBlock(
+        separated.identifier, separated);
+
+    auto adjacentIndexCount = [&](BlockID neighbor) {
+        Chunk chunk({0, 0, 0});
+        chunk.setBlock(1, 1, 1, BlockState{sourceId});
+        chunk.setBlock(2, 1, 1, BlockState{neighbor});
+        return MeshBuilder{}.build({
+            .chunk = chunk,
+            .registry = registry,
+            .atlas = nullptr,
+            .neighbors = {},
+        }).indices.size();
+    };
+
+    CHECK_EQ(adjacentIndexCount(joinedId), static_cast<size_t>(12));
+    CHECK_EQ(adjacentIndexCount(separatedId), static_cast<size_t>(18));
+}
+
+TEST_CASE(MeshBuilder_BoundaryCoverageRequiresNeighborOpacity) {
+    BlockModelCuboid source;
+    source.bounds = {{0.0f, 0.25f, 0.25f}, {1.0f, 0.75f, 0.75f}};
+    source.faces[static_cast<size_t>(Direction::PosX)] =
+        modelFace("surface", {}, BlockModelUvRotation::None, false, true);
+
+    BlockModelCuboid covering;
+    covering.bounds = {{0.0f, 0.0f, 0.0f}, {0.5f, 1.0f, 1.0f}};
+    covering.faces[static_cast<size_t>(Direction::NegX)] = modelFace("surface");
+
+    BlockRegistry registry = makeRegistry();
+    BlockType sourceType;
+    sourceType.identifier = "test:opacity_source";
+    sourceType.model = makeModel(
+        "test:opacity_source_model", {"surface"}, {source});
+    const BlockID sourceId = registry.registerBlock(
+        sourceType.identifier, sourceType);
+
+    BlockType opaque;
+    opaque.identifier = "test:opaque_cover";
+    opaque.model = makeModel(
+        "test:opaque_cover_model", {"surface"}, {covering});
+    opaque.isOpaque = true;
+    const BlockID opaqueId = registry.registerBlock(opaque.identifier, opaque);
+
+    BlockType transparent = opaque;
+    transparent.identifier = "test:transparent_cover";
+    transparent.isOpaque = false;
+    const BlockID transparentId = registry.registerBlock(
+        transparent.identifier, transparent);
+
+    auto adjacentIndexCount = [&](BlockID neighbor) {
+        Chunk chunk({0, 0, 0});
+        chunk.setBlock(1, 1, 1, BlockState{sourceId});
+        chunk.setBlock(2, 1, 1, BlockState{neighbor});
+        return MeshBuilder{}.build({
+            .chunk = chunk,
+            .registry = registry,
+            .atlas = nullptr,
+            .neighbors = {},
+        }).indices.size();
+    };
+
+    CHECK_EQ(adjacentIndexCount(opaqueId), static_cast<size_t>(6));
+    CHECK_EQ(adjacentIndexCount(transparentId), static_cast<size_t>(12));
+}
+
 TEST_CASE(MeshBuilder_FullCellModelMissingBoundaryFaceDoesNotOcclude) {
     BlockRegistry registry = makeRegistry();
     const BlockID stoneId = *registry.findByIdentifier("rigel:stone");
@@ -1046,6 +1179,68 @@ TEST_CASE(MeshBuilder_CullsOnlyMatchingSameTypeCuboidBoundaryFaces) {
         disjointType.identifier, disjointType);
 
     CHECK_EQ(adjacentIndexCount(disjointId, disjointId), static_cast<size_t>(24));
+
+    BlockModelCuboid smallPositive;
+    smallPositive.bounds = {{0.5f, 0.25f, 0.25f}, {1.0f, 0.75f, 0.75f}};
+    smallPositive.faces[static_cast<size_t>(Direction::PosX)] =
+        modelFace("surface");
+    BlockModelCuboid largeNegative;
+    largeNegative.bounds = {{0.0f, 0.0f, 0.0f}, {0.5f, 1.0f, 1.0f}};
+    largeNegative.faces[static_cast<size_t>(Direction::NegX)] =
+        modelFace("surface");
+    BlockType asymmetricType;
+    asymmetricType.identifier = "test:asymmetric_same_type";
+    asymmetricType.model = makeModel(
+        "test:asymmetric_same_type_model", {"surface"},
+        {std::move(smallPositive), std::move(largeNegative)});
+    asymmetricType.isOpaque = false;
+    asymmetricType.cullSameType = true;
+    const BlockID asymmetricId = registry.registerBlock(
+        asymmetricType.identifier, asymmetricType);
+
+    CHECK_EQ(
+        adjacentIndexCount(asymmetricId, asymmetricId),
+        static_cast<size_t>(18));
+}
+
+TEST_CASE(MeshBuilder_CullsModelBoundariesAcrossChunkEdges) {
+    BlockModelCuboid boundary;
+    boundary.bounds = {{0.0f, 0.25f, 0.25f}, {1.0f, 0.75f, 0.75f}};
+    boundary.faces[static_cast<size_t>(Direction::PosX)] =
+        modelFace("surface", {}, BlockModelUvRotation::None, false, true);
+
+    BlockRegistry registry = makeRegistry();
+    BlockType modelType;
+    modelType.identifier = "test:chunk_boundary_model";
+    modelType.model = makeModel(
+        "test:chunk_boundary_model_geometry", {"surface"}, {boundary});
+    const BlockID modelId = registry.registerBlock(
+        modelType.identifier, modelType);
+    const BlockID stoneId = *registry.findByIdentifier("rigel:stone");
+
+    Chunk chunk({0, 0, 0});
+    chunk.setBlock(Chunk::SIZE - 1, 1, 1, BlockState{modelId});
+    Chunk neighbor({1, 0, 0});
+    neighbor.setBlock(0, 1, 1, BlockState{stoneId});
+
+    std::array<const Chunk*, DirectionCount> neighbors{};
+    neighbors[static_cast<size_t>(Direction::PosX)] = &neighbor;
+
+    const ChunkMesh loaded = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = neighbors,
+    });
+    const ChunkMesh missing = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = {},
+    });
+
+    CHECK(loaded.isEmpty());
+    CHECK_EQ(missing.indices.size(), static_cast<size_t>(6));
 }
 
 TEST_CASE(MeshBuilder_ModelFacesUseAoOnlyForCubeCompatibleGeometry) {

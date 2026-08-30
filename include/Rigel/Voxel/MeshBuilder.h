@@ -89,16 +89,18 @@ private:
      * @param y Local Y coordinate
      * @param z Local Z coordinate
      * @param face The face direction to check
-     * @param cullAgainstOpaqueNeighbor Whether a full-cell opaque neighbor
-     *        may hide this face
-     * @param cullSameTypeNeighbor Whether block-level same-type culling is
-     *        geometrically valid for this face
+     * @param faceBounds Oriented cuboid bounds that define the emitted face
+     * @param cullAgainstOpaqueNeighbor Whether opaque boundary coverage may
+     *        hide this face
+     * @param cullSameTypeNeighbor Whether block-level same-type culling may
+     *        hide this face when its boundary is covered
      * @return True if face should be rendered
      */
     bool shouldRenderFace(
         const BuildContext& ctx,
         int x, int y, int z,
         Direction face,
+        const BlockModelBounds& faceBounds,
         const BlockState& state,
         const BlockType& type,
         bool cullAgainstOpaqueNeighbor = true,

@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <optional>
+#include <utility>
+#include <vector>
 
 namespace Rigel::Voxel {
 
@@ -270,64 +273,147 @@ bool isCellBoundaryFace(
         : bounds.min[normalAxis] == 0.0f;
 }
 
-bool hasMatchingOppositeBoundaryFace(
-    const BlockModelInstance& instance,
-    const BlockModelBounds& bounds,
-    Direction direction
+struct BoundaryRectangle {
+    float minU;
+    float maxU;
+    float minV;
+    float maxV;
+};
+
+std::optional<BoundaryRectangle> boundaryRectangle(
+    const BlockModelBounds& bounds, Direction direction,
+    bool requireInsideCell
 ) {
     if (!isCellBoundaryFace(bounds, direction)) {
-        return false;
+        return std::nullopt;
     }
 
-    const Direction oppositeDirection = opposite(direction);
+    std::array<size_t, 2> tangentAxes{};
     const size_t normalAxis = static_cast<size_t>(direction) / 2;
-    for (const BlockModelCuboid& candidate : instance->cuboids()) {
-        const BlockModelBounds candidateBounds = orientedBounds(
-            candidate.bounds, instance.orientation);
-        if (!isCellBoundaryFace(candidateBounds, oppositeDirection)) {
+    size_t tangent = 0;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (axis != normalAxis) {
+            tangentAxes[tangent++] = axis;
+        }
+    }
+
+    const BoundaryRectangle rectangle{
+        bounds.min[tangentAxes[0]], bounds.max[tangentAxes[0]],
+        bounds.min[tangentAxes[1]], bounds.max[tangentAxes[1]]};
+    if (!(rectangle.minU < rectangle.maxU) ||
+        !(rectangle.minV < rectangle.maxV)) {
+        return std::nullopt;
+    }
+    if (requireInsideCell &&
+        (rectangle.minU < 0.0f || rectangle.maxU > 1.0f ||
+         rectangle.minV < 0.0f || rectangle.maxV > 1.0f)) {
+        return std::nullopt;
+    }
+    return rectangle;
+}
+
+bool rectanglesCover(
+    const BoundaryRectangle& source,
+    std::vector<BoundaryRectangle> candidates
+) {
+    std::sort(
+        candidates.begin(), candidates.end(),
+        [](const BoundaryRectangle& left,
+           const BoundaryRectangle& right) {
+            if (left.minV != right.minV) return left.minV < right.minV;
+            return left.maxV < right.maxV;
+        });
+
+    std::vector<float> uEdges = {source.minU, source.maxU};
+    for (const BoundaryRectangle& candidate : candidates) {
+        if (candidate.maxU <= source.minU ||
+            candidate.minU >= source.maxU ||
+            candidate.maxV <= source.minV ||
+            candidate.minV >= source.maxV) {
             continue;
         }
+        if (candidate.minU > source.minU && candidate.minU < source.maxU) {
+            uEdges.push_back(candidate.minU);
+        }
+        if (candidate.maxU > source.minU && candidate.maxU < source.maxU) {
+            uEdges.push_back(candidate.maxU);
+        }
+    }
+    std::sort(uEdges.begin(), uEdges.end());
+    uEdges.erase(std::unique(uEdges.begin(), uEdges.end()), uEdges.end());
 
-        bool matchingRectangle = true;
-        for (size_t axis = 0; axis < 3; ++axis) {
-            if (axis != normalAxis &&
-                (candidateBounds.min[axis] != bounds.min[axis] ||
-                 candidateBounds.max[axis] != bounds.max[axis])) {
-                matchingRectangle = false;
+    for (size_t edge = 1; edge < uEdges.size(); ++edge) {
+        const float bandMin = uEdges[edge - 1];
+        const float bandMax = uEdges[edge];
+        float coveredThrough = source.minV;
+
+        for (const BoundaryRectangle& candidate : candidates) {
+            if (candidate.minU > bandMin || candidate.maxU < bandMax ||
+                candidate.maxV <= coveredThrough ||
+                candidate.minV >= source.maxV) {
+                continue;
+            }
+            if (candidate.minV > coveredThrough) {
+                break;
+            }
+            coveredThrough = candidate.maxV;
+            if (coveredThrough >= source.maxV) {
                 break;
             }
         }
-        if (!matchingRectangle) {
-            continue;
-        }
-
-        for (size_t sourceFaceIdx = 0;
-             sourceFaceIdx < DirectionCount; ++sourceFaceIdx) {
-            if (candidate.faces[sourceFaceIdx] &&
-                orientedDirection(
-                    static_cast<Direction>(sourceFaceIdx),
-                    instance.orientation) == oppositeDirection) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-bool isCoveredByFullCellNeighbor(
-    const BlockModelBounds& bounds, Direction direction
-) {
-    if (!isCellBoundaryFace(bounds, direction)) {
-        return false;
-    }
-    const size_t normalAxis = static_cast<size_t>(direction) / 2;
-    for (size_t axis = 0; axis < 3; ++axis) {
-        if (axis != normalAxis &&
-            (bounds.min[axis] < 0.0f || bounds.max[axis] > 1.0f)) {
+        if (coveredThrough < source.maxV) {
             return false;
         }
     }
     return true;
+}
+
+bool oppositeBoundaryCovers(
+    const BlockModelInstance& neighborModel,
+    const BlockModelBounds& sourceBounds,
+    Direction sourceDirection
+) {
+    const auto source = boundaryRectangle(
+        sourceBounds, sourceDirection, true);
+    if (!source || !neighborModel) {
+        return false;
+    }
+    if (neighborModel->isFullCube()) {
+        return true;
+    }
+
+    const Direction candidateDirection = opposite(sourceDirection);
+    std::vector<BoundaryRectangle> candidates;
+    for (const BlockModelCuboid& cuboid : neighborModel->cuboids()) {
+        bool hasCandidateFace = false;
+        for (size_t sourceFace = 0;
+             sourceFace < DirectionCount; ++sourceFace) {
+            if (cuboid.faces[sourceFace] &&
+                orientedDirection(
+                    static_cast<Direction>(sourceFace),
+                    neighborModel.orientation) == candidateDirection) {
+                hasCandidateFace = true;
+                break;
+            }
+        }
+        if (!hasCandidateFace) {
+            continue;
+        }
+
+        const BlockModelBounds bounds = orientedBounds(
+            cuboid.bounds, neighborModel.orientation);
+        if (const auto rectangle = boundaryRectangle(
+                bounds, candidateDirection, false)) {
+            if (rectangle->minU <= source->minU &&
+                rectangle->maxU >= source->maxU &&
+                rectangle->minV <= source->minV &&
+                rectangle->maxV >= source->maxV) {
+                return true;
+            }
+            candidates.push_back(*rectangle);
+        }
+    }
+    return rectanglesCover(*source, std::move(candidates));
 }
 
 bool isCubeAoCompatibleFace(
@@ -387,6 +473,8 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
 
                 if (type.model->isFullCube()) {
                     // Keep the canonical cube on its specialized path.
+                    constexpr BlockModelBounds unitCellBounds = {
+                        {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
                     for (size_t sourceFaceIdx = 0;
                          sourceFaceIdx < DirectionCount; ++sourceFaceIdx) {
                         const Direction sourceFace =
@@ -395,7 +483,9 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                             sourceFace, type.model.orientation);
                         const size_t faceIdx = static_cast<size_t>(face);
 
-                        if (!shouldRenderFace(ctx, x, y, z, face, state, type)) {
+                        if (!shouldRenderFace(
+                                ctx, x, y, z, face, unitCellBounds,
+                                state, type)) {
                             continue;
                         }
 
@@ -467,16 +557,9 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                             type.model.orientation);
                         const size_t faceIdx = static_cast<size_t>(direction);
                         const BlockModelFace& face = *optionalFace;
-                        const bool coveredByFullNeighbor =
-                            isCoveredByFullCellNeighbor(
-                                bounds, direction);
                         if (!shouldRenderFace(
-                                ctx, x, y, z, direction, state, type,
-                                face.cullAgainstOpaqueNeighbor &&
-                                    coveredByFullNeighbor,
-                                type.cullSameType &&
-                                    hasMatchingOppositeBoundaryFace(
-                                        type.model, bounds, direction))) {
+                                ctx, x, y, z, direction, bounds, state, type,
+                                face.cullAgainstOpaqueNeighbor)) {
                             continue;
                         }
 
@@ -570,6 +653,7 @@ bool MeshBuilder::shouldRenderFace(
     const BuildContext& ctx,
     int x, int y, int z,
     Direction face,
+    const BlockModelBounds& faceBounds,
     const BlockState& state,
     const BlockType& type,
     bool cullAgainstOpaqueNeighbor,
@@ -588,11 +672,12 @@ bool MeshBuilder::shouldRenderFace(
     }
 
     const BlockType& neighborType = ctx.registry.getType(neighbor.id);
-    if (cullAgainstOpaqueNeighbor && isFullCellOccluder(neighborType)) {
-        return false;
-    }
-
-    if (cullSameTypeNeighbor && type.cullSameType && neighbor.id == state.id) {
+    const bool opaqueCandidate =
+        cullAgainstOpaqueNeighbor && neighborType.isOpaque;
+    const bool sameTypeCandidate =
+        cullSameTypeNeighbor && type.cullSameType && neighbor.id == state.id;
+    if ((opaqueCandidate || sameTypeCandidate) &&
+        oppositeBoundaryCovers(neighborType.model, faceBounds, face)) {
         return false;
     }
 

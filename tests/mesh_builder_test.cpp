@@ -933,6 +933,44 @@ TEST_CASE(MeshBuilder_ModelFaceCullingIsControlledByFaceMetadata) {
     CHECK_EQ(buildAdjacent(overflowId).indices.size(), static_cast<size_t>(42));
 }
 
+TEST_CASE(MeshBuilder_OpaqueNormalizedFullCellModelsOccludeNeighbors) {
+    BlockRegistry registry = makeRegistry();
+    const BlockID stoneId = *registry.findByIdentifier("rigel:stone");
+
+    BlockType normalizedCube;
+    normalizedCube.identifier = "test:normalized_full_cell";
+    normalizedCube.model = makeModel(
+        "test:normalized_full_cell_model", {"surface"},
+        {completeCuboid(
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}, "surface",
+            false, true)});
+    normalizedCube.isOpaque = true;
+    const BlockID normalizedCubeId = registry.registerBlock(
+        normalizedCube.identifier, normalizedCube);
+
+    auto adjacentIndexCount = [&](BlockID left, BlockID right) {
+        Chunk chunk({0, 0, 0});
+        chunk.setBlock(1, 1, 1, BlockState{left});
+        chunk.setBlock(2, 1, 1, BlockState{right});
+        return MeshBuilder{}.build({
+            .chunk = chunk,
+            .registry = registry,
+            .atlas = nullptr,
+            .neighbors = {},
+        }).indices.size();
+    };
+
+    CHECK_EQ(
+        adjacentIndexCount(stoneId, normalizedCubeId),
+        static_cast<size_t>(60));
+    CHECK_EQ(
+        adjacentIndexCount(normalizedCubeId, stoneId),
+        static_cast<size_t>(60));
+    CHECK_EQ(
+        adjacentIndexCount(normalizedCubeId, normalizedCubeId),
+        static_cast<size_t>(60));
+}
+
 TEST_CASE(MeshBuilder_CullsOnlyMatchingSameTypeCuboidBoundaryFaces) {
     BlockRegistry registry = makeRegistry();
     const BlockID stoneId = *registry.findByIdentifier("rigel:stone");

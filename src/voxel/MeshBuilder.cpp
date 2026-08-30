@@ -225,12 +225,32 @@ int axisSign(const float pos[3], const Axis& axis) {
     return (pos[2] > 0.5f) ? 1 : -1;
 }
 
-bool isOccluder(const BlockState& state, const BlockRegistry& registry) {
-    if (state.isAir()) {
+bool isFullCellOccluder(const BlockType& type) {
+    if (!type.isOpaque || !type.model) {
         return false;
     }
-    const BlockType& type = registry.getType(state.id);
-    return type.isOpaque && type.model && type.model->isFullCube();
+    if (type.model->isFullCube()) {
+        return true;
+    }
+    for (const BlockModelCuboid& cuboid : type.model->cuboids()) {
+        bool coversCell = true;
+        for (size_t axis = 0; axis < 3; ++axis) {
+            if (cuboid.bounds.min[axis] > 0.0f ||
+                cuboid.bounds.max[axis] < 1.0f) {
+                coversCell = false;
+                break;
+            }
+        }
+        if (coversCell) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isOccluder(const BlockState& state, const BlockRegistry& registry) {
+    return !state.isAir() &&
+        isFullCellOccluder(registry.getType(state.id));
 }
 
 bool isCellBoundaryFace(
@@ -561,8 +581,7 @@ bool MeshBuilder::shouldRenderFace(
     }
 
     const BlockType& neighborType = ctx.registry.getType(neighbor.id);
-    if (cullAgainstOpaqueNeighbor && neighborType.isOpaque && neighborType.model &&
-        neighborType.model->isFullCube()) {
+    if (cullAgainstOpaqueNeighbor && isFullCellOccluder(neighborType)) {
         return false;
     }
 

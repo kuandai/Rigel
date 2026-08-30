@@ -4,11 +4,18 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <fstream>
 #include <set>
 #include <system_error>
 #include <utility>
+
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace Rigel::Test {
 namespace {
@@ -87,19 +94,6 @@ std::filesystem::path reserveSiblingDirectory(
          destination);
 }
 
-std::filesystem::path reserveSiblingPath(
-    const std::filesystem::path& destination,
-    std::string_view purpose) {
-    const std::filesystem::path reserved =
-        reserveSiblingDirectory(destination, purpose);
-    std::error_code error;
-    if (!std::filesystem::remove(reserved, error) || error) {
-        fail("Failed to reserve gallery capture handoff path", reserved,
-             error);
-    }
-    return reserved;
-}
-
 void writeFramebufferCapture(
     const GalleryFramebufferCapture& capture,
     const std::filesystem::path& destination) {
@@ -149,16 +143,44 @@ void writeCaptureManifest(
     }
 }
 
+std::error_code atomicExchangeDirectories(
+    const std::filesystem::path& first,
+    const std::filesystem::path& second
+) {
+#if defined(__linux__)
+    constexpr unsigned RenameExchange = 2U;
+    if (::syscall(
+            SYS_renameat2,
+            AT_FDCWD,
+            first.c_str(),
+            AT_FDCWD,
+            second.c_str(),
+            RenameExchange) == 0) {
+        return {};
+    }
+    return {errno, std::generic_category()};
+#else
+    (void)first;
+    (void)second;
+    return std::make_error_code(std::errc::operation_not_supported);
+#endif
+}
+
 void removeWorkingDirectory(const std::filesystem::path& path) {
-    std::error_code ignored;
-    std::filesystem::remove_all(path, ignored);
+    std::error_code error;
+    std::filesystem::remove_all(path, error);
+    if (error) {
+        fail("Failed to remove gallery capture working directory", path,
+             error);
+    }
 }
 
 } // namespace
 
 void publishGalleryCaptureSet(
     const std::vector<NamedGalleryFramebufferCapture>& captures,
-    const std::filesystem::path& destination) {
+    const std::filesystem::path& destination,
+    const GalleryCaptureDirectoryExchange& directoryExchange) {
     validateCaptureNames(captures);
     if (destination.empty() || destination.filename().empty()) {
         throw TestFailure(
@@ -174,8 +196,6 @@ void publishGalleryCaptureSet(
 
     const std::filesystem::path staging =
         reserveSiblingDirectory(destination, "staging");
-    std::filesystem::path previous;
-    bool previousMoved = false;
     try {
         for (const NamedGalleryFramebufferCapture& capture : captures) {
             writeFramebufferCapture(
@@ -184,39 +204,31 @@ void publishGalleryCaptureSet(
         }
         writeCaptureManifest(captures, staging / CaptureManifestName);
 
-        if (std::filesystem::exists(destination)) {
-            previous = reserveSiblingPath(destination, "previous");
-            std::filesystem::rename(destination, previous, error);
-            if (error) {
-                fail("Failed to preserve the previous gallery capture set",
-                     destination, error);
-            }
-            previousMoved = true;
-        }
-
         error.clear();
-        std::filesystem::rename(staging, destination, error);
+        const bool replacing = std::filesystem::exists(destination, error);
         if (error) {
-            fail("Failed to publish the complete gallery capture set",
+            fail("Failed to inspect gallery capture destination",
                  destination, error);
         }
-    } catch (...) {
-        if (previousMoved) {
-            std::error_code restoreError;
-            std::filesystem::rename(previous, destination, restoreError);
-            if (restoreError) {
-                throw TestFailure(
-                    "Gallery capture publication failed and the previous "
-                    "complete set could not be restored: " +
-                    restoreError.message());
+        if (replacing) {
+            error = directoryExchange
+                ? directoryExchange(staging, destination)
+                : atomicExchangeDirectories(staging, destination);
+            if (error) {
+                fail("Failed to atomically replace the gallery capture set",
+                     destination, error);
+            }
+            removeWorkingDirectory(staging);
+        } else {
+            std::filesystem::rename(staging, destination, error);
+            if (error) {
+                fail("Failed to publish the complete gallery capture set",
+                     destination, error);
             }
         }
+    } catch (...) {
         removeWorkingDirectory(staging);
         throw;
-    }
-
-    if (previousMoved) {
-        removeWorkingDirectory(previous);
     }
 }
 

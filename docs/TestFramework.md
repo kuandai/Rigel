@@ -139,8 +139,10 @@ RIGEL_GALLERY_CAPTURE_DIRECTORY="$rigel_gallery_captures" \
 
 Captures are inspection evidence rather than checked-in fixtures. The test
 does not compare pixel hashes, and rejects capture destinations inside the
-source tree. Publication stages all files beside the destination and preserves
-the previous complete set if validation, writing, or handoff fails.
+source tree. Publication stages all files beside the destination and atomically
+exchanges a complete replacement with the previous set. A failed handoff leaves
+the prior directory continuously visible, and a successful exchange removes
+the displaced set.
 
 Run the main suite via CTest:
 

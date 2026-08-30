@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace Rigel::Test {
@@ -19,8 +21,13 @@ struct NamedGalleryFramebufferCapture {
     GalleryFramebufferCapture framebuffer;
 };
 
+using GalleryCaptureDirectoryExchange = std::function<std::error_code(
+    const std::filesystem::path& staging,
+    const std::filesystem::path& destination)>;
+
 void publishGalleryCaptureSet(
     const std::vector<NamedGalleryFramebufferCapture>& captures,
-    const std::filesystem::path& destination);
+    const std::filesystem::path& destination,
+    const GalleryCaptureDirectoryExchange& directoryExchange = {});
 
 } // namespace Rigel::Test

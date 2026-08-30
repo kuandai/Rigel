@@ -1,10 +1,12 @@
 #include "GalleryCapturePublication.h"
 #include "TestFramework.h"
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -91,4 +93,98 @@ TEST_CASE(GalleryCapturePublication_LateCaptureFailurePreservesPriorCompleteSet)
         ++rootEntries;
     }
     CHECK_EQ(rootEntries, static_cast<size_t>(1));
+}
+
+TEST_CASE(GalleryCapturePublication_HandoffFailurePreservesPublishedSet) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_gallery_capture_handoff_failure");
+    const std::filesystem::path destination =
+        directory.path() / "published";
+    Rigel::Test::publishGalleryCaptureSet(
+        {makeCapture("old_cube", 31)}, destination);
+    const auto previous = readCaptureSet(destination);
+
+    bool observedCompleteStaging = false;
+    const Rigel::Test::GalleryCaptureDirectoryExchange failHandoff =
+        [&](const std::filesystem::path& staging,
+            const std::filesystem::path&) {
+            const auto staged = readCaptureSet(staging);
+            observedCompleteStaging =
+                staged.contains("new_cube.ppm") &&
+                staged.contains("capture-manifest.txt") &&
+                staged.at("capture-manifest.txt").find("complete=true\n") !=
+                    std::string::npos;
+            return std::make_error_code(std::errc::io_error);
+        };
+    bool failed = false;
+    try {
+        Rigel::Test::publishGalleryCaptureSet(
+            {makeCapture("new_cube", 95)}, destination, failHandoff);
+    } catch (const Rigel::Test::TestFailure&) {
+        failed = true;
+    }
+
+    CHECK(failed);
+    CHECK(observedCompleteStaging);
+    CHECK_EQ(readCaptureSet(destination), previous);
+    size_t rootEntries = 0;
+    for ([[maybe_unused]] const auto& entry :
+         std::filesystem::directory_iterator(directory.path())) {
+        ++rootEntries;
+    }
+    CHECK_EQ(rootEntries, static_cast<size_t>(1));
+}
+
+TEST_CASE(GalleryCapturePublication_ReplacementRemainsContinuouslyVisible) {
+#if !defined(__linux__)
+    SKIP_TEST("Atomic gallery capture replacement is validated on Linux");
+#else
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_gallery_capture_visibility");
+    const std::filesystem::path destination =
+        directory.path() / "published";
+    Rigel::Test::publishGalleryCaptureSet(
+        {makeCapture("old_cube", 31)}, destination);
+
+    std::atomic<bool> running{true};
+    std::atomic<bool> missingOrIncomplete{false};
+    std::atomic<size_t> observations{0};
+    std::thread reader([&] {
+        while (running.load(std::memory_order_acquire)) {
+            if (!std::filesystem::exists(destination)) {
+                missingOrIncomplete.store(true, std::memory_order_release);
+                continue;
+            }
+            std::ifstream manifest(
+                destination / "capture-manifest.txt", std::ios::binary);
+            const std::string contents{
+                std::istreambuf_iterator<char>(manifest),
+                std::istreambuf_iterator<char>()};
+            if (!manifest ||
+                contents.find("complete=true\n") == std::string::npos) {
+                missingOrIncomplete.store(true, std::memory_order_release);
+            }
+            observations.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    for (uint8_t color = 32; color < 96; ++color) {
+        Rigel::Test::publishGalleryCaptureSet(
+            {makeCapture("replacement_cube", color)}, destination);
+    }
+    running.store(false, std::memory_order_release);
+    reader.join();
+
+    CHECK(observations.load(std::memory_order_relaxed) > 0);
+    CHECK(!missingOrIncomplete.load(std::memory_order_acquire));
+    const auto replacement = readCaptureSet(destination);
+    CHECK(replacement.contains("replacement_cube.ppm"));
+    CHECK(!replacement.contains("old_cube.ppm"));
+    size_t rootEntries = 0;
+    for ([[maybe_unused]] const auto& entry :
+         std::filesystem::directory_iterator(directory.path())) {
+        ++rootEntries;
+    }
+    CHECK_EQ(rootEntries, static_cast<size_t>(1));
+#endif
 }

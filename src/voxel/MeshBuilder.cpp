@@ -243,6 +243,50 @@ bool isCellBoundaryFace(
         : bounds.min[normalAxis] == 0.0f;
 }
 
+bool hasMatchingOppositeBoundaryFace(
+    const BlockModelInstance& instance,
+    const BlockModelBounds& bounds,
+    Direction direction
+) {
+    if (!isCellBoundaryFace(bounds, direction)) {
+        return false;
+    }
+
+    const Direction oppositeDirection = opposite(direction);
+    const size_t normalAxis = static_cast<size_t>(direction) / 2;
+    for (const BlockModelCuboid& candidate : instance->cuboids()) {
+        const BlockModelBounds candidateBounds = orientedBounds(
+            candidate.bounds, instance.orientation);
+        if (!isCellBoundaryFace(candidateBounds, oppositeDirection)) {
+            continue;
+        }
+
+        bool matchingRectangle = true;
+        for (size_t axis = 0; axis < 3; ++axis) {
+            if (axis != normalAxis &&
+                (candidateBounds.min[axis] != bounds.min[axis] ||
+                 candidateBounds.max[axis] != bounds.max[axis])) {
+                matchingRectangle = false;
+                break;
+            }
+        }
+        if (!matchingRectangle) {
+            continue;
+        }
+
+        for (size_t sourceFaceIdx = 0;
+             sourceFaceIdx < DirectionCount; ++sourceFaceIdx) {
+            if (candidate.faces[sourceFaceIdx] &&
+                orientedDirection(
+                    static_cast<Direction>(sourceFaceIdx),
+                    instance.orientation) == oppositeDirection) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool isCoveredByFullCellNeighbor(
     const BlockModelBounds& bounds, Direction direction
 ) {
@@ -403,7 +447,9 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                                 ctx, x, y, z, direction, state, type,
                                 face.cullAgainstOpaqueNeighbor &&
                                     coveredByFullNeighbor,
-                                false)) {
+                                type.cullSameType &&
+                                    hasMatchingOppositeBoundaryFace(
+                                        type.model, bounds, direction))) {
                             continue;
                         }
 

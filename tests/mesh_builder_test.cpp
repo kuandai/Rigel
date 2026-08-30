@@ -933,7 +933,7 @@ TEST_CASE(MeshBuilder_ModelFaceCullingIsControlledByFaceMetadata) {
     CHECK_EQ(buildAdjacent(overflowId).indices.size(), static_cast<size_t>(42));
 }
 
-TEST_CASE(MeshBuilder_UsesConservativeCuboidAdjacencyWithoutFaceSubtraction) {
+TEST_CASE(MeshBuilder_CullsOnlyMatchingSameTypeCuboidBoundaryFaces) {
     BlockRegistry registry = makeRegistry();
     const BlockID stoneId = *registry.findByIdentifier("rigel:stone");
 
@@ -961,7 +961,24 @@ TEST_CASE(MeshBuilder_UsesConservativeCuboidAdjacencyWithoutFaceSubtraction) {
 
     CHECK_EQ(adjacentIndexCount(stoneId, slabId), static_cast<size_t>(66));
     CHECK_EQ(adjacentIndexCount(slabId, stoneId), static_cast<size_t>(66));
-    CHECK_EQ(adjacentIndexCount(slabId, slabId), static_cast<size_t>(72));
+    CHECK_EQ(adjacentIndexCount(slabId, slabId), static_cast<size_t>(60));
+
+    BlockModelCuboid upper;
+    upper.bounds = {{0.25f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}};
+    upper.faces[static_cast<size_t>(Direction::PosX)] = modelFace("surface");
+    BlockModelCuboid lower;
+    lower.bounds = {{0.0f, 0.0f, 0.0f}, {0.75f, 0.5f, 1.0f}};
+    lower.faces[static_cast<size_t>(Direction::NegX)] = modelFace("surface");
+    BlockType disjointType;
+    disjointType.identifier = "test:disjoint_faces";
+    disjointType.model = makeModel(
+        "test:disjoint_faces_model", {"surface"},
+        {std::move(upper), std::move(lower)});
+    disjointType.cullSameType = true;
+    const BlockID disjointId = registry.registerBlock(
+        disjointType.identifier, disjointType);
+
+    CHECK_EQ(adjacentIndexCount(disjointId, disjointId), static_cast<size_t>(24));
 }
 
 TEST_CASE(MeshBuilder_ModelFacesUseAoOnlyForCubeCompatibleGeometry) {

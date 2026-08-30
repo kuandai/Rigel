@@ -24,7 +24,7 @@ STAGED_JAR_RELATIVE_PATH = Path(".rigel/source/Cosmic-Reach.jar")
 GENERATED_ASSETS_RELATIVE_PATH = Path(".rigel/assets")
 PROVENANCE_RELATIVE_PATH = Path(".rigel/cosmic-reach-import.json")
 PROVENANCE_SCHEMA = 1
-IMPORTER_SCHEMA = 1
+IMPORTER_SCHEMA = 2
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 BLOCK_TEXTURE_SIZE = (16, 16)
@@ -386,6 +386,7 @@ BLOCK_PROPERTY_KEYS = {
     "itemIcon",
     "intProperties",
     "refractiveIndex",
+    "rotateTopBottom",
     "canRaycastForPlaceOn",
     "canRaycastForReplace",
     "walkThrough",
@@ -398,7 +399,7 @@ BLOCK_PROPERTY_KEYS = {
     "friction",
 }
 GENERATOR_KEYS = {"stringId", "params", "overrides", "modelName", "include"}
-GENERATOR_OVERRIDE_KEYS = BLOCK_PROPERTY_KEYS | {"rotateTopBottom"}
+GENERATOR_OVERRIDE_KEYS = BLOCK_PROPERTY_KEYS
 MODEL_ROOT_KEYS = {
     "textures",
     "parent",
@@ -434,6 +435,15 @@ VECTOR_FACES = {
     (0, -1, 0): "neg_y",
     (0, 0, 1): "pos_z",
     (0, 0, -1): "neg_z",
+}
+SUPPORTED_BLOCK_ORIENTATIONS = {
+    (0, 0, 0),
+    (90, 0, 0),
+    (270, 0, 0),
+    (0, 90, 0),
+    (0, 180, 0),
+    (0, 270, 0),
+    (0, 0, 90),
 }
 
 
@@ -498,25 +508,26 @@ def _generated_block_filename(identifier: str) -> str:
     return f"blocks/{name}.yaml"
 
 
-def _rotate_vector(vector: tuple[int, int, int], rotation: object, context: str) -> tuple[int, int, int]:
-    if rotation is None:
-        return vector
-    if not isinstance(rotation, list) or len(rotation) != 3:
-        raise AssetImportError(f"{context}: rotation must contain three angles")
-    try:
-        angles = tuple(int(angle) % 360 for angle in rotation)
-    except (TypeError, ValueError) as error:
-        raise AssetImportError(f"{context}: rotation angles must be integers") from error
-    if any(angle not in (0, 90, 180, 270) for angle in angles):
-        raise AssetImportError(f"{context}: only right-angle rotations are supported")
-    x, y, z = vector
-    for _ in range(angles[0] // 90):
-        y, z = -z, y
-    for _ in range(angles[1] // 90):
-        x, z = z, -x
-    for _ in range(angles[2] // 90):
-        x, y = -y, x
-    return x, y, z
+def _block_orientation(value: object, context: str) -> tuple[int, int, int]:
+    if value is None:
+        return 0, 0, 0
+    if (
+        not isinstance(value, list)
+        or len(value) != 3
+        or not all(
+            isinstance(angle, int) and not isinstance(angle, bool)
+            for angle in value
+        )
+    ):
+        raise AssetImportError(
+            f"{context}: rotation must contain three integer angles"
+        )
+    orientation = tuple(value)
+    if orientation not in SUPPORTED_BLOCK_ORIENTATIONS:
+        raise AssetImportError(
+            f"{context}: rotation is not present in the supported block-state set"
+        )
+    return orientation
 
 
 @dataclass(frozen=True)
@@ -712,6 +723,14 @@ def _validate_block_properties(properties: dict[str, object], context: str) -> N
                 raise AssetImportError(f"{context}.{key} must be an integer from 0 to 15")
     if "modelName" in properties and not isinstance(properties["modelName"], str):
         raise AssetImportError(f"{context}.modelName must be a string")
+    orientation = _block_orientation(properties.get("rotation"), f"{context}.rotation")
+    rotate_top_bottom = properties.get("rotateTopBottom", False)
+    if not isinstance(rotate_top_bottom, bool):
+        raise AssetImportError(f"{context}.rotateTopBottom must be a boolean")
+    if rotate_top_bottom and orientation not in ((90, 0, 0), (0, 0, 90)):
+        raise AssetImportError(
+            f"{context}.rotateTopBottom requires X90 or Z90 rotation"
+        )
 
 
 def _texture_from_alias(model: ResolvedModel, alias: str, context: str) -> str:
@@ -734,12 +753,11 @@ def _texture_from_alias(model: ResolvedModel, alias: str, context: str) -> str:
 
 
 def _resolved_face_textures(
-    model: ResolvedModel, rotation: object, context: str
+    model: ResolvedModel, context: str
 ) -> dict[str, str]:
     result: dict[str, str] = {}
     for source_face, alias in model.face_aliases.items():
-        vector = _rotate_vector(FACE_VECTORS[source_face], rotation, context)
-        destination_face = VECTOR_FACES[vector]
+        destination_face = VECTOR_FACES[FACE_VECTORS[source_face]]
         texture = _texture_from_alias(model, alias, context)
         previous = result.get(destination_face)
         if previous is not None and previous != texture:
@@ -793,13 +811,21 @@ def render_block_yaml(
     solid = not properties.get("walkThrough", False)
     if not isinstance(opaque, bool) or not isinstance(solid, bool):
         raise AssetImportError(f"{context}: opacity/solidity values are invalid")
-    texture_faces = _resolved_face_textures(model, properties.get("rotation"), context)
+    orientation = _block_orientation(properties.get("rotation"), f"{context}.rotation")
+    rotate_top_bottom = bool(properties.get("rotateTopBottom", False))
+    texture_faces = _resolved_face_textures(model, context)
     lines = [
         f"id: {_yaml_string(identifier)}",
         f"model: {'none' if model.empty else 'cube'}",
         f"opaque: {'true' if opaque else 'false'}",
         f"solid: {'true' if solid else 'false'}",
     ]
+    if orientation != (0, 0, 0):
+        lines.append(
+            f"orientation: [{orientation[0]}, {orientation[1]}, {orientation[2]}]"
+        )
+    if rotate_top_bottom:
+        lines.append("rotate_top_bottom: true")
     if model.culls_self or properties.get("isFluid", False):
         lines.append("cull_same_type: true")
     layer = "opaque" if model.empty or (opaque and not model.transparent) else "transparent"
@@ -888,7 +914,6 @@ def compile_blocks(
                     generated_parameters.update(leaf.parameters)
                     generated_properties = dict(properties)
                     generated_properties.update(leaf.overrides)
-                    generated_properties.pop("rotateTopBottom", None)
                     if leaf.model_name is not None:
                         generated_properties["modelName"] = leaf.model_name
                     generated_model_name = generated_properties.get("modelName")
@@ -976,10 +1001,20 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
             if not isinstance(decoded, str):
                 raise AssetImportError(f"{source}:{line_number}: id must be a string")
             result[key] = decoded
-        elif key in ("opaque", "solid", "cull_same_type"):
+        elif key in ("opaque", "solid", "cull_same_type", "rotate_top_bottom"):
             if value not in ("true", "false"):
                 raise AssetImportError(f"{source}:{line_number}: {key} must be boolean")
             result[key] = value == "true"
+        elif key == "orientation":
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError as error:
+                raise AssetImportError(
+                    f"{source}:{line_number}: orientation must be an angle array"
+                ) from error
+            result[key] = list(
+                _block_orientation(decoded, f"{source}.orientation")
+            )
         elif key in ("emits_light", "light_attenuation"):
             try:
                 result[key] = int(value)
@@ -989,7 +1024,8 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
             result[key] = value
     allowed = {
         "id", "model", "opaque", "solid", "cull_same_type", "layer",
-        "emits_light", "light_attenuation", "textures",
+        "emits_light", "light_attenuation", "orientation",
+        "rotate_top_bottom", "textures",
     }
     _reject_unknown_keys(result, allowed, source)
     required = {"id", "model", "opaque", "solid", "layer"}
@@ -1000,6 +1036,13 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
         raise AssetImportError(f"{source}: invalid model {result['model']!r}")
     if result["layer"] not in ("opaque", "cutout", "transparent", "emissive"):
         raise AssetImportError(f"{source}: invalid render layer {result['layer']!r}")
+    orientation = tuple(result.get("orientation", (0, 0, 0)))
+    if result.get("rotate_top_bottom", False) and orientation not in (
+        (90, 0, 0), (0, 0, 90)
+    ):
+        raise AssetImportError(
+            f"{source}: rotate_top_bottom requires X90 or Z90 orientation"
+        )
     for key in ("emits_light", "light_attenuation"):
         if key in result and not 0 <= int(result[key]) <= 15:
             raise AssetImportError(f"{source}: {key} is outside 0..15")

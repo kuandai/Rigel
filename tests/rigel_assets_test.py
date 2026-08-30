@@ -353,6 +353,85 @@ class BlockCompilerTest(unittest.TestCase):
             self.assertIn("solid: false", bright)
             self.assertIn("emits_light: 7", bright)
 
+    def test_preserves_generator_orientation_and_top_bottom_uv_behavior(self) -> None:
+        entries = synthetic_block_entries()
+        generators = json.loads(
+            entries["base/block_state_generators/variants.json"]
+        )
+        leaf = generators["generators"][1]
+        leaf["overrides"].update(
+            {"rotation": [0, 0, 90], "rotateTopBottom": True}
+        )
+        entries["base/block_state_generators/variants.json"] = encoded_json(
+            generators
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            output = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), output
+                )
+
+            generated = rigel_assets.parse_generated_block(
+                (output / "blocks/test__stone[shape=full].yaml").read_bytes(),
+                "generated.yaml",
+            )
+            self.assertEqual(generated["orientation"], [0, 0, 90])
+            self.assertTrue(generated["rotate_top_bottom"])
+
+    def test_emits_source_face_textures_for_runtime_orientation(self) -> None:
+        output = rigel_assets.render_block_yaml(
+            "test:directional",
+            {
+                "modelName": "unused",
+                "rotation": [0, 0, 90],
+                "rotateTopBottom": True,
+            },
+            _DirectionalModelResolver(),
+            "fixture",
+        )
+        block = rigel_assets.parse_generated_block(output, "generated.yaml")
+
+        self.assertEqual(block["orientation"], [0, 0, 90])
+        self.assertTrue(block["rotate_top_bottom"])
+        self.assertEqual(
+            block["textures"],
+            {
+                "pos_x": "textures/blocks/pos_x.png",
+                "neg_x": "textures/blocks/neg_x.png",
+                "pos_y": "textures/blocks/pos_y.png",
+                "neg_y": "textures/blocks/neg_y.png",
+                "pos_z": "textures/blocks/pos_z.png",
+                "neg_z": "textures/blocks/neg_z.png",
+            },
+        )
+
+    def test_rejects_unmeasured_and_composed_source_rotations(self) -> None:
+        cases = ([180, 0, 0], [0, 0, 270], [90, 90, 0], [0, 45, 0])
+        for rotation in cases:
+            with self.subTest(rotation=rotation), self.assertRaisesRegex(
+                rigel_assets.AssetImportError, "supported block-state set"
+            ):
+                rigel_assets.render_block_yaml(
+                    "test:bad",
+                    {"modelName": "unused", "rotation": rotation},
+                    _DirectionalModelResolver(),
+                    "fixture",
+                )
+
+        with self.assertRaisesRegex(
+            rigel_assets.AssetImportError, "requires X90 or Z90"
+        ):
+            rigel_assets.render_block_yaml(
+                "test:bad",
+                {"modelName": "unused", "rotateTopBottom": True},
+                _DirectionalModelResolver(),
+                "fixture",
+            )
+
     def test_unknown_meaningful_block_field_fails_closed(self) -> None:
         entries = synthetic_block_entries()
         block = json.loads(entries["base/blocks/test_stone.json"])
@@ -440,7 +519,7 @@ class SynchronizationTest(unittest.TestCase):
             self.assertFalse(second_changed)
             self.assertEqual(first, second)
             self.assertEqual(first["schema"], 1)
-            self.assertEqual(first["importer_schema"], 1)
+            self.assertEqual(first["importer_schema"], 2)
             self.assertEqual(first["counts"]["blocks"], 4)
             self.assertEqual(
                 first["output_tree_sha256"],
@@ -534,6 +613,26 @@ class _TransparentModelResolver:
             {"all": "textures/blocks/test.png"},
             {},
             True,
+            False,
+            False,
+            True,
+        )
+
+
+class _DirectionalModelResolver:
+    def resolve(self, reference: str) -> rigel_assets.ResolvedModel:
+        aliases = {
+            source: rigel_assets.VECTOR_FACES[vector]
+            for source, vector in rigel_assets.FACE_VECTORS.items()
+        }
+        textures = {
+            alias: f"textures/blocks/{alias}.png"
+            for alias in aliases.values()
+        }
+        return rigel_assets.ResolvedModel(
+            textures,
+            aliases,
+            False,
             False,
             False,
             True,

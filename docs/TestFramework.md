@@ -125,7 +125,9 @@ confirms that transparent crop texels expose the farther gallery floor while
 the opaque slab check confirms that partial solid models are not blended. For
 visual review, set
 `RIGEL_GALLERY_CAPTURE_DIRECTORY` to an absolute directory outside the source
-tree; the test writes one vertically oriented PPM capture per representative:
+tree. The test validates every representative before publishing the captures
+as one complete set. It writes one vertically oriented PPM per representative
+and a `capture-manifest.txt` completion record:
 
 ```bash
 rigel_gallery_captures=/absolute/path/to/gallery-captures
@@ -137,7 +139,8 @@ RIGEL_GALLERY_CAPTURE_DIRECTORY="$rigel_gallery_captures" \
 
 Captures are inspection evidence rather than checked-in fixtures. The test
 does not compare pixel hashes, and rejects capture destinations inside the
-source tree.
+source tree. Publication stages all files beside the destination and preserves
+the previous complete set if validation, writing, or handoff fails.
 
 Run the main suite via CTest:
 

@@ -369,6 +369,7 @@ if (RIGEL_BUILD_TESTS)
         add_executable(Rigel_generated_asset_integration_tests
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/TestFramework.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/GalleryCapturePublication.cpp
             ${GENERATED_ASSET_INTEGRATION_TEST_SOURCE}
         )
         target_include_directories(Rigel_generated_asset_integration_tests PRIVATE

@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include "GalleryCapturePublication.h"
 #include "OpenGLFixture.h"
 #include "ResourceRegistry.h"
 #include "Rigel/Asset/AssetManager.h"
@@ -25,7 +26,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <optional>
 #include <set>
@@ -351,12 +351,7 @@ size_t countSharedXPlaneFaces(
     return count;
 }
 
-struct FramebufferCapture {
-    int width = 0;
-    int height = 0;
-    std::vector<uint8_t> rgba;
-    std::vector<float> depth;
-};
+using FramebufferCapture = Rigel::Test::GalleryFramebufferCapture;
 
 FramebufferCapture readFramebuffer(int width, int height) {
     FramebufferCapture capture{
@@ -493,37 +488,13 @@ std::optional<std::filesystem::path> galleryCaptureDirectory() {
     }
 
     std::error_code error;
-    std::filesystem::create_directories(destination, error);
+    std::filesystem::create_directories(destination.parent_path(), error);
     if (error) {
         throw Rigel::Test::TestFailure(
-            "Failed to create gallery capture directory: " +
+            "Failed to create gallery capture parent directory: " +
             error.message());
     }
     return destination;
-}
-
-void writeFramebufferCapture(
-    const FramebufferCapture& capture,
-    const std::filesystem::path& destination
-) {
-    std::ofstream output(
-        destination,
-        std::ios::binary | std::ios::trunc);
-    output << "P6\n" << capture.width << ' ' << capture.height << "\n255\n";
-    for (int y = capture.height - 1; y >= 0; --y) {
-        for (int x = 0; x < capture.width; ++x) {
-            const size_t offset = static_cast<size_t>(
-                x + y * capture.width) * 4;
-            output.write(
-                reinterpret_cast<const char*>(capture.rgba.data() + offset),
-                3);
-        }
-    }
-    if (!output) {
-        throw Rigel::Test::TestFailure(
-            "Failed to write gallery framebuffer capture: " +
-            destination.string());
-    }
 }
 
 } // namespace
@@ -934,6 +905,10 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
 
     const std::optional<std::filesystem::path> captureDirectory =
         galleryCaptureDirectory();
+    std::vector<Rigel::Test::NamedGalleryFramebufferCapture> captures;
+    if (captureDirectory) {
+        captures.reserve(GalleryVisualRepresentatives.size());
+    }
     for (const GalleryVisualRepresentative& representative :
          GalleryVisualRepresentatives) {
         const BlockGalleryCatalogEntry& entry = requireGalleryEntry(
@@ -970,7 +945,7 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
                 .deltaTime = 1.0f / 60.0f,
             });
         }
-        const FramebufferCapture capture = readFramebuffer(
+        FramebufferCapture capture = readFramebuffer(
             GalleryCaptureWidth, GalleryCaptureHeight);
         CHECK(countRenderedCenterPixels(capture) >= static_cast<size_t>(4));
         if (representative.identifier == SlabId) {
@@ -980,11 +955,14 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
             checkAlphaCutoutRevealsFloor(capture);
         }
         if (captureDirectory) {
-            writeFramebufferCapture(
-                capture,
-                *captureDirectory /
-                    (std::string(representative.captureName) + ".ppm"));
+            captures.push_back({
+                std::string(representative.captureName),
+                std::move(capture),
+            });
         }
+    }
+    if (captureDirectory) {
+        Rigel::Test::publishGalleryCaptureSet(captures, *captureDirectory);
     }
 
     renderer.release();

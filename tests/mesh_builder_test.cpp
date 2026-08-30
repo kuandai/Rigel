@@ -365,6 +365,38 @@ TEST_CASE(MeshBuilder_EmitsInflatedSingleCuboidCardinalGeometry) {
     }
 }
 
+TEST_CASE(MeshBuilder_EmitsZeroThicknessFaceWithAuthoredShadingDirection) {
+    BlockModelCuboid cuboid;
+    cuboid.bounds.min = {0.5f, 0.0f, 0.0f};
+    cuboid.bounds.max = {0.5f, 1.0f, 1.0f};
+    BlockModelFace face = modelFace("surface");
+    face.shadingFace = Direction::PosY;
+    cuboid.faces[static_cast<size_t>(Direction::NegX)] = std::move(face);
+
+    BlockRegistry registry = makeRegistry();
+    BlockType block;
+    block.identifier = "test:flat_face";
+    block.model = makeModel(
+        "test:flat_face_model", {"surface"}, {std::move(cuboid)});
+    const BlockID blockId = registry.registerBlock(block.identifier, block);
+
+    Chunk chunk({0, 0, 0});
+    chunk.setBlock(1, 2, 3, BlockState{blockId});
+    const ChunkMesh mesh = MeshBuilder{}.build({
+        .chunk = chunk,
+        .registry = registry,
+        .atlas = nullptr,
+        .neighbors = {},
+    });
+
+    CHECK_EQ(mesh.vertices.size(), static_cast<size_t>(4));
+    CHECK_EQ(mesh.indices.size(), static_cast<size_t>(6));
+    for (const VoxelVertex& vertex : mesh.vertices) {
+        CHECK_EQ(vertex.x, 1.5f);
+        CHECK_EQ(vertex.normalIndex, static_cast<uint8_t>(Direction::PosY));
+    }
+}
+
 TEST_CASE(MeshBuilder_EmitsNormalizedCuboidsWithMissingFacesAndExtendedBounds) {
     BlockRegistry registry = makeRegistry();
 

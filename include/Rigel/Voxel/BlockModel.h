@@ -44,6 +44,7 @@ struct BlockModelFace {
     std::string textureSlot;
     BlockModelUvRect uv;
     BlockModelUvRotation rotation = BlockModelUvRotation::None;
+    std::optional<Direction> shadingFace;
     bool ambientOcclusion = false;
     bool cullAgainstOpaqueNeighbor = false;
 };

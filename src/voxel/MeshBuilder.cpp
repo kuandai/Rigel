@@ -391,6 +391,9 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                         const Direction direction =
                             orientedDirection(
                                 sourceDirection, type.model.orientation);
+                        const Direction shadingDirection = orientedDirection(
+                            optionalFace->shadingFace.value_or(sourceDirection),
+                            type.model.orientation);
                         const size_t faceIdx = static_cast<size_t>(direction);
                         const BlockModelFace& face = *optionalFace;
                         const bool coveredByFullNeighbor =
@@ -443,7 +446,8 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                                      : bounds.max[2]);
                             vertex.u = uvs[vertexIndex][0];
                             vertex.v = uvs[vertexIndex][1];
-                            vertex.normalIndex = static_cast<uint8_t>(faceIdx);
+                            vertex.normalIndex = static_cast<uint8_t>(
+                                shadingDirection);
                             vertex.aoLevel = aoLevels[vertexIndex];
                             vertex.textureLayer = faceTextureLayer;
                             layerVertices[layerIdx].push_back(vertex);

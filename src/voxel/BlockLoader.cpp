@@ -309,9 +309,9 @@ std::shared_ptr<const BlockModel> parseModel(
         cuboid.bounds.min = {values[0], values[1], values[2]};
         cuboid.bounds.max = {values[3], values[4], values[5]};
         for (size_t axis = 0; axis < 3; ++axis) {
-            if (!(cuboid.bounds.min[axis] < cuboid.bounds.max[axis])) {
+            if (cuboid.bounds.min[axis] > cuboid.bounds.max[axis]) {
                 fail(source, cuboidPath + ".bounds",
-                     "cuboid minimum must be less than maximum on every axis");
+                     "cuboid minimum must not exceed maximum on any axis");
             }
         }
 
@@ -330,8 +330,18 @@ std::shared_ptr<const BlockModel> parseModel(
             if (!direction) fail(source, facePath, "invalid cardinal face");
             requireMap(
                 faceNode, source, facePath,
-                {"texture", "uv", "rotation", "ambient_occlusion", "cull"},
+                {"texture", "uv", "rotation", "shading",
+                 "ambient_occlusion", "cull"},
                 {"texture"});
+
+            const size_t normalAxis = static_cast<size_t>(*direction) / 2;
+            for (size_t axis = 0; axis < 3; ++axis) {
+                if (axis != normalAxis &&
+                    cuboid.bounds.min[axis] == cuboid.bounds.max[axis]) {
+                    fail(source, facePath,
+                         "face must have non-zero area on both tangent axes");
+                }
+            }
 
             BlockModelFace face;
             face.textureSlot = scalar(
@@ -374,6 +384,15 @@ std::shared_ptr<const BlockModel> parseModel(
                              "expected 0, 90, 180, or 270 degrees");
                 }
             }
+            if (faceNode.has_child("shading")) {
+                const std::string shading = scalar(
+                    child(faceNode, "shading"), source, facePath + ".shading");
+                face.shadingFace = BlockModel::directionFromName(shading);
+                if (!face.shadingFace) {
+                    fail(source, facePath + ".shading",
+                         "invalid cardinal face");
+                }
+            }
             if (faceNode.has_child("ambient_occlusion")) {
                 face.ambientOcclusion = booleanValue(
                     child(faceNode, "ambient_occlusion"), source,
@@ -384,6 +403,14 @@ std::shared_ptr<const BlockModel> parseModel(
                     child(faceNode, "cull"), source, facePath + ".cull");
             }
             cuboid.faces[static_cast<size_t>(*direction)] = std::move(face);
+        }
+        if (facesNode.num_children() == 0) {
+            for (size_t axis = 0; axis < 3; ++axis) {
+                if (cuboid.bounds.min[axis] == cuboid.bounds.max[axis]) {
+                    fail(source, cuboidPath,
+                         "zero-thickness cuboid has no visible face");
+                }
+            }
         }
         cuboids.push_back(std::move(cuboid));
         ++cuboidIndex;

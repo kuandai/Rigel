@@ -139,6 +139,7 @@ cuboids:
         texture: cap
         uv: [1, 0.25, 0, 0.75]
         rotation: 90
+        shading: pos_y
         ambient_occlusion: false
         cull: false
       neg_x:
@@ -146,6 +147,10 @@ cuboids:
   - bounds: [0.25, 0.75, 0.25, 0.75, 1.25, 0.75]
     faces:
       pos_y:
+        texture: side
+  - bounds: [0.5, 0, 0, 0.5, 1, 1]
+    faces:
+      neg_x:
         texture: side
 )";
     constexpr std::string_view blockYaml = R"(
@@ -178,7 +183,7 @@ textures:
 
     const auto model = models.find("test:post");
     CHECK(model);
-    CHECK_EQ(model->cuboids().size(), static_cast<size_t>(2));
+    CHECK_EQ(model->cuboids().size(), static_cast<size_t>(3));
     CHECK_EQ(model->cuboids()[0].bounds.min[0], -0.25f);
     CHECK_EQ(model->cuboids()[0].bounds.max[0], 1.25f);
     CHECK(!model->cuboids()[0].faces[static_cast<size_t>(Direction::PosY)]);
@@ -186,6 +191,7 @@ textures:
     CHECK_EQ(face.uv.u0, 1.0f);
     CHECK_EQ(face.uv.u1, 0.0f);
     CHECK_EQ(face.rotation, BlockModelUvRotation::Quarter);
+    CHECK_EQ(face.shadingFace, Direction::PosY);
     CHECK(!face.ambientOcclusion);
     CHECK(!face.cullAgainstOpaqueNeighbor);
 
@@ -335,7 +341,7 @@ textures: {}
 }
 
 TEST_CASE(BlockLoader_RejectsMalformedNormalizedModelsAtomically) {
-    constexpr std::array<std::string_view, 7> invalidModels = {
+    constexpr std::array<std::string_view, 8> invalidModels = {
         R"(id: bad
 texture_slots: [all]
 cuboids: [{bounds: [0, 0, 0, 1, 1, 1], faces: {}}]
@@ -364,6 +370,10 @@ cuboids: [{bounds: [0, 0, 0, 1, 1, 1], faces: {pos_x: {texture: all, rotation: 4
         R"(id: bad
 texture_slots: [declared]
 cuboids: [{bounds: [0, 0, 0, 1, 1, 1], faces: {pos_x: {texture: missing}}}]
+)",
+        R"(id: bad
+texture_slots: [all]
+cuboids: [{bounds: [0, 0, 0, 1, 1, 1], faces: {pos_x: {texture: all, shading: diagonal}}}]
 )",
     };
 

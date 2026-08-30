@@ -234,6 +234,7 @@ if (RIGEL_BUILD_TESTS)
     target_compile_definitions(Rigel_tests PRIVATE
         $<$<CONFIG:Debug>:RIGEL_EXPECT_PROFILER_ENABLED>
         RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+        RIGEL_TEST_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
     )
 
     add_executable(Rigel_profiler_tests

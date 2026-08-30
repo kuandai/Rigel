@@ -2,7 +2,12 @@
 
 #include "Rigel/Voxel/BlockLoader.h"
 #include <array>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <span>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -67,6 +72,29 @@ void addSyntheticTexture(TextureAtlas& atlas, std::string_view path) {
     const std::vector<unsigned char> pixels(
         static_cast<size_t>(atlas.tileSize() * atlas.tileSize() * 4), 255);
     atlas.addTexture(std::string(path), pixels.data());
+}
+
+std::string readTextFile(const std::filesystem::path& path) {
+    std::ifstream stream(path);
+    if (!stream) {
+        throw std::runtime_error("Unable to read fixture output: " + path.string());
+    }
+    std::ostringstream content;
+    content << stream.rdbuf();
+    return content.str();
+}
+
+std::string shellQuote(std::string_view value) {
+    std::string result = "'";
+    for (const char character : value) {
+        if (character == '\'') {
+            result += "'\"'\"'";
+        } else {
+            result += character;
+        }
+    }
+    result += '\'';
+    return result;
 }
 
 } // namespace
@@ -205,6 +233,66 @@ textures:
     CHECK_EQ(block.model.get(), model.get());
     CHECK_EQ(*block.textures.find("side"), "textures/test/post_side.png");
     CHECK_EQ(*block.textures.find("cap"), "textures/test/post_cap.png");
+}
+
+TEST_CASE(BlockLoader_LoadsImportedSingleCuboidFixture) {
+    const std::filesystem::path fixtureRoot =
+        std::filesystem::current_path() / "single-cuboid-import";
+    const std::filesystem::path fixtureScript =
+        std::filesystem::path(RIGEL_TEST_SOURCE_DIRECTORY) /
+        "tests/single_cuboid_fixture.py";
+    const std::string command =
+        shellQuote(RIGEL_TEST_PYTHON_EXECUTABLE) + " " +
+        shellQuote(fixtureScript.string()) + " " +
+        shellQuote(fixtureRoot.string());
+    CHECK_EQ(std::system(command.c_str()), 0);
+
+    const std::filesystem::path assets = fixtureRoot / ".rigel/assets";
+    const std::string modelYaml =
+        readTextFile(assets / "models/blocks/ledge.yaml");
+    const std::string baseYaml =
+        readTextFile(assets / "blocks/test__ledge.yaml");
+    const std::string generatedYaml =
+        readTextFile(assets / "blocks/test__ledge[facing=east].yaml");
+    const std::array modelDefinitions = {
+        modelDefinition("models/blocks/ledge.yaml", modelYaml)};
+    const std::array blockDefinitions = {
+        definition("blocks/test__ledge.yaml", baseYaml),
+        definition("blocks/test__ledge[facing=east].yaml", generatedYaml),
+    };
+
+    TextureAtlas atlas;
+    addSyntheticTexture(atlas, "textures/blocks/ledge.png");
+    BlockModelRegistry models;
+    BlockRegistry blocks;
+    const BlockLoadReport report = BlockLoader{}.loadDefinitions(
+        "base", modelDefinitions, blockDefinitions, models, blocks, atlas);
+    CHECK_EQ(report.modelsLoaded, static_cast<size_t>(1));
+    CHECK_EQ(report.loaded, static_cast<size_t>(2));
+    CHECK_EQ(report.modelsFailed, static_cast<size_t>(0));
+    CHECK_EQ(report.failed, static_cast<size_t>(0));
+
+    const auto model = models.find("base:block_model/ledge");
+    CHECK(model);
+    CHECK_EQ(model->cuboids().size(), static_cast<size_t>(1));
+    CHECK_EQ(model->cuboids().front().bounds.min[0], -0.15625f);
+    CHECK_EQ(model->cuboids().front().bounds.max[0], 1.15625f);
+    CHECK(!model->cuboids().front().faces[static_cast<size_t>(Direction::NegX)]);
+    const auto& face = *model->cuboids().front().faces[
+        static_cast<size_t>(Direction::PosX)];
+    CHECK_EQ(face.uv.u0, 0.9375f);
+    CHECK_EQ(face.uv.u1, 0.1875f);
+    CHECK_EQ(face.rotation, BlockModelUvRotation::Quarter);
+    CHECK(!face.ambientOcclusion);
+    CHECK(!face.cullAgainstOpaqueNeighbor);
+
+    const BlockType& base =
+        blocks.getType(*blocks.findByIdentifier("test:ledge"));
+    const BlockType& generated =
+        blocks.getType(*blocks.findByIdentifier("test:ledge[facing=east]"));
+    CHECK_EQ(base.model.geometry.get(), model.get());
+    CHECK_EQ(generated.model.geometry.get(), model.get());
+    CHECK_EQ(generated.model.orientation, BlockModelOrientation::RotateY90);
 }
 
 TEST_CASE(BlockLoader_LoadsMeasuredOrientationsAsSharedModelInstances) {

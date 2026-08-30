@@ -56,7 +56,9 @@ Launch selection has the following exact behavior:
 - With neither selection, Rigel defaults to the normal world.
 - A missing or empty value, any other value, an unknown option, or more than one
   `--world-mode` is an error. Decoding fails before application startup and the
-  process exits unsuccessfully with a diagnostic naming the accepted values.
+  process exits unsuccessfully. Missing, empty, and invalid values name the two
+  accepted values; an unknown option names the supported `--world-mode` form;
+  and a duplicate reports that `--world-mode` was provided more than once.
 
 The launch mode is process-local. It is not a user preference or a world
 setting, and gallery code does not read the environment.
@@ -187,9 +189,13 @@ broader Cosmic Reach coverage:
 - Animated block textures and non-16-by-16 block textures are unsupported;
   affected source states are omitted under the importer's disjoint provenance
   reasons.
-- Collision and targeting use the source-authored `solid` flag and whole block
-  cells. Partial geometry does not shrink those cells, and out-of-cell geometry
-  does not extend collision or the targeting ray into another cell.
+- Collision uses the source-authored `solid` flag and whole block cells. Partial
+  geometry does not shrink those cells, and out-of-cell geometry does not extend
+  collision into another cell.
+- Targeting is independent of the `solid` flag: the first non-air block cell is
+  a hit, including a non-solid registration. Partial geometry does not shrink
+  the target cell, and out-of-cell geometry does not extend the targeting ray
+  into another cell.
 - Model ambient occlusion is simplified. Cube-style AO applies only when a
   normalized face requests it and spans a complete unit-cell boundary; other
   model faces use the fully unoccluded level, and only a closed full-cell model

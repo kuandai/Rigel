@@ -11,6 +11,7 @@ using namespace Rigel::Voxel;
 struct TargetingFixture {
     WorldResources resources;
     BlockID solidId;
+    BlockID nonSolidId;
     World world;
 
     TargetingFixture()
@@ -18,8 +19,17 @@ struct TargetingFixture {
               BlockType solid;
               const std::string identifier = "invented:target";
               solid.identifier = identifier;
+              solid.isSolid = true;
               return resources.registry().registerBlock(
                   identifier, std::move(solid));
+          }())
+        , nonSolidId([this] {
+              BlockType nonSolid;
+              const std::string identifier = "invented:non_solid_target";
+              nonSolid.identifier = identifier;
+              nonSolid.isSolid = false;
+              return resources.registry().registerBlock(
+                  identifier, std::move(nonSolid));
           }())
         , world(resources) {}
 };
@@ -57,6 +67,25 @@ TEST_CASE(BlockTargeting_StartingCellHasZeroDistanceAndNormal) {
     CHECK_EQ(target->block, (glm::ivec3{3, -1, 5}));
     CHECK_EQ(target->normal, (glm::ivec3{0, 0, 0}));
     CHECK_EQ(target->distance, 0.0f);
+}
+
+TEST_CASE(BlockTargeting_ReturnsFirstNonAirCellRegardlessOfSolidity) {
+    TargetingFixture fixture;
+    fixture.world.setBlock(0, 0, -2, BlockState{fixture.nonSolidId});
+    fixture.world.setBlock(0, 0, -3, BlockState{fixture.solidId});
+
+    CHECK(!fixture.resources.registry().getType(fixture.nonSolidId).isSolid);
+
+    const auto target = raycastBlock(
+        fixture.world,
+        glm::vec3{0.5f, 0.5f, 0.5f},
+        glm::vec3{0.0f, 0.0f, -1.0f},
+        8.0f);
+
+    CHECK(target.has_value());
+    CHECK_EQ(target->block, (glm::ivec3{0, 0, -2}));
+    CHECK_EQ(target->state.id, fixture.nonSolidId);
+    CHECK_NEAR(target->distance, 1.5f, 0.0001f);
 }
 
 TEST_CASE(BlockTargeting_RejectsDegenerateAndOutOfRangeRays) {

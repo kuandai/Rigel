@@ -91,6 +91,8 @@ private:
      * @param face The face direction to check
      * @param cullAgainstOpaqueNeighbor Whether a full-cell opaque neighbor
      *        may hide this face
+     * @param cullSameTypeNeighbor Whether block-level same-type culling is
+     *        geometrically valid for this face
      * @return True if face should be rendered
      */
     bool shouldRenderFace(
@@ -99,7 +101,8 @@ private:
         Direction face,
         const BlockState& state,
         const BlockType& type,
-        bool cullAgainstOpaqueNeighbor = true
+        bool cullAgainstOpaqueNeighbor = true,
+        bool cullSameTypeNeighbor = true
     ) const;
 
     /**

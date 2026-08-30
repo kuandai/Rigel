@@ -115,6 +115,48 @@ bool isOccluder(const BlockState& state, const BlockRegistry& registry) {
     return type.isOpaque && type.model && type.model->isFullCube();
 }
 
+bool isCellBoundaryFace(
+    const BlockModelBounds& bounds, Direction direction
+) {
+    const size_t faceIndex = static_cast<size_t>(direction);
+    const size_t normalAxis = faceIndex / 2;
+    return faceIndex % 2 == 0
+        ? bounds.max[normalAxis] == 1.0f
+        : bounds.min[normalAxis] == 0.0f;
+}
+
+bool isCoveredByFullCellNeighbor(
+    const BlockModelBounds& bounds, Direction direction
+) {
+    if (!isCellBoundaryFace(bounds, direction)) {
+        return false;
+    }
+    const size_t normalAxis = static_cast<size_t>(direction) / 2;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (axis != normalAxis &&
+            (bounds.min[axis] < 0.0f || bounds.max[axis] > 1.0f)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isCubeAoCompatibleFace(
+    const BlockModelBounds& bounds, Direction direction
+) {
+    if (!isCellBoundaryFace(bounds, direction)) {
+        return false;
+    }
+    const size_t normalAxis = static_cast<size_t>(direction) / 2;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (axis != normalAxis &&
+            (bounds.min[axis] != 0.0f || bounds.max[axis] != 1.0f)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // anonymous namespace
 
 ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
@@ -209,15 +251,21 @@ ChunkMesh MeshBuilder::build(const BuildContext& ctx) const {
                         const Direction direction =
                             static_cast<Direction>(faceIdx);
                         const BlockModelFace& face = *optionalFace;
+                        const bool coveredByFullNeighbor =
+                            isCoveredByFullCellNeighbor(
+                                cuboid.bounds, direction);
                         if (!shouldRenderFace(
                                 ctx, x, y, z, direction, state, type,
-                                face.cullAgainstOpaqueNeighbor)) {
+                                face.cullAgainstOpaqueNeighbor &&
+                                    coveredByFullNeighbor,
+                                false)) {
                             continue;
                         }
 
                         std::array<uint8_t, 4> aoLevels{};
                         aoLevels.fill(3);
-                        if (face.ambientOcclusion) {
+                        if (face.ambientOcclusion &&
+                            isCubeAoCompatibleFace(cuboid.bounds, direction)) {
                             for (size_t vertex = 0; vertex < aoLevels.size(); ++vertex) {
                                 aoLevels[vertex] = calculateAO(
                                     ctx, x, y, z, direction,
@@ -303,7 +351,8 @@ bool MeshBuilder::shouldRenderFace(
     Direction face,
     const BlockState& state,
     const BlockType& type,
-    bool cullAgainstOpaqueNeighbor
+    bool cullAgainstOpaqueNeighbor,
+    bool cullSameTypeNeighbor
 ) const {
     // Get offset for this direction
     int dx, dy, dz;
@@ -323,7 +372,7 @@ bool MeshBuilder::shouldRenderFace(
         return false;
     }
 
-    if (type.cullSameType && neighbor.id == state.id) {
+    if (cullSameTypeNeighbor && type.cullSameType && neighbor.id == state.id) {
         return false;
     }
 

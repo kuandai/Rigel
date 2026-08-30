@@ -241,12 +241,16 @@ if (RIGEL_BUILD_TESTS)
     set(GENERATED_ASSET_INTEGRATION_TEST_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/generated_asset_integration_test.cpp
     )
+    set(APPLICATION_LAUNCH_INTEGRATION_TEST_SOURCE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/application_launch_integration_test.cpp
+    )
     list(REMOVE_ITEM TEST_SOURCES
         ${PROFILER_TEST_SOURCE}
         ${BLOCK_ASSET_FAILURE_TEST_SOURCE}
         ${ASSET_MANIFEST_VALIDATION_TEST_SOURCE}
         ${PUBLIC_HEADER_CONSUMER_SOURCE}
         ${GENERATED_ASSET_INTEGRATION_TEST_SOURCE}
+        ${APPLICATION_LAUNCH_INTEGRATION_TEST_SOURCE}
     )
 
     add_executable(Rigel_tests
@@ -383,6 +387,33 @@ if (RIGEL_BUILD_TESTS)
                 Rigel_generated_asset_integration_tests PRIVATE
                 RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS)
         endif()
+
+        add_executable(Rigel_application_launch_integration_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/TestFramework.cpp
+            ${APPLICATION_LAUNCH_INTEGRATION_TEST_SOURCE}
+        )
+        target_include_directories(
+            Rigel_application_launch_integration_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+        target_compile_definitions(
+            Rigel_application_launch_integration_tests PRIVATE
+            RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(
+            Rigel_application_launch_integration_tests PRIVATE RigelLib)
+        if(TARGET OpenGL::EGL)
+            target_link_libraries(
+                Rigel_application_launch_integration_tests PRIVATE OpenGL::EGL)
+            target_compile_definitions(
+                Rigel_application_launch_integration_tests PRIVATE
+                RIGEL_TEST_HAS_EGL)
+        endif()
+        if(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS)
+            target_compile_definitions(
+                Rigel_application_launch_integration_tests PRIVATE
+                RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS)
+        endif()
     endif()
 
     add_dependencies(Rigel_tests
@@ -393,6 +424,10 @@ if (RIGEL_BUILD_TESTS)
     )
     if(TARGET Rigel_generated_asset_integration_tests)
         add_dependencies(Rigel_tests Rigel_generated_asset_integration_tests)
+    endif()
+    if(TARGET Rigel_application_launch_integration_tests)
+        add_dependencies(
+            Rigel_tests Rigel_application_launch_integration_tests)
     endif()
 
     add_test(NAME Rigel_tests COMMAND Rigel_tests)
@@ -420,6 +455,17 @@ if (RIGEL_BUILD_TESTS)
             set_tests_properties(
                 Rigel_generated_asset_integration_tests PROPERTIES
                 ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1")
+        endif()
+    endif()
+    if(TARGET Rigel_application_launch_integration_tests)
+        add_test(
+            NAME Rigel_application_launch_integration_tests
+            COMMAND Rigel_application_launch_integration_tests)
+        if(TARGET OpenGL::EGL AND UNIX AND NOT APPLE)
+            set_tests_properties(
+                Rigel_application_launch_integration_tests PROPERTIES
+                ENVIRONMENT
+                    "DISPLAY=;WAYLAND_DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1")
         endif()
     endif()
     add_test(

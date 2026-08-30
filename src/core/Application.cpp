@@ -49,7 +49,6 @@
 #include <string>
 #include <string_view>
 #include <tuple>
-#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -195,7 +194,20 @@ struct ViewDistanceBoundaryProbe {
 };
 
 ViewDistanceBoundaryProbe* g_viewDistanceBoundaryProbe = nullptr;
-LaunchApplicationMain g_applicationLaunchOverrideForTesting = nullptr;
+
+struct BlockGalleryLaunchLifecycleProbe {
+    ApplicationBlockGalleryLifecycleState* state = nullptr;
+    GlfwRuntime::Api runtimeApi;
+    std::filesystem::path userPreferencesPath;
+    std::shared_ptr<Persistence::InMemoryStorageBackend> storage;
+    Voxel::BlockGalleryWorldPosition specimenPosition;
+    Voxel::BlockID specimenId = Voxel::BlockRegistry::airId();
+    glm::vec3 movementStart{};
+    bool specimenSelected = false;
+    bool movementStarted = false;
+};
+
+BlockGalleryLaunchLifecycleProbe* g_blockGalleryLaunchLifecycleProbe = nullptr;
 
 double viewDistanceBoundaryTime() {
     return 0.0;
@@ -309,6 +321,7 @@ struct Application::Impl {
     Input::InputCallbackContext inputCallbacks;
     bool openGLInitialized = false;
     bool shutDown = false;
+    bool initializeWindowIntegrations = true;
     WorldMode worldMode = WorldMode::Normal;
     void (*afterContextAcquired)() = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
@@ -322,6 +335,7 @@ struct Application::Impl {
     explicit Impl(ApplicationConstructionHooks hooks)
         : runtime(hooks.runtimeApi)
         , preferencesPath(std::move(hooks.userPreferencesPath))
+        , initializeWindowIntegrations(hooks.initializeWindowIntegrations)
         , worldMode(hooks.worldMode)
         , afterContextAcquired(hooks.afterContextAcquired)
         , shutdownStageCompleted(hooks.shutdownStageCompleted)
@@ -351,7 +365,19 @@ Application::Application()
 }
 
 Application::Application(LaunchOptions launchOptions)
-    : Application(std::make_unique<Impl>(launchOptions.worldMode)) {
+    : Application([&] {
+          if (!g_blockGalleryLaunchLifecycleProbe) {
+              return std::make_unique<Impl>(launchOptions.worldMode);
+          }
+          ApplicationConstructionHooks hooks;
+          hooks.runtimeApi =
+              g_blockGalleryLaunchLifecycleProbe->runtimeApi;
+          hooks.userPreferencesPath =
+              g_blockGalleryLaunchLifecycleProbe->userPreferencesPath;
+          hooks.worldMode = launchOptions.worldMode;
+          hooks.initializeWindowIntegrations = false;
+          return std::make_unique<Impl>(std::move(hooks));
+      }()) {
 }
 
 Application::Application(std::unique_ptr<Impl> impl)
@@ -508,7 +534,14 @@ void Application::initialize() {
 
     // Initialize GLEW
     glewExperimental = GL_TRUE;
-    if (glewInit() != GLEW_OK) {
+    const GLenum glewStatus = glewInit();
+    bool glewInitialized = glewStatus == GLEW_OK;
+#if defined(GLEW_ERROR_NO_GLX_DISPLAY)
+    glewInitialized = glewInitialized ||
+        (glewStatus == GLEW_ERROR_NO_GLX_DISPLAY &&
+         glGetString(GL_VERSION) != nullptr);
+#endif
+    if (!glewInitialized) {
         spdlog::error("GLEW initialization failed");
         throw std::runtime_error("GLEW initialization failed");
     }
@@ -519,7 +552,9 @@ void Application::initialize() {
     spdlog::info("OpenGL Version: {}", (char*)glGetString(GL_VERSION));
 
 #if defined(RIGEL_ENABLE_IMGUI)
-    initializeOptionalUserInterface(m_impl->window.window, &UI::init);
+    if (m_impl->initializeWindowIntegrations) {
+        initializeOptionalUserInterface(m_impl->window.window, &UI::init);
+    }
 #endif
 
     m_impl->renderer.setVerticalFovDegrees(
@@ -541,7 +576,10 @@ void Application::initialize() {
         &m_impl->preferences->effectiveInput();
     registerApplicationPreferenceCallbacks(
         m_impl->inputCallbacks, *m_impl->preferences);
-    Input::registerWindowCallbacks(m_impl->window.window, m_impl->inputCallbacks);
+    if (m_impl->initializeWindowIntegrations) {
+        Input::registerWindowCallbacks(
+            m_impl->window.window, m_impl->inputCallbacks);
+    }
     m_impl->runtime.setWindowSizeCallback([](
         GLFWwindow* window, int width, int height) {
         auto* context = static_cast<Input::InputCallbackContext*>(
@@ -551,7 +589,9 @@ void Application::initialize() {
                 context->logicalResizeContext, width, height);
         }
     });
-    Input::setCursorCaptured(m_impl->window, true);
+    if (m_impl->initializeWindowIntegrations) {
+        Input::setCursorCaptured(m_impl->window, true);
+    }
     if (m_impl->timing.benchmarkEnabled) {
         spdlog::info("Chunk benchmark enabled");
     }
@@ -703,6 +743,7 @@ void Application::initialize() {
 
         m_impl->renderer.initialize(m_impl->assets);
         m_impl->world.ready = true;
+        ApplicationTestAccess::observeBlockGalleryLaunchInitialized(*this);
     } catch (const std::exception& e) {
         spdlog::error("Voxel bootstrap failed: {}", e.what());
         throw;
@@ -911,186 +952,6 @@ void Application::close() {
     }
 }
 
-namespace {
-
-struct BlockGalleryLaunchLifecycleProbe {
-    ApplicationBlockGalleryLifecycleState* state = nullptr;
-    void (*populateRegistry)(Voxel::BlockRegistry&) = nullptr;
-};
-
-BlockGalleryLaunchLifecycleProbe* g_blockGalleryLaunchLifecycleProbe = nullptr;
-
-} // namespace
-
-void ApplicationTestAccess::exerciseBlockGalleryLaunchLifecycle(
-    const LaunchOptions& options
-) {
-    BlockGalleryLaunchLifecycleProbe& probe =
-        *g_blockGalleryLaunchLifecycleProbe;
-    ApplicationBlockGalleryLifecycleState& observed = *probe.state;
-    observed.decodedWorldMode = options.worldMode;
-    if (options.worldMode != WorldMode::BlockGallery) {
-        throw std::invalid_argument(
-            "Block-gallery lifecycle exercise received another world mode");
-    }
-    if (!probe.populateRegistry) {
-        throw std::invalid_argument(
-            "Block-gallery lifecycle exercise requires registry data");
-    }
-
-    auto impl = std::make_unique<Application::Impl>(options.worldMode);
-    Voxel::WorldSet& worldSet = impl->world.worldSet;
-    worldSet.persistenceFormats().registerFormat(
-        Persistence::Backends::Memory::descriptor(),
-        Persistence::Backends::Memory::factory(),
-        Persistence::Backends::Memory::probe());
-    auto storage =
-        std::make_shared<Persistence::InMemoryStorageBackend>();
-    worldSet.setPersistenceStorage(storage);
-    worldSet.setPersistenceRoot(std::string(kBlockGalleryVirtualRoot));
-    applyBlockGalleryPersistencePolicy(worldSet);
-
-    Voxel::World& world = worldSet.createWorld(
-        Voxel::WorldSet::defaultWorldId());
-    impl->world.world = &world;
-    Persistence::PersistenceContext bootstrapContext =
-        worldSet.persistenceContext(world.id());
-    observed.persistenceRoot = bootstrapContext.rootPath;
-    observed.processPrivateStorage =
-        dynamic_cast<Persistence::InMemoryStorageBackend*>(
-            bootstrapContext.storage.get()) != nullptr;
-
-    probe.populateRegistry(worldSet.resources().registry());
-    worldSet.resources().registry().freeze();
-    const Voxel::BlockGalleryCatalog catalog(
-        worldSet.resources().registry());
-    if (catalog.entries().empty()) {
-        throw std::runtime_error(
-            "Block-gallery lifecycle exercise has no specimens");
-    }
-    auto gallery =
-        std::make_shared<const Voxel::BlockGalleryChunkGenerator>(
-            worldSet.resources().registry(), catalog);
-    impl->world.galleryGenerator = gallery;
-    Voxel::WorldView& view = worldSet.createView(world.id());
-    impl->world.worldView = &view;
-
-    detail::ApplicationWorldGenerationBootstrapResult bootstrapped =
-        detail::bootstrapApplicationWorldGeneration(
-            worldSet,
-            world.id(),
-            world,
-            view,
-            [&] {
-                return Persistence::NewWorldGeneration{
-                    "Block gallery",
-                    0,
-                    Voxel::prepareBlockGalleryGeneratorIdentity(
-                        worldSet.resources().registry(),
-                        gallery->worldBounds())};
-            },
-            bootstrapContext,
-            gallery);
-    observed.worldBootstrapped =
-        bootstrapped.generator &&
-        world.generator() == bootstrapped.generator &&
-        view.generator() == bootstrapped.generator;
-    impl->world.settings = std::move(bootstrapped.settings);
-
-    Persistence::PersistenceContext runtimeContext = bootstrapContext;
-    runtimeContext.preferredFormat = bootstrapped.persistenceFormat;
-    runtimeContext.discoverExistingFormat = false;
-    impl->world.chunkLoader =
-        std::make_shared<Persistence::AsyncChunkLoader>(
-            worldSet.persistenceService(),
-            runtimeContext,
-            world,
-            bootstrapped.generator->semanticsVersion(),
-            1,
-            1,
-            bootstrapped.generator);
-    connectChunkLoader(view, impl->world.chunkLoader);
-    Persistence::AsyncChunkLoader* loader =
-        impl->world.chunkLoader.get();
-
-    Voxel::StreamingConfig streaming;
-    streaming.viewDistanceChunks = 0;
-    streaming.unloadDistanceChunks = 1;
-    streaming.workerThreads = 0;
-    streaming.maxResidentChunks = 8;
-    view.setStreamConfig(streaming);
-    view.markSpawnDiscoveryComplete();
-
-    const Voxel::BlockGalleryOverview overview = gallery->overview();
-    applyBlockGalleryOverview(impl->camera, overview);
-    const glm::vec3 expectedPosition{
-        overview.centerX + overview.cameraDistance,
-        overview.cameraHeight,
-        overview.centerZ + overview.cameraDistance,
-    };
-    const glm::vec3 expectedTarget{
-        overview.centerX,
-        static_cast<float>(Voxel::BlockGalleryCatalog::SpecimenHeight),
-        overview.centerZ,
-    };
-    observed.overviewInstalled =
-        glm::distance(impl->camera.position, expectedPosition) < 0.0001f &&
-        glm::distance(impl->camera.target, expectedTarget) < 0.0001f;
-
-    auto bindings = std::make_shared<Input::InputBindings>();
-    bindings->bind("move_forward", GLFW_KEY_W);
-    impl->input.setBindings(bindings);
-    impl->world.ready = true;
-    Application application(
-        std::move(impl), Application::Initialization::Skip);
-
-    application.m_impl->input.beginFrame();
-    application.m_impl->input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
-    application.m_impl->input.beginFrame();
-    const glm::vec3 cameraBeforeMovement =
-        application.m_impl->camera.position;
-    Input::updateCamera(
-        application.m_impl->input,
-        application.m_impl->camera,
-        0.25f);
-    observed.freeFlyMoved =
-        glm::distance(
-            application.m_impl->camera.position,
-            cameraBeforeMovement) > 0.1f;
-
-    const Voxel::BlockGalleryCatalogEntry& specimen =
-        catalog.entries().front();
-    const Voxel::ChunkCoord specimenChunk = Voxel::worldToChunk(
-        specimen.specimenPosition.x,
-        specimen.specimenPosition.y,
-        specimen.specimenPosition.z);
-    for (size_t attempt = 0; attempt < 1024; ++attempt) {
-        view.updateStreaming(specimenChunk.toWorldCenter());
-        view.updateMeshes();
-        const Voxel::Chunk* chunk =
-            world.chunkManager().getChunk(specimenChunk);
-        if (chunk &&
-            world.getBlock(
-                specimen.specimenPosition.x,
-                specimen.specimenPosition.y,
-                specimen.specimenPosition.z).id == specimen.blockId) {
-            observed.specimenLoadedThroughAsyncLoader = true;
-            break;
-        }
-        std::this_thread::yield();
-    }
-    observed.chunkLoadsStarted = loader->diagnostics().work.started;
-    if (!observed.specimenLoadedThroughAsyncLoader) {
-        throw std::runtime_error(
-            "Block-gallery specimen did not stream through the chunk loader");
-    }
-
-    application.close();
-    observed.generatedChunkPersistedOnClose = storage->exists(
-        std::string(kBlockGalleryVirtualRoot) +
-        "/zones/rigel/default/regions");
-}
-
 void ApplicationTestAccess::construct(ApplicationConstructionHooks hooks) {
     if (hooks.userPreferencesPath.empty()) {
         hooks.userPreferencesPath = std::filesystem::absolute(
@@ -1247,24 +1108,156 @@ ApplicationBlockGalleryLifecycleState
 ApplicationTestAccess::runBlockGalleryLaunchLifecycle(
     int argc,
     const char* const* argv,
-    void (*populateRegistry)(Voxel::BlockRegistry&)
+    GlfwRuntime::Api runtimeApi,
+    std::filesystem::path userPreferencesPath
 ) {
-    if (g_applicationLaunchOverrideForTesting ||
-        g_blockGalleryLaunchLifecycleProbe) {
+    if (g_blockGalleryLaunchLifecycleProbe) {
         throw std::logic_error(
             "An application launch lifecycle exercise is already active");
     }
 
     ApplicationBlockGalleryLifecycleState observed;
-    BlockGalleryLaunchLifecycleProbe probe{
-        &observed, populateRegistry};
+    BlockGalleryLaunchLifecycleProbe probe;
+    probe.state = &observed;
+    probe.runtimeApi = runtimeApi;
+    probe.userPreferencesPath = std::move(userPreferencesPath);
     g_blockGalleryLaunchLifecycleProbe = &probe;
-    g_applicationLaunchOverrideForTesting =
-        &ApplicationTestAccess::exerciseBlockGalleryLaunchLifecycle;
     observed.exitCode = runApplication(argc, argv);
-    g_applicationLaunchOverrideForTesting = nullptr;
     g_blockGalleryLaunchLifecycleProbe = nullptr;
+    observed.generatedChunkPersistedOnClose =
+        probe.storage && probe.storage->exists(
+            std::string(kBlockGalleryVirtualRoot) +
+            "/zones/rigel/default/regions");
     return observed;
+}
+
+void ApplicationTestAccess::observeBlockGalleryLaunchInitialized(
+    Application& application
+) {
+    if (!g_blockGalleryLaunchLifecycleProbe) {
+        return;
+    }
+
+    BlockGalleryLaunchLifecycleProbe& probe =
+        *g_blockGalleryLaunchLifecycleProbe;
+    ApplicationBlockGalleryLifecycleState& observed = *probe.state;
+    Application::Impl& impl = *application.m_impl;
+    observed.decodedWorldMode = impl.worldMode;
+    if (impl.worldMode != WorldMode::BlockGallery ||
+        !impl.world.world || !impl.world.worldView ||
+        !impl.world.galleryGenerator) {
+        return;
+    }
+
+    const Persistence::PersistenceContext context =
+        impl.world.worldSet.persistenceContext(impl.world.activeWorldId);
+    observed.persistenceRoot = context.rootPath;
+    probe.storage = std::dynamic_pointer_cast<
+        Persistence::InMemoryStorageBackend>(context.storage);
+    observed.processPrivateStorage = probe.storage != nullptr;
+
+    Voxel::WorldResources& resources = impl.world.worldSet.resources();
+    const Voxel::BlockRegistry& registry = resources.registry();
+    const Voxel::BlockGalleryCatalog catalog(registry);
+    observed.resourcesInitialized = resources.initialized();
+    observed.runtimeRegistrationCount = registry.size();
+    observed.gallerySpecimenCount = catalog.entries().size();
+    observed.emptyGeometryExclusionCount =
+        catalog.emptyGeometryExclusions().size();
+    observed.textureCount = resources.textureAtlas().textureCount();
+    observed.worldBootstrapped =
+        impl.world.world->generator() &&
+        impl.world.world->generator() == impl.world.worldView->generator() &&
+        impl.world.chunkLoader != nullptr;
+
+    const Voxel::BlockGalleryOverview overview =
+        impl.world.galleryGenerator->overview();
+    const glm::vec3 expectedPosition{
+        overview.centerX + overview.cameraDistance,
+        overview.cameraHeight,
+        overview.centerZ + overview.cameraDistance,
+    };
+    const glm::vec3 expectedTarget{
+        overview.centerX,
+        static_cast<float>(Voxel::BlockGalleryCatalog::SpecimenHeight),
+        overview.centerZ,
+    };
+    observed.overviewInstalled =
+        glm::distance(impl.camera.position, expectedPosition) < 0.0001f &&
+        glm::distance(impl.camera.target, expectedTarget) < 0.0001f;
+
+    float closestDistanceSquared = std::numeric_limits<float>::max();
+    for (const Voxel::BlockGalleryCatalogEntry& entry : catalog.entries()) {
+        const float dx = static_cast<float>(entry.specimenPosition.x) -
+            impl.camera.position.x;
+        const float dz = static_cast<float>(entry.specimenPosition.z) -
+            impl.camera.position.z;
+        const float distanceSquared = dx * dx + dz * dz;
+        if (distanceSquared < closestDistanceSquared) {
+            closestDistanceSquared = distanceSquared;
+            probe.specimenPosition = entry.specimenPosition;
+            probe.specimenId = entry.blockId;
+            probe.specimenSelected = true;
+        }
+    }
+}
+
+void ApplicationTestAccess::observeBlockGalleryLaunchFrame(
+    Application& application
+) {
+    if (!g_blockGalleryLaunchLifecycleProbe) {
+        return;
+    }
+
+    BlockGalleryLaunchLifecycleProbe& probe =
+        *g_blockGalleryLaunchLifecycleProbe;
+    ApplicationBlockGalleryLifecycleState& observed = *probe.state;
+    Application::Impl& impl = *application.m_impl;
+    if (impl.worldMode != WorldMode::BlockGallery ||
+        !impl.world.world || !impl.world.worldView ||
+        !impl.world.chunkLoader) {
+        impl.runtime.requestWindowClose();
+        return;
+    }
+
+    ++observed.renderedFrames;
+    observed.frameRendererSubmitted = true;
+    observed.chunkLoadsStarted =
+        impl.world.chunkLoader->diagnostics().work.started;
+
+    if (!probe.movementStarted) {
+        probe.movementStart = impl.camera.position;
+        impl.input.handleKeyEvent(GLFW_KEY_W, GLFW_PRESS);
+        probe.movementStarted = true;
+    } else if (!observed.freeFlyMoved &&
+               glm::distance(impl.camera.position, probe.movementStart) >
+                   0.0001f) {
+        observed.freeFlyMoved = true;
+        impl.input.handleKeyEvent(GLFW_KEY_W, GLFW_RELEASE);
+    }
+
+    if (probe.specimenSelected) {
+        const auto& position = probe.specimenPosition;
+        const Voxel::ChunkCoord chunk = Voxel::worldToChunk(
+            position.x, position.y, position.z);
+        observed.specimenLoadedThroughAsyncLoader =
+            impl.world.world->getBlock(
+                position.x, position.y, position.z).id == probe.specimenId;
+        const auto mesh = impl.world.worldView->meshStore().snapshot(chunk);
+        observed.specimenMeshSubmitted =
+            observed.specimenLoadedThroughAsyncLoader &&
+            mesh.has_value() && !mesh->empty;
+    }
+
+    const bool complete =
+        observed.renderedFrames >= 2 &&
+        observed.freeFlyMoved &&
+        observed.specimenLoadedThroughAsyncLoader &&
+        observed.specimenMeshSubmitted &&
+        observed.chunkLoadsStarted > 0;
+    if (complete || observed.renderedFrames >= 600) {
+        impl.runtime.requestWindowClose();
+    }
 }
 
 std::optional<PreferenceApplyResult>
@@ -1315,10 +1308,6 @@ int runApplication(
 
 int runApplication(int argc, const char* const* argv) noexcept {
     return runApplication(argc, argv, [](const LaunchOptions& launchOptions) {
-        if (g_applicationLaunchOverrideForTesting) {
-            g_applicationLaunchOverrideForTesting(launchOptions);
-            return;
-        }
         Application application(launchOptions);
         application.run();
         application.close();
@@ -1433,7 +1422,8 @@ void Application::run() {
                 if (m_impl->input.isActionJustPressed("toggle_mouse_capture")) {
                     Input::setCursorCaptured(m_impl->window, !m_impl->window.cursorCaptured);
                 }
-                if (m_impl->window.cursorCaptured &&
+                if (m_impl->initializeWindowIntegrations &&
+                    m_impl->window.cursorCaptured &&
                     glfwGetInputMode(m_impl->window.window, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
                     Input::setCursorCaptured(m_impl->window, true);
                 }
@@ -1615,6 +1605,7 @@ void Application::run() {
                     requireFramebufferSize(m_impl->runtime);
                 m_impl->renderer.clear(width, height);
             }
+            ApplicationTestAccess::observeBlockGalleryLaunchFrame(*this);
         }
         Core::Profiler::endFrame();
 

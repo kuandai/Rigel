@@ -3,6 +3,7 @@
 #include "GlfwRuntime.h"
 #include "Rigel/Application.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -17,7 +18,6 @@ class AsyncChunkLoader;
 class StorageBackend;
 }
 namespace Voxel {
-class BlockRegistry;
 class WorldView;
 }
 
@@ -48,6 +48,7 @@ struct ApplicationConstructionHooks {
     void (*afterInstalledPersistenceContextPrepared)(
         ApplicationPersistencePolicyState) = nullptr;
     WorldMode worldMode = WorldMode::Normal;
+    bool initializeWindowIntegrations = true;
 };
 
 struct ApplicationCloseHooks {
@@ -82,13 +83,21 @@ struct ApplicationBlockGalleryLifecycleState {
     int exitCode = 0;
     WorldMode decodedWorldMode = WorldMode::Normal;
     std::string persistenceRoot;
+    size_t runtimeRegistrationCount = 0;
+    size_t gallerySpecimenCount = 0;
+    size_t emptyGeometryExclusionCount = 0;
+    size_t textureCount = 0;
     bool processPrivateStorage = false;
+    bool resourcesInitialized = false;
     bool worldBootstrapped = false;
     bool overviewInstalled = false;
     bool freeFlyMoved = false;
     bool specimenLoadedThroughAsyncLoader = false;
+    bool specimenMeshSubmitted = false;
+    bool frameRendererSubmitted = false;
     bool generatedChunkPersistedOnClose = false;
     uint64_t chunkLoadsStarted = 0;
+    uint64_t renderedFrames = 0;
 };
 
 class ApplicationTestAccess {
@@ -115,7 +124,8 @@ public:
     runBlockGalleryLaunchLifecycle(
         int argc,
         const char* const* argv,
-        void (*populateRegistry)(Voxel::BlockRegistry&));
+        GlfwRuntime::Api runtimeApi,
+        std::filesystem::path userPreferencesPath);
     static std::optional<PreferenceApplyResult>
     consumeViewDistanceOwnerForTesting(
         ApplicationPreferences& preferences,
@@ -124,10 +134,10 @@ public:
     static bool initializeOptionalUserInterface(
         GLFWwindow* window,
         bool (*initialize)(GLFWwindow*)) noexcept;
-
-private:
-    static void exerciseBlockGalleryLaunchLifecycle(
-        const LaunchOptions& options);
+    static void observeBlockGalleryLaunchInitialized(
+        Application& application);
+    static void observeBlockGalleryLaunchFrame(
+        Application& application);
 };
 
 } // namespace Rigel

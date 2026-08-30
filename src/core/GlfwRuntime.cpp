@@ -85,6 +85,7 @@ GlfwRuntime::GlfwRuntime()
           &glfwWindowShouldClose,
           &glfwPollEvents,
           &glfwSwapBuffers,
+          &glfwSetWindowShouldClose,
       }) {
 }
 
@@ -102,6 +103,12 @@ double GlfwRuntime::time() const {
 
 bool GlfwRuntime::windowShouldClose(GLFWwindow* window) const {
     return !m_api.windowShouldClose || m_api.windowShouldClose(window) != 0;
+}
+
+void GlfwRuntime::requestWindowClose() const {
+    if (m_window && m_api.setWindowShouldClose) {
+        m_api.setWindowShouldClose(m_window, GLFW_TRUE);
+    }
 }
 
 void GlfwRuntime::pollEvents() const {

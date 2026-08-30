@@ -85,8 +85,10 @@ path, the environment variable of the same name, then the canonical staged
 file. It invokes `sync`, then copies the coherent generated tree under the lock
 to a content-addressed build-directory snapshot before enumerating resources.
 Assembly inputs remain on that immutable snapshot if a later import publishes a
-new generation. Once resource enumeration has handed off the new paths, CMake
-marks that generation active and retires every predecessor. An interrupted
-handoff retains the prior active generation and at most one replacement
-candidate. Synchronization skips reconstruction when the JAR, importer, and
-generated-tree hashes are current.
+new generation. Before copying a replacement, snapshot recovery reads the
+atomically replaced generated assembly and retains its referenced generation.
+The incoming tree is the only additional candidate, bounding snapshots to two
+complete trees even before the first handoff marker exists. Once resource
+enumeration has handed off the new paths, CMake marks that generation active and
+retires its predecessor. Synchronization skips reconstruction when the JAR,
+importer, and generated-tree hashes are current.

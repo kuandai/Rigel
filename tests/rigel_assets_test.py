@@ -22,6 +22,7 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import rigel_assets
+from tests import single_cuboid_fixture
 
 
 def write_jar(path: Path, entries: dict[str, bytes] | None = None) -> None:
@@ -1162,6 +1163,138 @@ class ImportFoundationTest(unittest.TestCase):
                     if output_suffix.parts:
                         self.assertFalse(output.exists())
 
+    def test_pre_handoff_snapshots_have_a_fixed_single_generation_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "asset-root"
+            snapshots = Path(directory) / "snapshots"
+            self._prepare_publication(root)
+
+            for generation in range(6):
+                if generation:
+                    staging = root / f".rigel/.assets-staging-{generation}"
+                    rigel_assets.write_output(
+                        staging,
+                        f"generation-{generation}.bin",
+                        bytes([generation]) * (generation * 17),
+                    )
+                    provenance = {
+                        "generation": generation,
+                        "jar_sha256": hashlib.sha256(
+                            f"source-{generation}".encode()
+                        ).hexdigest(),
+                        "output_tree_sha256": rigel_assets.sha256_tree(staging),
+                    }
+                    rigel_assets.publish_generated_tree(
+                        root, staging, provenance
+                    )
+                else:
+                    provenance = rigel_assets.read_provenance(root)
+                    self.assertIsNotNone(provenance)
+                    assert provenance is not None
+
+                snapshot = rigel_assets.snapshot_generated_assets(
+                    root, snapshots, str(provenance["jar_sha256"])
+                )
+                generations = [
+                    path
+                    for path in snapshots.iterdir()
+                    if path.is_dir() and rigel_assets._is_sha256(path.name)
+                ]
+                self.assertEqual(generations, [snapshot])
+                self.assertEqual(
+                    sum(
+                        path.stat().st_size
+                        for path in snapshot.rglob("*")
+                        if path.is_file()
+                    ),
+                    sum(
+                        path.stat().st_size
+                        for path in (
+                            root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+                        ).rglob("*")
+                        if path.is_file()
+                    ),
+                )
+                self.assertFalse(
+                    (
+                        snapshots
+                        / rigel_assets.SNAPSHOT_ACTIVE_GENERATION_FILENAME
+                    ).exists()
+                )
+
+    def test_snapshot_copy_failure_preserves_the_assembly_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            test_root = Path(directory)
+            root = test_root / "asset-root"
+            snapshots = test_root / "snapshots"
+            assembly = test_root / "embedded/resources.S"
+            next_staging, next_provenance = self._prepare_publication(root)
+            first_provenance = rigel_assets.read_provenance(root)
+            self.assertIsNotNone(first_provenance)
+            assert first_provenance is not None
+            first = rigel_assets.snapshot_generated_assets(
+                root, snapshots, str(first_provenance["jar_sha256"])
+            )
+            rigel_assets.retire_generated_asset_snapshots(snapshots, first)
+
+            rigel_assets.write_output(next_staging, "new.txt", b"new")
+            rigel_assets.publish_generated_tree(
+                root, next_staging, next_provenance
+            )
+            assembly.parent.mkdir()
+            assembly.write_text(
+                f'.incbin "{first / "old.txt"}"\n', encoding="utf-8"
+            )
+            second = rigel_assets.snapshot_generated_assets(
+                root,
+                snapshots,
+                str(next_provenance["jar_sha256"]),
+                assembly,
+            )
+            assembly.write_text(
+                f'.incbin "{second / "new.txt"}"\n', encoding="utf-8"
+            )
+
+            final_staging = root / ".rigel/.assets-staging-final"
+            rigel_assets.write_output(final_staging, "final.txt", b"final")
+            final_provenance = {
+                "generation": "final",
+                "jar_sha256": hashlib.sha256(b"final-source").hexdigest(),
+                "output_tree_sha256": rigel_assets.sha256_tree(final_staging),
+            }
+            rigel_assets.publish_generated_tree(
+                root, final_staging, final_provenance
+            )
+            with mock.patch.object(
+                rigel_assets.shutil,
+                "copytree",
+                side_effect=OSError("injected snapshot copy failure"),
+            ), self.assertRaisesRegex(OSError, "injected snapshot copy failure"):
+                rigel_assets.snapshot_generated_assets(
+                    root,
+                    snapshots,
+                    str(final_provenance["jar_sha256"]),
+                    assembly,
+                )
+
+            self.assertFalse(first.exists())
+            self.assertTrue(second.is_dir())
+            self.assertEqual(
+                sorted(
+                    path.name
+                    for path in snapshots.iterdir()
+                    if path.is_dir()
+                ),
+                [second.name],
+            )
+            marker = json.loads(
+                (
+                    snapshots
+                    / rigel_assets.SNAPSHOT_ACTIVE_GENERATION_FILENAME
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(marker["tree_sha256"], second.name)
+
     def test_cmake_embeds_a_locked_immutable_generated_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             test_root = Path(directory)
@@ -1226,7 +1359,8 @@ rigel_snapshot_generated_resources(
     "{snapshots}"
     "{sys.executable}"
     "{importer}"
-    "{provenance['jar_sha256']}")
+    "{provenance['jar_sha256']}"
+    "{build / 'embedded/Dummy_resources.S'}")
 target_embed_resources(Dummy "${{GENERATED_ROOT}}")
 """,
                 encoding="utf-8",
@@ -1348,9 +1482,6 @@ if "retire-snapshots" in arguments:
     if not assembly.is_file() or str(retained) not in assembly.read_text(encoding="utf-8"):
         raise SystemExit("snapshot retirement preceded the resource handoff")
     first = output / {first_hash!r}
-    legacy = output / {legacy_hash!r}
-    if retained.name == {first_hash!r} and not legacy.is_dir():
-        raise SystemExit("unhanded predecessor was retired before the resource handoff")
     if retained.name != {first_hash!r}:
         if not first.is_dir():
             raise SystemExit("previous snapshot was retired before the resource handoff")
@@ -1376,7 +1507,8 @@ rigel_snapshot_generated_resources(
     "{snapshots}"
     "{sys.executable}"
     "{wrapper}"
-    "{expected_jar_hash}")
+    "{expected_jar_hash}"
+    "{build / 'embedded/Dummy_resources.S'}")
 target_embed_resources(Dummy "${{GENERATED_ROOT}}")
 rigel_retire_generated_resource_snapshots(
     "{snapshots}"
@@ -1469,6 +1601,138 @@ rigel_retire_generated_resource_snapshots(
                 [final_hash],
             )
 
+    def test_cmake_failure_keeps_the_interrupted_handoff_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            test_root = Path(directory)
+            root = test_root / "asset-root"
+            project = test_root / "project"
+            build = test_root / "build"
+            snapshots = build / "generated-resource-snapshots"
+            assembly = build / "embedded/Dummy_resources.S"
+            project.mkdir()
+            next_staging, next_provenance = self._prepare_publication(root)
+            first_provenance = rigel_assets.read_provenance(root)
+            self.assertIsNotNone(first_provenance)
+            assert first_provenance is not None
+            first_hash = str(first_provenance["output_tree_sha256"])
+            second_hash = str(next_provenance["output_tree_sha256"])
+            importer = Path(rigel_assets.__file__).resolve()
+            asset_resources = importer.parent.parent / "cmake/AssetResources.cmake"
+            (project / "dummy.cpp").write_text(
+                "int generated_resource_dummy() { return 0; }\n",
+                encoding="utf-8",
+            )
+
+            def write_project(jar_hash: str, failure: str | None = None) -> None:
+                resource_roots = (
+                    '"${GENERATED_ROOT}" "${GENERATED_ROOT}"'
+                    if failure == "enumeration"
+                    else '"${GENERATED_ROOT}"'
+                )
+                tail = (
+                    'message(FATAL_ERROR "injected handoff interruption")'
+                    if failure == "handoff"
+                    else (
+                        ""
+                        if failure == "enumeration"
+                        else f'''rigel_retire_generated_resource_snapshots(
+    "{snapshots}"
+    "${{GENERATED_ROOT}}"
+    "{sys.executable}"
+    "{importer}")'''
+                    )
+                )
+                (project / "CMakeLists.txt").write_text(
+                    f"""cmake_minimum_required(VERSION 3.20)
+project(InterruptedResourceHandoff LANGUAGES CXX ASM)
+include("{asset_resources}")
+add_library(Dummy STATIC dummy.cpp)
+rigel_snapshot_generated_resources(
+    GENERATED_ROOT
+    "{root}"
+    "{snapshots}"
+    "{sys.executable}"
+    "{importer}"
+    "{jar_hash}"
+    "{assembly}")
+target_embed_resources(Dummy {resource_roots})
+{tail}
+""",
+                    encoding="utf-8",
+                )
+
+            cmake = shutil.which("cmake")
+            self.assertIsNotNone(cmake)
+            assert cmake is not None
+            environment = dict(os.environ)
+            environment["CCACHE_DISABLE"] = "true"
+
+            write_project(str(first_provenance["jar_sha256"]))
+            configured = subprocess.run(
+                [cmake, "-S", str(project), "-B", str(build)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=environment,
+            )
+            self.assertEqual(
+                configured.returncode,
+                0,
+                configured.stdout + configured.stderr,
+            )
+
+            rigel_assets.write_output(next_staging, "new.txt", b"new")
+            rigel_assets.publish_generated_tree(
+                root, next_staging, next_provenance
+            )
+            write_project(str(next_provenance["jar_sha256"]), "handoff")
+            interrupted = subprocess.run(
+                [cmake, "-S", str(project), "-B", str(build)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=environment,
+            )
+            self.assertNotEqual(interrupted.returncode, 0)
+            interrupted_assembly = assembly.read_bytes()
+            self.assertIn(str(snapshots / second_hash).encode(), interrupted_assembly)
+            self.assertTrue((snapshots / first_hash).is_dir())
+            self.assertTrue((snapshots / second_hash).is_dir())
+
+            final_staging = root / ".rigel/.assets-staging-final"
+            rigel_assets.write_output(final_staging, "final.txt", b"final")
+            final_provenance = {
+                "generation": "final",
+                "jar_sha256": hashlib.sha256(b"final-source").hexdigest(),
+                "output_tree_sha256": rigel_assets.sha256_tree(final_staging),
+            }
+            final_hash = str(final_provenance["output_tree_sha256"])
+            rigel_assets.publish_generated_tree(
+                root, final_staging, final_provenance
+            )
+            write_project(str(final_provenance["jar_sha256"]), "enumeration")
+            failed = subprocess.run(
+                [cmake, "-S", str(project), "-B", str(build)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=environment,
+            )
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("Duplicate logical resource path", failed.stderr)
+            self.assertEqual(assembly.read_bytes(), interrupted_assembly)
+            self.assertFalse((snapshots / first_hash).exists())
+            self.assertTrue((snapshots / second_hash).is_dir())
+            self.assertTrue((snapshots / final_hash).is_dir())
+            self.assertEqual(
+                sorted(
+                    path.name
+                    for path in snapshots.iterdir()
+                    if path.is_dir()
+                ),
+                sorted([second_hash, final_hash]),
+            )
+
     def test_cmake_rejects_a_generation_replaced_after_synchronization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             test_root = Path(directory)
@@ -1523,7 +1787,8 @@ rigel_synchronize_generated_resources(
     "{snapshots}"
     "{sys.executable}"
     "{wrapper}"
-    "{first_jar}")
+    "{first_jar}"
+    "{build / 'embedded/Dummy_resources.S'}")
 """,
                 encoding="utf-8",
             )
@@ -1650,6 +1915,61 @@ class BlockCompilerTest(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn("solid: false", bright)
             self.assertIn("emits_light: 7", bright)
+
+    def test_compiles_one_cuboid_for_base_and_generated_states(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, single_cuboid_fixture.entries())
+            output = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                indexed = rigel_assets.indexed_archive(archive)
+                rigel_assets.extract_direct_assets(archive, indexed, output)
+                count = rigel_assets.compile_blocks(archive, indexed, output)
+
+            self.assertEqual(count, 2)
+            model = rigel_assets.parse_generated_model(
+                (output / "models/blocks/ledge.yaml").read_bytes(),
+                "models/blocks/ledge.yaml",
+            )
+            self.assertEqual(model["id"], "base:block_model/ledge")
+            self.assertEqual(len(model["cuboids"]), 1)
+            cuboid = model["cuboids"][0]
+            self.assertEqual(
+                cuboid["bounds"],
+                [-0.15625, -0.03125, 0.21875, 1.15625, 0.65625, 0.78125],
+            )
+            self.assertEqual(set(cuboid["faces"]), {"pos_x", "neg_y"})
+            self.assertEqual(
+                cuboid["faces"]["pos_x"]["uv"],
+                [0.9375, 0.125, 0.1875, 0.875],
+            )
+            self.assertEqual(cuboid["faces"]["pos_x"]["rotation"], 90)
+            self.assertFalse(
+                cuboid["faces"]["pos_x"]["ambient_occlusion"]
+            )
+            self.assertFalse(cuboid["faces"]["pos_x"]["cull"])
+            base = rigel_assets.parse_generated_block(
+                (output / "blocks/test__ledge.yaml").read_bytes(), "base.yaml"
+            )
+            generated = rigel_assets.parse_generated_block(
+                (
+                    output / "blocks/test__ledge[facing=east].yaml"
+                ).read_bytes(),
+                "generated.yaml",
+            )
+            self.assertEqual(base["model"], "base:block_model/ledge")
+            self.assertEqual(generated["model"], "base:block_model/ledge")
+            self.assertEqual(generated["orientation"], [0, 90, 0])
+            self.assertEqual(generated["textures"], base["textures"])
+            counts = rigel_assets.validate_generated_tree(
+                output,
+                required_identifiers=(
+                    "test:ledge",
+                    "test:ledge[facing=east]",
+                ),
+            )
+            self.assertEqual(counts["block_models"], 1)
 
     def test_preserves_generator_orientation_and_top_bottom_uv_behavior(self) -> None:
         entries = synthetic_block_entries()
@@ -2013,6 +2333,47 @@ class SynchronizationTest(unittest.TestCase):
             self.assertEqual(
                 first["output_tree_sha256"],
                 rigel_assets.sha256_tree(root / ".rigel/assets"),
+            )
+
+    def test_forced_rebuild_is_byte_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_cuboid_entries())
+
+            first, first_changed = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:post",)
+            )
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            provenance_path = root / rigel_assets.PROVENANCE_RELATIVE_PATH
+            first_files = {
+                path.relative_to(assets): path.read_bytes()
+                for path in assets.rglob("*")
+                if path.is_file()
+            }
+            first_provenance = provenance_path.read_bytes()
+
+            rebuilt, rebuilt_changed = rigel_assets.synchronize(
+                root,
+                jar,
+                force=True,
+                required_identifiers=("test:post",),
+            )
+
+            self.assertTrue(first_changed)
+            self.assertTrue(rebuilt_changed)
+            self.assertEqual(rebuilt, first)
+            self.assertEqual(provenance_path.read_bytes(), first_provenance)
+            self.assertEqual(
+                {
+                    path.relative_to(assets): path.read_bytes()
+                    for path in assets.rglob("*")
+                    if path.is_file()
+                },
+                first_files,
+            )
+            self.assertEqual(
+                rigel_assets.sha256_tree(assets), first["output_tree_sha256"]
             )
 
     def test_sync_imports_the_same_jar_bytes_recorded_in_provenance(self) -> None:

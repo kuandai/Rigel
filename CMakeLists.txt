@@ -58,7 +58,8 @@ if(RIGEL_RESOLVED_COSMIC_REACH_JAR)
         "${CMAKE_CURRENT_BINARY_DIR}/generated-resource-snapshots"
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py"
-        "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")
+        "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/embedded/RigelLib_resources.S")
     message(STATUS
         "Cosmic Reach assets prepared from ${RIGEL_COSMIC_REACH_JAR_SOURCE}: "
         "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")

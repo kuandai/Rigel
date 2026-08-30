@@ -2311,6 +2311,50 @@ def _active_snapshot_hash(output: Path) -> str | None:
     return active_hash
 
 
+def _snapshot_consumer_hash(output: Path, consumer: Path) -> str | None:
+    consumer = consumer.expanduser().resolve()
+    try:
+        content = consumer.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as error:
+        raise AssetImportError(
+            f"generated asset snapshot consumer is unreadable: {consumer}"
+        ) from error
+
+    referenced_hashes = {
+        path.name
+        for path in output.iterdir()
+        if _is_sha256(path.name) and f"{path}{os.sep}" in content
+    }
+    if len(referenced_hashes) > 1:
+        raise AssetImportError(
+            f"generated asset snapshot consumer references multiple generations: {consumer}"
+        )
+    if not referenced_hashes:
+        return None
+
+    referenced_hash = referenced_hashes.pop()
+    referenced = output / referenced_hash
+    if (
+        referenced.is_symlink()
+        or not referenced.is_dir()
+        or sha256_tree(referenced) != referenced_hash
+    ):
+        raise AssetImportError(
+            f"consumer-referenced generated asset snapshot is not coherent: {referenced}"
+        )
+    return referenced_hash
+
+
+def _record_active_snapshot(output: Path, active_hash: str | None) -> None:
+    marker = output / SNAPSHOT_ACTIVE_GENERATION_FILENAME
+    if active_hash is None:
+        marker.unlink(missing_ok=True)
+        return
+    atomic_write_json(marker, {"tree_sha256": active_hash})
+
+
 def _retire_snapshot_candidates(output: Path, retained_hashes: set[str]) -> None:
     for path in sorted(output.iterdir()):
         name = path.name
@@ -2328,7 +2372,10 @@ def _retire_snapshot_candidates(output: Path, retained_hashes: set[str]) -> None
 
 
 def snapshot_generated_assets(
-    root: Path, output: Path, expected_jar_digest: str
+    root: Path,
+    output: Path,
+    expected_jar_digest: str,
+    consumer: Path | None = None,
 ) -> Path:
     output = _resolve_snapshot_output(root, output)
     with _publication_guard(root):
@@ -2349,13 +2396,13 @@ def snapshot_generated_assets(
         tree_hash = provenance["output_tree_sha256"]
         assert isinstance(tree_hash, str)
         with _snapshot_output_guard(output, create=True):
-            active_hash = _active_snapshot_hash(output)
             retained_hashes = {tree_hash}
-            if active_hash is None:
-                retained_hashes.update(
-                    path.name for path in output.iterdir() if _is_sha256(path.name)
-                )
+            if consumer is not None:
+                active_hash = _snapshot_consumer_hash(output, consumer)
+                _record_active_snapshot(output, active_hash)
             else:
+                active_hash = _active_snapshot_hash(output)
+            if active_hash is not None:
                 retained_hashes.add(active_hash)
             _retire_snapshot_candidates(output, retained_hashes)
 
@@ -2547,6 +2594,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     snapshot_parser.add_argument("--output", type=Path, required=True)
     snapshot_parser.add_argument("--jar-sha256", required=True)
+    snapshot_parser.add_argument("--consumer", type=Path)
 
     retire_parser = subparsers.add_parser(
         "retire-snapshots",
@@ -2591,7 +2639,11 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Warning: {omission}", file=sys.stderr)
             return 0
         if args.command == "snapshot":
-            print(snapshot_generated_assets(root, args.output, args.jar_sha256))
+            print(
+                snapshot_generated_assets(
+                    root, args.output, args.jar_sha256, args.consumer
+                )
+            )
             return 0
         if args.command == "retire-snapshots":
             retire_generated_asset_snapshots(args.output, args.retain)

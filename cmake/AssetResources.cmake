@@ -1,9 +1,10 @@
 function(rigel_snapshot_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIRECTORY
-        PYTHON_EXECUTABLE IMPORTER_SCRIPT EXPECTED_JAR_SHA256)
+        PYTHON_EXECUTABLE IMPORTER_SCRIPT EXPECTED_JAR_SHA256 CONSUMER_FILE)
     execute_process(
         COMMAND "${PYTHON_EXECUTABLE}" "${IMPORTER_SCRIPT}"
             --root "${ROOT}" snapshot --output "${OUTPUT_DIRECTORY}"
             --jar-sha256 "${EXPECTED_JAR_SHA256}"
+            --consumer "${CONSUMER_FILE}"
         RESULT_VARIABLE SNAPSHOT_RESULT
         OUTPUT_VARIABLE SNAPSHOT_PATH
         ERROR_VARIABLE SNAPSHOT_ERROR
@@ -20,7 +21,7 @@ function(rigel_snapshot_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIRECTOR
 endfunction()
 
 function(rigel_synchronize_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIRECTORY
-        PYTHON_EXECUTABLE IMPORTER_SCRIPT SOURCE_JAR)
+        PYTHON_EXECUTABLE IMPORTER_SCRIPT SOURCE_JAR CONSUMER_FILE)
     execute_process(
         COMMAND "${PYTHON_EXECUTABLE}" "${IMPORTER_SCRIPT}"
             --root "${ROOT}" sync --jar "${SOURCE_JAR}"
@@ -47,7 +48,8 @@ function(rigel_synchronize_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIREC
         "${OUTPUT_DIRECTORY}"
         "${PYTHON_EXECUTABLE}"
         "${IMPORTER_SCRIPT}"
-        "${EXPECTED_JAR_SHA256}")
+        "${EXPECTED_JAR_SHA256}"
+        "${CONSUMER_FILE}")
     set(${OUTPUT_VARIABLE} "${SNAPSHOT_ROOT}" PARENT_SCOPE)
 endfunction()
 
@@ -128,7 +130,9 @@ function(target_embed_resources TARGET_NAME)
     set(EMBEDDED_DIR "${CMAKE_CURRENT_BINARY_DIR}/embedded")
     file(MAKE_DIRECTORY "${EMBEDDED_DIR}")
     set(ASM_FILE "${EMBEDDED_DIR}/${TARGET_NAME}_resources.S")
-    file(WRITE "${ASM_FILE}" "${ASSEMBLY_CONTENT}")
+    set(ASM_STAGING_FILE "${ASM_FILE}.new")
+    file(WRITE "${ASM_STAGING_FILE}" "${ASSEMBLY_CONTENT}")
+    file(RENAME "${ASM_STAGING_FILE}" "${ASM_FILE}")
     set_source_files_properties("${ASM_FILE}" PROPERTIES
         OBJECT_DEPENDS "${RESOURCE_DEPENDENCIES}")
 

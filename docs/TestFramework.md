@@ -52,6 +52,8 @@ When enabled, CMake adds:
 - `Rigel_public_header_consumer` (public dependency interface check)
 - `Rigel_generated_asset_integration_tests` (only when a Cosmic Reach JAR is
   configured)
+- `Rigel_application_launch_integration_tests` (only when a Cosmic Reach JAR is
+  configured)
 
 ### 2.3 Running Tests
 
@@ -114,6 +116,25 @@ Its focused real-source importer entry reads a digest-addressed JAR snapshot
 from the build tree, keeping the closure and repeated-synchronization checks
 coupled to the embedded generated-resource snapshot. The synthetic importer
 suite always runs without a real-JAR environment selection.
+
+The generated-asset integration renders labeled cube, slab, stair,
+multi-cuboid, rotated, cropped-UV, transparent, and out-of-cell specimens
+through the production `WorldView` and `FrameRenderer` path. It always reads
+the resulting framebuffer. For visual review, set
+`RIGEL_GALLERY_CAPTURE_DIRECTORY` to an absolute directory outside the source
+tree; the test writes one vertically oriented PPM capture per representative:
+
+```bash
+rigel_gallery_captures=/absolute/path/to/gallery-captures
+DISPLAY= WAYLAND_DISPLAY= LIBGL_ALWAYS_SOFTWARE=1 \
+RIGEL_GALLERY_CAPTURE_DIRECTORY="$rigel_gallery_captures" \
+  ../Rigel-build-debug/Rigel_generated_asset_integration_tests \
+  --filter RenderGallerySpecimens
+```
+
+Captures are inspection evidence rather than checked-in fixtures. The test
+does not compare pixel hashes, and rejects capture destinations inside the
+source tree.
 
 Run the main suite via CTest:
 

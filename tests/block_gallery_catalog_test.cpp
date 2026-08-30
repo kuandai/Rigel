@@ -202,6 +202,7 @@ TEST_CASE(BlockGalleryCatalog_ReportsOnlyExplicitEmptyGeometryExclusions) {
     const BlockID firstEmptyId = addEmptyBlock(registry, "invented:a_void");
     const BlockID solidId = addBlock(registry, "invented:solid");
     registry.freeze();
+    Rigel::Test::LogCapture logs("block-gallery-catalog-diagnostics");
 
     const BlockGalleryCatalog catalog(registry);
     CHECK_EQ(
@@ -226,6 +227,11 @@ TEST_CASE(BlockGalleryCatalog_ReportsOnlyExplicitEmptyGeometryExclusions) {
     CHECK(!catalog.findByBlockId(firstEmptyId));
     CHECK(!catalog.findByBlockId(lastEmptyId));
     CHECK(catalog.findByBlockId(solidId));
+    CHECK(logs.output().find("loaded=4") != std::string::npos);
+    CHECK(logs.output().find("specimens=1") != std::string::npos);
+    CHECK(logs.output().find("excluded_explicit_empty_geometry=3") !=
+          std::string::npos);
+    CHECK(logs.output().find("grid=1x1") != std::string::npos);
 }
 
 TEST_CASE(BlockGalleryCatalog_ReportsZeroRenderableRegistry) {
@@ -244,8 +250,11 @@ TEST_CASE(BlockGalleryCatalog_ReportsZeroRenderableRegistry) {
         static_cast<size_t>(1));
     CHECK(logs.output().find("no renderable registrations") !=
           std::string::npos);
+    CHECK(logs.output().find("loaded=1") != std::string::npos);
+    CHECK(logs.output().find("specimens=0") != std::string::npos);
     CHECK(logs.output().find("excluded_explicit_empty_geometry=1") !=
           std::string::npos);
+    CHECK(logs.output().find("grid=0x0") != std::string::npos);
 }
 
 TEST_CASE(BlockGalleryCatalog_RequiresCompletedRegistration) {

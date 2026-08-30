@@ -54,12 +54,17 @@ constexpr bool hasDisplayEnvironment(
 
 class HiddenOpenGLContext {
 public:
-    HiddenOpenGLContext() {
+    explicit HiddenOpenGLContext(int width = 64, int height = 64) {
+        if (width <= 0 || height <= 0) {
+            m_failure = detail::OpenGLContextFailure::ContextCreation;
+            m_error = "OpenGL test surface dimensions must be positive";
+            return;
+        }
 #if (defined(__unix__) || defined(__linux__)) && !defined(__APPLE__)
         if (!detail::hasDisplayEnvironment(
                 std::getenv("DISPLAY"), std::getenv("WAYLAND_DISPLAY"))) {
 #ifdef RIGEL_TEST_HAS_EGL
-            initializeEgl();
+            initializeEgl(width, height);
             return;
 #else
             m_failure = detail::OpenGLContextFailure::MissingDisplay;
@@ -79,7 +84,7 @@ public:
             setGlfwError("GLFW initialization failed", code, description);
 #ifdef RIGEL_TEST_HAS_EGL
             if (m_failure == detail::OpenGLContextFailure::MissingDisplay) {
-                initializeEgl();
+                initializeEgl(width, height);
             }
 #endif
             return;
@@ -92,7 +97,8 @@ public:
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
-        m_window = glfwCreateWindow(64, 64, "Rigel test", nullptr, nullptr);
+        m_window = glfwCreateWindow(
+            width, height, "Rigel test", nullptr, nullptr);
         if (!m_window) {
             m_failure = detail::OpenGLContextFailure::ContextCreation;
             const char* description = nullptr;
@@ -157,7 +163,7 @@ private:
         m_failure = detail::OpenGLContextFailure::EglInitialization;
     }
 
-    void initializeEgl() {
+    void initializeEgl(int width, int height) {
         const auto getPlatformDisplay =
             reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
                 eglGetProcAddress("eglGetPlatformDisplayEXT"));
@@ -198,9 +204,9 @@ private:
             return;
         }
 
-        constexpr EGLint surfaceAttributes[] = {
-            EGL_WIDTH, 64,
-            EGL_HEIGHT, 64,
+        const EGLint surfaceAttributes[] = {
+            EGL_WIDTH, width,
+            EGL_HEIGHT, height,
             EGL_NONE,
         };
         m_eglSurface = eglCreatePbufferSurface(

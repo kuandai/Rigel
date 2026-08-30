@@ -195,13 +195,15 @@ BlockGalleryCatalog::BlockGalleryCatalog(const BlockRegistry& registry)
     if (m_entries.empty()) {
         spdlog::warn(
             "Block gallery catalog has no renderable registrations: "
-            "loaded={}, excluded_explicit_empty_geometry={}",
+            "loaded={}, specimens=0, excluded_explicit_empty_geometry={}, "
+            "grid=0x0",
             m_diagnostics.loadedRegistrationCount,
             m_diagnostics.explicitEmptyGeometryCount);
     } else {
         spdlog::info(
-            "Block gallery catalog prepared: renderable={}, "
+            "Block gallery catalog prepared: loaded={}, specimens={}, "
             "excluded_explicit_empty_geometry={}, grid={}x{}, spacing={}",
+            m_diagnostics.loadedRegistrationCount,
             m_diagnostics.renderableCount,
             m_diagnostics.explicitEmptyGeometryCount,
             m_gridDimensions.columns,

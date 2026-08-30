@@ -22,7 +22,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -51,6 +56,30 @@ constexpr std::string_view LadderId =
     "base:ladder_steel[direction=PosX]";
 constexpr std::string_view PistonHeadId =
     "base:piston[direction=PosX,type=advancing,part=head]";
+constexpr std::string_view MultiCuboidId = "base:table_pedestal_wood";
+constexpr std::string_view CroppedUvId =
+    "base:laser_emitter[type=single,direction=NegZ]";
+constexpr std::string_view TransparentId = "base:water[type=source]";
+
+constexpr int GalleryCaptureWidth = 256;
+constexpr int GalleryCaptureHeight = 256;
+
+struct GalleryVisualRepresentative {
+    std::string_view captureName;
+    std::string_view identifier;
+};
+
+constexpr std::array<GalleryVisualRepresentative, 8>
+    GalleryVisualRepresentatives = {{
+        {"01_cube", "base:stone_shale"},
+        {"02_slab", SlabId},
+        {"03_stair", StairId},
+        {"04_multi_cuboid", MultiCuboidId},
+        {"05_rotated", DoorId},
+        {"06_cropped_uv", CroppedUvId},
+        {"07_transparent", TransparentId},
+        {"08_out_of_cell", PistonHeadId},
+    }};
 
 size_t countResources(std::string_view prefix, std::string_view suffix) {
     return static_cast<size_t>(std::count_if(
@@ -125,6 +154,21 @@ bool hasQuarterTurnedUv(const BlockModel& model) {
         }
     }
     return false;
+}
+
+bool hasOutOfCellGeometry(const BlockModel& model) {
+    return std::any_of(
+        model.cuboids().begin(),
+        model.cuboids().end(),
+        [](const BlockModelCuboid& cuboid) {
+            for (size_t axis = 0; axis < cuboid.bounds.min.size(); ++axis) {
+                if (cuboid.bounds.min[axis] < 0.0f ||
+                    cuboid.bounds.max[axis] > 1.0f) {
+                    return true;
+                }
+            }
+            return false;
+        });
 }
 
 void checkTextureBindings(
@@ -304,22 +348,47 @@ size_t countSharedXPlaneFaces(
     return count;
 }
 
-size_t countRenderedCenterPixels() {
-    constexpr int Width = 64;
-    constexpr int Height = 64;
-    std::array<uint8_t, Width * Height * 4> pixels{};
-    glFinish();
-    glReadPixels(
-        0, 0, Width, Height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+struct FramebufferCapture {
+    int width = 0;
+    int height = 0;
+    std::vector<uint8_t> rgba;
+};
 
+FramebufferCapture readFramebuffer(int width, int height) {
+    FramebufferCapture capture{
+        width,
+        height,
+        std::vector<uint8_t>(
+            static_cast<size_t>(width) * static_cast<size_t>(height) * 4),
+    };
+    glFinish();
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(
+        0,
+        0,
+        width,
+        height,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        capture.rgba.data());
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+    return capture;
+}
+
+size_t countRenderedCenterPixels(const FramebufferCapture& capture) {
     size_t rendered = 0;
-    for (int y = 20; y < 44; ++y) {
-        for (int x = 20; x < 44; ++x) {
-            const size_t offset = static_cast<size_t>(x + y * Width) * 4;
-            const int red = pixels[offset];
-            const int green = pixels[offset + 1];
-            const int blue = pixels[offset + 2];
+    for (int y = capture.height * 5 / 16;
+         y < capture.height * 11 / 16;
+         ++y) {
+        for (int x = capture.width * 5 / 16;
+             x < capture.width * 11 / 16;
+             ++x) {
+            const size_t offset = static_cast<size_t>(
+                x + y * capture.width) * 4;
+            const int red = capture.rgba[offset];
+            const int green = capture.rgba[offset + 1];
+            const int blue = capture.rgba[offset + 2];
             if (std::abs(red - 51) > 3 ||
                 std::abs(green - 77) > 3 ||
                 std::abs(blue - 77) > 3) {
@@ -328,6 +397,76 @@ size_t countRenderedCenterPixels() {
         }
     }
     return rendered;
+}
+
+bool pathIsWithin(
+    const std::filesystem::path& path,
+    const std::filesystem::path& directory
+) {
+    auto pathPart = path.begin();
+    for (auto directoryPart = directory.begin();
+         directoryPart != directory.end();
+         ++directoryPart, ++pathPart) {
+        if (pathPart == path.end() || *pathPart != *directoryPart) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<std::filesystem::path> galleryCaptureDirectory() {
+    const char* configured = std::getenv("RIGEL_GALLERY_CAPTURE_DIRECTORY");
+    if (!configured || configured[0] == '\0') {
+        return std::nullopt;
+    }
+
+    const std::filesystem::path requested(configured);
+    if (!requested.is_absolute()) {
+        throw Rigel::Test::TestFailure(
+            "Gallery capture directory must be an absolute path");
+    }
+
+    const std::filesystem::path source = std::filesystem::weakly_canonical(
+        std::filesystem::path(RIGEL_TEST_SOURCE_DIRECTORY));
+    const std::filesystem::path destination =
+        std::filesystem::weakly_canonical(requested);
+    if (pathIsWithin(destination, source)) {
+        throw Rigel::Test::TestFailure(
+            "Gallery captures must be stored outside the source tree");
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(destination, error);
+    if (error) {
+        throw Rigel::Test::TestFailure(
+            "Failed to create gallery capture directory: " +
+            error.message());
+    }
+    return destination;
+}
+
+void writeFramebufferCapture(
+    const FramebufferCapture& capture,
+    const std::filesystem::path& destination
+) {
+    std::ofstream output(
+        destination,
+        std::ios::binary | std::ios::trunc);
+    output << "P6\n" << capture.width << ' ' << capture.height << "\n255\n";
+    for (int y = capture.height - 1; y >= 0; --y) {
+        for (int x = 0; x < capture.width; ++x) {
+            const size_t offset = static_cast<size_t>(
+                x + y * capture.width) * 4;
+            output.write(
+                reinterpret_cast<const char*>(capture.rgba.data() + offset),
+                3);
+        }
+    }
+    if (!output) {
+        throw Rigel::Test::TestFailure(
+            "Failed to write gallery framebuffer capture: " +
+            destination.string());
+    }
 }
 
 } // namespace
@@ -583,7 +722,8 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
 #ifndef RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS
     SKIP_TEST("representative model expectations target Cosmic Reach 0.6.1");
 #else
-    Rigel::Test::HiddenOpenGLContext context;
+    Rigel::Test::HiddenOpenGLContext context(
+        GalleryCaptureWidth, GalleryCaptureHeight);
     context.require();
 
     Rigel::Asset::AssetManager assets;
@@ -678,17 +818,35 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     renderer.initialize(assets);
     renderer.setVerticalFovDegrees(70.0);
 
-    constexpr std::array<std::string_view, 6> representatives = {
-        "base:stone_shale",
-        SlabId,
-        StairId,
-        DoorId,
-        LadderId,
-        PistonHeadId,
-    };
-    for (const std::string_view identifier : representatives) {
+    CHECK(requireBlock(resources.registry(), "base:stone_shale")
+              .model->isFullCube());
+    CHECK_EQ(
+        requireBlock(resources.registry(), SlabId).model->cuboids().size(),
+        static_cast<size_t>(1));
+    CHECK(
+        requireBlock(resources.registry(), StairId).model->cuboids().size() >
+        1);
+    CHECK(
+        requireBlock(resources.registry(), MultiCuboidId)
+                .model->cuboids().size() >
+        1);
+    CHECK_NE(
+        requireBlock(resources.registry(), DoorId).model.orientation,
+        BlockModelOrientation::Identity);
+    CHECK(hasCroppedUv(
+        *requireBlock(resources.registry(), CroppedUvId).model.geometry));
+    CHECK_EQ(
+        requireBlock(resources.registry(), TransparentId).layer,
+        RenderLayer::Transparent);
+    CHECK(hasOutOfCellGeometry(
+        *requireBlock(resources.registry(), PistonHeadId).model.geometry));
+
+    const std::optional<std::filesystem::path> captureDirectory =
+        galleryCaptureDirectory();
+    for (const GalleryVisualRepresentative& representative :
+         GalleryVisualRepresentatives) {
         const BlockGalleryCatalogEntry& entry = requireGalleryEntry(
-            catalog, resources.registry(), identifier);
+            catalog, resources.registry(), representative.identifier);
         const glm::vec3 target{
             static_cast<float>(entry.specimenPosition.x) + 0.5f,
             static_cast<float>(entry.specimenPosition.y) + 0.5f,
@@ -709,17 +867,27 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
         CHECK(installed.has_value());
         CHECK(!installed->empty);
 
-        renderer.render({
-            .world = world,
-            .worldView = view,
-            .cameraPosition = camera,
-            .cameraTarget = target,
-            .cameraForward = glm::normalize(target - camera),
-            .viewportWidth = 64,
-            .viewportHeight = 64,
-            .deltaTime = 1.0f / 60.0f,
-        });
-        CHECK(countRenderedCenterPixels() >= static_cast<size_t>(4));
+        for (int frame = 0; frame < 3; ++frame) {
+            renderer.render({
+                .world = world,
+                .worldView = view,
+                .cameraPosition = camera,
+                .cameraTarget = target,
+                .cameraForward = glm::normalize(target - camera),
+                .viewportWidth = GalleryCaptureWidth,
+                .viewportHeight = GalleryCaptureHeight,
+                .deltaTime = 1.0f / 60.0f,
+            });
+        }
+        const FramebufferCapture capture = readFramebuffer(
+            GalleryCaptureWidth, GalleryCaptureHeight);
+        CHECK(countRenderedCenterPixels(capture) >= static_cast<size_t>(4));
+        if (captureDirectory) {
+            writeFramebufferCapture(
+                capture,
+                *captureDirectory /
+                    (std::string(representative.captureName) + ".ppm"));
+        }
     }
 
     renderer.release();

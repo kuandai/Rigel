@@ -1679,10 +1679,10 @@ def synchronize(
 ) -> tuple[dict[str, object], bool]:
     jar, _ = resolve_jar(root, explicit_jar)
     jar_digest = sha256_file(jar)
-    if not force and current_import_matches(root, jar_digest):
-        provenance = read_provenance(root)
-        assert provenance is not None
-        return provenance, False
+    if not force:
+        provenance = _matching_import_provenance(root, jar_digest)
+        if provenance is not None:
+            return provenance, False
 
     workspace = root / ".rigel"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -1722,7 +1722,12 @@ def synchronize(
 
 
 def validate_existing_import(root: Path) -> dict[str, object]:
-    provenance = read_provenance(root)
+    with _publication_guard(root):
+        return _validate_existing_import(root)
+
+
+def _validate_existing_import(root: Path) -> dict[str, object]:
+    provenance = _read_provenance(root)
     if provenance is None:
         raise AssetImportError("generated asset provenance is missing or malformed")
     if provenance.get("schema") != PROVENANCE_SCHEMA:
@@ -1812,28 +1817,126 @@ def _publication_lock(root: Path):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _reap_committed_backups(root: Path, workspace: Path) -> None:
+@contextmanager
+def _publication_guard(root: Path):
+    with _publication_lock(root):
+        _recover_interrupted_publication(root)
+        yield
+
+
+def _tree_matches_provenance(
+    assets: Path, provenance: dict[str, object] | None
+) -> bool:
+    expected_hash = provenance.get("output_tree_sha256") if provenance else None
+    if not isinstance(expected_hash, str) or not assets.is_dir():
+        return False
+    try:
+        return sha256_tree(assets) == expected_hash
+    except (AssetImportError, OSError):
+        return False
+
+
+def _published_state_is_coherent(root: Path) -> bool:
+    return _tree_matches_provenance(
+        root / GENERATED_ASSETS_RELATIVE_PATH, _read_provenance(root)
+    )
+
+
+def _transaction_state(backup: Path) -> dict[str, object] | None:
+    return _read_json_object(backup / "transaction.json")
+
+
+def _retry_atomic_copy(source: Path, destination: Path) -> None:
+    try:
+        atomic_copy(source, destination)
+    except OSError:
+        atomic_copy(source, destination)
+
+
+def _restore_previous_publication(root: Path, backup: Path) -> None:
+    destination = root / GENERATED_ASSETS_RELATIVE_PATH
+    provenance_path = root / PROVENANCE_RELATIVE_PATH
+    previous_assets = backup / "assets"
+    previous_provenance = backup / provenance_path.name
+    discarded_assets = backup / "discarded-assets"
+    transaction = _transaction_state(backup)
+    had_previous_assets = (
+        transaction.get("had_previous_assets") if transaction else None
+    )
+    had_previous_provenance = (
+        transaction.get("had_previous_provenance") if transaction else None
+    )
+    previous = _read_json_object(previous_provenance)
+    declared_empty_state = (
+        had_previous_assets is False and had_previous_provenance is False
+    )
+    legacy_empty_state = (
+        transaction is None
+        and not previous_assets.exists()
+        and not previous_provenance.exists()
+    )
+
+    if _tree_matches_provenance(previous_assets, previous):
+        if destination.exists():
+            _retry_remove_tree(discarded_assets)
+            _retry_replace(destination, discarded_assets)
+        _retry_atomic_copy(previous_provenance, provenance_path)
+        _retry_replace(previous_assets, destination)
+    elif _tree_matches_provenance(destination, previous):
+        _retry_atomic_copy(previous_provenance, provenance_path)
+    elif declared_empty_state:
+        if destination.exists():
+            _retry_remove_tree(discarded_assets)
+            _retry_replace(destination, discarded_assets)
+        provenance_path.unlink(missing_ok=True)
+    elif _published_state_is_coherent(root):
+        # Publication failed before the previous generation was moved.
+        pass
+    elif legacy_empty_state:
+        # This also recovers an interrupted first publication created by an
+        # importer version that predates the transaction marker.
+        if destination.exists():
+            _retry_remove_tree(discarded_assets)
+            _retry_replace(destination, discarded_assets)
+        provenance_path.unlink(missing_ok=True)
+    else:
+        raise AssetImportError(
+            "cannot restore the generated asset generation retained after "
+            "an interrupted publication"
+        )
+
+    if not (
+        _published_state_is_coherent(root)
+        or (
+            (declared_empty_state or legacy_empty_state)
+            and not destination.exists()
+            and not provenance_path.exists()
+        )
+    ):
+        raise AssetImportError(
+            "generated asset publication recovery did not produce a coherent state"
+        )
+    _retry_remove_tree(backup)
+
+
+def _recover_interrupted_publication(root: Path) -> None:
+    workspace = (root / GENERATED_ASSETS_RELATIVE_PATH).parent
     backups = sorted(workspace.glob(".assets-previous-*"))
     if not backups:
         return
-    provenance = read_provenance(root)
-    assets = root / GENERATED_ASSETS_RELATIVE_PATH
-    expected_hash = provenance.get("output_tree_sha256") if provenance else None
-    if (
-        not isinstance(expected_hash, str)
-        or not assets.is_dir()
-        or sha256_tree(assets) != expected_hash
-    ):
+    if _published_state_is_coherent(root):
+        for backup in backups:
+            _retry_remove_tree(backup)
+        return
+    if len(backups) != 1:
         raise AssetImportError(
-            "cannot reclaim a prior asset backup while the published tree "
-            "and provenance are not coherent"
+            "cannot recover multiple interrupted generated asset publications"
         )
-    for backup in backups:
-        _retry_remove_tree(backup)
+    _restore_previous_publication(root, backups[0])
 
 
 def publish_generated_tree(root: Path, staging: Path, provenance: dict[str, object]) -> None:
-    with _publication_lock(root):
+    with _publication_guard(root):
         _publish_generated_tree(root, staging, provenance)
 
 
@@ -1843,37 +1946,33 @@ def _publish_generated_tree(
     destination = root / GENERATED_ASSETS_RELATIVE_PATH
     provenance_path = root / PROVENANCE_RELATIVE_PATH
     destination.parent.mkdir(parents=True, exist_ok=True)
-    _reap_committed_backups(root, destination.parent)
     backup = Path(
         tempfile.mkdtemp(prefix=".assets-previous-", dir=destination.parent)
     )
     previous_assets = backup / "assets"
     previous_provenance = backup / provenance_path.name
-    discarded_assets = backup / "discarded-assets"
+    transaction_path = backup / "transaction.json"
+    had_previous_assets = destination.exists()
     had_previous_provenance = provenance_path.is_file()
-    provenance_publication_started = False
     try:
+        atomic_write_json(
+            transaction_path,
+            {
+                "had_previous_assets": had_previous_assets,
+                "had_previous_provenance": had_previous_provenance,
+            },
+        )
         if had_previous_provenance:
             atomic_copy(provenance_path, previous_provenance)
-        if destination.exists():
+        if had_previous_assets:
             os.replace(destination, previous_assets)
         os.replace(staging, destination)
-        provenance_publication_started = True
         atomic_write_json(provenance_path, provenance)
-    except Exception:
+    except BaseException:
         try:
-            if not staging.exists() and destination.exists():
-                _retry_replace(destination, discarded_assets)
-            if provenance_publication_started:
-                if had_previous_provenance:
-                    _retry_replace(previous_provenance, provenance_path)
-                else:
-                    provenance_path.unlink(missing_ok=True)
-            if previous_assets.exists():
-                _retry_replace(previous_assets, destination)
+            _restore_previous_publication(root, backup)
             _retry_remove_tree(staging)
-            _retry_remove_tree(backup)
-        except Exception as recovery_error:
+        except BaseException as recovery_error:
             raise AssetImportError(
                 "generated asset publication failed and rollback was incomplete"
             ) from recovery_error
@@ -1886,8 +1985,23 @@ def _publish_generated_tree(
         pass
 
 
+def _matching_import_provenance(
+    root: Path, jar_digest: str
+) -> dict[str, object] | None:
+    with _publication_guard(root):
+        provenance = _read_provenance(root)
+        if not _import_matches(root, provenance, jar_digest):
+            return None
+        return provenance
+
+
 def current_import_matches(root: Path, jar_digest: str) -> bool:
-    provenance = read_provenance(root)
+    return _matching_import_provenance(root, jar_digest) is not None
+
+
+def _import_matches(
+    root: Path, provenance: dict[str, object] | None, jar_digest: str
+) -> bool:
     assets = root / GENERATED_ASSETS_RELATIVE_PATH
     if not provenance or not assets.is_dir():
         return False
@@ -1898,10 +2012,7 @@ def current_import_matches(root: Path, jar_digest: str) -> bool:
         or provenance.get("jar_sha256") != jar_digest
     ):
         return False
-    try:
-        return provenance.get("output_tree_sha256") == sha256_tree(assets)
-    except (AssetImportError, OSError):
-        return False
+    return _tree_matches_provenance(assets, provenance)
 
 
 def validate_jar(path: Path) -> Path:
@@ -1963,8 +2074,7 @@ def stage_jar(root: Path, source: str | Path) -> Path:
     return destination
 
 
-def read_provenance(root: Path) -> dict[str, object] | None:
-    path = root / PROVENANCE_RELATIVE_PATH
+def _read_json_object(path: Path) -> dict[str, object] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -1972,6 +2082,15 @@ def read_provenance(root: Path) -> dict[str, object] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _read_provenance(root: Path) -> dict[str, object] | None:
+    return _read_json_object(root / PROVENANCE_RELATIVE_PATH)
+
+
+def read_provenance(root: Path) -> dict[str, object] | None:
+    with _publication_guard(root):
+        return _read_provenance(root)
 
 
 def status(root: Path, explicit: str | Path | None = None) -> int:

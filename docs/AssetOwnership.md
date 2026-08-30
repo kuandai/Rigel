@@ -66,8 +66,11 @@ python3 scripts/rigel_assets.py status
 python3 scripts/rigel_assets.py validate
 ```
 
-`sync` constructs and validates a complete staging tree, then atomically
-replaces `.rigel/assets/`. A failed import preserves the previous valid tree;
+`sync` constructs and validates a complete staging tree, then publishes it with
+its provenance under an interprocess lock. Status, validation, and synchronization
+checks use the same lock, and a retained previous generation restores a coherent
+tree and provenance pair when publication is interrupted. A failed import
+preserves the previous valid tree;
 removed source assets disappear on the next successful import. Provenance
 records the source JAR SHA-256, importer schema and source hash, deterministic
 output-tree SHA-256, source prefix, and category counts without timestamps or

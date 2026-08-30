@@ -109,6 +109,28 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+@contextmanager
+def _source_jar_snapshot(root: Path, source: Path):
+    workspace = root / ".rigel"
+    workspace.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    with tempfile.TemporaryFile(
+        prefix=".source-jar-", suffix=".tmp", dir=workspace
+    ) as snapshot:
+        with source.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                snapshot.write(chunk)
+                digest.update(chunk)
+        snapshot.flush()
+        snapshot.seek(0)
+        if not zipfile.is_zipfile(snapshot):
+            raise AssetImportError(
+                f"Cosmic Reach source is not a readable JAR/ZIP: {source}"
+            )
+        snapshot.seek(0)
+        yield snapshot, digest.hexdigest()
+
+
 def importer_sha256() -> str:
     return sha256_file(Path(__file__).resolve())
 
@@ -1681,58 +1703,58 @@ def synchronize(
     required_identifiers: tuple[str, ...] = REQUIRED_BLOCK_IDENTIFIERS,
 ) -> tuple[dict[str, object], bool]:
     jar, _ = resolve_jar(root, explicit_jar)
-    jar_digest = sha256_file(jar)
-    with _synchronization_lock(root, jar_digest):
-        with _publication_guard(root):
-            if not force:
-                provenance = _read_provenance(root)
-                if _import_matches(root, provenance, jar_digest):
-                    assert provenance is not None
-                    return provenance, False
-            starting_publication = _publication_token(root)
+    with _source_jar_snapshot(root, jar) as (jar_snapshot, jar_digest):
+        with _synchronization_lock(root, jar_digest):
+            with _publication_guard(root):
+                if not force:
+                    provenance = _read_provenance(root)
+                    if _import_matches(root, provenance, jar_digest):
+                        assert provenance is not None
+                        return provenance, False
+                starting_publication = _publication_token(root)
 
-        with _generated_tree_staging(root) as staging:
-            diagnostics: list[str] = []
-            with zipfile.ZipFile(jar) as archive:
-                entries = indexed_archive(archive)
-                if not any(
-                    path.startswith("base/blocks/") and path.endswith(".json")
-                    for path in entries
-                ):
-                    raise AssetImportError(
-                        "JAR has no Cosmic Reach base/blocks definitions"
-                    )
-                extract_direct_assets(archive, entries, staging, diagnostics)
-                compile_blocks(archive, entries, staging, diagnostics)
-                omit_blocks_with_unsupported_textures(staging, diagnostics)
-                version = source_version(archive, entries)
-            counts = validate_generated_tree(staging, required_identifiers)
-            provenance = {
-                "schema": PROVENANCE_SCHEMA,
-                "jar_sha256": jar_digest,
-                "importer_schema": IMPORTER_SCHEMA,
-                "importer_sha256": importer_sha256(),
-                "source_prefix": SOURCE_PREFIX,
-                "output_tree_sha256": sha256_tree(staging),
-                "counts": counts,
-            }
-            if version is not None:
-                provenance["source_version"] = version
-            if diagnostics:
-                provenance["source_omissions"] = diagnostics
+            with _generated_tree_staging(root) as staging:
+                diagnostics: list[str] = []
+                with zipfile.ZipFile(jar_snapshot) as archive:
+                    entries = indexed_archive(archive)
+                    if not any(
+                        path.startswith("base/blocks/") and path.endswith(".json")
+                        for path in entries
+                    ):
+                        raise AssetImportError(
+                            "JAR has no Cosmic Reach base/blocks definitions"
+                        )
+                    extract_direct_assets(archive, entries, staging, diagnostics)
+                    compile_blocks(archive, entries, staging, diagnostics)
+                    omit_blocks_with_unsupported_textures(staging, diagnostics)
+                    version = source_version(archive, entries)
+                counts = validate_generated_tree(staging, required_identifiers)
+                provenance = {
+                    "schema": PROVENANCE_SCHEMA,
+                    "jar_sha256": jar_digest,
+                    "importer_schema": IMPORTER_SCHEMA,
+                    "importer_sha256": importer_sha256(),
+                    "source_prefix": SOURCE_PREFIX,
+                    "output_tree_sha256": sha256_tree(staging),
+                    "counts": counts,
+                }
+                if version is not None:
+                    provenance["source_version"] = version
+                if diagnostics:
+                    provenance["source_omissions"] = diagnostics
 
-            with _publication_guard(root, reap_staging=False):
-                if _publication_token(root) != starting_publication:
-                    current = _read_provenance(root)
-                    if _import_matches(root, current, jar_digest):
-                        assert current is not None
-                        return current, False
-                    raise AssetImportError(
-                        "generated assets changed while synchronization was "
-                        "in progress; retry the synchronization"
-                    )
-                _publish_generated_tree(root, staging, provenance)
-            return provenance, True
+                with _publication_guard(root, reap_staging=False):
+                    if _publication_token(root) != starting_publication:
+                        current = _read_provenance(root)
+                        if _import_matches(root, current, jar_digest):
+                            assert current is not None
+                            return current, False
+                        raise AssetImportError(
+                            "generated assets changed while synchronization was "
+                            "in progress; retry the synchronization"
+                        )
+                    _publish_generated_tree(root, staging, provenance)
+                return provenance, True
 
 
 def validate_existing_import(root: Path) -> dict[str, object]:
@@ -1827,23 +1849,38 @@ def _staging_lease_path(staging: Path) -> Path:
 def _generated_tree_staging(root: Path):
     workspace = root / ".rigel"
     workspace.mkdir(parents=True, exist_ok=True)
-    descriptor, lease_name = tempfile.mkstemp(
-        prefix=STAGING_PREFIX, suffix=STAGING_LEASE_SUFFIX, dir=workspace
-    )
-    lease = Path(lease_name)
-    staging = lease.with_name(lease.name[: -len(STAGING_LEASE_SUFFIX)])
-    try:
-        with os.fdopen(descriptor, "a+b") as lease_file:
+    lease: Path | None = None
+    staging: Path | None = None
+    lease_file = None
+    with _publication_lock(root):
+        descriptor, lease_name = tempfile.mkstemp(
+            prefix=STAGING_PREFIX, suffix=STAGING_LEASE_SUFFIX, dir=workspace
+        )
+        lease = Path(lease_name)
+        staging = lease.with_name(lease.name[: -len(STAGING_LEASE_SUFFIX)])
+        try:
+            lease_file = os.fdopen(descriptor, "a+b")
             fcntl.flock(lease_file.fileno(), fcntl.LOCK_EX)
             staging.mkdir()
-            try:
-                yield staging
-            finally:
+        except BaseException:
+            if lease_file is None:
+                os.close(descriptor)
+            else:
+                lease_file.close()
+            lease.unlink(missing_ok=True)
+            raise
+    assert lease is not None and staging is not None and lease_file is not None
+    try:
+        yield staging
+    finally:
+        try:
+            with _publication_lock(root):
                 if staging.exists():
                     shutil.rmtree(staging)
-                fcntl.flock(lease_file.fileno(), fcntl.LOCK_UN)
-    finally:
-        lease.unlink(missing_ok=True)
+                lease.unlink(missing_ok=True)
+        finally:
+            fcntl.flock(lease_file.fileno(), fcntl.LOCK_UN)
+            lease_file.close()
 
 
 def _reap_abandoned_staging(root: Path) -> None:
@@ -2207,7 +2244,9 @@ def current_import_matches(root: Path, jar_digest: str) -> bool:
     return _matching_import_provenance(root, jar_digest) is not None
 
 
-def snapshot_generated_assets(root: Path, output: Path) -> Path:
+def snapshot_generated_assets(
+    root: Path, output: Path, expected_jar_digest: str
+) -> Path:
     output = output.expanduser().resolve()
     with _publication_guard(root):
         provenance = _read_provenance(root)
@@ -2217,6 +2256,13 @@ def snapshot_generated_assets(root: Path, output: Path) -> Path:
                 "cannot snapshot generated assets without a coherent tree and provenance"
             )
         assert provenance is not None
+        published_jar_digest = provenance.get("jar_sha256")
+        if published_jar_digest != expected_jar_digest:
+            raise AssetImportError(
+                "cannot snapshot generated assets because the published source "
+                "JAR changed after synchronization "
+                f"(expected {expected_jar_digest}, found {published_jar_digest})"
+            )
         tree_hash = provenance["output_tree_sha256"]
         assert isinstance(tree_hash, str)
         output.mkdir(parents=True, exist_ok=True)
@@ -2379,6 +2425,7 @@ def build_parser() -> argparse.ArgumentParser:
         "snapshot", help="copy a coherent generated tree for resource embedding"
     )
     snapshot_parser.add_argument("--output", type=Path, required=True)
+    snapshot_parser.add_argument("--jar-sha256", required=True)
 
     subparsers.add_parser(
         "validate", help="validate the generated tree and its provenance"
@@ -2416,7 +2463,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Warning: {omission}", file=sys.stderr)
             return 0
         if args.command == "snapshot":
-            print(snapshot_generated_assets(root, args.output))
+            print(snapshot_generated_assets(root, args.output, args.jar_sha256))
             return 0
         if args.command == "validate":
             provenance = validate_existing_import(root)

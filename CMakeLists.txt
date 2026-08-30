@@ -52,28 +52,16 @@ if(RIGEL_RESOLVED_COSMIC_REACH_JAR)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py")
-    execute_process(
-        COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py"
-            --root "${CMAKE_CURRENT_SOURCE_DIR}"
-            sync --jar "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
-        RESULT_VARIABLE RIGEL_ASSET_SYNC_RESULT
-        OUTPUT_VARIABLE RIGEL_ASSET_SYNC_OUTPUT
-        ERROR_VARIABLE RIGEL_ASSET_SYNC_ERROR)
-    if(NOT RIGEL_ASSET_SYNC_RESULT EQUAL 0)
-        message(FATAL_ERROR
-            "Cosmic Reach asset synchronization failed.\n"
-            "${RIGEL_ASSET_SYNC_OUTPUT}${RIGEL_ASSET_SYNC_ERROR}")
-    endif()
-    message(STATUS
-        "Cosmic Reach assets prepared from ${RIGEL_COSMIC_REACH_JAR_SOURCE}: "
-        "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")
-    rigel_snapshot_generated_resources(
+    rigel_synchronize_generated_resources(
         RIGEL_GENERATED_RESOURCE_ROOT
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_BINARY_DIR}/generated-resource-snapshots"
         "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py")
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py"
+        "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")
+    message(STATUS
+        "Cosmic Reach assets prepared from ${RIGEL_COSMIC_REACH_JAR_SOURCE}: "
+        "${RIGEL_RESOLVED_COSMIC_REACH_JAR}")
     list(APPEND RIGEL_RESOURCE_ROOTS "${RIGEL_GENERATED_RESOURCE_ROOT}")
 else()
     message(STATUS

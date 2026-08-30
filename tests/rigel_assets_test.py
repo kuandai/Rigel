@@ -308,6 +308,7 @@ class ImportFoundationTest(unittest.TestCase):
             root / rigel_assets.PROVENANCE_RELATIVE_PATH,
             {
                 "generation": "old",
+                "jar_sha256": hashlib.sha256(b"old-source").hexdigest(),
                 "output_tree_sha256": rigel_assets.sha256_tree(assets),
             },
         )
@@ -315,6 +316,7 @@ class ImportFoundationTest(unittest.TestCase):
         rigel_assets.write_output(staging, "new.txt", b"new")
         return staging, {
             "generation": "new",
+            "jar_sha256": hashlib.sha256(b"new-source").hexdigest(),
             "output_tree_sha256": rigel_assets.sha256_tree(staging),
         }
 
@@ -925,6 +927,100 @@ class ImportFoundationTest(unittest.TestCase):
                 )
             )
 
+    def test_staging_lease_is_locked_before_reapers_can_observe_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lease_created = threading.Event()
+            continue_creation = threading.Event()
+            staging_active = threading.Event()
+            finish_staging = threading.Event()
+            reaper_lock_attempted = threading.Event()
+            first_reaper_finished = threading.Event()
+            errors: list[BaseException] = []
+            real_mkstemp = rigel_assets.tempfile.mkstemp
+            real_publication_lock = rigel_assets._publication_lock
+
+            def pause_after_lease_creation(*args: object, **kwargs: object):
+                result = real_mkstemp(*args, **kwargs)
+                if kwargs.get("prefix") == rigel_assets.STAGING_PREFIX:
+                    lease_created.set()
+                    if not continue_creation.wait(timeout=5):
+                        raise AssertionError("staging creation was not resumed")
+                return result
+
+            @contextlib.contextmanager
+            def observed_publication_lock(lock_root: Path):
+                if threading.current_thread().name == "staging-reaper":
+                    reaper_lock_attempted.set()
+                with real_publication_lock(lock_root):
+                    yield
+
+            def create_staging() -> None:
+                try:
+                    with rigel_assets._generated_tree_staging(root) as staging:
+                        staging_active.set()
+                        if not finish_staging.wait(timeout=5):
+                            raise AssertionError("active staging was not released")
+                        self.assertTrue(staging.is_dir())
+                except BaseException as error:
+                    errors.append(error)
+
+            def reap_staging() -> None:
+                try:
+                    with rigel_assets._publication_guard(root):
+                        pass
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    first_reaper_finished.set()
+
+            with mock.patch.object(
+                rigel_assets.tempfile,
+                "mkstemp",
+                side_effect=pause_after_lease_creation,
+            ), mock.patch.object(
+                rigel_assets,
+                "_publication_lock",
+                side_effect=observed_publication_lock,
+            ):
+                creator = threading.Thread(
+                    target=create_staging, name="staging-creator"
+                )
+                reaper = threading.Thread(
+                    target=reap_staging, name="staging-reaper"
+                )
+                creator.start()
+                self.assertTrue(lease_created.wait(timeout=5))
+                leases = list(
+                    (root / ".rigel").glob(
+                        f"{rigel_assets.STAGING_PREFIX}*"
+                        f"{rigel_assets.STAGING_LEASE_SUFFIX}"
+                    )
+                )
+                self.assertEqual(len(leases), 1)
+                reaper.start()
+                self.assertTrue(reaper_lock_attempted.wait(timeout=5))
+                self.assertFalse(first_reaper_finished.is_set())
+
+                continue_creation.set()
+                self.assertTrue(staging_active.wait(timeout=5))
+                reaper.join(timeout=5)
+                self.assertFalse(reaper.is_alive())
+                self.assertTrue(first_reaper_finished.is_set())
+
+                with rigel_assets._publication_guard(root):
+                    pass
+                active_staging = leases[0].with_name(
+                    leases[0].name[: -len(rigel_assets.STAGING_LEASE_SUFFIX)]
+                )
+                self.assertTrue(active_staging.is_dir())
+                finish_staging.set()
+                creator.join(timeout=5)
+
+            self.assertFalse(creator.is_alive())
+            self.assertEqual(errors, [])
+            self.assertFalse(any((root / ".rigel").glob(".assets-staging-*")))
+
     def test_reader_waits_for_tree_and_provenance_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1080,7 +1176,8 @@ rigel_snapshot_generated_resources(
     "{root}"
     "{snapshots}"
     "{sys.executable}"
-    "{importer}")
+    "{importer}"
+    "{provenance['jar_sha256']}")
 target_embed_resources(Dummy "${{GENERATED_ROOT}}")
 """,
                 encoding="utf-8",
@@ -1164,6 +1261,84 @@ target_embed_resources(Dummy "${{GENERATED_ROOT}}")
                 env=build_environment,
             )
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+
+    def test_cmake_rejects_a_generation_replaced_after_synchronization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            test_root = Path(directory)
+            root = test_root / "asset-root"
+            project = test_root / "project"
+            build = test_root / "build"
+            snapshots = build / "generated-resource-snapshots"
+            first_jar = test_root / "first.jar"
+            replacement_jar = test_root / "replacement.jar"
+            first_entries = synthetic_block_entries()
+            first_entries["base/version.txt"] = b"first"
+            replacement_entries = synthetic_block_entries()
+            replacement_entries["base/version.txt"] = b"replacement"
+            replacement_entries["base/sounds/replacement.ogg"] = b"replacement"
+            write_jar(first_jar, first_entries)
+            write_jar(replacement_jar, replacement_entries)
+            project.mkdir()
+
+            importer = Path(rigel_assets.__file__).resolve()
+            asset_resources = importer.parent.parent / "cmake/AssetResources.cmake"
+            wrapper = test_root / "replace_after_sync.py"
+            wrapper.write_text(
+                f"""import sys
+from pathlib import Path
+sys.path.insert(0, {str(importer.parent)!r})
+import rigel_assets
+
+arguments = sys.argv[1:]
+if "sync" not in arguments:
+    raise SystemExit(rigel_assets.main(arguments))
+root = Path(arguments[arguments.index("--root") + 1]).resolve()
+jar = Path(arguments[arguments.index("--jar") + 1]).resolve()
+provenance, changed = rigel_assets.synchronize(
+    root, jar, required_identifiers=("test:stone",))
+action = "Synchronized" if changed else "Already current"
+print(f"{{action}}: {{root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH}}")
+print(f"JAR SHA-256: {{provenance['jar_sha256']}}")
+print(f"Output SHA-256: {{provenance['output_tree_sha256']}}")
+rigel_assets.synchronize(
+    root, Path({str(replacement_jar)!r}),
+    required_identifiers=("test:stone",))
+""",
+                encoding="utf-8",
+            )
+            (project / "CMakeLists.txt").write_text(
+                f"""cmake_minimum_required(VERSION 3.20)
+project(GeneratedResourceHandoff NONE)
+include("{asset_resources}")
+rigel_synchronize_generated_resources(
+    GENERATED_ROOT
+    "{root}"
+    "{snapshots}"
+    "{sys.executable}"
+    "{wrapper}"
+    "{first_jar}")
+""",
+                encoding="utf-8",
+            )
+            cmake = shutil.which("cmake")
+            self.assertIsNotNone(cmake)
+            assert cmake is not None
+            configured = subprocess.run(
+                [cmake, "-S", str(project), "-B", str(build)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertNotEqual(configured.returncode, 0)
+            configure_diagnostic = configured.stdout + configured.stderr
+            self.assertIn("published source", configure_diagnostic)
+            self.assertIn("JAR changed after synchronization", configure_diagnostic)
+            published = rigel_assets.read_provenance(root)
+            self.assertIsNotNone(published)
+            assert published is not None
+            self.assertEqual(published.get("source_version"), "replacement")
+            self.assertFalse(snapshots.exists())
 
     def test_output_path_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1631,6 +1806,59 @@ class SynchronizationTest(unittest.TestCase):
             self.assertEqual(
                 first["output_tree_sha256"],
                 rigel_assets.sha256_tree(root / ".rigel/assets"),
+            )
+
+    def test_sync_imports_the_same_jar_bytes_recorded_in_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_jar = root / "first.jar"
+            replacement_jar = root / "replacement.jar"
+            first_entries = synthetic_block_entries()
+            first_entries["base/version.txt"] = b"first"
+            first_entries["base/sounds/identity.ogg"] = b"first"
+            replacement_entries = synthetic_block_entries()
+            replacement_entries["base/version.txt"] = b"replacement"
+            replacement_entries["base/sounds/identity.ogg"] = b"replacement"
+            write_jar(first_jar, first_entries)
+            write_jar(replacement_jar, replacement_entries)
+            staged = rigel_assets.stage_jar(root, first_jar)
+            first_digest = rigel_assets.sha256_file(first_jar)
+            replacement_digest = rigel_assets.sha256_file(replacement_jar)
+            real_synchronization_lock = rigel_assets._synchronization_lock
+            replacement_count = 0
+
+            @contextlib.contextmanager
+            def replace_before_archive_open(lock_root: Path, jar_digest: str):
+                nonlocal replacement_count
+                self.assertEqual(jar_digest, first_digest)
+                replacement_count += 1
+                rigel_assets.stage_jar(root, replacement_jar)
+                with real_synchronization_lock(lock_root, jar_digest):
+                    yield
+
+            with mock.patch.object(
+                rigel_assets,
+                "_synchronization_lock",
+                side_effect=replace_before_archive_open,
+            ):
+                provenance, changed = rigel_assets.synchronize(
+                    root, required_identifiers=("test:stone",)
+                )
+
+            self.assertTrue(changed)
+            self.assertEqual(replacement_count, 1)
+            self.assertEqual(provenance["jar_sha256"], first_digest)
+            self.assertEqual(provenance.get("source_version"), "first")
+            self.assertEqual(
+                (root / ".rigel/assets/sounds/identity.ogg").read_bytes(),
+                b"first",
+            )
+            self.assertEqual(rigel_assets.sha256_file(staged), replacement_digest)
+            self.assertTrue(
+                rigel_assets.current_import_matches(root, first_digest)
+            )
+            self.assertFalse(
+                rigel_assets.current_import_matches(root, replacement_digest)
             )
 
     def test_equivalent_concurrent_syncs_share_completed_import(self) -> None:

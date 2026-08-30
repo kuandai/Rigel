@@ -1,8 +1,9 @@
 function(rigel_snapshot_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIRECTORY
-        PYTHON_EXECUTABLE IMPORTER_SCRIPT)
+        PYTHON_EXECUTABLE IMPORTER_SCRIPT EXPECTED_JAR_SHA256)
     execute_process(
         COMMAND "${PYTHON_EXECUTABLE}" "${IMPORTER_SCRIPT}"
             --root "${ROOT}" snapshot --output "${OUTPUT_DIRECTORY}"
+            --jar-sha256 "${EXPECTED_JAR_SHA256}"
         RESULT_VARIABLE SNAPSHOT_RESULT
         OUTPUT_VARIABLE SNAPSHOT_PATH
         ERROR_VARIABLE SNAPSHOT_ERROR
@@ -16,6 +17,38 @@ function(rigel_snapshot_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIRECTOR
             "Generated asset snapshot did not produce a resource root: ${SNAPSHOT_PATH}")
     endif()
     set(${OUTPUT_VARIABLE} "${SNAPSHOT_PATH}" PARENT_SCOPE)
+endfunction()
+
+function(rigel_synchronize_generated_resources OUTPUT_VARIABLE ROOT OUTPUT_DIRECTORY
+        PYTHON_EXECUTABLE IMPORTER_SCRIPT SOURCE_JAR)
+    execute_process(
+        COMMAND "${PYTHON_EXECUTABLE}" "${IMPORTER_SCRIPT}"
+            --root "${ROOT}" sync --jar "${SOURCE_JAR}"
+        RESULT_VARIABLE SYNC_RESULT
+        OUTPUT_VARIABLE SYNC_OUTPUT
+        ERROR_VARIABLE SYNC_ERROR)
+    if(NOT SYNC_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Cosmic Reach asset synchronization failed.\n"
+            "${SYNC_OUTPUT}${SYNC_ERROR}")
+    endif()
+    string(REGEX MATCH "JAR SHA-256: ([0-9a-f]+)" JAR_DIGEST_LINE
+        "${SYNC_OUTPUT}")
+    set(EXPECTED_JAR_SHA256 "${CMAKE_MATCH_1}")
+    string(LENGTH "${EXPECTED_JAR_SHA256}" JAR_DIGEST_LENGTH)
+    if(NOT JAR_DIGEST_LENGTH EQUAL 64)
+        message(FATAL_ERROR
+            "Asset synchronization did not report a valid source JAR digest.\n"
+            "${SYNC_OUTPUT}${SYNC_ERROR}")
+    endif()
+    rigel_snapshot_generated_resources(
+        SNAPSHOT_ROOT
+        "${ROOT}"
+        "${OUTPUT_DIRECTORY}"
+        "${PYTHON_EXECUTABLE}"
+        "${IMPORTER_SCRIPT}"
+        "${EXPECTED_JAR_SHA256}")
+    set(${OUTPUT_VARIABLE} "${SNAPSHOT_ROOT}" PARENT_SCOPE)
 endfunction()
 
 function(target_embed_resources TARGET_NAME)

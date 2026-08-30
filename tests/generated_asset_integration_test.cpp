@@ -4,6 +4,7 @@
 #include "ResourceRegistry.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Asset/Types.h"
+#include "Rigel/Voxel/BlockGalleryCatalog.h"
 #include "Rigel/Voxel/BlockLoader.h"
 #include "Rigel/Voxel/BlockModel.h"
 #include "Rigel/Voxel/BlockRegistry.h"
@@ -22,6 +23,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 using namespace Rigel::Voxel;
@@ -222,6 +224,49 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
     CHECK_EQ(report.skipped, static_cast<size_t>(1));
     CHECK_EQ(preparedRegistry.size(), static_cast<size_t>(2021));
     CHECK_EQ(preparedAtlas.textureCount(), static_cast<size_t>(276));
+#endif
+
+    preparedRegistry.freeze();
+    const BlockGalleryCatalog catalog(preparedRegistry);
+    CHECK_EQ(
+        catalog.diagnostics().loadedRegistrationCount,
+        preparedRegistry.size());
+    CHECK_EQ(
+        catalog.entries().size() +
+            catalog.emptyGeometryExclusions().size(),
+        preparedRegistry.size());
+
+    std::vector<bool> accounted(preparedRegistry.size(), false);
+    for (const BlockGalleryCatalogEntry& entry : catalog.entries()) {
+        CHECK(entry.blockId.type < accounted.size());
+        CHECK(!accounted[entry.blockId.type]);
+        accounted[entry.blockId.type] = true;
+        const BlockType& type = preparedRegistry.getType(entry.blockId);
+        CHECK_EQ(entry.identifier, type.identifier);
+        CHECK(!type.model->isEmpty());
+        CHECK_EQ(catalog.findBySpecimenPosition(entry.specimenPosition), &entry);
+    }
+    for (const BlockGalleryEmptyGeometryExclusion& exclusion :
+         catalog.emptyGeometryExclusions()) {
+        CHECK(exclusion.blockId.type < accounted.size());
+        CHECK(!accounted[exclusion.blockId.type]);
+        accounted[exclusion.blockId.type] = true;
+        const BlockType& type = preparedRegistry.getType(exclusion.blockId);
+        CHECK_EQ(exclusion.identifier, type.identifier);
+        CHECK(type.model->isEmpty());
+    }
+    CHECK(std::all_of(accounted.begin(), accounted.end(), [](bool value) {
+        return value;
+    }));
+
+#ifdef RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS
+    CHECK_EQ(catalog.entries().size(), static_cast<size_t>(2020));
+    CHECK_EQ(
+        catalog.emptyGeometryExclusions().size(),
+        static_cast<size_t>(1));
+    CHECK_EQ(
+        catalog.emptyGeometryExclusions().front().identifier,
+        std::string("base:air"));
 #endif
 }
 

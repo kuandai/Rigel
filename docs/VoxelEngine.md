@@ -42,6 +42,17 @@ The candidate registry is published atomically and then frozen before chunk
 mesh workers can read it. Registrations transitively retain immutable,
 Rigel-normalized `BlockModel` geometry.
 
+`BlockGalleryCatalog` can derive developer gallery metadata from that frozen
+runtime registry. It does not inspect asset files or maintain a separate block
+inventory. Entries are ordered by parsed namespace, base identifier, and
+state-property keys and values; a family-aware square-width layout keeps small
+families on one row and splits only families wider than the row. Every entry
+owns its stable catalog index, grid coordinate, and block-world specimen origin
+at four-cell spacing. Registrations whose explicit model contains no cuboids
+are the catalog's only exclusions. They are reported by identifier and
+`BlockID`, so air and any other intentional empty geometry remain accounted for
+even when the renderable count is zero.
+
 There are three model paths: built-in `cube`, built-in empty `none`, and
 reusable axis-aligned cuboid assets. A normalized model owns one or more cuboid
 bounds plus only its declared cardinal faces. Each face selects a named texture

@@ -80,34 +80,92 @@ inflation, missing faces, reversed or cropped UV rectangles, UV quarter-turns,
 and face shading/culling metadata are preserved. Right-angle block-state
 orientation remains a closed measured set.
 
-The 0.6.1 source describes 1,607 generated non-cube states. Cuboids recover
-1,601 geometrically, and 1,590 of those are publishable with the current 16×16
-block atlas. Supported non-cubic base registrations now reference the same
-normalized assets instead of retaining their earlier cube approximation. A
-current import emits 51 shared normalized cuboid definitions and 2,021 block
-definitions in total, an increase of exactly 1,590 blocks over the original
-parity output. Of 106 geometrically non-cubic base registrations in the source,
-100 are corrected from the earlier cube approximation; the remaining six are
-split evenly between the independent geometry and texture omissions below.
-The resulting tree SHA-256 is
-`e4d1c653f6cd36b876b033e8d359d188779261e4829adfc01ee6f8b62b4e81f3`.
-
-Explicit plane primitives remain outside the normalized model contract. Six
-generated variants use cuboid-plus-plane geometry; together with three base
-registrations they are visibly omitted with one provenance diagnostic. The
-64×16 conveyor and splitter textures likewise remain unsupported, producing a
-separate texture-dimension diagnostic. Animated textures, generalized planes,
+Explicit plane primitives, animated and nonstandard block textures,
 collision-shape fidelity, and model-accurate raycasting remain outside the
-runtime boundary.
-
-Import provenance retains the model-support schema and closure census. The
-1,607 candidates divide into 1,590 recovered states, six plane/mixed omissions,
-and eleven nonstandard-texture omissions. The same disjoint reasons record the
-three plus three omitted base approximations, including sorted block-state IDs,
-so the 106-state base census closes independently. Repeating a forced import of
-the same JAR produces the same tree hash and provenance bytes.
+runtime boundary. Import provenance retains the model-support schema, closure
+census, and sorted identifiers under disjoint omission reasons. The detailed
+counts and final output identity are recorded below.
 
 CR model emission texture maps also remain outside the current normalized
 block contract. Scalar emitted light is preserved. The importer recognizes
 the source field rather than treating it as unknown, and the limitation is
 kept explicit here instead of silently claiming full CR rendering parity.
+
+## Final block-model census
+
+The pre-support census divided the 1,607 generated non-cube omissions by source
+geometry:
+
+| Source shape | States | Geometrically expressible as cuboids |
+| --- | ---: | ---: |
+| One cuboid | 929 | 929 |
+| Multiple cuboids | 672 | 672 |
+| Cuboids plus planes | 6 | 0 |
+| **Total** | **1,607** | **1,601** |
+
+| Published support | Before cuboid support | Final import | Change |
+| --- | ---: | ---: | ---: |
+| Block definitions | 431 | 2,021 | +1,590 |
+| Shared normalized cuboid definitions | 0 | 51 | +51 |
+| Generated non-cube candidates recovered | 0 | 1,590 | +1,590 |
+| Non-cubic base registrations with normalized geometry | 0 | 100 | +100 |
+
+Exactly 1,590 candidate states are newly recovered; the 11-state difference
+from geometric expressibility is the current 16-by-16 atlas restriction. This
+is support for the measured cuboid subset, not general Cosmic Reach model
+support.
+
+The source also has 106 non-cubic base registrations that the earlier importer
+published with cube geometry. One hundred now bind normalized cuboids. The
+remaining six are omitted rather than retaining a misleading cube: three have
+plane/mixed geometry and three have nonstandard texture dimensions.
+
+Omission accounting is disjoint:
+
+| Provenance reason | Generated candidates | Base registrations | Recorded IDs |
+| --- | ---: | ---: | ---: |
+| Plane or mixed geometry | 6 | 3 | 9 |
+| Nonstandard texture dimensions | 11 | 3 | 14 |
+| **Total** | **17** | **6** | **23** |
+
+The plane-bearing states also depend on texture behavior outside the current
+atlas contract, but the audit assigns each identifier one reason so totals do
+not overlap. Plane primitives, animated textures, and the 64-by-16 conveyor and
+splitter textures all remain unsupported.
+
+The real-JAR integration gate inspected these published representatives through
+asset load, texture binding, CPU meshing, mesh-store installation, GPU upload,
+and draw submission:
+
+| Block state | Evidence checked |
+| --- | --- |
+| `base:wood_planks[slab_type=bottom]` | One cuboid, cropped UVs, half-cell bounds |
+| `base:wood_planks[stair_type=bottom_PosX]` | Four cuboids, ten faces, quarter-turned UVs |
+| `base:door_steel[part=bottom,power=on,direction=PosX]` | Y-oriented one-eighth-cell thickness |
+| `base:ladder_steel[direction=PosX]` | Y-oriented two-face thin geometry |
+| `base:piston[direction=PosX,type=advancing,part=head]` | Two cuboids, cropped/reversed/rotated UVs, and an authored bound of 1.25 |
+
+The final tree identity is
+`e4d1c653f6cd36b876b033e8d359d188779261e4829adfc01ee6f8b62b4e81f3`.
+A forced second import from the JAR digest recorded above reproduced both this
+tree hash and the provenance bytes exactly.
+
+## Meshing measurement
+
+The production `MeshBuilder` was measured in a Release build on 2026-08-30
+with GNU 16.1.1, Linux x86_64, an Intel Core i7-12700, and 20 reported hardware
+threads. The deterministic invented fixture used 30 timed iterations after five
+warmups per workload:
+
+| Workload | Blocks | Vertices | Indices | Mean | P50 | P95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All canonical cubes | 16,384 | 16,384 | 24,576 | 0.969 ms | 0.966 ms | 0.999 ms |
+| 75% cubes, 12.5% single, 12.5% multiple | 16,384 | 189,440 | 284,160 | 3.167 ms | 3.165 ms | 3.263 ms |
+| 62.5% single, 37.5% multiple | 16,384 | 540,672 | 811,008 | 18.240 ms | 18.227 ms | 18.581 ms |
+
+Pre-timing validation checked exact mesh cardinalities, layer batching, all
+supported orientations, a frozen registry, and
+`canonical_cube_fast_path=true`. The benchmark is deliberately synthetic and
+does not claim to reproduce the frequency distribution of a real world. Full
+environment metadata, minimum/maximum timings, fixture construction, and the
+reproduction command are recorded in `docs/DebugTooling.md`.

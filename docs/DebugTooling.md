@@ -234,9 +234,9 @@ above. Results were:
 
 | Workload | Vertices | Indices | Mean | P50 | P95 | Min | Max |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `all_cube` | 16,384 | 24,576 | 0.977 ms | 0.976 ms | 1.002 ms | 0.952 ms | 1.002 ms |
-| `representative_mixed` | 189,440 | 284,160 | 3.192 ms | 3.184 ms | 3.295 ms | 3.080 ms | 3.372 ms |
-| `non_cube_heavy` | 540,672 | 811,008 | 18.203 ms | 18.164 ms | 19.424 ms | 17.766 ms | 19.470 ms |
+| `all_cube` | 16,384 | 24,576 | 0.969 ms | 0.966 ms | 0.999 ms | 0.954 ms | 1.005 ms |
+| `representative_mixed` | 189,440 | 284,160 | 3.167 ms | 3.165 ms | 3.263 ms | 3.039 ms | 3.332 ms |
+| `non_cube_heavy` | 540,672 | 811,008 | 18.240 ms | 18.227 ms | 18.581 ms | 17.886 ms | 18.902 ms |
 
 This benchmark addition does not alter `MeshBuilder`. The pre-timing identity
 check reports `canonical_cube_fast_path=true`, and the ordinary 16,384-block

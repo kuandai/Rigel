@@ -24,7 +24,7 @@ implementation and how the systems fit together.
 - `docs/WorldGeneration.md` (strict graph generation, pipeline, streaming)
 - `docs/RenderingPipeline.md` (voxel rendering, TAA, shadows)
 - `docs/ShaderSystem.md` (shader assets and compilation)
-- `docs/VoxelEngine.md` (block and chunk structures)
+- `docs/VoxelEngine.md` (block models, meshing, and chunk structures)
 
 ### Entities
 
@@ -38,7 +38,7 @@ implementation and how the systems fit together.
 
 ### Assets + Configuration
 
-- `docs/AssetSystem.md` (manifest and loader behavior)
+- `docs/AssetSystem.md` (manifest, normalized block models, and loader behavior)
 - `docs/EmbeddedAssets.md` (resource embedding)
 - `docs/AssetOwnership.md` (Git/JAR/generated-content ownership and workflow)
 - `docs/CosmicReachImportParity.md` (real-JAR migration evidence)

@@ -50,6 +50,18 @@ source.
 - `WorldMeshStore` holds CPU meshes keyed by `MeshId` and `MeshRevision`.
 - `ChunkRenderer` caches GPU meshes and uploads when revisions change.
 - Meshes are rendered per chunk using an offset uniform.
+- `MeshBuilder` emits canonical cubes and normalized cuboids into the same
+  chunk mesh. Model faces remain grouped by their block registration's render
+  layer; there is no draw object per modeled block.
+
+The canonical full cube retains its specialized meshing and AO path.
+Normalized model faces preserve authored cardinal-face presence, UV crop and
+quarter turns, and shading normals. Their neighbor culling is conservative:
+only unit-boundary rectangles fully covered by opposite neighbor boundary
+faces are hidden. Opacity alone never makes partial geometry a whole-cell
+occluder.
+Cube-style AO is applied only to a requesting normalized face that spans a
+complete unit-cell boundary; other model faces use the unoccluded value.
 
 ### 3.2 Culling and Ordering
 

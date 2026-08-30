@@ -54,6 +54,14 @@ python3 scripts/rigel_assets.py status
 python3 scripts/rigel_assets.py validate
 ```
 
+The importer resolves compatible source block models into Rigel-owned
+normalized cuboid assets under `.rigel/assets/models/blocks/`. Runtime code
+consumes those generated assets, not Cosmic Reach JSON. The supported boundary
+is intentionally limited to the measured axis-aligned cuboid and right-angle
+block-state cases; see
+[`docs/AssetSystem.md`](docs/AssetSystem.md#normalized-block-models) for the
+format and rendering limits.
+
 CMake synchronizes before enumerating embedded resources whenever it finds a
 JAR. An automated environment can provide an absolute path without staging:
 

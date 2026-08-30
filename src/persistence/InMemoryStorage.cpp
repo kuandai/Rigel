@@ -193,19 +193,28 @@ struct InMemoryStorageBackend::State {
         std::vector<uint8_t> bytes;
     };
 
+    using Entries = std::map<std::string, Entry>;
+
     mutable std::shared_mutex entriesMutex;
-    std::map<std::string, Entry> entries;
+    Entries entries;
     std::mutex bootstrapMutexesMutex;
     std::map<std::string, std::shared_ptr<std::mutex>> bootstrapMutexes;
 
+    static StorageEntryKind entryKindIn(
+        const Entries& entries,
+        const std::string& path);
+    static void makeDirectoriesIn(
+        Entries& entries,
+        const std::string& requestedPath);
     StorageEntryKind entryKindLocked(const std::string& path) const;
     void makeDirectoriesLocked(const std::string& requestedPath);
 
     class AtomicWriteSession;
 };
 
-StorageEntryKind InMemoryStorageBackend::State::entryKindLocked(
-    const std::string& path) const {
+StorageEntryKind InMemoryStorageBackend::State::entryKindIn(
+    const Entries& entries,
+    const std::string& path) {
     if (isRootPath(path)) {
         return StorageEntryKind::Directory;
     }
@@ -215,12 +224,13 @@ StorageEntryKind InMemoryStorageBackend::State::entryKindLocked(
         : found->second.kind;
 }
 
-void InMemoryStorageBackend::State::makeDirectoriesLocked(
+void InMemoryStorageBackend::State::makeDirectoriesIn(
+    Entries& entries,
     const std::string& requestedPath) {
     std::string current = requestedPath;
     std::vector<std::string> missing;
     while (!isRootPath(current)) {
-        const StorageEntryKind kind = entryKindLocked(current);
+        const StorageEntryKind kind = entryKindIn(entries, current);
         if (kind == StorageEntryKind::Directory) {
             break;
         }
@@ -244,6 +254,16 @@ void InMemoryStorageBackend::State::makeDirectoriesLocked(
     }
 }
 
+StorageEntryKind InMemoryStorageBackend::State::entryKindLocked(
+    const std::string& path) const {
+    return entryKindIn(entries, path);
+}
+
+void InMemoryStorageBackend::State::makeDirectoriesLocked(
+    const std::string& requestedPath) {
+    makeDirectoriesIn(entries, requestedPath);
+}
+
 class InMemoryStorageBackend::State::AtomicWriteSession final
     : public Rigel::Persistence::AtomicWriteSession {
 public:
@@ -261,20 +281,32 @@ public:
 
     void commit() override {
         requireActive();
-        std::unique_lock lock(m_state->entriesMutex);
-        m_state->makeDirectoriesLocked(parentPath(m_path));
-        if (m_state->entryKindLocked(m_path) ==
-            StorageEntryKind::Directory) {
+        try {
+            std::unique_lock lock(m_state->entriesMutex);
+            auto replacement = m_state->entries;
+            State::makeDirectoriesIn(replacement, parentPath(m_path));
+            if (State::entryKindIn(replacement, m_path) ==
+                StorageEntryKind::Directory) {
+                throw std::runtime_error(
+                    "Cannot replace an in-memory directory with a file: " +
+                    m_path);
+            }
+            replacement.insert_or_assign(
+                m_path,
+                State::Entry{StorageEntryKind::RegularFile, m_bytes});
+            m_state->entries.swap(replacement);
+            m_active = false;
+        } catch (const std::exception& failure) {
             throw AtomicFilePublicationError(
                 AtomicFilePublicationState::NotPublished,
-                "Cannot replace an in-memory directory with a file: " +
-                    m_path);
+                "Failed to commit in-memory atomic write to " + m_path +
+                    " before publication: " + failure.what());
+        } catch (...) {
+            throw AtomicFilePublicationError(
+                AtomicFilePublicationState::NotPublished,
+                "Failed to commit in-memory atomic write to " + m_path +
+                    " before publication");
         }
-        auto replacement = m_state->entries;
-        replacement[m_path] = State::Entry{
-            StorageEntryKind::RegularFile, std::move(m_bytes)};
-        m_state->entries.swap(replacement);
-        m_active = false;
     }
 
     void abort() override {

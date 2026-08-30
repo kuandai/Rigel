@@ -60,6 +60,42 @@ TEST_CASE(InMemoryStorage_AtomicWritesPublishWholeSnapshotsOnly) {
         readText(storage, "virtual/world/value.bin"), replacement);
 }
 
+TEST_CASE(InMemoryStorage_FailedCommitClassifiesRemovedParentLifecycle) {
+    InMemoryStorageBackend storage;
+    auto staged = storage.openWrite("virtual/staging/value.bin");
+    const std::string stagedContents = "staged replacement";
+    staged->writer().writeBytes(
+        reinterpret_cast<const uint8_t*>(stagedContents.data()),
+        stagedContents.size());
+
+    storage.remove("virtual/staging");
+    CHECK(storage.createFileExclusive("virtual/staging", "parent replacement"));
+
+    try {
+        staged->commit();
+        throw Rigel::Test::TestFailure(
+            "Expected in-memory atomic publication to fail");
+    } catch (const AtomicFilePublicationError& failure) {
+        CHECK_EQ(
+            failure.state(), AtomicFilePublicationState::NotPublished);
+    } catch (const std::exception& failure) {
+        throw Rigel::Test::TestFailure(
+            std::string("Expected AtomicFilePublicationError, got: ") +
+            failure.what());
+    }
+
+    CHECK_EQ(readText(storage, "virtual/staging"), "parent replacement");
+    CHECK_EQ(
+        storage.entryKind("virtual/staging/value.bin"),
+        StorageEntryKind::Missing);
+
+    storage.remove("virtual/staging");
+    storage.mkdirs("virtual/staging");
+    staged->commit();
+    CHECK_EQ(
+        readText(storage, "virtual/staging/value.bin"), stagedContents);
+}
+
 TEST_CASE(InMemoryStorage_PublishesDirectoryTreesWithoutReplacement) {
     InMemoryStorageBackend storage;
     CHECK(storage.createDirectoryExclusive("virtual/world.staging.0"));

@@ -118,9 +118,12 @@ coupled to the embedded generated-resource snapshot. The synthetic importer
 suite always runs without a real-JAR environment selection.
 
 The generated-asset integration renders labeled cube, slab, stair,
-multi-cuboid, rotated, cropped-UV, transparent, and out-of-cell specimens
-through the production `WorldView` and `FrameRenderer` path. It always reads
-the resulting framebuffer. For visual review, set
+multi-cuboid, rotated, cropped-UV, transparent, out-of-cell, and alpha-cutout
+specimens through the production `WorldView` and `FrameRenderer` path. It
+always reads the resulting color and depth buffers. The alpha-cutout check
+confirms that transparent crop texels expose the farther gallery floor while
+the opaque slab check confirms that partial solid models are not blended. For
+visual review, set
 `RIGEL_GALLERY_CAPTURE_DIRECTORY` to an absolute directory outside the source
 tree; the test writes one vertically oriented PPM capture per representative:
 

@@ -60,6 +60,8 @@ constexpr std::string_view MultiCuboidId = "base:table_pedestal_wood";
 constexpr std::string_view CroppedUvId =
     "base:laser_emitter[type=single,direction=NegZ]";
 constexpr std::string_view TransparentId = "base:water[type=source]";
+constexpr std::string_view AlphaCutoutId =
+    "base:maize[type=farm,growth=4,part=bottom]";
 
 constexpr int GalleryCaptureWidth = 256;
 constexpr int GalleryCaptureHeight = 256;
@@ -69,7 +71,7 @@ struct GalleryVisualRepresentative {
     std::string_view identifier;
 };
 
-constexpr std::array<GalleryVisualRepresentative, 8>
+constexpr std::array<GalleryVisualRepresentative, 9>
     GalleryVisualRepresentatives = {{
         {"01_cube", "base:stone_shale"},
         {"02_slab", SlabId},
@@ -79,6 +81,7 @@ constexpr std::array<GalleryVisualRepresentative, 8>
         {"06_cropped_uv", CroppedUvId},
         {"07_transparent", TransparentId},
         {"08_out_of_cell", PistonHeadId},
+        {"09_alpha_cutout", AlphaCutoutId},
     }};
 
 size_t countResources(std::string_view prefix, std::string_view suffix) {
@@ -352,6 +355,7 @@ struct FramebufferCapture {
     int width = 0;
     int height = 0;
     std::vector<uint8_t> rgba;
+    std::vector<float> depth;
 };
 
 FramebufferCapture readFramebuffer(int width, int height) {
@@ -360,6 +364,8 @@ FramebufferCapture readFramebuffer(int width, int height) {
         height,
         std::vector<uint8_t>(
             static_cast<size_t>(width) * static_cast<size_t>(height) * 4),
+        std::vector<float>(
+            static_cast<size_t>(width) * static_cast<size_t>(height)),
     };
     glFinish();
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -371,6 +377,14 @@ FramebufferCapture readFramebuffer(int width, int height) {
         GL_RGBA,
         GL_UNSIGNED_BYTE,
         capture.rgba.data());
+    glReadPixels(
+        0,
+        0,
+        width,
+        height,
+        GL_DEPTH_COMPONENT,
+        GL_FLOAT,
+        capture.depth.data());
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
     return capture;
@@ -410,6 +424,36 @@ void checkOpaqueWoodOccludesFloor(const FramebufferCapture& capture) {
     // transparent pass to the slab blends those colors at its covered center.
     CHECK(red - green >= 20);
     CHECK(red - blue >= 40);
+}
+
+void checkAlphaCutoutRevealsFloor(const FramebufferCapture& capture) {
+    const auto colorOffset = [&](int x, int topDownY) {
+        const int y = capture.height - 1 - topDownY;
+        return static_cast<size_t>(x + y * capture.width) * 4;
+    };
+    const auto depthOffset = [&](int x, int topDownY) {
+        const int y = capture.height - 1 - topDownY;
+        return static_cast<size_t>(x + y * capture.width);
+    };
+
+    // These fixed production-camera samples cross a transparent opening in
+    // the maize texture between two opaque leaves. The pale floor color and
+    // its farther depth prove that the transparent texel wrote neither target.
+    const size_t leftColor = colorOffset(128, 128);
+    const size_t openingColor = colorOffset(132, 128);
+    const size_t rightColor = colorOffset(136, 128);
+    CHECK(capture.rgba[leftColor + 1] > capture.rgba[leftColor] + 10);
+    CHECK(capture.rgba[leftColor + 1] > capture.rgba[leftColor + 2] + 30);
+    CHECK(capture.rgba[rightColor] > capture.rgba[rightColor + 1] + 50);
+    CHECK(capture.rgba[rightColor + 1] > capture.rgba[rightColor + 2] + 50);
+    CHECK(capture.rgba[openingColor] >= 100);
+    CHECK(capture.rgba[openingColor + 1] >= 100);
+    CHECK(capture.rgba[openingColor + 2] >= 100);
+    const float leftDepth = capture.depth[depthOffset(128, 128)];
+    const float openingDepth = capture.depth[depthOffset(132, 128)];
+    const float rightDepth = capture.depth[depthOffset(136, 128)];
+    CHECK(openingDepth > leftDepth);
+    CHECK(openingDepth > rightDepth);
 }
 
 bool pathIsWithin(
@@ -593,10 +637,12 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     const BlockType& stair = requireBlock(resources.registry(), StairId);
     const BlockType& door = requireBlock(resources.registry(), DoorId);
     const BlockType& ladder = requireBlock(resources.registry(), LadderId);
+    const BlockType& alphaCutout =
+        requireBlock(resources.registry(), AlphaCutoutId);
     const BlockType& pistonHead =
         requireBlock(resources.registry(), PistonHeadId);
     for (const BlockType* block : {
-             &slab, &stair, &door, &ladder, &pistonHead}) {
+             &slab, &stair, &door, &ladder, &alphaCutout, &pistonHead}) {
         CHECK(!block->model->isFullCube());
         checkTextureBindings(*block, resources.textureAtlas());
     }
@@ -643,6 +689,11 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     CHECK_NEAR(
         ladderRange.max[0] - ladderRange.min[0], 0.00625f, 0.00001f);
 
+    const ChunkMesh alphaCutoutMesh = buildOne(
+        resources.registry(), resources.textureAtlas(), AlphaCutoutId);
+    checkMeshCardinality(
+        alphaCutoutMesh, 16, 24, RenderLayer::Cutout);
+
     const ChunkMesh pistonMesh = buildOne(
         resources.registry(), resources.textureAtlas(), PistonHeadId);
     checkMeshCardinality(pistonMesh, 48, 72, RenderLayer::Opaque);
@@ -666,6 +717,9 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     chunk.setBlock(
         11, 2, 2, BlockState{requireBlockId(resources.registry(), LadderId)});
     chunk.setBlock(
+        13, 2, 2,
+        BlockState{requireBlockId(resources.registry(), AlphaCutoutId)});
+    chunk.setBlock(
         15, 2, 2,
         BlockState{requireBlockId(resources.registry(), PistonHeadId)});
     ChunkMesh mesh = MeshBuilder{}.build({
@@ -674,21 +728,25 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
         .atlas = &resources.textureAtlas(),
         .neighbors = {},
     });
-    CHECK_EQ(mesh.vertexCount(), static_cast<size_t>(144));
-    CHECK_EQ(mesh.indexCount(), static_cast<size_t>(216));
+    CHECK_EQ(mesh.vertexCount(), static_cast<size_t>(160));
+    CHECK_EQ(mesh.indexCount(), static_cast<size_t>(240));
     CHECK_EQ(
         mesh.layers[static_cast<size_t>(RenderLayer::Opaque)].indexCount,
         static_cast<uint32_t>(204));
     CHECK_EQ(
+        mesh.layers[static_cast<size_t>(RenderLayer::Cutout)].indexCount,
+        static_cast<uint32_t>(24));
+    CHECK_EQ(
         mesh.layers[static_cast<size_t>(RenderLayer::Transparent)].indexCount,
         static_cast<uint32_t>(12));
 
-    const std::array<std::string_view, 5> expectedTextures = {
+    const std::array<std::string_view, 6> expectedTextures = {
         "textures/blocks/foliage/wood_planks.png",
         "textures/blocks/furniture/steel_door_bottom.png",
         "textures/blocks/furniture/ladder_steel.png",
         "textures/blocks/machines/machine_top.png",
         "textures/blocks/machines/piston_advancing_side.png",
+        "textures/blocks/crops/maize/maize_bottom_growth_4.png",
     };
     std::set<uint16_t> expectedLayers;
     for (const std::string_view path : expectedTextures) {
@@ -851,6 +909,10 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     CHECK_EQ(
         requireBlock(resources.registry(), TransparentId).layer,
         RenderLayer::Transparent);
+    CHECK(!requireBlock(resources.registry(), AlphaCutoutId).isOpaque);
+    CHECK_EQ(
+        requireBlock(resources.registry(), AlphaCutoutId).layer,
+        RenderLayer::Cutout);
     CHECK(!requireBlock(resources.registry(), SlabId).isOpaque);
     CHECK_EQ(
         requireBlock(resources.registry(), SlabId).layer,
@@ -866,7 +928,7 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     CHECK(!requireBlock(resources.registry(), MultiCuboidId).isOpaque);
     CHECK_EQ(
         requireBlock(resources.registry(), MultiCuboidId).layer,
-        RenderLayer::Opaque);
+        RenderLayer::Cutout);
     CHECK(hasOutOfCellGeometry(
         *requireBlock(resources.registry(), PistonHeadId).model.geometry));
 
@@ -913,6 +975,9 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
         CHECK(countRenderedCenterPixels(capture) >= static_cast<size_t>(4));
         if (representative.identifier == SlabId) {
             checkOpaqueWoodOccludesFloor(capture);
+        }
+        if (representative.identifier == AlphaCutoutId) {
+            checkAlphaCutoutRevealsFloor(capture);
         }
         if (captureDirectory) {
             writeFramebufferCapture(

@@ -19,6 +19,7 @@ import struct
 import sys
 import tempfile
 import zipfile
+import zlib
 
 
 TOOL_NAME = "rigel_assets"
@@ -34,7 +35,7 @@ SNAPSHOT_LOCK_FILENAME = ".snapshot.lock"
 SNAPSHOT_ACTIVE_GENERATION_FILENAME = ".active-generation.json"
 SNAPSHOT_STAGING_SUFFIX = ".staging"
 PROVENANCE_SCHEMA = 1
-IMPORTER_SCHEMA = 4
+IMPORTER_SCHEMA = 5
 BLOCK_MODEL_SUPPORT_SCHEMA = 1
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -288,6 +289,172 @@ def png_dimensions(data: bytes, source: str) -> tuple[int, int]:
     if width == 0 or height == 0:
         raise AssetImportError(f"{source}: PNG dimensions must be non-zero")
     return width, height
+
+
+def _paeth_predictor(left: int, above: int, upper_left: int) -> int:
+    estimate = left + above - upper_left
+    left_distance = abs(estimate - left)
+    above_distance = abs(estimate - above)
+    upper_left_distance = abs(estimate - upper_left)
+    if left_distance <= above_distance and left_distance <= upper_left_distance:
+        return left
+    if above_distance <= upper_left_distance:
+        return above
+    return upper_left
+
+
+def _png_samples(scanline: bytes, bit_depth: int) -> list[int]:
+    if bit_depth == 8:
+        return list(scanline)
+    if bit_depth == 16:
+        return [
+            int.from_bytes(scanline[offset : offset + 2], "big")
+            for offset in range(0, len(scanline), 2)
+        ]
+    mask = (1 << bit_depth) - 1
+    return [
+        (scanline[index * bit_depth // 8]
+         >> (8 - bit_depth - index * bit_depth % 8)) & mask
+        for index in range(len(scanline) * 8 // bit_depth)
+    ]
+
+
+def png_has_transparent_texels(data: bytes, source: str) -> bool:
+    width, height = png_dimensions(data, source)
+    if len(data) < 33:
+        raise AssetImportError(f"{source}: malformed PNG header")
+    bit_depth, color_type, compression, filtering, interlace = struct.unpack(
+        ">BBBBB", data[24:29]
+    )
+    valid_bit_depths = {
+        0: (1, 2, 4, 8, 16),
+        2: (8, 16),
+        3: (1, 2, 4, 8),
+        4: (8, 16),
+        6: (8, 16),
+    }
+    if (
+        color_type not in valid_bit_depths
+        or bit_depth not in valid_bit_depths[color_type]
+    ):
+        raise AssetImportError(
+            f"{source}: unsupported PNG color type or bit depth"
+        )
+    if compression != 0 or filtering != 0 or interlace != 0:
+        raise AssetImportError(
+            f"{source}: unsupported PNG compression, filtering, or interlace"
+        )
+
+    compressed = bytearray()
+    transparency = b""
+    offset = len(PNG_SIGNATURE)
+    found_end = False
+    while offset + 12 <= len(data):
+        length = struct.unpack(">I", data[offset : offset + 4])[0]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(data):
+            raise AssetImportError(f"{source}: truncated PNG chunk")
+        kind = data[offset + 4 : offset + 8]
+        payload = data[offset + 8 : offset + 8 + length]
+        if kind == b"IDAT":
+            compressed.extend(payload)
+        elif kind == b"tRNS":
+            transparency = payload
+        elif kind == b"IEND":
+            found_end = True
+            break
+        offset = chunk_end
+    if not compressed or not found_end:
+        raise AssetImportError(f"{source}: PNG image data is incomplete")
+
+    samples_per_pixel = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color_type]
+    row_bytes = (width * samples_per_pixel * bit_depth + 7) // 8
+    filter_bytes_per_pixel = max(
+        1, (samples_per_pixel * bit_depth + 7) // 8
+    )
+    try:
+        filtered = zlib.decompress(bytes(compressed))
+    except zlib.error as error:
+        raise AssetImportError(f"{source}: malformed PNG image data") from error
+    if len(filtered) != height * (row_bytes + 1):
+        raise AssetImportError(
+            f"{source}: PNG scanline data has the wrong size"
+        )
+
+    transparent_gray: int | None = None
+    transparent_rgb: tuple[int, int, int] | None = None
+    if color_type == 0 and transparency:
+        if len(transparency) != 2:
+            raise AssetImportError(
+                f"{source}: malformed grayscale PNG transparency"
+            )
+        transparent_gray = int.from_bytes(transparency, "big")
+    elif color_type == 2 and transparency:
+        if len(transparency) != 6:
+            raise AssetImportError(
+                f"{source}: malformed truecolor PNG transparency"
+            )
+        transparent_rgb = struct.unpack(">HHH", transparency)
+    elif color_type not in (0, 2, 3) and transparency:
+        raise AssetImportError(
+            f"{source}: unexpected PNG transparency chunk"
+        )
+
+    previous = bytearray(row_bytes)
+    for row_index in range(height):
+        start = row_index * (row_bytes + 1)
+        filter_type = filtered[start]
+        if filter_type > 4:
+            raise AssetImportError(f"{source}: invalid PNG scanline filter")
+        encoded = filtered[start + 1 : start + 1 + row_bytes]
+        row = bytearray(row_bytes)
+        for index, value in enumerate(encoded):
+            left = (
+                row[index - filter_bytes_per_pixel]
+                if index >= filter_bytes_per_pixel
+                else 0
+            )
+            above = previous[index]
+            upper_left = (
+                previous[index - filter_bytes_per_pixel]
+                if index >= filter_bytes_per_pixel
+                else 0
+            )
+            predictor = (
+                0 if filter_type == 0
+                else left if filter_type == 1
+                else above if filter_type == 2
+                else (left + above) // 2 if filter_type == 3
+                else _paeth_predictor(left, above, upper_left)
+            )
+            row[index] = (value + predictor) & 0xFF
+        samples = _png_samples(row, bit_depth)
+        if color_type == 6 and any(
+            samples[index] != (1 << bit_depth) - 1
+            for index in range(3, width * 4, 4)
+        ):
+            return True
+        if color_type == 4 and any(
+            samples[index] != (1 << bit_depth) - 1
+            for index in range(1, width * 2, 2)
+        ):
+            return True
+        if color_type == 3 and any(
+            sample < len(transparency) and transparency[sample] != 0xFF
+            for sample in samples[:width]
+        ):
+            return True
+        if color_type == 0 and transparent_gray is not None and any(
+            sample == transparent_gray for sample in samples[:width]
+        ):
+            return True
+        if color_type == 2 and transparent_rgb is not None and any(
+            tuple(samples[index : index + 3]) == transparent_rgb
+            for index in range(0, width * 3, 3)
+        ):
+            return True
+        previous = row
+    return False
 
 
 def _strip_base_namespace(reference: str, context: str) -> str:
@@ -878,7 +1045,28 @@ class BlockModelResolver:
         self.archive = archive
         self.entries = entries
         self.cache: dict[str, ResolvedModel] = {}
+        self.texture_transparency_cache: dict[str, bool] = {}
         self.active: set[str] = set()
+
+    def any_texture_has_transparent_texels(
+        self, references: tuple[str, ...], context: str
+    ) -> bool:
+        for reference in sorted(set(references)):
+            source = f"base/{reference}"
+            transparent = self.texture_transparency_cache.get(source)
+            if transparent is None:
+                info = self.entries.get(source)
+                if info is None:
+                    raise AssetImportError(
+                        f"{context}: missing block texture {reference}"
+                    )
+                transparent = png_has_transparent_texels(
+                    self.archive.read(info), source
+                )
+                self.texture_transparency_cache[source] = transparent
+            if transparent:
+                return True
+        return False
 
     def resolve(self, reference: str) -> ResolvedModel:
         source = _resource_archive_path(reference, "block model")
@@ -1218,7 +1406,14 @@ def render_block_yaml(
         lines.append("rotate_top_bottom: true")
     if model.culls_self or properties.get("isFluid", False):
         lines.append("cull_same_type: true")
-    layer = "transparent" if not model.empty and model.transparent else "opaque"
+    if not model.empty and model.transparent:
+        layer = "transparent"
+    elif models.any_texture_has_transparent_texels(
+        tuple(texture_bindings.values()), context
+    ):
+        layer = "cutout"
+    else:
+        layer = "opaque"
     lines.append(f"layer: {layer}")
     emitted = max(
         int(properties.get("lightLevelRed", 0)),

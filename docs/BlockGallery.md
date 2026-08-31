@@ -100,6 +100,9 @@ Effective layers are listed once in render order and include both the block
 default and its texture-slot overrides. Single-layer specimens omit the
 redundant slot mapping. Mixed-layer specimens show the first four slots in
 normalized model order and report how many additional slots were omitted.
+The presentation adapter derives both strings from the immutable runtime
+`BlockType` and its normalized model slot order; the ImGui layer displays those
+values and does not duplicate or reinterpret model geometry.
 
 Targeting intentionally uses the normal whole-cell DDA. It identifies the first
 occupied block cell on the camera ray, not the visible cuboid face under a

@@ -82,6 +82,38 @@ cmake --build "$rigel_release_build" --parallel
 ctest --test-dir "$rigel_release_build" --output-on-failure --parallel
 ```
 
+Those commands are source-only gates only when all three JAR selectors are
+absent: the `RIGEL_COSMIC_REACH_JAR` CMake cache value, the environment
+variable of the same name, and `.rigel/source/Cosmic-Reach.jar` in the source
+tree. Use a clean checkout or archive with no `.rigel/` tree for an auditable
+source-only run, and unset the environment variable. CMake then reports that
+only source-owned runtime assets are available, and the generated-asset and
+application-launch integration executables are not registered.
+
+For the conditional Cosmic Reach 0.6.1 acceptance gate, configure a third
+fresh Release build with the JAR selected explicitly, then build and run all
+CTest entries:
+
+```bash
+rigel_real_release_build=../Rigel-build-real-release
+rigel_cosmic_reach_jar=/absolute/path/to/Cosmic-Reach-0.6.1.jar
+conan install . --output-folder="$rigel_real_release_build" --build=missing \
+  -s build_type=Release
+cmake -S . -B "$rigel_real_release_build" \
+  -DCMAKE_TOOLCHAIN_FILE="$rigel_real_release_build/conan_toolchain.cmake" \
+  -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DRIGEL_COSMIC_REACH_JAR="$rigel_cosmic_reach_jar"
+cmake --build "$rigel_real_release_build" --parallel
+ctest --test-dir "$rigel_real_release_build" --output-on-failure --parallel
+```
+
+The exact 0.6.1 digest enables the strict generated-asset expectations. On
+Linux that CTest entry requires EGL, clears X11 and Wayland display selection,
+forces software OpenGL, and treats a skipped case as a failure. Generated
+resources and the digest-addressed JAR copy remain in the external build and
+ignored source asset trees rather than becoming repository fixtures.
+
 You can also run the test executable directly:
 
 ```bash

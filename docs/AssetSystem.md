@@ -168,6 +168,39 @@ animated block textures, and non-16-by-16 block textures are not supported.
 The importer omits those cases with disjoint provenance reasons rather than
 publishing an approximation or claiming arbitrary CR-model compatibility.
 
+### Opacity and texture alpha
+
+The importer makes three separate decisions rather than treating source
+transparency as one material flag:
+
+1. The registration's `opaque` value comes from an explicit source `isOpaque`
+   property when present, otherwise from the inverse of the resolved model's
+   `isTransparent`. This value controls whole-block occlusion behavior; it does
+   not select alpha blending.
+2. Every referenced PNG is decoded and classified as fully opaque, binary
+   alpha (only zero and fully opaque texels), or fractional alpha. The
+   canonical render layers are respectively `opaque`, `cutout`, and
+   `transparent`.
+3. A source `refractiveIndex` can promote a binary-alpha texture slot from
+   `cutout` to `transparent`. It never promotes a fully opaque slot. Source
+   fluid and model-transparency flags do not otherwise override the PNG class.
+
+Layer selection remains per texture slot for normalized models. The generated
+block document stores the most common effective slot layer as `layer`, using
+the stable `opaque`, `cutout`, `transparent` order to break a tie, and records
+only differing slots in `texture_render_layers`. This is a compact encoding;
+the runtime resolves every face through its named slot and batches it directly
+into the corresponding existing chunk layer range. A mixed wood/glass model
+therefore keeps its wood opaque while its glass blends. A built-in full cube
+cannot express per-slot overrides, so an import whose cube faces require
+conflicting layers fails instead of collapsing them to one material.
+
+The foreground shader preserves the sampled alpha for the `transparent`
+range. `cutout` performs the existing 0.5 alpha test and writes depth, while
+`opaque` does not blend. The renderer does not apply a generic transparent
+alpha multiplier and this contract does not introduce a general material
+system.
+
 ### Publication and runtime semantics
 
 Before publication, generated-tree validation parses every normalized model

@@ -32,6 +32,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/geometric.hpp>
@@ -61,6 +62,7 @@ constexpr std::string_view HandrailId =
     "base:steel_handrail[direction=PosX]";
 constexpr std::string_view GlassId = "base:glass";
 constexpr std::string_view LavaId = "base:lava[type=source]";
+constexpr std::string_view VegetationId = "base:grass_blades";
 constexpr std::string_view PistonHeadId =
     "base:piston[direction=PosX,type=advancing,part=head]";
 constexpr std::string_view MultiCuboidId = "base:table_pedestal_wood";
@@ -267,6 +269,20 @@ void checkMeshCardinality(
     CHECK_EQ(
         mesh.layers[static_cast<size_t>(layer)].indexCount,
         static_cast<uint32_t>(indexCount));
+}
+
+void checkExclusiveMeshLayer(
+    const ChunkMesh& mesh,
+    RenderLayer expectedLayer
+) {
+    CHECK(mesh.indexCount() > 0);
+    for (size_t index = 0; index < mesh.layers.size(); ++index) {
+        CHECK_EQ(
+            mesh.layers[index].indexCount,
+            index == static_cast<size_t>(expectedLayer)
+                ? static_cast<uint32_t>(mesh.indexCount())
+                : static_cast<uint32_t>(0));
+    }
 }
 
 const BlockGalleryCatalogEntry& requireGalleryEntry(
@@ -477,6 +493,21 @@ void checkAlphaCutoutRevealsFloor(const FramebufferCapture& capture) {
     CHECK(openingDepth > rightDepth);
 }
 
+void checkAuthoredWaterAlpha(const FramebufferCapture& capture) {
+    const int x = 145;
+    const int topDownY = 128;
+    const int y = capture.height - 1 - topDownY;
+    const size_t offset = static_cast<size_t>(x + y * capture.width) * 4;
+    const int red = capture.rgba[offset];
+    const int blue = capture.rgba[offset + 2];
+
+    // This front-face sample blends the constant-alpha water texture over the
+    // clear color. The authored alpha produces a materially stronger blue shift
+    // than the removed global 0.5 transparent multiplier.
+    CHECK(blue >= 90);
+    CHECK(blue >= red + 50);
+}
+
 void checkMixedTableMaterials(const FramebufferCapture& capture) {
     const auto colorOffset = [&](int x, int topDownY) {
         const int y = capture.height - 1 - topDownY;
@@ -666,7 +697,7 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
         std::string("base:air"));
 
     for (const std::string_view identifier : {
-             LeavesId, WalkwayId, LadderId, HandrailId}) {
+             LeavesId, WalkwayId, LadderId, HandrailId, VegetationId}) {
         const auto presentation = requireGalleryPresentation(
             catalog, preparedRegistry, identifier);
         CHECK_EQ(
@@ -741,6 +772,8 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     const BlockType& glass = requireBlock(resources.registry(), GlassId);
     const BlockType& water = requireBlock(resources.registry(), TransparentId);
     const BlockType& lava = requireBlock(resources.registry(), LavaId);
+    const BlockType& vegetation =
+        requireBlock(resources.registry(), VegetationId);
     for (const BlockType* block : {
              &slab, &stair, &door, &ladder, &alphaCutout, &mixedTable,
              &pistonHead}) {
@@ -778,6 +811,24 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     CHECK(!lava.isOpaque);
     CHECK(lava.cullSameType);
     CHECK_EQ(lava.layer, RenderLayer::Opaque);
+    CHECK(!vegetation.isOpaque);
+    CHECK_EQ(vegetation.layer, RenderLayer::Cutout);
+
+    for (const auto& [identifier, expectedLayer] :
+         std::array<std::pair<std::string_view, RenderLayer>, 8>{
+             std::pair{LeavesId, RenderLayer::Cutout},
+             std::pair{WalkwayId, RenderLayer::Cutout},
+             std::pair{LadderId, RenderLayer::Cutout},
+             std::pair{HandrailId, RenderLayer::Cutout},
+             std::pair{GlassId, RenderLayer::Transparent},
+             std::pair{TransparentId, RenderLayer::Transparent},
+             std::pair{LavaId, RenderLayer::Opaque},
+             std::pair{VegetationId, RenderLayer::Cutout},
+         }) {
+        checkExclusiveMeshLayer(
+            buildOne(resources.registry(), resources.textureAtlas(), identifier),
+            expectedLayer);
+    }
 
     const ChunkMesh slabMesh = buildOne(
         resources.registry(), resources.textureAtlas(), SlabId);
@@ -942,6 +993,37 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     const std::vector<GeneratedGalleryPair> diagnosticPairs =
         generatedDiagnosticPairs(*gallery, catalog);
     CHECK_EQ(diagnosticPairs.size(), static_cast<size_t>(3));
+    std::set<std::string> diagnosticLabels;
+    for (const BlockGalleryCullingDiagnosticPlacement& placement :
+         catalog.cullingDiagnosticPlacements()) {
+        const auto presentation = makeBlockGalleryTargetPresentation(
+            catalog,
+            resources.registry(),
+            BlockTarget{
+                .block = {
+                    placement.worldPosition.x,
+                    placement.worldPosition.y,
+                    placement.worldPosition.z,
+                },
+                .state = BlockState{placement.sourceBlockId},
+            });
+        CHECK(presentation);
+        CHECK(presentation->cullingDiagnostic);
+        CHECK_EQ(
+            presentation->cullingDiagnostic->caseKind,
+            placement.caseKind);
+        CHECK_EQ(presentation->cullingDiagnostic->label, placement.label);
+        CHECK_EQ(
+            presentation->cullingDiagnostic->caseOrdinal,
+            placement.caseOrdinal);
+        CHECK_EQ(
+            presentation->cullingDiagnostic->pairOrdinal,
+            placement.pairOrdinal);
+        CHECK_EQ(presentation->catalogPosition, static_cast<size_t>(0));
+        CHECK(!presentation->effectiveRenderLayers.empty());
+        diagnosticLabels.insert(placement.label);
+    }
+    CHECK_EQ(diagnosticLabels.size(), diagnosticPairs.size());
     const PreparedGeneratorDefinitionSnapshot identity =
         prepareBlockGalleryGeneratorIdentity(
             resources.registry(), gallery->worldBounds());
@@ -1078,29 +1160,21 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
         galleryCaptureDirectory();
     std::vector<Rigel::Test::NamedGalleryFramebufferCapture> captures;
     if (captureDirectory) {
-        captures.reserve(GalleryVisualRepresentatives.size());
+        captures.reserve(GalleryVisualRepresentatives.size() + 2);
     }
-    for (const GalleryVisualRepresentative& representative :
-         GalleryVisualRepresentatives) {
-        const BlockGalleryCatalogEntry& entry = requireGalleryEntry(
-            catalog, resources.registry(), representative.identifier);
-        const glm::vec3 target{
-            static_cast<float>(entry.specimenPosition.x) + 0.5f,
-            static_cast<float>(entry.specimenPosition.y) + 0.5f,
-            static_cast<float>(entry.specimenPosition.z) + 0.5f,
-        };
-        const glm::vec3 camera = target + glm::vec3{2.5f, 1.5f, 2.5f};
-        const ChunkCoord chunk = worldToChunk(
-            entry.specimenPosition.x,
-            entry.specimenPosition.y,
-            entry.specimenPosition.z);
+    const auto renderGalleryView = [&](const glm::vec3& camera,
+                                       const glm::vec3& target) {
+        const ChunkCoord targetChunk = worldToChunk(
+            static_cast<int>(std::floor(target.x)),
+            static_cast<int>(std::floor(target.y)),
+            static_cast<int>(std::floor(target.z)));
         for (size_t attempt = 0;
-             attempt < 24 && !view.meshStore().snapshot(chunk);
+             attempt < 24 && !view.meshStore().snapshot(targetChunk);
              ++attempt) {
             view.updateStreaming(camera);
             view.updateMeshes();
         }
-        const auto installed = view.meshStore().snapshot(chunk);
+        const auto installed = view.meshStore().snapshot(targetChunk);
         CHECK(installed.has_value());
         CHECK(!installed->empty);
 
@@ -1116,14 +1190,28 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
                 .deltaTime = 1.0f / 60.0f,
             });
         }
-        FramebufferCapture capture = readFramebuffer(
-            GalleryCaptureWidth, GalleryCaptureHeight);
+        return readFramebuffer(GalleryCaptureWidth, GalleryCaptureHeight);
+    };
+    for (const GalleryVisualRepresentative& representative :
+         GalleryVisualRepresentatives) {
+        const BlockGalleryCatalogEntry& entry = requireGalleryEntry(
+            catalog, resources.registry(), representative.identifier);
+        const glm::vec3 target{
+            static_cast<float>(entry.specimenPosition.x) + 0.5f,
+            static_cast<float>(entry.specimenPosition.y) + 0.5f,
+            static_cast<float>(entry.specimenPosition.z) + 0.5f,
+        };
+        const glm::vec3 camera = target + glm::vec3{2.5f, 1.5f, 2.5f};
+        FramebufferCapture capture = renderGalleryView(camera, target);
         CHECK(countRenderedCenterPixels(capture) >= static_cast<size_t>(4));
         if (representative.identifier == SlabId) {
             checkOpaqueWoodOccludesFloor(capture);
         }
         if (representative.identifier == AlphaCutoutId) {
             checkAlphaCutoutRevealsFloor(capture);
+        }
+        if (representative.identifier == TransparentId) {
+            checkAuthoredWaterAlpha(capture);
         }
         if (representative.identifier == MultiCuboidId) {
             checkMixedTableMaterials(capture);
@@ -1134,6 +1222,65 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
                 std::move(capture),
             });
         }
+    }
+
+    const BlockGalleryGridDimensions dimensions = catalog.gridDimensions();
+    CHECK(dimensions.columns > 0);
+    CHECK(dimensions.rows > 1);
+    const BlockGalleryCatalogEntry* rowEnd =
+        catalog.findByIndex(dimensions.columns - 1);
+    const BlockGalleryCatalogEntry* nextRowBegin =
+        catalog.findByIndex(dimensions.columns);
+    CHECK(rowEnd);
+    CHECK(nextRowBegin);
+    CHECK_EQ(nextRowBegin->catalogIndex, rowEnd->catalogIndex + 1);
+    CHECK_EQ(nextRowBegin->gridCoordinate.column, rowEnd->gridCoordinate.column);
+    CHECK_EQ(nextRowBegin->gridCoordinate.row, rowEnd->gridCoordinate.row + 1);
+    CHECK_EQ(nextRowBegin->specimenPosition.x, rowEnd->specimenPosition.x);
+    CHECK_EQ(
+        nextRowBegin->specimenPosition.z,
+        rowEnd->specimenPosition.z + BlockGalleryCatalog::SpecimenSpacing);
+    const glm::vec3 rowTransitionTarget{
+        static_cast<float>(rowEnd->specimenPosition.x) + 0.5f,
+        static_cast<float>(BlockGalleryCatalog::SpecimenHeight) + 0.5f,
+        (static_cast<float>(rowEnd->specimenPosition.z) +
+         static_cast<float>(nextRowBegin->specimenPosition.z)) * 0.5f + 0.5f,
+    };
+    FramebufferCapture rowTransitionCapture = renderGalleryView(
+        rowTransitionTarget + glm::vec3{12.0f, 10.0f, 12.0f},
+        rowTransitionTarget);
+    CHECK(
+        countRenderedCenterPixels(rowTransitionCapture) >=
+        static_cast<size_t>(4));
+    if (captureDirectory) {
+        captures.push_back({
+            "10_dense_row_transition",
+            std::move(rowTransitionCapture),
+        });
+    }
+
+    const auto& diagnosticPlacements = catalog.cullingDiagnosticPlacements();
+    CHECK(!diagnosticPlacements.empty());
+    const float diagnosticMinX = static_cast<float>(
+        diagnosticPlacements.front().worldPosition.x);
+    const float diagnosticMaxX = static_cast<float>(
+        diagnosticPlacements.back().worldPosition.x);
+    const glm::vec3 diagnosticTarget{
+        (diagnosticMinX + diagnosticMaxX) * 0.5f + 0.5f,
+        static_cast<float>(BlockGalleryCatalog::SpecimenHeight) + 0.5f,
+        static_cast<float>(diagnosticPlacements.front().worldPosition.z) + 0.5f,
+    };
+    FramebufferCapture diagnosticCapture = renderGalleryView(
+        diagnosticTarget + glm::vec3{10.0f, 8.0f, 12.0f},
+        diagnosticTarget);
+    CHECK(
+        countRenderedCenterPixels(diagnosticCapture) >=
+        static_cast<size_t>(4));
+    if (captureDirectory) {
+        captures.push_back({
+            "11_culling_diagnostics",
+            std::move(diagnosticCapture),
+        });
     }
     if (captureDirectory) {
         Rigel::Test::publishGalleryCaptureSet(captures, *captureDirectory);

@@ -38,6 +38,7 @@ SNAPSHOT_STAGING_SUFFIX = ".staging"
 PROVENANCE_SCHEMA = 1
 IMPORTER_SCHEMA = 6
 BLOCK_MODEL_SUPPORT_SCHEMA = 1
+MATERIAL_LAYER_AUDIT_SCHEMA = 1
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 BLOCK_TEXTURE_SIZE = (16, 16)
@@ -2350,6 +2351,149 @@ def validate_generated_tree(
     }
 
 
+def audit_generated_material_layers(root: Path) -> dict[str, object]:
+    alpha_counts = {
+        alpha_class.value: 0
+        for alpha_class in TextureAlphaClass
+    }
+    alpha_by_texture: dict[str, TextureAlphaClass] = {}
+    texture_root = root / "textures"
+    if texture_root.is_dir():
+        for path in sorted(texture_root.rglob("*.png")):
+            logical = path.relative_to(root).as_posix()
+            alpha_class = classify_png_alpha(path.read_bytes(), logical)
+            alpha_by_texture[logical] = alpha_class
+            alpha_counts[alpha_class.value] += 1
+
+    registration_counts = {
+        "opaque_only": 0,
+        "cutout_only": 0,
+        "transparent_only": 0,
+        "mixed": 0,
+        "other_only": 0,
+        "empty": 0,
+    }
+    canonical_layer = {
+        TextureAlphaClass.FULLY_OPAQUE: "opaque",
+        TextureAlphaClass.BINARY: "cutout",
+        TextureAlphaClass.FRACTIONAL: "transparent",
+    }
+    suspicious: list[dict[str, str]] = []
+    block_root = root / "blocks"
+    if block_root.is_dir():
+        for path in sorted(block_root.rglob("*.yaml")):
+            logical = path.relative_to(root).as_posix()
+            block = parse_generated_block(path.read_bytes(), logical)
+            identifier = str(block["id"])
+            textures = block.get("textures", {})
+            texture_layers = block.get("texture_render_layers", {})
+            if not isinstance(textures, dict) or not isinstance(texture_layers, dict):
+                raise AssetImportError(
+                    f"{logical}: generated texture mappings are invalid"
+                )
+
+            effective_layers: set[str] = set()
+            for slot in sorted(textures):
+                texture = _validate_generated_texture_reference(
+                    textures[slot], f"{logical}.textures.{slot}"
+                )
+                alpha_class = alpha_by_texture.get(texture)
+                if alpha_class is None:
+                    raise AssetImportError(
+                        f"{logical}: texture slot {slot!r} references an "
+                        f"unaudited PNG: {texture}"
+                    )
+                render_layer = str(texture_layers.get(slot, block["layer"]))
+                effective_layers.add(render_layer)
+                if render_layer != canonical_layer[alpha_class]:
+                    suspicious.append({
+                        "identifier": identifier,
+                        "slot": str(slot),
+                        "texture": texture,
+                        "alpha_class": alpha_class.value,
+                        "render_layer": render_layer,
+                    })
+
+            if not effective_layers:
+                registration_counts["empty"] += 1
+            elif len(effective_layers) > 1:
+                registration_counts["mixed"] += 1
+            else:
+                only_layer = next(iter(effective_layers))
+                category = {
+                    "opaque": "opaque_only",
+                    "cutout": "cutout_only",
+                    "transparent": "transparent_only",
+                }.get(only_layer, "other_only")
+                registration_counts[category] += 1
+
+    return {
+        "schema": MATERIAL_LAYER_AUDIT_SCHEMA,
+        "texture_alpha_classes": alpha_counts,
+        "effective_registration_layers": registration_counts,
+        "suspicious_cross_classifications": suspicious,
+    }
+
+
+def validate_material_layer_audit_report(
+    report: object,
+    counts: object | None = None,
+) -> None:
+    if not isinstance(report, dict):
+        raise AssetImportError("generated material-layer audit is missing or malformed")
+    if report.get("schema") != MATERIAL_LAYER_AUDIT_SCHEMA:
+        raise AssetImportError("generated material-layer audit schema is unsupported")
+
+    alpha_counts = report.get("texture_alpha_classes")
+    registration_counts = report.get("effective_registration_layers")
+    suspicious = report.get("suspicious_cross_classifications")
+    expected_alpha_keys = {alpha_class.value for alpha_class in TextureAlphaClass}
+    expected_registration_keys = {
+        "opaque_only",
+        "cutout_only",
+        "transparent_only",
+        "mixed",
+        "other_only",
+        "empty",
+    }
+    if (
+        not isinstance(alpha_counts, dict)
+        or set(alpha_counts) != expected_alpha_keys
+        or any(type(value) is not int or value < 0 for value in alpha_counts.values())
+    ):
+        raise AssetImportError("generated texture alpha-class audit is malformed")
+    if (
+        not isinstance(registration_counts, dict)
+        or set(registration_counts) != expected_registration_keys
+        or any(
+            type(value) is not int or value < 0
+            for value in registration_counts.values()
+        )
+    ):
+        raise AssetImportError("generated registration-layer audit is malformed")
+    if not isinstance(suspicious, list) or any(
+        not isinstance(entry, dict)
+        or set(entry) != {
+            "identifier", "slot", "texture", "alpha_class", "render_layer"
+        }
+        or any(not isinstance(value, str) for value in entry.values())
+        for entry in suspicious
+    ):
+        raise AssetImportError(
+            "generated suspicious cross-classification audit is malformed"
+        )
+
+    if isinstance(counts, dict):
+        if sum(alpha_counts.values()) != counts.get("textures"):
+            raise AssetImportError(
+                "generated texture alpha-class audit count is inconsistent"
+            )
+        if sum(registration_counts.values()) != counts.get("blocks"):
+            raise AssetImportError(
+                "generated registration-layer audit count is inconsistent"
+            )
+
+
 def source_version(
     archive: zipfile.ZipFile, entries: dict[str, zipfile.ZipInfo]
 ) -> str | None:
@@ -2405,6 +2549,10 @@ def synchronize(
                     )
                     version = source_version(archive, entries)
                 counts = validate_generated_tree(staging, required_identifiers)
+                material_layer_audit = audit_generated_material_layers(staging)
+                validate_material_layer_audit_report(
+                    material_layer_audit, counts
+                )
                 provenance = {
                     "schema": PROVENANCE_SCHEMA,
                     "jar_sha256": jar_digest,
@@ -2414,6 +2562,7 @@ def synchronize(
                     "output_tree_sha256": sha256_tree(staging),
                     "counts": counts,
                     "block_model_import": model_audit.provenance(),
+                    "material_layer_audit": material_layer_audit,
                 }
                 if version is not None:
                     provenance["source_version"] = version
@@ -2452,6 +2601,12 @@ def _validate_existing_import(root: Path) -> dict[str, object]:
     validate_block_model_import_report(provenance.get("block_model_import"))
     assets = root / GENERATED_ASSETS_RELATIVE_PATH
     counts = validate_generated_tree(assets)
+    material_layer_audit = audit_generated_material_layers(assets)
+    validate_material_layer_audit_report(material_layer_audit, counts)
+    if provenance.get("material_layer_audit") != material_layer_audit:
+        raise AssetImportError(
+            "generated material-layer audit does not match the asset tree"
+        )
     actual_hash = sha256_tree(assets)
     if provenance.get("output_tree_sha256") != actual_hash:
         raise AssetImportError("generated asset tree does not match provenance")
@@ -3151,6 +3306,9 @@ def _import_matches(
         return False
     try:
         validate_block_model_import_report(provenance.get("block_model_import"))
+        validate_material_layer_audit_report(
+            provenance.get("material_layer_audit"), provenance.get("counts")
+        )
     except AssetImportError:
         return False
     return _tree_matches_provenance(assets, provenance)
@@ -3234,6 +3392,38 @@ def read_provenance(root: Path) -> dict[str, object] | None:
         return _read_provenance(root)
 
 
+def print_material_layer_audit(report: object) -> None:
+    validate_material_layer_audit_report(report)
+    assert isinstance(report, dict)
+    alpha_counts = report["texture_alpha_classes"]
+    registration_counts = report["effective_registration_layers"]
+    suspicious = report["suspicious_cross_classifications"]
+    assert isinstance(alpha_counts, dict)
+    assert isinstance(registration_counts, dict)
+    assert isinstance(suspicious, list)
+    print(
+        "Material layers: "
+        f"fully_opaque={alpha_counts['fully_opaque']}, "
+        f"binary={alpha_counts['binary']}, "
+        f"fractional={alpha_counts['fractional']}, "
+        f"opaque_only={registration_counts['opaque_only']}, "
+        f"cutout_only={registration_counts['cutout_only']}, "
+        f"transparent_only={registration_counts['transparent_only']}, "
+        f"mixed={registration_counts['mixed']}, "
+        f"other_only={registration_counts['other_only']}, "
+        f"empty={registration_counts['empty']}, "
+        f"suspicious_cross_classifications={len(suspicious)}"
+    )
+    for entry in suspicious:
+        assert isinstance(entry, dict)
+        print(
+            "Suspicious material layer: "
+            f"{entry['identifier']} slot={entry['slot']} "
+            f"texture={entry['texture']} alpha={entry['alpha_class']} "
+            f"layer={entry['render_layer']}"
+        )
+
+
 def status(root: Path, explicit: str | Path | None = None) -> int:
     try:
         jar, source = resolve_jar(root, explicit)
@@ -3242,10 +3432,13 @@ def status(root: Path, explicit: str | Path | None = None) -> int:
         return 1
 
     jar_digest = sha256_file(jar)
-    synchronized = current_import_matches(root, jar_digest)
+    provenance = _matching_import_provenance(root, jar_digest)
+    synchronized = provenance is not None
     print(f"Cosmic Reach JAR: {jar} ({source})")
     print(f"JAR SHA-256: {jar_digest}")
     print(f"Generated assets: {'current' if synchronized else 'not synchronized'}")
+    if provenance is not None:
+        print_material_layer_audit(provenance.get("material_layer_audit"))
     return 0 if synchronized else 2
 
 
@@ -3343,6 +3536,7 @@ def main(argv: list[str] | None = None) -> int:
                                 "base_approximation_states="
                                 f"{summary.get('base_approximation_states')}"
                             )
+            print_material_layer_audit(provenance.get("material_layer_audit"))
             omissions = provenance.get("source_omissions", [])
             if isinstance(omissions, list):
                 for omission in omissions:
@@ -3361,6 +3555,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate":
             provenance = validate_existing_import(root)
             print(f"Generated assets are valid: {provenance['output_tree_sha256']}")
+            print_material_layer_audit(provenance.get("material_layer_audit"))
             return 0
     except AssetImportError as error:
         print(f"{TOOL_NAME}: {error}", file=sys.stderr)

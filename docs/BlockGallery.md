@@ -18,6 +18,11 @@ python3 scripts/rigel_assets.py status
 python3 scripts/rigel_assets.py validate
 ```
 
+Synchronization, status, and validation report the generated PNG alpha census,
+effective single-layer and mixed registration counts, and any noncanonical but
+permitted alpha/layer cross-classifications. This keeps the ignored import's
+material-layer evidence tied to the exact generated tree and importer revision.
+
 Then configure and build Rigel as described in the top-level `README.md`.
 Reconfigure an existing build after staging or changing a JAR so CMake embeds a
 fresh content-addressed generated-resource snapshot. The staged JAR, generated

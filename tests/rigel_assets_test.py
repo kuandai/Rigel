@@ -2740,6 +2740,120 @@ class BlockCompilerTest(unittest.TestCase):
 
 
 class GeneratedTreeClosureTest(unittest.TestCase):
+    def test_audits_alpha_classes_effective_layers_and_cross_classifications(
+        self,
+    ) -> None:
+        def generated_block(
+            identifier: str,
+            layer: str,
+            textures: dict[str, str] | None = None,
+            overrides: dict[str, str] | None = None,
+        ) -> bytes:
+            lines = [
+                f"id: {json.dumps(identifier)}",
+                "model: test:synthetic",
+                "opaque: false",
+                "solid: false",
+                f"layer: {layer}",
+            ]
+            if overrides:
+                lines.append("texture_render_layers:")
+                lines.extend(
+                    f"  {slot}: {json.dumps(value)}"
+                    for slot, value in overrides.items()
+                )
+            if textures:
+                lines.append("textures:")
+                lines.extend(
+                    f"  {slot}: {json.dumps(value)}"
+                    for slot, value in textures.items()
+                )
+            return ("\n".join(lines) + "\n").encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            texture_paths = {
+                "opaque": "textures/blocks/opaque.png",
+                "binary": "textures/blocks/binary.png",
+                "fractional": "textures/blocks/fractional.png",
+            }
+            rigel_assets.write_output(
+                output, texture_paths["opaque"], synthetic_png()
+            )
+            rigel_assets.write_output(
+                output,
+                texture_paths["binary"],
+                synthetic_png(transparent_pixels={(0, 0)}),
+            )
+            rigel_assets.write_output(
+                output,
+                texture_paths["fractional"],
+                synthetic_png(fractional_pixels={(0, 0): 127}),
+            )
+            fixtures = {
+                "opaque": generated_block(
+                    "test:opaque", "opaque", {"all": texture_paths["opaque"]}
+                ),
+                "cutout": generated_block(
+                    "test:cutout", "cutout", {"all": texture_paths["binary"]}
+                ),
+                "transparent": generated_block(
+                    "test:transparent",
+                    "transparent",
+                    {"all": texture_paths["fractional"]},
+                ),
+                "mixed": generated_block(
+                    "test:mixed",
+                    "opaque",
+                    {
+                        "frame": texture_paths["opaque"],
+                        "pane": texture_paths["fractional"],
+                    },
+                    {"pane": "transparent"},
+                ),
+                "binary_blend": generated_block(
+                    "test:binary_blend",
+                    "transparent",
+                    {"pane": texture_paths["binary"]},
+                ),
+                "empty": generated_block("test:empty", "opaque"),
+            }
+            for name, payload in fixtures.items():
+                rigel_assets.write_output(
+                    output, f"blocks/{name}.yaml", payload
+                )
+
+            report = rigel_assets.audit_generated_material_layers(output)
+
+            self.assertEqual(
+                report["texture_alpha_classes"],
+                {"fully_opaque": 1, "binary": 1, "fractional": 1},
+            )
+            self.assertEqual(
+                report["effective_registration_layers"],
+                {
+                    "opaque_only": 1,
+                    "cutout_only": 1,
+                    "transparent_only": 2,
+                    "mixed": 1,
+                    "other_only": 0,
+                    "empty": 1,
+                },
+            )
+            self.assertEqual(
+                report["suspicious_cross_classifications"],
+                [{
+                    "identifier": "test:binary_blend",
+                    "slot": "pane",
+                    "texture": texture_paths["binary"],
+                    "alpha_class": "binary",
+                    "render_layer": "transparent",
+                }],
+            )
+            rigel_assets.validate_material_layer_audit_report(
+                report, {"textures": 3, "blocks": 6}
+            )
+
     def test_rejects_incomplete_or_ambiguous_block_model_closure(self) -> None:
         def duplicate_model(output: Path) -> None:
             shutil.copyfile(
@@ -3015,6 +3129,36 @@ class SynchronizationTest(unittest.TestCase):
                     root, str(provenance["jar_sha256"])
                 )
             )
+
+    def test_existing_import_rejects_stale_material_layer_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            provenance, _ = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+            layer_counts = provenance["material_layer_audit"][
+                "effective_registration_layers"
+            ]
+            layer_counts["opaque_only"] -= 1
+            layer_counts["transparent_only"] += 1
+            rigel_assets.atomic_write_json(
+                root / rigel_assets.PROVENANCE_RELATIVE_PATH, provenance
+            )
+
+            validate_tree = rigel_assets.validate_generated_tree
+            with mock.patch.object(
+                rigel_assets,
+                "validate_generated_tree",
+                side_effect=lambda assets: validate_tree(
+                    assets, required_identifiers=("test:stone",)
+                ),
+            ), self.assertRaisesRegex(
+                rigel_assets.AssetImportError,
+                "material-layer audit does not match",
+            ):
+                rigel_assets.validate_existing_import(root)
 
     def test_forced_rebuild_is_byte_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3533,6 +3677,26 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
             self.assertEqual(len(textures["block_states"]), 14)
             self.assertEqual(textures["candidate_states"], 11)
             self.assertEqual(textures["base_approximation_states"], 3)
+            self.assertEqual(
+                first["material_layer_audit"],
+                {
+                    "schema": rigel_assets.MATERIAL_LAYER_AUDIT_SCHEMA,
+                    "texture_alpha_classes": {
+                        "fully_opaque": 252,
+                        "binary": 152,
+                        "fractional": 34,
+                    },
+                    "effective_registration_layers": {
+                        "opaque_only": 1709,
+                        "cutout_only": 271,
+                        "transparent_only": 26,
+                        "mixed": 14,
+                        "other_only": 0,
+                        "empty": 1,
+                    },
+                    "suspicious_cross_classifications": [],
+                },
+            )
 
             assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
             generated_blocks = {}
@@ -3566,6 +3730,9 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
                 "base:lava[type=source]": (
                     "all", rigel_assets.TextureAlphaClass.FULLY_OPAQUE,
                     "opaque",
+                ),
+                "base:grass_blades": (
+                    "side", rigel_assets.TextureAlphaClass.BINARY, "cutout"
                 ),
             }
             for identifier, (slot, expected_alpha, expected_layer) in (

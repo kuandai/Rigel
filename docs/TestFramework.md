@@ -119,14 +119,17 @@ suite always runs without a real-JAR environment selection.
 
 The generated-asset integration renders labeled cube, slab, stair,
 multi-cuboid, rotated, cropped-UV, transparent, out-of-cell, and alpha-cutout
-specimens through the production `WorldView` and `FrameRenderer` path. It
-always reads the resulting color and depth buffers. The alpha-cutout check
-confirms that transparent crop texels expose the farther gallery floor while
-the opaque slab check confirms that partial solid models are not blended. For
-visual review, set
+specimens, plus a dense serpentine row turn and the culling diagnostic pad,
+through the production `WorldView` and `FrameRenderer` path. It always reads
+the resulting color and depth buffers. The alpha-cutout check confirms that
+transparent crop texels expose the farther gallery floor, the water check
+requires its authored blend strength, and the mixed table check distinguishes
+opaque wood from fractional glass. The opaque slab check confirms that partial
+solid models are not blended. Diagnostic targeting and labels are checked from
+the same catalog metadata before capture. For visual review, set
 `RIGEL_GALLERY_CAPTURE_DIRECTORY` to an absolute directory outside the source
 tree. The test validates every representative before publishing the captures
-as one complete set. It writes one vertically oriented PPM per representative
+as one complete set. It writes one vertically oriented PPM per view
 and a `capture-manifest.txt` completion record:
 
 ```bash

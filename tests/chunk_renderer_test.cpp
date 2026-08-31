@@ -104,6 +104,48 @@ ChunkMesh makeWideTextureLayerMesh() {
     return mesh;
 }
 
+void appendScreenQuad(
+    ChunkMesh& mesh,
+    float minX,
+    float minY,
+    float maxX,
+    float maxY,
+    uint16_t textureLayer
+) {
+    const uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+    const std::array<std::array<float, 2>, 4> positions{{
+        {minX, minY},
+        {minX, maxY},
+        {maxX, maxY},
+        {maxX, minY},
+    }};
+    for (const auto& position : positions) {
+        VoxelVertex vertex{};
+        vertex.x = position[0];
+        vertex.y = position[1];
+        vertex.u = 0.5f;
+        vertex.v = 0.5f;
+        vertex.normalIndex = static_cast<uint8_t>(Direction::PosY);
+        vertex.aoLevel = 3;
+        vertex.textureLayer = textureLayer;
+        mesh.vertices.push_back(vertex);
+    }
+    constexpr std::array<uint32_t, 6> indices = {0, 1, 2, 0, 2, 3};
+    for (const uint32_t index : indices) {
+        mesh.indices.push_back(base + index);
+    }
+}
+
+ChunkMesh makeAlphaPolicyMesh() {
+    ChunkMesh mesh;
+    appendScreenQuad(mesh, -1.0f, 0.0f, 0.0f, 1.0f, 0);
+    appendScreenQuad(mesh, -1.0f, -1.0f, 0.0f, 0.0f, 1);
+    appendScreenQuad(mesh, 0.0f, -1.0f, 1.0f, 1.0f, 0);
+    mesh.layers[static_cast<size_t>(RenderLayer::Cutout)] = {0, 12};
+    mesh.layers[static_cast<size_t>(RenderLayer::Transparent)] = {12, 6};
+    return mesh;
+}
+
 void checkWideLayerShaderAttribute(GLuint program) {
     CHECK_EQ(glGetAttribLocation(program, "a_textureLayer"), 3);
 
@@ -579,6 +621,76 @@ TEST_CASE(ChunkRenderer_PreservesTextureLayersAcrossByteBoundary) {
     CHECK(abovePixel[0] < 20);
     CHECK(abovePixel[1] > 180);
     CHECK(abovePixel[2] < 20);
+    CHECK_EQ(glGetError(), GL_NO_ERROR);
+}
+
+TEST_CASE(ChunkRenderer_PreservesAuthoredAlphaAndLayerDepthPolicy) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+
+    TextureAtlas atlas({
+        .tileSize = 1,
+        .maxLayers = 2,
+        .generateMipmaps = false,
+    });
+    constexpr std::array<unsigned char, 4> authoredBlend = {
+        255, 0, 0, 128};
+    constexpr std::array<unsigned char, 4> belowCutout = {
+        255, 0, 0, 64};
+    atlas.addTexture("textures/test/authored_blend", authoredBlend.data());
+    atlas.addTexture("textures/test/below_cutout", belowCutout.data());
+    atlas.upload();
+
+    Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    const auto voxelShader = assets.get<Asset::ShaderAsset>("shaders/voxel");
+    CHECK_EQ(
+        glGetUniformLocation(voxelShader->program, "u_alphaMultiplier"),
+        -1);
+
+    WorldMeshStore store;
+    store.set({0, 0, 0}, makeAlphaPolicyMesh());
+    WorldRenderContext renderContext;
+    renderContext.meshes = &store;
+    renderContext.atlas = &atlas;
+    renderContext.shader = voxelShader;
+    renderContext.renderDistanceWorldUnits = 32.0f;
+
+    glViewport(0, 0, 64, 64);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    ChunkRenderer renderer;
+    renderer.render(renderContext);
+
+    const auto readColor = [](int x, int y) {
+        std::array<unsigned char, 4> pixel{};
+        glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel.data());
+        return pixel;
+    };
+    const auto readDepth = [](int x, int y) {
+        float depth = 0.0f;
+        glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
+        return depth;
+    };
+
+    const auto acceptedCutout = readColor(16, 48);
+    CHECK(acceptedCutout[0] >= 220);
+    CHECK(acceptedCutout[1] <= 2);
+    CHECK(readDepth(16, 48) < 1.0f);
+
+    const auto discardedCutout = readColor(16, 16);
+    CHECK(discardedCutout[0] <= 2);
+    CHECK_NEAR(readDepth(16, 16), 1.0f, 0.0001f);
+
+    const auto transparent = readColor(48, 32);
+    // Lighting produces about 116 red at the authored 128/255 alpha. A
+    // second, generic 0.5 multiplier would produce only about 58.
+    CHECK(transparent[0] >= 108);
+    CHECK(transparent[0] <= 122);
+    CHECK(transparent[1] <= 2);
+    CHECK(transparent[2] <= 2);
+    CHECK_NEAR(readDepth(48, 32), 1.0f, 0.0001f);
     CHECK_EQ(glGetError(), GL_NO_ERROR);
 }
 

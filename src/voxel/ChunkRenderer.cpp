@@ -459,7 +459,6 @@ void ChunkRenderer::cacheUniformLocations() {
     m_locChunkOffset = m_shader->uniform("u_chunkOffset");
     m_locTextureAtlas = m_shader->uniform("u_textureAtlas");
     m_locSunDirection = m_shader->uniform("u_sunDirection");
-    m_locAlphaMultiplier = m_shader->uniform("u_alphaMultiplier");
     m_locAlphaCutoff = m_shader->uniform("u_alphaCutoff");
     m_locRenderLayer = m_shader->uniform("u_renderLayer");
     m_locShadowEnabled = m_shader->uniform("u_shadowEnabled");
@@ -509,16 +508,9 @@ void ChunkRenderer::renderPass(RenderLayer layer,
                                const WorldRenderContext& ctx) {
     setupLayerState(layer);
 
-    float alphaMultiplier = 1.0f;
     float alphaCutoff = 0.0f;
     if (layer == RenderLayer::Cutout) {
         alphaCutoff = 0.5f;
-    } else if (layer == RenderLayer::Transparent) {
-        alphaMultiplier = ctx.profile.transparentAlpha;
-    }
-
-    if (m_locAlphaMultiplier >= 0) {
-        glUniform1f(m_locAlphaMultiplier, alphaMultiplier);
     }
     if (m_locAlphaCutoff >= 0) {
         glUniform1f(m_locAlphaCutoff, alphaCutoff);

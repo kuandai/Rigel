@@ -43,7 +43,6 @@ struct TemporalAAProfile {
 // render and shadow ranges separately at frame construction time.
 struct RenderProfile {
     glm::vec3 sunDirection = glm::vec3(0.5f, 1.0f, 0.3f);
-    float transparentAlpha = 0.5f;
     ShadowProfile shadow;
     TemporalAAProfile temporalAA;
 };

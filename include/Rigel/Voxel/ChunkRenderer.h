@@ -144,7 +144,6 @@ private:
     GLint m_locChunkOffset = -1;
     GLint m_locTextureAtlas = -1;
     GLint m_locSunDirection = -1;
-    GLint m_locAlphaMultiplier = -1;
     GLint m_locAlphaCutoff = -1;
     GLint m_locView = -1;
     GLint m_locRenderLayer = -1;

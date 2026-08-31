@@ -92,9 +92,11 @@ Layer selection is controlled by `u_renderLayer` in the voxel shader.
 `WorldView` starts with one shipped `RenderProfile`. Cascade count and map size,
 distance limit, split blend, bias, normal bias, PCF radii, transparency scale,
 strength, and fade power are fixed renderer tuning. The same profile owns the
-static sun direction and transparent alpha. Clear color and lighting weights
-remain direct shipped constants. None of these values is loaded from player,
-world, content, working-directory, or per-world configuration.
+static sun direction. Foreground transparent geometry preserves the alpha
+sampled from its texture; the profile's transparency scale applies only to the
+separate shadow-transmittance pass. Clear color and lighting weights remain
+direct shipped constants. None of these values is loaded from player, world,
+content, working-directory, or per-world configuration.
 
 Tests and developer diagnostics can use the explicitly named
 `WorldView::setRenderProfileForDiagnostics()` seam for exact low-level inputs.

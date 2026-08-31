@@ -25,10 +25,16 @@ concept StoresDerivedRenderDistance = requires(T value) {
     value.renderDistance;
 };
 
+template<typename T>
+concept HasForegroundTransparentAlpha = requires(T value) {
+    value.transparentAlpha;
+};
+
 static_assert(
     !HasAntiAliasingPreference<Rigel::Preferences::UserPreferences>);
 static_assert(!HasProfilingSetting<Rigel::Voxel::RenderProfile>);
 static_assert(!StoresDerivedRenderDistance<Rigel::Voxel::RenderProfile>);
+static_assert(!HasForegroundTransparentAlpha<Rigel::Voxel::RenderProfile>);
 
 class ViewDistanceRenderFixture final {
 public:
@@ -64,7 +70,6 @@ TEST_CASE(RenderProfile_UsesOneShippedShadowAndArtProfile) {
     CHECK_NEAR(profile.sunDirection.x, 0.5f, 0.0001f);
     CHECK_NEAR(profile.sunDirection.y, 1.0f, 0.0001f);
     CHECK_NEAR(profile.sunDirection.z, 0.3f, 0.0001f);
-    CHECK_NEAR(profile.transparentAlpha, 0.5f, 0.0001f);
     CHECK_EQ(profile.shadow.cascades, 3);
     CHECK_EQ(profile.shadow.mapSize, 6144);
     CHECK_NEAR(

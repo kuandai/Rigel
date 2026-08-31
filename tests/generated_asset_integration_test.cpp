@@ -482,14 +482,16 @@ void checkMixedTableMaterials(const FramebufferCapture& capture) {
     CHECK(capture.rgba[glassOverWood + 2] < 110);
 
     // A second partial-alpha glass sample remains visibly blended instead of
-    // being either discarded to the pale floor or drawn as opaque cyan.
+    // being either discarded to the pale floor or drawn as opaque cyan. These
+    // bounds require the texture's authored alpha; applying another 0.5 scale
+    // puts every channel below 145.
     const size_t glassOverFloor = colorOffset(148, 104);
-    CHECK(capture.rgba[glassOverFloor] >= 115);
-    CHECK(capture.rgba[glassOverFloor] <= 145);
-    CHECK(capture.rgba[glassOverFloor + 1] >= 100);
-    CHECK(capture.rgba[glassOverFloor + 1] <= 135);
-    CHECK(capture.rgba[glassOverFloor + 2] >= 90);
-    CHECK(capture.rgba[glassOverFloor + 2] <= 120);
+    CHECK(capture.rgba[glassOverFloor] >= 170);
+    CHECK(capture.rgba[glassOverFloor] <= 188);
+    CHECK(capture.rgba[glassOverFloor + 1] >= 165);
+    CHECK(capture.rgba[glassOverFloor + 1] <= 183);
+    CHECK(capture.rgba[glassOverFloor + 2] >= 160);
+    CHECK(capture.rgba[glassOverFloor + 2] <= 176);
 
     const auto checkOpaqueWood = [&](int x, int topDownY) {
         const size_t color = colorOffset(x, topDownY);

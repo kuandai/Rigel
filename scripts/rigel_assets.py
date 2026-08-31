@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from enum import Enum
 import fcntl
 import hashlib
 import json
@@ -35,7 +36,7 @@ SNAPSHOT_LOCK_FILENAME = ".snapshot.lock"
 SNAPSHOT_ACTIVE_GENERATION_FILENAME = ".active-generation.json"
 SNAPSHOT_STAGING_SUFFIX = ".staging"
 PROVENANCE_SCHEMA = 1
-IMPORTER_SCHEMA = 5
+IMPORTER_SCHEMA = 6
 BLOCK_MODEL_SUPPORT_SCHEMA = 1
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -319,7 +320,13 @@ def _png_samples(scanline: bytes, bit_depth: int) -> list[int]:
     ]
 
 
-def png_has_transparent_texels(data: bytes, source: str) -> bool:
+class TextureAlphaClass(Enum):
+    FULLY_OPAQUE = "fully_opaque"
+    BINARY = "binary"
+    FRACTIONAL = "fractional"
+
+
+def classify_png_alpha(data: bytes, source: str) -> TextureAlphaClass:
     width, height = png_dimensions(data, source)
     if len(data) < 33:
         raise AssetImportError(f"{source}: malformed PNG header")
@@ -346,9 +353,13 @@ def png_has_transparent_texels(data: bytes, source: str) -> bool:
         )
 
     compressed = bytearray()
-    transparency = b""
+    transparency: bytes | None = None
+    palette_entries: int | None = None
     offset = len(PNG_SIGNATURE)
+    found_header = False
+    found_data = False
     found_end = False
+    data_closed = False
     while offset + 12 <= len(data):
         length = struct.unpack(">I", data[offset : offset + 4])[0]
         chunk_end = offset + 12 + length
@@ -356,49 +367,128 @@ def png_has_transparent_texels(data: bytes, source: str) -> bool:
             raise AssetImportError(f"{source}: truncated PNG chunk")
         kind = data[offset + 4 : offset + 8]
         payload = data[offset + 8 : offset + 8 + length]
-        if kind == b"IDAT":
+        expected_crc = struct.unpack(">I", data[offset + 8 + length : chunk_end])[0]
+        actual_crc = zlib.crc32(kind + payload) & 0xFFFFFFFF
+        if actual_crc != expected_crc:
+            raise AssetImportError(f"{source}: PNG chunk checksum mismatch")
+        if len(kind) != 4 or not all(
+            ord("A") <= value <= ord("Z") or ord("a") <= value <= ord("z")
+            for value in kind
+        ):
+            raise AssetImportError(f"{source}: invalid PNG chunk type")
+        if not found_header and kind != b"IHDR":
+            raise AssetImportError(f"{source}: PNG header is not the first chunk")
+        if kind == b"IHDR":
+            if found_header or length != 13 or offset != len(PNG_SIGNATURE):
+                raise AssetImportError(f"{source}: malformed PNG header chunk")
+            found_header = True
+        elif kind == b"PLTE":
+            if found_data or palette_entries is not None:
+                raise AssetImportError(f"{source}: malformed PNG palette")
+            if length == 0 or length % 3 != 0 or length > 256 * 3:
+                raise AssetImportError(f"{source}: malformed PNG palette")
+            palette_entries = length // 3
+        elif kind == b"IDAT":
+            if data_closed:
+                raise AssetImportError(f"{source}: PNG image data is not consecutive")
+            found_data = True
             compressed.extend(payload)
         elif kind == b"tRNS":
+            if found_data or transparency is not None:
+                raise AssetImportError(f"{source}: malformed PNG transparency")
+            if color_type == 3 and palette_entries is None:
+                raise AssetImportError(
+                    f"{source}: indexed PNG transparency precedes its palette"
+                )
             transparency = payload
         elif kind == b"IEND":
+            if length != 0 or not found_data:
+                raise AssetImportError(f"{source}: malformed PNG end chunk")
             found_end = True
+            if chunk_end != len(data):
+                raise AssetImportError(f"{source}: trailing data after PNG end chunk")
             break
+        elif kind[0] & 0x20 == 0:
+            raise AssetImportError(
+                f"{source}: unsupported critical PNG chunk {kind.decode('ascii')}"
+            )
+        if found_data and kind != b"IDAT":
+            data_closed = True
         offset = chunk_end
-    if not compressed or not found_end:
+    if not found_header or not compressed or not found_end:
         raise AssetImportError(f"{source}: PNG image data is incomplete")
+
+    if color_type == 3:
+        if palette_entries is None or palette_entries > (1 << bit_depth):
+            raise AssetImportError(f"{source}: malformed indexed PNG palette")
+        if transparency is not None and (
+            not transparency or len(transparency) > palette_entries
+        ):
+            raise AssetImportError(f"{source}: malformed indexed PNG transparency")
+    elif color_type == 0 and palette_entries is not None:
+        raise AssetImportError(f"{source}: unexpected grayscale PNG palette")
+    elif color_type == 4 and palette_entries is not None:
+        raise AssetImportError(f"{source}: unexpected grayscale-alpha PNG palette")
 
     samples_per_pixel = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color_type]
     row_bytes = (width * samples_per_pixel * bit_depth + 7) // 8
     filter_bytes_per_pixel = max(
         1, (samples_per_pixel * bit_depth + 7) // 8
     )
+    expected_size = height * (row_bytes + 1)
     try:
-        filtered = zlib.decompress(bytes(compressed))
+        decompressor = zlib.decompressobj()
+        filtered = decompressor.decompress(
+            bytes(compressed), expected_size + 1
+        )
     except zlib.error as error:
         raise AssetImportError(f"{source}: malformed PNG image data") from error
-    if len(filtered) != height * (row_bytes + 1):
+    if (
+        len(filtered) != expected_size
+        or not decompressor.eof
+        or decompressor.unconsumed_tail
+        or decompressor.unused_data
+    ):
         raise AssetImportError(
             f"{source}: PNG scanline data has the wrong size"
         )
 
     transparent_gray: int | None = None
     transparent_rgb: tuple[int, int, int] | None = None
-    if color_type == 0 and transparency:
+    if color_type == 0 and transparency is not None:
         if len(transparency) != 2:
             raise AssetImportError(
                 f"{source}: malformed grayscale PNG transparency"
             )
         transparent_gray = int.from_bytes(transparency, "big")
-    elif color_type == 2 and transparency:
+        if transparent_gray >= (1 << bit_depth):
+            raise AssetImportError(
+                f"{source}: grayscale PNG transparency is out of range"
+            )
+    elif color_type == 2 and transparency is not None:
         if len(transparency) != 6:
             raise AssetImportError(
                 f"{source}: malformed truecolor PNG transparency"
             )
         transparent_rgb = struct.unpack(">HHH", transparency)
-    elif color_type not in (0, 2, 3) and transparency:
+        if any(sample >= (1 << bit_depth) for sample in transparent_rgb):
+            raise AssetImportError(
+                f"{source}: truecolor PNG transparency is out of range"
+            )
+    elif color_type not in (0, 2, 3) and transparency is not None:
         raise AssetImportError(
             f"{source}: unexpected PNG transparency chunk"
         )
+
+    alpha_class = TextureAlphaClass.FULLY_OPAQUE
+    maximum_sample = (1 << bit_depth) - 1
+
+    def record_alpha(alpha: int, opaque_value: int = maximum_sample) -> None:
+        nonlocal alpha_class
+        if alpha not in (0, opaque_value):
+            alpha_class = TextureAlphaClass.FRACTIONAL
+        elif alpha == 0 and alpha_class == TextureAlphaClass.FULLY_OPAQUE:
+            alpha_class = TextureAlphaClass.BINARY
 
     previous = bytearray(row_bytes)
     for row_index in range(height):
@@ -429,32 +519,37 @@ def png_has_transparent_texels(data: bytes, source: str) -> bool:
             )
             row[index] = (value + predictor) & 0xFF
         samples = _png_samples(row, bit_depth)
-        if color_type == 6 and any(
-            samples[index] != (1 << bit_depth) - 1
-            for index in range(3, width * 4, 4)
-        ):
-            return True
-        if color_type == 4 and any(
-            samples[index] != (1 << bit_depth) - 1
-            for index in range(1, width * 2, 2)
-        ):
-            return True
-        if color_type == 3 and any(
-            sample < len(transparency) and transparency[sample] != 0xFF
-            for sample in samples[:width]
-        ):
-            return True
-        if color_type == 0 and transparent_gray is not None and any(
-            sample == transparent_gray for sample in samples[:width]
-        ):
-            return True
-        if color_type == 2 and transparent_rgb is not None and any(
-            tuple(samples[index : index + 3]) == transparent_rgb
-            for index in range(0, width * 3, 3)
-        ):
-            return True
+        if color_type == 6:
+            for index in range(3, width * 4, 4):
+                record_alpha(samples[index])
+        elif color_type == 4:
+            for index in range(1, width * 2, 2):
+                record_alpha(samples[index])
+        elif color_type == 3:
+            assert palette_entries is not None
+            for sample in samples[:width]:
+                if sample >= palette_entries:
+                    raise AssetImportError(
+                        f"{source}: indexed PNG sample is outside its palette"
+                    )
+                record_alpha(
+                    transparency[sample]
+                    if transparency is not None and sample < len(transparency)
+                    else 0xFF,
+                    0xFF,
+                )
+        elif color_type == 0 and transparent_gray is not None:
+            for sample in samples[:width]:
+                record_alpha(0 if sample == transparent_gray else maximum_sample)
+        elif color_type == 2 and transparent_rgb is not None:
+            for index in range(0, width * 3, 3):
+                record_alpha(
+                    0
+                    if tuple(samples[index : index + 3]) == transparent_rgb
+                    else maximum_sample
+                )
         previous = row
-    return False
+    return alpha_class
 
 
 def _strip_base_namespace(reference: str, context: str) -> str:
@@ -1045,28 +1140,24 @@ class BlockModelResolver:
         self.archive = archive
         self.entries = entries
         self.cache: dict[str, ResolvedModel] = {}
-        self.texture_transparency_cache: dict[str, bool] = {}
+        self.texture_alpha_cache: dict[str, TextureAlphaClass] = {}
         self.active: set[str] = set()
 
-    def any_texture_has_transparent_texels(
-        self, references: tuple[str, ...], context: str
-    ) -> bool:
-        for reference in sorted(set(references)):
-            source = f"base/{reference}"
-            transparent = self.texture_transparency_cache.get(source)
-            if transparent is None:
-                info = self.entries.get(source)
-                if info is None:
-                    raise AssetImportError(
-                        f"{context}: missing block texture {reference}"
-                    )
-                transparent = png_has_transparent_texels(
-                    self.archive.read(info), source
-                )
-                self.texture_transparency_cache[source] = transparent
-            if transparent:
-                return True
-        return False
+    def texture_alpha_class(
+        self, reference: str, context: str
+    ) -> TextureAlphaClass:
+        source = f"base/{reference}"
+        alpha_class = self.texture_alpha_cache.get(source)
+        if alpha_class is not None:
+            return alpha_class
+        info = self.entries.get(source)
+        if info is None:
+            raise AssetImportError(
+                f"{context}: missing block texture {reference}"
+            )
+        alpha_class = classify_png_alpha(self.archive.read(info), source)
+        self.texture_alpha_cache[source] = alpha_class
+        return alpha_class
 
     def resolve(self, reference: str) -> ResolvedModel:
         source = _resource_archive_path(reference, "block model")
@@ -1416,29 +1507,46 @@ def render_block_yaml(
         lines.append("rotate_top_bottom: true")
     if model.culls_self or properties.get("isFluid", False):
         lines.append("cull_same_type: true")
-    transparent_slots = tuple(sorted(
-        slot
-        for slot, texture in texture_bindings.items()
-        if models.any_texture_has_transparent_texels((texture,), context)
-    ))
-    texture_render_layers: dict[str, str] = {}
-    if not model.empty and model.transparent:
-        layer = "transparent"
-    elif transparent_slots:
-        alpha_layer = (
+    alpha_classes = {
+        slot: models.texture_alpha_class(texture, context)
+        for slot, texture in sorted(texture_bindings.items())
+    }
+    refractive = "refractiveIndex" in properties
+    slot_layers = {
+        slot: (
             "transparent"
-            if "refractiveIndex" in properties
+            if alpha_class == TextureAlphaClass.FRACTIONAL
+            or (refractive and alpha_class == TextureAlphaClass.BINARY)
             else "cutout"
+            if alpha_class == TextureAlphaClass.BINARY
+            else "opaque"
         )
-        if not model.full_cube and len(transparent_slots) < len(texture_bindings):
-            layer = "opaque"
-            texture_render_layers = {
-                slot: alpha_layer for slot in transparent_slots
-            }
-        else:
-            layer = alpha_layer
-    else:
+        for slot, alpha_class in alpha_classes.items()
+    }
+    texture_render_layers: dict[str, str] = {}
+    effective_layers = set(slot_layers.values())
+    if model.empty or not effective_layers:
         layer = "opaque"
+    elif len(effective_layers) == 1:
+        layer = next(iter(effective_layers))
+    elif model.full_cube:
+        raise AssetImportError(
+            f"{context}: full-cube texture slots require conflicting render layers"
+        )
+    else:
+        layer_priority = {"opaque": 0, "cutout": 1, "transparent": 2}
+        layer = min(
+            effective_layers,
+            key=lambda candidate: (
+                -sum(value == candidate for value in slot_layers.values()),
+                layer_priority[candidate],
+            ),
+        )
+        texture_render_layers = {
+            slot: slot_layer
+            for slot, slot_layer in slot_layers.items()
+            if slot_layer != layer
+        }
     lines.append(f"layer: {layer}")
     if texture_render_layers:
         lines.append("texture_render_layers:")
@@ -2093,6 +2201,7 @@ def validate_generated_tree(
 
     block_identifiers: dict[str, str] = {}
     referenced_textures: dict[str, str] = {}
+    block_texture_layers: list[tuple[str, str, str, str]] = []
     block_paths = sorted(
         path for path in logical_paths
         if path.startswith("blocks/") and path.endswith(".yaml")
@@ -2119,11 +2228,22 @@ def validate_generated_tree(
                     f"{logical}: texture bindings do not match model {model_identifier}"
                 )
         if isinstance(textures, dict):
+            texture_layers = block.get("texture_render_layers", {})
+            if not isinstance(texture_layers, dict):
+                raise AssetImportError(
+                    f"{logical}: texture_render_layers must be a map"
+                )
             for slot, texture in textures.items():
                 reference = _validate_generated_texture_reference(
                     texture, f"{logical}.textures.{slot}"
                 )
                 referenced_textures[reference] = logical
+                block_texture_layers.append((
+                    logical,
+                    str(slot),
+                    reference,
+                    str(texture_layers.get(slot, block["layer"])),
+                ))
 
     namespace_collisions = sorted(
         set(block_identifiers) & set(normalized_models)
@@ -2186,6 +2306,25 @@ def validate_generated_tree(
         remainder = len(missing_textures) - min(len(missing_textures), 8)
         suffix = f"; and {remainder} more" if remainder else ""
         raise AssetImportError(f"generated texture references are unresolved: {preview}{suffix}")
+
+    alpha_classes: dict[str, TextureAlphaClass] = {}
+    coherent_layers = {
+        TextureAlphaClass.FULLY_OPAQUE: {"opaque", "emissive"},
+        TextureAlphaClass.BINARY: {"cutout", "transparent", "emissive"},
+        TextureAlphaClass.FRACTIONAL: {"transparent", "emissive"},
+    }
+    for logical, slot, reference, render_layer in block_texture_layers:
+        alpha_class = alpha_classes.get(reference)
+        if alpha_class is None:
+            alpha_class = classify_png_alpha(
+                (root / reference).read_bytes(), reference
+            )
+            alpha_classes[reference] = alpha_class
+        if render_layer not in coherent_layers[alpha_class]:
+            raise AssetImportError(
+                f"{logical}: texture slot {slot!r} uses {render_layer!r} "
+                f"with {alpha_class.value} PNG alpha"
+            )
 
     return {
         "blocks": len(block_identifiers),

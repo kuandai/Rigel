@@ -54,6 +54,12 @@ constexpr std::string_view DoorId =
     "base:door_steel[part=bottom,power=on,direction=PosX]";
 constexpr std::string_view LadderId =
     "base:ladder_steel[direction=PosX]";
+constexpr std::string_view LeavesId = "base:leaves[type=permament]";
+constexpr std::string_view WalkwayId = "base:steel_walkway";
+constexpr std::string_view HandrailId =
+    "base:steel_handrail[direction=PosX]";
+constexpr std::string_view GlassId = "base:glass";
+constexpr std::string_view LavaId = "base:lava[type=source]";
 constexpr std::string_view PistonHeadId =
     "base:piston[direction=PosX,type=advancing,part=head]";
 constexpr std::string_view MultiCuboidId = "base:table_pedestal_wood";
@@ -659,6 +665,12 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
         requireBlock(resources.registry(), MultiCuboidId);
     const BlockType& pistonHead =
         requireBlock(resources.registry(), PistonHeadId);
+    const BlockType& leaves = requireBlock(resources.registry(), LeavesId);
+    const BlockType& walkway = requireBlock(resources.registry(), WalkwayId);
+    const BlockType& handrail = requireBlock(resources.registry(), HandrailId);
+    const BlockType& glass = requireBlock(resources.registry(), GlassId);
+    const BlockType& water = requireBlock(resources.registry(), TransparentId);
+    const BlockType& lava = requireBlock(resources.registry(), LavaId);
     for (const BlockType* block : {
              &slab, &stair, &door, &ladder, &alphaCutout, &mixedTable,
              &pistonHead}) {
@@ -684,6 +696,19 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     CHECK(hasQuarterTurnedUv(*pistonHead.model.geometry));
     CHECK_EQ(pistonHead.model->cuboids().back().bounds.max[2], 1.25f);
 
+    for (const BlockType* cutout : {
+             &leaves, &walkway, &ladder, &handrail}) {
+        CHECK(!cutout->isOpaque);
+        CHECK_EQ(cutout->layer, RenderLayer::Cutout);
+    }
+    CHECK(!glass.isOpaque);
+    CHECK_EQ(glass.layer, RenderLayer::Transparent);
+    CHECK(!water.isOpaque);
+    CHECK_EQ(water.layer, RenderLayer::Transparent);
+    CHECK(!lava.isOpaque);
+    CHECK(lava.cullSameType);
+    CHECK_EQ(lava.layer, RenderLayer::Opaque);
+
     const ChunkMesh slabMesh = buildOne(
         resources.registry(), resources.textureAtlas(), SlabId);
     checkMeshCardinality(slabMesh, 24, 36, RenderLayer::Opaque);
@@ -703,7 +728,7 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
 
     const ChunkMesh ladderMesh = buildOne(
         resources.registry(), resources.textureAtlas(), LadderId);
-    checkMeshCardinality(ladderMesh, 8, 12, RenderLayer::Transparent);
+    checkMeshCardinality(ladderMesh, 8, 12, RenderLayer::Cutout);
     const PositionRange ladderRange = positionRange(ladderMesh);
     CHECK_NEAR(
         ladderRange.max[0] - ladderRange.min[0], 0.00625f, 0.00001f);
@@ -774,10 +799,10 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
         static_cast<uint32_t>(204));
     CHECK_EQ(
         mesh.layers[static_cast<size_t>(RenderLayer::Cutout)].indexCount,
-        static_cast<uint32_t>(24));
+        static_cast<uint32_t>(36));
     CHECK_EQ(
         mesh.layers[static_cast<size_t>(RenderLayer::Transparent)].indexCount,
-        static_cast<uint32_t>(12));
+        static_cast<uint32_t>(0));
 
     const std::array<std::string_view, 6> expectedTextures = {
         "textures/blocks/foliage/wood_planks.png",

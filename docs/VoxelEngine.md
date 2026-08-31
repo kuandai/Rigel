@@ -70,6 +70,16 @@ assign a render-layer override to a slot, and may apply only the measured
 right-angle X/Y/Z orientations. Cuboid bounds are in cell units and may extend
 outside `[0, 1]`.
 
+The importer keeps source opacity separate from texture compositing. Source
+`isTransparent` can make a registration non-opaque for neighbor occlusion, but
+does not select alpha blending. Each referenced PNG is decoded deterministically:
+fully opaque textures use `Opaque`, textures containing only opaque/transparent
+alpha use `Cutout`, and textures containing fractional alpha use `Transparent`.
+A source refractive index may promote an alpha-bearing binary slot to
+`Transparent`; it never promotes a fully opaque slot. Normalized models retain
+these decisions per texture slot, so mixed opaque and blended geometry remains
+in separate chunk layer ranges.
+
 ## Chunk Storage and Coordinates
 
 Chunks are 32 blocks on each axis. A `Chunk` divides its storage into eight

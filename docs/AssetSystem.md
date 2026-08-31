@@ -173,10 +173,11 @@ publishing an approximation or claiming arbitrary CR-model compatibility.
 Before publication, generated-tree validation parses every normalized model
 and rejects duplicate resource/model identities, malformed cuboids, unresolved
 models or texture slots, invalid orientations, block/model identifier
-collisions, and missing texture resources. `BlockLoader` then validates the
-complete reusable-model, block-definition, and texture set as one candidate.
-An aggregate failure publishes none of it and rolls back atlas entries added by
-that attempt.
+collisions, missing texture resources, malformed or unsupported referenced PNG
+data, and render layers that contradict the decoded PNG alpha class.
+`BlockLoader` then validates the complete reusable-model, block-definition, and
+texture set as one candidate. An aggregate failure publishes none of it and
+rolls back atlas entries added by that attempt.
 
 Published block registrations retain their model through
 `shared_ptr<const BlockModel>`. World initialization freezes the block registry

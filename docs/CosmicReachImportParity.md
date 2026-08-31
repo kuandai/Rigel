@@ -142,13 +142,19 @@ and draw submission:
 | `base:wood_planks[slab_type=bottom]` | One cuboid, cropped UVs, half-cell bounds |
 | `base:wood_planks[stair_type=bottom_PosX]` | Four cuboids, ten faces, quarter-turned UVs |
 | `base:door_steel[part=bottom,power=on,direction=PosX]` | Y-oriented one-eighth-cell thickness |
-| `base:ladder_steel[direction=PosX]` | Y-oriented two-face thin geometry |
+| `base:leaves[type=permament]` | Binary PNG alpha selects cutout while source opacity remains independent |
+| `base:steel_walkway` | Binary grate holes select cutout rather than generic blending |
+| `base:ladder_steel[direction=PosX]` | Y-oriented two-face thin geometry uses binary-alpha cutout |
+| `base:steel_handrail[direction=PosX]` | Binary openings select cutout on the effective registration |
+| `base:glass` | Fractional PNG alpha selects transparent rendering |
+| `base:water[type=source]` | Fractional fluid alpha selects transparent rendering |
+| `base:lava[type=source]` | Fully opaque PNG remains opaque-rendered despite fluid/source transparency flags |
 | `base:table_pedestal_wood` | Opaque wood frame and pedestal plus alpha-blended glass top |
 | `base:piston[direction=PosX,type=advancing,part=head]` | Two cuboids, cropped/reversed/rotated UVs, and an authored bound of 1.25 |
 | `base:maize[type=farm,growth=4,part=bottom]` | Alpha-cutout crossed cuboids preserve transparent color and depth holes |
 
 The final tree identity is
-`f087345162f222962752a28aa3e8ee8e6ab94506bce04754daf46c5bd0d711d8`.
+`78cda73112e0d463503b454241ab625c83af4c00c927a0b984375c06fad61bdf`.
 A forced second import from the JAR digest recorded above reproduced both this
 tree hash and the provenance bytes exactly.
 

@@ -39,6 +39,8 @@ def synthetic_png(
     width: int = 16,
     height: int = 16,
     transparent_pixels: set[tuple[int, int]] | None = None,
+    fractional_pixels: dict[tuple[int, int], int] | None = None,
+    interlace: int = 0,
 ) -> bytes:
     def chunk(kind: bytes, payload: bytes) -> bytes:
         return (
@@ -49,10 +51,13 @@ def synthetic_png(
         )
 
     transparent_pixels = transparent_pixels or set()
+    fractional_pixels = fractional_pixels or {}
     pixels = b"".join(
         b"\0" + b"".join(
             b"\xff\xff\xff" + (
-                b"\0" if (x, y) in transparent_pixels else b"\xff"
+                bytes((fractional_pixels[(x, y)],))
+                if (x, y) in fractional_pixels
+                else b"\0" if (x, y) in transparent_pixels else b"\xff"
             )
             for x in range(width)
         )
@@ -60,7 +65,10 @@ def synthetic_png(
     )
     return (
         rigel_assets.PNG_SIGNATURE
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(
+            b"IHDR",
+            struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, interlace),
+        )
         + chunk(b"IDAT", zlib.compress(pixels))
         + chunk(b"IEND", b"")
     )
@@ -246,6 +254,38 @@ def compile_cuboid_fixture(root: Path) -> Path:
         rigel_assets.extract_direct_assets(archive, indexed, output)
         rigel_assets.compile_blocks(archive, indexed, output)
     return output
+
+
+class TextureAlphaClassificationTest(unittest.TestCase):
+    def test_classifies_opaque_binary_and_fractional_rgba(self) -> None:
+        cases = (
+            (synthetic_png(), rigel_assets.TextureAlphaClass.FULLY_OPAQUE),
+            (
+                synthetic_png(transparent_pixels={(0, 0), (8, 8)}),
+                rigel_assets.TextureAlphaClass.BINARY,
+            ),
+            (
+                synthetic_png(fractional_pixels={(0, 0): 1, (8, 8): 128}),
+                rigel_assets.TextureAlphaClass.FRACTIONAL,
+            ),
+        )
+        for payload, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(
+                    rigel_assets.classify_png_alpha(payload, "fixture.png"),
+                    expected,
+                )
+
+    def test_malformed_and_unsupported_pngs_fail_closed(self) -> None:
+        cases = (
+            synthetic_png()[:-1],
+            synthetic_png(interlace=1),
+        )
+        for payload in cases:
+            with self.subTest(size=len(payload)), self.assertRaises(
+                rigel_assets.AssetImportError
+            ):
+                rigel_assets.classify_png_alpha(payload, "fixture.png")
 
 
 class ProvisioningTest(unittest.TestCase):
@@ -2141,7 +2181,7 @@ class BlockCompilerTest(unittest.TestCase):
             self.assertFalse(generated["opaque"])
             self.assertEqual(generated["layer"], "opaque")
 
-    def test_nontransparent_partial_model_with_alpha_uses_cutout_layer(self) -> None:
+    def test_nontransparent_partial_model_with_binary_alpha_uses_cutout_layer(self) -> None:
         entries = single_cuboid_fixture.entries()
         block = json.loads(entries["base/blocks/ledge.json"])
         block["defaultProperties"]["isOpaque"] = False
@@ -2167,18 +2207,91 @@ class BlockCompilerTest(unittest.TestCase):
             self.assertFalse(generated["opaque"])
             self.assertEqual(generated["layer"], "cutout")
 
-    def test_refractive_mixed_model_preserves_per_texture_materials(self) -> None:
+    def test_transparent_model_with_binary_alpha_uses_cutout_layer(self) -> None:
+        entries = single_cuboid_fixture.entries()
+        model = json.loads(entries["base/models/blocks/ledge.json"])
+        model["isTransparent"] = True
+        entries["base/models/blocks/ledge.json"] = encoded_json(model)
+        entries["base/textures/blocks/ledge.png"] = synthetic_png(
+            transparent_pixels={(0, 0), (8, 8)}
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), root
+                )
+
+            generated = rigel_assets.parse_generated_block(
+                (root / "blocks/test__ledge.yaml").read_bytes(),
+                "blocks/test__ledge.yaml",
+            )
+            self.assertFalse(generated["opaque"])
+            self.assertEqual(generated["layer"], "cutout")
+
+    def test_fractional_alpha_uses_transparent_layer(self) -> None:
+        entries = single_cuboid_fixture.entries()
+        block = json.loads(entries["base/blocks/ledge.json"])
+        block["defaultProperties"]["isOpaque"] = False
+        entries["base/blocks/ledge.json"] = encoded_json(block)
+        entries["base/textures/blocks/ledge.png"] = synthetic_png(
+            fractional_pixels={(0, 0): 64, (8, 8): 192}
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), root
+                )
+
+            generated = rigel_assets.parse_generated_block(
+                (root / "blocks/test__ledge.yaml").read_bytes(),
+                "blocks/test__ledge.yaml",
+            )
+            self.assertEqual(generated["layer"], "transparent")
+
+    def test_refractive_binary_alpha_explicitly_blends(self) -> None:
+        entries = single_cuboid_fixture.entries()
+        block = json.loads(entries["base/blocks/ledge.json"])
+        block["defaultProperties"].update(
+            {"isOpaque": False, "refractiveIndex": 1.6}
+        )
+        entries["base/blocks/ledge.json"] = encoded_json(block)
+        entries["base/textures/blocks/ledge.png"] = synthetic_png(
+            transparent_pixels={(0, 0), (8, 8)}
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), root
+                )
+
+            generated = rigel_assets.parse_generated_block(
+                (root / "blocks/test__ledge.yaml").read_bytes(),
+                "blocks/test__ledge.yaml",
+            )
+            self.assertEqual(generated["layer"], "transparent")
+
+    def test_fractional_mixed_model_preserves_per_texture_materials(self) -> None:
         entries = synthetic_cuboid_entries()
         model = json.loads(entries["base/models/blocks/post.json"])
         model["isTransparent"] = False
         entries["base/models/blocks/post.json"] = encoded_json(model)
         block = json.loads(entries["base/blocks/test_post.json"])
-        block["defaultProperties"].update(
-            {"isOpaque": False, "refractiveIndex": 1.6}
-        )
+        block["defaultProperties"]["isOpaque"] = False
         entries["base/blocks/test_post.json"] = encoded_json(block)
         entries["base/textures/blocks/red_accent.png"] = synthetic_png(
-            transparent_pixels={(0, 0), (8, 8)}
+            fractional_pixels={(0, 0): 64, (8, 8): 192}
         )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -2466,7 +2579,7 @@ class BlockCompilerTest(unittest.TestCase):
                         archive, rigel_assets.indexed_archive(archive), root / "output"
                     )
 
-    def test_model_transparency_and_fluid_self_culling_map_to_runtime_fields(self) -> None:
+    def test_model_transparency_and_fluid_do_not_blend_opaque_texture(self) -> None:
         resolver = _TransparentModelResolver()
         output = rigel_assets.render_block_yaml(
             "test:fluid",
@@ -2475,7 +2588,7 @@ class BlockCompilerTest(unittest.TestCase):
             "fixture",
         ).decode()
         self.assertIn("opaque: false", output)
-        self.assertIn("layer: transparent", output)
+        self.assertIn("layer: opaque", output)
         self.assertIn("cull_same_type: true", output)
 
     def test_missing_generator_reference_fails_closed(self) -> None:
@@ -3202,6 +3315,39 @@ class SynchronizationTest(unittest.TestCase):
                     root, required_identifiers=("test:stone",)
                 )
 
+    def test_validation_rejects_unknown_and_incoherent_layers(self) -> None:
+        base = rigel_assets.render_block_yaml(
+            "test:stone",
+            {"modelName": "unused"},
+            _MissingTextureModelResolver(),
+            "fixture",
+        )
+        cases = (
+            (b"layer: opaque", b"layer: unknown", "invalid render layer"),
+            (
+                b"layer: opaque",
+                b"layer: transparent",
+                "fully_opaque PNG alpha",
+            ),
+        )
+        for original, replacement, message in cases:
+            with self.subTest(replacement=replacement), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                rigel_assets.write_output(
+                    root,
+                    "blocks/test__stone.yaml",
+                    base.replace(original, replacement),
+                )
+                rigel_assets.write_output(
+                    root, "textures/blocks/missing.png", synthetic_png()
+                )
+                with self.assertRaisesRegex(
+                    rigel_assets.AssetImportError, message
+                ):
+                    rigel_assets.validate_generated_tree(
+                        root, required_identifiers=("test:stone",)
+                    )
+
 
 class RealJarBlockModelClosureTest(unittest.TestCase):
     def test_cosmic_reach_0_6_1_model_closure(self) -> None:
@@ -3265,9 +3411,82 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
             self.assertEqual(len(textures["block_states"]), 14)
             self.assertEqual(textures["candidate_states"], 11)
             self.assertEqual(textures["base_approximation_states"], 3)
+
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            generated_blocks = {}
+            for path in sorted((assets / "blocks").glob("*.yaml")):
+                block = rigel_assets.parse_generated_block(
+                    path.read_bytes(), path.relative_to(assets).as_posix()
+                )
+                generated_blocks[str(block["id"])] = block
+
+            representatives = {
+                "base:leaves[type=permament]": (
+                    "all", rigel_assets.TextureAlphaClass.BINARY, "cutout"
+                ),
+                "base:steel_walkway": (
+                    "all", rigel_assets.TextureAlphaClass.BINARY, "cutout"
+                ),
+                "base:ladder_steel[direction=PosX]": (
+                    "front", rigel_assets.TextureAlphaClass.BINARY, "cutout"
+                ),
+                "base:steel_handrail[direction=PosX]": (
+                    "front", rigel_assets.TextureAlphaClass.BINARY, "cutout"
+                ),
+                "base:glass": (
+                    "all", rigel_assets.TextureAlphaClass.FRACTIONAL,
+                    "transparent",
+                ),
+                "base:water[type=source]": (
+                    "all", rigel_assets.TextureAlphaClass.FRACTIONAL,
+                    "transparent",
+                ),
+                "base:lava[type=source]": (
+                    "all", rigel_assets.TextureAlphaClass.FULLY_OPAQUE,
+                    "opaque",
+                ),
+            }
+            for identifier, (slot, expected_alpha, expected_layer) in (
+                representatives.items()
+            ):
+                with self.subTest(identifier=identifier):
+                    block = generated_blocks[identifier]
+                    texture = str(block["textures"][slot])
+                    self.assertEqual(
+                        rigel_assets.classify_png_alpha(
+                            (assets / texture).read_bytes(), texture
+                        ),
+                        expected_alpha,
+                    )
+                    self.assertEqual(
+                        block.get("texture_render_layers", {}).get(
+                            slot, block["layer"]
+                        ),
+                        expected_layer,
+                    )
+                    self.assertFalse(block["opaque"])
+
+            table = generated_blocks["base:table_pedestal_wood"]
+            self.assertEqual(table["layer"], "opaque")
+            self.assertEqual(
+                table["texture_render_layers"], {"top": "transparent"}
+            )
+            table_alpha = {
+                slot: rigel_assets.classify_png_alpha(
+                    (assets / str(texture)).read_bytes(), str(texture)
+                )
+                for slot, texture in table["textures"].items()
+            }
+            self.assertEqual(
+                table_alpha,
+                {
+                    "border": rigel_assets.TextureAlphaClass.FULLY_OPAQUE,
+                    "top": rigel_assets.TextureAlphaClass.FRACTIONAL,
+                },
+            )
             self.assertEqual(
                 first["output_tree_sha256"],
-                "f087345162f222962752a28aa3e8ee8e6ab94506bce04754daf46c5bd0d711d8",
+                "78cda73112e0d463503b454241ab625c83af4c00c927a0b984375c06fad61bdf",
             )
 
 
@@ -3282,10 +3501,10 @@ class _MissingTextureModelResolver:
             True,
         )
 
-    def any_texture_has_transparent_texels(
-        self, references: tuple[str, ...], context: str
-    ) -> bool:
-        return False
+    def texture_alpha_class(
+        self, reference: str, context: str
+    ) -> rigel_assets.TextureAlphaClass:
+        return rigel_assets.TextureAlphaClass.FULLY_OPAQUE
 
 
 class _TransparentModelResolver:
@@ -3299,10 +3518,10 @@ class _TransparentModelResolver:
             True,
         )
 
-    def any_texture_has_transparent_texels(
-        self, references: tuple[str, ...], context: str
-    ) -> bool:
-        return False
+    def texture_alpha_class(
+        self, reference: str, context: str
+    ) -> rigel_assets.TextureAlphaClass:
+        return rigel_assets.TextureAlphaClass.FULLY_OPAQUE
 
 
 class _DirectionalModelResolver:
@@ -3324,10 +3543,10 @@ class _DirectionalModelResolver:
             True,
         )
 
-    def any_texture_has_transparent_texels(
-        self, references: tuple[str, ...], context: str
-    ) -> bool:
-        return False
+    def texture_alpha_class(
+        self, reference: str, context: str
+    ) -> rigel_assets.TextureAlphaClass:
+        return rigel_assets.TextureAlphaClass.FULLY_OPAQUE
 
 
 if __name__ == "__main__":

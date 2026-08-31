@@ -133,55 +133,35 @@ BlockGalleryCatalog::BlockGalleryCatalog(const BlockRegistry& registry)
     m_diagnostics.explicitEmptyGeometryCount =
         m_emptyGeometryExclusions.size();
     m_gridDimensions.columns = squareGridWidth(candidates.size());
-
-    m_entries.reserve(candidates.size());
-    size_t column = 0;
-    size_t row = 0;
-    for (size_t familyBegin = 0; familyBegin < candidates.size();) {
-        size_t familyEnd = familyBegin + 1;
-        while (familyEnd < candidates.size() &&
-               candidates[familyEnd].parsed.family ==
-                   candidates[familyBegin].parsed.family) {
-            ++familyEnd;
-        }
-
-        const size_t familySize = familyEnd - familyBegin;
-        const size_t remainingColumns = m_gridDimensions.columns - column;
-        if (column != 0 &&
-            (familySize > m_gridDimensions.columns ||
-             familySize > remainingColumns)) {
-            column = 0;
-            ++row;
-        }
-
-        for (size_t index = familyBegin; index < familyEnd; ++index) {
-            const Candidate& candidate = candidates[index];
-            const size_t catalogIndex = m_entries.size();
-            m_entries.push_back({
-                .identifier = candidate.type->identifier,
-                .blockId = candidate.blockId,
-                .family = candidate.parsed.family,
-                .catalogIndex = catalogIndex,
-                .gridCoordinate = {column, row},
-                .specimenPosition = {
-                    static_cast<int>(column) * SpecimenSpacing,
-                    SpecimenHeight,
-                    static_cast<int>(row) * SpecimenSpacing,
-                },
-            });
-            m_blockIdToCatalogIndex[candidate.blockId.type] = catalogIndex;
-
-            ++column;
-            if (column == m_gridDimensions.columns) {
-                column = 0;
-                ++row;
-            }
-        }
-        familyBegin = familyEnd;
+    if (m_gridDimensions.columns != 0) {
+        m_gridDimensions.rows =
+            (candidates.size() + m_gridDimensions.columns - 1) /
+            m_gridDimensions.columns;
     }
 
-    if (!m_entries.empty()) {
-        m_gridDimensions.rows = m_entries.back().gridCoordinate.row + 1;
+    m_entries.reserve(candidates.size());
+    for (size_t catalogIndex = 0;
+         catalogIndex < candidates.size();
+         ++catalogIndex) {
+        const Candidate& candidate = candidates[catalogIndex];
+        const size_t row = catalogIndex / m_gridDimensions.columns;
+        const size_t rowOffset = catalogIndex % m_gridDimensions.columns;
+        const size_t column = row % 2 == 0
+            ? rowOffset
+            : m_gridDimensions.columns - rowOffset - 1;
+        m_entries.push_back({
+            .identifier = candidate.type->identifier,
+            .blockId = candidate.blockId,
+            .family = candidate.parsed.family,
+            .catalogIndex = catalogIndex,
+            .gridCoordinate = {column, row},
+            .specimenPosition = {
+                static_cast<int>(column) * SpecimenSpacing,
+                SpecimenHeight,
+                static_cast<int>(row) * SpecimenSpacing,
+            },
+        });
+        m_blockIdToCatalogIndex[candidate.blockId.type] = catalogIndex;
     }
     m_gridToCatalogIndex.assign(
         m_gridDimensions.columns * m_gridDimensions.rows, MissingIndex);

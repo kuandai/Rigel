@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <string>
@@ -378,6 +379,31 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
             generator, entry.specimenPosition);
         CHECK_EQ(state.id, entry.blockId);
         CHECK_EQ(state.skyLight(), static_cast<uint8_t>(15));
+        CHECK_EQ(
+            std::count_if(
+                placements.begin(), placements.end(),
+                [&](const GeneratedBlockPlacement& placement) {
+                    return placement.position == entry.specimenPosition &&
+                        placement.blockId == entry.blockId;
+                }),
+            static_cast<std::ptrdiff_t>(1));
+    }
+    const BlockGalleryGridDimensions dimensions = catalog.gridDimensions();
+    for (size_t column = 0; column < dimensions.columns; ++column) {
+        const BlockGalleryGridCoordinate coordinate{
+            column, dimensions.rows - 1};
+        if (catalog.findByGridCoordinate(coordinate)) {
+            continue;
+        }
+        CHECK(generatedBlock(
+            generator,
+            {
+                static_cast<int>(column) *
+                    BlockGalleryCatalog::SpecimenSpacing,
+                BlockGalleryCatalog::SpecimenHeight,
+                static_cast<int>(dimensions.rows - 1) *
+                    BlockGalleryCatalog::SpecimenSpacing,
+            }).isAir());
     }
     CHECK_EQ(
         generatedBlock(generator, {-1, 0, -1}).id,
@@ -462,6 +488,46 @@ TEST_CASE(BlockGalleryChunkGenerator_AccountsAcrossChunkBoundaries) {
         expectedCounts.begin(), expectedCounts.end(), [](const auto& entry) {
             return entry.first.x > 0 || entry.first.z > 0;
         }));
+
+    const BlockGalleryGridDimensions dimensions = catalog.gridDimensions();
+    const size_t firstPositiveChunkCoordinate =
+        static_cast<size_t>(Chunk::SIZE /
+            BlockGalleryCatalog::SpecimenSpacing);
+    const BlockGalleryCatalogEntry* beforeXBoundary =
+        catalog.findByGridCoordinate(
+            {firstPositiveChunkCoordinate - 1, 0});
+    const BlockGalleryCatalogEntry* afterXBoundary =
+        catalog.findByGridCoordinate(
+            {firstPositiveChunkCoordinate, 0});
+    const BlockGalleryCatalogEntry* beforeZBoundary =
+        catalog.findByGridCoordinate(
+            {0, firstPositiveChunkCoordinate - 1});
+    const BlockGalleryCatalogEntry* afterZBoundary =
+        catalog.findByGridCoordinate(
+            {0, firstPositiveChunkCoordinate});
+    CHECK(beforeXBoundary);
+    CHECK(afterXBoundary);
+    CHECK(beforeZBoundary);
+    CHECK(afterZBoundary);
+    CHECK_NE(
+        worldToChunk(
+            beforeXBoundary->specimenPosition.x,
+            beforeXBoundary->specimenPosition.y,
+            beforeXBoundary->specimenPosition.z),
+        worldToChunk(
+            afterXBoundary->specimenPosition.x,
+            afterXBoundary->specimenPosition.y,
+            afterXBoundary->specimenPosition.z));
+    CHECK_NE(
+        worldToChunk(
+            beforeZBoundary->specimenPosition.x,
+            beforeZBoundary->specimenPosition.y,
+            beforeZBoundary->specimenPosition.z),
+        worldToChunk(
+            afterZBoundary->specimenPosition.x,
+            afterZBoundary->specimenPosition.y,
+            afterZBoundary->specimenPosition.z));
+    CHECK(dimensions.rows > firstPositiveChunkCoordinate);
 
     for (const auto& [coord, expected] : expectedCounts) {
         CHECK(gallery.containsChunk(coord));

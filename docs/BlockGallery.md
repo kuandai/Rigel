@@ -108,11 +108,12 @@ Ordering and placement do not depend on registry or hash-map iteration:
 1. Parse each identifier into namespace, base identifier, and state properties.
 2. Sort by namespace, then base identifier, then property key/value pairs after
    sorting those pairs. The full identifier is the final tie-breaker.
-3. Keep the resulting `namespace:base_identifier` families contiguous. Start a
-   small family on the next row when it would not fit in the current row; only a
-   family wider than the row is split.
-4. Use `ceil(sqrt(renderable_count))` columns. Family packing can leave unused
-   cells, so the final row count is derived from the last placed entry.
+3. Keep the resulting `namespace:base_identifier` families contiguous in that
+   linear order.
+4. Use `ceil(sqrt(renderable_count))` columns and map the linear sequence onto
+   alternating left-to-right and right-to-left rows. This serpentine mapping
+   keeps entries adjacent across row turns and leaves unused cells only in the
+   final partial row.
 
 For zero-based grid coordinate `(column, row)`, the specimen's owning block cell
 is exactly:

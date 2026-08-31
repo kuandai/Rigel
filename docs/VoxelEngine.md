@@ -46,13 +46,14 @@ Rigel-normalized `BlockModel` geometry.
 `BlockGalleryCatalog` can derive developer gallery metadata from that frozen
 runtime registry. It does not inspect asset files or maintain a separate block
 inventory. Entries are ordered by parsed namespace, base identifier, and
-state-property keys and values; a family-aware square-width layout keeps small
-families on one row and splits only families wider than the row. Every entry
-owns its stable catalog index, grid coordinate, and block-world specimen origin
-at four-cell spacing. Registrations whose explicit model contains no cuboids
-are the catalog's only exclusions. They are reported by identifier and
-`BlockID`, so air and any other intentional empty geometry remain accounted for
-even when the renderable count is zero.
+state-property keys and values. A near-square serpentine layout maps that dense
+linear order onto alternating row directions, keeping consecutive family
+entries physically adjacent across row turns and confining unused cells to the
+final partial row. Every entry owns its stable catalog index, grid coordinate,
+and block-world specimen origin at four-cell spacing. Registrations whose
+explicit model contains no cuboids are the catalog's only exclusions. They are
+reported by identifier and `BlockID`, so air and any other intentional empty
+geometry remain accounted for even when the renderable count is zero.
 
 The developer gallery places those entries, a reference floor, and culling
 diagnostics through ordinary chunks. It retains the production streaming,

@@ -625,6 +625,20 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
 #ifdef RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS
     CHECK_EQ(catalog.entries().size(), static_cast<size_t>(2020));
     CHECK_EQ(
+        catalog.gridDimensions(),
+        (BlockGalleryGridDimensions{45, 45}));
+    for (size_t row = 0; row < 44; ++row) {
+        for (size_t column = 0; column < 45; ++column) {
+            CHECK(catalog.findByGridCoordinate({column, row}));
+        }
+    }
+    size_t finalRowSpecimenCount = 0;
+    for (size_t column = 0; column < 45; ++column) {
+        finalRowSpecimenCount +=
+            catalog.findByGridCoordinate({column, 44}) ? 1 : 0;
+    }
+    CHECK_EQ(finalRowSpecimenCount, static_cast<size_t>(40));
+    CHECK_EQ(
         catalog.emptyGeometryExclusions().size(),
         static_cast<size_t>(1));
     CHECK_EQ(

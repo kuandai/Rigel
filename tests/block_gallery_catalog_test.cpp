@@ -121,30 +121,48 @@ TEST_CASE(BlockGalleryCatalog_IsStableAcrossRegistrationOrder) {
     }
 }
 
-TEST_CASE(BlockGalleryCatalog_PacksWholeAndSplitFamiliesDeterministically) {
+TEST_CASE(BlockGalleryCatalog_MapsDenseSerpentineRowsWithoutFamilyPadding) {
     BlockRegistry registry;
-    addNumberedFamily(registry, "invented:a", 2);
-    addNumberedFamily(registry, "invented:b", 5);
+    addNumberedFamily(registry, "invented:a", 3);
+    addNumberedFamily(registry, "invented:b", 9);
     addNumberedFamily(registry, "invented:c", 2);
     registry.freeze();
 
     const BlockGalleryCatalog catalog(registry);
     CHECK_EQ(
         catalog.gridDimensions(),
-        (BlockGalleryGridDimensions{3, 4}));
+        (BlockGalleryGridDimensions{4, 4}));
 
     const std::vector<BlockGalleryGridCoordinate> expected = {
-        {0, 0}, {1, 0},
-        {0, 1}, {1, 1}, {2, 1}, {0, 2}, {1, 2},
-        {0, 3}, {1, 3},
+        {0, 0}, {1, 0}, {2, 0}, {3, 0},
+        {3, 1}, {2, 1}, {1, 1}, {0, 1},
+        {0, 2}, {1, 2}, {2, 2}, {3, 2},
+        {3, 3}, {2, 3},
     };
     CHECK_EQ(catalog.entries().size(), expected.size());
     for (size_t index = 0; index < expected.size(); ++index) {
         CHECK_EQ(catalog.entries()[index].catalogIndex, index);
         CHECK_EQ(catalog.entries()[index].gridCoordinate, expected[index]);
+        if (index != 0) {
+            const BlockGalleryGridCoordinate previous = expected[index - 1];
+            const BlockGalleryGridCoordinate current = expected[index];
+            const size_t distance =
+                std::max(previous.column, current.column) -
+                    std::min(previous.column, current.column) +
+                std::max(previous.row, current.row) -
+                    std::min(previous.row, current.row);
+            CHECK_EQ(distance, static_cast<size_t>(1));
+        }
     }
-    CHECK(!catalog.findByGridCoordinate({2, 0}));
-    CHECK(!catalog.findByGridCoordinate({2, 2}));
+    for (size_t row = 0; row < 3; ++row) {
+        for (size_t column = 0; column < 4; ++column) {
+            CHECK(catalog.findByGridCoordinate({column, row}));
+        }
+    }
+    CHECK(!catalog.findByGridCoordinate({0, 3}));
+    CHECK(!catalog.findByGridCoordinate({1, 3}));
+    CHECK(catalog.findByGridCoordinate({2, 3}));
+    CHECK(catalog.findByGridCoordinate({3, 3}));
 }
 
 TEST_CASE(BlockGalleryCatalog_PlacementAndLookupsRoundTripWithoutDuplicates) {
@@ -158,8 +176,8 @@ TEST_CASE(BlockGalleryCatalog_PlacementAndLookupsRoundTripWithoutDuplicates) {
 
     const BlockGalleryCatalog catalog(registry);
     CHECK_EQ(
-        catalog.gridDimensions().columns,
-        static_cast<size_t>(5));
+        catalog.gridDimensions(),
+        (BlockGalleryGridDimensions{5, 4}));
 
     std::set<std::pair<size_t, size_t>> gridCoordinates;
     std::set<std::tuple<int, int, int>> specimenPositions;
@@ -194,6 +212,15 @@ TEST_CASE(BlockGalleryCatalog_PlacementAndLookupsRoundTripWithoutDuplicates) {
     CHECK(!catalog.findByBlockId(BlockID{65000}));
     CHECK(!catalog.findBySpecimenPosition({1, 1, 0}));
     CHECK(!catalog.findBySpecimenPosition({0, 0, 0}));
+    CHECK_EQ(
+        catalog.entries()[15].gridCoordinate,
+        (BlockGalleryGridCoordinate{4, 3}));
+    CHECK_EQ(
+        catalog.entries()[16].gridCoordinate,
+        (BlockGalleryGridCoordinate{3, 3}));
+    for (size_t column = 0; column < 3; ++column) {
+        CHECK(!catalog.findByGridCoordinate({column, 3}));
+    }
 }
 
 TEST_CASE(BlockGalleryCatalog_ReportsOnlyExplicitEmptyGeometryExclusions) {

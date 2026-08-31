@@ -1,5 +1,6 @@
 #include "Rigel/Voxel/BlockGalleryCatalog.h"
 
+#include "BlockModelGeometry.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 
 #include <spdlog/spdlog.h>
@@ -13,6 +14,10 @@
 
 namespace Rigel::Voxel {
 namespace {
+
+constexpr int kDiagnosticSeparation = 8;
+constexpr int kDiagnosticGroupSpacing = 4;
+constexpr size_t kDiagnosticPairSize = 2;
 
 struct ParsedIdentifier {
     std::string nameSpace;
@@ -96,6 +101,17 @@ size_t squareGridWidth(size_t entryCount) {
     return width;
 }
 
+bool suitableReferenceFloor(const BlockType& type) {
+    return type.isOpaque && type.layer == RenderLayer::Opaque &&
+        type.model->isFullCube();
+}
+
+struct CullingDiagnosticCandidate {
+    BlockGalleryCullingCaseKind kind;
+    std::string_view label;
+    const BlockGalleryCatalogEntry* entry;
+};
+
 } // namespace
 
 BlockGalleryCatalog::BlockGalleryCatalog(const BlockRegistry& registry)
@@ -172,13 +188,93 @@ BlockGalleryCatalog::BlockGalleryCatalog(const BlockRegistry& registry)
         m_gridToCatalogIndex[gridIndex] = entry.catalogIndex;
     }
 
+    const BlockGalleryCatalogEntry* referenceFloor = nullptr;
+    const BlockGalleryCatalogEntry* sameType = nullptr;
+    const BlockGalleryCatalogEntry* opaqueCoverage = nullptr;
+    for (const BlockGalleryCatalogEntry& entry : m_entries) {
+        const BlockType& type = registry.getType(entry.blockId);
+        if (!referenceFloor && suitableReferenceFloor(type)) {
+            referenceFloor = &entry;
+        }
+        if (!sameType && detail::identicalPairCullsBothXBoundaries(
+                type, detail::BoundaryCullReason::SameType)) {
+            sameType = &entry;
+        }
+        if (!opaqueCoverage && !type.model->isFullCube() &&
+            detail::identicalPairCullsBothXBoundaries(
+                type, detail::BoundaryCullReason::OpaqueCoverage)) {
+            opaqueCoverage = &entry;
+        }
+    }
+
+    std::vector<CullingDiagnosticCandidate> diagnosticCandidates;
+    diagnosticCandidates.reserve(3);
+    if (referenceFloor) {
+        diagnosticCandidates.push_back({
+            BlockGalleryCullingCaseKind::OpaqueFullCube,
+            "Opaque full-cube baseline",
+            referenceFloor,
+        });
+    }
+    if (sameType) {
+        diagnosticCandidates.push_back({
+            BlockGalleryCullingCaseKind::SameType,
+            "Same-type shared boundary",
+            sameType,
+        });
+    }
+    if (opaqueCoverage) {
+        diagnosticCandidates.push_back({
+            BlockGalleryCullingCaseKind::OpaqueCoverage,
+            "Complete opposite-face coverage",
+            opaqueCoverage,
+        });
+    }
+
+    const int galleryMaxZ = m_gridDimensions.rows == 0
+        ? 0
+        : static_cast<int>(m_gridDimensions.rows - 1) * SpecimenSpacing;
+    const int diagnosticZ = galleryMaxZ + kDiagnosticSeparation;
+    m_cullingDiagnosticPlacements.reserve(
+        diagnosticCandidates.size() * kDiagnosticPairSize);
+    for (size_t caseIndex = 0;
+         caseIndex < diagnosticCandidates.size();
+         ++caseIndex) {
+        const CullingDiagnosticCandidate& candidate =
+            diagnosticCandidates[caseIndex];
+        for (size_t pairIndex = 0;
+             pairIndex < kDiagnosticPairSize;
+             ++pairIndex) {
+            m_cullingDiagnosticPlacements.push_back({
+                .caseKind = candidate.kind,
+                .label = std::string(candidate.label),
+                .caseOrdinal = caseIndex + 1,
+                .caseCount = diagnosticCandidates.size(),
+                .pairPosition = pairIndex == 0
+                    ? BlockGalleryDiagnosticPairPosition::First
+                    : BlockGalleryDiagnosticPairPosition::Second,
+                .pairOrdinal = pairIndex + 1,
+                .pairCount = kDiagnosticPairSize,
+                .sourceIdentifier = candidate.entry->identifier,
+                .sourceBlockId = candidate.entry->blockId,
+                .worldPosition = {
+                    static_cast<int>(caseIndex) * kDiagnosticGroupSpacing +
+                        static_cast<int>(pairIndex),
+                    SpecimenHeight,
+                    diagnosticZ,
+                },
+            });
+        }
+    }
+
     if (m_entries.empty()) {
         spdlog::warn(
             "Block gallery catalog has no renderable registrations: "
             "loaded={}, specimens=0, excluded_explicit_empty_geometry={}, "
-            "grid=0x0",
+            "grid=0x0, culling_diagnostic_cells={}",
             m_diagnostics.loadedRegistrationCount,
-            m_diagnostics.explicitEmptyGeometryCount);
+            m_diagnostics.explicitEmptyGeometryCount,
+            m_cullingDiagnosticPlacements.size());
     } else {
         spdlog::info(
             "Block gallery catalog prepared: loaded={}, specimens={}, "
@@ -231,6 +327,19 @@ const BlockGalleryCatalogEntry* BlockGalleryCatalog::findBySpecimenPosition(
         static_cast<size_t>(position.x / SpecimenSpacing),
         static_cast<size_t>(position.z / SpecimenSpacing),
     });
+}
+
+const BlockGalleryCullingDiagnosticPlacement*
+BlockGalleryCatalog::findCullingDiagnosticByPosition(
+    BlockGalleryWorldPosition position
+) const {
+    const auto found = std::find_if(
+        m_cullingDiagnosticPlacements.begin(),
+        m_cullingDiagnosticPlacements.end(),
+        [position](const BlockGalleryCullingDiagnosticPlacement& placement) {
+            return placement.worldPosition == position;
+        });
+    return found == m_cullingDiagnosticPlacements.end() ? nullptr : &*found;
 }
 
 } // namespace Rigel::Voxel

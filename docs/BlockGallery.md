@@ -84,10 +84,12 @@ Treat the center of the viewport as the targeting crosshair. Aim it at a
 specimen from within eight blocks. The top-right **Block gallery target** window
 then shows the full block-state identifier, one-based catalog position and
 catalog size, zero-based grid coordinate, normalized model identifier, cuboid
-count, orientation, render layer, opacity and solidity flags, and resolved
-texture-binding count. The current renderer does not draw a separate reticle;
-the camera's center ray is the crosshair direction. Empty space, the reference
-floor, and diagnostic cells show `No catalog specimen targeted.`
+count, orientation, base and effective render layers, compact texture-slot layer
+mapping, culling/opacity/solidity flags, and resolved texture-binding count.
+Culling diagnostic cells replace the catalog position with their case label,
+case ordinal, and pair-cell ordinal. The current renderer does not draw a
+separate reticle; the camera's center ray is the crosshair direction. Empty
+space and the reference floor show `No catalog specimen targeted.`
 
 Targeting intentionally uses the normal whole-cell DDA. It identifies the first
 occupied block cell on the camera ray, not the visible cuboid face under a
@@ -148,8 +150,12 @@ Each group places two identical blocks in neighboring X cells, with groups four
 cells apart and the same reference floor beneath them. The zone makes shared
 boundary removal, conservative partial-model coverage, and same-type culling
 easy to inspect through the production mesher. Diagnostic blocks deliberately
-duplicate catalog registrations but are not specimens, so targeting them does
-not present catalog metadata. A missing suitable runtime registration simply
+duplicate catalog registrations but are not specimens, so they never
+participate in catalog index or grid lookup. Each cell is instead targetable
+through immutable diagnostic placement metadata that owns the stable case kind,
+label, pair position, source block identity, and world position consumed by
+generation. Targeting either member identifies the case and the member's
+one-based position in its pair. A missing suitable runtime registration simply
 omits that group.
 
 ## Runtime and persistence semantics

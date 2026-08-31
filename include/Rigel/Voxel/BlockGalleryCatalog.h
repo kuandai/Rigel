@@ -3,6 +3,7 @@
 #include "Block.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,36 @@ struct BlockGalleryEmptyGeometryExclusion {
     BlockID blockId;
 };
 
+enum class BlockGalleryCullingCaseKind : uint8_t {
+    OpaqueFullCube,
+    SameType,
+    OpaqueCoverage,
+};
+
+enum class BlockGalleryDiagnosticPairPosition : uint8_t {
+    First,
+    Second,
+};
+
+/** One targetable cell in a two-block culling diagnostic pair. */
+struct BlockGalleryCullingDiagnosticPlacement {
+    BlockGalleryCullingCaseKind caseKind =
+        BlockGalleryCullingCaseKind::OpaqueFullCube;
+    std::string label;
+    size_t caseOrdinal = 0;
+    size_t caseCount = 0;
+    BlockGalleryDiagnosticPairPosition pairPosition =
+        BlockGalleryDiagnosticPairPosition::First;
+    size_t pairOrdinal = 0;
+    size_t pairCount = 0;
+    std::string sourceIdentifier;
+    BlockID sourceBlockId;
+    BlockGalleryWorldPosition worldPosition;
+
+    bool operator==(
+        const BlockGalleryCullingDiagnosticPlacement&) const = default;
+};
+
 struct BlockGalleryCatalogDiagnostics {
     size_t loadedRegistrationCount = 0;
     size_t renderableCount = 0;
@@ -73,6 +104,10 @@ public:
     emptyGeometryExclusions() const {
         return m_emptyGeometryExclusions;
     }
+    const std::vector<BlockGalleryCullingDiagnosticPlacement>&
+    cullingDiagnosticPlacements() const {
+        return m_cullingDiagnosticPlacements;
+    }
     const BlockGalleryCatalogDiagnostics& diagnostics() const {
         return m_diagnostics;
     }
@@ -86,6 +121,9 @@ public:
         BlockGalleryGridCoordinate coordinate) const;
     const BlockGalleryCatalogEntry* findBySpecimenPosition(
         BlockGalleryWorldPosition position) const;
+    const BlockGalleryCullingDiagnosticPlacement*
+    findCullingDiagnosticByPosition(
+        BlockGalleryWorldPosition position) const;
 
 private:
     friend class BlockGalleryChunkGenerator;
@@ -95,6 +133,8 @@ private:
     const BlockRegistry* m_sourceRegistry = nullptr;
     std::vector<BlockGalleryCatalogEntry> m_entries;
     std::vector<BlockGalleryEmptyGeometryExclusion> m_emptyGeometryExclusions;
+    std::vector<BlockGalleryCullingDiagnosticPlacement>
+        m_cullingDiagnosticPlacements;
     std::vector<size_t> m_blockIdToCatalogIndex;
     std::vector<size_t> m_gridToCatalogIndex;
     BlockGalleryCatalogDiagnostics m_diagnostics;

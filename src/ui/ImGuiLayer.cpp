@@ -407,22 +407,52 @@ void renderBlockGalleryTarget(
         return;
     }
 
-    ImGui::TextUnformatted(target->blockStateIdentifier.c_str());
+    if (target->cullingDiagnostic) {
+        const auto& diagnostic = *target->cullingDiagnostic;
+        ImGui::Text("Culling case: %s", diagnostic.label.c_str());
+        ImGui::Text(
+            "Case: %zu / %zu",
+            diagnostic.caseOrdinal,
+            diagnostic.caseCount);
+        ImGui::Text(
+            "Pair cell: %zu / %zu",
+            diagnostic.pairOrdinal,
+            diagnostic.pairCount);
+        ImGui::Text(
+            "Block state: %s",
+            target->blockStateIdentifier.c_str());
+    } else {
+        ImGui::TextUnformatted(target->blockStateIdentifier.c_str());
+    }
     ImGui::Separator();
-    ImGui::Text(
-        "Catalog: %zu / %zu",
-        target->catalogPosition,
-        target->catalogSize);
-    ImGui::Text(
-        "Grid: (%zu, %zu)",
-        target->gridCoordinate.column,
-        target->gridCoordinate.row);
+    if (!target->cullingDiagnostic) {
+        ImGui::Text(
+            "Catalog: %zu / %zu",
+            target->catalogPosition,
+            target->catalogSize);
+        ImGui::Text(
+            "Grid: (%zu, %zu)",
+            target->gridCoordinate.column,
+            target->gridCoordinate.row);
+    }
     ImGui::Text("Model: %s", target->modelIdentifier.c_str());
     ImGui::Text("Cuboids: %zu", target->cuboidCount);
     ImGui::Text("Orientation: %s", target->orientation.c_str());
-    ImGui::Text("Render layer: %s", target->renderLayer.c_str());
+    ImGui::Text("Base render layer: %s", target->renderLayer.c_str());
+    ImGui::Text(
+        "Effective layers: %s",
+        target->effectiveRenderLayers.c_str());
+    if (!target->textureSlotRenderLayers.empty()) {
+        ImGui::TextWrapped(
+            "Slot layers: %s",
+            target->textureSlotRenderLayers.c_str());
+    }
     ImGui::Text("Opaque: %s", target->opaque ? "true" : "false");
     ImGui::Text("Solid: %s", target->solid ? "true" : "false");
+    ImGui::Text("Full cube: %s", target->fullCube ? "true" : "false");
+    ImGui::Text(
+        "Cull same type: %s",
+        target->cullSameType ? "true" : "false");
     ImGui::Text("Texture bindings: %zu", target->textureBindingCount);
     ImGui::End();
 #else

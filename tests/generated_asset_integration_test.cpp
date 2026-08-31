@@ -292,37 +292,33 @@ std::vector<GeneratedGalleryPair> generatedDiagnosticPairs(
     const BlockGalleryChunkGenerator& gallery,
     const BlockGalleryCatalog& catalog
 ) {
-    const BlockGalleryGridDimensions dimensions = catalog.gridDimensions();
-    const int galleryMaxZ = dimensions.rows == 0
-        ? 0
-        : static_cast<int>(dimensions.rows - 1) *
-            BlockGalleryCatalog::SpecimenSpacing;
+    const auto& placements = catalog.cullingDiagnosticPlacements();
+    CHECK_EQ(placements.size() % 2, static_cast<size_t>(0));
     std::vector<GeneratedGalleryPair> result;
-    for (int z = galleryMaxZ + 1; z < galleryMaxZ + Chunk::SIZE; ++z) {
-        for (int x = 0; x < Chunk::SIZE - 1; ++x) {
-            const BlockGalleryWorldPosition leftPosition{
-                x, BlockGalleryCatalog::SpecimenHeight, z};
-            const BlockGalleryWorldPosition rightPosition{
-                x + 1, BlockGalleryCatalog::SpecimenHeight, z};
-            const BlockState left = generatedGalleryBlock(
-                gallery, leftPosition);
-            const BlockState right = generatedGalleryBlock(
-                gallery, rightPosition);
-            if (left.isAir() || left.id != right.id) {
-                continue;
-            }
-            if (x > 0 &&
-                generatedGalleryBlock(
-                    gallery,
-                    {x - 1, BlockGalleryCatalog::SpecimenHeight, z}).id ==
-                    left.id) {
-                continue;
-            }
-            result.push_back({{
-                {leftPosition, left.id},
-                {rightPosition, right.id},
-            }});
-        }
+    result.reserve(placements.size() / 2);
+    for (size_t index = 0; index < placements.size(); index += 2) {
+        const BlockGalleryCullingDiagnosticPlacement& first =
+            placements[index];
+        const BlockGalleryCullingDiagnosticPlacement& second =
+            placements[index + 1];
+        CHECK_EQ(first.caseKind, second.caseKind);
+        CHECK_EQ(
+            first.pairPosition,
+            BlockGalleryDiagnosticPairPosition::First);
+        CHECK_EQ(
+            second.pairPosition,
+            BlockGalleryDiagnosticPairPosition::Second);
+        CHECK_EQ(first.sourceBlockId, second.sourceBlockId);
+        const BlockState generatedFirst = generatedGalleryBlock(
+            gallery, first.worldPosition);
+        const BlockState generatedSecond = generatedGalleryBlock(
+            gallery, second.worldPosition);
+        CHECK_EQ(generatedFirst.id, first.sourceBlockId);
+        CHECK_EQ(generatedSecond.id, second.sourceBlockId);
+        result.push_back({{
+            {first.worldPosition, generatedFirst.id},
+            {second.worldPosition, generatedSecond.id},
+        }});
     }
     return result;
 }

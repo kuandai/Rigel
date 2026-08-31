@@ -1,12 +1,10 @@
 #include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 
-#include "BlockModelGeometry.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 
 #include <algorithm>
 #include <cmath>
-#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -14,15 +12,8 @@ namespace Rigel::Voxel {
 namespace {
 
 constexpr int kFloorBorder = 1;
-constexpr int kDiagnosticSeparation = 8;
-constexpr int kDiagnosticGroupSpacing = 4;
 constexpr float kMaximumOverviewDistance = 128.0f;
 constexpr float kMaximumOverviewHeight = 48.0f;
-
-bool suitableReferenceFloor(const BlockType& type) {
-    return type.isOpaque && type.layer == RenderLayer::Opaque &&
-        type.model->isFullCube();
-}
 
 GeneratorDefinitionData::Noise zeroNoise() {
     return {
@@ -60,23 +51,13 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
             "Block gallery catalog does not belong to the supplied registry");
     }
 
-    const BlockGalleryCatalogEntry* coverageDiagnostic = nullptr;
-    const BlockGalleryCatalogEntry* sameTypeDiagnostic = nullptr;
-    std::optional<BlockID> referenceFloorBlock;
-    for (const BlockGalleryCatalogEntry& entry : catalog.entries()) {
-        const BlockType& type = registry.getType(entry.blockId);
-        if (!referenceFloorBlock && suitableReferenceFloor(type)) {
-            referenceFloorBlock = entry.blockId;
-        }
-        if (!sameTypeDiagnostic &&
-            detail::identicalPairCullsBothXBoundaries(
-                type, detail::BoundaryCullReason::SameType)) {
-            sameTypeDiagnostic = &entry;
-        }
-        if (!coverageDiagnostic && !type.model->isFullCube() &&
-            detail::identicalPairCullsBothXBoundaries(
-                type, detail::BoundaryCullReason::OpaqueCoverage)) {
-            coverageDiagnostic = &entry;
+    BlockID referenceFloorBlock = BlockRegistry::airId();
+    for (const BlockGalleryCullingDiagnosticPlacement& placement :
+         catalog.cullingDiagnosticPlacements()) {
+        if (placement.caseKind ==
+                BlockGalleryCullingCaseKind::OpaqueFullCube) {
+            referenceFloorBlock = placement.sourceBlockId;
+            break;
         }
     }
 
@@ -91,7 +72,7 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
         : static_cast<int>(dimensions.rows - 1) *
             BlockGalleryCatalog::SpecimenSpacing;
 
-    if (referenceFloorBlock && !catalog.entries().empty()) {
+    if (!referenceFloorBlock.isAir() && !catalog.entries().empty()) {
         const int floorMinX = -kFloorBorder;
         const int floorMaxX = galleryMaxX + kFloorBorder;
         const int floorMinZ = -kFloorBorder;
@@ -100,7 +81,7 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
             for (int x = floorMinX; x <= floorMaxX; ++x) {
                 addPlacement({
                     {x, 0, z},
-                    *referenceFloorBlock,
+                    referenceFloorBlock,
                 });
             }
         }
@@ -113,62 +94,40 @@ BlockGalleryChunkGenerator::BlockGalleryChunkGenerator(
         });
     }
 
-    const BlockGalleryWorldPosition diagnosticOrigin = {
-        0,
-        BlockGalleryCatalog::SpecimenHeight,
-        galleryMaxZ + kDiagnosticSeparation,
-    };
-    int diagnosticX = diagnosticOrigin.x;
-    const auto addPair = [&](BlockID blockId,
-                             int x,
-                             int z,
-                             auto&& add) {
-        add(BlockPlacement{{x, 1, z}, blockId});
-        add(BlockPlacement{{x + 1, 1, z}, blockId});
-    };
-
-    if (referenceFloorBlock) {
-        addPair(
-            *referenceFloorBlock,
-            diagnosticX,
-            diagnosticOrigin.z,
-            [this](BlockPlacement placement) {
-                addPlacement(std::move(placement));
-            });
-        diagnosticX += kDiagnosticGroupSpacing;
-    }
-    if (sameTypeDiagnostic) {
-        addPair(
-            sameTypeDiagnostic->blockId,
-            diagnosticX,
-            diagnosticOrigin.z,
-            [this](BlockPlacement placement) {
-                addPlacement(std::move(placement));
-            });
-        diagnosticX += kDiagnosticGroupSpacing;
-    }
-    if (coverageDiagnostic) {
-        addPair(
-            coverageDiagnostic->blockId,
-            diagnosticX,
-            diagnosticOrigin.z,
-            [this](BlockPlacement placement) {
-                addPlacement(std::move(placement));
-            });
+    int diagnosticMinX = 0;
+    int diagnosticMaxX = 0;
+    int diagnosticMaxZ = galleryMaxZ;
+    bool hasDiagnostics = false;
+    for (const BlockGalleryCullingDiagnosticPlacement& placement :
+         catalog.cullingDiagnosticPlacements()) {
+        addPlacement({placement.worldPosition, placement.sourceBlockId});
+        if (!hasDiagnostics) {
+            diagnosticMinX = placement.worldPosition.x;
+            diagnosticMaxX = placement.worldPosition.x;
+            hasDiagnostics = true;
+        } else {
+            diagnosticMinX = std::min(
+                diagnosticMinX, placement.worldPosition.x);
+            diagnosticMaxX = std::max(
+                diagnosticMaxX, placement.worldPosition.x);
+        }
+        diagnosticMaxZ = std::max(
+            diagnosticMaxZ, placement.worldPosition.z);
     }
 
-    if (referenceFloorBlock) {
-        for (int x = diagnosticOrigin.x; x <= diagnosticX + 1; ++x) {
+    if (!referenceFloorBlock.isAir() && hasDiagnostics) {
+        const int diagnosticZ =
+            catalog.cullingDiagnosticPlacements().front().worldPosition.z;
+        for (int x = diagnosticMinX; x <= diagnosticMaxX; ++x) {
             addPlacement({
-                {x, 0, diagnosticOrigin.z},
-                *referenceFloorBlock,
+                {x, 0, diagnosticZ},
+                referenceFloorBlock,
             });
         }
     }
 
-    const int diagnosticMaxX = diagnosticX + 1;
     const int extentX = std::max(galleryMaxX, diagnosticMaxX);
-    const int extentZ = std::max(galleryMaxZ, diagnosticOrigin.z);
+    const int extentZ = std::max(galleryMaxZ, diagnosticMaxZ);
     m_overview.centerX = static_cast<float>(extentX) * 0.5f;
     m_overview.centerZ = static_cast<float>(extentZ) * 0.5f;
     const float span = static_cast<float>(std::max(extentX, extentZ) + 1);

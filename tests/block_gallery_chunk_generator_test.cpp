@@ -21,7 +21,9 @@
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -409,13 +411,63 @@ TEST_CASE(BlockGalleryChunkGenerator_PlacesCatalogFloorAndDiagnostics) {
         generatedBlock(generator, {-1, 0, -1}).id,
         referenceFloor->blockId);
 
+    const auto& diagnosticMetadata =
+        catalog.cullingDiagnosticPlacements();
+    CHECK_EQ(diagnosticMetadata.size(), static_cast<size_t>(6));
+    std::set<std::tuple<int, int, int>> diagnosticCells;
+    for (const BlockGalleryCullingDiagnosticPlacement& diagnostic :
+         diagnosticMetadata) {
+        CHECK(diagnosticCells.emplace(
+            diagnostic.worldPosition.x,
+            diagnostic.worldPosition.y,
+            diagnostic.worldPosition.z).second);
+        CHECK_EQ(
+            catalog.findCullingDiagnosticByPosition(
+                diagnostic.worldPosition),
+            &diagnostic);
+        CHECK(!catalog.findBySpecimenPosition(diagnostic.worldPosition));
+        CHECK_EQ(
+            registry.getType(diagnostic.sourceBlockId).identifier,
+            diagnostic.sourceIdentifier);
+        const BlockState generated = generatedBlock(
+            generator, diagnostic.worldPosition);
+        CHECK_EQ(generated.id, diagnostic.sourceBlockId);
+        CHECK_EQ(generated.skyLight(), static_cast<uint8_t>(15));
+        CHECK_EQ(
+            std::count_if(
+                placements.begin(), placements.end(),
+                [&](const GeneratedBlockPlacement& placement) {
+                    return placement.position == diagnostic.worldPosition &&
+                        placement.blockId == diagnostic.sourceBlockId;
+                }),
+            static_cast<std::ptrdiff_t>(1));
+    }
+
+    const int diagnosticZ =
+        diagnosticMetadata.front().worldPosition.z;
+    CHECK(diagnosticZ - galleryLastZ(catalog) >= 8);
+    for (int z = galleryLastZ(catalog) + 2;
+         z < diagnosticZ;
+         ++z) {
+        CHECK(generatedBlock(generator, {0, 0, z}).isAir());
+        CHECK(generatedBlock(
+            generator,
+            {0, BlockGalleryCatalog::SpecimenHeight, z}).isAir());
+    }
+    CHECK(generatedBlock(
+        generator,
+        {2, BlockGalleryCatalog::SpecimenHeight, diagnosticZ}).isAir());
+    CHECK_EQ(
+        generatedBlock(generator, {2, 0, diagnosticZ}).id,
+        referenceFloorBlock);
+
     const std::vector<GeneratedBlockPair> pairs =
         diagnosticPairs(placements, catalog);
     CHECK_EQ(pairs.size(), static_cast<size_t>(3));
 
     const GeneratedBlockPair& opaquePair =
         diagnosticPairFor(pairs, referenceFloorBlock);
-    const int diagnosticZ = opaquePair.front().position.z;
+    CHECK_EQ(opaquePair.front().position.z, diagnosticZ);
     CHECK(diagnosticZ > galleryLastZ(catalog));
 
     for (const GeneratedBlockPair& pair : pairs) {

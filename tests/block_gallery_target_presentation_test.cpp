@@ -4,8 +4,11 @@
 #include "Rigel/Voxel/BlockGalleryTargetPresentation.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 
+#include <array>
 #include <memory>
+#include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -45,25 +48,55 @@ BlockID addPresentedSpecimen(
     type.textures.bind("primary", "invented/primary.png");
     type.textures.bind("accent", "invented/accent.png");
     type.layer = RenderLayer::Transparent;
+    type.textureRenderLayers.emplace("accent", RenderLayer::Cutout);
     type.isOpaque = false;
     type.isSolid = true;
     return registry.registerBlock(identifier, std::move(type));
+}
+
+BlockID addPartialDiagnostic(
+    BlockRegistry& registry,
+    const std::string& identifier,
+    bool opaqueCoverage,
+    bool cullSameType
+) {
+    BlockModelCuboid cuboid;
+    cuboid.bounds.max = {1.0f, 0.5f, 1.0f};
+    for (size_t index = 0; index < DirectionCount; ++index) {
+        cuboid.faces[index] = BlockModelFace{
+            .textureSlot = "surface",
+            .cullAgainstOpaqueNeighbor = opaqueCoverage,
+        };
+    }
+
+    BlockType type;
+    type.identifier = identifier;
+    type.model = BlockModelInstance(std::make_shared<const BlockModel>(
+        identifier + "_model",
+        std::vector<std::string>{"surface"},
+        std::vector<BlockModelCuboid>{cuboid}));
+    type.isOpaque = opaqueCoverage;
+    type.cullSameType = cullSameType;
+    return registry.registerBlock(identifier, std::move(type));
+}
+
+BlockTarget targetAt(
+    BlockGalleryWorldPosition position,
+    BlockID blockId
+) {
+    return {
+        .block = {position.x, position.y, position.z},
+        .normal = {0, 0, 1},
+        .state = BlockState{blockId},
+        .distance = 3.0f,
+    };
 }
 
 BlockTarget targetAt(
     const BlockGalleryCatalogEntry& entry,
     BlockID blockId
 ) {
-    return {
-        .block = {
-            entry.specimenPosition.x,
-            entry.specimenPosition.y,
-            entry.specimenPosition.z,
-        },
-        .normal = {0, 0, 1},
-        .state = BlockState{blockId},
-        .distance = 3.0f,
-    };
+    return targetAt(entry.specimenPosition, blockId);
 }
 
 } // namespace
@@ -94,9 +127,18 @@ TEST_CASE(BlockGalleryTargetPresentation_UsesCatalogAndRuntimeMetadata) {
     CHECK_EQ(presentation->cuboidCount, static_cast<size_t>(2));
     CHECK_EQ(presentation->orientation, std::string("rotate_z_90"));
     CHECK_EQ(presentation->renderLayer, std::string("transparent"));
+    CHECK_EQ(
+        presentation->effectiveRenderLayers,
+        std::string("transparent + cutout"));
+    CHECK_EQ(
+        presentation->textureSlotRenderLayers,
+        std::string("primary=transparent, accent=cutout"));
     CHECK(!presentation->opaque);
     CHECK(presentation->solid);
+    CHECK(!presentation->fullCube);
+    CHECK(!presentation->cullSameType);
     CHECK_EQ(presentation->textureBindingCount, static_cast<size_t>(2));
+    CHECK(!presentation->cullingDiagnostic);
 }
 
 TEST_CASE(BlockGalleryTargetPresentation_RejectsNonSpecimenCellsSafely) {
@@ -119,4 +161,180 @@ TEST_CASE(BlockGalleryTargetPresentation_RejectsNonSpecimenCellsSafely) {
 
     CHECK(!makeBlockGalleryTargetPresentation(
         catalog, registry, targetAt(*entry, otherId)));
+
+    CHECK(!makeBlockGalleryTargetPresentation(
+        catalog,
+        registry,
+        targetAt({123, BlockGalleryCatalog::SpecimenHeight, 123},
+                 BlockRegistry::airId())));
+}
+
+TEST_CASE(BlockGalleryTargetPresentation_IdentifiesEveryDiagnosticPairCell) {
+    BlockRegistry registry;
+    const BlockID baselineId = addFullCube(
+        registry, "invented:baseline");
+    const BlockID coverageId = addPartialDiagnostic(
+        registry, "invented:coverage", true, false);
+    const BlockID sameTypeId = addPartialDiagnostic(
+        registry, "invented:same_type", false, true);
+    registry.freeze();
+    const BlockGalleryCatalog catalog(registry);
+
+    const auto& placements = catalog.cullingDiagnosticPlacements();
+    CHECK_EQ(placements.size(), static_cast<size_t>(6));
+
+    BlockRegistry reorderedRegistry;
+    addPartialDiagnostic(
+        reorderedRegistry, "invented:same_type", false, true);
+    addPartialDiagnostic(
+        reorderedRegistry, "invented:coverage", true, false);
+    addFullCube(reorderedRegistry, "invented:baseline");
+    reorderedRegistry.freeze();
+    const BlockGalleryCatalog reorderedCatalog(reorderedRegistry);
+    const auto& reorderedPlacements =
+        reorderedCatalog.cullingDiagnosticPlacements();
+    CHECK_EQ(reorderedPlacements.size(), placements.size());
+    for (size_t index = 0; index < placements.size(); ++index) {
+        CHECK_EQ(reorderedPlacements[index].caseKind,
+                 placements[index].caseKind);
+        CHECK_EQ(reorderedPlacements[index].label, placements[index].label);
+        CHECK_EQ(reorderedPlacements[index].caseOrdinal,
+                 placements[index].caseOrdinal);
+        CHECK_EQ(reorderedPlacements[index].caseCount,
+                 placements[index].caseCount);
+        CHECK_EQ(reorderedPlacements[index].pairPosition,
+                 placements[index].pairPosition);
+        CHECK_EQ(reorderedPlacements[index].pairOrdinal,
+                 placements[index].pairOrdinal);
+        CHECK_EQ(reorderedPlacements[index].pairCount,
+                 placements[index].pairCount);
+        CHECK_EQ(reorderedPlacements[index].sourceIdentifier,
+                 placements[index].sourceIdentifier);
+        CHECK_EQ(reorderedPlacements[index].worldPosition,
+                 placements[index].worldPosition);
+    }
+
+    const std::array<BlockGalleryCullingCaseKind, 3> expectedKinds = {
+        BlockGalleryCullingCaseKind::OpaqueFullCube,
+        BlockGalleryCullingCaseKind::SameType,
+        BlockGalleryCullingCaseKind::OpaqueCoverage,
+    };
+    const std::array<BlockID, 3> expectedIds = {
+        baselineId,
+        sameTypeId,
+        coverageId,
+    };
+    const std::array<std::string, 3> expectedLabels = {
+        "Opaque full-cube baseline",
+        "Same-type shared boundary",
+        "Complete opposite-face coverage",
+    };
+    const std::array<std::string, 3> expectedIdentifiers = {
+        "invented:baseline",
+        "invented:same_type",
+        "invented:coverage",
+    };
+
+    std::set<std::tuple<int, int, int>> occupiedCells;
+    for (size_t caseIndex = 0; caseIndex < expectedKinds.size(); ++caseIndex) {
+        const auto& first = placements[caseIndex * 2];
+        const auto& second = placements[caseIndex * 2 + 1];
+        CHECK_EQ(first.caseKind, expectedKinds[caseIndex]);
+        CHECK_EQ(second.caseKind, expectedKinds[caseIndex]);
+        CHECK_EQ(first.label, expectedLabels[caseIndex]);
+        CHECK_EQ(second.label, expectedLabels[caseIndex]);
+        CHECK_EQ(first.caseOrdinal, caseIndex + 1);
+        CHECK_EQ(second.caseOrdinal, caseIndex + 1);
+        CHECK_EQ(first.caseCount, static_cast<size_t>(3));
+        CHECK_EQ(second.caseCount, static_cast<size_t>(3));
+        CHECK_EQ(
+            first.pairPosition,
+            BlockGalleryDiagnosticPairPosition::First);
+        CHECK_EQ(
+            second.pairPosition,
+            BlockGalleryDiagnosticPairPosition::Second);
+        CHECK_EQ(first.pairOrdinal, static_cast<size_t>(1));
+        CHECK_EQ(second.pairOrdinal, static_cast<size_t>(2));
+        CHECK_EQ(first.pairCount, static_cast<size_t>(2));
+        CHECK_EQ(second.pairCount, static_cast<size_t>(2));
+        CHECK_EQ(first.sourceBlockId, expectedIds[caseIndex]);
+        CHECK_EQ(second.sourceBlockId, expectedIds[caseIndex]);
+        CHECK_EQ(first.sourceIdentifier, expectedIdentifiers[caseIndex]);
+        CHECK_EQ(second.sourceIdentifier, first.sourceIdentifier);
+        CHECK_EQ(second.worldPosition.x, first.worldPosition.x + 1);
+        CHECK_EQ(second.worldPosition.y, first.worldPosition.y);
+        CHECK_EQ(second.worldPosition.z, first.worldPosition.z);
+
+        for (const auto* placement : {&first, &second}) {
+            CHECK(occupiedCells.emplace(
+                placement->worldPosition.x,
+                placement->worldPosition.y,
+                placement->worldPosition.z).second);
+            CHECK_EQ(
+                catalog.findCullingDiagnosticByPosition(
+                    placement->worldPosition),
+                placement);
+            CHECK(!catalog.findBySpecimenPosition(
+                placement->worldPosition));
+
+            const auto presentation = makeBlockGalleryTargetPresentation(
+                catalog,
+                registry,
+                targetAt(
+                    placement->worldPosition,
+                    placement->sourceBlockId));
+            CHECK(presentation.has_value());
+            CHECK_EQ(
+                presentation->blockStateIdentifier,
+                placement->sourceIdentifier);
+            CHECK(presentation->cullingDiagnostic.has_value());
+            CHECK_EQ(
+                presentation->cullingDiagnostic->caseKind,
+                placement->caseKind);
+            CHECK_EQ(
+                presentation->cullingDiagnostic->label,
+                placement->label);
+            CHECK_EQ(
+                presentation->cullingDiagnostic->caseOrdinal,
+                placement->caseOrdinal);
+            CHECK_EQ(
+                presentation->cullingDiagnostic->caseCount,
+                placement->caseCount);
+            CHECK_EQ(
+                presentation->cullingDiagnostic->pairPosition,
+                placement->pairPosition);
+            CHECK_EQ(
+                presentation->cullingDiagnostic->pairOrdinal,
+                placement->pairOrdinal);
+            CHECK_EQ(
+                presentation->cullingDiagnostic->pairCount,
+                placement->pairCount);
+            CHECK_EQ(presentation->catalogPosition, static_cast<size_t>(0));
+            CHECK_EQ(presentation->modelIdentifier,
+                     registry.getType(placement->sourceBlockId)
+                         .model->identifier());
+            CHECK_EQ(presentation->renderLayer, std::string("opaque"));
+            CHECK_EQ(
+                presentation->effectiveRenderLayers,
+                std::string("opaque"));
+            CHECK(!presentation->textureSlotRenderLayers.empty());
+            CHECK_EQ(presentation->fullCube, caseIndex == 0);
+            CHECK_EQ(presentation->cullSameType, caseIndex == 1);
+            CHECK_EQ(presentation->opaque, caseIndex != 1);
+        }
+    }
+
+    const int diagnosticZ = placements.front().worldPosition.z;
+    CHECK(!catalog.findCullingDiagnosticByPosition({2, 1, diagnosticZ}));
+    CHECK(!makeBlockGalleryTargetPresentation(
+        catalog, registry, targetAt({0, 0, diagnosticZ}, baselineId)));
+    CHECK(!makeBlockGalleryTargetPresentation(
+        catalog,
+        registry,
+        targetAt({2, BlockGalleryCatalog::SpecimenHeight, diagnosticZ},
+                 BlockRegistry::airId())));
+    CHECK(!makeBlockGalleryTargetPresentation(
+        catalog,
+        registry,
+        targetAt(placements.front().worldPosition, coverageId)));
 }

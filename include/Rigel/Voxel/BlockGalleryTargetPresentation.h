@@ -11,7 +11,22 @@ namespace Rigel::Voxel {
 
 class BlockRegistry;
 
-/** UI-ready metadata for one targeted catalog specimen. */
+struct BlockGalleryCullingDiagnosticPresentation {
+    BlockGalleryCullingCaseKind caseKind =
+        BlockGalleryCullingCaseKind::OpaqueFullCube;
+    std::string label;
+    size_t caseOrdinal = 0;
+    size_t caseCount = 0;
+    BlockGalleryDiagnosticPairPosition pairPosition =
+        BlockGalleryDiagnosticPairPosition::First;
+    size_t pairOrdinal = 0;
+    size_t pairCount = 0;
+
+    bool operator==(
+        const BlockGalleryCullingDiagnosticPresentation&) const = default;
+};
+
+/** UI-ready metadata for one targeted gallery block. */
 struct BlockGalleryTargetPresentation {
     std::string blockStateIdentifier;
     size_t catalogPosition = 0;
@@ -21,16 +36,22 @@ struct BlockGalleryTargetPresentation {
     size_t cuboidCount = 0;
     std::string orientation;
     std::string renderLayer;
+    std::string effectiveRenderLayers;
+    std::string textureSlotRenderLayers;
     bool opaque = false;
     bool solid = false;
+    bool fullCube = false;
+    bool cullSameType = false;
     size_t textureBindingCount = 0;
+    std::optional<BlockGalleryCullingDiagnosticPresentation>
+        cullingDiagnostic;
 
     bool operator==(const BlockGalleryTargetPresentation&) const = default;
 };
 
 /**
- * Build presentation data only when a whole-cell target is the catalog
- * specimen at that exact world position.
+ * Build presentation data only when a whole-cell target matches a catalog
+ * specimen or culling diagnostic placement at that exact world position.
  */
 std::optional<BlockGalleryTargetPresentation>
 makeBlockGalleryTargetPresentation(

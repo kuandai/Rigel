@@ -962,22 +962,31 @@ TEST_CASE(MeshBuilder_BatchesMultipleCuboidsByBlockRenderLayer) {
     checkFaceWinding(mesh, 40, Direction::NegZ);
 }
 
-TEST_CASE(MeshBuilder_BatchesNormalizedModelFacesByTextureRenderLayer) {
+TEST_CASE(MeshBuilder_BatchesImportedMixedFacesByTextureRenderLayer) {
     BlockRegistry registry = makeRegistry();
 
     BlockModelCuboid cuboid;
     cuboid.bounds.max = {1.0f, 1.0f, 1.0f};
     cuboid.faces[static_cast<size_t>(Direction::PosY)] =
-        modelFace("frame");
+        modelFace("opaque_wood");
     cuboid.faces[static_cast<size_t>(Direction::NegY)] =
-        modelFace("glass");
+        modelFace("binary_glass");
     BlockType mixed;
-    mixed.identifier = "test:mixed_material";
+    mixed.identifier = "test:refractive_mixed_material";
     mixed.model = makeModel(
-        "test:mixed_material_geometry", {"frame", "glass"}, {cuboid});
+        "test:refractive_mixed_material_geometry",
+        {"opaque_wood", "binary_glass"}, {cuboid});
     mixed.layer = RenderLayer::Opaque;
-    mixed.textureRenderLayers.emplace("glass", RenderLayer::Transparent);
+    mixed.textureRenderLayers.emplace(
+        "binary_glass", RenderLayer::Transparent);
     const BlockID mixedId = registry.registerBlock(mixed.identifier, mixed);
+    const BlockType& registeredMixed = registry.getType(mixedId);
+    CHECK_EQ(
+        registeredMixed.renderLayerForTextureSlot("opaque_wood"),
+        RenderLayer::Opaque);
+    CHECK_EQ(
+        registeredMixed.renderLayerForTextureSlot("binary_glass"),
+        RenderLayer::Transparent);
 
     Chunk chunk({0, 0, 0});
     chunk.setBlock(1, 1, 1, BlockState{mixedId});

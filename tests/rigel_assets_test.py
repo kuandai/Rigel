@@ -35,6 +35,15 @@ def encoded_json(value: object) -> bytes:
     return json.dumps(value).encode("utf-8")
 
 
+def png_chunk(kind: bytes, payload: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(payload))
+        + kind
+        + payload
+        + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+    )
+
+
 def synthetic_png(
     width: int = 16,
     height: int = 16,
@@ -42,14 +51,6 @@ def synthetic_png(
     fractional_pixels: dict[tuple[int, int], int] | None = None,
     interlace: int = 0,
 ) -> bytes:
-    def chunk(kind: bytes, payload: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(payload))
-            + kind
-            + payload
-            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
-        )
-
     transparent_pixels = transparent_pixels or set()
     fractional_pixels = fractional_pixels or {}
     pixels = b"".join(
@@ -65,12 +66,35 @@ def synthetic_png(
     )
     return (
         rigel_assets.PNG_SIGNATURE
-        + chunk(
+        + png_chunk(
             b"IHDR",
             struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, interlace),
         )
-        + chunk(b"IDAT", zlib.compress(pixels))
-        + chunk(b"IEND", b"")
+        + png_chunk(b"IDAT", zlib.compress(pixels))
+        + png_chunk(b"IEND", b"")
+    )
+
+
+def png_with_lowercase_reserved_chunk() -> bytes:
+    payload = synthetic_png()
+    header_end = len(rigel_assets.PNG_SIGNATURE) + 12 + 13
+    return (
+        payload[:header_end]
+        + png_chunk(b"tesT", b"")
+        + payload[header_end:]
+    )
+
+
+def truecolor_png_with_transparency_before_palette() -> bytes:
+    return (
+        rigel_assets.PNG_SIGNATURE
+        + png_chunk(
+            b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+        )
+        + png_chunk(b"tRNS", struct.pack(">HHH", 0, 0, 0))
+        + png_chunk(b"PLTE", b"\xff\xff\xff")
+        + png_chunk(b"IDAT", zlib.compress(b"\0\xff\xff\xff"))
+        + png_chunk(b"IEND", b"")
     )
 
 
@@ -278,12 +302,17 @@ class TextureAlphaClassificationTest(unittest.TestCase):
 
     def test_malformed_and_unsupported_pngs_fail_closed(self) -> None:
         cases = (
-            synthetic_png()[:-1],
-            synthetic_png(interlace=1),
+            (synthetic_png()[:-1], "incomplete"),
+            (synthetic_png(interlace=1), "unsupported"),
+            (png_with_lowercase_reserved_chunk(), "lowercase reserved"),
+            (
+                truecolor_png_with_transparency_before_palette(),
+                "malformed PNG palette",
+            ),
         )
-        for payload in cases:
-            with self.subTest(size=len(payload)), self.assertRaises(
-                rigel_assets.AssetImportError
+        for payload, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic), self.assertRaisesRegex(
+                rigel_assets.AssetImportError, diagnostic
             ):
                 rigel_assets.classify_png_alpha(payload, "fixture.png")
 
@@ -2313,6 +2342,65 @@ class BlockCompilerTest(unittest.TestCase):
                 {"accent": "transparent"},
             )
 
+    def test_refractive_mixed_model_promotes_only_binary_alpha_slot(self) -> None:
+        entries = synthetic_cuboid_entries()
+        model = json.loads(entries["base/models/blocks/post.json"])
+        model["isTransparent"] = False
+        entries["base/models/blocks/post.json"] = encoded_json(model)
+        block = json.loads(entries["base/blocks/test_post.json"])
+        block["defaultProperties"].update(
+            {"isOpaque": False, "refractiveIndex": 1.6}
+        )
+        entries["base/blocks/test_post.json"] = encoded_json(block)
+        entries["base/textures/blocks/red_accent.png"] = synthetic_png(
+            transparent_pixels={(0, 0), (8, 8)}
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive:
+                indexed = rigel_assets.indexed_archive(archive)
+                rigel_assets.extract_direct_assets(archive, indexed, root)
+                rigel_assets.compile_blocks(archive, indexed, root)
+
+            generated = rigel_assets.parse_generated_block(
+                (root / "blocks/test__post.yaml").read_bytes(),
+                "blocks/test__post.yaml",
+            )
+            self.assertEqual(generated["layer"], "opaque")
+            self.assertEqual(
+                generated["texture_render_layers"],
+                {"accent": "transparent"},
+            )
+            effective_layers = {
+                slot: generated.get("texture_render_layers", {}).get(
+                    slot, generated["layer"]
+                )
+                for slot in generated["textures"]
+            }
+            self.assertEqual(
+                effective_layers,
+                {"accent": "transparent", "surface": "opaque"},
+            )
+            alpha_classes = {
+                slot: rigel_assets.classify_png_alpha(
+                    (root / texture).read_bytes(), texture
+                )
+                for slot, texture in generated["textures"].items()
+            }
+            self.assertEqual(
+                alpha_classes,
+                {
+                    "accent": rigel_assets.TextureAlphaClass.BINARY,
+                    "surface": rigel_assets.TextureAlphaClass.FULLY_OPAQUE,
+                },
+            )
+            rigel_assets.validate_generated_tree(
+                root, required_identifiers=("test:post",)
+            )
+
     def test_preserves_generator_orientation_and_top_bottom_uv_behavior(self) -> None:
         entries = synthetic_block_entries()
         generators = json.loads(
@@ -3298,6 +3386,40 @@ class SynchronizationTest(unittest.TestCase):
             self.assertEqual(
                 previous_provenance,
                 (root / rigel_assets.PROVENANCE_RELATIVE_PATH).read_bytes(),
+            )
+
+    def test_png_codec_failure_preserves_previous_tree_and_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            good_jar = root / "good.jar"
+            write_jar(good_jar, synthetic_block_entries())
+            previous, _ = rigel_assets.synchronize(
+                root, good_jar, required_identifiers=("test:stone",)
+            )
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            provenance_path = root / rigel_assets.PROVENANCE_RELATIVE_PATH
+            previous_hash = rigel_assets.sha256_tree(assets)
+            previous_provenance = provenance_path.read_bytes()
+
+            bad_entries = synthetic_block_entries()
+            bad_entries["base/textures/blocks/test_stone.png"] = (
+                png_with_lowercase_reserved_chunk()
+            )
+            bad_jar = root / "bad.jar"
+            write_jar(bad_jar, bad_entries)
+            with self.assertRaisesRegex(
+                rigel_assets.AssetImportError, "lowercase reserved"
+            ):
+                rigel_assets.synchronize(
+                    root, bad_jar, required_identifiers=("test:stone",)
+                )
+
+            self.assertEqual(rigel_assets.sha256_tree(assets), previous_hash)
+            self.assertEqual(provenance_path.read_bytes(), previous_provenance)
+            self.assertTrue(
+                rigel_assets.current_import_matches(
+                    root, str(previous["jar_sha256"])
+                )
             )
 
     def test_validation_rejects_missing_texture_reference(self) -> None:

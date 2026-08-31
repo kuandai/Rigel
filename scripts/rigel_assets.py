@@ -376,6 +376,10 @@ def classify_png_alpha(data: bytes, source: str) -> TextureAlphaClass:
             for value in kind
         ):
             raise AssetImportError(f"{source}: invalid PNG chunk type")
+        if kind[2] & 0x20:
+            raise AssetImportError(
+                f"{source}: PNG chunk type has a lowercase reserved byte"
+            )
         if not found_header and kind != b"IHDR":
             raise AssetImportError(f"{source}: PNG header is not the first chunk")
         if kind == b"IHDR":
@@ -383,7 +387,11 @@ def classify_png_alpha(data: bytes, source: str) -> TextureAlphaClass:
                 raise AssetImportError(f"{source}: malformed PNG header chunk")
             found_header = True
         elif kind == b"PLTE":
-            if found_data or palette_entries is not None:
+            if (
+                found_data
+                or palette_entries is not None
+                or transparency is not None
+            ):
                 raise AssetImportError(f"{source}: malformed PNG palette")
             if length == 0 or length % 3 != 0 or length > 256 * 3:
                 raise AssetImportError(f"{source}: malformed PNG palette")

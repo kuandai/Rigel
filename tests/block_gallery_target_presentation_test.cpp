@@ -80,6 +80,37 @@ BlockID addPartialDiagnostic(
     return registry.registerBlock(identifier, std::move(type));
 }
 
+BlockID addLayeredSpecimen(
+    BlockRegistry& registry,
+    const std::string& identifier,
+    std::vector<std::string> slots,
+    RenderLayer defaultLayer,
+    const std::vector<std::pair<std::string, RenderLayer>>& overrides = {}
+) {
+    BlockModelCuboid cuboid;
+    cuboid.bounds.max = {1.0f, 1.0f, 1.0f};
+    if (!slots.empty()) {
+        cuboid.faces[static_cast<size_t>(Direction::PosY)] = BlockModelFace{
+            .textureSlot = slots.front(),
+        };
+    }
+
+    BlockType type;
+    type.identifier = identifier;
+    type.model = BlockModelInstance(std::make_shared<const BlockModel>(
+        identifier + "_model",
+        slots,
+        std::vector<BlockModelCuboid>{cuboid}));
+    for (const std::string& slot : slots) {
+        type.textures.bind(slot, "invented/" + slot + ".png");
+    }
+    type.layer = defaultLayer;
+    for (const auto& [slot, layer] : overrides) {
+        type.textureRenderLayers.emplace(slot, layer);
+    }
+    return registry.registerBlock(identifier, std::move(type));
+}
+
 BlockTarget targetAt(
     BlockGalleryWorldPosition position,
     BlockID blockId
@@ -129,7 +160,7 @@ TEST_CASE(BlockGalleryTargetPresentation_UsesCatalogAndRuntimeMetadata) {
     CHECK_EQ(presentation->renderLayer, std::string("transparent"));
     CHECK_EQ(
         presentation->effectiveRenderLayers,
-        std::string("transparent + cutout"));
+        std::string("cutout + transparent"));
     CHECK_EQ(
         presentation->textureSlotRenderLayers,
         std::string("primary=transparent, accent=cutout"));
@@ -139,6 +170,109 @@ TEST_CASE(BlockGalleryTargetPresentation_UsesCatalogAndRuntimeMetadata) {
     CHECK(!presentation->cullSameType);
     CHECK_EQ(presentation->textureBindingCount, static_cast<size_t>(2));
     CHECK(!presentation->cullingDiagnostic);
+}
+
+TEST_CASE(BlockGalleryTargetPresentation_ReportsStableCompactLayerMappings) {
+    BlockRegistry registry;
+    const BlockID opaqueId = addLayeredSpecimen(
+        registry,
+        "invented:opaque",
+        {"surface"},
+        RenderLayer::Opaque);
+    const BlockID cutoutId = addLayeredSpecimen(
+        registry,
+        "invented:cutout",
+        {"surface"},
+        RenderLayer::Cutout);
+    const BlockID transparentId = addLayeredSpecimen(
+        registry,
+        "invented:transparent",
+        {"surface"},
+        RenderLayer::Transparent);
+    const BlockID defaultUnionId = addLayeredSpecimen(
+        registry,
+        "invented:default_union",
+        {"glass", "wood"},
+        RenderLayer::Cutout,
+        {
+            {"glass", RenderLayer::Transparent},
+            {"wood", RenderLayer::Opaque},
+        });
+
+    const std::vector<std::string> mixedSlots = {
+        "glass", "mask", "wood", "glow", "detail", "fluid",
+    };
+    const BlockID mixedForwardId = addLayeredSpecimen(
+        registry,
+        "invented:mixed_forward",
+        mixedSlots,
+        RenderLayer::Transparent,
+        {
+            {"mask", RenderLayer::Cutout},
+            {"wood", RenderLayer::Opaque},
+            {"glow", RenderLayer::Emissive},
+            {"detail", RenderLayer::Opaque},
+        });
+    const BlockID mixedReverseId = addLayeredSpecimen(
+        registry,
+        "invented:mixed_reverse",
+        mixedSlots,
+        RenderLayer::Transparent,
+        {
+            {"detail", RenderLayer::Opaque},
+            {"glow", RenderLayer::Emissive},
+            {"wood", RenderLayer::Opaque},
+            {"mask", RenderLayer::Cutout},
+        });
+    registry.freeze();
+    const BlockGalleryCatalog catalog(registry);
+
+    const auto presentationFor = [&](BlockID id) {
+        const BlockGalleryCatalogEntry* entry = catalog.findByBlockId(id);
+        CHECK(entry != nullptr);
+        return makeBlockGalleryTargetPresentation(
+            catalog, registry, targetAt(*entry, id));
+    };
+
+    for (const auto& [id, expectedLayer] :
+         std::array{
+             std::pair{opaqueId, std::string("opaque")},
+             std::pair{cutoutId, std::string("cutout")},
+             std::pair{transparentId, std::string("transparent")},
+         }) {
+        const auto presentation = presentationFor(id);
+        CHECK(presentation.has_value());
+        CHECK_EQ(presentation->effectiveRenderLayers, expectedLayer);
+        CHECK(presentation->textureSlotRenderLayers.empty());
+    }
+
+    const auto defaultUnion = presentationFor(defaultUnionId);
+    CHECK(defaultUnion.has_value());
+    CHECK_EQ(
+        defaultUnion->effectiveRenderLayers,
+        std::string("opaque + cutout + transparent"));
+    CHECK_EQ(
+        defaultUnion->textureSlotRenderLayers,
+        std::string("glass=transparent, wood=opaque"));
+
+    const auto mixedForward = presentationFor(mixedForwardId);
+    const auto mixedReverse = presentationFor(mixedReverseId);
+    CHECK(mixedForward.has_value());
+    CHECK(mixedReverse.has_value());
+    CHECK_EQ(
+        mixedForward->effectiveRenderLayers,
+        std::string("opaque + cutout + transparent + emissive"));
+    CHECK_EQ(
+        mixedForward->textureSlotRenderLayers,
+        std::string(
+            "glass=transparent, mask=cutout, wood=opaque, glow=emissive, "
+            "... (+2 more)"));
+    CHECK_EQ(
+        mixedReverse->effectiveRenderLayers,
+        mixedForward->effectiveRenderLayers);
+    CHECK_EQ(
+        mixedReverse->textureSlotRenderLayers,
+        mixedForward->textureSlotRenderLayers);
 }
 
 TEST_CASE(BlockGalleryTargetPresentation_RejectsNonSpecimenCellsSafely) {
@@ -317,7 +451,7 @@ TEST_CASE(BlockGalleryTargetPresentation_IdentifiesEveryDiagnosticPairCell) {
             CHECK_EQ(
                 presentation->effectiveRenderLayers,
                 std::string("opaque"));
-            CHECK(!presentation->textureSlotRenderLayers.empty());
+            CHECK(presentation->textureSlotRenderLayers.empty());
             CHECK_EQ(presentation->fullCube, caseIndex == 0);
             CHECK_EQ(presentation->cullSameType, caseIndex == 1);
             CHECK_EQ(presentation->opaque, caseIndex != 1);

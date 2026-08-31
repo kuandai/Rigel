@@ -91,6 +91,11 @@ case ordinal, and pair-cell ordinal. The current renderer does not draw a
 separate reticle; the camera's center ray is the crosshair direction. Empty
 space and the reference floor show `No catalog specimen targeted.`
 
+Effective layers are listed once in render order and include both the block
+default and its texture-slot overrides. Single-layer specimens omit the
+redundant slot mapping. Mixed-layer specimens show the first four slots in
+normalized model order and report how many additional slots were omitted.
+
 Targeting intentionally uses the normal whole-cell DDA. It identifies the first
 occupied block cell on the camera ray, not the visible cuboid face under a
 pixel. This is especially noticeable for slabs, thin geometry, and geometry

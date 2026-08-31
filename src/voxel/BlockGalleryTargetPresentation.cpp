@@ -2,6 +2,7 @@
 
 #include "Rigel/Voxel/BlockRegistry.h"
 
+#include <algorithm>
 #include <array>
 #include <string_view>
 #include <utility>
@@ -39,8 +40,11 @@ struct TextureLayerPresentation {
 };
 
 TextureLayerPresentation textureLayerPresentation(const BlockType& type) {
+    constexpr size_t maxPresentedSlotMappings = 4;
+
     TextureLayerPresentation result;
     std::array<bool, RenderLayerCount> presentedLayers{};
+    presentedLayers[static_cast<size_t>(type.layer)] = true;
     for (const std::string& slot : type.model->textureSlots()) {
         const std::string* binding = type.textures.find(slot);
         if (binding && !binding->empty()) {
@@ -48,24 +52,44 @@ TextureLayerPresentation textureLayerPresentation(const BlockType& type) {
         }
 
         const RenderLayer layer = type.renderLayerForTextureSlot(slot);
-        const size_t layerIndex = static_cast<size_t>(layer);
-        if (!presentedLayers[layerIndex]) {
-            if (!result.effectiveLayers.empty()) {
-                result.effectiveLayers += " + ";
-            }
-            result.effectiveLayers += renderLayerName(layer);
-            presentedLayers[layerIndex] = true;
-        }
+        presentedLayers[static_cast<size_t>(layer)] = true;
+    }
 
+    size_t effectiveLayerCount = 0;
+    for (size_t index = 0; index < presentedLayers.size(); ++index) {
+        if (!presentedLayers[index]) {
+            continue;
+        }
+        if (!result.effectiveLayers.empty()) {
+            result.effectiveLayers += " + ";
+        }
+        result.effectiveLayers +=
+            renderLayerName(static_cast<RenderLayer>(index));
+        ++effectiveLayerCount;
+    }
+
+    if (effectiveLayerCount == 1) {
+        return result;
+    }
+
+    const auto& slots = type.model->textureSlots();
+    const size_t presentedSlotCount =
+        std::min(slots.size(), maxPresentedSlotMappings);
+    for (size_t index = 0; index < presentedSlotCount; ++index) {
         if (!result.slotMappings.empty()) {
             result.slotMappings += ", ";
         }
+        const std::string& slot = slots[index];
         result.slotMappings += slot;
         result.slotMappings += '=';
-        result.slotMappings += renderLayerName(layer);
+        result.slotMappings +=
+            renderLayerName(type.renderLayerForTextureSlot(slot));
     }
-    if (result.effectiveLayers.empty()) {
-        result.effectiveLayers = renderLayerName(type.layer);
+    if (slots.size() > presentedSlotCount) {
+        result.slotMappings += ", ... (+";
+        result.slotMappings +=
+            std::to_string(slots.size() - presentedSlotCount);
+        result.slotMappings += " more)";
     }
     return result;
 }

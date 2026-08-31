@@ -8,6 +8,7 @@
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Voxel/BlockGalleryCatalog.h"
 #include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
+#include "Rigel/Voxel/BlockGalleryTargetPresentation.h"
 #include "Rigel/Voxel/BlockLoader.h"
 #include "Rigel/Voxel/BlockModel.h"
 #include "Rigel/Voxel/BlockRegistry.h"
@@ -114,6 +115,29 @@ const BlockType& requireBlock(
     const BlockRegistry& registry, std::string_view identifier
 ) {
     return registry.getType(requireBlockId(registry, identifier));
+}
+
+BlockGalleryTargetPresentation requireGalleryPresentation(
+    const BlockGalleryCatalog& catalog,
+    const BlockRegistry& registry,
+    std::string_view identifier
+) {
+    const BlockID blockId = requireBlockId(registry, identifier);
+    const BlockGalleryCatalogEntry* entry = catalog.findByBlockId(blockId);
+    CHECK(entry);
+    const auto presentation = makeBlockGalleryTargetPresentation(
+        catalog,
+        registry,
+        BlockTarget{
+            .block = {
+                entry->specimenPosition.x,
+                entry->specimenPosition.y,
+                entry->specimenPosition.z,
+            },
+            .state = BlockState{blockId},
+        });
+    CHECK(presentation);
+    return *presentation;
 }
 
 size_t faceCount(const BlockModel& model) {
@@ -640,6 +664,40 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
     CHECK_EQ(
         catalog.emptyGeometryExclusions().front().identifier,
         std::string("base:air"));
+
+    for (const std::string_view identifier : {
+             LeavesId, WalkwayId, LadderId, HandrailId}) {
+        const auto presentation = requireGalleryPresentation(
+            catalog, preparedRegistry, identifier);
+        CHECK_EQ(
+            presentation.effectiveRenderLayers,
+            std::string("cutout"));
+        CHECK(presentation.textureSlotRenderLayers.empty());
+    }
+    for (const std::string_view identifier : {GlassId, TransparentId}) {
+        const auto presentation = requireGalleryPresentation(
+            catalog, preparedRegistry, identifier);
+        CHECK_EQ(
+            presentation.effectiveRenderLayers,
+            std::string("transparent"));
+        CHECK(presentation.textureSlotRenderLayers.empty());
+    }
+    const auto lavaPresentation = requireGalleryPresentation(
+        catalog, preparedRegistry, LavaId);
+    CHECK_EQ(
+        lavaPresentation.effectiveRenderLayers,
+        std::string("opaque"));
+    CHECK(lavaPresentation.textureSlotRenderLayers.empty());
+
+    const auto mixedTablePresentation = requireGalleryPresentation(
+        catalog, preparedRegistry, MultiCuboidId);
+    CHECK_EQ(mixedTablePresentation.renderLayer, std::string("opaque"));
+    CHECK_EQ(
+        mixedTablePresentation.effectiveRenderLayers,
+        std::string("opaque + transparent"));
+    CHECK_EQ(
+        mixedTablePresentation.textureSlotRenderLayers,
+        std::string("border=opaque, top=transparent"));
 #endif
 }
 

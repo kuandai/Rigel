@@ -90,19 +90,29 @@ specimen from within eight blocks. The top-right **Block gallery target** window
 then shows the full block-state identifier, one-based catalog position and
 catalog size, zero-based grid coordinate, normalized model identifier, cuboid
 count, orientation, base and effective render layers, compact texture-slot layer
-mapping, culling/opacity/solidity flags, and resolved texture-binding count.
-Culling diagnostic cells replace the catalog position with their case label,
-case ordinal, and pair-cell ordinal. The current renderer does not draw a
-separate reticle; the camera's center ray is the crosshair direction. Empty
-space and the reference floor show `No catalog specimen targeted.`
+mapping, collision shape, culling/opacity/solidity flags, and resolved
+texture-binding count. Collision is reported as `none`, `full cube`, `one box`,
+or an exact box count; conservative fallback provenance is appended when
+present. Culling diagnostic cells replace the catalog position with their case
+label, case ordinal, and pair-cell ordinal while retaining the same collision
+line. The current renderer does not draw a separate reticle; the camera's
+center ray is the crosshair direction. Empty space and the reference floor show
+`No catalog specimen targeted.`
 
 Effective layers are listed once in render order and include both the block
 default and its texture-slot overrides. Single-layer specimens omit the
 redundant slot mapping. Mixed-layer specimens show the first four slots in
 normalized model order and report how many additional slots were omitted.
-The presentation adapter derives both strings from the immutable runtime
-`BlockType` and its normalized model slot order; the ImGui layer displays those
-values and does not duplicate or reinterpret model geometry.
+The presentation adapter derives render-layer strings from the immutable
+runtime `BlockType` and its normalized model slot order, and derives collision
+text directly from `BlockCollisionShape`. The ImGui layer displays those values
+without inspecting importer state or reinterpreting visual model geometry.
+
+The gallery does not draw targeted collision wireframes. The existing
+wireframe path is owned by entity-bound diagnostics and receives neither a
+gallery target nor block collision geometry; collision inspection remains at
+the compact presentation boundary rather than adding a separate renderer or
+launch option.
 
 Targeting intentionally uses the normal whole-cell DDA. It identifies the first
 occupied block cell on the camera ray, not the visible cuboid face under a
@@ -209,9 +219,6 @@ broader Cosmic Reach coverage:
 - Animated block textures and non-16-by-16 block textures are unsupported;
   affected source states are omitted under the importer's disjoint provenance
   reasons.
-- Collision uses the source-authored `solid` flag and whole block cells. Partial
-  geometry does not shrink those cells, and out-of-cell geometry does not extend
-  collision into another cell.
 - Targeting is independent of the `solid` flag: the first non-air block cell is
   a hit, including a non-solid registration. Partial geometry does not shrink
   the target cell, and out-of-cell geometry does not extend the targeting ray

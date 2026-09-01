@@ -481,14 +481,34 @@ std::unordered_map<std::string, RenderLayer> parseTextureRenderLayerMap(
     return result;
 }
 
+BlockCollisionShape::Provenance collisionProvenanceValue(
+    std::string_view value,
+    std::string_view source
+) {
+    constexpr std::string_view path = "block.collision_provenance";
+    if (value == "authored") {
+        return BlockCollisionShape::Provenance::Authored;
+    }
+    if (value == "exact") {
+        return BlockCollisionShape::Provenance::Exact;
+    }
+    if (value == "conservative_fallback") {
+        return BlockCollisionShape::Provenance::ConservativeFallback;
+    }
+    fail(source, path, "unknown collision provenance '" +
+        std::string(value) + "'");
+}
+
 BlockCollisionShape parseCollisionShape(
-    ryml::ConstNodeRef node, std::string_view source
+    ryml::ConstNodeRef node,
+    std::string_view source,
+    BlockCollisionShape::Provenance provenance
 ) {
     constexpr std::string_view path = "block.collision";
     if (node.has_val() && !node.has_children()) {
         const std::string value = scalar(node, source, path);
-        if (value == "none") return BlockCollisionShape::empty();
-        if (value == "full") return BlockCollisionShape::fullCube();
+        if (value == "none") return BlockCollisionShape::empty(provenance);
+        if (value == "full") return BlockCollisionShape::fullCube(provenance);
         fail(source, path, "unknown collision shape '" + value + "'");
     }
 
@@ -521,7 +541,7 @@ BlockCollisionShape parseCollisionShape(
     }
 
     try {
-        return BlockCollisionShape::boxes(boxes);
+        return BlockCollisionShape::boxes(boxes, provenance);
     } catch (const std::invalid_argument& error) {
         fail(source, path, error.what());
     }
@@ -592,9 +612,9 @@ ParsedBlock parseBlock(
     requireMap(
         root, source, "block",
         {"id", "identifier", "name", "model", "opaque", "solid",
-         "collision", "cull_same_type", "layer", "emits_light",
-         "light_attenuation", "orientation", "rotate_top_bottom", "textures",
-         "texture_render_layers"});
+         "collision", "collision_provenance", "cull_same_type", "layer",
+         "emits_light", "light_attenuation", "orientation",
+         "rotate_top_bottom", "textures", "texture_render_layers"});
 
     size_t explicitNames = 0;
     std::string identifier;
@@ -647,8 +667,23 @@ ParsedBlock parseBlock(
     if (const auto value = optionalBool(root, "solid", source, "block")) {
         type.isSolid = *value;
     }
+    const BlockCollisionShape::Provenance collisionProvenance =
+        root.has_child("collision_provenance")
+        ? collisionProvenanceValue(
+              scalar(
+                  root["collision_provenance"],
+                  source,
+                  "block.collision_provenance"),
+              source)
+        : BlockCollisionShape::Provenance::Authored;
+    if (!root.has_child("collision") &&
+        collisionProvenance != BlockCollisionShape::Provenance::Authored) {
+        fail(source, "block.collision_provenance",
+             "requires an explicit collision shape");
+    }
     type.collision = root.has_child("collision")
-        ? parseCollisionShape(root["collision"], source)
+        ? parseCollisionShape(
+              root["collision"], source, collisionProvenance)
         : (type.isSolid ? BlockCollisionShape::fullCube()
                         : BlockCollisionShape::empty());
     if (const auto value = optionalBool(root, "cull_same_type", source, "block")) {

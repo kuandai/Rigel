@@ -188,6 +188,11 @@ inclusive supported range of `[-0.25, 1.25]`; values outside that range are
 rejected rather than clamped. The collision mapping has no fields other than
 `boxes`, and the list must not be empty.
 
+An explicit collision may carry top-level `collision_provenance` metadata.
+Ordinary authored assets omit the field and are recorded as `authored` at
+runtime. Normalized imports use `exact` or `conservative_fallback`; the metadata
+does not alter the physical shape.
+
 When `collision` is omitted, the loader preserves legacy behavior: a true
 `solid` flag becomes `full` and a false flag becomes `none`. An explicit
 collision shape is allowed to differ from `solid`. `BlockType` stores the result
@@ -197,15 +202,15 @@ exposed as a non-owning read-only span. Collision is never derived at runtime
 from `BlockModel` cuboids.
 
 The Cosmic Reach importer always writes an explicit collision snapshot for
-each published registration. A source `walkThrough` state becomes `none`, even
-when it has visible geometry. Other states use the positive-volume cuboids from
-the fully resolved source model. Imported inflation is already folded into the
-bounds, zero-volume render helpers are discarded, and the registration's
-orthogonal state orientation is applied before the boxes are written. A single
-unit-cell box is canonicalized to `full`; all other boxes remain inline on the
-registration. This use of resolved visual cuboids is confined to import time.
-The normalized collision asset and runtime type remain independent from the
-normalized visual model.
+each published registration and marks its per-registration provenance `exact`.
+A source `walkThrough` state becomes `none`, even when it has visible geometry.
+Other states use the positive-volume cuboids from the fully resolved source
+model. Imported inflation is already folded into the bounds, zero-volume render
+helpers are discarded, and the registration's orthogonal state orientation is
+applied before the boxes are written. A single unit-cell box is canonicalized
+to `full`; all other boxes remain inline on the registration. This use of
+resolved visual cuboids is confined to import time. The normalized collision
+asset and runtime type remain independent from the normalized visual model.
 
 Collision import provenance records a support schema and disjoint shape counts
 for empty, full, single-partial, and multi-box registrations. It also reports

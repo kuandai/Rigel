@@ -22,6 +22,18 @@ BlockID addFullCube(BlockRegistry& registry, const std::string& identifier) {
     return registry.registerBlock(identifier, std::move(type));
 }
 
+BlockID addCollisionSpecimen(
+    BlockRegistry& registry,
+    const std::string& identifier,
+    BlockCollisionShape collision
+) {
+    BlockType type;
+    type.identifier = identifier;
+    type.textures = FaceTextures::uniform("invented/collision.png");
+    type.collision = std::move(collision);
+    return registry.registerBlock(identifier, std::move(type));
+}
+
 BlockID addPresentedSpecimen(
     BlockRegistry& registry,
     const std::string& identifier
@@ -166,10 +178,62 @@ TEST_CASE(BlockGalleryTargetPresentation_UsesCatalogAndRuntimeMetadata) {
         std::string("primary=transparent, accent=cutout"));
     CHECK(!presentation->opaque);
     CHECK(presentation->solid);
+    CHECK_EQ(presentation->collision, std::string("full cube"));
     CHECK(!presentation->fullCube);
     CHECK(!presentation->cullSameType);
     CHECK_EQ(presentation->textureBindingCount, static_cast<size_t>(2));
     CHECK(!presentation->cullingDiagnostic);
+}
+
+TEST_CASE(BlockGalleryTargetPresentation_ReportsEveryCollisionKindAndFallback) {
+    BlockRegistry registry;
+    const BlockID emptyId = addCollisionSpecimen(
+        registry,
+        "invented:collision_empty",
+        BlockCollisionShape::empty());
+    const BlockID fullId = addCollisionSpecimen(
+        registry,
+        "invented:collision_full",
+        BlockCollisionShape::fullCube());
+    const BlockID singleId = addCollisionSpecimen(
+        registry,
+        "invented:collision_single",
+        BlockCollisionShape::boxes({
+            {{0.25f, 0.0f, 0.25f}, {0.75f, 0.5f, 0.75f}},
+        }));
+    const BlockID multipleId = addCollisionSpecimen(
+        registry,
+        "invented:collision_multiple",
+        BlockCollisionShape::boxes({
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.25f, 1.0f}},
+            {{0.0f, 0.25f, 0.0f}, {0.25f, 1.0f, 1.0f}},
+            {{0.75f, 0.25f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+        }));
+    const BlockID fallbackId = addCollisionSpecimen(
+        registry,
+        "invented:collision_fallback",
+        BlockCollisionShape::fullCube(
+            BlockCollisionShape::Provenance::ConservativeFallback));
+    registry.freeze();
+    const BlockGalleryCatalog catalog(registry);
+
+    for (const auto& [id, expected] :
+         std::array{
+             std::pair{emptyId, std::string("none")},
+             std::pair{fullId, std::string("full cube")},
+             std::pair{singleId, std::string("one box")},
+             std::pair{multipleId, std::string("3 boxes")},
+             std::pair{
+                 fallbackId,
+                 std::string("full cube (conservative fallback)")},
+         }) {
+        const BlockGalleryCatalogEntry* entry = catalog.findByBlockId(id);
+        CHECK(entry != nullptr);
+        const auto presentation = makeBlockGalleryTargetPresentation(
+            catalog, registry, targetAt(*entry, id));
+        CHECK(presentation.has_value());
+        CHECK_EQ(presentation->collision, expected);
+    }
 }
 
 TEST_CASE(BlockGalleryTargetPresentation_ReportsStableCompactLayerMappings) {
@@ -452,6 +516,7 @@ TEST_CASE(BlockGalleryTargetPresentation_IdentifiesEveryDiagnosticPairCell) {
                 presentation->effectiveRenderLayers,
                 std::string("opaque"));
             CHECK(presentation->textureSlotRenderLayers.empty());
+            CHECK_EQ(presentation->collision, std::string("full cube"));
             CHECK_EQ(presentation->fullCube, caseIndex == 0);
             CHECK_EQ(presentation->cullSameType, caseIndex == 1);
             CHECK_EQ(presentation->opaque, caseIndex != 1);

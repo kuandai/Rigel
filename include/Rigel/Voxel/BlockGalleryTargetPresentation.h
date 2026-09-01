@@ -40,6 +40,7 @@ struct BlockGalleryTargetPresentation {
     std::string textureSlotRenderLayers;
     bool opaque = false;
     bool solid = false;
+    std::string collision;
     bool fullCube = false;
     bool cullSameType = false;
     size_t textureBindingCount = 0;

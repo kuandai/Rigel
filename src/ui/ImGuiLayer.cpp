@@ -449,7 +449,10 @@ void renderBlockGalleryTarget(
     }
     ImGui::Text("Opaque: %s", target->opaque ? "true" : "false");
     ImGui::Text("Solid: %s", target->solid ? "true" : "false");
-    ImGui::Text("Full cube: %s", target->fullCube ? "true" : "false");
+    ImGui::Text("Collision: %s", target->collision.c_str());
+    ImGui::Text(
+        "Model full cube: %s",
+        target->fullCube ? "true" : "false");
     ImGui::Text(
         "Cull same type: %s",
         target->cullSameType ? "true" : "false");

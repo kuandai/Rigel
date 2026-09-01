@@ -707,6 +707,25 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
     CHECK_EQ(
         catalog.emptyGeometryExclusions().front().identifier,
         std::string("base:air"));
+    for (const BlockGalleryCatalogEntry& entry : catalog.entries()) {
+        CHECK_EQ(
+            preparedRegistry.getType(entry.blockId).collision.provenance(),
+            BlockCollisionShape::Provenance::Exact);
+    }
+
+    for (const auto& [identifier, collision] :
+         std::array{
+             std::pair{
+                 std::string_view("base:stone_shale"),
+                 std::string_view("full cube")},
+             std::pair{SlabId, std::string_view("one box")},
+             std::pair{StairId, std::string_view("2 boxes")},
+             std::pair{VegetationId, std::string_view("none")},
+         }) {
+        const auto presentation = requireGalleryPresentation(
+            catalog, preparedRegistry, identifier);
+        CHECK_EQ(presentation.collision, collision);
+    }
 
     for (const std::string_view identifier : {
              LeavesId, WalkwayId, LadderId, HandrailId, VegetationId}) {

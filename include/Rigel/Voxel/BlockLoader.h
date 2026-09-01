@@ -102,6 +102,8 @@ struct BlockModelDefinitionSource {
  * # collision:
  * #   boxes:
  * #     - [0.25, 0.0, 0.25, 0.75, 1.0, 0.75]
+ * # Imported snapshots may also declare `collision_provenance` as `exact` or
+ * # `conservative_fallback`; ordinary authored shapes omit it.
  * # If omitted, solid blocks use `full` and non-solid blocks use `none`.
  * @endcode
  *

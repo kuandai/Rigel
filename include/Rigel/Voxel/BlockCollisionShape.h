@@ -41,6 +41,13 @@ public:
         Boxes,
     };
 
+    /** How the normalized physical geometry was obtained. */
+    enum class Provenance : unsigned char {
+        Authored,
+        Exact,
+        ConservativeFallback,
+    };
+
     static constexpr float MinimumCoordinate = -0.25f;
     static constexpr float MaximumCoordinate = 1.25f;
 
@@ -50,24 +57,32 @@ public:
     BlockCollisionShape& operator=(const BlockCollisionShape&) noexcept = default;
 
     BlockCollisionShape(BlockCollisionShape&& other) noexcept
-        : m_kind(other.m_kind), m_boxes(other.m_boxes) {}
+        : m_kind(other.m_kind)
+        , m_provenance(other.m_provenance)
+        , m_boxes(other.m_boxes) {}
 
     BlockCollisionShape& operator=(BlockCollisionShape&& other) noexcept {
         m_kind = other.m_kind;
+        m_provenance = other.m_provenance;
         m_boxes = other.m_boxes;
         return *this;
     }
 
-    static BlockCollisionShape empty() noexcept {
-        return BlockCollisionShape(Kind::Empty);
+    static BlockCollisionShape empty(
+        Provenance provenance = Provenance::Authored
+    ) noexcept {
+        return BlockCollisionShape(Kind::Empty, provenance);
     }
 
-    static BlockCollisionShape fullCube() noexcept {
-        return BlockCollisionShape(Kind::FullCube);
+    static BlockCollisionShape fullCube(
+        Provenance provenance = Provenance::Authored
+    ) noexcept {
+        return BlockCollisionShape(Kind::FullCube, provenance);
     }
 
     static BlockCollisionShape boxes(
-        const std::vector<BlockCollisionBox>& boxes
+        const std::vector<BlockCollisionBox>& boxes,
+        Provenance provenance = Provenance::Authored
     ) {
         if (boxes.empty()) {
             throw std::invalid_argument(
@@ -102,10 +117,10 @@ public:
         }
 
         if (boxes.size() == 1 && boxes.front() == fullCubeBox()) {
-            return fullCube();
+            return fullCube(provenance);
         }
 
-        BlockCollisionShape result(Kind::Boxes);
+        BlockCollisionShape result(Kind::Boxes, provenance);
         result.m_boxes =
             std::make_shared<const std::vector<BlockCollisionBox>>(
                 boxes);
@@ -113,6 +128,7 @@ public:
     }
 
     Kind kind() const noexcept { return m_kind; }
+    Provenance provenance() const noexcept { return m_provenance; }
     bool isEmpty() const noexcept { return m_kind == Kind::Empty; }
     bool isFullCube() const noexcept { return m_kind == Kind::FullCube; }
     bool isBoxes() const noexcept { return m_kind == Kind::Boxes; }
@@ -129,7 +145,10 @@ public:
     }
 
 private:
-    explicit BlockCollisionShape(Kind kind) noexcept : m_kind(kind) {}
+    explicit BlockCollisionShape(
+        Kind kind,
+        Provenance provenance
+    ) noexcept : m_kind(kind), m_provenance(provenance) {}
 
     static const BlockCollisionBox& fullCubeBox() noexcept {
         static constexpr BlockCollisionBox box{
@@ -140,6 +159,7 @@ private:
     }
 
     Kind m_kind = Kind::FullCube;
+    Provenance m_provenance = Provenance::Authored;
     std::shared_ptr<const std::vector<BlockCollisionBox>> m_boxes;
 };
 

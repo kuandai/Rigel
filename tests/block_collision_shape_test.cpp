@@ -36,6 +36,9 @@ TEST_CASE(BlockCollisionShape_EmptyAndFullCubeUseCanonicalQueries) {
 
     const BlockCollisionShape legacyDefault;
     CHECK(legacyDefault.isFullCube());
+    CHECK_EQ(
+        legacyDefault.provenance(),
+        BlockCollisionShape::Provenance::Authored);
 }
 
 TEST_CASE(BlockCollisionShape_CustomBoxesAreImmutableSnapshots) {
@@ -108,6 +111,10 @@ TEST_CASE(BlockCollisionShape_ValidatesNormalizedBoxInvariants) {
     CHECK_THROWS(BlockCollisionShape::boxes({repeated, repeated}));
 
     const BlockCollisionShape canonicalized = BlockCollisionShape::boxes({
-        {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}});
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}},
+        BlockCollisionShape::Provenance::ConservativeFallback);
     CHECK(canonicalized.isFullCube());
+    CHECK_EQ(
+        canonicalized.provenance(),
+        BlockCollisionShape::Provenance::ConservativeFallback);
 }

@@ -38,7 +38,7 @@ SNAPSHOT_STAGING_SUFFIX = ".staging"
 PROVENANCE_SCHEMA = 1
 IMPORTER_SCHEMA = 7
 BLOCK_MODEL_SUPPORT_SCHEMA = 1
-BLOCK_COLLISION_SUPPORT_SCHEMA = 2
+BLOCK_COLLISION_SUPPORT_SCHEMA = 3
 MATERIAL_LAYER_AUDIT_SCHEMA = 1
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -1675,6 +1675,7 @@ def render_block_yaml(
         f"opaque: {'true' if opaque else 'false'}",
         f"solid: {'true' if solid else 'false'}",
         f"collision: {_render_collision_shape(collision)}",
+        "collision_provenance: exact",
     ]
     if orientation != (0, 0, 0):
         lines.append(
@@ -2050,6 +2051,12 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
             result[key] = _parse_generated_collision(
                 value, source, line_number
             )
+        elif key == "collision_provenance":
+            if value not in ("exact", "conservative_fallback"):
+                raise AssetImportError(
+                    f"{source}:{line_number}: unsupported collision provenance"
+                )
+            result[key] = value
         elif key in ("emits_light", "light_attenuation"):
             try:
                 result[key] = int(value)
@@ -2061,10 +2068,13 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
         "id", "model", "opaque", "solid", "cull_same_type", "layer",
         "emits_light", "light_attenuation", "orientation",
         "rotate_top_bottom", "collision", "textures",
-        "texture_render_layers",
+        "collision_provenance", "texture_render_layers",
     }
     _reject_unknown_keys(result, allowed, source)
-    required = {"id", "model", "opaque", "solid", "collision", "layer"}
+    required = {
+        "id", "model", "opaque", "solid", "collision",
+        "collision_provenance", "layer",
+    }
     missing = sorted(required - set(result))
     if missing:
         raise AssetImportError(f"{source}: missing generated fields: {', '.join(missing)}")
@@ -2427,7 +2437,12 @@ def audit_generated_collision_shapes(root: Path) -> dict[str, int]:
             assert isinstance(boxes, list)
             category = "single_partial" if len(boxes) == 1 else "multi_box"
         counts[category] += 1
-        counts["exact_derived"] += 1
+        provenance = block["collision_provenance"]
+        if provenance == "exact":
+            counts["exact_derived"] += 1
+        else:
+            assert provenance == "conservative_fallback"
+            counts["conservative_fallback"] += 1
     return counts
 
 

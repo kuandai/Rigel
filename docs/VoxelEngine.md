@@ -238,7 +238,8 @@ Normalized models are visual geometry. `BlockType` separately stores an
 immutable physical shape as empty, a canonical full cube, or one or more
 normalized AABBs. Omitted authored collision preserves the legacy mapping from
 `solid` to a full or empty shape; physics is never derived live from visual
-cuboids.
+cuboids. Compact provenance distinguishes authored shapes, exact imports, and
+conservative imported fallbacks without changing collision behavior.
 
 The world exposes normalized collision boxes in world coordinates and accounts
 for their supported overhang beyond the owning cell. Entity movement consumes

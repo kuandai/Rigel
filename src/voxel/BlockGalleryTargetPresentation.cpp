@@ -33,6 +33,28 @@ std::string_view renderLayerName(RenderLayer layer) {
     return "unknown";
 }
 
+std::string collisionPresentation(const BlockCollisionShape& shape) {
+    std::string result;
+    switch (shape.kind()) {
+        case BlockCollisionShape::Kind::Empty:
+            result = "none";
+            break;
+        case BlockCollisionShape::Kind::FullCube:
+            result = "full cube";
+            break;
+        case BlockCollisionShape::Kind::Boxes:
+            result = shape.boxes().size() == 1
+                ? "one box"
+                : std::to_string(shape.boxes().size()) + " boxes";
+            break;
+    }
+    if (shape.provenance() ==
+        BlockCollisionShape::Provenance::ConservativeFallback) {
+        result += " (conservative fallback)";
+    }
+    return result;
+}
+
 struct TextureLayerPresentation {
     size_t bindingCount = 0;
     std::string effectiveLayers;
@@ -165,6 +187,7 @@ makeBlockGalleryTargetPresentation(
         .textureSlotRenderLayers = textureLayers.slotMappings,
         .opaque = type.isOpaque,
         .solid = type.isSolid,
+        .collision = collisionPresentation(type.collision),
         .fullCube = type.model->isFullCube(),
         .cullSameType = type.cullSameType,
         .textureBindingCount = textureLayers.bindingCount,

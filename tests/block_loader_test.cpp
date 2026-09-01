@@ -207,6 +207,22 @@ collision:
     - [-0.25, 0, 0, 1.25, 1, 1]
 textures: {}
 )";
+    constexpr std::string_view exactBox = R"(
+id: exact_box
+model: none
+collision:
+  boxes:
+    - [0.25, 0, 0.25, 0.75, 1, 0.75]
+collision_provenance: exact
+textures: {}
+)";
+    constexpr std::string_view fallbackFull = R"(
+id: fallback_full
+model: none
+collision: full
+collision_provenance: conservative_fallback
+textures: {}
+)";
     const std::array definitions = {
         definition("blocks/implicit_full.yaml", implicitFull),
         definition("blocks/implicit_empty.yaml", implicitEmpty),
@@ -215,6 +231,8 @@ textures: {}
         definition("blocks/single_box.yaml", singleBox),
         definition("blocks/multiple_boxes.yaml", multipleBoxes),
         definition("blocks/overhanging_box.yaml", overhangingBox),
+        definition("blocks/exact_box.yaml", exactBox),
+        definition("blocks/fallback_full.yaml", fallbackFull),
     };
 
     BlockRegistry blocks;
@@ -250,10 +268,23 @@ textures: {}
         *blocks.findByIdentifier("test:overhanging_box")).collision;
     CHECK_EQ(overhanging.boxes().front().min[0], -0.25f);
     CHECK_EQ(overhanging.boxes().front().max[0], 1.25f);
+
+    CHECK_EQ(
+        blocks.getType(*blocks.findByIdentifier("test:implicit_full"))
+            .collision.provenance(),
+        BlockCollisionShape::Provenance::Authored);
+    CHECK_EQ(
+        blocks.getType(*blocks.findByIdentifier("test:exact_box"))
+            .collision.provenance(),
+        BlockCollisionShape::Provenance::Exact);
+    CHECK_EQ(
+        blocks.getType(*blocks.findByIdentifier("test:fallback_full"))
+            .collision.provenance(),
+        BlockCollisionShape::Provenance::ConservativeFallback);
 }
 
 TEST_CASE(BlockLoader_RejectsMalformedCollisionShapesAtomically) {
-    constexpr std::array<std::string_view, 11> invalidCollision = {
+    constexpr std::array<std::string_view, 13> invalidCollision = {
         "collision: unknown\n",
         "collision: {boxes: [[0, 0, 0, 1, 1, 1]], extra: true}\n",
         "collision: {boxes: []}\n",
@@ -265,6 +296,8 @@ TEST_CASE(BlockLoader_RejectsMalformedCollisionShapesAtomically) {
         "collision: {boxes: [[-0.2501, 0, 0, 1, 1, 1]]}\n",
         "collision: {boxes: [[0, 0, 0, 1.2501, 1, 1]]}\n",
         "collision: {boxes: full}\n",
+        "collision: full\ncollision_provenance: guessed\n",
+        "collision_provenance: exact\n",
     };
 
     for (const std::string_view collision : invalidCollision) {

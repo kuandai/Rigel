@@ -2711,8 +2711,10 @@ class BlockCompilerTest(unittest.TestCase):
             )
 
         self.assertEqual(base["collision"], "full")
+        self.assertEqual(base["collision_provenance"], "exact")
         self.assertEqual(walk_through["model"], "cube")
         self.assertEqual(walk_through["collision"], "none")
+        self.assertEqual(walk_through["collision_provenance"], "exact")
         self.assertEqual(
             audit.provenance(),
             {
@@ -2976,6 +2978,7 @@ class GeneratedTreeClosureTest(unittest.TestCase):
                 "opaque: false",
                 "solid: false",
                 "collision: none",
+                "collision_provenance: exact",
                 f"layer: {layer}",
             ]
             if overrides:
@@ -4015,6 +4018,16 @@ class SynchronizationTest(unittest.TestCase):
                 "missing generated fields: collision",
             ),
             (
+                b"collision_provenance: exact\n",
+                b"",
+                "missing generated fields: collision_provenance",
+            ),
+            (
+                b"collision_provenance: exact",
+                b"collision_provenance: guessed",
+                "unsupported collision provenance",
+            ),
+            (
                 b"collision: full",
                 b'collision: {"boxes":[]}',
                 "non-empty array",
@@ -4251,7 +4264,7 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
             )
             self.assertEqual(
                 first["output_tree_sha256"],
-                "ca6838262d1b1e934462f3308408cd0e147ae8f168dd7827d67171001fb58a40",
+                "51502c1020cc216a8f2a2b887a966ffc8ef39ba29c8c369cd453271ad2cd81bc",
             )
 
 

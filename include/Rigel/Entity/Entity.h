@@ -63,8 +63,16 @@ public:
                         const glm::mat4& modelMatrix,
                         bool shouldRender);
 
+    /**
+     * Select a loaded model and use its hitbox. A missing model or a model
+     * without a hitbox restores the centered one-unit default local bounds.
+     */
     void setModel(Asset::Handle<EntityModelAsset> model);
     const Asset::Handle<EntityModelAsset>& model() const { return m_model; }
+    /**
+     * Retain an unresolved model identifier for persistence. This clears the
+     * loaded model and restores the centered one-unit default local bounds.
+     */
     void setModelIdentifier(std::string identifier);
     const std::string& modelIdentifier() const { return m_modelIdentifier; }
 
@@ -101,7 +109,7 @@ protected:
     bool m_collidedZ = false;
     float m_floorFriction = 0.1f;
 
-    Aabb m_localBounds{glm::vec3(-0.5f), glm::vec3(0.5f)};
+    Aabb m_localBounds{defaultLocalBounds()};
     Aabb m_worldBounds{};
 
     EntityTagList m_tags;
@@ -109,6 +117,9 @@ protected:
     std::string m_modelIdentifier;
     std::unique_ptr<EntityModelInstance> m_modelInstance;
     glm::vec4 m_renderTint{1.0f};
+
+private:
+    static const Aabb& defaultLocalBounds();
 };
 
 } // namespace Rigel::Entity

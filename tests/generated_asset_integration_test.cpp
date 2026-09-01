@@ -5,6 +5,7 @@
 #include "ResourceRegistry.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Asset/Types.h"
+#include "Rigel/Entity/Entity.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Voxel/BlockGalleryCatalog.h"
 #include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
@@ -21,6 +22,7 @@
 #include "Rigel/Voxel/WorldMeshStore.h"
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/WorldView.h"
+#include "Rigel/Voxel/World.h"
 
 #include <algorithm>
 #include <array>
@@ -36,6 +38,7 @@
 #include <vector>
 
 #include <glm/geometric.hpp>
+#include <glm/vec2.hpp>
 
 namespace {
 using namespace Rigel::Voxel;
@@ -50,6 +53,8 @@ constexpr std::array<std::string_view, 5> RequiredMaterials = {
 
 constexpr std::string_view SlabId =
     "base:wood_planks[slab_type=bottom]";
+constexpr std::string_view TopSlabId =
+    "base:wood_planks[slab_type=top]";
 constexpr std::string_view StairId =
     "base:wood_planks[stair_type=bottom_PosX]";
 constexpr std::string_view DoorId =
@@ -74,6 +79,13 @@ constexpr std::string_view AlphaCutoutId =
 
 constexpr int GalleryCaptureWidth = 256;
 constexpr int GalleryCaptureHeight = 256;
+
+class CollisionTestEntity : public Rigel::Entity::Entity {
+public:
+    CollisionTestEntity() : Entity("rigel:collision_test") {
+        m_gravityModifier = 0.0f;
+    }
+};
 
 struct GalleryVisualRepresentative {
     std::string_view captureName;
@@ -729,6 +741,154 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
     CHECK_EQ(
         mixedTablePresentation.textureSlotRenderLayers,
         std::string("border=opaque, top=transparent"));
+#endif
+}
+
+TEST_CASE(GeneratedAssets_QueryAndCollideWithNormalizedShapes) {
+#ifndef RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS
+    SKIP_TEST("representative collision expectations target Cosmic Reach 0.6.1");
+#else
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+
+    WorldResources resources;
+    BlockModelRegistry models;
+    TextureAtlas atlas;
+    const BlockLoadReport report = BlockLoader{}.loadFromManifest(
+        assets, models, resources.registry(), atlas);
+    CHECK_EQ(report.failed, static_cast<size_t>(0));
+    CHECK_EQ(report.loaded, static_cast<size_t>(2020));
+    resources.registry().freeze();
+
+    struct StairRepresentative {
+        std::string_view identifier;
+        BlockCollisionBox upper;
+        glm::vec2 upperFootprint;
+        glm::vec2 lowerFootprint;
+    };
+    const std::array stairs = {
+        StairRepresentative{
+            "base:wood_planks[stair_type=bottom_PosX]",
+            {{0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {0.75f, 0.5f},
+            {0.25f, 0.5f}},
+        StairRepresentative{
+            "base:wood_planks[stair_type=bottom_NegX]",
+            {{0.0f, 0.5f, 0.0f}, {0.5f, 1.0f, 1.0f}},
+            {0.25f, 0.5f},
+            {0.75f, 0.5f}},
+        StairRepresentative{
+            "base:wood_planks[stair_type=bottom_PosZ]",
+            {{0.0f, 0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}},
+            {0.5f, 0.75f},
+            {0.5f, 0.25f}},
+        StairRepresentative{
+            "base:wood_planks[stair_type=bottom_NegZ]",
+            {{0.0f, 0.5f, 0.0f}, {1.0f, 1.0f, 0.5f}},
+            {0.5f, 0.25f},
+            {0.5f, 0.75f}},
+    };
+
+    World world(resources);
+    world.setBlock(
+        0, 0, 0,
+        BlockState{requireBlockId(resources.registry(), SlabId)});
+    world.setBlock(
+        2, 0, 0,
+        BlockState{requireBlockId(resources.registry(), TopSlabId)});
+    for (size_t index = 0; index < stairs.size(); ++index) {
+        world.setBlock(
+            4 + static_cast<int>(index) * 2,
+            0,
+            0,
+            BlockState{requireBlockId(
+                resources.registry(), stairs[index].identifier)});
+    }
+    world.setBlock(
+        12, 0, 2,
+        BlockState{requireBlockId(resources.registry(), VegetationId)});
+
+    const auto queryAt = [&](int x, int z = 0) {
+        std::vector<BlockCollisionBox> boxes;
+        const bool accepted = world.forEachCollisionBox(
+            BlockCollisionBox{
+                {static_cast<float>(x) - 0.1f, -0.1f,
+                 static_cast<float>(z) - 0.1f},
+                {static_cast<float>(x) + 1.1f, 1.1f,
+                 static_cast<float>(z) + 1.1f}},
+            [&](const BlockCollisionBox& box) { boxes.push_back(box); });
+        CHECK(accepted);
+        return boxes;
+    };
+    CHECK_EQ(
+        queryAt(0),
+        (std::vector<BlockCollisionBox>{
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}}}));
+    CHECK_EQ(
+        queryAt(2),
+        (std::vector<BlockCollisionBox>{
+            {{2.0f, 0.5f, 0.0f}, {3.0f, 1.0f, 1.0f}}}));
+    for (size_t index = 0; index < stairs.size(); ++index) {
+        const int x = 4 + static_cast<int>(index) * 2;
+        const std::vector<BlockCollisionBox> boxes = queryAt(x);
+        CHECK_EQ(boxes.size(), static_cast<size_t>(2));
+        BlockCollisionBox expectedUpper = stairs[index].upper;
+        expectedUpper.min[0] += static_cast<float>(x);
+        expectedUpper.max[0] += static_cast<float>(x);
+        CHECK(
+            std::find(boxes.begin(), boxes.end(), expectedUpper) !=
+            boxes.end());
+    }
+
+    const auto fall = [&](float x, float z) {
+        CollisionTestEntity entity;
+        entity.setLocalBounds(Rigel::Entity::Aabb{
+            glm::vec3(-0.1f, -0.2f, -0.1f),
+            glm::vec3(0.1f, 0.2f, 0.1f)});
+        entity.setPosition(x, 3.0f, z);
+        entity.setVelocity(glm::vec3(0.0f, -10.0f, 0.0f));
+        entity.update(world, 0.5f);
+        CHECK(entity.collidedY());
+        CHECK(entity.isOnGround());
+        return entity.position().y;
+    };
+    CHECK_NEAR(
+        fall(0.5f, 0.5f),
+        0.7f + BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_NEAR(
+        fall(2.5f, 0.5f),
+        1.2f + BlockCollisionContactTolerance,
+        0.00001f);
+    for (size_t index = 0; index < stairs.size(); ++index) {
+        const float x = 4.0f + static_cast<float>(index) * 2.0f;
+        CHECK_NEAR(
+            fall(
+                x + stairs[index].upperFootprint.x,
+                stairs[index].upperFootprint.y),
+            1.2f + BlockCollisionContactTolerance,
+            0.00001f);
+        CHECK_NEAR(
+            fall(
+                x + stairs[index].lowerFootprint.x,
+                stairs[index].lowerFootprint.y),
+            0.7f + BlockCollisionContactTolerance,
+            0.00001f);
+    }
+
+    const BlockType& vegetation =
+        requireBlock(resources.registry(), VegetationId);
+    CHECK(!vegetation.model->isEmpty());
+    CHECK(vegetation.collision.isEmpty());
+    CHECK(queryAt(12, 2).empty());
+    CollisionTestEntity passThrough;
+    passThrough.setLocalBounds(Rigel::Entity::Aabb{
+        glm::vec3(-0.1f), glm::vec3(0.1f)});
+    passThrough.setPosition(10.0f, 0.5f, 2.5f);
+    passThrough.setVelocity(glm::vec3(4.0f, 0.0f, 0.0f));
+    passThrough.update(world, 1.0f);
+    CHECK(!passThrough.collidedX());
+    CHECK_EQ(passThrough.position().x, 14.0f);
 #endif
 }
 

@@ -5,8 +5,11 @@
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/BlockType.h"
 
+#include <array>
 #include <cmath>
 #include <limits>
+
+#include <glm/vec2.hpp>
 
 using namespace Rigel::Entity;
 using namespace Rigel::Voxel;
@@ -177,6 +180,172 @@ TEST_CASE(EntityPhysics_PartialFloorSetsGroundContact) {
         entity.position().y,
         0.9f + BlockCollisionContactTolerance,
         0.00001f);
+}
+
+TEST_CASE(EntityPhysics_LandsOnSlabAndMultiBoxSurfaceHeights) {
+    WorldResources resources;
+    World world(resources);
+    placeBlock(
+        resources,
+        world,
+        "rigel:bottom_slab",
+        BlockCollisionShape::boxes({
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}},
+        }),
+        0,
+        0,
+        0);
+    placeBlock(
+        resources,
+        world,
+        "rigel:top_slab",
+        BlockCollisionShape::boxes({
+            {{0.0f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+        }),
+        2,
+        0,
+        0);
+    placeBlock(
+        resources,
+        world,
+        "rigel:two_level_surface",
+        BlockCollisionShape::boxes({
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}},
+            {{0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+        }),
+        4,
+        0,
+        0);
+
+    const auto fall = [&](float x) {
+        GravityFreeEntity entity;
+        entity.setLocalBounds(
+            Aabb{glm::vec3(-0.2f), glm::vec3(0.2f)});
+        entity.setPosition(x, 3.0f, 0.5f);
+        entity.setVelocity(glm::vec3(0.0f, -10.0f, 0.0f));
+        entity.update(world, 0.5f);
+        CHECK(entity.collidedY());
+        CHECK(entity.isOnGround());
+        return entity.position().y;
+    };
+
+    CHECK_NEAR(
+        fall(0.5f),
+        0.7f + BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_NEAR(
+        fall(2.5f),
+        1.2f + BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_NEAR(
+        fall(4.25f),
+        0.7f + BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_NEAR(
+        fall(4.75f),
+        1.2f + BlockCollisionContactTolerance,
+        0.00001f);
+}
+
+TEST_CASE(EntityPhysics_RotatedStairContactsDependOnFootprint) {
+    struct StairCase {
+        const char* identifier;
+        BlockCollisionBox upper;
+        glm::vec2 upperFootprint;
+        glm::vec2 lowerFootprint;
+    };
+    const std::array cases = {
+        StairCase{
+            "rigel:stair_pos_x",
+            {{0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {0.75f, 0.5f},
+            {0.25f, 0.5f}},
+        StairCase{
+            "rigel:stair_neg_x",
+            {{0.0f, 0.5f, 0.0f}, {0.5f, 1.0f, 1.0f}},
+            {0.25f, 0.5f},
+            {0.75f, 0.5f}},
+        StairCase{
+            "rigel:stair_pos_z",
+            {{0.0f, 0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}},
+            {0.5f, 0.75f},
+            {0.5f, 0.25f}},
+        StairCase{
+            "rigel:stair_neg_z",
+            {{0.0f, 0.5f, 0.0f}, {1.0f, 1.0f, 0.5f}},
+            {0.5f, 0.25f},
+            {0.5f, 0.75f}},
+    };
+
+    for (const StairCase& stair : cases) {
+        WorldResources resources;
+        World world(resources);
+        placeBlock(
+            resources,
+            world,
+            stair.identifier,
+            BlockCollisionShape::boxes({
+                stair.upper,
+                {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}},
+            }),
+            0,
+            0,
+            0);
+
+        const auto fall = [&](const glm::vec2& footprint) {
+            GravityFreeEntity entity;
+            entity.setLocalBounds(
+                Aabb{glm::vec3(-0.1f, -0.2f, -0.1f),
+                     glm::vec3(0.1f, 0.2f, 0.1f)});
+            entity.setPosition(footprint.x, 3.0f, footprint.y);
+            entity.setVelocity(glm::vec3(0.0f, -10.0f, 0.0f));
+            entity.update(world, 0.5f);
+            CHECK(entity.collidedY());
+            CHECK(entity.isOnGround());
+            return entity.position().y;
+        };
+
+        CHECK_NEAR(
+            fall(stair.upperFootprint),
+            1.2f + BlockCollisionContactTolerance,
+            0.00001f);
+        CHECK_NEAR(
+            fall(stair.lowerFootprint),
+            0.7f + BlockCollisionContactTolerance,
+            0.00001f);
+    }
+}
+
+TEST_CASE(EntityPhysics_HorizontalStairContactDoesNotStepUp) {
+    WorldResources resources;
+    World world(resources);
+    placeBlock(
+        resources,
+        world,
+        "rigel:static_stair",
+        BlockCollisionShape::boxes({
+            {{0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}},
+        }),
+        1,
+        0,
+        0);
+
+    GravityFreeEntity entity;
+    entity.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    entity.setPosition(0.5f, 0.75f, 0.5f);
+    entity.setVelocity(glm::vec3(2.0f, 0.0f, 0.0f));
+
+    entity.update(world, 1.0f);
+
+    CHECK(entity.collidedX());
+    CHECK(!entity.collidedY());
+    CHECK_NEAR(
+        entity.position().x,
+        1.25f - BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_EQ(entity.position().y, 0.75f);
 }
 
 TEST_CASE(EntityPhysics_StationaryInitialOverlapIsNotDepenetrated) {
@@ -386,6 +555,15 @@ TEST_CASE(EntityPhysics_CeilingCollisionStopsUpwardVelocity) {
         1.75f - BlockCollisionContactTolerance,
         0.00001f);
     CHECK_EQ(entity.velocity().y, 0.0f);
+
+    const float contactPosition = entity.position().y;
+    for (int iteration = 0; iteration < 4; ++iteration) {
+        entity.setVelocity(glm::vec3(0.0f, 1.0f, 0.0f));
+        entity.update(world, 1.0f);
+        CHECK(entity.collidedY());
+        CHECK(!entity.isOnGround());
+        CHECK_EQ(entity.position().y, contactPosition);
+    }
 }
 
 TEST_CASE(EntityPhysics_WallCollisionPreservesSlidingAxis) {
@@ -491,6 +669,39 @@ TEST_CASE(EntityPhysics_ContactAndGroundProbeRemainStable) {
     CHECK(entity.isOnGround());
     CHECK_EQ(entity.position().y, contactPosition);
     CHECK_EQ(entity.velocity().y, 0.0f);
+}
+
+TEST_CASE(EntityPhysics_AdjacentFloorBoxesKeepStableGroundContact) {
+    WorldResources resources;
+    World world(resources);
+    const BlockID floor = placeBlock(
+        resources,
+        world,
+        "rigel:adjacent_floor",
+        BlockCollisionShape::fullCube(),
+        0,
+        0,
+        0);
+    world.setBlock(1, 0, 0, BlockState{floor});
+
+    GravityFreeEntity entity;
+    entity.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    entity.setPosition(1.0f, 2.0f, 0.5f);
+    entity.setVelocity(glm::vec3(0.0f, -2.0f, 0.0f));
+
+    entity.update(world, 1.0f);
+    const float contactPosition = entity.position().y;
+    CHECK(entity.collidedY());
+    CHECK(entity.isOnGround());
+
+    for (int iteration = 0; iteration < 4; ++iteration) {
+        entity.setVelocity(glm::vec3(0.0f, -1.0f, 0.0f));
+        entity.update(world, 1.0f);
+        CHECK(entity.collidedY());
+        CHECK(entity.isOnGround());
+        CHECK_EQ(entity.position().y, contactPosition);
+    }
 }
 
 TEST_CASE(EntityPhysics_InvalidOrUnboundedMovementDoesNotCorruptPosition) {

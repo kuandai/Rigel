@@ -240,10 +240,15 @@ normalized AABBs. Omitted authored collision preserves the legacy mapping from
 `solid` to a full or empty shape; physics is never derived live from visual
 cuboids.
 
-The current entity resolver still tests the source-authored `solid` property
-against the entire block cell, and edit raycasting stops at any occupied cell
-rather than intersecting model or collision-shape bounds. Visual geometry
-outside `[0, 1]` does not extend either test.
+The world exposes normalized collision boxes in world coordinates and accounts
+for their supported overhang beyond the owning cell. Entity movement consumes
+that query with continuous X, then Y, then Z sweeps and stops at the nearest
+box on each axis. A shared contact tolerance controls separation and ground
+probes. Stationary initial overlap is not depenetrated.
+
+Edit raycasting remains cell-based and stops at any occupied cell rather than
+intersecting model or collision-shape bounds. Visual geometry outside `[0, 1]`
+does not extend raycasting.
 
 Opacity, emitted light, and attenuation likewise remain source-authored
 block-registration properties. Rigel does not infer solidity or lighting from
@@ -257,8 +262,7 @@ cuboid coverage.
 - Plane primitives, animated block textures, and non-16-by-16 block textures
   are not supported. The importer omits those states instead of approximating
   them.
-- Entity collision and edit raycasting still operate on whole cells; collision
-  shapes are loaded and retained but not yet used by those queries.
+- Edit raycasting operates on occupied cells rather than collision boxes.
 - Mesh generation emits independent faces rather than greedy merged quads.
 - Voxel visibility uses distance culling only; there is no frustum or occlusion
   culling for chunks.

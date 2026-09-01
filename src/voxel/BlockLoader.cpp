@@ -521,7 +521,7 @@ BlockCollisionShape parseCollisionShape(
     }
 
     try {
-        return BlockCollisionShape::boxes(std::move(boxes));
+        return BlockCollisionShape::boxes(boxes);
     } catch (const std::invalid_argument& error) {
         fail(source, path, error.what());
     }

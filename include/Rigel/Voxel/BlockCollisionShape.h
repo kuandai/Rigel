@@ -11,6 +11,8 @@
 
 namespace Rigel::Voxel {
 
+inline constexpr float BlockCollisionContactTolerance = 1.0e-4f;
+
 /** An axis-aligned collision box in block-cell coordinates. */
 struct BlockCollisionBox {
     std::array<float, 3> min{};
@@ -58,7 +60,9 @@ public:
         return BlockCollisionShape(Kind::FullCube);
     }
 
-    static BlockCollisionShape boxes(std::vector<BlockCollisionBox> boxes) {
+    static BlockCollisionShape boxes(
+        const std::vector<BlockCollisionBox>& boxes
+    ) {
         if (boxes.empty()) {
             throw std::invalid_argument(
                 "collision boxes must contain at least one box");
@@ -98,7 +102,7 @@ public:
         BlockCollisionShape result(Kind::Boxes);
         result.m_boxes =
             std::make_shared<const std::vector<BlockCollisionBox>>(
-                std::move(boxes));
+                boxes);
         return result;
     }
 

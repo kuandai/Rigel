@@ -4,13 +4,11 @@
 #include "Rigel/Voxel/World.h"
 
 #include <algorithm>
-#include <cmath>
 #include <glm/glm.hpp>
 
 namespace Rigel::Entity {
 
 namespace {
-constexpr float kEpsilon = 1.0e-4f;
 
 enum class Axis {
     X,
@@ -18,54 +16,8 @@ enum class Axis {
     Z
 };
 
-bool isSolidAt(Voxel::World& world, int x, int y, int z) {
-    Voxel::BlockState state = world.getBlock(x, y, z);
-    if (state.isAir()) {
-        return false;
-    }
-    return world.blockRegistry().getType(state.id).isSolid;
-}
-
-struct AxisRange {
-    int min = 0;
-    int max = 0;
-};
-
-AxisRange toBlockRange(float minCoord, float maxCoord) {
-    int minBlock = static_cast<int>(std::floor(minCoord));
-    int maxBlock = static_cast<int>(std::floor(maxCoord - kEpsilon));
-    if (maxBlock < minBlock) {
-        maxBlock = minBlock;
-    }
-    return {minBlock, maxBlock};
-}
-
-bool intersectsSolidBlocks(Voxel::World& world, const Aabb& box) {
-    AxisRange xRange = toBlockRange(box.min.x, box.max.x);
-    AxisRange yRange = toBlockRange(box.min.y, box.max.y);
-    AxisRange zRange = toBlockRange(box.min.z, box.max.z);
-
-    for (int bx = xRange.min; bx <= xRange.max; ++bx) {
-        for (int by = yRange.min; by <= yRange.max; ++by) {
-            for (int bz = zRange.min; bz <= zRange.max; ++bz) {
-                if (!isSolidAt(world, bx, by, bz)) {
-                    continue;
-                }
-                Aabb block{
-                    glm::vec3(static_cast<float>(bx),
-                              static_cast<float>(by),
-                              static_cast<float>(bz)),
-                    glm::vec3(static_cast<float>(bx + 1),
-                              static_cast<float>(by + 1),
-                              static_cast<float>(bz + 1))
-                };
-                if (box.intersects(block)) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
+size_t axisIndex(Axis axis) {
+    return static_cast<size_t>(axis);
 }
 
 float axisValue(const glm::vec3& value, Axis axis) {
@@ -85,6 +37,31 @@ void setAxisValue(glm::vec3& value, Axis axis, float axisValue) {
     }
 }
 
+Voxel::BlockCollisionBox collisionBox(const Aabb& box) {
+    return {
+        .min = {box.min.x, box.min.y, box.min.z},
+        .max = {box.max.x, box.max.y, box.max.z},
+    };
+}
+
+bool overlapsOnOtherAxes(
+    const Aabb& entity,
+    const Voxel::BlockCollisionBox& block,
+    Axis movementAxis
+) {
+    const size_t movementIndex = axisIndex(movementAxis);
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (axis == movementIndex) continue;
+        if (entity.min[axis] >=
+                block.max[axis] - Voxel::BlockCollisionContactTolerance ||
+            entity.max[axis] <=
+                block.min[axis] + Voxel::BlockCollisionContactTolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void resolveAxis(Voxel::World& world,
                  const Aabb& localBounds,
                  glm::vec3& position,
@@ -93,104 +70,71 @@ void resolveAxis(Voxel::World& world,
                  float dt,
                  bool& collided,
                  bool& onGround) {
-    float delta = axisValue(velocity, axis) * dt;
+    const float delta = axisValue(velocity, axis) * dt;
     if (delta == 0.0f) {
         return;
     }
 
-    glm::vec3 testPos = position;
-    setAxisValue(testPos, axis, axisValue(position, axis) + delta);
-    Aabb moved = localBounds.translated(testPos);
-
-    AxisRange xRange = toBlockRange(moved.min.x, moved.max.x);
-    AxisRange yRange = toBlockRange(moved.min.y, moved.max.y);
-    AxisRange zRange = toBlockRange(moved.min.z, moved.max.z);
-
-    bool hit = false;
-    float resolved = axisValue(testPos, axis);
+    const size_t movementIndex = axisIndex(axis);
+    const Aabb start = localBounds.translated(position);
+    Aabb swept = start;
     if (delta > 0.0f) {
-        float maxAllowed = resolved;
-        for (int bx = xRange.min; bx <= xRange.max; ++bx) {
-            for (int by = yRange.min; by <= yRange.max; ++by) {
-                for (int bz = zRange.min; bz <= zRange.max; ++bz) {
-                    if (!isSolidAt(world, bx, by, bz)) {
-                        continue;
-                    }
-                    Aabb block{
-                        glm::vec3(static_cast<float>(bx),
-                                  static_cast<float>(by),
-                                  static_cast<float>(bz)),
-                        glm::vec3(static_cast<float>(bx + 1),
-                                  static_cast<float>(by + 1),
-                                  static_cast<float>(bz + 1))
-                    };
-                    if (!moved.intersects(block)) {
-                        continue;
-                    }
-                    float candidate = 0.0f;
-                    switch (axis) {
-                        case Axis::X:
-                            candidate = block.min.x - localBounds.max.x - kEpsilon;
-                            break;
-                        case Axis::Y:
-                            candidate = block.min.y - localBounds.max.y - kEpsilon;
-                            break;
-                        case Axis::Z:
-                            candidate = block.min.z - localBounds.max.z - kEpsilon;
-                            break;
-                    }
-                    maxAllowed = std::min(maxAllowed, candidate);
-                    hit = true;
-                }
-            }
-        }
-        if (hit) {
-            setAxisValue(position, axis, maxAllowed);
-        } else {
-            setAxisValue(position, axis, resolved);
-        }
+        swept.max[movementIndex] += delta;
     } else {
-        float minAllowed = resolved;
-        for (int bx = xRange.min; bx <= xRange.max; ++bx) {
-            for (int by = yRange.min; by <= yRange.max; ++by) {
-                for (int bz = zRange.min; bz <= zRange.max; ++bz) {
-                    if (!isSolidAt(world, bx, by, bz)) {
-                        continue;
-                    }
-                    Aabb block{
-                        glm::vec3(static_cast<float>(bx),
-                                  static_cast<float>(by),
-                                  static_cast<float>(bz)),
-                        glm::vec3(static_cast<float>(bx + 1),
-                                  static_cast<float>(by + 1),
-                                  static_cast<float>(bz + 1))
-                    };
-                    if (!moved.intersects(block)) {
-                        continue;
-                    }
-                    float candidate = 0.0f;
-                    switch (axis) {
-                        case Axis::X:
-                            candidate = block.max.x - localBounds.min.x + kEpsilon;
-                            break;
-                        case Axis::Y:
-                            candidate = block.max.y - localBounds.min.y + kEpsilon;
-                            break;
-                        case Axis::Z:
-                            candidate = block.max.z - localBounds.min.z + kEpsilon;
-                            break;
-                    }
-                    minAllowed = std::max(minAllowed, candidate);
-                    hit = true;
+        swept.min[movementIndex] += delta;
+    }
+
+    float allowedDelta = delta;
+    bool hit = false;
+    world.forEachCollisionBox(
+        collisionBox(swept),
+        [&](const Voxel::BlockCollisionBox& block) {
+            if (!overlapsOnOtherAxes(start, block, axis)) return;
+
+            if (delta > 0.0f) {
+                const float startFace = start.max[movementIndex];
+                const float blockFace = block.min[movementIndex];
+                if (startFace >
+                    blockFace + Voxel::BlockCollisionContactTolerance) {
+                    return;
+                }
+                if (startFace + delta <
+                    blockFace - Voxel::BlockCollisionContactTolerance) {
+                    return;
+                }
+                const float candidate = std::max(
+                    0.0f,
+                    blockFace - startFace -
+                        Voxel::BlockCollisionContactTolerance);
+                if (!hit || candidate < allowedDelta) {
+                    allowedDelta = candidate;
+                }
+            } else {
+                const float startFace = start.min[movementIndex];
+                const float blockFace = block.max[movementIndex];
+                if (startFace <
+                    blockFace - Voxel::BlockCollisionContactTolerance) {
+                    return;
+                }
+                if (startFace + delta >
+                    blockFace + Voxel::BlockCollisionContactTolerance) {
+                    return;
+                }
+                const float candidate = std::min(
+                    0.0f,
+                    blockFace - startFace +
+                        Voxel::BlockCollisionContactTolerance);
+                if (!hit || candidate > allowedDelta) {
+                    allowedDelta = candidate;
                 }
             }
-        }
-        if (hit) {
-            setAxisValue(position, axis, minAllowed);
-        } else {
-            setAxisValue(position, axis, resolved);
-        }
-    }
+            hit = true;
+        });
+
+    setAxisValue(
+        position,
+        axis,
+        axisValue(position, axis) + allowedDelta);
 
     if (hit) {
         collided = true;
@@ -199,6 +143,25 @@ void resolveAxis(Voxel::World& world,
         }
         setAxisValue(velocity, axis, 0.0f);
     }
+}
+
+bool isSupported(Voxel::World& world, const Aabb& box) {
+    Voxel::BlockCollisionBox probe = collisionBox(box);
+    probe.min[1] -= Voxel::BlockCollisionContactTolerance * 2.0f;
+
+    bool supported = false;
+    world.forEachCollisionBox(
+        probe,
+        [&](const Voxel::BlockCollisionBox& block) {
+            if (supported || !overlapsOnOtherAxes(box, block, Axis::Y)) {
+                return;
+            }
+            const float distance = box.min.y - block.max[1];
+            supported =
+                distance >= -Voxel::BlockCollisionContactTolerance &&
+                distance <= Voxel::BlockCollisionContactTolerance * 2.0f;
+        });
+    return supported;
 }
 
 } // namespace
@@ -290,8 +253,7 @@ void Entity::resolveCollisions(Voxel::World& world, float dt) {
     resolveAxis(world, m_localBounds, m_position, m_velocity, Axis::Z, dt, m_collidedZ, m_onGround);
 
     if (!m_onGround) {
-        Aabb probe = m_localBounds.translated(m_position + glm::vec3(0.0f, -kEpsilon * 2.0f, 0.0f));
-        if (intersectsSolidBlocks(world, probe)) {
+        if (isSupported(world, m_localBounds.translated(m_position))) {
             m_onGround = true;
         }
     }

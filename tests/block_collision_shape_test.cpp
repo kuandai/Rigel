@@ -67,6 +67,28 @@ TEST_CASE(BlockCollisionShape_CustomBoxesAreImmutableSnapshots) {
     CHECK_EQ(registered.boxes()[0].min[0], -0.25f);
 }
 
+TEST_CASE(BlockCollisionShape_MovedInputCannotAliasRegisteredBoxes) {
+    std::vector<BlockCollisionBox> authored = {
+        {{-0.25f, 0.0f, 0.25f}, {0.5f, 0.5f, 0.75f}},
+    };
+    BlockCollisionBox* retained = authored.data();
+    const BlockCollisionShape shape =
+        BlockCollisionShape::boxes(std::move(authored));
+
+    BlockRegistry registry;
+    BlockType block;
+    block.collision = shape;
+    const BlockID blockId =
+        registry.registerBlock("test:moved_shape", std::move(block));
+
+    retained->min[0] = 0.0f;
+    retained->max[0] = 0.25f;
+
+    const BlockCollisionShape& registered = registry.getType(blockId).collision;
+    CHECK_EQ(registered.boxes()[0].min[0], -0.25f);
+    CHECK_EQ(registered.boxes()[0].max[0], 0.5f);
+}
+
 TEST_CASE(BlockCollisionShape_ValidatesNormalizedBoxInvariants) {
     CHECK_THROWS(BlockCollisionShape::boxes({}));
     CHECK_THROWS(BlockCollisionShape::boxes({

@@ -3,9 +3,48 @@
 #include "Rigel/Persistence/Providers.h"
 
 #include <spdlog/spdlog.h>
+#include <cmath>
 #include <stdexcept>
 
 namespace Rigel::Voxel {
+
+namespace {
+
+bool overlaps(
+    const BlockCollisionBox& first,
+    const BlockCollisionBox& second
+) {
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (first.min[axis] >
+                second.max[axis] + BlockCollisionContactTolerance ||
+            first.max[axis] <
+                second.min[axis] - BlockCollisionContactTolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+BlockCollisionBox translated(
+    const BlockCollisionBox& box,
+    int x,
+    int y,
+    int z
+) {
+    const std::array<float, 3> offset{
+        static_cast<float>(x),
+        static_cast<float>(y),
+        static_cast<float>(z),
+    };
+    BlockCollisionBox result = box;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        result.min[axis] += offset[axis];
+        result.max[axis] += offset[axis];
+    }
+    return result;
+}
+
+} // namespace
 
 World::World()
     : m_persistenceProviders(std::make_shared<Persistence::ProviderRegistry>()) {
@@ -73,6 +112,58 @@ void World::setBlock(int wx, int wy, int wz, BlockState state) {
 
 BlockState World::getBlock(int wx, int wy, int wz) const {
     return m_chunkManager.getBlock(wx, wy, wz);
+}
+
+void World::forEachCollisionBox(
+    const BlockCollisionBox& bounds,
+    void* context,
+    CollisionBoxCallback callback
+) const {
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(bounds.min[axis]) ||
+            !std::isfinite(bounds.max[axis]) ||
+            bounds.min[axis] > bounds.max[axis]) {
+            return;
+        }
+    }
+
+    const int minX = static_cast<int>(std::ceil(
+        bounds.min[0] - BlockCollisionShape::MaximumCoordinate -
+        BlockCollisionContactTolerance));
+    const int minY = static_cast<int>(std::ceil(
+        bounds.min[1] - BlockCollisionShape::MaximumCoordinate -
+        BlockCollisionContactTolerance));
+    const int minZ = static_cast<int>(std::ceil(
+        bounds.min[2] - BlockCollisionShape::MaximumCoordinate -
+        BlockCollisionContactTolerance));
+    const int maxX = static_cast<int>(std::floor(
+        bounds.max[0] - BlockCollisionShape::MinimumCoordinate +
+        BlockCollisionContactTolerance));
+    const int maxY = static_cast<int>(std::floor(
+        bounds.max[1] - BlockCollisionShape::MinimumCoordinate +
+        BlockCollisionContactTolerance));
+    const int maxZ = static_cast<int>(std::floor(
+        bounds.max[2] - BlockCollisionShape::MinimumCoordinate +
+        BlockCollisionContactTolerance));
+
+    const BlockRegistry& registry = blockRegistry();
+    for (int x = minX; x <= maxX; ++x) {
+        for (int y = minY; y <= maxY; ++y) {
+            for (int z = minZ; z <= maxZ; ++z) {
+                const BlockState state = getBlock(x, y, z);
+                if (state.isAir()) continue;
+
+                for (const BlockCollisionBox& localBox :
+                     registry.getType(state.id).collision.boxes()) {
+                    const BlockCollisionBox worldBox =
+                        translated(localBox, x, y, z);
+                    if (overlaps(bounds, worldBox)) {
+                        callback(context, worldBox);
+                    }
+                }
+            }
+        }
+    }
 }
 
 void World::setGenerator(std::shared_ptr<const WorldGenerator> generator) {

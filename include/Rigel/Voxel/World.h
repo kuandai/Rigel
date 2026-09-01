@@ -9,6 +9,7 @@
  */
 
 #include "Block.h"
+#include "BlockCollisionShape.h"
 #include "BlockRegistry.h"
 #include "ChunkManager.h"
 #include "WorldGenerator.h"
@@ -17,6 +18,8 @@
 #include <Rigel/Entity/WorldEntities.h>
 
 #include <memory>
+#include <type_traits>
+#include <utility>
 
 namespace Rigel::Persistence {
 class ProviderRegistry;
@@ -107,6 +110,28 @@ public:
      */
     BlockState getBlock(int wx, int wy, int wz) const;
 
+    /**
+     * Visit physical block boxes overlapping world-space bounds.
+     *
+     * The callback is invoked synchronously and boxes are valid only for the
+     * duration of the call. The query accounts for supported block overhang.
+     */
+    template<typename Callback>
+    void forEachCollisionBox(
+        const BlockCollisionBox& bounds,
+        Callback&& callback
+    ) const {
+        using CallbackType = std::remove_reference_t<Callback>;
+        void* context = const_cast<void*>(
+            static_cast<const void*>(std::addressof(callback)));
+        forEachCollisionBox(
+            bounds,
+            context,
+            [](void* rawContext, const BlockCollisionBox& box) {
+                (*static_cast<CallbackType*>(rawContext))(box);
+            });
+    }
+
     /// @}
 
     /// @name Generation
@@ -124,6 +149,15 @@ public:
     /// @}
 
 private:
+    using CollisionBoxCallback =
+        void (*)(void* context, const BlockCollisionBox& box);
+
+    void forEachCollisionBox(
+        const BlockCollisionBox& bounds,
+        void* context,
+        CollisionBoxCallback callback
+    ) const;
+
     WorldId m_id = kDefaultWorldId;
     WorldResources* m_resources = nullptr;
     ChunkManager m_chunkManager;

@@ -246,6 +246,97 @@ regression. Cross-machine or cross-revision comparisons should use the same
 fixture and command; model-heavy time should be interpreted with its much
 larger emitted mesh counts rather than compared as equal output.
 
+### 7.2 Entity collision benchmark
+
+`Rigel_entity_collision_benchmark` measures the production
+`Entity::update`, axis-separated block query/resolver, and multi-entity tick
+paths without entering the player controller or scheduler. It is built only
+when `RIGEL_BUILD_BENCHMARKS=ON`. Its block registrations, populated chunks,
+entity positions, and velocities are deterministic synthetic inputs local to
+the benchmark; they are not runtime configuration.
+
+The five workloads are:
+
+- `empty_world_movement`: one entity moves four cells through air.
+- `dense_full_cube_collision`: one entity sweeps into a 32x32x32 chunk filled
+  with the canonical `FullCube` shape.
+- `mixed_partial_shapes`: the same sweep enters a filled chunk alternating
+  immutable one-box and two-box shapes.
+- `high_speed_sweep`: one entity moves 256 cells toward a full cube at cell
+  200, exercising the whole continuous movement interval.
+- `multiple_independent_entities`: `WorldEntities` ticks 64 entities against
+  separate full-cube cells.
+
+Every entity has one nonzero movement axis. Its X sweep and stationary support
+probe issue two collision queries; Y and Z preserve the production axis order
+but do not query when their deltas are zero. `broadphase_candidates_per_iteration`
+is the exact combined candidate context for those two queries, including the
+supported shape-overhang range. `validated_boxes_per_sweep` is the number of
+world boxes returned by an untimed query over the movement interval. The
+64-entity values are totals for one world tick.
+
+Before warmup or timing, the executable checks the final position and contact
+flag for every workload, verifies the canonical full-cube kind and immutable
+partial box counts, and checks every reported sweep-box count. Timing cannot
+start if output validation fails. A benchmark-local replacement of the global
+C++ allocation functions then counts allocation calls only inside each workload
+body. Empty, full-cube, partial, and high-speed direct-update workloads must
+report zero allocations or the run fails. The multi-entity path reports the
+existing one allocation per world tick used to snapshot entity IDs; it is one
+allocation per iteration, not per entity, movement axis, candidate, or box.
+
+Use an out-of-tree Release build:
+
+```bash
+rigel_release_build=../Rigel-build-release
+conan install . --output-folder="$rigel_release_build" --build=missing \
+  -s build_type=Release
+cmake -S . -B "$rigel_release_build" \
+  -DCMAKE_TOOLCHAIN_FILE="$rigel_release_build/conan_toolchain.cmake" \
+  -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DRIGEL_BUILD_BENCHMARKS=ON
+cmake --build "$rigel_release_build" --parallel \
+  --target Rigel_entity_collision_benchmark
+ctest --test-dir "$rigel_release_build" --output-on-failure \
+  -R Rigel_entity_collision_benchmark_options
+"$rigel_release_build/Rigel_entity_collision_benchmark" \
+  --iterations 5000 --warmup 200
+```
+
+Timed iterations are limited to 1-20,000 and warmups to 0-2,000. The defaults
+are the 5,000 and 200 values above. `--validate-only` checks fixture outputs
+without emitting workload timing. The focused CTest also checks validation
+ordering, workload/query metadata, allocation ownership, validate-only mode,
+and strict rejection of invalid or repeated options.
+
+A Release capture on 2026-08-31 used GNU 16.1.1 on Linux x86_64 with a 12th
+Gen Intel Core i7-12700, 20 reported hardware threads, and a steady clock with
+a one-nanosecond period. The exact performance invocation was:
+
+```text
+/tmp/rigel-collision-release/Rigel_entity_collision_benchmark --iterations 5000 --warmup 200
+```
+
+All workloads completed their 5,000 timed iterations after 200 warmups:
+
+| Workload | Entities/iteration | Candidates/iteration | Boxes/sweep | Elapsed | ns/entity update | Total vs. empty | Per entity vs. empty | Allocations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `empty_world_movement` | 1 | 90 | 0 | 3.299 ms | 659.872 | 1.000x | 1.000x | 0 |
+| `dense_full_cube_collision` | 1 | 108 | 8 | 8.176 ms | 1,635.260 | 2.478x | 2.478x | 0 |
+| `mixed_partial_shapes` | 1 | 108 | 11 | 8.914 ms | 1,782.764 | 2.702x | 2.702x | 0 |
+| `high_speed_sweep` | 1 | 2,349 | 1 | 136.052 ms | 27,210.403 | 41.236x | 41.236x | 0 |
+| `multiple_independent_entities` | 64 | 5,184 | 64 | 391.577 ms | 1,223.679 | 118.683x | 1.854x | 5,000 |
+
+The canonical full-cube workload was faster than the partial-shape workload
+at the same broadphase candidate count, and all four direct-update workloads
+were allocation-free. High-speed cost increased with its much larger candidate
+range while remaining allocation-free. The multi-entity total includes
+320,000 entity updates and exactly 5,000 ID-snapshot allocations, matching one
+per world tick. These measurements showed no material regression requiring a
+collision query or resolver change; no production physics code was changed for
+the benchmark.
+
 ---
 
 ## 8. Streaming Lifecycle Signal

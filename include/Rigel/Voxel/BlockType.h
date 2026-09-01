@@ -9,6 +9,7 @@
  */
 
 #include "Block.h"
+#include "BlockCollisionShape.h"
 #include "BlockModel.h"
 
 #include <any>
@@ -113,8 +114,11 @@ struct BlockType {
     /// Whether this block fully occludes adjacent faces
     bool isOpaque = true;
 
-    /// Whether this block has collision
+    /// Source-authored solidity retained for legacy gameplay semantics.
     bool isSolid = true;
+
+    /// Immutable physical geometry, independent from the visual model.
+    BlockCollisionShape collision;
 
     /// Cull faces when adjacent to the same block type
     bool cullSameType = false;

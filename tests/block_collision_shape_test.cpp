@@ -1,0 +1,91 @@
+#include "TestFramework.h"
+
+#include "Rigel/Voxel/BlockCollisionShape.h"
+#include "Rigel/Voxel/BlockRegistry.h"
+
+#include <limits>
+#include <span>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+using namespace Rigel::Voxel;
+
+static_assert(std::is_same_v<
+              decltype(std::declval<const BlockCollisionShape&>().boxes()),
+              std::span<const BlockCollisionBox>>);
+static_assert(!std::is_assignable_v<
+              decltype(std::declval<const BlockCollisionShape&>().boxes()[0]),
+              BlockCollisionBox>);
+
+TEST_CASE(BlockCollisionShape_EmptyAndFullCubeUseCanonicalQueries) {
+    const BlockCollisionShape empty = BlockCollisionShape::empty();
+    CHECK(empty.isEmpty());
+    CHECK(empty.boxes().empty());
+
+    const BlockCollisionShape full = BlockCollisionShape::fullCube();
+    CHECK(full.isFullCube());
+    CHECK_EQ(full.boxes().size(), static_cast<size_t>(1));
+    CHECK_EQ(
+        full.boxes().front().min,
+        (std::array<float, 3>{0.0f, 0.0f, 0.0f}));
+    CHECK_EQ(
+        full.boxes().front().max,
+        (std::array<float, 3>{1.0f, 1.0f, 1.0f}));
+    CHECK_EQ(full.boxes().data(), BlockCollisionShape::fullCube().boxes().data());
+
+    const BlockCollisionShape legacyDefault;
+    CHECK(legacyDefault.isFullCube());
+}
+
+TEST_CASE(BlockCollisionShape_CustomBoxesAreImmutableSnapshots) {
+    std::vector<BlockCollisionBox> authored = {
+        {{-0.25f, 0.0f, 0.25f}, {0.5f, 0.5f, 0.75f}},
+        {{0.5f, 0.25f, 0.0f}, {1.25f, 1.0f, 1.0f}},
+    };
+    const BlockCollisionShape shape = BlockCollisionShape::boxes(authored);
+    authored[0].min[0] = 0.0f;
+
+    CHECK(shape.isBoxes());
+    CHECK_EQ(shape.boxes().size(), static_cast<size_t>(2));
+    CHECK_EQ(shape.boxes()[0].min[0], -0.25f);
+    CHECK_EQ(shape.boxes()[1].max[0], 1.25f);
+
+    const BlockCollisionShape copy = shape;
+    CHECK_EQ(copy.boxes().data(), shape.boxes().data());
+
+    BlockRegistry registry;
+    CHECK(registry.getType(BlockRegistry::airId()).collision.isEmpty());
+    BlockType block;
+    block.collision = shape;
+    const BlockID blockId = registry.registerBlock("test:custom_shape", block);
+    block.collision = BlockCollisionShape::empty();
+
+    const BlockCollisionShape& registered = registry.getType(blockId).collision;
+    CHECK(registered.isBoxes());
+    CHECK_EQ(registered.boxes().data(), shape.boxes().data());
+    CHECK_EQ(registered.boxes()[0].min[0], -0.25f);
+}
+
+TEST_CASE(BlockCollisionShape_ValidatesNormalizedBoxInvariants) {
+    CHECK_THROWS(BlockCollisionShape::boxes({}));
+    CHECK_THROWS(BlockCollisionShape::boxes({
+        {{0.0f, 0.0f, 0.0f},
+         {std::numeric_limits<float>::infinity(), 1.0f, 1.0f}}}));
+    CHECK_THROWS(BlockCollisionShape::boxes({
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 1.0f}}}));
+    CHECK_THROWS(BlockCollisionShape::boxes({
+        {{0.5f, 0.0f, 0.0f}, {0.25f, 1.0f, 1.0f}}}));
+    CHECK_THROWS(BlockCollisionShape::boxes({
+        {{-0.2501f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}}));
+    CHECK_THROWS(BlockCollisionShape::boxes({
+        {{0.0f, 0.0f, 0.0f}, {1.2501f, 1.0f, 1.0f}}}));
+
+    const BlockCollisionBox repeated{
+        {0.25f, 0.0f, 0.25f}, {0.75f, 0.5f, 0.75f}};
+    CHECK_THROWS(BlockCollisionShape::boxes({repeated, repeated}));
+
+    const BlockCollisionShape canonicalized = BlockCollisionShape::boxes({
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}});
+    CHECK(canonicalized.isFullCube());
+}

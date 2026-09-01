@@ -234,11 +234,16 @@ select subrectangles and quarter turns within the same texture layer.
 
 ## Block geometry versus gameplay
 
-Normalized models are visual geometry. Collision still tests the source-authored
-`solid` property against the entire block cell, and edit raycasting stops at any
-occupied cell rather than intersecting model faces. A partial solid model
-therefore does not shrink collision or raycast bounds, and visible geometry
-outside `[0, 1]` does not extend them into another cell.
+Normalized models are visual geometry. `BlockType` separately stores an
+immutable physical shape as empty, a canonical full cube, or one or more
+normalized AABBs. Omitted authored collision preserves the legacy mapping from
+`solid` to a full or empty shape; physics is never derived live from visual
+cuboids.
+
+The current entity resolver still tests the source-authored `solid` property
+against the entire block cell, and edit raycasting stops at any occupied cell
+rather than intersecting model or collision-shape bounds. Visual geometry
+outside `[0, 1]` does not extend either test.
 
 Opacity, emitted light, and attenuation likewise remain source-authored
 block-registration properties. Rigel does not infer solidity or lighting from
@@ -252,8 +257,8 @@ cuboid coverage.
 - Plane primitives, animated block textures, and non-16-by-16 block textures
   are not supported. The importer omits those states instead of approximating
   them.
-- Collision and edit raycasting operate on whole cells, not visual model
-  bounds or faces.
+- Entity collision and edit raycasting still operate on whole cells; collision
+  shapes are loaded and retained but not yet used by those queries.
 - Mesh generation emits independent faces rather than greedy merged quads.
 - Voxel visibility uses distance culling only; there is no frustum or occlusion
   culling for chunks.

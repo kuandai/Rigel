@@ -14,6 +14,7 @@ BlockRegistry::BlockRegistry() {
     air.model = BlockModel::empty();
     air.isOpaque = false;
     air.isSolid = false;
+    air.collision = BlockCollisionShape::empty();
     air.layer = RenderLayer::Opaque;
     air.emittedLight = 0;
     air.lightAttenuation = 0;

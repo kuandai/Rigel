@@ -67,6 +67,7 @@ struct BlockModelDefinitionSource {
  * model: cube
  * opaque: true
  * solid: true
+ * collision: full
  * textures:
  *   all: textures/blocks/stone.png
  *
@@ -97,6 +98,11 @@ struct BlockModelDefinitionSource {
  * # Orientation is registration-local. Supported angle triples are identity,
  * # X 90/270, Y 90/180/270, and Z 90. rotate_top_bottom is an explicit UV
  * # correction accepted only for X 90 and Z 90 registrations.
+ * # Collision is `none`, `full`, or a strict inline box list:
+ * # collision:
+ * #   boxes:
+ * #     - [0.25, 0.0, 0.25, 0.75, 1.0, 0.75]
+ * # If omitted, solid blocks use `full` and non-solid blocks use `none`.
  * @endcode
  *
  * @section usage Usage

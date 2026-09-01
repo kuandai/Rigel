@@ -481,6 +481,52 @@ std::unordered_map<std::string, RenderLayer> parseTextureRenderLayerMap(
     return result;
 }
 
+BlockCollisionShape parseCollisionShape(
+    ryml::ConstNodeRef node, std::string_view source
+) {
+    constexpr std::string_view path = "block.collision";
+    if (node.has_val() && !node.has_children()) {
+        const std::string value = scalar(node, source, path);
+        if (value == "none") return BlockCollisionShape::empty();
+        if (value == "full") return BlockCollisionShape::fullCube();
+        fail(source, path, "unknown collision shape '" + value + "'");
+    }
+
+    requireMap(node, source, path, {"boxes"}, {"boxes"});
+    const ryml::ConstNodeRef boxesNode = child(node, "boxes");
+    requireSequence(boxesNode, source, std::string(path) + ".boxes");
+
+    std::vector<BlockCollisionBox> boxes;
+    boxes.reserve(boxesNode.num_children());
+    size_t boxIndex = 0;
+    for (const ryml::ConstNodeRef boxNode : boxesNode.children()) {
+        const std::string boxPath =
+            std::string(path) + ".boxes[" + std::to_string(boxIndex) + "]";
+        requireSequence(boxNode, source, boxPath);
+        if (boxNode.num_children() != 6) {
+            fail(source, boxPath, "expected six coordinates");
+        }
+
+        std::array<float, 6> values{};
+        for (size_t coordinate = 0; coordinate < values.size(); ++coordinate) {
+            values[coordinate] = floatValue(
+                boxNode[coordinate], source,
+                boxPath + "[" + std::to_string(coordinate) + "]");
+        }
+        boxes.push_back({
+            .min = {values[0], values[1], values[2]},
+            .max = {values[3], values[4], values[5]},
+        });
+        ++boxIndex;
+    }
+
+    try {
+        return BlockCollisionShape::boxes(std::move(boxes));
+    } catch (const std::invalid_argument& error) {
+        fail(source, path, error.what());
+    }
+}
+
 FaceTextures bindCubeTextures(
     const std::unordered_map<std::string, std::string>& bindings,
     std::string_view source
@@ -546,8 +592,8 @@ ParsedBlock parseBlock(
     requireMap(
         root, source, "block",
         {"id", "identifier", "name", "model", "opaque", "solid",
-         "cull_same_type", "layer", "emits_light", "light_attenuation",
-         "orientation", "rotate_top_bottom", "textures",
+         "collision", "cull_same_type", "layer", "emits_light",
+         "light_attenuation", "orientation", "rotate_top_bottom", "textures",
          "texture_render_layers"});
 
     size_t explicitNames = 0;
@@ -601,6 +647,10 @@ ParsedBlock parseBlock(
     if (const auto value = optionalBool(root, "solid", source, "block")) {
         type.isSolid = *value;
     }
+    type.collision = root.has_child("collision")
+        ? parseCollisionShape(root["collision"], source)
+        : (type.isSolid ? BlockCollisionShape::fullCube()
+                        : BlockCollisionShape::empty());
     if (const auto value = optionalBool(root, "cull_same_type", source, "block")) {
         type.cullSameType = *value;
     }

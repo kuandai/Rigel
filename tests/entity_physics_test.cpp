@@ -704,6 +704,48 @@ TEST_CASE(EntityPhysics_AdjacentFloorBoxesKeepStableGroundContact) {
     }
 }
 
+TEST_CASE(EntityPhysics_NoClipTransitionClearsCollisionContacts) {
+    WorldResources resources;
+    World world(resources);
+    const BlockID solid = placeBlock(
+        resources,
+        world,
+        "rigel:noclip_transition",
+        BlockCollisionShape::fullCube(),
+        0,
+        0,
+        0);
+    world.setBlock(1, 1, 0, BlockState{solid});
+
+    Entity entity("rigel:test_entity");
+    entity.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    entity.setPosition(0.5f, 2.0f, 0.5f);
+    entity.setVelocity(glm::vec3(2.0f, -2.0f, 0.0f));
+
+    entity.update(world, 0.5f);
+
+    CHECK(entity.collidedX());
+    CHECK(entity.collidedY());
+    CHECK(entity.isOnGround());
+
+    constexpr float noClipDt = 0.5f;
+    const glm::vec3 noClipVelocity{4.0f, 3.0f, -2.0f};
+    entity.setVelocity(noClipVelocity);
+    entity.addTag(EntityTags::NoClip);
+    const glm::vec3 expectedPosition =
+        entity.position() + noClipVelocity * noClipDt;
+
+    entity.update(world, noClipDt);
+
+    CHECK(!entity.collidedX());
+    CHECK(!entity.collidedY());
+    CHECK(!entity.collidedZ());
+    CHECK(!entity.isOnGround());
+    CHECK_EQ(entity.velocity(), noClipVelocity);
+    CHECK_EQ(entity.position(), expectedPosition);
+}
+
 TEST_CASE(EntityPhysics_InvalidOrUnboundedMovementDoesNotCorruptPosition) {
     WorldResources resources;
     World world(resources);

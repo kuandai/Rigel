@@ -256,16 +256,16 @@ void Entity::updateWorldBounds() {
 }
 
 void Entity::resolveCollisions(Voxel::World& world, float dt) {
+    m_collidedX = false;
+    m_collidedY = false;
+    m_collidedZ = false;
+    m_onGround = false;
+
     if (isNoClip()) {
         m_position += m_velocity * dt;
         updateWorldBounds();
         return;
     }
-
-    m_collidedX = false;
-    m_collidedY = false;
-    m_collidedZ = false;
-    m_onGround = false;
 
     resolveAxis(world, m_localBounds, m_position, m_velocity, Axis::X, dt, m_collidedX, m_onGround);
     resolveAxis(world, m_localBounds, m_position, m_velocity, Axis::Y, dt, m_collidedY, m_onGround);

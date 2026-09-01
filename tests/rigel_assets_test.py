@@ -4090,10 +4090,13 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
             rebuilt, rebuilt_changed = rigel_assets.synchronize(
                 root, jar, force=True
             )
+            repeated, repeated_changed = rigel_assets.synchronize(root, jar)
 
             self.assertTrue(changed)
             self.assertTrue(rebuilt_changed)
+            self.assertFalse(repeated_changed)
             self.assertEqual(rebuilt, first)
+            self.assertEqual(repeated, first)
             self.assertEqual(
                 (root / rigel_assets.PROVENANCE_RELATIVE_PATH).read_bytes(),
                 first_provenance,
@@ -4165,6 +4168,249 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
                     path.read_bytes(), path.relative_to(assets).as_posix()
                 )
                 generated_blocks[str(block["id"])] = block
+
+            self.assertEqual(
+                rigel_assets.audit_generated_collision_shapes(assets),
+                {
+                    "empty": 67,
+                    "full": 315,
+                    "single_partial": 956,
+                    "multi_box": 683,
+                    "exact_derived": 2021,
+                    "conservative_fallback": 0,
+                    "ambiguous": 0,
+                },
+            )
+            self.assertTrue(all(
+                block["collision_provenance"] == "exact"
+                for block in generated_blocks.values()
+            ))
+
+            walk_through_with_geometry = {
+                identifier
+                for identifier, block in generated_blocks.items()
+                if not block["solid"] and block["model"] != "none"
+            }
+            self.assertEqual(len(walk_through_with_geometry), 66)
+            self.assertTrue(all(
+                generated_blocks[identifier]["collision"] == "none"
+                for identifier in walk_through_with_geometry
+            ))
+            self.assertEqual(
+                {
+                    identifier
+                    for identifier, block in generated_blocks.items()
+                    if not block["solid"] and block["model"] == "none"
+                },
+                {"base:air"},
+            )
+
+            slab_boxes = {
+                "bottom": [0.0, 0.0, 0.0, 1.0, 0.5, 1.0],
+                "top": [0.0, 0.5, 0.0, 1.0, 1.0, 1.0],
+                "verticalNegX": [0.0, 0.0, 0.0, 0.5, 1.0, 1.0],
+                "verticalNegZ": [0.0, 0.0, 0.0, 1.0, 1.0, 0.5],
+                "verticalPosX": [0.5, 0.0, 0.0, 1.0, 1.0, 1.0],
+                "verticalPosZ": [0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            }
+            for slab_type, box in slab_boxes.items():
+                with self.subTest(slab_type=slab_type):
+                    self.assertEqual(
+                        generated_blocks[
+                            f"base:wood_planks[slab_type={slab_type}]"
+                        ]["collision"],
+                        {"boxes": [box]},
+                    )
+
+            stair_boxes = {
+                "bottom_NegX": [
+                    [0.0, 0.5, 0.0, 0.5, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 1.0, 0.5, 1.0],
+                ],
+                "bottom_NegZ": [
+                    [0.0, 0.5, 0.0, 1.0, 1.0, 0.5],
+                    [0.0, 0.0, 0.0, 1.0, 0.5, 1.0],
+                ],
+                "bottom_PosX": [
+                    [0.5, 0.5, 0.0, 1.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 1.0, 0.5, 1.0],
+                ],
+                "bottom_PosZ": [
+                    [0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 1.0, 0.5, 1.0],
+                ],
+                "top_NegX": [
+                    [0.0, 0.0, 0.0, 0.5, 0.5, 1.0],
+                    [0.0, 0.5, 0.0, 1.0, 1.0, 1.0],
+                ],
+                "top_NegZ": [
+                    [0.0, 0.0, 0.0, 1.0, 0.5, 0.5],
+                    [0.0, 0.5, 0.0, 1.0, 1.0, 1.0],
+                ],
+                "top_PosX": [
+                    [0.5, 0.0, 0.0, 1.0, 0.5, 1.0],
+                    [0.0, 0.5, 0.0, 1.0, 1.0, 1.0],
+                ],
+                "top_PosZ": [
+                    [0.0, 0.0, 0.5, 1.0, 0.5, 1.0],
+                    [0.0, 0.5, 0.0, 1.0, 1.0, 1.0],
+                ],
+            }
+            for stair_type, boxes in stair_boxes.items():
+                with self.subTest(stair_type=stair_type):
+                    self.assertEqual(
+                        generated_blocks[
+                            f"base:wood_planks[stair_type={stair_type}]"
+                        ]["collision"],
+                        {"boxes": boxes},
+                    )
+
+            representative_collisions = {
+                "base:steel_walkway": "full",
+                "base:glass": "full",
+                "base:ladder_steel[direction=PosX]": {
+                    "boxes": [[0.99375, 0.0, 0.0, 1.0, 1.0, 1.0]]
+                },
+                "base:steel_handrail[direction=PosX]": {
+                    "boxes": [[0.99375, 0.0, 0.0, 1.0, 1.0, 1.0]]
+                },
+                "base:grass_blades": "none",
+                "base:table_pedestal_wood": {
+                    "boxes": [
+                        [0.0, 0.9375, 0.0, 0.0625, 1.0, 1.0],
+                        [0.0625, 0.9375, 0.0, 0.9375, 1.0, 0.0625],
+                        [0.0625, 0.9375, 0.0625, 0.9375, 1.0, 0.9375],
+                        [0.0625, 0.9375, 0.9375, 0.9375, 1.0, 1.0],
+                        [0.9375, 0.9375, 0.0, 1.0, 1.0, 1.0],
+                        [0.4375, 0.0, 0.4375, 0.5625, 0.9375, 0.5625],
+                    ]
+                },
+                "base:laser_emitter[type=single,direction=NegZ]": {
+                    "boxes": [
+                        [0.0, 0.0, 0.0, 1.0, 0.4375, 1.0],
+                        [0.0625, 0.4375, 0.0625, 0.9375, 0.5625, 0.9375],
+                        [0.0, 0.5625, 0.0, 1.0, 1.0, 1.0],
+                    ]
+                },
+            }
+            for identifier, collision in representative_collisions.items():
+                with self.subTest(identifier=identifier):
+                    self.assertEqual(
+                        generated_blocks[identifier]["collision"], collision
+                    )
+
+            piston_boxes = {
+                "NegX": [
+                    [0.0, 0.0, 0.0, 0.25, 1.0, 1.0],
+                    [0.25, 0.375, 0.375, 1.25, 0.625, 0.625],
+                ],
+                "NegY": [
+                    [0.0, 0.0, 0.0, 1.0, 0.25, 1.0],
+                    [0.375, 0.25, 0.375, 0.625, 1.25, 0.625],
+                ],
+                "NegZ": [
+                    [0.0, 0.0, 0.0, 1.0, 1.0, 0.25],
+                    [0.375, 0.375, 0.25, 0.625, 0.625, 1.25],
+                ],
+                "PosX": [
+                    [0.75, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    [-0.25, 0.375, 0.375, 0.75, 0.625, 0.625],
+                ],
+                "PosY": [
+                    [0.0, 0.75, 0.0, 1.0, 1.0, 1.0],
+                    [0.375, -0.25, 0.375, 0.625, 0.75, 0.625],
+                ],
+                "PosZ": [
+                    [0.0, 0.0, 0.75, 1.0, 1.0, 1.0],
+                    [0.375, 0.375, -0.25, 0.625, 0.625, 0.75],
+                ],
+            }
+            piston_types = ("advancing", "heavy", "push", "suction")
+            expected_piston_heads = {
+                f"base:piston[direction={direction},type={piston_type},part=head]"
+                for direction in piston_boxes
+                for piston_type in piston_types
+            }
+            self.assertEqual(
+                {
+                    identifier
+                    for identifier in generated_blocks
+                    if identifier.startswith("base:piston[direction=")
+                    and identifier.endswith(",part=head]")
+                },
+                expected_piston_heads,
+            )
+            for direction, boxes in piston_boxes.items():
+                for piston_type in piston_types:
+                    identifier = (
+                        f"base:piston[direction={direction},"
+                        f"type={piston_type},part=head]"
+                    )
+                    with self.subTest(identifier=identifier):
+                        self.assertTrue(generated_blocks[identifier]["solid"])
+                        self.assertEqual(
+                            generated_blocks[identifier]["collision"],
+                            {"boxes": boxes},
+                        )
+
+            with zipfile.ZipFile(jar) as archive:
+                entries = rigel_assets.indexed_archive(archive)
+                models = rigel_assets.BlockModelResolver(archive, entries)
+
+                def source_document(path: str) -> dict[str, object]:
+                    value = rigel_assets.load_relaxed_json(
+                        archive.read(entries[path]), path
+                    )
+                    self.assertIsInstance(value, dict)
+                    return value
+
+                grass_source = source_document(
+                    "base/blocks/foliage/grass_blades.json"
+                )
+                grass_state = grass_source["blockStates"]["default"]
+                self.assertIs(grass_state["walkThrough"], True)
+                grass_model = models.resolve(str(grass_state["modelName"]))
+                self.assertFalse(grass_model.empty)
+                self.assertIsNotNone(grass_model.geometry)
+
+                for model_name in (
+                    "base:models/blocks/industrial_decor/steel_walkway.json",
+                    "base:models/blocks/model_glass.json",
+                ):
+                    self.assertTrue(models.resolve(model_name).full_cube)
+
+                for model_name in (
+                    "base:models/blocks/furniture/model_ladder_steel.json",
+                    "base:models/blocks/industrial_decor/steel_handrail.json",
+                ):
+                    geometry = models.resolve(model_name).geometry
+                    self.assertIsNotNone(geometry)
+                    self.assertEqual(
+                        [cuboid.bounds for cuboid in geometry.cuboids],
+                        [(0.0, 0.0, 0.0, 1.0, 1.0, 0.00625)],
+                    )
+
+                table_geometry = models.resolve(
+                    "base:models/blocks/furniture/table_pedestal_wood.json"
+                ).geometry
+                self.assertIsNotNone(table_geometry)
+                self.assertEqual(len(table_geometry.cuboids), 6)
+                machine_geometry = models.resolve(
+                    "base:models/blocks/machines/model_laser_emitter.json"
+                ).geometry
+                self.assertIsNotNone(machine_geometry)
+                self.assertEqual(len(machine_geometry.cuboids), 3)
+                piston_geometry = models.resolve(
+                    "base:models/blocks/machines/pistons/model_piston_head.json"
+                ).geometry
+                self.assertIsNotNone(piston_geometry)
+                self.assertEqual(
+                    [cuboid.bounds for cuboid in piston_geometry.cuboids],
+                    [
+                        (0.0, 0.0, 0.0, 1.0, 1.0, 0.25),
+                        (0.375, 0.375, 0.25, 0.625, 0.625, 1.25),
+                    ],
+                )
 
             representatives = {
                 "base:leaves[type=permament]": (

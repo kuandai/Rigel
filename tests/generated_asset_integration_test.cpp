@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <set>
@@ -71,8 +72,9 @@ constexpr std::string_view VegetationId = "base:grass_blades";
 constexpr std::string_view PistonHeadId =
     "base:piston[direction=PosX,type=advancing,part=head]";
 constexpr std::string_view MultiCuboidId = "base:table_pedestal_wood";
-constexpr std::string_view CroppedUvId =
+constexpr std::string_view MachineMultiCuboidId =
     "base:laser_emitter[type=single,direction=NegZ]";
+constexpr std::string_view CroppedUvId = MachineMultiCuboidId;
 constexpr std::string_view TransparentId = "base:water[type=source]";
 constexpr std::string_view AlphaCutoutId =
     "base:maize[type=farm,growth=4,part=bottom]";
@@ -129,6 +131,19 @@ const BlockType& requireBlock(
     const BlockRegistry& registry, std::string_view identifier
 ) {
     return registry.getType(requireBlockId(registry, identifier));
+}
+
+void checkCollisionBoxes(
+    const BlockType& block,
+    std::initializer_list<BlockCollisionBox> expected
+) {
+    CHECK(block.collision.isBoxes());
+    CHECK_EQ(block.collision.boxes().size(), expected.size());
+    CHECK(std::equal(
+        block.collision.boxes().begin(),
+        block.collision.boxes().end(),
+        expected.begin(),
+        expected.end()));
 }
 
 BlockGalleryTargetPresentation requireGalleryPresentation(
@@ -650,6 +665,65 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
     CHECK_EQ(report.skipped, static_cast<size_t>(1));
     CHECK_EQ(preparedRegistry.size(), static_cast<size_t>(2021));
     CHECK_EQ(preparedAtlas.textureCount(), static_cast<size_t>(276));
+
+    struct CollisionCensus {
+        size_t empty = 0;
+        size_t full = 0;
+        size_t singlePartial = 0;
+        size_t multiBox = 0;
+        size_t authored = 0;
+        size_t exact = 0;
+        size_t conservativeFallback = 0;
+        size_t walkThroughWithGeometry = 0;
+    } collisionCensus;
+    for (const BlockType& type : preparedRegistry) {
+        switch (type.collision.kind()) {
+            case BlockCollisionShape::Kind::Empty:
+                ++collisionCensus.empty;
+                break;
+            case BlockCollisionShape::Kind::FullCube:
+                ++collisionCensus.full;
+                break;
+            case BlockCollisionShape::Kind::Boxes:
+                if (type.collision.boxes().size() == 1) {
+                    ++collisionCensus.singlePartial;
+                } else {
+                    ++collisionCensus.multiBox;
+                }
+                break;
+        }
+        switch (type.collision.provenance()) {
+            case BlockCollisionShape::Provenance::Authored:
+                ++collisionCensus.authored;
+                break;
+            case BlockCollisionShape::Provenance::Exact:
+                ++collisionCensus.exact;
+                break;
+            case BlockCollisionShape::Provenance::ConservativeFallback:
+                ++collisionCensus.conservativeFallback;
+                break;
+        }
+        if (!type.isSolid && !type.model->isEmpty()) {
+            ++collisionCensus.walkThroughWithGeometry;
+            CHECK(type.collision.isEmpty());
+        }
+    }
+    CHECK_EQ(collisionCensus.empty, static_cast<size_t>(67));
+    CHECK_EQ(collisionCensus.full, static_cast<size_t>(315));
+    CHECK_EQ(collisionCensus.singlePartial, static_cast<size_t>(956));
+    CHECK_EQ(collisionCensus.multiBox, static_cast<size_t>(683));
+    CHECK_EQ(collisionCensus.authored, static_cast<size_t>(1));
+    CHECK_EQ(collisionCensus.exact, static_cast<size_t>(2020));
+    CHECK_EQ(collisionCensus.conservativeFallback, static_cast<size_t>(0));
+    CHECK_EQ(
+        collisionCensus.walkThroughWithGeometry,
+        static_cast<size_t>(66));
+    const BlockType& air = preparedRegistry.getType(BlockRegistry::airId());
+    CHECK(air.collision.isEmpty());
+    CHECK(air.model->isEmpty());
+    CHECK_EQ(
+        air.collision.provenance(),
+        BlockCollisionShape::Provenance::Authored);
 #endif
 
     preparedRegistry.freeze();
@@ -779,6 +853,96 @@ TEST_CASE(GeneratedAssets_QueryAndCollideWithNormalizedShapes) {
     CHECK_EQ(report.loaded, static_cast<size_t>(2020));
     resources.registry().freeze();
 
+    const BlockType& walkway = requireBlock(
+        resources.registry(), WalkwayId);
+    CHECK(!walkway.isOpaque);
+    CHECK(walkway.collision.isFullCube());
+    const BlockType& glass = requireBlock(resources.registry(), GlassId);
+    CHECK(!glass.isOpaque);
+    CHECK(glass.collision.isFullCube());
+    checkCollisionBoxes(
+        requireBlock(resources.registry(), LadderId),
+        {{{0.99375f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}});
+    checkCollisionBoxes(
+        requireBlock(resources.registry(), HandrailId),
+        {{{0.99375f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}});
+    checkCollisionBoxes(
+        requireBlock(resources.registry(), MultiCuboidId),
+        {
+            {{0.0f, 0.9375f, 0.0f}, {0.0625f, 1.0f, 1.0f}},
+            {{0.0625f, 0.9375f, 0.0f}, {0.9375f, 1.0f, 0.0625f}},
+            {{0.0625f, 0.9375f, 0.0625f},
+             {0.9375f, 1.0f, 0.9375f}},
+            {{0.0625f, 0.9375f, 0.9375f}, {0.9375f, 1.0f, 1.0f}},
+            {{0.9375f, 0.9375f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{0.4375f, 0.0f, 0.4375f}, {0.5625f, 0.9375f, 0.5625f}},
+        });
+    checkCollisionBoxes(
+        requireBlock(resources.registry(), MachineMultiCuboidId),
+        {
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.4375f, 1.0f}},
+            {{0.0625f, 0.4375f, 0.0625f},
+             {0.9375f, 0.5625f, 0.9375f}},
+            {{0.0f, 0.5625f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+        });
+
+    struct PistonDirection {
+        std::string_view name;
+        BlockCollisionBox plate;
+        BlockCollisionBox shaft;
+    };
+    constexpr std::array pistonDirections = {
+        PistonDirection{
+            "NegX",
+            {{0.0f, 0.0f, 0.0f}, {0.25f, 1.0f, 1.0f}},
+            {{0.25f, 0.375f, 0.375f}, {1.25f, 0.625f, 0.625f}}},
+        PistonDirection{
+            "NegY",
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.25f, 1.0f}},
+            {{0.375f, 0.25f, 0.375f}, {0.625f, 1.25f, 0.625f}}},
+        PistonDirection{
+            "NegZ",
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.25f}},
+            {{0.375f, 0.375f, 0.25f}, {0.625f, 0.625f, 1.25f}}},
+        PistonDirection{
+            "PosX",
+            {{0.75f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{-0.25f, 0.375f, 0.375f}, {0.75f, 0.625f, 0.625f}}},
+        PistonDirection{
+            "PosY",
+            {{0.0f, 0.75f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{0.375f, -0.25f, 0.375f}, {0.625f, 0.75f, 0.625f}}},
+        PistonDirection{
+            "PosZ",
+            {{0.0f, 0.0f, 0.75f}, {1.0f, 1.0f, 1.0f}},
+            {{0.375f, 0.375f, -0.25f}, {0.625f, 0.625f, 0.75f}}},
+    };
+    for (const PistonDirection& direction : pistonDirections) {
+        for (const std::string_view type : {
+                 std::string_view("advancing"),
+                 std::string_view("heavy"),
+                 std::string_view("push"),
+                 std::string_view("suction")}) {
+            const std::string identifier =
+                "base:piston[direction=" + std::string(direction.name) +
+                ",type=" + std::string(type) + ",part=head]";
+            const BlockType& piston = requireBlock(
+                resources.registry(), identifier);
+            CHECK(piston.isSolid);
+            CHECK_EQ(
+                piston.collision.provenance(),
+                BlockCollisionShape::Provenance::Exact);
+            const std::array expected = {
+                direction.plate, direction.shaft};
+            CHECK_EQ(piston.collision.boxes().size(), expected.size());
+            CHECK(std::equal(
+                piston.collision.boxes().begin(),
+                piston.collision.boxes().end(),
+                expected.begin(),
+                expected.end()));
+        }
+    }
+
     struct StairRepresentative {
         std::string_view identifier;
         BlockCollisionBox upper;
@@ -826,6 +990,9 @@ TEST_CASE(GeneratedAssets_QueryAndCollideWithNormalizedShapes) {
     world.setBlock(
         12, 0, 2,
         BlockState{requireBlockId(resources.registry(), VegetationId)});
+    world.setBlock(
+        14, 0, 0,
+        BlockState{requireBlockId(resources.registry(), PistonHeadId)});
 
     const auto queryAt = [&](int x, int z = 0) {
         std::vector<BlockCollisionBox> boxes;
@@ -908,6 +1075,18 @@ TEST_CASE(GeneratedAssets_QueryAndCollideWithNormalizedShapes) {
     passThrough.update(world, 1.0f);
     CHECK(!passThrough.collidedX());
     CHECK_EQ(passThrough.position().x, 14.0f);
+
+    std::vector<BlockCollisionBox> pistonOverhang;
+    CHECK(world.forEachCollisionBox(
+        {{13.7f, 0.4f, 0.4f}, {13.9f, 0.6f, 0.6f}},
+        [&](const BlockCollisionBox& box) {
+            pistonOverhang.push_back(box);
+        }));
+    CHECK_EQ(
+        pistonOverhang,
+        (std::vector<BlockCollisionBox>{
+            {{13.75f, 0.375f, 0.375f},
+             {14.75f, 0.625f, 0.625f}}}));
 #endif
 }
 

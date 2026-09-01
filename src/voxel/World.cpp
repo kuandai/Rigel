@@ -3,12 +3,62 @@
 #include "Rigel/Persistence/Providers.h"
 
 #include <spdlog/spdlog.h>
+#include <array>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
 
 namespace Rigel::Voxel {
 
 namespace {
+
+constexpr uint64_t kMaximumCollisionQueryCandidates = 65'536;
+
+struct CollisionQueryRange {
+    std::array<int, 3> min{};
+    std::array<int, 3> max{};
+};
+
+bool collisionQueryRange(
+    const BlockCollisionBox& bounds,
+    CollisionQueryRange& range
+) {
+    uint64_t candidateCount = 1;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(bounds.min[axis]) ||
+            !std::isfinite(bounds.max[axis]) ||
+            bounds.min[axis] > bounds.max[axis]) {
+            return false;
+        }
+
+        const double candidateMin = std::ceil(
+            static_cast<double>(bounds.min[axis]) -
+            BlockCollisionShape::MaximumCoordinate -
+            BlockCollisionContactTolerance);
+        const double candidateMax = std::floor(
+            static_cast<double>(bounds.max[axis]) -
+            BlockCollisionShape::MinimumCoordinate +
+            BlockCollisionContactTolerance);
+        if (candidateMin < std::numeric_limits<int>::min() ||
+            candidateMax > std::numeric_limits<int>::max() ||
+            candidateMin > candidateMax) {
+            return false;
+        }
+
+        range.min[axis] = static_cast<int>(candidateMin);
+        range.max[axis] = static_cast<int>(candidateMax);
+        const uint64_t axisCandidateCount = static_cast<uint64_t>(
+            static_cast<int64_t>(range.max[axis]) -
+            static_cast<int64_t>(range.min[axis]) + 1);
+        if (axisCandidateCount >
+            kMaximumCollisionQueryCandidates / candidateCount) {
+            return false;
+        }
+        candidateCount *= axisCandidateCount;
+    }
+    return true;
+}
 
 bool overlaps(
     const BlockCollisionBox& first,
@@ -128,42 +178,23 @@ BlockState World::getBlock(int wx, int wy, int wz) const {
     return m_chunkManager.getBlock(wx, wy, wz);
 }
 
-void World::forEachCollisionBox(
+bool World::forEachCollisionBox(
     const BlockCollisionBox& bounds,
     void* context,
     CollisionBoxCallback callback
 ) const {
-    for (size_t axis = 0; axis < 3; ++axis) {
-        if (!std::isfinite(bounds.min[axis]) ||
-            !std::isfinite(bounds.max[axis]) ||
-            bounds.min[axis] > bounds.max[axis]) {
-            return;
-        }
+    CollisionQueryRange range;
+    if (!collisionQueryRange(bounds, range)) {
+        return false;
     }
 
-    const int minX = static_cast<int>(std::ceil(
-        bounds.min[0] - BlockCollisionShape::MaximumCoordinate -
-        BlockCollisionContactTolerance));
-    const int minY = static_cast<int>(std::ceil(
-        bounds.min[1] - BlockCollisionShape::MaximumCoordinate -
-        BlockCollisionContactTolerance));
-    const int minZ = static_cast<int>(std::ceil(
-        bounds.min[2] - BlockCollisionShape::MaximumCoordinate -
-        BlockCollisionContactTolerance));
-    const int maxX = static_cast<int>(std::floor(
-        bounds.max[0] - BlockCollisionShape::MinimumCoordinate +
-        BlockCollisionContactTolerance));
-    const int maxY = static_cast<int>(std::floor(
-        bounds.max[1] - BlockCollisionShape::MinimumCoordinate +
-        BlockCollisionContactTolerance));
-    const int maxZ = static_cast<int>(std::floor(
-        bounds.max[2] - BlockCollisionShape::MinimumCoordinate +
-        BlockCollisionContactTolerance));
-
     const BlockRegistry& registry = blockRegistry();
-    for (int x = minX; x <= maxX; ++x) {
-        for (int y = minY; y <= maxY; ++y) {
-            for (int z = minZ; z <= maxZ; ++z) {
+    for (int64_t wideX = range.min[0]; wideX <= range.max[0]; ++wideX) {
+        const int x = static_cast<int>(wideX);
+        for (int64_t wideY = range.min[1]; wideY <= range.max[1]; ++wideY) {
+            const int y = static_cast<int>(wideY);
+            for (int64_t wideZ = range.min[2]; wideZ <= range.max[2]; ++wideZ) {
+                const int z = static_cast<int>(wideZ);
                 const BlockState state = getBlock(x, y, z);
                 if (state.isAir()) continue;
 
@@ -189,6 +220,7 @@ void World::forEachCollisionBox(
             }
         }
     }
+    return true;
 }
 
 void World::setGenerator(std::shared_ptr<const WorldGenerator> generator) {

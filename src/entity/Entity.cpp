@@ -92,7 +92,7 @@ void resolveAxis(Voxel::World& world,
 
     float allowedDelta = delta;
     bool hit = false;
-    world.forEachCollisionBox(
+    const bool queryAccepted = world.forEachCollisionBox(
         collisionBox(swept),
         [&](const Voxel::BlockCollisionBox& block) {
             if (!overlapsOnOtherAxes(start, block, axis)) return;
@@ -137,6 +137,11 @@ void resolveAxis(Voxel::World& world,
             hit = true;
         });
 
+    if (!queryAccepted) {
+        setAxisValue(velocity, axis, 0.0f);
+        return;
+    }
+
     setAxisValue(
         position,
         axis,
@@ -156,7 +161,7 @@ bool isSupported(Voxel::World& world, const Aabb& box) {
     probe.min[1] -= Voxel::BlockCollisionContactTolerance * 2.0f;
 
     bool supported = false;
-    world.forEachCollisionBox(
+    const bool queryAccepted = world.forEachCollisionBox(
         probe,
         [&](const Voxel::BlockCollisionBox& block) {
             if (supported || !overlapsOnOtherAxes(box, block, Axis::Y)) {
@@ -167,7 +172,7 @@ bool isSupported(Voxel::World& world, const Aabb& box) {
                 distance >= -Voxel::BlockCollisionContactTolerance &&
                 distance <= Voxel::BlockCollisionContactTolerance * 2.0f;
         });
-    return supported;
+    return queryAccepted && supported;
 }
 
 } // namespace

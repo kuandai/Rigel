@@ -537,3 +537,42 @@ TEST_CASE(EntityPhysics_InvalidOrUnboundedMovementDoesNotCorruptPosition) {
     CHECK(std::isfinite(unboundedDisplacement.worldBounds().min.x));
     CHECK(std::isfinite(unboundedDisplacement.worldBounds().max.x));
 }
+
+TEST_CASE(EntityPhysics_RejectsLargeFiniteSweepsInBothDirections) {
+    WorldResources resources;
+    World world(resources);
+
+    GravityFreeEntity positive;
+    positive.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    positive.setPosition(1.0f, 2.0f, 3.0f);
+    positive.setVelocity(glm::vec3(1.0e9f, 0.0f, 0.0f));
+
+    GravityFreeEntity negative;
+    negative.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    negative.setPosition(-1.0f, -2.0f, -3.0f);
+    negative.setVelocity(glm::vec3(-1.0e9f, 0.0f, 0.0f));
+
+    positive.update(world, 1.0f);
+    negative.update(world, 1.0f);
+
+    CHECK_EQ(positive.position(), glm::vec3(1.0f, 2.0f, 3.0f));
+    CHECK_EQ(negative.position(), glm::vec3(-1.0f, -2.0f, -3.0f));
+    CHECK_EQ(positive.velocity().x, 0.0f);
+    CHECK_EQ(negative.velocity().x, 0.0f);
+    CHECK(!positive.collidedX());
+    CHECK(!negative.collidedX());
+    CHECK_EQ(
+        positive.worldBounds().min,
+        glm::vec3(0.75f, 1.75f, 2.75f));
+    CHECK_EQ(
+        positive.worldBounds().max,
+        glm::vec3(1.25f, 2.25f, 3.25f));
+    CHECK_EQ(
+        negative.worldBounds().min,
+        glm::vec3(-1.25f, -2.25f, -3.25f));
+    CHECK_EQ(
+        negative.worldBounds().max,
+        glm::vec3(-0.75f, -1.75f, -2.75f));
+}

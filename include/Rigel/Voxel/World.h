@@ -115,16 +115,18 @@ public:
      *
      * The callback is invoked synchronously and boxes are valid only for the
      * duration of the call. The query accounts for supported block overhang.
+     * Returns false without visiting the world when the bounds cannot be
+     * represented as block coordinates or exceed the fixed candidate limit.
      */
     template<typename Callback>
-    void forEachCollisionBox(
+    bool forEachCollisionBox(
         const BlockCollisionBox& bounds,
         Callback&& callback
     ) const {
         using CallbackType = std::remove_reference_t<Callback>;
         void* context = const_cast<void*>(
             static_cast<const void*>(std::addressof(callback)));
-        forEachCollisionBox(
+        return forEachCollisionBox(
             bounds,
             context,
             [](void* rawContext, const BlockCollisionBox& box) {
@@ -152,7 +154,7 @@ private:
     using CollisionBoxCallback =
         void (*)(void* context, const BlockCollisionBox& box);
 
-    void forEachCollisionBox(
+    bool forEachCollisionBox(
         const BlockCollisionBox& bounds,
         void* context,
         CollisionBoxCallback callback

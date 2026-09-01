@@ -4,6 +4,7 @@
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,9 +35,10 @@ std::vector<BlockCollisionBox> query(
     BlockCollisionBox bounds
 ) {
     std::vector<BlockCollisionBox> result;
-    world.forEachCollisionBox(
+    const bool accepted = world.forEachCollisionBox(
         bounds,
         [&](const BlockCollisionBox& box) { result.push_back(box); });
+    CHECK(accepted);
     return result;
 }
 
@@ -265,4 +267,55 @@ TEST_CASE(WorldCollisionQuery_FindsBothDirectionsOfSupportedOverhang) {
     CHECK_EQ(
         positiveOverhang.front(),
         (BlockCollisionBox{{-1.0f, 0.0f, 0.0f}, {-0.75f, 1.0f, 1.0f}}));
+}
+
+TEST_CASE(WorldCollisionQuery_RejectsUnsafeAndOversizedBoundsBeforeTraversal) {
+    WorldResources resources;
+    World world(resources);
+
+    const auto rejected = [&](const BlockCollisionBox& bounds) {
+        size_t visits = 0;
+        const bool accepted = world.forEachCollisionBox(
+            bounds,
+            [&](const BlockCollisionBox&) { ++visits; });
+        CHECK(!accepted);
+        CHECK_EQ(visits, static_cast<size_t>(0));
+    };
+
+    const float positiveIntBoundary =
+        static_cast<float>(std::numeric_limits<int>::max());
+    const float negativeIntBoundary =
+        static_cast<float>(std::numeric_limits<int>::min());
+    rejected({
+        {positiveIntBoundary, 0.0f, 0.0f},
+        {positiveIntBoundary, 0.0f, 0.0f},
+    });
+    rejected({
+        {negativeIntBoundary, 0.0f, 0.0f},
+        {negativeIntBoundary, 0.0f, 0.0f},
+    });
+    rejected({
+        {-1.0e20f, 0.0f, 0.0f},
+        {-1.0e20f, 0.0f, 0.0f},
+    });
+    rejected({
+        {1.0e20f, 0.0f, 0.0f},
+        {1.0e20f, 0.0f, 0.0f},
+    });
+    rejected({
+        {-1.0e9f, 0.0f, 0.0f},
+        {1.0e9f, 0.0f, 0.0f},
+    });
+    rejected({
+        {std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f},
+    });
+    rejected({
+        {0.0f, 0.0f, 0.0f},
+        {std::numeric_limits<float>::infinity(), 0.0f, 0.0f},
+    });
+    rejected({
+        {1.0f, 0.0f, 0.0f},
+        {-1.0f, 0.0f, 0.0f},
+    });
 }

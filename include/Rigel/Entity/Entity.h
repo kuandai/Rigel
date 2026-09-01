@@ -83,7 +83,8 @@ protected:
     /**
      * Sweep against static block shapes in X, then Y, then Z order.
      * Stationary initial overlap is intentionally left in place; this is not
-     * a general depenetration solver.
+     * a general depenetration solver. An axis movement whose collision query
+     * is outside the world's finite work and coordinate bounds is cancelled.
      */
     void resolveCollisions(Voxel::World& world, float dt);
 

@@ -3404,6 +3404,45 @@ class SynchronizationTest(unittest.TestCase):
                 )
             )
 
+    def test_existing_import_rejects_fallbacks_exceeding_full_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            provenance, _ = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+            report = provenance["block_collision_import"]
+            fallback_count = report["full"] + 1
+            report["exact_derived"] -= fallback_count
+            report["conservative_fallback"] = fallback_count
+            report["ambiguous"] = fallback_count
+            shape_counts = rigel_assets.audit_generated_collision_shapes(
+                root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            )
+
+            with self.assertRaisesRegex(
+                rigel_assets.AssetImportError,
+                "fallback count exceeds FullCube shapes",
+            ):
+                rigel_assets.validate_block_collision_import_report(
+                    report, shape_counts
+                )
+
+            rigel_assets.atomic_write_json(
+                root / rigel_assets.PROVENANCE_RELATIVE_PATH, provenance
+            )
+            with self.assertRaisesRegex(
+                rigel_assets.AssetImportError,
+                "fallback count exceeds FullCube shapes",
+            ):
+                rigel_assets.validate_existing_import(root)
+            self.assertFalse(
+                rigel_assets.current_import_matches(
+                    root, str(provenance["jar_sha256"])
+                )
+            )
+
     def test_existing_import_rejects_stale_material_layer_audit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

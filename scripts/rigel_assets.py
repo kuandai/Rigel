@@ -2492,6 +2492,10 @@ def validate_block_collision_import_report(
         raise AssetImportError(
             "block_collision_import ambiguity count is inconsistent"
         )
+    if counts["conservative_fallback"] > counts["full"]:
+        raise AssetImportError(
+            "block_collision_import fallback count exceeds FullCube shapes"
+        )
     if shape_counts is not None and any(
         counts[key] != shape_counts.get(key)
         for key in ("empty", "full", "single_partial", "multi_box")

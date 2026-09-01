@@ -4,6 +4,7 @@
 #include "Rigel/Voxel/World.h"
 
 #include <algorithm>
+#include <cmath>
 #include <glm/glm.hpp>
 
 namespace Rigel::Entity {
@@ -71,6 +72,11 @@ void resolveAxis(Voxel::World& world,
                  bool& collided,
                  bool& onGround) {
     const float delta = axisValue(velocity, axis) * dt;
+    if (!std::isfinite(delta) ||
+        !std::isfinite(axisValue(position, axis) + delta)) {
+        setAxisValue(velocity, axis, 0.0f);
+        return;
+    }
     if (delta == 0.0f) {
         return;
     }
@@ -262,7 +268,7 @@ void Entity::resolveCollisions(Voxel::World& world, float dt) {
 }
 
 void Entity::update(Voxel::World& world, float dt) {
-    if (dt <= 0.0f) {
+    if (!std::isfinite(dt) || dt <= 0.0f) {
         return;
     }
 

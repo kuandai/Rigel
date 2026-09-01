@@ -5,6 +5,9 @@
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/BlockType.h"
 
+#include <cmath>
+#include <limits>
+
 using namespace Rigel::Entity;
 using namespace Rigel::Voxel;
 
@@ -199,4 +202,338 @@ TEST_CASE(EntityPhysics_StationaryInitialOverlapIsNotDepenetrated) {
     CHECK(!entity.collidedX());
     CHECK(!entity.collidedY());
     CHECK(!entity.collidedZ());
+}
+
+TEST_CASE(EntityPhysics_SweepsFullCubesInBothDirections) {
+    WorldResources resources;
+    World world(resources);
+    placeBlock(
+        resources,
+        world,
+        "rigel:positive_cube",
+        BlockCollisionShape::fullCube(),
+        2,
+        0,
+        0);
+    placeBlock(
+        resources,
+        world,
+        "rigel:negative_cube",
+        BlockCollisionShape::fullCube(),
+        -3,
+        0,
+        0);
+
+    GravityFreeEntity positive;
+    positive.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    positive.setPosition(0.0f, 0.5f, 0.5f);
+    positive.setVelocity(glm::vec3(10.0f, 0.0f, 0.0f));
+
+    GravityFreeEntity negative;
+    negative.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    negative.setPosition(0.0f, 0.5f, 0.5f);
+    negative.setVelocity(glm::vec3(-10.0f, 0.0f, 0.0f));
+
+    positive.update(world, 1.0f);
+    negative.update(world, 1.0f);
+
+    CHECK(positive.collidedX());
+    CHECK_NEAR(
+        positive.position().x,
+        1.75f - BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_EQ(positive.velocity().x, 0.0f);
+    CHECK(negative.collidedX());
+    CHECK_NEAR(
+        negative.position().x,
+        -1.75f + BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_EQ(negative.velocity().x, 0.0f);
+}
+
+TEST_CASE(EntityPhysics_UsesNearestOfMultipleBoxesAndCrossedBlocks) {
+    WorldResources resources;
+    World world(resources);
+    const BlockID obstacle = placeBlock(
+        resources,
+        world,
+        "rigel:multiple_crossed",
+        BlockCollisionShape::boxes({
+            {{0.1f, 0.0f, 0.0f}, {0.2f, 1.0f, 1.0f}},
+            {{0.7f, 0.0f, 0.0f}, {0.8f, 1.0f, 1.0f}},
+        }),
+        -8,
+        0,
+        0);
+    world.setBlock(-5, 0, 0, BlockState{obstacle});
+    world.setBlock(-3, 0, 0, BlockState{obstacle});
+
+    GravityFreeEntity entity;
+    entity.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    entity.setPosition(0.0f, 0.5f, 0.5f);
+    entity.setVelocity(glm::vec3(-10.0f, 0.0f, 0.0f));
+
+    entity.update(world, 1.0f);
+
+    CHECK(entity.collidedX());
+    CHECK_NEAR(
+        entity.position().x,
+        -1.95f + BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_EQ(entity.velocity().x, 0.0f);
+}
+
+TEST_CASE(EntityPhysics_SweepsThinBoxesAtRepresentativeDistances) {
+    WorldResources resources;
+    World world(resources);
+    placeBlock(
+        resources,
+        world,
+        "rigel:quarter_cell_thin",
+        BlockCollisionShape::boxes({
+            {{0.15f, 0.0f, 0.0f}, {0.2f, 1.0f, 1.0f}},
+        }),
+        0,
+        0,
+        0);
+    placeBlock(
+        resources,
+        world,
+        "rigel:two_cell_thin",
+        BlockCollisionShape::boxes({
+            {{0.25f, 0.0f, 0.0f}, {0.3f, 1.0f, 1.0f}},
+        }),
+        1,
+        0,
+        2);
+    placeBlock(
+        resources,
+        world,
+        "rigel:ten_cell_thin",
+        BlockCollisionShape::boxes({
+            {{0.25f, 0.0f, 0.0f}, {0.3f, 1.0f, 1.0f}},
+        }),
+        9,
+        0,
+        4);
+
+    GravityFreeEntity quarterCell;
+    quarterCell.setLocalBounds(
+        Aabb{glm::vec3(-0.05f), glm::vec3(0.05f)});
+    quarterCell.setPosition(0.0f, 0.5f, 0.5f);
+    quarterCell.setVelocity(glm::vec3(0.25f, 0.0f, 0.0f));
+
+    GravityFreeEntity twoCells;
+    twoCells.setLocalBounds(
+        Aabb{glm::vec3(-0.05f), glm::vec3(0.05f)});
+    twoCells.setPosition(0.0f, 0.5f, 2.5f);
+    twoCells.setVelocity(glm::vec3(2.0f, 0.0f, 0.0f));
+
+    GravityFreeEntity tenCells;
+    tenCells.setLocalBounds(
+        Aabb{glm::vec3(-0.05f), glm::vec3(0.05f)});
+    tenCells.setPosition(0.0f, 0.5f, 4.5f);
+    tenCells.setVelocity(glm::vec3(10.0f, 0.0f, 0.0f));
+
+    quarterCell.update(world, 1.0f);
+    twoCells.update(world, 1.0f);
+    tenCells.update(world, 1.0f);
+
+    CHECK(quarterCell.collidedX());
+    CHECK_NEAR(
+        quarterCell.position().x,
+        0.1f - BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK(twoCells.collidedX());
+    CHECK_NEAR(
+        twoCells.position().x,
+        1.2f - BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK(tenCells.collidedX());
+    CHECK_NEAR(
+        tenCells.position().x,
+        9.2f - BlockCollisionContactTolerance,
+        0.00001f);
+}
+
+TEST_CASE(EntityPhysics_CeilingCollisionStopsUpwardVelocity) {
+    WorldResources resources;
+    World world(resources);
+    placeBlock(
+        resources,
+        world,
+        "rigel:ceiling",
+        BlockCollisionShape::fullCube(),
+        0,
+        2,
+        0);
+
+    GravityFreeEntity entity;
+    entity.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    entity.setPosition(0.5f, 0.5f, 0.5f);
+    entity.setVelocity(glm::vec3(0.0f, 4.0f, 0.0f));
+
+    entity.update(world, 1.0f);
+
+    CHECK(entity.collidedY());
+    CHECK(!entity.isOnGround());
+    CHECK_NEAR(
+        entity.position().y,
+        1.75f - BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_EQ(entity.velocity().y, 0.0f);
+}
+
+TEST_CASE(EntityPhysics_WallCollisionPreservesSlidingAxis) {
+    WorldResources resources;
+    World world(resources);
+    placeBlock(
+        resources,
+        world,
+        "rigel:slide_wall",
+        BlockCollisionShape::fullCube(),
+        1,
+        0,
+        0);
+
+    GravityFreeEntity entity;
+    entity.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    entity.setPosition(0.0f, 0.5f, 0.5f);
+    entity.setVelocity(glm::vec3(2.0f, 0.0f, 2.0f));
+
+    entity.update(world, 1.0f);
+
+    CHECK(entity.collidedX());
+    CHECK(!entity.collidedZ());
+    CHECK_NEAR(
+        entity.position().x,
+        0.75f - BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_EQ(entity.position().z, 2.5f);
+    CHECK_EQ(entity.velocity().x, 0.0f);
+    CHECK_EQ(entity.velocity().z, 2.0f);
+}
+
+TEST_CASE(EntityPhysics_DiagonalMovementResolvesXBeforeZ) {
+    WorldResources resources;
+    World world(resources);
+    placeBlock(
+        resources,
+        world,
+        "rigel:diagonal_corner",
+        BlockCollisionShape::fullCube(),
+        1,
+        0,
+        1);
+
+    GravityFreeEntity entity;
+    entity.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    entity.setPosition(0.5f, 0.5f, 0.5f);
+    entity.setVelocity(glm::vec3(1.0f, 0.0f, 1.0f));
+
+    entity.update(world, 1.0f);
+
+    CHECK(!entity.collidedX());
+    CHECK(entity.collidedZ());
+    CHECK_EQ(entity.position().x, 1.5f);
+    CHECK_NEAR(
+        entity.position().z,
+        0.75f - BlockCollisionContactTolerance,
+        0.00001f);
+    CHECK_EQ(entity.velocity().x, 1.0f);
+    CHECK_EQ(entity.velocity().z, 0.0f);
+}
+
+TEST_CASE(EntityPhysics_ContactAndGroundProbeRemainStable) {
+    WorldResources resources;
+    World world(resources);
+    placeBlock(
+        resources,
+        world,
+        "rigel:stable_floor",
+        BlockCollisionShape::fullCube(),
+        0,
+        0,
+        0);
+
+    GravityFreeEntity entity;
+    entity.setLocalBounds(
+        Aabb{glm::vec3(-0.25f), glm::vec3(0.25f)});
+    entity.setPosition(0.5f, 2.0f, 0.5f);
+    entity.setVelocity(glm::vec3(0.0f, -2.0f, 0.0f));
+
+    entity.update(world, 1.0f);
+    const float contactPosition = entity.position().y;
+
+    CHECK(entity.collidedY());
+    CHECK(entity.isOnGround());
+    CHECK_NEAR(
+        contactPosition,
+        1.25f + BlockCollisionContactTolerance,
+        0.00001f);
+
+    entity.update(world, 1.0f);
+
+    CHECK(!entity.collidedY());
+    CHECK(entity.isOnGround());
+    CHECK_EQ(entity.position().y, contactPosition);
+
+    entity.setVelocity(glm::vec3(0.0f, -1.0f, 0.0f));
+    entity.update(world, 1.0f);
+
+    CHECK(entity.collidedY());
+    CHECK(entity.isOnGround());
+    CHECK_EQ(entity.position().y, contactPosition);
+    CHECK_EQ(entity.velocity().y, 0.0f);
+}
+
+TEST_CASE(EntityPhysics_InvalidOrUnboundedMovementDoesNotCorruptPosition) {
+    WorldResources resources;
+    World world(resources);
+
+    GravityFreeEntity invalidTime;
+    invalidTime.setPosition(1.0f, 2.0f, 3.0f);
+    invalidTime.setVelocity(glm::vec3(1.0f));
+    invalidTime.update(
+        world,
+        std::numeric_limits<float>::quiet_NaN());
+
+    CHECK_EQ(invalidTime.position(), glm::vec3(1.0f, 2.0f, 3.0f));
+    CHECK_EQ(invalidTime.velocity(), glm::vec3(1.0f));
+
+    GravityFreeEntity invalidDisplacement;
+    invalidDisplacement.setPosition(1.0f, 2.0f, 3.0f);
+    invalidDisplacement.setVelocity(glm::vec3(
+        std::numeric_limits<float>::infinity(),
+        0.0f,
+        0.0f));
+    invalidDisplacement.update(world, 1.0f);
+
+    CHECK_EQ(
+        invalidDisplacement.position(),
+        glm::vec3(1.0f, 2.0f, 3.0f));
+    CHECK_EQ(invalidDisplacement.velocity().x, 0.0f);
+    CHECK(std::isfinite(invalidDisplacement.worldBounds().min.x));
+    CHECK(std::isfinite(invalidDisplacement.worldBounds().max.x));
+
+    GravityFreeEntity unboundedDisplacement;
+    const float largePosition =
+        std::numeric_limits<float>::max() * 0.5f;
+    unboundedDisplacement.setPosition(largePosition, 2.0f, 3.0f);
+    unboundedDisplacement.setVelocity(glm::vec3(
+        std::numeric_limits<float>::max(),
+        0.0f,
+        0.0f));
+    unboundedDisplacement.update(world, 1.0f);
+
+    CHECK_EQ(unboundedDisplacement.position().x, largePosition);
+    CHECK_EQ(unboundedDisplacement.velocity().x, 0.0f);
+    CHECK(std::isfinite(unboundedDisplacement.worldBounds().min.x));
+    CHECK(std::isfinite(unboundedDisplacement.worldBounds().max.x));
 }

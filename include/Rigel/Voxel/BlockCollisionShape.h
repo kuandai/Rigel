@@ -11,6 +11,12 @@
 
 namespace Rigel::Voxel {
 
+/**
+ * The single tolerance for static block contact.
+ *
+ * Candidate-range expansion, contact separation, orthogonal overlap tests,
+ * and support probes all derive from this value.
+ */
 inline constexpr float BlockCollisionContactTolerance = 1.0e-4f;
 
 /** An axis-aligned collision box in block-cell coordinates. */

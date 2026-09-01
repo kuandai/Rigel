@@ -79,6 +79,12 @@ public:
 protected:
     void applyFloorFriction(float friction);
     void updateWorldBounds();
+
+    /**
+     * Sweep against static block shapes in X, then Y, then Z order.
+     * Stationary initial overlap is intentionally left in place; this is not
+     * a general depenetration solver.
+     */
     void resolveCollisions(Voxel::World& world, float dt);
 
     EntityId m_id;

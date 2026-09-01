@@ -21,6 +21,7 @@ implementation and how the systems fit together.
 
 ### Voxel + World
 
+- `docs/BlockCollision.md` (normalized physical shapes, world queries, and entity sweeps)
 - `docs/BlockGallery.md` (developer launch, navigation, catalog, and visual review)
 - `docs/WorldGeneration.md` (strict graph generation, pipeline, streaming)
 - `docs/RenderingPipeline.md` (voxel rendering, TAA, shadows)
@@ -29,7 +30,7 @@ implementation and how the systems fit together.
 
 ### Entities
 
-- `docs/EntitySystem.md` (runtime, rendering, models, persistence)
+- `docs/EntitySystem.md` (runtime, static-world collision, rendering, models, persistence)
 
 ### Persistence
 

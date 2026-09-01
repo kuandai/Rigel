@@ -245,7 +245,9 @@ The world exposes normalized collision boxes in world coordinates and accounts
 for their supported overhang beyond the owning cell. Entity movement consumes
 that query with continuous X, then Y, then Z sweeps and stops at the nearest
 box on each axis. A shared contact tolerance controls separation and ground
-probes. Stationary initial overlap is not depenetrated.
+probes. Stationary initial overlap is not depenetrated. The complete asset,
+query, movement, and limitation contract is documented in
+`docs/BlockCollision.md`.
 
 Edit raycasting remains cell-based and stops at any occupied cell rather than
 intersecting model or collision-shape bounds. Visual geometry outside `[0, 1]`
@@ -264,6 +266,11 @@ cuboid coverage.
   are not supported. The importer omits those states instead of approximating
   them.
 - Edit raycasting operates on occupied cells rather than collision boxes.
+- Static stair boxes do not provide step-up traversal, and the player-controlled
+  camera does not use entity physics.
+- Static collision has no entity-to-entity, convex/non-AABB, visual-plane, or
+  generalized depenetration path. Fixed X/Y/Z response remains axis-order
+  dependent.
 - Mesh generation emits independent faces rather than greedy merged quads.
 - Voxel visibility uses distance culling only; there is no frustum or occlusion
   culling for chunks.
@@ -275,6 +282,7 @@ cuboid coverage.
 ## Related Docs
 
 - `docs/BlockGallery.md`
+- `docs/BlockCollision.md`
 - `docs/ApplicationLifecycle.md`
 - `docs/WorldGeneration.md`
 - `docs/RenderingPipeline.md`

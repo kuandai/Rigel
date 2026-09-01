@@ -28,8 +28,11 @@ Entities are runtime objects with physics, rendering, and persistence hooks:
 - Tags: `EntityTags` (e.g. `NoClip`, `NoSaveInChunks`)
 - Render state: optional model handle, persistent model identifier, and tint
 
-Collision is axis-aligned (AABB) and resolved per-axis against voxel solids.
-Entities tagged `EntityTags::NoClip` bypass collision resolution.
+Static-world collision is axis-aligned and resolved with continuous X, then Y,
+then Z sweeps against the normalized physical boxes returned by `World`.
+Entities tagged `EntityTags::NoClip` bypass collision resolution. See
+`docs/BlockCollision.md` for query ownership, contact behavior, and the retained
+physics limitations.
 
 ## 3. World Ownership and Iteration
 

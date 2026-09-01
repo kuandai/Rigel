@@ -80,10 +80,12 @@ inflation, missing faces, reversed or cropped UV rectangles, UV quarter-turns,
 and face shading/culling metadata are preserved. Right-angle block-state
 orientation remains a closed measured set.
 
-Explicit plane primitives, animated and nonstandard block textures,
-collision-shape fidelity, and model-accurate raycasting remain outside the
-runtime boundary. Import provenance retains the model-support schema, closure
-census, and sorted identifiers under disjoint omission reasons. The detailed
+Explicit plane primitives, animated and nonstandard block textures, and
+model-accurate raycasting remain outside the runtime boundary. Compatible
+published registrations carry separate normalized physical collision
+snapshots; visual planes do not automatically become colliders. Import
+provenance retains the model- and collision-support schemas, closure and shape
+censuses, and sorted identifiers under disjoint omission reasons. The detailed
 counts and final output identity are recorded below.
 
 CR model emission texture maps also remain outside the current normalized

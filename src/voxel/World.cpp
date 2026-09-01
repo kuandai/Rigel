@@ -31,17 +31,31 @@ BlockCollisionBox translated(
     int y,
     int z
 ) {
-    const std::array<float, 3> offset{
-        static_cast<float>(x),
-        static_cast<float>(y),
-        static_cast<float>(z),
+    const float worldX = static_cast<float>(x);
+    const float worldY = static_cast<float>(y);
+    const float worldZ = static_cast<float>(z);
+    return {
+        .min = {
+            box.min[0] + worldX,
+            box.min[1] + worldY,
+            box.min[2] + worldZ,
+        },
+        .max = {
+            box.max[0] + worldX,
+            box.max[1] + worldY,
+            box.max[2] + worldZ,
+        },
     };
-    BlockCollisionBox result = box;
-    for (size_t axis = 0; axis < 3; ++axis) {
-        result.min[axis] += offset[axis];
-        result.max[axis] += offset[axis];
-    }
-    return result;
+}
+
+BlockCollisionBox fullCubeAt(int x, int y, int z) {
+    const float worldX = static_cast<float>(x);
+    const float worldY = static_cast<float>(y);
+    const float worldZ = static_cast<float>(z);
+    return {
+        .min = {worldX, worldY, worldZ},
+        .max = {worldX + 1.0f, worldY + 1.0f, worldZ + 1.0f},
+    };
 }
 
 } // namespace
@@ -153,8 +167,19 @@ void World::forEachCollisionBox(
                 const BlockState state = getBlock(x, y, z);
                 if (state.isAir()) continue;
 
-                for (const BlockCollisionBox& localBox :
-                     registry.getType(state.id).collision.boxes()) {
+                const BlockCollisionShape& shape =
+                    registry.getType(state.id).collision;
+                if (shape.isEmpty()) continue;
+
+                if (shape.isFullCube()) {
+                    const BlockCollisionBox worldBox = fullCubeAt(x, y, z);
+                    if (overlaps(bounds, worldBox)) {
+                        callback(context, worldBox);
+                    }
+                    continue;
+                }
+
+                for (const BlockCollisionBox& localBox : shape.boxes()) {
                     const BlockCollisionBox worldBox =
                         translated(localBox, x, y, z);
                     if (overlaps(bounds, worldBox)) {

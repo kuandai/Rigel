@@ -97,6 +97,24 @@ std::string shellQuote(std::string_view value) {
     return result;
 }
 
+std::string collisionCardinalityDefinition(
+    std::string_view identifier,
+    size_t boxCount
+) {
+    std::ostringstream yaml;
+    yaml << "id: " << identifier << '\n'
+         << "model: none\n"
+         << "collision:\n"
+         << "  boxes:\n";
+    for (size_t index = 0; index < boxCount; ++index) {
+        yaml << "    - ["
+             << (-0.25 + static_cast<double>(index) * 0.01)
+             << ", 0, 0, 1.25, 1, 1]\n";
+    }
+    yaml << "textures: {}\n";
+    return yaml.str();
+}
+
 } // namespace
 
 TEST_CASE(BlockLoader_LoadsSyntheticDefinitions) {
@@ -318,6 +336,46 @@ TEST_CASE(BlockLoader_RejectsMalformedCollisionShapesAtomically) {
         CHECK(!blocks.findByIdentifier("test:bad_collision"));
         CHECK(!report.representativeFailures.front().reason.empty());
     }
+}
+
+TEST_CASE(BlockLoader_EnforcesNormalizedCollisionBoxCardinality) {
+    const std::string boundary = collisionCardinalityDefinition(
+        "boundary_collision", BlockCollisionShape::MaximumBoxes);
+    const std::string excessive = collisionCardinalityDefinition(
+        "excessive_collision", BlockCollisionShape::MaximumBoxes + 1);
+    const std::array boundaryDefinition = {
+        definition("blocks/boundary_collision.yaml", boundary),
+    };
+    const std::array excessiveDefinition = {
+        definition("blocks/excessive_collision.yaml", excessive),
+    };
+
+    BlockRegistry blocks;
+    TextureAtlas atlas;
+    const BlockLoadReport boundaryReport = BlockLoader{}.loadDefinitions(
+        "test", boundaryDefinition, blocks, atlas);
+
+    CHECK_EQ(boundaryReport.loaded, static_cast<size_t>(1));
+    CHECK_EQ(boundaryReport.failed, static_cast<size_t>(0));
+    const auto boundaryId = blocks.findByIdentifier(
+        "test:boundary_collision");
+    CHECK(boundaryId);
+    CHECK_EQ(
+        blocks.getType(*boundaryId).collision.boxes().size(),
+        BlockCollisionShape::MaximumBoxes);
+
+    const BlockLoadReport excessiveReport = BlockLoader{}.loadDefinitions(
+        "test", excessiveDefinition, blocks, atlas);
+
+    CHECK_EQ(excessiveReport.loaded, static_cast<size_t>(0));
+    CHECK_EQ(excessiveReport.failed, static_cast<size_t>(1));
+    CHECK(!blocks.findByIdentifier("test:excessive_collision"));
+    CHECK_EQ(
+        excessiveReport.representativeFailures.size(),
+        static_cast<size_t>(1));
+    CHECK(
+        excessiveReport.representativeFailures.front().reason.find(
+            "at most 16 boxes; received 17") != std::string::npos);
 }
 
 TEST_CASE(BlockLoader_LoadsReusableNormalizedCuboids) {

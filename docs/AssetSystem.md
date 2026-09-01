@@ -186,7 +186,9 @@ must have finite coordinates, positive volume, and be unique within the shape.
 Coordinates may extend by at most 0.25 cell beyond a block boundary, giving an
 inclusive supported range of `[-0.25, 1.25]`; values outside that range are
 rejected rather than clamped. The collision mapping has no fields other than
-`boxes`, and the list must not be empty.
+`boxes`, and the list must contain between one and 16 boxes. The same maximum
+is enforced by normalized-tree generation and validation, strict runtime asset
+loading, and direct `BlockCollisionShape` construction.
 
 An explicit collision may carry top-level `collision_provenance` metadata.
 Ordinary authored assets omit the field and are recorded as `authored` at

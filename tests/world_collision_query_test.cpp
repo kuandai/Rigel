@@ -269,6 +269,54 @@ TEST_CASE(WorldCollisionQuery_FindsBothDirectionsOfSupportedOverhang) {
         (BlockCollisionBox{{-1.0f, 0.0f, 0.0f}, {-0.75f, 1.0f, 1.0f}}));
 }
 
+TEST_CASE(WorldCollisionQuery_BoundsMaximumCandidateBoxWork) {
+    WorldResources resources;
+    World world(resources);
+
+    std::vector<BlockCollisionBox> localBoxes;
+    localBoxes.reserve(BlockCollisionShape::MaximumBoxes);
+    for (size_t index = 0;
+         index < BlockCollisionShape::MaximumBoxes;
+         ++index) {
+        localBoxes.push_back({
+            {
+                -0.25f,
+                -0.25f + static_cast<float>(index) * 0.01f,
+                0.0f,
+            },
+            {1.25f, 1.25f, 1.0f},
+        });
+    }
+
+    BlockType type;
+    type.identifier = "rigel:maximum_query_shape";
+    type.collision = BlockCollisionShape::boxes(localBoxes);
+    const BlockID id = resources.registry().registerBlock(
+        "rigel:maximum_query_shape", std::move(type));
+    const BlockState state{id};
+
+    constexpr int minimumX = -1;
+    constexpr int maximumX = 16'382;
+    for (int x = minimumX; x <= maximumX; ++x) {
+        for (int y = -1; y <= 0; ++y) {
+            for (int z = -1; z <= 0; ++z) {
+                world.setBlock(x, y, z, state);
+            }
+        }
+    }
+
+    size_t visits = 0;
+    const bool accepted = world.forEachCollisionBox(
+        {{0.0f, 0.0f, 0.0f}, {16'381.75f, 0.0f, 0.0f}},
+        [&](const BlockCollisionBox&) noexcept { ++visits; });
+
+    constexpr size_t maximumCandidateCells = 65'536;
+    CHECK(accepted);
+    CHECK_EQ(
+        visits,
+        maximumCandidateCells * BlockCollisionShape::MaximumBoxes);
+}
+
 TEST_CASE(WorldCollisionQuery_RejectsUnsafeAndOversizedBoundsBeforeTraversal) {
     WorldResources resources;
     World world(resources);

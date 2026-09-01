@@ -5,11 +5,28 @@
 
 #include <limits>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 using namespace Rigel::Voxel;
+
+namespace {
+
+std::vector<BlockCollisionBox> distinctCollisionBoxes(size_t count) {
+    std::vector<BlockCollisionBox> boxes;
+    boxes.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        boxes.push_back({
+            {-0.25f + static_cast<float>(index) * 0.01f, 0.0f, 0.0f},
+            {1.25f, 1.0f, 1.0f},
+        });
+    }
+    return boxes;
+}
+
+} // namespace
 
 static_assert(std::is_same_v<
               decltype(std::declval<const BlockCollisionShape&>().boxes()),
@@ -117,4 +134,30 @@ TEST_CASE(BlockCollisionShape_ValidatesNormalizedBoxInvariants) {
     CHECK_EQ(
         canonicalized.provenance(),
         BlockCollisionShape::Provenance::ConservativeFallback);
+}
+
+TEST_CASE(BlockCollisionShape_BoundsImmutableBoxCardinality) {
+    std::vector<BlockCollisionBox> boundary = distinctCollisionBoxes(
+        BlockCollisionShape::MaximumBoxes);
+    const BlockCollisionBox first = boundary.front();
+    const BlockCollisionBox last = boundary.back();
+    const BlockCollisionShape accepted =
+        BlockCollisionShape::boxes(boundary);
+    boundary.front().min[0] = 0.0f;
+    boundary.back().max[0] = 0.5f;
+
+    CHECK(accepted.isBoxes());
+    CHECK_EQ(accepted.boxes().size(), BlockCollisionShape::MaximumBoxes);
+    CHECK_EQ(accepted.boxes().front(), first);
+    CHECK_EQ(accepted.boxes().back(), last);
+
+    std::string diagnostic;
+    try {
+        BlockCollisionShape::boxes(distinctCollisionBoxes(
+            BlockCollisionShape::MaximumBoxes + 1));
+    } catch (const std::invalid_argument& error) {
+        diagnostic = error.what();
+    }
+    CHECK(diagnostic.find("at most 16 boxes") != std::string::npos);
+    CHECK(diagnostic.find("received 17") != std::string::npos);
 }

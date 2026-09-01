@@ -16,9 +16,12 @@ coordinates. A shape is one of:
 
 `Empty` and `FullCube` do not allocate box storage. A `Boxes` shape validates
 and shares immutable storage, and exposes a read-only span so world queries can
-iterate it without per-query allocation. Box coordinates are finite and may
-range from `-0.25` through `1.25` on each axis. This bounded overhang is
-validated, retained, and queried; it is not clamped back into the owning cell.
+iterate it without per-query allocation. A shape may contain at most 16 boxes.
+The staged Cosmic Reach 0.6.1 tree has a measured maximum of seven, so the
+normalized limit retains deliberate headroom while bounding runtime work. Box
+coordinates are finite and may range from `-0.25` through `1.25` on each axis.
+This bounded overhang is validated, retained, and queried; it is not clamped
+back into the owning cell.
 
 The shape is not a `BlockModel`. Models own render cuboids, faces, texture
 bindings, and orientation. Collision has no faces, textures, render layer, or
@@ -90,6 +93,9 @@ range, so an overhanging box is discoverable from either side of its owning
 cell. Empty shapes are skipped, full cubes use a direct path, and explicit
 boxes are visited through immutable spans. Invalid, unrepresentable, or
 excessively large queries are rejected rather than performing unbounded work.
+The fixed 65,536-cell query limit and 16-box shape limit cap one accepted query
+at 1,048,576 explicit-box examinations. Callback traversal itself does not
+allocate.
 
 ## Entity movement and contact
 

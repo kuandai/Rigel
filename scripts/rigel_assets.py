@@ -38,13 +38,14 @@ SNAPSHOT_STAGING_SUFFIX = ".staging"
 PROVENANCE_SCHEMA = 1
 IMPORTER_SCHEMA = 7
 BLOCK_MODEL_SUPPORT_SCHEMA = 1
-BLOCK_COLLISION_SUPPORT_SCHEMA = 3
+BLOCK_COLLISION_SUPPORT_SCHEMA = 4
 MATERIAL_LAYER_AUDIT_SCHEMA = 1
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 BLOCK_TEXTURE_SIZE = (16, 16)
 BLOCK_COLLISION_MINIMUM_COORDINATE = -0.25
 BLOCK_COLLISION_MAXIMUM_COORDINATE = 1.25
+BLOCK_COLLISION_MAXIMUM_BOXES = 16
 REQUIRED_BLOCK_IDENTIFIERS = (
     "base:dirt",
     "base:grass",
@@ -1029,6 +1030,12 @@ def _resolved_collision_shape(
             raise AssetImportError(
                 f"{context}: duplicate positive-volume collision cuboid"
             )
+        if len(boxes) >= BLOCK_COLLISION_MAXIMUM_BOXES:
+            raise AssetImportError(
+                f"{context}: collision shape has {len(boxes) + 1} "
+                "positive-volume boxes; at most "
+                f"{BLOCK_COLLISION_MAXIMUM_BOXES} are supported"
+            )
         boxes.append(bounds)
 
     if not boxes:
@@ -1933,6 +1940,11 @@ def _parse_generated_collision(
     if not isinstance(raw_boxes, list) or not raw_boxes:
         raise AssetImportError(
             f"{source}.collision.boxes must be a non-empty array"
+        )
+    if len(raw_boxes) > BLOCK_COLLISION_MAXIMUM_BOXES:
+        raise AssetImportError(
+            f"{source}.collision.boxes contains {len(raw_boxes)} boxes; "
+            f"at most {BLOCK_COLLISION_MAXIMUM_BOXES} are supported"
         )
     boxes: list[list[float]] = []
     for box_index, raw_box in enumerate(raw_boxes):

@@ -6,6 +6,7 @@
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -50,6 +51,7 @@ public:
 
     static constexpr float MinimumCoordinate = -0.25f;
     static constexpr float MaximumCoordinate = 1.25f;
+    static constexpr size_t MaximumBoxes = 16;
 
     /** The default preserves the legacy solid-block contract. */
     BlockCollisionShape() noexcept = default;
@@ -87,6 +89,12 @@ public:
         if (boxes.empty()) {
             throw std::invalid_argument(
                 "collision boxes must contain at least one box");
+        }
+        if (boxes.size() > MaximumBoxes) {
+            throw std::invalid_argument(
+                "collision shapes support at most " +
+                std::to_string(MaximumBoxes) + " boxes; received " +
+                std::to_string(boxes.size()));
         }
 
         for (size_t index = 0; index < boxes.size(); ++index) {

@@ -2822,6 +2822,82 @@ class BlockCompilerTest(unittest.TestCase):
         self.assertEqual(report["multi_box"], 1)
         self.assertEqual(report["exact_derived"], 3)
 
+    def test_bounds_imported_collision_box_cardinality(self) -> None:
+        def entries(box_count: int) -> dict[str, bytes]:
+            cuboids = [
+                {
+                    "localBounds": [index / 4.0, 0, 0, 16, 16, 16],
+                    "faces": {
+                        "localPosY": {
+                            "uv": [0, 0, 16, 16],
+                            "texture": "all",
+                        }
+                    },
+                }
+                for index in range(box_count)
+            ]
+            return {
+                "base/models/blocks/cardinality.json": encoded_json(
+                    {
+                        "textures": {
+                            "all": {
+                                "fileName": (
+                                    "base:textures/blocks/cardinality.png"
+                                )
+                            }
+                        },
+                        "cuboids": cuboids,
+                    }
+                ),
+                "base/blocks/cardinality.json": encoded_json(
+                    {
+                        "stringId": "test:cardinality",
+                        "defaultProperties": {
+                            "modelName": (
+                                "base:models/blocks/cardinality.json"
+                            )
+                        },
+                        "blockStates": {"default": {}},
+                    }
+                ),
+                "base/textures/blocks/cardinality.png": synthetic_png(),
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "boundary.jar"
+            write_jar(jar, entries(rigel_assets.BLOCK_COLLISION_MAXIMUM_BOXES))
+            output = root / "boundary"
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive, rigel_assets.indexed_archive(archive), output
+                )
+            block = rigel_assets.parse_generated_block(
+                (output / "blocks/test__cardinality.yaml").read_bytes(),
+                "blocks/test__cardinality.yaml",
+            )
+            self.assertEqual(
+                len(block["collision"]["boxes"]),
+                rigel_assets.BLOCK_COLLISION_MAXIMUM_BOXES,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "excessive.jar"
+            write_jar(
+                jar,
+                entries(rigel_assets.BLOCK_COLLISION_MAXIMUM_BOXES + 1),
+            )
+            with zipfile.ZipFile(jar) as archive, self.assertRaisesRegex(
+                rigel_assets.AssetImportError,
+                "collision shape has 17 positive-volume boxes; at most 16",
+            ):
+                rigel_assets.compile_blocks(
+                    archive,
+                    rigel_assets.indexed_archive(archive),
+                    root / "excessive",
+                )
+
     def test_orients_collision_bounds_for_every_supported_state_turn(self) -> None:
         source = (-0.25, 0.125, 0.25, 0.75, 0.625, 1.25)
         cases = {
@@ -4061,6 +4137,61 @@ class SynchronizationTest(unittest.TestCase):
                         root, required_identifiers=("test:stone",)
                     )
 
+    def test_validation_enforces_collision_box_cardinality(self) -> None:
+        base = rigel_assets.render_block_yaml(
+            "test:stone",
+            {"modelName": "unused"},
+            _MissingTextureModelResolver(),
+            "fixture",
+        )
+
+        def boxes(count: int) -> list[list[float]]:
+            return [
+                [-0.25 + index * 0.01, 0.0, 0.0, 1.25, 1.0, 1.0]
+                for index in range(count)
+            ]
+
+        def generated_block(count: int) -> bytes:
+            replacement = json.dumps(
+                {"boxes": boxes(count)}, separators=(",", ":")
+            ).encode("utf-8")
+            return base.replace(b"collision: full", b"collision: " + replacement)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rigel_assets.write_output(
+                root,
+                "blocks/test__stone.yaml",
+                generated_block(rigel_assets.BLOCK_COLLISION_MAXIMUM_BOXES),
+            )
+            rigel_assets.write_output(
+                root, "textures/blocks/missing.png", synthetic_png()
+            )
+            counts = rigel_assets.validate_generated_tree(
+                root, required_identifiers=("test:stone",)
+            )
+            self.assertEqual(counts["blocks"], 1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rigel_assets.write_output(
+                root,
+                "blocks/test__stone.yaml",
+                generated_block(
+                    rigel_assets.BLOCK_COLLISION_MAXIMUM_BOXES + 1
+                ),
+            )
+            rigel_assets.write_output(
+                root, "textures/blocks/missing.png", synthetic_png()
+            )
+            with self.assertRaisesRegex(
+                rigel_assets.AssetImportError,
+                "contains 17 boxes; at most 16",
+            ):
+                rigel_assets.validate_generated_tree(
+                    root, required_identifiers=("test:stone",)
+                )
+
 
 class RealJarBlockModelClosureTest(unittest.TestCase):
     def test_cosmic_reach_0_6_1_model_closure(self) -> None:
@@ -4168,6 +4299,26 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
                     path.read_bytes(), path.relative_to(assets).as_posix()
                 )
                 generated_blocks[str(block["id"])] = block
+
+            explicit_box_cardinalities = {
+                identifier: len(block["collision"]["boxes"])
+                for identifier, block in generated_blocks.items()
+                if isinstance(block["collision"], dict)
+            }
+            measured_maximum_boxes = max(explicit_box_cardinalities.values())
+            self.assertEqual(measured_maximum_boxes, 7)
+            self.assertLessEqual(
+                measured_maximum_boxes,
+                rigel_assets.BLOCK_COLLISION_MAXIMUM_BOXES,
+            )
+            self.assertEqual(
+                {
+                    identifier
+                    for identifier, count in explicit_box_cardinalities.items()
+                    if count == measured_maximum_boxes
+                },
+                {"base:laser_emitter[type=split,axis=Y]"},
+            )
 
             self.assertEqual(
                 rigel_assets.audit_generated_collision_shapes(assets),

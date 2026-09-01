@@ -2079,7 +2079,7 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
         "texture_render_layers",
     }
     _reject_unknown_keys(result, allowed, source)
-    required = {"id", "model", "opaque", "solid", "layer"}
+    required = {"id", "model", "opaque", "solid", "collision", "layer"}
     missing = sorted(required - set(result))
     if missing:
         raise AssetImportError(f"{source}: missing generated fields: {', '.join(missing)}")
@@ -2428,10 +2428,8 @@ def audit_generated_collision_shapes(root: Path) -> dict[str, int]:
     for path in sorted((root / "blocks").glob("*.yaml")):
         logical = path.relative_to(root).as_posix()
         block = parse_generated_block(path.read_bytes(), logical)
-        collision = block.get("collision")
-        if collision is None:
-            category = "full" if block["solid"] else "empty"
-        elif collision == "none":
+        collision = block["collision"]
+        if collision == "none":
             category = "empty"
         elif collision == "full":
             category = "full"

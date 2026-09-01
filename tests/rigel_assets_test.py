@@ -2974,6 +2974,7 @@ class GeneratedTreeClosureTest(unittest.TestCase):
                 "model: test:synthetic",
                 "opaque: false",
                 "solid: false",
+                "collision: none",
                 f"layer: {layer}",
             ]
             if overrides:
@@ -3895,6 +3896,11 @@ class SynchronizationTest(unittest.TestCase):
             "fixture",
         )
         cases = (
+            (
+                b"collision: full\n",
+                b"",
+                "missing generated fields: collision",
+            ),
             (
                 b"collision: full",
                 b'collision: {"boxes":[]}',

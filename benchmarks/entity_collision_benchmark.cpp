@@ -197,6 +197,8 @@ constexpr size_t kMaximumIterations = 20'000;
 constexpr size_t kMaximumWarmupIterations = 2'000;
 constexpr size_t kMultipleEntityCount = 64;
 constexpr float kEntityHalfExtent = 0.25f;
+constexpr uint64_t kMultipleEntityIdTime = UINT64_C(0x524947454c);
+constexpr uint32_t kMultipleEntityIdRandom = UINT32_C(0x434f4c4c);
 
 struct Options {
     size_t iterations = kDefaultIterations;
@@ -217,6 +219,14 @@ enum class WorkloadKind : uint8_t {
     HighSpeedSweep,
     MultipleEntities,
 };
+
+Entity::EntityId multipleEntityId(size_t index) {
+    return {
+        kMultipleEntityIdTime,
+        kMultipleEntityIdRandom,
+        static_cast<uint32_t>(index + 1),
+    };
+}
 
 struct WorkloadContext {
     WorkloadKind kind;
@@ -376,8 +386,10 @@ public:
                 3, 0, static_cast<int>(index),
                 Voxel::BlockState{m_fullCubeId});
             auto entity = std::make_unique<GravityFreeEntity>();
+            const Entity::EntityId id = multipleEntityId(index);
+            entity->setId(id);
             m_multipleEntities.push_back(entity.get());
-            if (m_multipleWorld.entities().spawn(std::move(entity)).isNull()) {
+            if (m_multipleWorld.entities().spawn(std::move(entity)) != id) {
                 throw std::runtime_error("failed to spawn benchmark entity");
             }
         }
@@ -410,6 +422,8 @@ public:
                 Voxel::BlockCollisionContactTolerance,
             true);
 
+        m_multipleEntityTickOrderFingerprint =
+            validateMultipleEntityTickOrder();
         prepareMultipleEntities();
         m_multipleWorld.tickEntities(0.5f);
         for (const GravityFreeEntity* entity : m_multipleEntities) {
@@ -435,6 +449,10 @@ public:
             }
         }
         return context;
+    }
+
+    uint64_t multipleEntityTickOrderFingerprint() const {
+        return m_multipleEntityTickOrderFingerprint;
     }
 
     uint64_t run(WorkloadKind kind) {
@@ -469,6 +487,39 @@ public:
     }
 
 private:
+    uint64_t validateMultipleEntityTickOrder() const {
+        std::array<bool, kMultipleEntityCount> visited{};
+        size_t visitedCount = 0;
+        uint64_t fingerprint = UINT64_C(14695981039346656037);
+        m_multipleWorld.entities().forEach(
+            [&](const Entity::Entity& entity) {
+                const Entity::EntityId& id = entity.id();
+                if (id.time != kMultipleEntityIdTime ||
+                    id.random != kMultipleEntityIdRandom ||
+                    id.counter == 0 ||
+                    id.counter > kMultipleEntityCount) {
+                    throw std::runtime_error(
+                        "multiple-entity ID validation failed");
+                }
+
+                const size_t index = id.counter - 1;
+                if (visited[index] || m_multipleEntities[index] != &entity) {
+                    throw std::runtime_error(
+                        "multiple-entity identity validation failed");
+                }
+                visited[index] = true;
+                ++visitedCount;
+
+                fingerprint ^= static_cast<uint64_t>(id.counter);
+                fingerprint *= UINT64_C(1099511628211);
+            });
+        if (visitedCount != kMultipleEntityCount) {
+            throw std::runtime_error(
+                "multiple-entity traversal validation failed");
+        }
+        return fingerprint;
+    }
+
     static void prepare(
         GravityFreeEntity& entity,
         float startX,
@@ -597,6 +648,7 @@ private:
     GravityFreeEntity m_mixedEntity;
     GravityFreeEntity m_highSpeedEntity;
     std::vector<GravityFreeEntity*> m_multipleEntities;
+    uint64_t m_multipleEntityTickOrderFingerprint = 0;
 };
 
 std::optional<size_t> parseBounded(
@@ -750,6 +802,9 @@ int runBenchmark(int argc, char** argv) {
         << " canonical_full_cube=true"
         << " immutable_partial_box_spans=true"
         << " output_checked_before_timing=true"
+        << " deterministic_multiple_entity_ids=true"
+        << " multiple_entity_tick_order_fingerprint="
+        << fixture.multipleEntityTickOrderFingerprint()
         << " allocation_counter=global_operator_new_calls\n";
 
     if (options.validateOnly) {

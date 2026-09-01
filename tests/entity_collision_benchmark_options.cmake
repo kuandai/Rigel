@@ -16,9 +16,13 @@ if (NOT TIMED_OUTPUT MATCHES
     message(FATAL_ERROR "Entity collision benchmark omitted environment metadata")
 endif()
 if (NOT TIMED_OUTPUT MATCHES
-    "validation status=passed fixture_count=5 canonical_full_cube=true immutable_partial_box_spans=true output_checked_before_timing=true allocation_counter=global_operator_new_calls")
+    "validation status=passed fixture_count=5 canonical_full_cube=true immutable_partial_box_spans=true output_checked_before_timing=true deterministic_multiple_entity_ids=true multiple_entity_tick_order_fingerprint=[0-9]+ allocation_counter=global_operator_new_calls")
     message(FATAL_ERROR "Entity collision benchmark omitted pre-timing validation")
 endif()
+string(REGEX MATCH
+    "multiple_entity_tick_order_fingerprint=([0-9]+)"
+    TIMED_FINGERPRINT_MATCH "${TIMED_OUTPUT}")
+set(TIMED_FINGERPRINT "${CMAKE_MATCH_1}")
 if (NOT TIMED_OUTPUT MATCHES
     "configuration mode=timed iterations_per_workload=1 warmup_iterations_per_workload=0 maximum_iterations=20000 maximum_warmup_iterations=2000 movement_axes_per_entity=1 collision_queries_per_entity=2 axis_order=x,y,z allocation_timing_scope=workload_body")
     message(FATAL_ERROR "Entity collision benchmark omitted bounded run metadata")
@@ -73,6 +77,17 @@ if (NOT VALIDATE_RESULT EQUAL 0 OR
     VALIDATE_OUTPUT MATCHES "workload name=")
     message(FATAL_ERROR
         "Validate-only mode violated its contract: ${VALIDATE_ERROR}")
+endif()
+string(REGEX MATCH
+    "multiple_entity_tick_order_fingerprint=([0-9]+)"
+    VALIDATE_FINGERPRINT_MATCH "${VALIDATE_OUTPUT}")
+set(VALIDATE_FINGERPRINT "${CMAKE_MATCH_1}")
+if (TIMED_FINGERPRINT STREQUAL "" OR
+    VALIDATE_FINGERPRINT STREQUAL "" OR
+    NOT TIMED_FINGERPRINT STREQUAL VALIDATE_FINGERPRINT)
+    message(FATAL_ERROR
+        "Multiple-entity tick order changed across fresh fixtures: "
+        "${TIMED_FINGERPRINT} != ${VALIDATE_FINGERPRINT}")
 endif()
 
 function(assert_rejected EXPECTED_ERROR)

@@ -265,7 +265,8 @@ The five workloads are:
 - `high_speed_sweep`: one entity moves 256 cells toward a full cube at cell
   200, exercising the whole continuous movement interval.
 - `multiple_independent_entities`: `WorldEntities` ticks 64 entities against
-  separate full-cube cells.
+  separate full-cube cells. Those entities have fixed IDs so unordered-map
+  traversal and the measured tick order are reproducible across processes.
 
 Every entity has one nonzero movement axis. Its X sweep and stationary support
 probe issue two collision queries; Y and Z preserve the production axis order
@@ -277,7 +278,10 @@ world boxes returned by an untimed query over the movement interval. The
 
 Before warmup or timing, the executable checks the final position and contact
 flag for every workload, verifies the canonical full-cube kind and immutable
-partial box counts, and checks every reported sweep-box count. Timing cannot
+partial box counts, checks every reported sweep-box count, and verifies all
+fixed multi-entity IDs. It also reports a noncommutative fingerprint of the
+unordered-map traversal that supplies `WorldEntities` tick order. The focused
+check compares that fingerprint across fresh benchmark processes. Timing cannot
 start if output validation fails. A benchmark-local replacement of the global
 C++ allocation functions then counts allocation calls only inside each workload
 body. Empty, full-cube, partial, and high-speed direct-update workloads must
@@ -307,8 +311,9 @@ ctest --test-dir "$rigel_release_build" --output-on-failure \
 Timed iterations are limited to 1-20,000 and warmups to 0-2,000. The defaults
 are the 5,000 and 200 values above. `--validate-only` checks fixture outputs
 without emitting workload timing. The focused CTest also checks validation
-ordering, workload/query metadata, allocation ownership, validate-only mode,
-and strict rejection of invalid or repeated options.
+ordering, reproducible multi-entity tick order across processes, workload/query
+metadata, allocation ownership, validate-only mode, and strict rejection of
+invalid or repeated options.
 
 A Release capture on 2026-08-31 used GNU 16.1.1 on Linux x86_64 with a 12th
 Gen Intel Core i7-12700, 20 reported hardware threads, and a steady clock with
@@ -322,11 +327,11 @@ All workloads completed their 5,000 timed iterations after 200 warmups:
 
 | Workload | Entities/iteration | Candidates/iteration | Boxes/sweep | Elapsed | ns/entity update | Total vs. empty | Per entity vs. empty | Allocations |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `empty_world_movement` | 1 | 90 | 0 | 3.299 ms | 659.872 | 1.000x | 1.000x | 0 |
-| `dense_full_cube_collision` | 1 | 108 | 8 | 8.176 ms | 1,635.260 | 2.478x | 2.478x | 0 |
-| `mixed_partial_shapes` | 1 | 108 | 11 | 8.914 ms | 1,782.764 | 2.702x | 2.702x | 0 |
-| `high_speed_sweep` | 1 | 2,349 | 1 | 136.052 ms | 27,210.403 | 41.236x | 41.236x | 0 |
-| `multiple_independent_entities` | 64 | 5,184 | 64 | 391.577 ms | 1,223.679 | 118.683x | 1.854x | 5,000 |
+| `empty_world_movement` | 1 | 90 | 0 | 3.818 ms | 763.608 | 1.000x | 1.000x | 0 |
+| `dense_full_cube_collision` | 1 | 108 | 8 | 9.244 ms | 1,848.749 | 2.421x | 2.421x | 0 |
+| `mixed_partial_shapes` | 1 | 108 | 11 | 9.324 ms | 1,864.843 | 2.442x | 2.442x | 0 |
+| `high_speed_sweep` | 1 | 2,349 | 1 | 138.379 ms | 27,675.856 | 36.244x | 36.244x | 0 |
+| `multiple_independent_entities` | 64 | 5,184 | 64 | 390.530 ms | 1,220.405 | 102.285x | 1.598x | 5,000 |
 
 The canonical full-cube workload was faster than the partial-shape workload
 at the same broadphase candidate count, and all four direct-update workloads

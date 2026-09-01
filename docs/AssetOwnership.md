@@ -87,6 +87,9 @@ Block-collision provenance separately records its support schema, the empty,
 full, single-partial, and multi-box registration counts, and exact, conservative
 fallback, and ambiguous derivation counts. Validation reconciles those shape
 counts against the generated block documents before accepting the provenance.
+Because unsupported meaningful constructs are omitted or rejected instead of
+approximated, every published registration must be exact and the fallback and
+ambiguity counts must remain zero.
 
 CMake resolves a JAR in this order: explicit `RIGEL_COSMIC_REACH_JAR` cache
 path, the environment variable of the same name, then the canonical staged

@@ -2857,35 +2857,36 @@ class BlockCompilerTest(unittest.TestCase):
                     Path(directory) / "output",
                 )
 
-    def test_collision_fallback_and_ambiguity_accounting_is_consistent(self) -> None:
+    def test_collision_provenance_requires_exact_published_shapes(self) -> None:
         audit = rigel_assets.BlockCollisionImportAudit()
         audit.record("test:exact", rigel_assets.ResolvedCollisionShape("empty"))
-        audit.record(
-            "test:fallback",
-            rigel_assets.ResolvedCollisionShape(
-                "full", conservative_fallback=True, ambiguous=True
-            ),
-        )
         report = audit.provenance()
         self.assertEqual(report["exact_derived"], 1)
-        self.assertEqual(report["conservative_fallback"], 1)
-        self.assertEqual(report["ambiguous"], 1)
+        self.assertEqual(report["conservative_fallback"], 0)
+        self.assertEqual(report["ambiguous"], 0)
         rigel_assets.validate_block_collision_import_report(
             report,
             {
                 "empty": 1,
-                "full": 1,
+                "full": 0,
                 "single_partial": 0,
                 "multi_box": 0,
+                "exact_derived": 1,
+                "conservative_fallback": 0,
+                "ambiguous": 0,
             },
         )
 
-        inconsistent = dict(report)
-        inconsistent["ambiguous"] = 2
+        plausible_fallback = dict(report)
+        plausible_fallback["exact_derived"] = 0
+        plausible_fallback["conservative_fallback"] = 1
+        plausible_fallback["ambiguous"] = 1
         with self.assertRaisesRegex(
-            rigel_assets.AssetImportError, "ambiguity count"
+            rigel_assets.AssetImportError, "must be exact derivations"
         ):
-            rigel_assets.validate_block_collision_import_report(inconsistent)
+            rigel_assets.validate_block_collision_import_report(
+                plausible_fallback
+            )
 
     def test_model_transparency_and_fluid_do_not_blend_opaque_texture(self) -> None:
         resolver = _TransparentModelResolver()
@@ -3177,6 +3178,65 @@ class GeneratedTreeClosureTest(unittest.TestCase):
 
 
 class SynchronizationTest(unittest.TestCase):
+    def test_sync_omits_ambiguous_planes_from_collision_publication(self) -> None:
+        entries = synthetic_block_entries()
+        entries["base/models/blocks/plane.json"] = encoded_json(
+            {
+                "textures": {
+                    "all": {
+                        "fileName": "base:textures/blocks/test_stone.png"
+                    }
+                },
+                "planes": [{"invented": "unsupported"}],
+            }
+        )
+        entries["base/blocks/plane.json"] = encoded_json(
+            {
+                "stringId": "test:plane",
+                "defaultProperties": {
+                    "modelName": "base:models/blocks/plane.json"
+                },
+                "blockStates": {"default": {}},
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+
+            provenance, changed = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+
+            assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
+            self.assertTrue(changed)
+            self.assertFalse((assets / "blocks/test__plane.yaml").exists())
+            self.assertEqual(
+                provenance["block_collision_import"],
+                {
+                    "schema": rigel_assets.BLOCK_COLLISION_SUPPORT_SCHEMA,
+                    "empty": 2,
+                    "full": 2,
+                    "single_partial": 0,
+                    "multi_box": 0,
+                    "exact_derived": 4,
+                    "conservative_fallback": 0,
+                    "ambiguous": 0,
+                },
+            )
+            self.assertEqual(
+                provenance["block_model_import"]["omissions"]
+                ["plane_or_mixed_geometry"]["block_states"],
+                ["test:plane"],
+            )
+            self.assertTrue(
+                any(
+                    "omitted 1 block states with explicit plane geometry"
+                    in diagnostic
+                    for diagnostic in provenance["source_omissions"]
+                )
+            )
+
     def test_sync_records_block_model_recovery_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3395,7 +3455,7 @@ class SynchronizationTest(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 rigel_assets.AssetImportError,
-                "derivation counts are inconsistent",
+                "must be exact derivations",
             ):
                 rigel_assets.validate_existing_import(root)
             self.assertFalse(
@@ -3404,7 +3464,7 @@ class SynchronizationTest(unittest.TestCase):
                 )
             )
 
-    def test_existing_import_rejects_fallbacks_exceeding_full_shapes(self) -> None:
+    def test_sync_repairs_plausible_false_collision_fallback_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             jar = root / "fixture.jar"
@@ -3413,17 +3473,17 @@ class SynchronizationTest(unittest.TestCase):
                 root, jar, required_identifiers=("test:stone",)
             )
             report = provenance["block_collision_import"]
-            fallback_count = report["full"] + 1
-            report["exact_derived"] -= fallback_count
-            report["conservative_fallback"] = fallback_count
-            report["ambiguous"] = fallback_count
+            expected_report = dict(report)
+            report["exact_derived"] -= 1
+            report["conservative_fallback"] = 1
+            report["ambiguous"] = 1
             shape_counts = rigel_assets.audit_generated_collision_shapes(
                 root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
             )
 
             with self.assertRaisesRegex(
                 rigel_assets.AssetImportError,
-                "fallback count exceeds FullCube shapes",
+                "must be exact derivations",
             ):
                 rigel_assets.validate_block_collision_import_report(
                     report, shape_counts
@@ -3434,12 +3494,26 @@ class SynchronizationTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 rigel_assets.AssetImportError,
-                "fallback count exceeds FullCube shapes",
+                "must be exact derivations",
             ):
                 rigel_assets.validate_existing_import(root)
             self.assertFalse(
                 rigel_assets.current_import_matches(
                     root, str(provenance["jar_sha256"])
+                )
+            )
+
+            repaired, changed = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                repaired["block_collision_import"], expected_report
+            )
+            self.assertTrue(
+                rigel_assets.current_import_matches(
+                    root, str(repaired["jar_sha256"])
                 )
             )
 

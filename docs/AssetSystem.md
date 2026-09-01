@@ -210,9 +210,11 @@ normalized visual model.
 Collision import provenance records a support schema and disjoint shape counts
 for empty, full, single-partial, and multi-box registrations. It also reports
 exact derivations, conservative full-cube fallbacks, and ambiguous source
-constructs. Validation recomputes the shape counts from the published tree and
-rejects stale or internally inconsistent provenance. Source geometry outside
-the supported overhang range fails instead of being clamped.
+constructs. Published shapes are currently required to be exact derivations,
+so the fallback and ambiguity counts must both be zero. Validation reconstructs
+all seven counts from that publication policy and the published tree, rejecting
+plausible-looking derivation-count changes as well as stale shape counts. Source
+geometry outside the supported overhang range fails instead of being clamped.
 
 For the validated Cosmic Reach 0.6.1 input, the 2,021 published registrations
 resolve to 67 empty shapes, 315 full cubes, 956 single partial boxes, and 683

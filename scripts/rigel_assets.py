@@ -38,7 +38,7 @@ SNAPSHOT_STAGING_SUFFIX = ".staging"
 PROVENANCE_SCHEMA = 1
 IMPORTER_SCHEMA = 7
 BLOCK_MODEL_SUPPORT_SCHEMA = 1
-BLOCK_COLLISION_SUPPORT_SCHEMA = 1
+BLOCK_COLLISION_SUPPORT_SCHEMA = 2
 MATERIAL_LAYER_AUDIT_SCHEMA = 1
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -894,8 +894,6 @@ class ResolvedModel:
 class ResolvedCollisionShape:
     kind: str
     boxes: tuple[tuple[float, float, float, float, float, float], ...] = ()
-    conservative_fallback: bool = False
-    ambiguous: bool = False
 
 
 @dataclass
@@ -934,18 +932,9 @@ class BlockCollisionImportAudit:
                 collision.kind == "multi_box"
                 for collision in self.states.values()
             ),
-            "exact_derived": sum(
-                not collision.conservative_fallback
-                for collision in self.states.values()
-            ),
-            "conservative_fallback": sum(
-                collision.conservative_fallback
-                for collision in self.states.values()
-            ),
-            "ambiguous": sum(
-                collision.ambiguous
-                for collision in self.states.values()
-            ),
+            "exact_derived": len(self.states),
+            "conservative_fallback": 0,
+            "ambiguous": 0,
         }
         validate_block_collision_import_report(report)
         return report
@@ -1010,8 +999,8 @@ def _resolved_collision_shape(
     if geometry is None or model.empty:
         return ResolvedCollisionShape("empty")
     if geometry.plane_count:
-        return ResolvedCollisionShape(
-            "full", conservative_fallback=True, ambiguous=True
+        raise AssetImportError(
+            f"{context}: explicit plane geometry is not supported"
         )
 
     orientation = _block_orientation(
@@ -1659,10 +1648,6 @@ def render_block_yaml(
             model.empty,
             model.full_cube,
             model.geometry,
-        )
-    if model.geometry is not None and model.geometry.plane_count:
-        raise AssetImportError(
-            f"{context}: explicit plane geometry is not supported"
         )
     opaque = properties.get("isOpaque", not model.transparent)
     solid = not properties.get("walkThrough", False)
@@ -2424,6 +2409,9 @@ def audit_generated_collision_shapes(root: Path) -> dict[str, int]:
         "full": 0,
         "single_partial": 0,
         "multi_box": 0,
+        "exact_derived": 0,
+        "conservative_fallback": 0,
+        "ambiguous": 0,
     }
     for path in sorted((root / "blocks").glob("*.yaml")):
         logical = path.relative_to(root).as_posix()
@@ -2439,6 +2427,7 @@ def audit_generated_collision_shapes(root: Path) -> dict[str, int]:
             assert isinstance(boxes, list)
             category = "single_partial" if len(boxes) == 1 else "multi_box"
         counts[category] += 1
+        counts["exact_derived"] += 1
     return counts
 
 
@@ -2482,26 +2471,28 @@ def validate_block_collision_import_report(
         for key in ("empty", "full", "single_partial", "multi_box")
     )
     if (
-        counts["exact_derived"] + counts["conservative_fallback"]
-        != registration_count
+        counts["exact_derived"] != registration_count
+        or counts["conservative_fallback"] != 0
+        or counts["ambiguous"] != 0
     ):
         raise AssetImportError(
-            "block_collision_import derivation counts are inconsistent"
-        )
-    if counts["ambiguous"] > counts["conservative_fallback"]:
-        raise AssetImportError(
-            "block_collision_import ambiguity count is inconsistent"
-        )
-    if counts["conservative_fallback"] > counts["full"]:
-        raise AssetImportError(
-            "block_collision_import fallback count exceeds FullCube shapes"
+            "block_collision_import published registrations must be exact "
+            "derivations; fallback and ambiguity are unsupported"
         )
     if shape_counts is not None and any(
         counts[key] != shape_counts.get(key)
-        for key in ("empty", "full", "single_partial", "multi_box")
+        for key in (
+            "empty",
+            "full",
+            "single_partial",
+            "multi_box",
+            "exact_derived",
+            "conservative_fallback",
+            "ambiguous",
+        )
     ):
         raise AssetImportError(
-            "block_collision_import shape counts do not match the asset tree"
+            "block_collision_import counts do not match the asset tree"
         )
     return report
 

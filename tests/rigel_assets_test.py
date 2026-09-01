@@ -2549,6 +2549,26 @@ class BlockCompilerTest(unittest.TestCase):
             self.assertEqual(generated["textures"], red["textures"])
             self.assertEqual(generated["orientation"], [0, 90, 0])
             self.assertEqual(
+                red["collision"],
+                {
+                    "boxes": [
+                        [-0.09375, -0.03125, 0.21875,
+                         1.09375, 0.53125, 0.78125],
+                        [0.25, 0.5, 0.25, 0.75, 1.0, 0.75],
+                    ]
+                },
+            )
+            self.assertEqual(
+                generated["collision"],
+                {
+                    "boxes": [
+                        [0.21875, -0.03125, -0.09375,
+                         0.78125, 0.53125, 1.09375],
+                        [0.25, 0.5, 0.25, 0.75, 1.0, 0.75],
+                    ]
+                },
+            )
+            self.assertEqual(
                 blue["textures"]["surface"],
                 "textures/blocks/blue_surface.png",
             )
@@ -2666,6 +2686,206 @@ class BlockCompilerTest(unittest.TestCase):
                     rigel_assets.compile_blocks(
                         archive, rigel_assets.indexed_archive(archive), root / "output"
                     )
+
+    def test_snapshots_walk_through_and_full_cube_collision(self) -> None:
+        audit = rigel_assets.BlockCollisionImportAudit()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            output = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive,
+                    rigel_assets.indexed_archive(archive),
+                    output,
+                    collision_audit=audit,
+                )
+
+            base = rigel_assets.parse_generated_block(
+                (output / "blocks/test__stone.yaml").read_bytes(), "base.yaml"
+            )
+            walk_through = rigel_assets.parse_generated_block(
+                (output / "blocks/test__stone[kind=bright].yaml").read_bytes(),
+                "walk-through.yaml",
+            )
+
+        self.assertEqual(base["collision"], "full")
+        self.assertEqual(walk_through["model"], "cube")
+        self.assertEqual(walk_through["collision"], "none")
+        self.assertEqual(
+            audit.provenance(),
+            {
+                "schema": rigel_assets.BLOCK_COLLISION_SUPPORT_SCHEMA,
+                "empty": 2,
+                "full": 2,
+                "single_partial": 0,
+                "multi_box": 0,
+                "exact_derived": 4,
+                "conservative_fallback": 0,
+                "ambiguous": 0,
+            },
+        )
+
+    def test_snapshots_partial_multiple_helper_and_overhanging_cuboids(self) -> None:
+        def model(cuboids: list[dict[str, object]]) -> bytes:
+            return encoded_json(
+                {
+                    "textures": {
+                        "all": {
+                            "fileName": "base:textures/blocks/collision.png"
+                        }
+                    },
+                    "cuboids": cuboids,
+                }
+            )
+
+        def cuboid(
+            bounds: list[int], face: str = "localPosY"
+        ) -> dict[str, object]:
+            return {
+                "localBounds": bounds,
+                "faces": {
+                    face: {"uv": [0, 0, 16, 16], "texture": "all"}
+                },
+            }
+
+        entries = {
+            "base/models/blocks/slab.json": model(
+                [cuboid([0, 0, 0, 16, 8, 16])]
+            ),
+            "base/models/blocks/stair.json": model(
+                [
+                    cuboid([0, 0, 0, 16, 8, 16]),
+                    cuboid([0, 8, 0, 8, 16, 16]),
+                    cuboid([0, 8, 0, 0, 16, 16], "localPosX"),
+                ]
+            ),
+            "base/models/blocks/overhang.json": model(
+                [cuboid([-4, 0, 4, 20, 16, 12])]
+            ),
+            "base/textures/blocks/collision.png": synthetic_png(),
+        }
+        for name in ("slab", "stair", "overhang"):
+            entries[f"base/blocks/{name}.json"] = encoded_json(
+                {
+                    "stringId": f"test:{name}",
+                    "defaultProperties": {
+                        "modelName": f"base:models/blocks/{name}.json"
+                    },
+                    "blockStates": {"default": {}},
+                }
+            )
+
+        audit = rigel_assets.BlockCollisionImportAudit()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, entries)
+            output = root / "output"
+            with zipfile.ZipFile(jar) as archive:
+                rigel_assets.compile_blocks(
+                    archive,
+                    rigel_assets.indexed_archive(archive),
+                    output,
+                    collision_audit=audit,
+                )
+            collisions = {
+                name: rigel_assets.parse_generated_block(
+                    (output / f"blocks/test__{name}.yaml").read_bytes(),
+                    f"{name}.yaml",
+                )["collision"]
+                for name in ("slab", "stair", "overhang")
+            }
+
+        self.assertEqual(
+            collisions["slab"],
+            {"boxes": [[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]},
+        )
+        self.assertEqual(
+            collisions["stair"],
+            {
+                "boxes": [
+                    [0.0, 0.0, 0.0, 1.0, 0.5, 1.0],
+                    [0.0, 0.5, 0.0, 0.5, 1.0, 1.0],
+                ]
+            },
+        )
+        self.assertEqual(
+            collisions["overhang"],
+            {"boxes": [[-0.25, 0.0, 0.25, 1.25, 1.0, 0.75]]},
+        )
+        report = audit.provenance()
+        self.assertEqual(report["single_partial"], 2)
+        self.assertEqual(report["multi_box"], 1)
+        self.assertEqual(report["exact_derived"], 3)
+
+    def test_orients_collision_bounds_for_every_supported_state_turn(self) -> None:
+        source = (-0.25, 0.125, 0.25, 0.75, 0.625, 1.25)
+        cases = {
+            (0, 0, 0): source,
+            (90, 0, 0): (-0.25, 0.25, 0.375, 0.75, 1.25, 0.875),
+            (270, 0, 0): (-0.25, -0.25, 0.125, 0.75, 0.75, 0.625),
+            (0, 90, 0): (-0.25, 0.125, -0.25, 0.75, 0.625, 0.75),
+            (0, 180, 0): (0.25, 0.125, -0.25, 1.25, 0.625, 0.75),
+            (0, 270, 0): (0.25, 0.125, 0.25, 1.25, 0.625, 1.25),
+            (0, 0, 90): (0.125, 0.25, 0.25, 0.625, 1.25, 1.25),
+        }
+        for orientation, expected in cases.items():
+            with self.subTest(orientation=orientation):
+                self.assertEqual(
+                    rigel_assets._oriented_collision_bounds(
+                        source, orientation
+                    ),
+                    expected,
+                )
+
+    def test_collision_bounds_outside_supported_overhang_fail_closed(self) -> None:
+        entries = synthetic_cuboid_entries()
+        model = json.loads(entries["base/models/blocks/post.json"])
+        model["cuboids"][0]["localBounds"][0] = -5
+        entries["base/models/blocks/post.json"] = encoded_json(model)
+        with tempfile.TemporaryDirectory() as directory:
+            jar = Path(directory) / "fixture.jar"
+            write_jar(jar, entries)
+            with zipfile.ZipFile(jar) as archive, self.assertRaisesRegex(
+                rigel_assets.AssetImportError, "supported.*range"
+            ):
+                rigel_assets.compile_blocks(
+                    archive,
+                    rigel_assets.indexed_archive(archive),
+                    Path(directory) / "output",
+                )
+
+    def test_collision_fallback_and_ambiguity_accounting_is_consistent(self) -> None:
+        audit = rigel_assets.BlockCollisionImportAudit()
+        audit.record("test:exact", rigel_assets.ResolvedCollisionShape("empty"))
+        audit.record(
+            "test:fallback",
+            rigel_assets.ResolvedCollisionShape(
+                "full", conservative_fallback=True, ambiguous=True
+            ),
+        )
+        report = audit.provenance()
+        self.assertEqual(report["exact_derived"], 1)
+        self.assertEqual(report["conservative_fallback"], 1)
+        self.assertEqual(report["ambiguous"], 1)
+        rigel_assets.validate_block_collision_import_report(
+            report,
+            {
+                "empty": 1,
+                "full": 1,
+                "single_partial": 0,
+                "multi_box": 0,
+            },
+        )
+
+        inconsistent = dict(report)
+        inconsistent["ambiguous"] = 2
+        with self.assertRaisesRegex(
+            rigel_assets.AssetImportError, "ambiguity count"
+        ):
+            rigel_assets.validate_block_collision_import_report(inconsistent)
 
     def test_model_transparency_and_fluid_do_not_blend_opaque_texture(self) -> None:
         resolver = _TransparentModelResolver()
@@ -3106,6 +3326,35 @@ class SynchronizationTest(unittest.TestCase):
                 rebuilt["block_model_import"]["schema"], updated_schema
             )
 
+    def test_block_collision_support_schema_invalidates_synchronization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            first, _ = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+            updated_schema = rigel_assets.BLOCK_COLLISION_SUPPORT_SCHEMA + 1
+
+            with mock.patch.object(
+                rigel_assets,
+                "BLOCK_COLLISION_SUPPORT_SCHEMA",
+                updated_schema,
+            ):
+                self.assertFalse(
+                    rigel_assets.current_import_matches(
+                        root, str(first["jar_sha256"])
+                    )
+                )
+                rebuilt, changed = rigel_assets.synchronize(
+                    root, jar, required_identifiers=("test:stone",)
+                )
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                rebuilt["block_collision_import"]["schema"], updated_schema
+            )
+
     def test_existing_import_rejects_inconsistent_model_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3122,6 +3371,30 @@ class SynchronizationTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 rigel_assets.AssetImportError,
                 "approximation correction count is inconsistent",
+            ):
+                rigel_assets.validate_existing_import(root)
+            self.assertFalse(
+                rigel_assets.current_import_matches(
+                    root, str(provenance["jar_sha256"])
+                )
+            )
+
+    def test_existing_import_rejects_inconsistent_collision_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jar = root / "fixture.jar"
+            write_jar(jar, synthetic_block_entries())
+            provenance, _ = rigel_assets.synchronize(
+                root, jar, required_identifiers=("test:stone",)
+            )
+            provenance["block_collision_import"]["full"] += 1
+            rigel_assets.atomic_write_json(
+                root / rigel_assets.PROVENANCE_RELATIVE_PATH, provenance
+            )
+
+            with self.assertRaisesRegex(
+                rigel_assets.AssetImportError,
+                "derivation counts are inconsistent",
             ):
                 rigel_assets.validate_existing_import(root)
             self.assertFalse(
@@ -3614,6 +3887,48 @@ class SynchronizationTest(unittest.TestCase):
                         root, required_identifiers=("test:stone",)
                     )
 
+    def test_validation_rejects_malformed_and_noncanonical_collision(self) -> None:
+        base = rigel_assets.render_block_yaml(
+            "test:stone",
+            {"modelName": "unused"},
+            _MissingTextureModelResolver(),
+            "fixture",
+        )
+        cases = (
+            (
+                b"collision: full",
+                b'collision: {"boxes":[]}',
+                "non-empty array",
+            ),
+            (
+                b"collision: full",
+                b'collision: {"boxes":[[0,0,0,1,1,1]]}',
+                "canonical unit geometry",
+            ),
+            (
+                b"collision: full",
+                b'collision: {"boxes":[[-0.26,0,0,1,1,1]]}',
+                "supported.*range",
+            ),
+        )
+        for original, replacement, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                rigel_assets.write_output(
+                    root,
+                    "blocks/test__stone.yaml",
+                    base.replace(original, replacement),
+                )
+                rigel_assets.write_output(
+                    root, "textures/blocks/missing.png", synthetic_png()
+                )
+                with self.assertRaisesRegex(
+                    rigel_assets.AssetImportError, message
+                ):
+                    rigel_assets.validate_generated_tree(
+                        root, required_identifiers=("test:stone",)
+                    )
+
 
 class RealJarBlockModelClosureTest(unittest.TestCase):
     def test_cosmic_reach_0_6_1_model_closure(self) -> None:
@@ -3697,6 +4012,19 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
                     "suspicious_cross_classifications": [],
                 },
             )
+            self.assertEqual(
+                first["block_collision_import"],
+                {
+                    "schema": rigel_assets.BLOCK_COLLISION_SUPPORT_SCHEMA,
+                    "empty": 67,
+                    "full": 315,
+                    "single_partial": 956,
+                    "multi_box": 683,
+                    "exact_derived": 2021,
+                    "conservative_fallback": 0,
+                    "ambiguous": 0,
+                },
+            )
 
             assets = root / rigel_assets.GENERATED_ASSETS_RELATIVE_PATH
             generated_blocks = {}
@@ -3773,9 +4101,38 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
                     "top": rigel_assets.TextureAlphaClass.FRACTIONAL,
                 },
             )
+            self.assertEqual(generated_blocks["base:grass_blades"]["collision"], "none")
+            self.assertEqual(generated_blocks["base:asphalt"]["collision"], "full")
+            self.assertEqual(
+                generated_blocks["base:asphalt[slab_type=bottom]"]["collision"],
+                {"boxes": [[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]},
+            )
+            self.assertEqual(
+                generated_blocks[
+                    "base:asphalt[stair_type=bottom_NegX]"
+                ]["collision"],
+                {
+                    "boxes": [
+                        [0.0, 0.5, 0.0, 0.5, 1.0, 1.0],
+                        [0.0, 0.0, 0.0, 1.0, 0.5, 1.0],
+                    ]
+                },
+            )
+            piston_head = generated_blocks[
+                "base:piston[direction=PosX,type=push,part=head]"
+            ]["collision"]
+            self.assertEqual(
+                piston_head,
+                {
+                    "boxes": [
+                        [0.75, 0.0, 0.0, 1.0, 1.0, 1.0],
+                        [-0.25, 0.375, 0.375, 0.75, 0.625, 0.625],
+                    ]
+                },
+            )
             self.assertEqual(
                 first["output_tree_sha256"],
-                "78cda73112e0d463503b454241ab625c83af4c00c927a0b984375c06fad61bdf",
+                "ca6838262d1b1e934462f3308408cd0e147ae8f168dd7827d67171001fb58a40",
             )
 
 

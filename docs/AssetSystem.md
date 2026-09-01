@@ -196,6 +196,32 @@ box storage, while inline boxes are shared through read-only storage and
 exposed as a non-owning read-only span. Collision is never derived at runtime
 from `BlockModel` cuboids.
 
+The Cosmic Reach importer always writes an explicit collision snapshot for
+each published registration. A source `walkThrough` state becomes `none`, even
+when it has visible geometry. Other states use the positive-volume cuboids from
+the fully resolved source model. Imported inflation is already folded into the
+bounds, zero-volume render helpers are discarded, and the registration's
+orthogonal state orientation is applied before the boxes are written. A single
+unit-cell box is canonicalized to `full`; all other boxes remain inline on the
+registration. This use of resolved visual cuboids is confined to import time.
+The normalized collision asset and runtime type remain independent from the
+normalized visual model.
+
+Collision import provenance records a support schema and disjoint shape counts
+for empty, full, single-partial, and multi-box registrations. It also reports
+exact derivations, conservative full-cube fallbacks, and ambiguous source
+constructs. Validation recomputes the shape counts from the published tree and
+rejects stale or internally inconsistent provenance. Source geometry outside
+the supported overhang range fails instead of being clamped.
+
+For the validated Cosmic Reach 0.6.1 input, the 2,021 published registrations
+resolve to 67 empty shapes, 315 full cubes, 956 single partial boxes, and 683
+multi-box shapes. All are exact derivations; fallback and ambiguity counts are
+zero. The empty total includes 66 walk-through registrations with visual
+geometry. Twenty-four solid piston-head registrations retain collision boxes
+that reach exactly 0.25 cell beyond the owning cell. Stair collision excludes
+the source models' zero-volume render helpers.
+
 The format supports the currently measured single- and multiple-cuboid models.
 It is not a scene graph or a general transform/model format. Plane primitives,
 animated block textures, and non-16-by-16 block textures are not supported.

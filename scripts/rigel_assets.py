@@ -36,12 +36,15 @@ SNAPSHOT_LOCK_FILENAME = ".snapshot.lock"
 SNAPSHOT_ACTIVE_GENERATION_FILENAME = ".active-generation.json"
 SNAPSHOT_STAGING_SUFFIX = ".staging"
 PROVENANCE_SCHEMA = 1
-IMPORTER_SCHEMA = 6
+IMPORTER_SCHEMA = 7
 BLOCK_MODEL_SUPPORT_SCHEMA = 1
+BLOCK_COLLISION_SUPPORT_SCHEMA = 1
 MATERIAL_LAYER_AUDIT_SCHEMA = 1
 SOURCE_PREFIX = "base/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 BLOCK_TEXTURE_SIZE = (16, 16)
+BLOCK_COLLISION_MINIMUM_COORDINATE = -0.25
+BLOCK_COLLISION_MAXIMUM_COORDINATE = 1.25
 REQUIRED_BLOCK_IDENTIFIERS = (
     "base:dirt",
     "base:grass",
@@ -887,6 +890,181 @@ class ResolvedModel:
     geometry: ResolvedGeometry | None = None
 
 
+@dataclass(frozen=True)
+class ResolvedCollisionShape:
+    kind: str
+    boxes: tuple[tuple[float, float, float, float, float, float], ...] = ()
+    conservative_fallback: bool = False
+    ambiguous: bool = False
+
+
+@dataclass
+class BlockCollisionImportAudit:
+    states: dict[str, ResolvedCollisionShape] = field(default_factory=dict)
+
+    def record(
+        self, identifier: str, collision: ResolvedCollisionShape
+    ) -> None:
+        if identifier in self.states:
+            raise AssetImportError(
+                f"duplicate collision audit identifier: {identifier}"
+            )
+        self.states[identifier] = collision
+
+    def discard(self, identifiers: list[str]) -> None:
+        for identifier in identifiers:
+            self.states.pop(identifier, None)
+
+    def provenance(self) -> dict[str, object]:
+        report: dict[str, object] = {
+            "schema": BLOCK_COLLISION_SUPPORT_SCHEMA,
+            "empty": sum(
+                collision.kind == "empty"
+                for collision in self.states.values()
+            ),
+            "full": sum(
+                collision.kind == "full"
+                for collision in self.states.values()
+            ),
+            "single_partial": sum(
+                collision.kind == "single_partial"
+                for collision in self.states.values()
+            ),
+            "multi_box": sum(
+                collision.kind == "multi_box"
+                for collision in self.states.values()
+            ),
+            "exact_derived": sum(
+                not collision.conservative_fallback
+                for collision in self.states.values()
+            ),
+            "conservative_fallback": sum(
+                collision.conservative_fallback
+                for collision in self.states.values()
+            ),
+            "ambiguous": sum(
+                collision.ambiguous
+                for collision in self.states.values()
+            ),
+        }
+        validate_block_collision_import_report(report)
+        return report
+
+
+def _oriented_collision_bounds(
+    bounds: tuple[float, float, float, float, float, float],
+    orientation: tuple[int, int, int],
+) -> tuple[float, float, float, float, float, float]:
+    min_x, min_y, min_z, max_x, max_y, max_z = bounds
+    if orientation == (0, 0, 0):
+        result = bounds
+    elif orientation == (90, 0, 0):
+        result = (
+            min_x, min_z, 1.0 - max_y,
+            max_x, max_z, 1.0 - min_y,
+        )
+    elif orientation == (270, 0, 0):
+        result = (
+            min_x, 1.0 - max_z, min_y,
+            max_x, 1.0 - min_z, max_y,
+        )
+    elif orientation == (0, 90, 0):
+        result = (
+            1.0 - max_z, min_y, min_x,
+            1.0 - min_z, max_y, max_x,
+        )
+    elif orientation == (0, 180, 0):
+        result = (
+            1.0 - max_x, min_y, 1.0 - max_z,
+            1.0 - min_x, max_y, 1.0 - min_z,
+        )
+    elif orientation == (0, 270, 0):
+        result = (
+            min_z, min_y, 1.0 - max_x,
+            max_z, max_y, 1.0 - min_x,
+        )
+    elif orientation == (0, 0, 90):
+        result = (
+            min_y, 1.0 - max_x, min_z,
+            max_y, 1.0 - min_x, max_z,
+        )
+    else:
+        raise AssertionError(f"unsupported normalized orientation: {orientation}")
+    return tuple(0.0 if coordinate == 0.0 else coordinate for coordinate in result)
+
+
+def _resolved_collision_shape(
+    model: ResolvedModel,
+    properties: dict[str, object],
+    context: str,
+) -> ResolvedCollisionShape:
+    walk_through = properties.get("walkThrough", False)
+    if not isinstance(walk_through, bool):
+        raise AssetImportError(f"{context}.walkThrough must be a boolean")
+    if walk_through:
+        return ResolvedCollisionShape("empty")
+
+    if model.full_cube:
+        return ResolvedCollisionShape("full")
+    geometry = model.geometry
+    if geometry is None or model.empty:
+        return ResolvedCollisionShape("empty")
+    if geometry.plane_count:
+        return ResolvedCollisionShape(
+            "full", conservative_fallback=True, ambiguous=True
+        )
+
+    orientation = _block_orientation(
+        properties.get("rotation"), f"{context}.rotation"
+    )
+    boxes: list[tuple[float, float, float, float, float, float]] = []
+    for cuboid_index, cuboid in enumerate(geometry.cuboids):
+        if any(
+            cuboid.bounds[axis] == cuboid.bounds[axis + 3]
+            for axis in range(3)
+        ):
+            continue
+        bounds = _oriented_collision_bounds(cuboid.bounds, orientation)
+        for coordinate_index, coordinate in enumerate(bounds):
+            if (
+                coordinate < BLOCK_COLLISION_MINIMUM_COORDINATE
+                or coordinate > BLOCK_COLLISION_MAXIMUM_COORDINATE
+            ):
+                raise AssetImportError(
+                    f"{context}: collision cuboid {cuboid_index} coordinate "
+                    f"{coordinate_index} exceeds the supported "
+                    f"[{BLOCK_COLLISION_MINIMUM_COORDINATE}, "
+                    f"{BLOCK_COLLISION_MAXIMUM_COORDINATE}] range"
+                )
+        if bounds in boxes:
+            raise AssetImportError(
+                f"{context}: duplicate positive-volume collision cuboid"
+            )
+        boxes.append(bounds)
+
+    if not boxes:
+        return ResolvedCollisionShape("empty")
+    normalized_boxes = tuple(boxes)
+    if normalized_boxes == ((0.0, 0.0, 0.0, 1.0, 1.0, 1.0),):
+        return ResolvedCollisionShape("full")
+    return ResolvedCollisionShape(
+        "single_partial" if len(normalized_boxes) == 1 else "multi_box",
+        normalized_boxes,
+    )
+
+
+def _render_collision_shape(collision: ResolvedCollisionShape) -> str:
+    if collision.kind == "empty":
+        return "none"
+    if collision.kind == "full":
+        return "full"
+    return json.dumps(
+        {"boxes": [list(box) for box in collision.boxes]},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
 @dataclass
 class BlockModelImportAudit:
     candidate_states: set[str] = field(default_factory=set)
@@ -1462,6 +1640,7 @@ def render_block_yaml(
     models: BlockModelResolver,
     context: str,
     texture_model_reference: str | None = None,
+    collision_audit: BlockCollisionImportAudit | None = None,
 ) -> bytes:
     _validate_block_properties(properties, context)
     model_reference = properties.get("modelName")
@@ -1491,6 +1670,9 @@ def render_block_yaml(
         raise AssetImportError(f"{context}: opacity/solidity values are invalid")
     orientation = _block_orientation(properties.get("rotation"), f"{context}.rotation")
     rotate_top_bottom = bool(properties.get("rotateTopBottom", False))
+    collision = _resolved_collision_shape(model, properties, context)
+    if collision_audit is not None:
+        collision_audit.record(identifier, collision)
     texture_bindings = (
         _resolved_face_textures(model, context)
         if model.full_cube
@@ -1507,6 +1689,7 @@ def render_block_yaml(
         f"model: {model_identifier}",
         f"opaque: {'true' if opaque else 'false'}",
         f"solid: {'true' if solid else 'false'}",
+        f"collision: {_render_collision_shape(collision)}",
     ]
     if orientation != (0, 0, 0):
         lines.append(
@@ -1599,6 +1782,7 @@ def compile_blocks(
     staging: Path,
     diagnostics: list[str] | None = None,
     model_audit: BlockModelImportAudit | None = None,
+    collision_audit: BlockCollisionImportAudit | None = None,
 ) -> int:
     models = BlockModelResolver(archive, entries)
     generators = StateGeneratorResolver(archive, entries)
@@ -1722,6 +1906,7 @@ def compile_blocks(
                         models,
                         source,
                         texture_model,
+                        collision_audit,
                     )
                     generated[identifier] = (payload, source)
                     generated_paths[output] = (identifier, source)
@@ -1739,6 +1924,66 @@ def compile_blocks(
             f"plane geometry (unsupported): {', '.join(sources)}"
         )
     return len(generated)
+
+
+def _parse_generated_collision(
+    raw_value: str, source: str, line_number: int
+) -> str | dict[str, object]:
+    context = f"{source}:{line_number}: collision"
+    if raw_value in ("none", "full"):
+        return raw_value
+    try:
+        decoded = json.loads(raw_value)
+    except json.JSONDecodeError as error:
+        raise AssetImportError(
+            f"{context} must be none, full, or a boxes mapping"
+        ) from error
+    mapping = _expect_object(decoded, f"{source}.collision")
+    if set(mapping) != {"boxes"}:
+        raise AssetImportError(
+            f"{source}.collision must contain exactly one boxes field"
+        )
+    raw_boxes = mapping["boxes"]
+    if not isinstance(raw_boxes, list) or not raw_boxes:
+        raise AssetImportError(
+            f"{source}.collision.boxes must be a non-empty array"
+        )
+    boxes: list[list[float]] = []
+    for box_index, raw_box in enumerate(raw_boxes):
+        box_context = f"{source}.collision.boxes[{box_index}]"
+        if not isinstance(raw_box, list) or len(raw_box) != 6:
+            raise AssetImportError(
+                f"{box_context} must contain six coordinates"
+            )
+        box = [
+            _finite_number(value, f"{box_context}[{index}]")
+            for index, value in enumerate(raw_box)
+        ]
+        for axis in range(3):
+            if box[axis] >= box[axis + 3]:
+                raise AssetImportError(
+                    f"{box_context} must have positive volume"
+                )
+        if any(
+            coordinate < BLOCK_COLLISION_MINIMUM_COORDINATE
+            or coordinate > BLOCK_COLLISION_MAXIMUM_COORDINATE
+            for coordinate in box
+        ):
+            raise AssetImportError(
+                f"{box_context} exceeds the supported "
+                f"[{BLOCK_COLLISION_MINIMUM_COORDINATE}, "
+                f"{BLOCK_COLLISION_MAXIMUM_COORDINATE}] range"
+            )
+        if box in boxes:
+            raise AssetImportError(
+                f"{source}.collision.boxes must not contain duplicates"
+            )
+        boxes.append(box)
+    if boxes == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]:
+        raise AssetImportError(
+            f"{source}.collision canonical unit geometry must use full"
+        )
+    return {"boxes": boxes}
 
 
 def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
@@ -1816,6 +2061,10 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
             result[key] = list(
                 _block_orientation(decoded, f"{source}.orientation")
             )
+        elif key == "collision":
+            result[key] = _parse_generated_collision(
+                value, source, line_number
+            )
         elif key in ("emits_light", "light_attenuation"):
             try:
                 result[key] = int(value)
@@ -1826,7 +2075,8 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
     allowed = {
         "id", "model", "opaque", "solid", "cull_same_type", "layer",
         "emits_light", "light_attenuation", "orientation",
-        "rotate_top_bottom", "textures", "texture_render_layers",
+        "rotate_top_bottom", "collision", "textures",
+        "texture_render_layers",
     }
     _reject_unknown_keys(result, allowed, source)
     required = {"id", "model", "opaque", "solid", "layer"}
@@ -2031,6 +2281,7 @@ def omit_blocks_with_unsupported_textures(
     root: Path,
     diagnostics: list[str] | None = None,
     model_audit: BlockModelImportAudit | None = None,
+    collision_audit: BlockCollisionImportAudit | None = None,
 ) -> int:
     omitted: list[str] = []
     unsupported: set[str] = set()
@@ -2063,6 +2314,8 @@ def omit_blocks_with_unsupported_textures(
         )
     if model_audit is not None:
         model_audit.record_nonstandard_textures(omitted)
+    if collision_audit is not None:
+        collision_audit.discard(omitted)
     prune_unused_block_models(root)
     return len(omitted)
 
@@ -2161,6 +2414,92 @@ def validate_block_model_import_report(value: object) -> dict[str, object]:
     if base_states != corrected + omitted_base_states:
         raise AssetImportError(
             "block_model_import approximation correction count is inconsistent"
+        )
+    return report
+
+
+def audit_generated_collision_shapes(root: Path) -> dict[str, int]:
+    counts = {
+        "empty": 0,
+        "full": 0,
+        "single_partial": 0,
+        "multi_box": 0,
+    }
+    for path in sorted((root / "blocks").glob("*.yaml")):
+        logical = path.relative_to(root).as_posix()
+        block = parse_generated_block(path.read_bytes(), logical)
+        collision = block.get("collision")
+        if collision is None:
+            category = "full" if block["solid"] else "empty"
+        elif collision == "none":
+            category = "empty"
+        elif collision == "full":
+            category = "full"
+        else:
+            assert isinstance(collision, dict)
+            boxes = collision["boxes"]
+            assert isinstance(boxes, list)
+            category = "single_partial" if len(boxes) == 1 else "multi_box"
+        counts[category] += 1
+    return counts
+
+
+def validate_block_collision_import_report(
+    value: object,
+    shape_counts: dict[str, int] | None = None,
+) -> dict[str, object]:
+    report = _expect_object(value, "block_collision_import")
+    required = {
+        "schema",
+        "empty",
+        "full",
+        "single_partial",
+        "multi_box",
+        "exact_derived",
+        "conservative_fallback",
+        "ambiguous",
+    }
+    if set(report) != required:
+        raise AssetImportError(
+            "block_collision_import must contain the complete supported report"
+        )
+
+    counts: dict[str, int] = {}
+    for key in sorted(required):
+        raw_count = report[key]
+        if (
+            not isinstance(raw_count, int)
+            or isinstance(raw_count, bool)
+            or raw_count < 0
+        ):
+            raise AssetImportError(
+                f"block_collision_import.{key} must be a non-negative integer"
+            )
+        counts[key] = raw_count
+    if counts["schema"] != BLOCK_COLLISION_SUPPORT_SCHEMA:
+        raise AssetImportError("block_collision_import schema is unsupported")
+
+    registration_count = sum(
+        counts[key]
+        for key in ("empty", "full", "single_partial", "multi_box")
+    )
+    if (
+        counts["exact_derived"] + counts["conservative_fallback"]
+        != registration_count
+    ):
+        raise AssetImportError(
+            "block_collision_import derivation counts are inconsistent"
+        )
+    if counts["ambiguous"] > counts["conservative_fallback"]:
+        raise AssetImportError(
+            "block_collision_import ambiguity count is inconsistent"
+        )
+    if shape_counts is not None and any(
+        counts[key] != shape_counts.get(key)
+        for key in ("empty", "full", "single_partial", "multi_box")
+    ):
+        raise AssetImportError(
+            "block_collision_import shape counts do not match the asset tree"
         )
     return report
 
@@ -2531,6 +2870,7 @@ def synchronize(
             with _generated_tree_staging(root) as staging:
                 diagnostics: list[str] = []
                 model_audit = BlockModelImportAudit()
+                collision_audit = BlockCollisionImportAudit()
                 with zipfile.ZipFile(jar_snapshot) as archive:
                     entries = indexed_archive(archive)
                     if not any(
@@ -2542,16 +2882,22 @@ def synchronize(
                         )
                     extract_direct_assets(archive, entries, staging, diagnostics)
                     compile_blocks(
-                        archive, entries, staging, diagnostics, model_audit
+                        archive, entries, staging, diagnostics, model_audit,
+                        collision_audit,
                     )
                     omit_blocks_with_unsupported_textures(
-                        staging, diagnostics, model_audit
+                        staging, diagnostics, model_audit, collision_audit
                     )
                     version = source_version(archive, entries)
                 counts = validate_generated_tree(staging, required_identifiers)
                 material_layer_audit = audit_generated_material_layers(staging)
                 validate_material_layer_audit_report(
                     material_layer_audit, counts
+                )
+                collision_report = collision_audit.provenance()
+                validate_block_collision_import_report(
+                    collision_report,
+                    audit_generated_collision_shapes(staging),
                 )
                 provenance = {
                     "schema": PROVENANCE_SCHEMA,
@@ -2562,6 +2908,7 @@ def synchronize(
                     "output_tree_sha256": sha256_tree(staging),
                     "counts": counts,
                     "block_model_import": model_audit.provenance(),
+                    "block_collision_import": collision_report,
                     "material_layer_audit": material_layer_audit,
                 }
                 if version is not None:
@@ -2599,8 +2946,15 @@ def _validate_existing_import(root: Path) -> dict[str, object]:
     if provenance.get("importer_sha256") != importer_sha256():
         raise AssetImportError("generated assets require synchronization with this importer")
     validate_block_model_import_report(provenance.get("block_model_import"))
+    validate_block_collision_import_report(
+        provenance.get("block_collision_import")
+    )
     assets = root / GENERATED_ASSETS_RELATIVE_PATH
     counts = validate_generated_tree(assets)
+    validate_block_collision_import_report(
+        provenance.get("block_collision_import"),
+        audit_generated_collision_shapes(assets),
+    )
     material_layer_audit = audit_generated_material_layers(assets)
     validate_material_layer_audit_report(material_layer_audit, counts)
     if provenance.get("material_layer_audit") != material_layer_audit:
@@ -3306,6 +3660,10 @@ def _import_matches(
         return False
     try:
         validate_block_model_import_report(provenance.get("block_model_import"))
+        validate_block_collision_import_report(
+            provenance.get("block_collision_import"),
+            audit_generated_collision_shapes(assets),
+        )
         validate_material_layer_audit_report(
             provenance.get("material_layer_audit"), provenance.get("counts")
         )
@@ -3424,6 +3782,26 @@ def print_material_layer_audit(report: object) -> None:
         )
 
 
+def print_block_collision_import(report: object) -> None:
+    validate_block_collision_import_report(report)
+    assert isinstance(report, dict)
+    print(
+        "Block collision import: "
+        + ", ".join(
+            f"{name}={report[name]}"
+            for name in (
+                "empty",
+                "full",
+                "single_partial",
+                "multi_box",
+                "exact_derived",
+                "conservative_fallback",
+                "ambiguous",
+            )
+        )
+    )
+
+
 def status(root: Path, explicit: str | Path | None = None) -> int:
     try:
         jar, source = resolve_jar(root, explicit)
@@ -3438,6 +3816,9 @@ def status(root: Path, explicit: str | Path | None = None) -> int:
     print(f"JAR SHA-256: {jar_digest}")
     print(f"Generated assets: {'current' if synchronized else 'not synchronized'}")
     if provenance is not None:
+        print_block_collision_import(
+            provenance.get("block_collision_import")
+        )
         print_material_layer_audit(provenance.get("material_layer_audit"))
     return 0 if synchronized else 2
 
@@ -3536,6 +3917,9 @@ def main(argv: list[str] | None = None) -> int:
                                 "base_approximation_states="
                                 f"{summary.get('base_approximation_states')}"
                             )
+            print_block_collision_import(
+                provenance.get("block_collision_import")
+            )
             print_material_layer_audit(provenance.get("material_layer_audit"))
             omissions = provenance.get("source_omissions", [])
             if isinstance(omissions, list):
@@ -3555,6 +3939,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate":
             provenance = validate_existing_import(root)
             print(f"Generated assets are valid: {provenance['output_tree_sha256']}")
+            print_block_collision_import(
+                provenance.get("block_collision_import")
+            )
             print_material_layer_audit(provenance.get("material_layer_audit"))
             return 0
     except AssetImportError as error:

@@ -48,7 +48,6 @@ TEST_CASE(EntityPhysics_FloorCollision) {
 
     BlockType solid;
     solid.identifier = "rigel:stone";
-    solid.isSolid = true;
     auto solidId = resources.registry().registerBlock(solid.identifier, solid);
 
     BlockState block;

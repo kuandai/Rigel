@@ -961,7 +961,6 @@ std::shared_ptr<WorldGenerator> makeBoundedSolidGenerator(
         BlockType solid;
         solid.identifier = solidIdentifier;
         solid.isOpaque = true;
-        solid.isSolid = true;
         registry.registerBlock(solid.identifier, solid);
     }
 
@@ -985,7 +984,6 @@ BlockID registerTestBlock(BlockRegistry& registry, const std::string& identifier
     BlockType block;
     block.identifier = identifier;
     block.isOpaque = true;
-    block.isSolid = true;
     return registry.registerBlock(identifier, std::move(block));
 }
 
@@ -995,7 +993,6 @@ BlockID registerTexturedTestBlock(BlockRegistry& registry,
     BlockType block;
     block.identifier = identifier;
     block.isOpaque = true;
-    block.isSolid = true;
     block.textures = FaceTextures::uniform(texture);
     return registry.registerBlock(identifier, std::move(block));
 }

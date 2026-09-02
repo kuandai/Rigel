@@ -68,7 +68,6 @@ TEST_CASE(WorldView_StreamingDiagnosticsConsumeLoaderRegionMetrics) {
     BlockType solid;
     solid.identifier = "rigel:diagnostic_stone";
     solid.isOpaque = true;
-    solid.isSolid = true;
     registry.registerBlock(solid.identifier, solid);
     BlockType surface = solid;
     surface.identifier = "rigel:diagnostic_surface";
@@ -284,7 +283,6 @@ TEST_CASE(WorldView_ClearRestartsRetainedChunkAndMeshStateTogether) {
     BlockType solid;
     solid.identifier = "rigel:view_clear_solid";
     solid.isOpaque = true;
-    solid.isSolid = true;
     const BlockID solidId =
         resources.registry().registerBlock(solid.identifier, solid);
 
@@ -363,7 +361,6 @@ TEST_CASE(WorldView_ViewPolicyDrivesFrameProjectionAndShadowCeiling) {
     BlockType solid;
     solid.identifier = "test:world_view_policy_solid";
     solid.isOpaque = true;
-    solid.isSolid = true;
     solid.textures = FaceTextures::uniform(std::string(texturePath));
     const BlockID solidId =
         resources.registry().registerBlock(solid.identifier, solid);
@@ -506,7 +503,6 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
     BlockType solid;
     solid.identifier = "rigel:world_view_draw_evidence_solid";
     solid.isOpaque = true;
-    solid.isSolid = true;
     const BlockID solidId =
         resources.registry().registerBlock(solid.identifier, solid);
 

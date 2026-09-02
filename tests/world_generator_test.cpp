@@ -21,8 +21,10 @@ BlockRegistry makeRegistry() {
              "rigel:tree"}) {
         BlockType block;
         block.identifier = identifier;
-        block.isSolid = identifier != "rigel:water";
         block.isOpaque = identifier != "rigel:water";
+        if (identifier == "rigel:water") {
+            block.collision = BlockCollisionShape::empty();
+        }
         registry.registerBlock(identifier, std::move(block));
     }
     return registry;

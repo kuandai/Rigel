@@ -16,7 +16,6 @@ BlockID registerBlock(BlockRegistry& registry, const std::string& id) {
     BlockType block;
     block.identifier = id;
     block.isOpaque = true;
-    block.isSolid = true;
     return registry.registerBlock(id, std::move(block));
 }
 

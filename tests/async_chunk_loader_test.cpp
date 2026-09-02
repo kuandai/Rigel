@@ -537,13 +537,11 @@ std::shared_ptr<WorldGenerator> makeGenerator(BlockRegistry& registry) {
     BlockType solid;
     solid.identifier = "rigel:test_solid";
     solid.isOpaque = true;
-    solid.isSolid = true;
     registry.registerBlock(solid.identifier, solid);
 
     BlockType surface;
     surface.identifier = "rigel:test_surface";
     surface.isOpaque = true;
-    surface.isSolid = true;
     registry.registerBlock(surface.identifier, surface);
 
     return Rigel::Test::makeWorldGeneratorFixture(
@@ -554,7 +552,6 @@ BlockID registerTestBlock(BlockRegistry& registry, const std::string& identifier
     BlockType block;
     block.identifier = identifier;
     block.isOpaque = true;
-    block.isSolid = true;
     return registry.registerBlock(identifier, std::move(block));
 }
 

@@ -142,7 +142,6 @@ BlockType makeType(
     type.model = std::move(model);
     type.model.orientation = orientation;
     type.isOpaque = false;
-    type.isSolid = true;
     type.layer = layer;
     type.lightAttenuation = 0;
     type.textures.bind(
@@ -162,7 +161,6 @@ RegistryFixture makeRegistry() {
     BlockType cube;
     cube.model = BlockModel::fullCube();
     cube.isOpaque = true;
-    cube.isSolid = true;
     cube.layer = RenderLayer::Opaque;
     cube.textures = FaceTextures::uniform(
         "textures/benchmark/invented_cube.png");

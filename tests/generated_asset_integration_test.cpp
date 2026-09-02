@@ -703,9 +703,8 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
                 ++collisionCensus.conservativeFallback;
                 break;
         }
-        if (!type.isSolid && !type.model->isEmpty()) {
+        if (type.collision.isEmpty() && !type.model->isEmpty()) {
             ++collisionCensus.walkThroughWithGeometry;
-            CHECK(type.collision.isEmpty());
         }
     }
     CHECK_EQ(collisionCensus.empty, static_cast<size_t>(67));
@@ -928,7 +927,6 @@ TEST_CASE(GeneratedAssets_QueryAndCollideWithNormalizedShapes) {
                 ",type=" + std::string(type) + ",part=head]";
             const BlockType& piston = requireBlock(
                 resources.registry(), identifier);
-            CHECK(piston.isSolid);
             CHECK_EQ(
                 piston.collision.provenance(),
                 BlockCollisionShape::Provenance::Exact);

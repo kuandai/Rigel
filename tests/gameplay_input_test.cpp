@@ -51,7 +51,6 @@ TEST_CASE(GameplayInput_BlockEditsUseSemanticActions) {
     Voxel::BlockType solid;
     solid.identifier = "rigel:input_test_solid";
     solid.isOpaque = true;
-    solid.isSolid = true;
     const Voxel::BlockID solidId =
         resources.registry().registerBlock(solid.identifier, solid);
     Voxel::World world(resources);

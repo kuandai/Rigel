@@ -433,7 +433,6 @@ void saveCRWorld(const std::shared_ptr<StorageBackend>& storage,
         Rigel::Voxel::BlockType block;
         block.identifier = identifier;
         block.isOpaque = true;
-        block.isSolid = true;
         auto blockId = resources.registry().registerBlock(
             identifier, std::move(block));
         world.setBlock(0, 0, 0, Rigel::Voxel::BlockState{blockId});
@@ -482,7 +481,6 @@ Rigel::Voxel::BlockID registerTestBlock(Rigel::Voxel::BlockRegistry& registry,
     Rigel::Voxel::BlockType block;
     block.identifier = identifier;
     block.isOpaque = true;
-    block.isSolid = true;
     return registry.registerBlock(identifier, std::move(block));
 }
 

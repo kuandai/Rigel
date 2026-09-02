@@ -62,7 +62,6 @@ BlockID addPresentedSpecimen(
     type.layer = RenderLayer::Transparent;
     type.textureRenderLayers.emplace("accent", RenderLayer::Cutout);
     type.isOpaque = false;
-    type.isSolid = true;
     return registry.registerBlock(identifier, std::move(type));
 }
 
@@ -177,7 +176,6 @@ TEST_CASE(BlockGalleryTargetPresentation_UsesCatalogAndRuntimeMetadata) {
         presentation->textureSlotRenderLayers,
         std::string("primary=transparent, accent=cutout"));
     CHECK(!presentation->opaque);
-    CHECK(presentation->solid);
     CHECK_EQ(presentation->collision, std::string("full cube"));
     CHECK(!presentation->fullCube);
     CHECK(!presentation->cullSameType);

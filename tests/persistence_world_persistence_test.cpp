@@ -63,7 +63,6 @@ TEST_CASE(Persistence_WorldSaveAndAsyncLoad_MemoryFormat) {
     Voxel::BlockType testBlock;
     testBlock.identifier = testIdentifier;
     testBlock.isOpaque = true;
-    testBlock.isSolid = true;
     testBlock.textures = Voxel::FaceTextures::uniform("textures/blocks/test.png");
     auto testId = resources.registry().registerBlock(testIdentifier, std::move(testBlock));
 
@@ -174,7 +173,6 @@ TEST_CASE(Persistence_CRReloadPreservesContentAndGeneratesFromSavedSnapshot) {
     Voxel::BlockType existingBlock;
     existingBlock.identifier = "rigel:existing_cr_block";
     existingBlock.isOpaque = true;
-    existingBlock.isSolid = true;
     const std::string existingIdentifier = existingBlock.identifier;
     const Voxel::BlockID existingId = resources.registry().registerBlock(
         existingIdentifier, std::move(existingBlock));
@@ -182,7 +180,6 @@ TEST_CASE(Persistence_CRReloadPreservesContentAndGeneratesFromSavedSnapshot) {
     Voxel::BlockType generatedBlock;
     generatedBlock.identifier = "rigel:snapshot_generated_block";
     generatedBlock.isOpaque = true;
-    generatedBlock.isSolid = true;
     const std::string generatedIdentifier = generatedBlock.identifier;
     const Voxel::BlockID generatedId = resources.registry().registerBlock(
         generatedIdentifier, std::move(generatedBlock));
@@ -488,7 +485,6 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         Voxel::BlockType firstBlock;
         firstBlock.identifier = "base:first";
         firstBlock.isOpaque = true;
-        firstBlock.isSolid = true;
         const std::string firstIdentifier = firstBlock.identifier;
         const auto firstId = resources.registry().registerBlock(
             firstIdentifier, std::move(firstBlock));
@@ -496,7 +492,6 @@ TEST_CASE(Persistence_WorldSaveTargetsDirtyRegionsWithoutGlobalEnumeration) {
         Voxel::BlockType secondBlock;
         secondBlock.identifier = "base:second";
         secondBlock.isOpaque = true;
-        secondBlock.isSolid = true;
         const std::string secondIdentifier = secondBlock.identifier;
         const auto secondId = resources.registry().registerBlock(
             secondIdentifier, std::move(secondBlock));

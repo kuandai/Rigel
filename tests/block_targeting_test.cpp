@@ -10,26 +10,25 @@ using namespace Rigel::Voxel;
 
 struct TargetingFixture {
     WorldResources resources;
-    BlockID solidId;
-    BlockID nonSolidId;
+    BlockID collidingId;
+    BlockID nonCollidingId;
     World world;
 
     TargetingFixture()
-        : solidId([this] {
-              BlockType solid;
+        : collidingId([this] {
+              BlockType colliding;
               const std::string identifier = "invented:target";
-              solid.identifier = identifier;
-              solid.isSolid = true;
+              colliding.identifier = identifier;
               return resources.registry().registerBlock(
-                  identifier, std::move(solid));
+                  identifier, std::move(colliding));
           }())
-        , nonSolidId([this] {
-              BlockType nonSolid;
-              const std::string identifier = "invented:non_solid_target";
-              nonSolid.identifier = identifier;
-              nonSolid.isSolid = false;
+        , nonCollidingId([this] {
+              BlockType nonColliding;
+              const std::string identifier = "invented:non_colliding_target";
+              nonColliding.identifier = identifier;
+              nonColliding.collision = BlockCollisionShape::empty();
               return resources.registry().registerBlock(
-                  identifier, std::move(nonSolid));
+                  identifier, std::move(nonColliding));
           }())
         , world(resources) {}
 };
@@ -38,7 +37,7 @@ struct TargetingFixture {
 
 TEST_CASE(BlockTargeting_ReturnsWholeCellStateNormalAndDistance) {
     TargetingFixture fixture;
-    fixture.world.setBlock(-2, 1, 0, BlockState{fixture.solidId});
+    fixture.world.setBlock(-2, 1, 0, BlockState{fixture.collidingId});
 
     const auto target = raycastBlock(
         fixture.world,
@@ -49,13 +48,13 @@ TEST_CASE(BlockTargeting_ReturnsWholeCellStateNormalAndDistance) {
     CHECK(target.has_value());
     CHECK_EQ(target->block, (glm::ivec3{-2, 1, 0}));
     CHECK_EQ(target->normal, (glm::ivec3{1, 0, 0}));
-    CHECK_EQ(target->state.id, fixture.solidId);
+    CHECK_EQ(target->state.id, fixture.collidingId);
     CHECK_NEAR(target->distance, 2.5f, 0.0001f);
 }
 
 TEST_CASE(BlockTargeting_StartingCellHasZeroDistanceAndNormal) {
     TargetingFixture fixture;
-    fixture.world.setBlock(3, -1, 5, BlockState{fixture.solidId});
+    fixture.world.setBlock(3, -1, 5, BlockState{fixture.collidingId});
 
     const auto target = raycastBlock(
         fixture.world,
@@ -69,12 +68,14 @@ TEST_CASE(BlockTargeting_StartingCellHasZeroDistanceAndNormal) {
     CHECK_EQ(target->distance, 0.0f);
 }
 
-TEST_CASE(BlockTargeting_ReturnsFirstNonAirCellRegardlessOfSolidity) {
+TEST_CASE(BlockTargeting_ReturnsFirstNonAirCellRegardlessOfCollision) {
     TargetingFixture fixture;
-    fixture.world.setBlock(0, 0, -2, BlockState{fixture.nonSolidId});
-    fixture.world.setBlock(0, 0, -3, BlockState{fixture.solidId});
+    fixture.world.setBlock(0, 0, -2, BlockState{fixture.nonCollidingId});
+    fixture.world.setBlock(0, 0, -3, BlockState{fixture.collidingId});
 
-    CHECK(!fixture.resources.registry().getType(fixture.nonSolidId).isSolid);
+    CHECK(fixture.resources.registry()
+              .getType(fixture.nonCollidingId)
+              .collision.isEmpty());
 
     const auto target = raycastBlock(
         fixture.world,
@@ -84,13 +85,13 @@ TEST_CASE(BlockTargeting_ReturnsFirstNonAirCellRegardlessOfSolidity) {
 
     CHECK(target.has_value());
     CHECK_EQ(target->block, (glm::ivec3{0, 0, -2}));
-    CHECK_EQ(target->state.id, fixture.nonSolidId);
+    CHECK_EQ(target->state.id, fixture.nonCollidingId);
     CHECK_NEAR(target->distance, 1.5f, 0.0001f);
 }
 
 TEST_CASE(BlockTargeting_RejectsDegenerateAndOutOfRangeRays) {
     TargetingFixture fixture;
-    fixture.world.setBlock(0, 0, -3, BlockState{fixture.solidId});
+    fixture.world.setBlock(0, 0, -3, BlockState{fixture.collidingId});
 
     CHECK(!raycastBlock(
         fixture.world,

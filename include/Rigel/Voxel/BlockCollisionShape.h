@@ -126,11 +126,16 @@ public:
         return result;
     }
 
-    Kind kind() const noexcept { return m_kind; }
+    Kind kind() const noexcept {
+        if (m_boxes) {
+            return Kind::Boxes;
+        }
+        return m_isFullCube ? Kind::FullCube : Kind::Empty;
+    }
     Provenance provenance() const noexcept { return m_provenance; }
-    bool isEmpty() const noexcept { return m_kind == Kind::Empty; }
-    bool isFullCube() const noexcept { return m_kind == Kind::FullCube; }
-    bool isBoxes() const noexcept { return m_kind == Kind::Boxes; }
+    bool isEmpty() const noexcept { return !m_isFullCube && !m_boxes; }
+    bool isFullCube() const noexcept { return m_isFullCube; }
+    bool isBoxes() const noexcept { return static_cast<bool>(m_boxes); }
 
     /** Iteration is allocation-free for every shape kind. */
     std::span<const BlockCollisionBox> boxes() const noexcept {
@@ -147,7 +152,9 @@ private:
     explicit BlockCollisionShape(
         Kind kind,
         Provenance provenance
-    ) noexcept : m_kind(kind), m_provenance(provenance) {}
+    ) noexcept
+        : m_isFullCube(kind == Kind::FullCube)
+        , m_provenance(provenance) {}
 
     static const BlockCollisionBox& fullCubeBox() noexcept {
         static constexpr BlockCollisionBox box{
@@ -157,7 +164,9 @@ private:
         return box;
     }
 
-    Kind m_kind = Kind::FullCube;
+    // With no custom box owner, this flag distinguishes FullCube from Empty.
+    // A default-moved custom shape therefore becomes a coherent Empty shape.
+    bool m_isFullCube = true;
     Provenance m_provenance = Provenance::Authored;
     std::shared_ptr<const std::vector<BlockCollisionBox>> m_boxes;
 };

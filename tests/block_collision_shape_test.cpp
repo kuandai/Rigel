@@ -102,12 +102,18 @@ TEST_CASE(BlockCollisionShape_MoveAndCopyPreserveCollisionSemantics) {
     CHECK_EQ(moved.provenance(), BlockCollisionShape::Provenance::Exact);
     CHECK_EQ(moved.boxes().data(), storage);
     CHECK_EQ(copied.boxes().data(), storage);
+    CHECK(source.isEmpty());
+    CHECK_EQ(source.kind(), BlockCollisionShape::Kind::Empty);
+    CHECK(source.boxes().empty());
 
     BlockCollisionShape assigned = BlockCollisionShape::empty();
     assigned = std::move(moved);
     CHECK(assigned.isBoxes());
     CHECK_EQ(assigned.provenance(), BlockCollisionShape::Provenance::Exact);
     CHECK_EQ(assigned.boxes().data(), storage);
+    CHECK(moved.isEmpty());
+    CHECK_EQ(moved.kind(), BlockCollisionShape::Kind::Empty);
+    CHECK(moved.boxes().empty());
 
     BlockCollisionShape copyAssigned;
     copyAssigned = assigned;

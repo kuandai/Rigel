@@ -66,7 +66,6 @@ struct BlockModelDefinitionSource {
  * id: stone
  * model: cube
  * opaque: true
- * solid: true
  * collision: full
  * textures:
  *   all: textures/blocks/stone.png
@@ -75,7 +74,7 @@ struct BlockModelDefinitionSource {
  * id: grass
  * model: cube
  * opaque: true
- * solid: true
+ * collision: full
  * textures:
  *   top: textures/blocks/grass_top.png
  *   bottom: textures/blocks/dirt.png
@@ -86,7 +85,7 @@ struct BlockModelDefinitionSource {
  * model: cube
  * orientation: [0, 90, 0]
  * opaque: false
- * solid: true
+ * collision: full
  * layer: transparent
  * textures:
  *   all: textures/blocks/glass.png
@@ -104,7 +103,7 @@ struct BlockModelDefinitionSource {
  * #     - [0.25, 0.0, 0.25, 0.75, 1.0, 0.75]
  * # Imported snapshots may also declare `collision_provenance` as `exact` or
  * # `conservative_fallback`; ordinary authored shapes omit it.
- * # If omitted, solid blocks use `full` and non-solid blocks use `none`.
+ * # Every normalized block must declare collision explicitly.
  * @endcode
  *
  * @section usage Usage

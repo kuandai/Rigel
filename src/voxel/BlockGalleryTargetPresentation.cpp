@@ -186,7 +186,6 @@ makeBlockGalleryTargetPresentation(
         .effectiveRenderLayers = textureLayers.effectiveLayers,
         .textureSlotRenderLayers = textureLayers.slotMappings,
         .opaque = type.isOpaque,
-        .solid = type.isSolid,
         .collision = collisionPresentation(type.collision),
         .fullCube = type.model->isFullCube(),
         .cullSameType = type.cullSameType,

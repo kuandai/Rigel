@@ -114,9 +114,6 @@ struct BlockType {
     /// Whether this block fully occludes adjacent faces
     bool isOpaque = true;
 
-    /// Source-authored solidity retained for legacy gameplay semantics.
-    bool isSolid = true;
-
     /// Immutable physical geometry, independent from the visual model.
     BlockCollisionShape collision;
 

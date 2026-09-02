@@ -26,14 +26,12 @@ back into the owning cell.
 The shape is not a `BlockModel`. Models own render cuboids, faces, texture
 bindings, and orientation. Collision has no faces, textures, render layer, or
 live relationship to those cuboids. A registration can therefore be visible
-but non-colliding, or collide differently from its rendered model and `solid`
-flag.
+but non-colliding, or collide differently from its rendered model.
 
 The normalized block format accepts `collision: none`, `collision: full`, or a
-non-empty `collision.boxes` list. When authored collision is omitted,
-`BlockLoader` preserves the legacy rule: `solid: true` loads as `FullCube` and
-`solid: false` loads as `Empty`. See `docs/AssetSystem.md` for the complete YAML
-schema and validation rules.
+non-empty `collision.boxes` list. Every normalized block must provide one of
+these values; omission and the removed `solid` field are rejected. See
+`docs/AssetSystem.md` for the complete YAML schema and validation rules.
 
 ## Cosmic Reach snapshots
 
@@ -71,7 +69,7 @@ fallback a normal publication path.
 The reconciled Cosmic Reach 0.6.1 census contains 2,021 published
 registrations: 67 empty, 315 full-cube, 956 single-partial, and 683 multi-box
 shapes. Sixty-six walk-through registrations are visible but empty. Twenty-four
-solid piston-head registrations retain collision overhang of exactly `0.25`
+piston-head registrations retain collision overhang of exactly `0.25`
 cell, and published stair shapes omit their zero-volume render helpers. These
 figures are validation evidence, not runtime dispatch rules.
 

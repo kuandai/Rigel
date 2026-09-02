@@ -90,7 +90,7 @@ specimen from within eight blocks. The top-right **Block gallery target** window
 then shows the full block-state identifier, one-based catalog position and
 catalog size, zero-based grid coordinate, normalized model identifier, cuboid
 count, orientation, base and effective render layers, compact texture-slot layer
-mapping, collision shape, culling/opacity/solidity flags, and resolved
+mapping, collision shape, culling and opacity flags, and resolved
 texture-binding count. Collision is reported as `none`, `full cube`, `one box`,
 or an exact box count; conservative fallback provenance is appended when
 present. Culling diagnostic cells replace the catalog position with their case
@@ -219,10 +219,10 @@ broader Cosmic Reach coverage:
 - Animated block textures and non-16-by-16 block textures are unsupported;
   affected source states are omitted under the importer's disjoint provenance
   reasons.
-- Targeting is independent of the `solid` flag: the first non-air block cell is
-  a hit, including a non-solid registration. Partial geometry does not shrink
-  the target cell, and out-of-cell geometry does not extend the targeting ray
-  into another cell.
+- Targeting is independent of collision: the first non-air block cell is a
+  hit, including a registration with `collision: none`. Partial geometry does
+  not shrink the target cell, and out-of-cell geometry does not extend the
+  targeting ray into another cell.
 - Model ambient occlusion is simplified. Cube-style AO applies only when a
   normalized face requests it and spans a complete unit-cell boundary; other
   model faces use the fully unoccluded level, and only a closed full-cell model

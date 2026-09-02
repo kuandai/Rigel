@@ -53,7 +53,7 @@ public:
     static constexpr float MaximumCoordinate = 1.25f;
     static constexpr size_t MaximumBoxes = 16;
 
-    /** The default preserves the legacy solid-block contract. */
+    /** A default-constructed block shape is the canonical full cube. */
     BlockCollisionShape() noexcept = default;
     BlockCollisionShape(const BlockCollisionShape&) noexcept = default;
     BlockCollisionShape& operator=(const BlockCollisionShape&) noexcept = default;

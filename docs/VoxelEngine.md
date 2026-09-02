@@ -28,7 +28,8 @@ byte containing sky and block light nibbles.
 `BlockType` supplies the properties used by storage and meshing:
 
 - Identifier and an immutable model instance
-- Opacity, solidity, and same-type face-culling flags
+- An immutable collision shape, independent of the visual model
+- Opacity and same-type face-culling flags
 - Full-cube face textures or named normalized-model texture bindings
 - `Opaque`, `Cutout`, `Transparent`, or `Emissive` default render layer, with
   named-slot overrides for normalized models that combine materials
@@ -236,10 +237,10 @@ select subrectangles and quarter turns within the same texture layer.
 
 Normalized models are visual geometry. `BlockType` separately stores an
 immutable physical shape as empty, a canonical full cube, or one or more
-normalized AABBs. Omitted authored collision preserves the legacy mapping from
-`solid` to a full or empty shape; physics is never derived live from visual
-cuboids. Compact provenance distinguishes authored shapes, exact imports, and
-conservative imported fallbacks without changing collision behavior.
+normalized AABBs. Normalized block assets must declare that collision shape
+explicitly; physics is never derived live from visual cuboids. Compact
+provenance distinguishes authored shapes, exact imports, and conservative
+imported fallbacks without changing collision behavior.
 
 The world exposes normalized collision boxes in world coordinates and accounts
 for their supported overhang beyond the owning cell. Entity movement consumes
@@ -254,7 +255,7 @@ intersecting model or collision-shape bounds. Visual geometry outside `[0, 1]`
 does not extend raycasting.
 
 Opacity, emitted light, and attenuation likewise remain source-authored
-block-registration properties. Rigel does not infer solidity or lighting from
+block-registration properties. Rigel does not infer collision or lighting from
 cuboid coverage.
 
 ## Current Limitations

@@ -1657,9 +1657,8 @@ def render_block_yaml(
             model.geometry,
         )
     opaque = properties.get("isOpaque", not model.transparent)
-    solid = not properties.get("walkThrough", False)
-    if not isinstance(opaque, bool) or not isinstance(solid, bool):
-        raise AssetImportError(f"{context}: opacity/solidity values are invalid")
+    if not isinstance(opaque, bool):
+        raise AssetImportError(f"{context}: opacity value is invalid")
     orientation = _block_orientation(properties.get("rotation"), f"{context}.rotation")
     rotate_top_bottom = bool(properties.get("rotateTopBottom", False))
     collision = _resolved_collision_shape(model, properties, context)
@@ -1680,7 +1679,6 @@ def render_block_yaml(
         f"id: {_yaml_string(identifier)}",
         f"model: {model_identifier}",
         f"opaque: {'true' if opaque else 'false'}",
-        f"solid: {'true' if solid else 'false'}",
         f"collision: {_render_collision_shape(collision)}",
         "collision_provenance: exact",
     ]
@@ -2045,7 +2043,7 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
             if not isinstance(decoded, str):
                 raise AssetImportError(f"{source}:{line_number}: id must be a string")
             result[key] = decoded
-        elif key in ("opaque", "solid", "cull_same_type", "rotate_top_bottom"):
+        elif key in ("opaque", "cull_same_type", "rotate_top_bottom"):
             if value not in ("true", "false"):
                 raise AssetImportError(f"{source}:{line_number}: {key} must be boolean")
             result[key] = value == "true"
@@ -2077,14 +2075,14 @@ def parse_generated_block(data: bytes, source: str) -> dict[str, object]:
         else:
             result[key] = value
     allowed = {
-        "id", "model", "opaque", "solid", "cull_same_type", "layer",
+        "id", "model", "opaque", "cull_same_type", "layer",
         "emits_light", "light_attenuation", "orientation",
         "rotate_top_bottom", "collision", "textures",
         "collision_provenance", "texture_render_layers",
     }
     _reject_unknown_keys(result, allowed, source)
     required = {
-        "id", "model", "opaque", "solid", "collision",
+        "id", "model", "opaque", "collision",
         "collision_provenance", "layer",
     }
     missing = sorted(required - set(result))

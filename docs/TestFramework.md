@@ -157,7 +157,7 @@ the resulting color and depth buffers. The alpha-cutout check confirms that
 transparent crop texels expose the farther gallery floor, the water check
 requires its authored blend strength, and the mixed table check distinguishes
 opaque wood from fractional glass. The opaque slab check confirms that partial
-solid models are not blended. Diagnostic targeting and labels are checked from
+opaque models are not blended. Diagnostic targeting and labels are checked from
 the same catalog metadata before capture. For visual review, set
 `RIGEL_GALLERY_CAPTURE_DIRECTORY` to an absolute directory outside the source
 tree. The test validates every representative before publishing the captures

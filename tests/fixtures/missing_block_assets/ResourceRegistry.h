@@ -22,7 +22,7 @@ public:
             "id: required_block\n"
             "model: cube\n"
             "opaque: true\n"
-            "solid: true\n"
+            "collision: full\n"
             "textures:\n"
             "  all: textures/blocks/required.png\n";
         static constexpr char texturelessModel[] =
@@ -35,7 +35,7 @@ public:
             "id: invisible_block\n"
             "model: invisible_shape\n"
             "opaque: false\n"
-            "solid: false\n"
+            "collision: none\n"
             "textures: {}\n";
         static constexpr unsigned char inventedTexture[] = {
             137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72,

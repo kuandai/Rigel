@@ -2126,7 +2126,8 @@ class BlockCompilerTest(unittest.TestCase):
             bright = (
                 output / "blocks/test__stone[kind=bright].yaml"
             ).read_text(encoding="utf-8")
-            self.assertIn("solid: false", bright)
+            self.assertNotIn("solid:", bright)
+            self.assertIn("collision: none", bright)
             self.assertIn("emits_light: 7", bright)
 
     def test_compiles_one_cuboid_for_base_and_generated_states(self) -> None:
@@ -3052,7 +3053,6 @@ class GeneratedTreeClosureTest(unittest.TestCase):
                 f"id: {json.dumps(identifier)}",
                 "model: test:synthetic",
                 "opaque: false",
-                "solid: false",
                 "collision: none",
                 "collision_provenance: exact",
                 f"layer: {layer}",
@@ -4047,6 +4047,24 @@ class SynchronizationTest(unittest.TestCase):
                     root, required_identifiers=("test:stone",)
                 )
 
+    def test_generated_block_parser_rejects_removed_solid_field(self) -> None:
+        block = rigel_assets.render_block_yaml(
+            "test:stone",
+            {"modelName": "unused"},
+            _MissingTextureModelResolver(),
+            "fixture",
+        )
+
+        with self.assertRaisesRegex(
+            rigel_assets.AssetImportError, "unsupported fields: solid"
+        ):
+            rigel_assets.parse_generated_block(
+                block.replace(
+                    b"opaque: true", b"opaque: true\nsolid: true"
+                ),
+                "blocks/test__stone.yaml",
+            )
+
     def test_validation_rejects_unknown_and_incoherent_layers(self) -> None:
         base = rigel_assets.render_block_yaml(
             "test:stone",
@@ -4340,7 +4358,7 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
             walk_through_with_geometry = {
                 identifier
                 for identifier, block in generated_blocks.items()
-                if not block["solid"] and block["model"] != "none"
+                if block["collision"] == "none" and block["model"] != "none"
             }
             self.assertEqual(len(walk_through_with_geometry), 66)
             self.assertTrue(all(
@@ -4351,7 +4369,7 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
                 {
                     identifier
                     for identifier, block in generated_blocks.items()
-                    if not block["solid"] and block["model"] == "none"
+                    if block["collision"] == "none" and block["model"] == "none"
                 },
                 {"base:air"},
             )
@@ -4498,7 +4516,6 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
                         f"type={piston_type},part=head]"
                     )
                     with self.subTest(identifier=identifier):
-                        self.assertTrue(generated_blocks[identifier]["solid"])
                         self.assertEqual(
                             generated_blocks[identifier]["collision"],
                             {"boxes": boxes},
@@ -4659,10 +4676,10 @@ class RealJarBlockModelClosureTest(unittest.TestCase):
                     ]
                 },
             )
-            self.assertEqual(
-                first["output_tree_sha256"],
-                "51502c1020cc216a8f2a2b887a966ffc8ef39ba29c8c369cd453271ad2cd81bc",
-            )
+        self.assertEqual(
+            first["output_tree_sha256"],
+            "424c9ac06274a791b26a6486155b9b64f53ba0cc138819cd95f3b6f94d97ff55",
+        )
 
 
 class _MissingTextureModelResolver:

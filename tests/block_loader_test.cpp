@@ -20,7 +20,7 @@ constexpr std::string_view kStone = R"(
 id: test:stone
 model: cube
 opaque: true
-solid: true
+collision: full
 layer: opaque
 textures:
   all: textures/test/stone.png
@@ -30,7 +30,7 @@ constexpr std::string_view kGlass = R"(
 id: test:glass
 model: cube
 opaque: false
-solid: true
+collision: full
 layer: transparent
 textures:
   all: textures/test/glass.png
@@ -40,7 +40,7 @@ constexpr std::string_view kGrass = R"(
 id: test:grass
 model: cube
 opaque: true
-solid: true
+collision: full
 layer: opaque
 textures:
   top: textures/test/grass_top.png
@@ -52,7 +52,7 @@ constexpr std::string_view kFullGrass = R"(
 id: test:grass[type=full]
 model: cube
 opaque: true
-solid: true
+collision: full
 layer: opaque
 textures:
   all: textures/test/grass_top.png
@@ -174,29 +174,16 @@ TEST_CASE(BlockLoader_LoadsSyntheticDefinitions) {
     CHECK_EQ(fullGrass.textures.forFace(Direction::NegY), texturePaths[2]);
 }
 
-TEST_CASE(BlockLoader_LoadsExplicitAndImplicitCollisionShapes) {
-    constexpr std::string_view implicitFull = R"(
-id: implicit_full
+TEST_CASE(BlockLoader_LoadsNormalizedCollisionShapes) {
+    constexpr std::string_view empty = R"(
+id: empty
 model: none
-textures: {}
-)";
-    constexpr std::string_view implicitEmpty = R"(
-id: implicit_empty
-model: none
-solid: false
-textures: {}
-)";
-    constexpr std::string_view explicitEmpty = R"(
-id: explicit_empty
-model: none
-solid: true
 collision: none
 textures: {}
 )";
-    constexpr std::string_view explicitFull = R"(
-id: explicit_full
+    constexpr std::string_view full = R"(
+id: full
 model: none
-solid: false
 collision: full
 textures: {}
 )";
@@ -242,10 +229,8 @@ collision_provenance: conservative_fallback
 textures: {}
 )";
     const std::array definitions = {
-        definition("blocks/implicit_full.yaml", implicitFull),
-        definition("blocks/implicit_empty.yaml", implicitEmpty),
-        definition("blocks/explicit_empty.yaml", explicitEmpty),
-        definition("blocks/explicit_full.yaml", explicitFull),
+        definition("blocks/empty.yaml", empty),
+        definition("blocks/full.yaml", full),
         definition("blocks/single_box.yaml", singleBox),
         definition("blocks/multiple_boxes.yaml", multipleBoxes),
         definition("blocks/overhanging_box.yaml", overhangingBox),
@@ -260,13 +245,9 @@ textures: {}
 
     CHECK_EQ(report.loaded, definitions.size());
     CHECK_EQ(report.failed, static_cast<size_t>(0));
-    CHECK(blocks.getType(*blocks.findByIdentifier("test:implicit_full"))
-              .collision.isFullCube());
-    CHECK(blocks.getType(*blocks.findByIdentifier("test:implicit_empty"))
+    CHECK(blocks.getType(*blocks.findByIdentifier("test:empty"))
               .collision.isEmpty());
-    CHECK(blocks.getType(*blocks.findByIdentifier("test:explicit_empty"))
-              .collision.isEmpty());
-    CHECK(blocks.getType(*blocks.findByIdentifier("test:explicit_full"))
+    CHECK(blocks.getType(*blocks.findByIdentifier("test:full"))
               .collision.isFullCube());
 
     const BlockCollisionShape& single =
@@ -288,7 +269,7 @@ textures: {}
     CHECK_EQ(overhanging.boxes().front().max[0], 1.25f);
 
     CHECK_EQ(
-        blocks.getType(*blocks.findByIdentifier("test:implicit_full"))
+        blocks.getType(*blocks.findByIdentifier("test:full"))
             .collision.provenance(),
         BlockCollisionShape::Provenance::Authored);
     CHECK_EQ(
@@ -299,6 +280,32 @@ textures: {}
         blocks.getType(*blocks.findByIdentifier("test:fallback_full"))
             .collision.provenance(),
         BlockCollisionShape::Provenance::ConservativeFallback);
+}
+
+TEST_CASE(BlockLoader_RejectsMissingCollisionAndRemovedSolidField) {
+    constexpr std::array invalidDefinitions = {
+        std::string_view{
+            "id: missing_collision\nmodel: none\ntextures: {}\n"},
+        std::string_view{
+            "id: stale_solid\nmodel: none\nsolid: false\n"
+            "collision: none\ntextures: {}\n"},
+    };
+
+    for (const std::string_view yaml : invalidDefinitions) {
+        const std::array definitions = {
+            definition("blocks/invalid_authority.yaml", yaml)};
+        BlockRegistry blocks;
+        TextureAtlas atlas;
+
+        const BlockLoadReport report =
+            BlockLoader{}.loadDefinitions("test", definitions, blocks, atlas);
+
+        CHECK_EQ(report.loaded, static_cast<size_t>(0));
+        CHECK_EQ(report.failed, static_cast<size_t>(1));
+        CHECK_EQ(blocks.size(), static_cast<size_t>(1));
+        CHECK_EQ(report.representativeFailures.size(), static_cast<size_t>(1));
+        CHECK(!report.representativeFailures.front().reason.empty());
+    }
 }
 
 TEST_CASE(BlockLoader_RejectsMalformedCollisionShapesAtomically) {
@@ -320,7 +327,7 @@ TEST_CASE(BlockLoader_RejectsMalformedCollisionShapesAtomically) {
 
     for (const std::string_view collision : invalidCollision) {
         const std::string yaml =
-            "id: bad_collision\nmodel: none\nsolid: true\n" +
+            "id: bad_collision\nmodel: none\n" +
             std::string(collision) + "textures: {}\n";
         const std::array definitions = {
             definition("blocks/bad_collision.yaml", yaml)};
@@ -408,7 +415,7 @@ cuboids:
 id: post_block
 model: post
 opaque: false
-solid: true
+collision: full
 layer: opaque
 texture_render_layers:
   cap: transparent
@@ -476,6 +483,7 @@ cuboids:
     constexpr std::string_view blockYaml = R"(
 id: bad_post
 model: post
+collision: full
 layer: opaque
 texture_render_layers:
   missing: transparent
@@ -597,7 +605,7 @@ cuboids:
             std::to_string(item.angles[1]) + ", " +
             std::to_string(item.angles[2]) + "]\nrotate_top_bottom: " +
             (item.rotateTopBottom ? "true" : "false") +
-            "\ntextures: {}\n");
+            "\ncollision: full\ntextures: {}\n");
         blockDefinitions.push_back(definition(
             "blocks/oriented.yaml", yaml.back()));
     }
@@ -631,47 +639,56 @@ cuboids: [{bounds: [0, 0, 0, 1, 1, 1], faces: {}}]
     constexpr std::array<std::string_view, 9> invalidBlocks = {
         R"(id: bad
 model: directional
+collision: full
 orientation: 90
 textures: {}
 )",
         R"(id: bad
 model: directional
+collision: full
 orientation: [90, 0]
 textures: {}
 )",
         R"(id: bad
 model: directional
+collision: full
 orientation: [east, 0, 0]
 textures: {}
 )",
         R"(id: bad
 model: directional
+collision: full
 orientation: [45, 0, 0]
 textures: {}
 )",
         R"(id: bad
 model: directional
+collision: full
 orientation: [180, 0, 0]
 textures: {}
 )",
         R"(id: bad
 model: directional
+collision: full
 orientation: [0, 0, 270]
 textures: {}
 )",
         R"(id: bad
 model: directional
+collision: full
 orientation: [90, 90, 0]
 textures: {}
 )",
         R"(id: bad
 model: directional
+collision: full
 orientation: [0, 0, 90]
 rotate_top_bottom: quarter
 textures: {}
 )",
         R"(id: bad
 model: directional
+collision: full
 orientation: [0, 0, 0]
 rotate_top_bottom: true
 textures: {}
@@ -797,6 +814,7 @@ cuboids:
     constexpr std::string_view blockYaml = R"(
 id: incomplete
 model: two_slots
+collision: full
 textures:
   first: textures/test/first.png
 )";
@@ -832,6 +850,7 @@ cuboids:
     constexpr std::string_view blockYaml = R"(
 id: over_capacity
 model: capacity_model
+collision: full
 textures: {}
 )";
     const std::array modelDefinitions = {

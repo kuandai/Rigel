@@ -611,7 +611,7 @@ ParsedBlock parseBlock(
     const ryml::ConstNodeRef root = tree.rootref();
     requireMap(
         root, source, "block",
-        {"id", "identifier", "name", "model", "opaque", "solid",
+        {"id", "identifier", "name", "model", "opaque",
          "collision", "collision_provenance", "cull_same_type", "layer",
          "emits_light", "light_attenuation", "orientation",
          "rotate_top_bottom", "textures", "texture_render_layers"});
@@ -664,8 +664,8 @@ ParsedBlock parseBlock(
     if (const auto value = optionalBool(root, "opaque", source, "block")) {
         type.isOpaque = *value;
     }
-    if (const auto value = optionalBool(root, "solid", source, "block")) {
-        type.isSolid = *value;
+    if (!root.has_child("collision")) {
+        fail(source, "block.collision", "required");
     }
     const BlockCollisionShape::Provenance collisionProvenance =
         root.has_child("collision_provenance")
@@ -676,16 +676,8 @@ ParsedBlock parseBlock(
                   "block.collision_provenance"),
               source)
         : BlockCollisionShape::Provenance::Authored;
-    if (!root.has_child("collision") &&
-        collisionProvenance != BlockCollisionShape::Provenance::Authored) {
-        fail(source, "block.collision_provenance",
-             "requires an explicit collision shape");
-    }
-    type.collision = root.has_child("collision")
-        ? parseCollisionShape(
-              root["collision"], source, collisionProvenance)
-        : (type.isSolid ? BlockCollisionShape::fullCube()
-                        : BlockCollisionShape::empty());
+    type.collision = parseCollisionShape(
+        root["collision"], source, collisionProvenance);
     if (const auto value = optionalBool(root, "cull_same_type", source, "block")) {
         type.cullSameType = *value;
     }

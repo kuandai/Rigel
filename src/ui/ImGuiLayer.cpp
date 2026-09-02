@@ -448,7 +448,6 @@ void renderBlockGalleryTarget(
             target->textureSlotRenderLayers.c_str());
     }
     ImGui::Text("Opaque: %s", target->opaque ? "true" : "false");
-    ImGui::Text("Solid: %s", target->solid ? "true" : "false");
     ImGui::Text("Collision: %s", target->collision.c_str());
     ImGui::Text(
         "Model full cube: %s",

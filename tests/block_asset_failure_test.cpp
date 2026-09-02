@@ -48,6 +48,7 @@ cuboids:
     constexpr std::string_view blockYaml = R"(
 id: late_texture_failure
 model: two_textures
+collision: full
 textures:
   first: textures/invented/a_available.png
   second: textures/invented/z_missing.png

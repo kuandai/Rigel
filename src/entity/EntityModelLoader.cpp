@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <optional>
+#include <string_view>
 
 namespace Rigel::Entity {
 
@@ -41,6 +43,39 @@ bool readVec3(ryml::ConstNodeRef node, glm::vec3& out) {
     node[1] >> out.y;
     node[2] >> out.z;
     return true;
+}
+
+void readHitboxVec3(const Asset::LoadContext& ctx,
+                    const std::string& path,
+                    ryml::ConstNodeRef node,
+                    std::string_view boundName,
+                    glm::vec3& out) {
+    static constexpr std::array axisNames = {'x', 'y', 'z'};
+
+    for (glm::length_t axis = 0; axis < out.length(); ++axis) {
+        const ryml::ConstNodeRef coordinate = node[axis];
+        const char axisName = axisNames[static_cast<size_t>(axis)];
+        const std::string diagnostic =
+            "Entity model hitbox " + std::string(boundName) + "." +
+            axisName +
+            " must be a number without trailing characters in '" + path +
+            "'";
+        if (!coordinate.readable() || !coordinate.has_val() ||
+            coordinate.has_children()) {
+            throw Asset::AssetLoadError(ctx.id, diagnostic);
+        }
+
+        const auto text = coordinate.val();
+        float parsed = 0.0f;
+        const auto result = std::from_chars(
+            text.data(), text.data() + text.size(), parsed,
+            std::chars_format::general);
+        if (result.ec != std::errc{} ||
+            result.ptr != text.data() + text.size()) {
+            throw Asset::AssetLoadError(ctx.id, diagnostic);
+        }
+        out[axis] = parsed;
+    }
 }
 
 void sortTrack(EntityAnimationTrack& track) {
@@ -197,16 +232,18 @@ std::shared_ptr<Asset::AssetBase> EntityModelLoader::load(const Asset::LoadConte
         glm::vec3 max(0.0f);
         const bool hasMin = hitbox.has_child("min") &&
             hitbox["min"].num_children() == 3 &&
-            readVec3(hitbox["min"], min);
+            hitbox["min"].is_seq();
         const bool hasMax = hitbox.has_child("max") &&
             hitbox["max"].num_children() == 3 &&
-            readVec3(hitbox["max"], max);
+            hitbox["max"].is_seq();
         if (!hasMin || !hasMax) {
             throw Asset::AssetLoadError(
                 ctx.id,
                 "Entity model hitbox requires three-coordinate 'min' and "
                 "'max' sequences in '" + *pathOpt + "'");
         }
+        readHitboxVec3(ctx, *pathOpt, hitbox["min"], "min", min);
+        readHitboxVec3(ctx, *pathOpt, hitbox["max"], "max", max);
         validateHitbox(ctx, *pathOpt, min, max);
         asset->hitbox = Aabb{min, max};
     }

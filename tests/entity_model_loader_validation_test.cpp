@@ -98,6 +98,16 @@ TEST_CASE(EntityModelLoader_RejectsMalformedHitboxCoordinates) {
     }
 }
 
+TEST_CASE(EntityModelLoader_RejectsHitboxCoordinatesWithTrailingJunk) {
+    const std::string diagnostic =
+        rejectedDiagnostic("0junk, 0, 0", "1, 1, 1");
+
+    CHECK(diagnostic.find("min.x") != std::string::npos);
+    CHECK(diagnostic.find("must be a number") != std::string::npos);
+    CHECK(diagnostic.find("models/entities/authored.yaml") !=
+          std::string::npos);
+}
+
 TEST_CASE(EntityModelLoader_RejectsInvertedHitboxBoundsOnEveryAxis) {
     checkBoundRejection("2, 0, 0", "1, 1, 1", "x");
     checkBoundRejection("0, 2, 0", "1, 1, 1", "y");

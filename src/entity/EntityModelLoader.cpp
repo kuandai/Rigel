@@ -8,6 +8,8 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <optional>
 
 namespace Rigel::Entity {
@@ -95,6 +97,36 @@ float trackMaxTime(const EntityAnimationTrack& track) {
     }
     return track.keys.back().time;
 }
+
+void validateHitbox(const Asset::LoadContext& ctx,
+                    const std::string& path,
+                    const glm::vec3& min,
+                    const glm::vec3& max) {
+    static constexpr std::array axisNames = {'x', 'y', 'z'};
+
+    for (glm::length_t axis = 0; axis < min.length(); ++axis) {
+        const char axisName = axisNames[static_cast<size_t>(axis)];
+        if (!std::isfinite(min[axis])) {
+            throw Asset::AssetLoadError(
+                ctx.id,
+                "Entity model hitbox min." + std::string(1, axisName) +
+                    " must be finite in '" + path + "'");
+        }
+        if (!std::isfinite(max[axis])) {
+            throw Asset::AssetLoadError(
+                ctx.id,
+                "Entity model hitbox max." + std::string(1, axisName) +
+                    " must be finite in '" + path + "'");
+        }
+        if (min[axis] >= max[axis]) {
+            throw Asset::AssetLoadError(
+                ctx.id,
+                "Entity model hitbox requires min." +
+                    std::string(1, axisName) + " < max." +
+                    std::string(1, axisName) + " in '" + path + "'");
+        }
+    }
+}
 } // namespace
 
 std::shared_ptr<Asset::AssetBase> EntityModelLoader::load(const Asset::LoadContext& ctx) {
@@ -163,13 +195,20 @@ std::shared_ptr<Asset::AssetBase> EntityModelLoader::load(const Asset::LoadConte
         ryml::ConstNodeRef hitbox = root["hitbox"];
         glm::vec3 min(0.0f);
         glm::vec3 max(0.0f);
-        bool hasMin = hitbox.has_child("min") && readVec3(hitbox["min"], min);
-        bool hasMax = hitbox.has_child("max") && readVec3(hitbox["max"], max);
-        if (hasMin && hasMax) {
-            asset->hitbox = Aabb{min, max};
-        } else {
-            spdlog::warn("EntityModelAsset: hitbox missing min/max in {}", *pathOpt);
+        const bool hasMin = hitbox.has_child("min") &&
+            hitbox["min"].num_children() == 3 &&
+            readVec3(hitbox["min"], min);
+        const bool hasMax = hitbox.has_child("max") &&
+            hitbox["max"].num_children() == 3 &&
+            readVec3(hitbox["max"], max);
+        if (!hasMin || !hasMax) {
+            throw Asset::AssetLoadError(
+                ctx.id,
+                "Entity model hitbox requires three-coordinate 'min' and "
+                "'max' sequences in '" + *pathOpt + "'");
         }
+        validateHitbox(ctx, *pathOpt, min, max);
+        asset->hitbox = Aabb{min, max};
     }
 
     std::unordered_map<std::string, std::string> parentNames;

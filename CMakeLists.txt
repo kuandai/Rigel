@@ -246,6 +246,9 @@ if (RIGEL_BUILD_TESTS)
     set(ASSET_MANIFEST_VALIDATION_TEST_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/asset_manifest_validation_test.cpp
     )
+    set(ENTITY_MODEL_LOADER_VALIDATION_TEST_SOURCE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/entity_model_loader_validation_test.cpp
+    )
     set(PUBLIC_HEADER_CONSUMER_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/public_header_consumer.cpp
     )
@@ -259,6 +262,7 @@ if (RIGEL_BUILD_TESTS)
         ${PROFILER_TEST_SOURCE}
         ${BLOCK_ASSET_FAILURE_TEST_SOURCE}
         ${ASSET_MANIFEST_VALIDATION_TEST_SOURCE}
+        ${ENTITY_MODEL_LOADER_VALIDATION_TEST_SOURCE}
         ${PUBLIC_HEADER_CONSUMER_SOURCE}
         ${GENERATED_ASSET_INTEGRATION_TEST_SOURCE}
         ${APPLICATION_LAUNCH_INTEGRATION_TEST_SOURCE}
@@ -371,6 +375,35 @@ if (RIGEL_BUILD_TESTS)
         glm::glm
     )
 
+    add_executable(Rigel_entity_model_loader_validation_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/TestFramework.cpp
+        ${ENTITY_MODEL_LOADER_VALIDATION_TEST_SOURCE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/AssetManager.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/RawLoader.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/TextureLoader.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderLoader.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderCompiler.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderAsset.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/entity/EntityModelLoader.cpp
+    )
+    target_include_directories(Rigel_entity_model_loader_validation_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/entity_model_assets
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+    target_compile_definitions(Rigel_entity_model_loader_validation_tests PRIVATE
+        RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(Rigel_entity_model_loader_validation_tests PRIVATE
+        spdlog::spdlog
+        GLEW::GLEW
+        OpenGL::GL
+        ryml::ryml
+        stb::stb
+        glm::glm
+    )
+
     add_executable(Rigel_public_header_consumer
         ${PUBLIC_HEADER_CONSUMER_SOURCE}
     )
@@ -432,6 +465,7 @@ if (RIGEL_BUILD_TESTS)
         Rigel_profiler_tests
         Rigel_block_asset_failure_tests
         Rigel_asset_manifest_validation_tests
+        Rigel_entity_model_loader_validation_tests
         Rigel_public_header_consumer
     )
     if(TARGET Rigel_generated_asset_integration_tests)
@@ -446,6 +480,7 @@ if (RIGEL_BUILD_TESTS)
     add_test(NAME Rigel_profiler_tests COMMAND Rigel_profiler_tests)
     add_test(NAME Rigel_block_asset_failure_tests COMMAND Rigel_block_asset_failure_tests)
     add_test(NAME Rigel_asset_manifest_validation_tests COMMAND Rigel_asset_manifest_validation_tests)
+    add_test(NAME Rigel_entity_model_loader_validation_tests COMMAND Rigel_entity_model_loader_validation_tests)
     add_test(NAME Rigel_public_header_consumer COMMAND Rigel_public_header_consumer)
     if(TARGET Rigel_generated_asset_integration_tests)
         add_test(

@@ -165,7 +165,7 @@ from orientation.
 ### Normalized block collision shapes
 
 Physical block geometry is authored on the block registration, independently
-from its visual model. The optional `collision` field accepts the compact
+from its visual model. The required `collision` field accepts the compact
 scalars `none` and `full`, or one or more inline axis-aligned boxes:
 
 ```yaml

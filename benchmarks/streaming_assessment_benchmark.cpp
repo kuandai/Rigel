@@ -6,6 +6,7 @@
 #include "Rigel/Render/OpenGLRuntime.h"
 #include "Rigel/UI/ImGuiLayer.h"
 #include "Rigel/Voxel/BlockLoader.h"
+#include "Rigel/Voxel/BlockModel.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/ChunkManager.h"
 #include "Rigel/Voxel/ChunkStreamer.h"
@@ -102,9 +103,10 @@ RepresentativeBootstrapConfiguration loadRepresentativeBootstrapConfiguration(
     bool loadBlockAssets) {
     if (loadBlockAssets) {
         Voxel::TextureAtlas atlas;
+        Voxel::BlockModelRegistry models;
         Voxel::BlockLoader blocks;
         const Voxel::BlockLoadReport report =
-            blocks.loadFromManifest(assets, registry, atlas);
+            blocks.loadFromManifest(assets, models, registry, atlas);
         if (report.failed != 0) {
             throw std::runtime_error(
                 "Shipped block assets failed benchmark bootstrap");

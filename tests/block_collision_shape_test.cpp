@@ -34,6 +34,8 @@ static_assert(std::is_same_v<
 static_assert(!std::is_assignable_v<
               decltype(std::declval<const BlockCollisionShape&>().boxes()[0]),
               BlockCollisionBox>);
+static_assert(std::is_nothrow_move_constructible_v<BlockCollisionShape>);
+static_assert(std::is_nothrow_move_assignable_v<BlockCollisionShape>);
 
 TEST_CASE(BlockCollisionShape_EmptyAndFullCubeUseCanonicalQueries) {
     const BlockCollisionShape empty = BlockCollisionShape::empty();
@@ -85,6 +87,34 @@ TEST_CASE(BlockCollisionShape_CustomBoxesAreImmutableSnapshots) {
     CHECK(registered.isBoxes());
     CHECK_EQ(registered.boxes().data(), shape.boxes().data());
     CHECK_EQ(registered.boxes()[0].min[0], -0.25f);
+}
+
+TEST_CASE(BlockCollisionShape_MoveAndCopyPreserveCollisionSemantics) {
+    BlockCollisionShape source = BlockCollisionShape::boxes(
+        {{{-0.25f, 0.0f, 0.25f}, {0.5f, 0.5f, 0.75f}},
+         {{0.5f, 0.25f, 0.0f}, {1.25f, 1.0f, 1.0f}}},
+        BlockCollisionShape::Provenance::Exact);
+    const BlockCollisionShape copied = source;
+    const BlockCollisionBox* const storage = source.boxes().data();
+
+    BlockCollisionShape moved = std::move(source);
+    CHECK(moved.isBoxes());
+    CHECK_EQ(moved.provenance(), BlockCollisionShape::Provenance::Exact);
+    CHECK_EQ(moved.boxes().data(), storage);
+    CHECK_EQ(copied.boxes().data(), storage);
+
+    BlockCollisionShape assigned = BlockCollisionShape::empty();
+    assigned = std::move(moved);
+    CHECK(assigned.isBoxes());
+    CHECK_EQ(assigned.provenance(), BlockCollisionShape::Provenance::Exact);
+    CHECK_EQ(assigned.boxes().data(), storage);
+
+    BlockCollisionShape copyAssigned;
+    copyAssigned = assigned;
+    CHECK_EQ(copyAssigned.boxes().data(), storage);
+    CHECK_EQ(copyAssigned.boxes().size(), static_cast<size_t>(2));
+    CHECK_EQ(copyAssigned.boxes()[0].min[0], -0.25f);
+    CHECK_EQ(copyAssigned.boxes()[1].max[0], 1.25f);
 }
 
 TEST_CASE(BlockCollisionShape_MovedInputCannotAliasRegisteredBoxes) {

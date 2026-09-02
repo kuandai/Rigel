@@ -58,17 +58,8 @@ public:
     BlockCollisionShape(const BlockCollisionShape&) noexcept = default;
     BlockCollisionShape& operator=(const BlockCollisionShape&) noexcept = default;
 
-    BlockCollisionShape(BlockCollisionShape&& other) noexcept
-        : m_kind(other.m_kind)
-        , m_provenance(other.m_provenance)
-        , m_boxes(other.m_boxes) {}
-
-    BlockCollisionShape& operator=(BlockCollisionShape&& other) noexcept {
-        m_kind = other.m_kind;
-        m_provenance = other.m_provenance;
-        m_boxes = other.m_boxes;
-        return *this;
-    }
+    BlockCollisionShape(BlockCollisionShape&&) noexcept = default;
+    BlockCollisionShape& operator=(BlockCollisionShape&&) noexcept = default;
 
     static BlockCollisionShape empty(
         Provenance provenance = Provenance::Authored

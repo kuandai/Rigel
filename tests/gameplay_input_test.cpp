@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/BlockTargeting.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 #include "Rigel/Voxel/WorldView.h"
@@ -10,8 +11,51 @@
 #include <GLFW/glfw3.h>
 
 #include <memory>
+#include <string>
+#include <vector>
 
 using namespace Rigel;
+
+namespace {
+
+Voxel::BlockID addModelBlock(
+    Voxel::WorldResources& resources,
+    std::string identifier,
+    Voxel::BlockModelBounds bounds
+) {
+    Voxel::BlockModelCuboid cuboid;
+    cuboid.bounds = bounds;
+    for (auto& face : cuboid.faces) {
+        face = Voxel::BlockModelFace{.textureSlot = "invented"};
+    }
+    Voxel::BlockType type;
+    type.identifier = identifier;
+    type.model = Voxel::BlockModelInstance(
+        std::make_shared<const Voxel::BlockModel>(
+            identifier + "_model",
+            std::vector<std::string>{"invented"},
+            std::vector<Voxel::BlockModelCuboid>{cuboid}));
+    return resources.registry().registerBlock(identifier, std::move(type));
+}
+
+Input::InputState pressedEditInput(std::string_view action, int key) {
+    auto bindings = std::make_shared<Input::InputBindings>();
+    bindings->bind(std::string(action), key);
+    Input::InputState input;
+    input.setBindings(std::move(bindings));
+    input.beginFrame();
+    input.handleKeyEvent(key, GLFW_PRESS);
+    input.beginFrame();
+    return input;
+}
+
+const Voxel::BlockTarget* targetPointer(
+    const std::optional<Voxel::BlockTarget>& target
+) {
+    return target ? &*target : nullptr;
+}
+
+} // namespace
 
 TEST_CASE(GameplayInput_CursorMathUsesEffectiveSensitivityAndInvertY) {
     Input::WindowState window;
@@ -72,16 +116,20 @@ TEST_CASE(GameplayInput_BlockEditsUseSemanticActions) {
     world.setBlock(0, 0, 0, Voxel::BlockState{solidId});
     input.handleMouseButtonEvent(GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS);
     input.beginFrame();
+    auto target = Voxel::raycastBlock(
+        world, camera.position, camera.forward, 8.0f);
     Input::handleBlockEdits(
-        input, window, camera, world, view, solidId,
+        input, window, targetPointer(target), world, view, solidId,
         Input::GameplayMutationMode::ReadWrite);
     CHECK_EQ(world.getBlock(0, 0, 0).id, solidId);
 
     input.handleMouseButtonEvent(GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE);
     input.handleKeyEvent(GLFW_KEY_R, GLFW_PRESS);
     input.beginFrame();
+    target = Voxel::raycastBlock(
+        world, camera.position, camera.forward, 8.0f);
     Input::handleBlockEdits(
-        input, window, camera, world, view, solidId,
+        input, window, targetPointer(target), world, view, solidId,
         Input::GameplayMutationMode::ReadWrite);
     CHECK(world.getBlock(0, 0, 0).isAir());
 
@@ -90,8 +138,10 @@ TEST_CASE(GameplayInput_BlockEditsUseSemanticActions) {
     world.setBlock(0, 0, 0, Voxel::BlockState{solidId});
     input.handleKeyEvent(GLFW_KEY_P, GLFW_PRESS);
     input.beginFrame();
+    target = Voxel::raycastBlock(
+        world, camera.position, camera.forward, 8.0f);
     Input::handleBlockEdits(
-        input, window, camera, world, view, solidId,
+        input, window, targetPointer(target), world, view, solidId,
         Input::GameplayMutationMode::ReadWrite);
     CHECK_EQ(world.getBlock(0, 0, 1).id, solidId);
 }
@@ -139,7 +189,7 @@ TEST_CASE(GameplayInput_ReadOnlyModeSuppressesWorldMutationsOnly) {
     Input::handleBlockEdits(
         input,
         window,
-        camera,
+        nullptr,
         world,
         view,
         solidId,
@@ -149,6 +199,106 @@ TEST_CASE(GameplayInput_ReadOnlyModeSuppressesWorldMutationsOnly) {
     CHECK_EQ(world.getBlock(0, 0, 0).id, solidId);
     CHECK(world.getBlock(0, 0, 1).isAir());
     CHECK_EQ(world.entities().size(), static_cast<size_t>(0));
+}
+
+TEST_CASE(GameplayInput_RemovalTargetsBeyondPartialModelEmptySpace) {
+    Voxel::WorldResources resources;
+    const Voxel::BlockID slab = addModelBlock(
+        resources,
+        "invented:removal_slab",
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}});
+    const Voxel::BlockID fullCube = addModelBlock(
+        resources,
+        "invented:removal_background",
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+    Voxel::World world(resources);
+    Voxel::WorldView view(world, resources);
+    world.setBlock(0, 0, 1, Voxel::BlockState{slab});
+    world.setBlock(0, 0, 0, Voxel::BlockState{fullCube});
+
+    const auto target = Voxel::raycastBlock(
+        world, {0.5f, 0.75f, 2.5f}, {0.0f, 0.0f, -1.0f}, 8.0f);
+    CHECK(target.has_value());
+    CHECK_EQ(target->block, (glm::ivec3{0, 0, 0}));
+    Input::InputState input = pressedEditInput("remove_block", GLFW_KEY_R);
+    Input::WindowState window;
+
+    CHECK(Input::handleBlockEdits(
+        input, window, targetPointer(target), world, view, fullCube,
+        Input::GameplayMutationMode::ReadWrite));
+    CHECK(world.getBlock(0, 0, 0).isAir());
+    CHECK_EQ(world.getBlock(0, 0, 1).id, slab);
+}
+
+TEST_CASE(GameplayInput_PlacementUsesPartialModelFaceNormal) {
+    Voxel::WorldResources resources;
+    const Voxel::BlockID slab = addModelBlock(
+        resources,
+        "invented:placement_slab",
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}});
+    const Voxel::BlockID placed = addModelBlock(
+        resources,
+        "invented:placed_cube",
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+    Voxel::World world(resources);
+    Voxel::WorldView view(world, resources);
+    world.setBlock(0, 0, 0, Voxel::BlockState{slab});
+
+    const auto target = Voxel::raycastBlock(
+        world, {0.5f, 0.75f, 0.5f}, {0.0f, -1.0f, 0.0f}, 8.0f);
+    CHECK(target.has_value());
+    CHECK_EQ(target->normal, (glm::ivec3{0, 1, 0}));
+    CHECK_NEAR(target->position.y, 0.5f, 0.00001f);
+    Input::InputState input = pressedEditInput("place_block", GLFW_KEY_P);
+    Input::WindowState window;
+
+    CHECK(Input::handleBlockEdits(
+        input, window, targetPointer(target), world, view, placed,
+        Input::GameplayMutationMode::ReadWrite));
+    CHECK_EQ(world.getBlock(0, 1, 0).id, placed);
+    CHECK_EQ(world.getBlock(0, 0, 0).id, slab);
+}
+
+TEST_CASE(GameplayInput_RemovalUsesOverhangingModelOwner) {
+    Voxel::WorldResources resources;
+    const Voxel::BlockID overhang = addModelBlock(
+        resources,
+        "invented:owner_overhang",
+        {{-0.25f, 0.0f, 0.0f}, {0.25f, 1.0f, 1.0f}});
+    Voxel::World world(resources);
+    Voxel::WorldView view(world, resources);
+    world.setBlock(1, 0, 0, Voxel::BlockState{overhang});
+
+    const auto target = Voxel::raycastBlock(
+        world, {0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, 8.0f);
+    CHECK(target.has_value());
+    CHECK_EQ(target->block, (glm::ivec3{1, 0, 0}));
+    CHECK_NEAR(target->position.x, 0.75f, 0.00001f);
+    Input::InputState input = pressedEditInput("remove_block", GLFW_KEY_R);
+    Input::WindowState window;
+
+    CHECK(Input::handleBlockEdits(
+        input, window, targetPointer(target), world, view, overhang,
+        Input::GameplayMutationMode::ReadWrite));
+    CHECK(world.getBlock(1, 0, 0).isAir());
+}
+
+TEST_CASE(GameplayInput_NoTargetDoesNotEditWorld) {
+    Voxel::WorldResources resources;
+    const Voxel::BlockID placed = addModelBlock(
+        resources,
+        "invented:no_target_cube",
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+    Voxel::World world(resources);
+    Voxel::WorldView view(world, resources);
+    world.setBlock(3, 2, 1, Voxel::BlockState{placed});
+    Input::InputState input = pressedEditInput("remove_block", GLFW_KEY_R);
+    Input::WindowState window;
+
+    CHECK(!Input::handleBlockEdits(
+        input, window, nullptr, world, view, placed,
+        Input::GameplayMutationMode::ReadWrite));
+    CHECK_EQ(world.getBlock(3, 2, 1).id, placed);
 }
 
 TEST_CASE(GameplayInput_ReadWriteModeRetainsDemoMutation) {

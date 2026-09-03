@@ -13,7 +13,7 @@ struct GLFWwindow;
 
 namespace Rigel {
 namespace Asset { class AssetManager; }
-namespace Voxel { class World; class WorldView; }
+namespace Voxel { class World; class WorldView; struct BlockTarget; }
 
 namespace Input {
 
@@ -102,9 +102,11 @@ void handleDemoSpawn(const InputState& input,
                      const CameraState& camera,
                      GameplayMutationMode mode);
 
-void handleBlockEdits(const InputState& input,
+/** Apply edit actions to an already-resolved center target. Returns true
+ * when the world changed and the owning frame should refresh its target. */
+bool handleBlockEdits(const InputState& input,
                       const WindowState& window,
-                      const CameraState& camera,
+                      const Voxel::BlockTarget* target,
                       Voxel::World& world,
                       Voxel::WorldView& worldView,
                       Voxel::BlockID placeBlock,

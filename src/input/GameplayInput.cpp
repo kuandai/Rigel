@@ -334,74 +334,64 @@ void handleDemoSpawn(const InputState& input,
     }
 }
 
-void handleBlockEdits(const InputState& input,
+bool handleBlockEdits(const InputState& input,
                       const WindowState& window,
-                      const CameraState& camera,
+                      const Voxel::BlockTarget* target,
                       Voxel::World& world,
                       Voxel::WorldView& worldView,
                       Voxel::BlockID placeBlock,
                       GameplayMutationMode mode) {
-    if (mode == GameplayMutationMode::ReadOnly) {
-        return;
+    if (mode == GameplayMutationMode::ReadOnly ||
+        !window.cursorCaptured || !target) {
+        return false;
     }
-    if (window.cursorCaptured) {
-        auto prioritizeEditedChunk = [&](const glm::ivec3& worldPos) {
-            Voxel::ChunkCoord coord = Voxel::worldToChunk(worldPos.x, worldPos.y, worldPos.z);
-            int lx = 0;
-            int ly = 0;
-            int lz = 0;
-            Voxel::worldToLocal(worldPos.x, worldPos.y, worldPos.z, lx, ly, lz);
-            worldView.prioritizeChunkMesh(coord);
-            if (lx == 0) {
-                worldView.prioritizeChunkMesh(coord.offset(-1, 0, 0));
-            } else if (lx == Voxel::Chunk::SIZE - 1) {
-                worldView.prioritizeChunkMesh(coord.offset(1, 0, 0));
-            }
-            if (ly == 0) {
-                worldView.prioritizeChunkMesh(coord.offset(0, -1, 0));
-            } else if (ly == Voxel::Chunk::SIZE - 1) {
-                worldView.prioritizeChunkMesh(coord.offset(0, 1, 0));
-            }
-            if (lz == 0) {
-                worldView.prioritizeChunkMesh(coord.offset(0, 0, -1));
-            } else if (lz == Voxel::Chunk::SIZE - 1) {
-                worldView.prioritizeChunkMesh(coord.offset(0, 0, 1));
-            }
-        };
+    bool worldEdited = false;
+    auto prioritizeEditedChunk = [&](const glm::ivec3& worldPos) {
+        Voxel::ChunkCoord coord = Voxel::worldToChunk(worldPos.x, worldPos.y, worldPos.z);
+        int lx = 0;
+        int ly = 0;
+        int lz = 0;
+        Voxel::worldToLocal(worldPos.x, worldPos.y, worldPos.z, lx, ly, lz);
+        worldView.prioritizeChunkMesh(coord);
+        if (lx == 0) {
+            worldView.prioritizeChunkMesh(coord.offset(-1, 0, 0));
+        } else if (lx == Voxel::Chunk::SIZE - 1) {
+            worldView.prioritizeChunkMesh(coord.offset(1, 0, 0));
+        }
+        if (ly == 0) {
+            worldView.prioritizeChunkMesh(coord.offset(0, -1, 0));
+        } else if (ly == Voxel::Chunk::SIZE - 1) {
+            worldView.prioritizeChunkMesh(coord.offset(0, 1, 0));
+        }
+        if (lz == 0) {
+            worldView.prioritizeChunkMesh(coord.offset(0, 0, -1));
+        } else if (lz == Voxel::Chunk::SIZE - 1) {
+            worldView.prioritizeChunkMesh(coord.offset(0, 0, 1));
+        }
+    };
 
-        const float interactDistance = 8.0f;
-        if (input.isActionJustPressed("remove_block")) {
-            if (const auto hit = Voxel::raycastBlock(
-                    world,
-                    camera.position,
-                    camera.forward,
-                    interactDistance)) {
-                world.setBlock(
-                    hit->block.x,
-                    hit->block.y,
-                    hit->block.z,
-                    Voxel::BlockState{});
-                prioritizeEditedChunk(hit->block);
-            }
-        }
-        if (input.isActionJustPressed("place_block")) {
-            if (const auto hit = Voxel::raycastBlock(
-                    world,
-                    camera.position,
-                    camera.forward,
-                    interactDistance)) {
-                glm::ivec3 placePos = hit->block + hit->normal;
-                if (hit->normal != glm::ivec3(0) &&
-                    placeBlock != Voxel::BlockRegistry::airId() &&
-                    world.getBlock(placePos.x, placePos.y, placePos.z).isAir()) {
-                    Voxel::BlockState state;
-                    state.id = placeBlock;
-                    world.setBlock(placePos.x, placePos.y, placePos.z, state);
-                    prioritizeEditedChunk(placePos);
-                }
-            }
+    if (input.isActionJustPressed("remove_block")) {
+        world.setBlock(
+            target->block.x,
+            target->block.y,
+            target->block.z,
+            Voxel::BlockState{});
+        prioritizeEditedChunk(target->block);
+        worldEdited = true;
+    }
+    if (input.isActionJustPressed("place_block")) {
+        const glm::ivec3 placePos = target->block + target->normal;
+        if (target->normal != glm::ivec3(0) &&
+            placeBlock != Voxel::BlockRegistry::airId() &&
+            world.getBlock(placePos.x, placePos.y, placePos.z).isAir()) {
+            Voxel::BlockState state;
+            state.id = placeBlock;
+            world.setBlock(placePos.x, placePos.y, placePos.z, state);
+            prioritizeEditedChunk(placePos);
+            worldEdited = true;
         }
     }
+    return worldEdited;
 }
 
 } // namespace Rigel::Input

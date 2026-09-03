@@ -3,6 +3,9 @@
 #include "Rigel/Voxel/BlockGalleryCatalog.h"
 #include "Rigel/Voxel/BlockGalleryTargetPresentation.h"
 #include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/BlockTargeting.h"
+#include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldResources.h"
 
 #include <array>
 #include <memory>
@@ -363,6 +366,50 @@ TEST_CASE(BlockGalleryTargetPresentation_RejectsNonSpecimenCellsSafely) {
         registry,
         targetAt({123, BlockGalleryCatalog::SpecimenHeight, 123},
                  BlockRegistry::airId())));
+}
+
+TEST_CASE(BlockGalleryTargetPresentation_AcceptsShapeAwareGallerySelection) {
+    WorldResources resources;
+    const BlockID specimenId = addPartialDiagnostic(
+        resources.registry(), "invented:gallery_slab", false, false);
+    resources.registry().freeze();
+    const BlockGalleryCatalog catalog(resources.registry());
+    const BlockGalleryCatalogEntry* entry =
+        catalog.findByBlockId(specimenId);
+    CHECK(entry != nullptr);
+    World world(resources);
+    world.setBlock(
+        entry->specimenPosition.x,
+        entry->specimenPosition.y,
+        entry->specimenPosition.z,
+        BlockState{specimenId});
+
+    const glm::vec3 origin{
+        static_cast<float>(entry->specimenPosition.x) + 0.5f,
+        static_cast<float>(entry->specimenPosition.y) + 0.75f,
+        static_cast<float>(entry->specimenPosition.z) + 0.5f,
+    };
+    const auto target = raycastBlock(
+        world, origin, {0.0f, -1.0f, 0.0f}, 8.0f);
+
+    CHECK(target.has_value());
+    CHECK_EQ(
+        target->block,
+        (glm::ivec3{
+            entry->specimenPosition.x,
+            entry->specimenPosition.y,
+            entry->specimenPosition.z}));
+    CHECK_EQ(target->normal, (glm::ivec3{0, 1, 0}));
+    CHECK_NEAR(
+        target->position.y,
+        static_cast<float>(entry->specimenPosition.y) + 0.5f,
+        0.00001f);
+    const auto presentation = makeBlockGalleryTargetPresentation(
+        catalog, resources.registry(), *target);
+    CHECK(presentation.has_value());
+    CHECK_EQ(
+        presentation->blockStateIdentifier,
+        std::string("invented:gallery_slab"));
 }
 
 TEST_CASE(BlockGalleryTargetPresentation_IdentifiesEveryDiagnosticPairCell) {

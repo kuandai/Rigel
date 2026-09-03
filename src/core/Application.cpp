@@ -66,7 +66,7 @@ constexpr std::string_view kInstalledPersistenceFormat = "cr";
 constexpr std::string_view kBlockGalleryPersistenceFormat = "memory";
 constexpr std::string_view kBlockGalleryVirtualRoot =
     "developer/block-gallery";
-constexpr float kBlockGalleryTargetDistance = 8.0f;
+constexpr float kBlockTargetDistance = 8.0f;
 
 void applyInstalledPersistencePolicy(
     Voxel::WorldSet& worldSet,
@@ -302,6 +302,7 @@ struct Application::Impl {
         std::unique_ptr<const Voxel::BlockGalleryCatalog> galleryCatalog;
         std::shared_ptr<const Voxel::BlockGalleryChunkGenerator>
             galleryGenerator;
+        std::optional<Voxel::BlockTarget> blockTarget;
         std::optional<Voxel::BlockGalleryTargetPresentation>
             galleryTargetPresentation;
         std::optional<Persistence::WorldSettings> settings;
@@ -929,6 +930,7 @@ void Application::Impl::shutdown() noexcept {
             activeView->releaseRenderResources();
         }
     }
+    world.blockTarget.reset();
     world.galleryTargetPresentation.reset();
     world.galleryGenerator.reset();
     world.galleryCatalog.reset();
@@ -1504,25 +1506,34 @@ void Application::run() {
                         *m_impl->world.world,
                         m_impl->camera,
                         mutationMode);
-                    Input::handleBlockEdits(
+                    const auto refreshBlockTarget = [&] {
+                        m_impl->world.blockTarget = Voxel::raycastBlock(
+                            *m_impl->world.world,
+                            m_impl->camera.position,
+                            m_impl->camera.forward,
+                            kBlockTargetDistance);
+                    };
+                    refreshBlockTarget();
+                    const bool worldEdited = Input::handleBlockEdits(
                         m_impl->input,
                         m_impl->window,
-                        m_impl->camera,
+                        m_impl->world.blockTarget
+                            ? &*m_impl->world.blockTarget
+                            : nullptr,
                         *m_impl->world.world,
                         *m_impl->world.worldView,
                         m_impl->world.placeBlock,
                         mutationMode);
+                    if (worldEdited) {
+                        refreshBlockTarget();
+                    }
                     if (m_impl->world.galleryCatalog) {
-                        const auto target = Voxel::raycastBlock(
-                            *m_impl->world.world,
-                            m_impl->camera.position,
-                            m_impl->camera.forward,
-                            kBlockGalleryTargetDistance);
-                        m_impl->world.galleryTargetPresentation = target
+                        m_impl->world.galleryTargetPresentation =
+                            m_impl->world.blockTarget
                             ? Voxel::makeBlockGalleryTargetPresentation(
                                   *m_impl->world.galleryCatalog,
                                   m_impl->world.world->blockRegistry(),
-                                  *target)
+                                  *m_impl->world.blockTarget)
                             : std::nullopt;
                     }
                     m_impl->world.world->tickEntities(deltaTime);

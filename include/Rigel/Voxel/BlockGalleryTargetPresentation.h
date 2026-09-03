@@ -34,6 +34,9 @@ struct BlockGalleryTargetPresentation {
     BlockGalleryGridCoordinate gridCoordinate;
     std::string modelIdentifier;
     size_t cuboidCount = 0;
+    size_t hitCuboidPosition = 0;
+    std::string hitFace;
+    float hitDistance = 0.0f;
     std::string orientation;
     std::string renderLayer;
     std::string effectiveRenderLayers;
@@ -50,8 +53,9 @@ struct BlockGalleryTargetPresentation {
 };
 
 /**
- * Build presentation data only when a whole-cell target matches a catalog
- * specimen or culling diagnostic placement at that exact world position.
+ * Build presentation data when the target's owning coordinate matches a
+ * catalog specimen or culling diagnostic placement. Geometry may extend into
+ * neighboring cells, but catalog identity remains attached to its owner.
  */
 std::optional<BlockGalleryTargetPresentation>
 makeBlockGalleryTargetPresentation(

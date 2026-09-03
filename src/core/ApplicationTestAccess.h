@@ -95,6 +95,9 @@ struct ApplicationBlockGalleryLifecycleState {
     bool specimenLoadedThroughAsyncLoader = false;
     bool specimenMeshSubmitted = false;
     bool specimenTargetPresented = false;
+    bool exactTargetMetadataPresented = false;
+    bool targetChangePresented = false;
+    bool noTargetPresented = false;
     bool galleryMutationsSuppressed = false;
     bool frameRendererSubmitted = false;
     bool generatedChunkPersistedOnClose = false;

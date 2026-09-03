@@ -23,6 +23,7 @@
 #include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 #include "Rigel/Voxel/BlockGalleryTargetPresentation.h"
 #include "Rigel/Voxel/BlockTargeting.h"
+#include "Rigel/Voxel/RayAabb.h"
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
 #include "Rigel/Voxel/WorldSet.h"
@@ -209,6 +210,9 @@ struct BlockGalleryLaunchLifecycleProbe {
     bool specimenSelected = false;
     bool movementStarted = false;
     bool targetingStarted = false;
+    bool targetChangeRequested = false;
+    bool noTargetRequested = false;
+    float initialTargetDistance = 0.0f;
     bool mutationInputsQueued = false;
 };
 
@@ -1278,13 +1282,57 @@ void ApplicationTestAccess::observeBlockGalleryLaunchFrame(
         }
 
         if (probe.targetingStarted &&
+            impl.world.blockTarget &&
             impl.world.galleryTargetPresentation) {
+            const Voxel::BlockTarget& target = *impl.world.blockTarget;
             const auto& presentation =
                 *impl.world.galleryTargetPresentation;
             observed.specimenTargetPresented =
+                target.block == glm::ivec3{
+                    position.x, position.y, position.z} &&
                 presentation.blockStateIdentifier ==
                     impl.world.world->blockRegistry()
                         .getType(probe.specimenId).identifier;
+            observed.exactTargetMetadataPresented =
+                observed.specimenTargetPresented &&
+                presentation.hitCuboidPosition == target.cuboidIndex + 1 &&
+                presentation.cuboidCount ==
+                    impl.world.world->blockRegistry()
+                        .getType(target.state.id).model->cuboids().size() &&
+                presentation.hitFace ==
+                    Voxel::BlockModel::directionName(target.face) &&
+                presentation.hitDistance == target.distance;
+
+            if (observed.exactTargetMetadataPresented &&
+                !probe.targetChangeRequested) {
+                probe.initialTargetDistance = presentation.hitDistance;
+                impl.camera.position += impl.camera.forward * 0.125f;
+                impl.camera.target =
+                    impl.camera.position + impl.camera.forward;
+                probe.targetChangeRequested = true;
+            } else if (probe.targetChangeRequested &&
+                       !observed.targetChangePresented &&
+                       observed.exactTargetMetadataPresented &&
+                       std::abs(
+                           presentation.hitDistance -
+                           probe.initialTargetDistance) >
+                           Voxel::BlockRayIntersectionTolerance) {
+                observed.targetChangePresented = true;
+                impl.camera.position = {
+                    static_cast<float>(position.x) + 0.5f,
+                    static_cast<float>(position.y) + 3.0f,
+                    static_cast<float>(position.z) + 0.5f,
+                };
+                impl.camera.pitch = 89.0f;
+                impl.camera.forward = {0.0f, 1.0f, 0.0f};
+                impl.camera.target =
+                    impl.camera.position + impl.camera.forward;
+                probe.noTargetRequested = true;
+            }
+        } else if (probe.noTargetRequested &&
+                   !impl.world.blockTarget &&
+                   !impl.world.galleryTargetPresentation) {
+            observed.noTargetPresented = true;
         }
 
         if (observed.specimenTargetPresented &&
@@ -1318,6 +1366,9 @@ void ApplicationTestAccess::observeBlockGalleryLaunchFrame(
         observed.specimenLoadedThroughAsyncLoader &&
         observed.specimenMeshSubmitted &&
         observed.specimenTargetPresented &&
+        observed.exactTargetMetadataPresented &&
+        observed.targetChangePresented &&
+        observed.noTargetPresented &&
         observed.galleryMutationsSuppressed &&
         observed.chunkLoadsStarted > 0;
     if (complete || observed.renderedFrames >= 600) {

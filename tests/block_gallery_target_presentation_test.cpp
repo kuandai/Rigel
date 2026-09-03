@@ -7,6 +7,7 @@
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <set>
@@ -94,6 +95,36 @@ BlockID addPartialDiagnostic(
     return registry.registerBlock(identifier, std::move(type));
 }
 
+BlockID addOverhangingSpecimen(
+    BlockRegistry& registry,
+    const std::string& identifier,
+    bool cullSameType = false
+) {
+    BlockModelCuboid plate;
+    plate.bounds.max = {1.0f, 1.0f, 1.0f};
+    BlockModelCuboid shaft;
+    shaft.bounds.min = {0.375f, 0.375f, 0.25f};
+    shaft.bounds.max = {0.625f, 0.625f, 1.25f};
+    for (BlockModelCuboid* cuboid : {&plate, &shaft}) {
+        for (size_t index = 0; index < DirectionCount; ++index) {
+            cuboid->faces[index] = BlockModelFace{
+                .textureSlot = "surface",
+            };
+        }
+    }
+
+    BlockType type;
+    type.identifier = identifier;
+    type.model = BlockModelInstance(std::make_shared<const BlockModel>(
+        identifier + "_model",
+        std::vector<std::string>{"surface"},
+        std::vector<BlockModelCuboid>{plate, shaft}));
+    type.model.orientation = BlockModelOrientation::RotateY90;
+    type.textures.bind("surface", "invented/overhang.png");
+    type.cullSameType = cullSameType;
+    return registry.registerBlock(identifier, std::move(type));
+}
+
 BlockID addLayeredSpecimen(
     BlockRegistry& registry,
     const std::string& identifier,
@@ -156,8 +187,12 @@ TEST_CASE(BlockGalleryTargetPresentation_UsesCatalogAndRuntimeMetadata) {
     const BlockGalleryCatalogEntry* entry = catalog.findByBlockId(specimenId);
     CHECK(entry != nullptr);
 
+    BlockTarget target = targetAt(*entry, specimenId);
+    target.face = Direction::NegY;
+    target.cuboidIndex = 1;
+    target.distance = 2.375f;
     const auto presentation = makeBlockGalleryTargetPresentation(
-        catalog, registry, targetAt(*entry, specimenId));
+        catalog, registry, target);
 
     CHECK(presentation.has_value());
     CHECK_EQ(
@@ -170,6 +205,9 @@ TEST_CASE(BlockGalleryTargetPresentation_UsesCatalogAndRuntimeMetadata) {
         presentation->modelIdentifier,
         std::string("invented:two_cuboid_model"));
     CHECK_EQ(presentation->cuboidCount, static_cast<size_t>(2));
+    CHECK_EQ(presentation->hitCuboidPosition, static_cast<size_t>(2));
+    CHECK_EQ(presentation->hitFace, std::string("neg_y"));
+    CHECK_EQ(presentation->hitDistance, 2.375f);
     CHECK_EQ(presentation->orientation, std::string("rotate_z_90"));
     CHECK_EQ(presentation->renderLayer, std::string("transparent"));
     CHECK_EQ(
@@ -234,6 +272,10 @@ TEST_CASE(BlockGalleryTargetPresentation_ReportsEveryCollisionKindAndFallback) {
             catalog, registry, targetAt(*entry, id));
         CHECK(presentation.has_value());
         CHECK_EQ(presentation->collision, expected);
+        CHECK_EQ(presentation->hitCuboidPosition, static_cast<size_t>(1));
+        CHECK_EQ(presentation->cuboidCount, static_cast<size_t>(1));
+        CHECK_EQ(presentation->hitFace, std::string("pos_x"));
+        CHECK_EQ(presentation->hitDistance, 3.0f);
     }
 }
 
@@ -366,12 +408,25 @@ TEST_CASE(BlockGalleryTargetPresentation_RejectsNonSpecimenCellsSafely) {
         registry,
         targetAt({123, BlockGalleryCatalog::SpecimenHeight, 123},
                  BlockRegistry::airId())));
+
+    BlockTarget invalidHit = targetAt(*entry, specimenId);
+    invalidHit.cuboidIndex = 2;
+    CHECK(!makeBlockGalleryTargetPresentation(
+        catalog, registry, invalidHit));
+    invalidHit.cuboidIndex = 0;
+    invalidHit.face = static_cast<Direction>(DirectionCount);
+    CHECK(!makeBlockGalleryTargetPresentation(
+        catalog, registry, invalidHit));
+    invalidHit.face = Direction::PosX;
+    invalidHit.distance = -1.0f;
+    CHECK(!makeBlockGalleryTargetPresentation(
+        catalog, registry, invalidHit));
 }
 
 TEST_CASE(BlockGalleryTargetPresentation_AcceptsShapeAwareGallerySelection) {
     WorldResources resources;
-    const BlockID specimenId = addPartialDiagnostic(
-        resources.registry(), "invented:gallery_slab", false, false);
+    const BlockID specimenId = addOverhangingSpecimen(
+        resources.registry(), "invented:gallery_overhang");
     resources.registry().freeze();
     const BlockGalleryCatalog catalog(resources.registry());
     const BlockGalleryCatalogEntry* entry =
@@ -385,12 +440,12 @@ TEST_CASE(BlockGalleryTargetPresentation_AcceptsShapeAwareGallerySelection) {
         BlockState{specimenId});
 
     const glm::vec3 origin{
-        static_cast<float>(entry->specimenPosition.x) + 0.5f,
-        static_cast<float>(entry->specimenPosition.y) + 0.75f,
+        static_cast<float>(entry->specimenPosition.x) - 0.5f,
+        static_cast<float>(entry->specimenPosition.y) + 0.5f,
         static_cast<float>(entry->specimenPosition.z) + 0.5f,
     };
     const auto target = raycastBlock(
-        world, origin, {0.0f, -1.0f, 0.0f}, 8.0f);
+        world, origin, {1.0f, 0.0f, 0.0f}, 8.0f);
 
     CHECK(target.has_value());
     CHECK_EQ(
@@ -399,17 +454,61 @@ TEST_CASE(BlockGalleryTargetPresentation_AcceptsShapeAwareGallerySelection) {
             entry->specimenPosition.x,
             entry->specimenPosition.y,
             entry->specimenPosition.z}));
-    CHECK_EQ(target->normal, (glm::ivec3{0, 1, 0}));
+    CHECK_EQ(target->normal, (glm::ivec3{-1, 0, 0}));
+    CHECK_EQ(target->face, Direction::NegX);
+    CHECK_EQ(target->cuboidIndex, static_cast<size_t>(1));
+    CHECK_NEAR(target->distance, 0.25f, 0.00001f);
     CHECK_NEAR(
-        target->position.y,
-        static_cast<float>(entry->specimenPosition.y) + 0.5f,
+        target->position.x,
+        static_cast<float>(entry->specimenPosition.x) - 0.25f,
         0.00001f);
     const auto presentation = makeBlockGalleryTargetPresentation(
         catalog, resources.registry(), *target);
     CHECK(presentation.has_value());
     CHECK_EQ(
         presentation->blockStateIdentifier,
-        std::string("invented:gallery_slab"));
+        std::string("invented:gallery_overhang"));
+    CHECK_EQ(presentation->hitCuboidPosition, static_cast<size_t>(2));
+    CHECK_EQ(presentation->cuboidCount, static_cast<size_t>(2));
+    CHECK_EQ(presentation->hitFace, std::string("neg_x"));
+    CHECK_NEAR(presentation->hitDistance, 0.25f, 0.00001f);
+}
+
+TEST_CASE(BlockGalleryTargetPresentation_UsesOwnerForOverhangingDiagnostic) {
+    WorldResources resources;
+    const BlockID specimenId = addOverhangingSpecimen(
+        resources.registry(), "invented:diagnostic_overhang", true);
+    resources.registry().freeze();
+    const BlockGalleryCatalog catalog(resources.registry());
+    const auto diagnostic = std::find_if(
+        catalog.cullingDiagnosticPlacements().begin(),
+        catalog.cullingDiagnosticPlacements().end(),
+        [&](const BlockGalleryCullingDiagnosticPlacement& placement) {
+            return placement.sourceBlockId == specimenId;
+        });
+    CHECK(diagnostic != catalog.cullingDiagnosticPlacements().end());
+
+    World world(resources);
+    const auto& owner = diagnostic->worldPosition;
+    world.setBlock(owner.x, owner.y, owner.z, BlockState{specimenId});
+    const auto target = raycastBlock(
+        world,
+        {static_cast<float>(owner.x) - 0.5f,
+         static_cast<float>(owner.y) + 0.5f,
+         static_cast<float>(owner.z) + 0.5f},
+        {1.0f, 0.0f, 0.0f},
+        2.0f);
+
+    CHECK(target);
+    CHECK_EQ(target->block, (glm::ivec3{owner.x, owner.y, owner.z}));
+    CHECK_EQ(target->cuboidIndex, static_cast<size_t>(1));
+    const auto presentation = makeBlockGalleryTargetPresentation(
+        catalog, resources.registry(), *target);
+    CHECK(presentation);
+    CHECK(presentation->cullingDiagnostic);
+    CHECK_EQ(presentation->hitCuboidPosition, static_cast<size_t>(2));
+    CHECK_EQ(presentation->hitFace, std::string("neg_x"));
+    CHECK_NEAR(presentation->hitDistance, 0.25f, 0.00001f);
 }
 
 TEST_CASE(BlockGalleryTargetPresentation_IdentifiesEveryDiagnosticPairCell) {

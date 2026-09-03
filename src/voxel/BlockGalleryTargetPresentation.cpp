@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <string_view>
 #include <utility>
 
@@ -155,6 +156,11 @@ makeBlockGalleryTargetPresentation(
     if (type.identifier != expectedIdentifier) {
         return std::nullopt;
     }
+    if (target.cuboidIndex >= type.model->cuboids().size() ||
+        static_cast<size_t>(target.face) >= DirectionCount ||
+        !std::isfinite(target.distance) || target.distance < 0.0f) {
+        return std::nullopt;
+    }
 
     const TextureLayerPresentation textureLayers =
         textureLayerPresentation(type);
@@ -181,6 +187,9 @@ makeBlockGalleryTargetPresentation(
             : BlockGalleryGridCoordinate{},
         .modelIdentifier = type.model->identifier(),
         .cuboidCount = type.model->cuboids().size(),
+        .hitCuboidPosition = target.cuboidIndex + 1,
+        .hitFace = std::string(BlockModel::directionName(target.face)),
+        .hitDistance = target.distance,
         .orientation = std::string(orientationName(type.model.orientation)),
         .renderLayer = std::string(renderLayerName(type.layer)),
         .effectiveRenderLayers = textureLayers.effectiveLayers,

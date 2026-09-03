@@ -436,7 +436,12 @@ void renderBlockGalleryTarget(
             target->gridCoordinate.row);
     }
     ImGui::Text("Model: %s", target->modelIdentifier.c_str());
-    ImGui::Text("Cuboids: %zu", target->cuboidCount);
+    ImGui::Text(
+        "Hit cuboid: %zu / %zu",
+        target->hitCuboidPosition,
+        target->cuboidCount);
+    ImGui::Text("Hit face: %s", target->hitFace.c_str());
+    ImGui::Text("Hit distance: %.9g blocks", target->hitDistance);
     ImGui::Text("Orientation: %s", target->orientation.c_str());
     ImGui::Text("Base render layer: %s", target->renderLayer.c_str());
     ImGui::Text(

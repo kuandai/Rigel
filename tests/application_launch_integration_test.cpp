@@ -207,6 +207,9 @@ TEST_CASE(Application_BlockGalleryLaunchUsesProductionLifecycle) {
     CHECK(observed.specimenLoadedThroughAsyncLoader);
     CHECK(observed.specimenMeshSubmitted);
     CHECK(observed.specimenTargetPresented);
+    CHECK(observed.exactTargetMetadataPresented);
+    CHECK(observed.targetChangePresented);
+    CHECK(observed.noTargetPresented);
     CHECK(observed.galleryMutationsSuppressed);
     CHECK(observed.frameRendererSubmitted);
     CHECK(observed.chunkLoadsStarted > 0);

@@ -1091,6 +1091,36 @@ TEST_CASE(GeneratedAssets_QueryAndCollideWithNormalizedShapes) {
         (std::vector<BlockCollisionBox>{
             {{13.75f, 0.375f, 0.375f},
              {14.75f, 0.625f, 0.625f}}}));
+
+    const BlockGalleryCatalog catalog(resources.registry());
+    const BlockID pistonId = requireBlockId(
+        resources.registry(), PistonHeadId);
+    const BlockGalleryCatalogEntry* pistonEntry =
+        catalog.findByBlockId(pistonId);
+    CHECK(pistonEntry);
+    const auto& owner = pistonEntry->specimenPosition;
+    world.setBlock(owner.x, owner.y, owner.z, BlockState{pistonId});
+    const auto pistonTarget = raycastBlock(
+        world,
+        {static_cast<float>(owner.x) - 0.5f,
+         static_cast<float>(owner.y) + 0.5f,
+         static_cast<float>(owner.z) + 0.5f},
+        {1.0f, 0.0f, 0.0f},
+        2.0f);
+    CHECK(pistonTarget);
+    CHECK_EQ(
+        pistonTarget->block,
+        (glm::ivec3{owner.x, owner.y, owner.z}));
+    const auto pistonPresentation = makeBlockGalleryTargetPresentation(
+        catalog, resources.registry(), *pistonTarget);
+    CHECK(pistonPresentation);
+    CHECK_EQ(pistonPresentation->blockStateIdentifier,
+             std::string(PistonHeadId));
+    CHECK_EQ(pistonPresentation->hitCuboidPosition,
+             static_cast<size_t>(2));
+    CHECK_EQ(pistonPresentation->cuboidCount, static_cast<size_t>(2));
+    CHECK_EQ(pistonPresentation->hitFace, std::string("neg_x"));
+    CHECK_NEAR(pistonPresentation->hitDistance, 0.25f, 0.00001f);
 #endif
 }
 

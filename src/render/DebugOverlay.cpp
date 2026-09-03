@@ -1,5 +1,7 @@
 #include "Rigel/Render/DebugOverlay.h"
 
+#include "../voxel/BlockModelGeometry.h"
+
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Preferences/UserPreferences.h"
@@ -215,6 +217,40 @@ std::vector<glm::vec3> buildAabbEdgeLinePresentation(
     for (const Entity::Aabb& box : boxes) {
         const AabbEdgeVertices edges =
             makeAabbEdgeVertices(box, translation, expansion);
+        vertices.insert(vertices.end(), edges.begin(), edges.end());
+    }
+    return vertices;
+}
+
+std::vector<glm::vec3> buildBlockTargetOutlinePresentation(
+    const Voxel::BlockRegistry& registry,
+    const Voxel::BlockTarget* target
+) {
+    if (!target || target->state.id.type >= registry.size()) {
+        return {};
+    }
+
+    const Voxel::BlockModelInstance& instance =
+        registry.getType(target->state.id).model;
+    if (!instance || instance->isEmpty() ||
+        target->cuboidIndex >= instance->cuboids().size()) {
+        return {};
+    }
+
+    std::vector<glm::vec3> vertices;
+    vertices.reserve(
+        instance->cuboids().size() * AabbEdgeVertices{}.size());
+    const glm::vec3 translation(target->block);
+    for (const Voxel::BlockModelCuboid& cuboid : instance->cuboids()) {
+        const Voxel::BlockModelBounds bounds =
+            Voxel::detail::orientedBounds(
+                cuboid.bounds, instance.orientation);
+        const AabbEdgeVertices edges = makeAabbEdgeVertices(
+            Entity::Aabb{
+                glm::vec3{bounds.min[0], bounds.min[1], bounds.min[2]},
+                glm::vec3{bounds.max[0], bounds.max[1], bounds.max[2]}},
+            translation,
+            kBlockTargetOutlineExpansion);
         vertices.insert(vertices.end(), edges.begin(), edges.end());
     }
     return vertices;
@@ -794,19 +830,14 @@ void renderBlockTargetOutline(
     const glm::mat4& view,
     const glm::mat4& projection
 ) {
-    if (!target || !debug.entityDebug.initialized) {
+    if (!debug.entityDebug.initialized) {
         return;
     }
-    const auto bounds = Voxel::blockTargetBounds(registry, *target);
-    if (!bounds) {
+    const std::vector<glm::vec3> vertices =
+        buildBlockTargetOutlinePresentation(registry, target);
+    if (vertices.empty()) {
         return;
     }
-    const AabbEdgeVertices vertices = makeAabbEdgeVertices(
-        Entity::Aabb{
-            glm::vec3{bounds->min[0], bounds->min[1], bounds->min[2]},
-            glm::vec3{bounds->max[0], bounds->max[1], bounds->max[2]}},
-        glm::vec3{0.0f},
-        kBlockTargetOutlineExpansion);
     renderWorldLines(
         debug.entityDebug,
         vertices,

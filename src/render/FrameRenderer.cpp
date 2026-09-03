@@ -422,12 +422,6 @@ void FrameRenderer::render(const FrameRenderContext& context) {
 
     if (useTaa) {
         renderEntityDebugBoxes(m_impl->debug, &context.world, view, projection);
-        renderBlockTargetOutline(
-            m_impl->debug,
-            context.world.blockRegistry(),
-            context.blockTarget,
-            view,
-            projection);
         {
             PROFILE_SCOPE("TAA");
             glm::mat4 viewProjectionNoJitter = projectionNoJitter * view;
@@ -441,13 +435,17 @@ void FrameRenderer::render(const FrameRenderContext& context) {
     } else {
         renderEntityDebugBoxes(
             m_impl->debug, &context.world, view, projectionNoJitter);
-        renderBlockTargetOutline(
-            m_impl->debug,
-            context.world.blockRegistry(),
-            context.blockTarget,
-            view,
-            projectionNoJitter);
     }
+
+    // Selection feedback is composited after the resolved scene. This keeps
+    // it out of temporal history and uses the stable projection while still
+    // testing against scene depth (resolved depth is blitted above for TAA).
+    renderBlockTargetOutline(
+        m_impl->debug,
+        context.world.blockRegistry(),
+        context.blockTarget,
+        view,
+        projectionNoJitter);
 
     renderDebugField(
         m_impl->debug,

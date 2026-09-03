@@ -12,13 +12,17 @@
 #include "Rigel/Voxel/BlockTargeting.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
+#include "Rigel/Voxel/WorldView.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <initializer_list>
+#include <limits>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -121,6 +125,66 @@ private:
     PFNGLBINDVERTEXARRAYPROC m_previousBindVertexArray;
     PFNGLGETUNIFORMLOCATIONPROC m_previousGetUniformLocation;
 };
+
+Rigel::Voxel::BlockModelCuboid outlineCuboid(
+    Rigel::Voxel::BlockModelBounds bounds,
+    std::initializer_list<Rigel::Voxel::Direction> faces
+) {
+    Rigel::Voxel::BlockModelCuboid cuboid;
+    cuboid.bounds = bounds;
+    for (const Rigel::Voxel::Direction direction : faces) {
+        cuboid.faces[static_cast<size_t>(direction)] =
+            Rigel::Voxel::BlockModelFace{.textureSlot = "invented"};
+    }
+    return cuboid;
+}
+
+Rigel::Voxel::BlockID registerOutlineBlock(
+    Rigel::Voxel::BlockRegistry& registry,
+    const std::string& identifier,
+    std::vector<Rigel::Voxel::BlockModelCuboid> cuboids,
+    Rigel::Voxel::BlockModelOrientation orientation =
+        Rigel::Voxel::BlockModelOrientation::Identity
+) {
+    Rigel::Voxel::BlockType type;
+    type.identifier = identifier;
+    type.model = Rigel::Voxel::BlockModelInstance(
+        std::make_shared<const Rigel::Voxel::BlockModel>(
+            identifier + "_model",
+            std::vector<std::string>{"invented"},
+            std::move(cuboids)));
+    type.model.orientation = orientation;
+    return registry.registerBlock(identifier, std::move(type));
+}
+
+size_t darkPixelCount(int width, int height) {
+    std::vector<unsigned char> pixels(
+        static_cast<size_t>(width * height * 4));
+    glReadPixels(
+        0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    size_t count = 0;
+    for (size_t index = 0; index < pixels.size(); index += 4) {
+        if (pixels[index] < 32) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+size_t nonBlackPixelCount(int width, int height) {
+    std::vector<unsigned char> pixels(
+        static_cast<size_t>(width * height * 4));
+    glReadPixels(
+        0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    size_t count = 0;
+    for (size_t index = 0; index < pixels.size(); index += 4) {
+        if (pixels[index] != 0 || pixels[index + 1] != 0 ||
+            pixels[index + 2] != 0) {
+            ++count;
+        }
+    }
+    return count;
+}
 
 } // namespace
 
@@ -325,6 +389,88 @@ TEST_CASE(DebugOverlay_AabbEdgePresentationHandlesBoxesAndTransforms) {
         expected.begin(), expected.end(), transformed.begin()));
 }
 
+TEST_CASE(DebugOverlay_BlockTargetPresentationUsesEveryOrientedModelCuboid) {
+    using namespace Rigel::Voxel;
+    using Rigel::Entity::Aabb;
+    using Rigel::Render::buildBlockTargetOutlinePresentation;
+    using Rigel::Render::makeAabbEdgeVertices;
+
+    BlockRegistry registry;
+    BlockType cubeType;
+    const std::string cubeIdentifier = "invented:outline_cube";
+    cubeType.identifier = cubeIdentifier;
+    cubeType.model.orientation = BlockModelOrientation::RotateZ90;
+    const BlockID cube = registry.registerBlock(
+        cubeIdentifier, std::move(cubeType));
+
+    const BlockID shaped = registerOutlineBlock(
+        registry,
+        "invented:outline_shape",
+        {
+            outlineCuboid(
+                {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}},
+                {Direction::PosX, Direction::NegX,
+                 Direction::PosY, Direction::NegY,
+                 Direction::PosZ, Direction::NegZ}),
+            outlineCuboid(
+                {{0.0f, 0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}},
+                {Direction::PosX, Direction::PosY}),
+            outlineCuboid(
+                {{-0.25f, 0.25f, 0.4f}, {0.25f, 0.75f, 0.4f}},
+                {Direction::PosZ, Direction::NegZ}),
+        },
+        BlockModelOrientation::RotateY90);
+
+    BlockTarget target{
+        .block = {4, -2, 7},
+        .state = BlockState{shaped},
+        .cuboidIndex = 1,
+    };
+    const std::vector<glm::vec3> shapedPresentation =
+        buildBlockTargetOutlinePresentation(registry, &target);
+    CHECK_EQ(shapedPresentation.size(), static_cast<size_t>(72));
+
+    constexpr float expansion = 0.002f;
+    const std::array expectedBounds = {
+        Aabb{{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}},
+        Aabb{{0.0f, 0.5f, 0.0f}, {0.5f, 1.0f, 1.0f}},
+        Aabb{{0.6f, 0.25f, -0.25f}, {0.6f, 0.75f, 0.25f}},
+    };
+    for (size_t index = 0; index < expectedBounds.size(); ++index) {
+        const auto expected = makeAabbEdgeVertices(
+            expectedBounds[index], glm::vec3(target.block), expansion);
+        CHECK(std::equal(
+            expected.begin(),
+            expected.end(),
+            shapedPresentation.begin() + static_cast<std::ptrdiff_t>(
+                index * expected.size())));
+    }
+
+    target.cuboidIndex = 2;
+    CHECK_EQ(
+        buildBlockTargetOutlinePresentation(registry, &target),
+        shapedPresentation);
+
+    target.block = {-3, 5, 2};
+    target.state = BlockState{cube};
+    target.cuboidIndex = 0;
+    const std::vector<glm::vec3> cubePresentation =
+        buildBlockTargetOutlinePresentation(registry, &target);
+    const auto expectedCube = makeAabbEdgeVertices(
+        Aabb{{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+        glm::vec3(target.block),
+        expansion);
+    CHECK_EQ(cubePresentation.size(), expectedCube.size());
+    CHECK(std::equal(
+        expectedCube.begin(), expectedCube.end(), cubePresentation.begin()));
+
+    target.state = BlockState{BlockRegistry::airId()};
+    CHECK(buildBlockTargetOutlinePresentation(registry, &target).empty());
+    CHECK(buildBlockTargetOutlinePresentation(registry, nullptr).empty());
+    target.state.id.type = std::numeric_limits<uint16_t>::max();
+    CHECK(buildBlockTargetOutlinePresentation(registry, &target).empty());
+}
+
 TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
     Rigel::Test::HiddenOpenGLContext context;
     context.require();
@@ -350,11 +496,19 @@ TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
     glEnable(GL_BLEND);
 
     Rigel::Voxel::BlockRegistry registry;
-    Rigel::Voxel::BlockType type;
     const std::string identifier = "invented:outline_cube";
-    type.identifier = identifier;
-    const Rigel::Voxel::BlockID id =
-        registry.registerBlock(identifier, std::move(type));
+    const Rigel::Voxel::BlockID id = registerOutlineBlock(
+        registry,
+        identifier,
+        {
+            outlineCuboid(
+                {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}},
+                {Rigel::Voxel::Direction::PosX,
+                 Rigel::Voxel::Direction::NegX}),
+            outlineCuboid(
+                {{0.25f, 0.5f, 0.25f}, {0.75f, 1.0f, 0.75f}},
+                {Rigel::Voxel::Direction::PosY}),
+        });
     const Rigel::Voxel::BlockTarget target{
         .block = {0, 0, 0},
         .state = Rigel::Voxel::BlockState{id},
@@ -399,7 +553,34 @@ TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
     CHECK_EQ(currentProgram, static_cast<GLint>(callerShader->program));
     CHECK_EQ(currentVao, static_cast<GLint>(callerVao));
     CHECK_EQ(currentBuffer, static_cast<GLint>(callerBuffer));
+    glBindBuffer(GL_ARRAY_BUFFER, debug.entityDebug.vbo);
+    GLint uploadedBytes = 0;
+    glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE, &uploadedBytes);
+    CHECK_EQ(
+        uploadedBytes,
+        static_cast<GLint>(48 * sizeof(glm::vec3)));
+    glBindBuffer(GL_ARRAY_BUFFER, callerBuffer);
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+
+    glClearDepth(0.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    Rigel::Render::renderBlockTargetOutline(
+        debug,
+        registry,
+        &target,
+        glm::mat4(1.0f),
+        glm::ortho(-0.5f, 1.5f, -0.5f, 1.5f, -2.0f, 2.0f));
+    CHECK_EQ(nonBlackPixelCount(extent, extent), static_cast<size_t>(0));
+
+    glClearDepth(1.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    Rigel::Render::renderBlockTargetOutline(
+        debug,
+        registry,
+        nullptr,
+        glm::mat4(1.0f),
+        glm::ortho(-0.5f, 1.5f, -0.5f, 1.5f, -2.0f, 2.0f));
+    CHECK_EQ(nonBlackPixelCount(extent, extent), static_cast<size_t>(0));
 
     glUseProgram(0);
     glBindVertexArray(0);
@@ -408,6 +589,98 @@ TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
     glDeleteVertexArrays(1, &callerVao);
     glDeleteBuffers(1, &callerBuffer);
     Rigel::Render::releaseDebugResources(debug);
+    assets.clearCache();
+}
+
+TEST_CASE(DebugOverlay_FrameTargetUsesStableProjectionAcrossTaaModes) {
+    using namespace Rigel::Voxel;
+
+    constexpr int extent = 64;
+    Rigel::Test::HiddenOpenGLContext context(extent, extent);
+    context.require();
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+
+    WorldResources resources;
+    BlockType type;
+    const std::string identifier = "invented:frame_outline";
+    type.identifier = identifier;
+    const BlockID block = resources.registry().registerBlock(
+        identifier, std::move(type));
+    World world(resources);
+    WorldView view(world, resources);
+    view.initialize(assets);
+
+    Rigel::Render::FrameRenderer renderer;
+    renderer.initialize(assets);
+    constexpr float verticalFovDegrees = 60.0f;
+    renderer.setVerticalFovDegrees(verticalFovDegrees);
+
+    const BlockTarget target{
+        .block = {0, 0, 0},
+        .state = BlockState{block},
+    };
+    const glm::vec3 cameraPosition{0.5f, 0.5f, 3.0f};
+    const glm::vec3 cameraTarget{0.5f, 0.5f, 0.5f};
+    const glm::mat4 expectedViewProjection = glm::perspective(
+        glm::radians(verticalFovDegrees), 1.0f, 0.1f,
+        view.projectionFarPlaneWorldUnits()) * glm::lookAt(
+            cameraPosition,
+            cameraTarget,
+            glm::vec3(0.0f, 1.0f, 0.0f));
+    const auto lineShader =
+        assets.get<Rigel::Asset::ShaderAsset>("shaders/entity_debug");
+    const GLint viewProjectionLocation =
+        lineShader->uniform("u_viewProjection");
+    CHECK(viewProjectionLocation >= 0);
+
+    for (const bool taaEnabled : {false, true}) {
+        RenderProfile profile = view.renderProfile();
+        profile.temporalAA.enabled = taaEnabled;
+        view.setRenderProfileForDiagnostics(profile);
+
+        renderer.render({
+            .world = world,
+            .worldView = view,
+            .cameraPosition = cameraPosition,
+            .cameraTarget = cameraTarget,
+            .cameraForward = glm::normalize(cameraTarget - cameraPosition),
+            .viewportWidth = extent,
+            .viewportHeight = extent,
+            .blockTarget = &target,
+        });
+
+        std::array<float, 16> actualViewProjection{};
+        glGetUniformfv(
+            lineShader->program,
+            viewProjectionLocation,
+            actualViewProjection.data());
+        const float* expected = glm::value_ptr(expectedViewProjection);
+        for (size_t index = 0;
+             index < actualViewProjection.size(); ++index) {
+            CHECK_NEAR(
+                actualViewProjection[index], expected[index], 0.00001f);
+        }
+        CHECK(darkPixelCount(extent, extent) > 0);
+        CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+
+        renderer.render({
+            .world = world,
+            .worldView = view,
+            .cameraPosition = cameraPosition,
+            .cameraTarget = cameraTarget,
+            .cameraForward = glm::normalize(cameraTarget - cameraPosition),
+            .viewportWidth = extent,
+            .viewportHeight = extent,
+            .blockTarget = nullptr,
+        });
+        CHECK_EQ(darkPixelCount(extent, extent), static_cast<size_t>(0));
+        CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+    }
+
+    renderer.release();
+    view.releaseRenderResources();
+    resources.releaseRenderResources();
     assets.clearCache();
 }
 

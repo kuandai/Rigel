@@ -109,6 +109,15 @@ std::vector<glm::vec3> buildAabbEdgeLinePresentation(
     const glm::vec3& translation = glm::vec3{0.0f},
     float expansion = 0.0f);
 
+/**
+ * Build the production outline for every cuboid in an already-resolved block
+ * target. The returned vertices are tightly packed for GL_LINES and include
+ * the small expansion used to protect the outline from coplanar depth noise.
+ */
+std::vector<glm::vec3> buildBlockTargetOutlinePresentation(
+    const Voxel::BlockRegistry& registry,
+    const Voxel::BlockTarget* target);
+
 void initDebugField(DebugState& debug, Asset::AssetManager& assets);
 
 void initFrameGraph(DebugState& debug, Asset::AssetManager& assets);

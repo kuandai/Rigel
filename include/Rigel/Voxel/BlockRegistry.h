@@ -103,6 +103,11 @@ public:
     size_t size() const { return m_types.size(); }
     /// @}
 
+    /** Aggregate local bounds of every registered oriented visual model. */
+    const std::optional<BlockModelBounds>& modelExtents() const {
+        return m_modelExtents;
+    }
+
     /// Prevent further registrations before concurrent readers begin.
     void freeze() { m_frozen = true; }
     bool frozen() const { return m_frozen; }
@@ -118,6 +123,7 @@ public:
 private:
     std::vector<BlockType> m_types;
     std::unordered_map<std::string, BlockID> m_identifierMap;
+    std::optional<BlockModelBounds> m_modelExtents;
     bool m_frozen = false;
 };
 

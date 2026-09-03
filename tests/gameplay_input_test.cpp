@@ -283,6 +283,44 @@ TEST_CASE(GameplayInput_RemovalUsesOverhangingModelOwner) {
     CHECK(world.getBlock(1, 0, 0).isAir());
 }
 
+TEST_CASE(GameplayInput_RemovalInvalidatesTargetBeforeSimultaneousPlacement) {
+    Voxel::WorldResources resources;
+    const Voxel::BlockID targetBlock = addModelBlock(
+        resources,
+        "invented:simultaneous_target",
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+    const Voxel::BlockID placedBlock = addModelBlock(
+        resources,
+        "invented:simultaneous_placed",
+        {{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+    Voxel::World world(resources);
+    Voxel::WorldView view(world, resources);
+    world.setBlock(0, 0, 0, Voxel::BlockState{targetBlock});
+
+    const auto target = Voxel::raycastBlock(
+        world, {0.5f, 0.5f, 2.5f}, {0.0f, 0.0f, -1.0f}, 8.0f);
+    CHECK(target.has_value());
+    CHECK_EQ(target->block, (glm::ivec3{0, 0, 0}));
+    CHECK_EQ(target->normal, (glm::ivec3{0, 0, 1}));
+
+    auto bindings = std::make_shared<Input::InputBindings>();
+    bindings->bind("remove_block", GLFW_KEY_R);
+    bindings->bind("place_block", GLFW_KEY_P);
+    Input::InputState input;
+    input.setBindings(std::move(bindings));
+    input.beginFrame();
+    input.handleKeyEvent(GLFW_KEY_R, GLFW_PRESS);
+    input.handleKeyEvent(GLFW_KEY_P, GLFW_PRESS);
+    input.beginFrame();
+    Input::WindowState window;
+
+    CHECK(Input::handleBlockEdits(
+        input, window, targetPointer(target), world, view, placedBlock,
+        Input::GameplayMutationMode::ReadWrite));
+    CHECK(world.getBlock(0, 0, 0).isAir());
+    CHECK(world.getBlock(0, 0, 1).isAir());
+}
+
 TEST_CASE(GameplayInput_NoTargetDoesNotEditWorld) {
     Voxel::WorldResources resources;
     const Voxel::BlockID placed = addModelBlock(

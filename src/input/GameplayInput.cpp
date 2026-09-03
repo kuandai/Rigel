@@ -378,8 +378,9 @@ bool handleBlockEdits(const InputState& input,
             Voxel::BlockState{});
         prioritizeEditedChunk(target->block);
         worldEdited = true;
-    }
-    if (input.isActionJustPressed("place_block")) {
+    } else if (input.isActionJustPressed("place_block")) {
+        // Removal takes precedence when both actions begin in one frame because
+        // removing the owning block invalidates every surface datum in target.
         const glm::ivec3 placePos = target->block + target->normal;
         if (target->normal != glm::ivec3(0) &&
             placeBlock != Voxel::BlockRegistry::airId() &&

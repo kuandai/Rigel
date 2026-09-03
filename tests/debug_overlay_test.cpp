@@ -2,6 +2,7 @@
 #include "OpenGLFixture.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Entity/Entity.h"
 #include "Rigel/input/GameplayInput.h"
 #include "Rigel/input/InputBindingsLoader.h"
 #include "Rigel/Render/ChunkDebugPresentation.h"
@@ -9,6 +10,8 @@
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/BlockTargeting.h"
+#include "Rigel/Voxel/World.h"
+#include "Rigel/Voxel/WorldResources.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -285,6 +288,43 @@ TEST_CASE(DebugOverlay_AabbEdgesContainTwelveUniqueNonDiagonalEdges) {
     CHECK_EQ(uniqueEdges.size(), static_cast<size_t>(12));
 }
 
+TEST_CASE(DebugOverlay_AabbEdgePresentationHandlesBoxesAndTransforms) {
+    using Rigel::Entity::Aabb;
+    using Rigel::Render::buildAabbEdgeLinePresentation;
+    using Rigel::Render::makeAabbEdgeVertices;
+
+    const Aabb full{{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
+    const Aabb partial{{0.25f, 0.1f, 0.4f}, {0.75f, 0.6f, 0.9f}};
+    const std::array boxes{full, partial};
+    const auto presentation = buildAabbEdgeLinePresentation(boxes);
+    CHECK_EQ(presentation.size(), static_cast<size_t>(48));
+
+    const auto fullEdges = makeAabbEdgeVertices(full);
+    const auto partialEdges = makeAabbEdgeVertices(partial);
+    CHECK(std::equal(
+        fullEdges.begin(), fullEdges.end(), presentation.begin()));
+    CHECK(std::equal(
+        partialEdges.begin(),
+        partialEdges.end(),
+        presentation.begin() + static_cast<std::ptrdiff_t>(fullEdges.size())));
+
+    const Aabb zeroThickness{
+        {0.5f, 0.0f, 0.25f},
+        {0.5f, 1.0f, 0.25f}};
+    const std::array flatBox{zeroThickness};
+    const glm::vec3 translation{3.0f, -2.0f, 5.0f};
+    constexpr float expansion = 0.125f;
+    const auto transformed = buildAabbEdgeLinePresentation(
+        flatBox, translation, expansion);
+    const auto expected = makeAabbEdgeVertices(
+        Aabb{
+            {3.375f, -2.125f, 5.125f},
+            {3.625f, -0.875f, 5.375f}});
+    CHECK_EQ(transformed.size(), expected.size());
+    CHECK(std::equal(
+        expected.begin(), expected.end(), transformed.begin()));
+}
+
 TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
     Rigel::Test::HiddenOpenGLContext context;
     context.require();
@@ -294,6 +334,20 @@ TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
     Rigel::Render::initEntityDebug(debug, assets);
     CHECK(!debug.overlayEnabled);
     CHECK(debug.entityDebug.initialized);
+
+    const auto callerShader =
+        assets.get<Rigel::Asset::ShaderAsset>("shaders/frame_graph");
+    GLuint callerVao = 0;
+    GLuint callerBuffer = 0;
+    glGenVertexArrays(1, &callerVao);
+    glGenBuffers(1, &callerBuffer);
+    glBindVertexArray(callerVao);
+    glBindBuffer(GL_ARRAY_BUFFER, callerBuffer);
+    callerShader->bind();
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
 
     Rigel::Voxel::BlockRegistry registry;
     Rigel::Voxel::BlockType type;
@@ -330,15 +384,83 @@ TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
         }
     }
     CHECK(litPixels > 0);
-    CHECK(glIsEnabled(GL_DEPTH_TEST));
+    CHECK(!glIsEnabled(GL_DEPTH_TEST));
     CHECK(glIsEnabled(GL_CULL_FACE));
-    CHECK(!glIsEnabled(GL_BLEND));
+    CHECK(glIsEnabled(GL_BLEND));
     GLboolean depthMask = GL_FALSE;
     glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
     CHECK_EQ(depthMask, static_cast<GLboolean>(GL_TRUE));
+    GLint currentProgram = 0;
+    GLint currentVao = 0;
+    GLint currentBuffer = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &currentProgram);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &currentVao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &currentBuffer);
+    CHECK_EQ(currentProgram, static_cast<GLint>(callerShader->program));
+    CHECK_EQ(currentVao, static_cast<GLint>(callerVao));
+    CHECK_EQ(currentBuffer, static_cast<GLint>(callerBuffer));
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
 
+    glUseProgram(0);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glDisable(GL_BLEND);
+    glDeleteVertexArrays(1, &callerVao);
+    glDeleteBuffers(1, &callerBuffer);
     Rigel::Render::releaseDebugResources(debug);
+    assets.clearCache();
+}
+
+TEST_CASE(DebugOverlay_EntityBoxesRetainSharedResourceLifecycle) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    Rigel::Render::DebugState debug;
+    Rigel::Render::initEntityDebug(debug, assets);
+    debug.overlayEnabled = true;
+
+    Rigel::Voxel::WorldResources resources;
+    Rigel::Voxel::World world(resources);
+    auto entity = std::make_unique<Rigel::Entity::Entity>(
+        "invented:outlined_entity");
+    entity->setLocalBounds({{-0.4f, -0.3f, -0.2f},
+                            {0.4f, 0.3f, 0.2f}});
+    entity->setPosition(0.0f, 0.0f, 0.0f);
+    CHECK(!world.entities().spawn(std::move(entity)).isNull());
+
+    constexpr int extent = 64;
+    glViewport(0, 0, extent, extent);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    Rigel::Render::renderEntityDebugBoxes(
+        debug,
+        &world,
+        glm::mat4(1.0f),
+        glm::ortho(-1.0f, 1.0f, -1.0f, 1.0f, -2.0f, 2.0f));
+
+    std::vector<unsigned char> pixels(
+        static_cast<size_t>(extent * extent * 4));
+    glReadPixels(
+        0, 0, extent, extent, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    const size_t litPixels = static_cast<size_t>(std::count_if(
+        pixels.begin(), pixels.end(), [](unsigned char component) {
+            return component != 0;
+        }));
+    CHECK(litPixels > static_cast<size_t>(extent * extent));
+
+    const GLuint lineVao = debug.entityDebug.vao;
+    const GLuint lineVbo = debug.entityDebug.vbo;
+    CHECK(glIsVertexArray(lineVao));
+    CHECK(glIsBuffer(lineVbo));
+    Rigel::Render::releaseDebugResources(debug);
+    CHECK(!debug.entityDebug.initialized);
+    CHECK_EQ(debug.entityDebug.vao, static_cast<GLuint>(0));
+    CHECK_EQ(debug.entityDebug.vbo, static_cast<GLuint>(0));
+    CHECK(!glIsVertexArray(lineVao));
+    CHECK(!glIsBuffer(lineVbo));
+    CHECK_NO_THROW(Rigel::Render::releaseDebugResources(debug));
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
     assets.clearCache();
 }
 

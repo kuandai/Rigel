@@ -164,9 +164,15 @@ std::string historicalTraceKeyName(
 } // namespace
 
 AabbEdgeVertices makeAabbEdgeVertices(
-    const glm::vec3& minimum,
-    const glm::vec3& maximum
+    const Entity::Aabb& bounds,
+    const glm::vec3& translation,
+    float expansion
 ) {
+    const glm::vec3 expansionVector(expansion);
+    const glm::vec3 minimum =
+        bounds.min + translation - expansionVector;
+    const glm::vec3 maximum =
+        bounds.max + translation + expansionVector;
     const std::array corners = {
         glm::vec3{minimum.x, minimum.y, minimum.z},
         glm::vec3{maximum.x, minimum.y, minimum.z},
@@ -192,7 +198,72 @@ AabbEdgeVertices makeAabbEdgeVertices(
     return vertices;
 }
 
+AabbEdgeVertices makeAabbEdgeVertices(
+    const glm::vec3& minimum,
+    const glm::vec3& maximum
+) {
+    return makeAabbEdgeVertices(Entity::Aabb{minimum, maximum});
+}
+
+std::vector<glm::vec3> buildAabbEdgeLinePresentation(
+    std::span<const Entity::Aabb> boxes,
+    const glm::vec3& translation,
+    float expansion
+) {
+    std::vector<glm::vec3> vertices;
+    vertices.reserve(boxes.size() * AabbEdgeVertices{}.size());
+    for (const Entity::Aabb& box : boxes) {
+        const AabbEdgeVertices edges =
+            makeAabbEdgeVertices(box, translation, expansion);
+        vertices.insert(vertices.end(), edges.begin(), edges.end());
+    }
+    return vertices;
+}
+
 namespace {
+
+void restoreCapability(GLenum capability, GLboolean enabled) {
+    if (enabled == GL_TRUE) {
+        glEnable(capability);
+    } else {
+        glDisable(capability);
+    }
+}
+
+class WorldLineGlState final {
+public:
+    WorldLineGlState()
+        : m_depthTest(glIsEnabled(GL_DEPTH_TEST))
+        , m_cullFace(glIsEnabled(GL_CULL_FACE))
+        , m_blend(glIsEnabled(GL_BLEND)) {
+        glGetBooleanv(GL_DEPTH_WRITEMASK, &m_depthWriteMask);
+        glGetIntegerv(GL_CURRENT_PROGRAM, &m_program);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &m_vertexArray);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &m_arrayBuffer);
+    }
+
+    ~WorldLineGlState() {
+        restoreCapability(GL_DEPTH_TEST, m_depthTest);
+        glDepthMask(m_depthWriteMask);
+        restoreCapability(GL_CULL_FACE, m_cullFace);
+        restoreCapability(GL_BLEND, m_blend);
+        glBindVertexArray(static_cast<GLuint>(m_vertexArray));
+        glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(m_arrayBuffer));
+        glUseProgram(static_cast<GLuint>(m_program));
+    }
+
+    WorldLineGlState(const WorldLineGlState&) = delete;
+    WorldLineGlState& operator=(const WorldLineGlState&) = delete;
+
+private:
+    GLboolean m_depthTest = GL_FALSE;
+    GLboolean m_depthWriteMask = GL_FALSE;
+    GLboolean m_cullFace = GL_FALSE;
+    GLboolean m_blend = GL_FALSE;
+    GLint m_program = 0;
+    GLint m_vertexArray = 0;
+    GLint m_arrayBuffer = 0;
+};
 
 void renderWorldLines(
     EntityDebug& lines,
@@ -204,6 +275,7 @@ void renderWorldLines(
         return;
     }
 
+    const WorldLineGlState callerState;
     lines.shader->bind();
     if (lines.locViewProjection >= 0) {
         glUniformMatrix4fv(
@@ -251,11 +323,6 @@ void renderWorldLines(
     glVertexAttribPointer(
         0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
     glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(vertices.size()));
-
-    glDepthMask(GL_TRUE);
-    glEnable(GL_CULL_FACE);
-    glBindVertexArray(0);
-    glUseProgram(0);
 }
 
 } // namespace
@@ -704,16 +771,14 @@ void renderEntityDebugBoxes(DebugState& debug,
         return;
     }
 
-    std::vector<glm::vec3> vertices;
-    vertices.reserve(
-        world->entities().size() * AabbEdgeVertices{}.size());
+    std::vector<Entity::Aabb> boxes;
+    boxes.reserve(world->entities().size());
 
     world->entities().forEach([&](const Entity::Entity& entity) {
-        const Entity::Aabb& bounds = entity.worldBounds();
-        const AabbEdgeVertices edges =
-            makeAabbEdgeVertices(bounds.min, bounds.max);
-        vertices.insert(vertices.end(), edges.begin(), edges.end());
+        boxes.push_back(entity.worldBounds());
     });
+    const std::vector<glm::vec3> vertices =
+        buildAabbEdgeLinePresentation(boxes);
 
     renderWorldLines(
         debug.entityDebug,
@@ -736,12 +801,12 @@ void renderBlockTargetOutline(
     if (!bounds) {
         return;
     }
-    const glm::vec3 expansion(kBlockTargetOutlineExpansion);
     const AabbEdgeVertices vertices = makeAabbEdgeVertices(
-        glm::vec3{
-            bounds->min[0], bounds->min[1], bounds->min[2]} - expansion,
-        glm::vec3{
-            bounds->max[0], bounds->max[1], bounds->max[2]} + expansion);
+        Entity::Aabb{
+            glm::vec3{bounds->min[0], bounds->min[1], bounds->min[2]},
+            glm::vec3{bounds->max[0], bounds->max[1], bounds->max[2]}},
+        glm::vec3{0.0f},
+        kBlockTargetOutlineExpansion);
     renderWorldLines(
         debug.entityDebug,
         vertices,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rigel/Asset/Handle.h"
+#include "Rigel/Entity/Aabb.h"
 #include "Rigel/Render/ChunkDebugPresentation.h"
 #include "Rigel/Voxel/ChunkStreamer.h"
 
@@ -88,10 +89,25 @@ struct DebugFieldPresentation {
 
 using AabbEdgeVertices = std::array<glm::vec3, 24>;
 
-/** Build the twelve non-diagonal edges of an axis-aligned box. */
+/** Build the twelve non-diagonal edges of a world-space axis-aligned box. */
+AabbEdgeVertices makeAabbEdgeVertices(
+    const Entity::Aabb& bounds,
+    const glm::vec3& translation = glm::vec3{0.0f},
+    float expansion = 0.0f);
+
+/** Compatibility overload for callers that already hold separate bounds. */
 AabbEdgeVertices makeAabbEdgeVertices(
     const glm::vec3& minimum,
     const glm::vec3& maximum);
+
+/**
+ * Build tightly packed GL_LINES vertices for any number of world-space boxes.
+ * Translation and non-negative expansion are applied to every input box.
+ */
+std::vector<glm::vec3> buildAabbEdgeLinePresentation(
+    std::span<const Entity::Aabb> boxes,
+    const glm::vec3& translation = glm::vec3{0.0f},
+    float expansion = 0.0f);
 
 void initDebugField(DebugState& debug, Asset::AssetManager& assets);
 

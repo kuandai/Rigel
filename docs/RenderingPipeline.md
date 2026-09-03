@@ -36,14 +36,18 @@ source.
 5. `WorldView`:
    - Calls `ChunkRenderer::render`.
    - Calls `EntityRenderer::render`.
-6. Optional TAA resolve blends history into the current frame.
-7. Entity debug bounds render before the resolve when TAA is enabled (or after
-   the world when it is disabled).
+6. Entity debug bounds render into the current scene target before the TAA
+   resolve when TAA is enabled (or after the world when it is disabled).
+7. Optional TAA resolve blends history into the current frame and copies the
+   resolved color back to the engine-owned scene target.
 8. The current block-model selection outline renders with the stable
    non-jittered projection and scene depth, independent of the F1 diagnostics
    toggle. With TAA it is added after resolve but before color presentation, so
    it does not enter temporal history.
-9. The chunk visualizer and frame graph render after the resolved scene.
+9. With TAA, only the completed scene color is presented to the default
+   framebuffer; the window depth/stencil format is not part of the outline
+   occlusion contract.
+10. The chunk visualizer and frame graph render after the resolved scene.
 
 ---
 

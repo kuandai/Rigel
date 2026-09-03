@@ -161,7 +161,8 @@ GPU upload, and the streamer's lifecycle-complete state do not imply it.
 - `renderEntityDebugBoxes` draws a wireframe AABB for every entity.
 - Bounds use `Entity::worldBounds`, not model geometry.
 - Depth testing is enabled; depth writes are disabled.
-- Wireframes render as `GL_LINE` polygons.
+- Wireframes render as twelve explicit edges using `GL_LINES`; they contain no
+  triangle-face diagonals.
 
 If TAA is enabled, entity debug boxes are drawn before the TAA resolve and are
 subject to the jitter/resolve pass. The chunk field and frame graph render after

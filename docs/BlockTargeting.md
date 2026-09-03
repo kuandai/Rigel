@@ -90,8 +90,9 @@ that ties the best distance. It stops only when the next cell boundary is
 farther than the best hit plus the intersection tolerance; by then every owner
 whose geometry could produce an equal or closer hit has been tested. This
 finds lateral overhangs and protrusions while keeping work proportional to
-traversed cells times a registry-bounded candidate count. There is no segment
-box scan or BVH.
+traversed cells times a registry-bounded candidate count, plus the cuboids and
+declared faces examined for each non-air candidate. There is no segment box
+scan or BVH.
 
 ## Runtime ownership
 

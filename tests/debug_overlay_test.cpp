@@ -1,18 +1,27 @@
 #include "TestFramework.h"
+#include "OpenGLFixture.h"
 
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/input/GameplayInput.h"
 #include "Rigel/input/InputBindingsLoader.h"
 #include "Rigel/Render/ChunkDebugPresentation.h"
+#include "Rigel/Render/DebugOverlay.h"
 #include "Rigel/Render/FrameRenderer.h"
+#include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/BlockTargeting.h"
 
 #include <GLFW/glfw3.h>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <memory>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -245,6 +254,92 @@ TEST_CASE(DebugOverlay_DetailPrefersTraceAndKeepsEvidenceSeparate) {
     CHECK(!selectChunkDebugDetail(
         std::span<const ChunkStreamer::DebugChunkState>{},
         {0, 0, 0}).has_value());
+}
+
+TEST_CASE(DebugOverlay_AabbEdgesContainTwelveUniqueNonDiagonalEdges) {
+    const glm::vec3 minimum{-2.0f, 3.0f, 5.0f};
+    const glm::vec3 maximum{7.0f, 11.0f, 13.0f};
+    const auto vertices =
+        Rigel::Render::makeAabbEdgeVertices(minimum, maximum);
+    std::set<std::pair<int, int>> uniqueEdges;
+
+    const auto cornerIndex = [&](const glm::vec3& vertex) {
+        int result = 0;
+        for (size_t axis = 0; axis < 3; ++axis) {
+            CHECK(vertex[axis] == minimum[axis] ||
+                  vertex[axis] == maximum[axis]);
+            if (vertex[axis] == maximum[axis]) {
+                result |= 1 << axis;
+            }
+        }
+        return result;
+    };
+    for (size_t index = 0; index < vertices.size(); index += 2) {
+        const int first = cornerIndex(vertices[index]);
+        const int second = cornerIndex(vertices[index + 1]);
+        CHECK_EQ(std::popcount(
+            static_cast<unsigned>(first ^ second)), 1);
+        CHECK(uniqueEdges.emplace(
+            std::min(first, second), std::max(first, second)).second);
+    }
+    CHECK_EQ(uniqueEdges.size(), static_cast<size_t>(12));
+}
+
+TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+    Rigel::Render::DebugState debug;
+    Rigel::Render::initEntityDebug(debug, assets);
+    CHECK(!debug.overlayEnabled);
+    CHECK(debug.entityDebug.initialized);
+
+    Rigel::Voxel::BlockRegistry registry;
+    Rigel::Voxel::BlockType type;
+    const std::string identifier = "invented:outline_cube";
+    type.identifier = identifier;
+    const Rigel::Voxel::BlockID id =
+        registry.registerBlock(identifier, std::move(type));
+    const Rigel::Voxel::BlockTarget target{
+        .block = {0, 0, 0},
+        .state = Rigel::Voxel::BlockState{id},
+    };
+
+    constexpr int extent = 64;
+    glViewport(0, 0, extent, extent);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClearDepth(1.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    Rigel::Render::renderBlockTargetOutline(
+        debug,
+        registry,
+        &target,
+        glm::mat4(1.0f),
+        glm::ortho(-0.5f, 1.5f, -0.5f, 1.5f, -2.0f, 2.0f));
+
+    std::vector<unsigned char> pixels(
+        static_cast<size_t>(extent * extent * 4));
+    glReadPixels(
+        0, 0, extent, extent, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    size_t litPixels = 0;
+    for (size_t index = 0; index < pixels.size(); index += 4) {
+        if (pixels[index] != 0 || pixels[index + 1] != 0 ||
+            pixels[index + 2] != 0) {
+            ++litPixels;
+        }
+    }
+    CHECK(litPixels > 0);
+    CHECK(glIsEnabled(GL_DEPTH_TEST));
+    CHECK(glIsEnabled(GL_CULL_FACE));
+    CHECK(!glIsEnabled(GL_BLEND));
+    GLboolean depthMask = GL_FALSE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+    CHECK_EQ(depthMask, static_cast<GLboolean>(GL_TRUE));
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+
+    Rigel::Render::releaseDebugResources(debug);
+    assets.clearCache();
 }
 
 TEST_CASE(DebugOverlay_PartialAcquisitionCleanupRunsOnce) {

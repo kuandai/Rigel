@@ -7,6 +7,7 @@
 #include "Rigel/Render/TemporalJitter.h"
 #include "FrameRendererTestAccess.h"
 #include "Rigel/Voxel/Chunk.h"
+#include "Rigel/Voxel/BlockTargeting.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldView.h"
 
@@ -421,6 +422,12 @@ void FrameRenderer::render(const FrameRenderContext& context) {
 
     if (useTaa) {
         renderEntityDebugBoxes(m_impl->debug, &context.world, view, projection);
+        renderBlockTargetOutline(
+            m_impl->debug,
+            context.world.blockRegistry(),
+            context.blockTarget,
+            view,
+            projection);
         {
             PROFILE_SCOPE("TAA");
             glm::mat4 viewProjectionNoJitter = projectionNoJitter * view;
@@ -434,6 +441,12 @@ void FrameRenderer::render(const FrameRenderContext& context) {
     } else {
         renderEntityDebugBoxes(
             m_impl->debug, &context.world, view, projectionNoJitter);
+        renderBlockTargetOutline(
+            m_impl->debug,
+            context.world.blockRegistry(),
+            context.blockTarget,
+            view,
+            projectionNoJitter);
     }
 
     renderDebugField(

@@ -3,6 +3,8 @@
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Preferences/UserPreferences.h"
+#include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/BlockTargeting.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldView.h"
@@ -30,6 +32,9 @@ constexpr int kFrameGraphSamples = 180;
 constexpr float kFrameGraphMaxMs = 50.0f;
 constexpr float kFrameGraphHeight = 0.28f;
 constexpr float kFrameGraphBottom = -0.95f;
+// Keep outline edges just outside coplanar model surfaces to avoid depth
+// fighting while retaining normal depth occlusion by nearer geometry.
+constexpr float kBlockTargetOutlineExpansion = 0.002f;
 constexpr float kCubeVertices[] = {
     // +X
     0.5f, -0.5f, -0.5f,
@@ -154,6 +159,103 @@ std::string historicalTraceKeyName(
         std::to_string(key->coord.y) + ", " +
         std::to_string(key->coord.z) + ") #" +
         std::to_string(key->lifecycleId);
+}
+
+} // namespace
+
+AabbEdgeVertices makeAabbEdgeVertices(
+    const glm::vec3& minimum,
+    const glm::vec3& maximum
+) {
+    const std::array corners = {
+        glm::vec3{minimum.x, minimum.y, minimum.z},
+        glm::vec3{maximum.x, minimum.y, minimum.z},
+        glm::vec3{maximum.x, maximum.y, minimum.z},
+        glm::vec3{minimum.x, maximum.y, minimum.z},
+        glm::vec3{minimum.x, minimum.y, maximum.z},
+        glm::vec3{maximum.x, minimum.y, maximum.z},
+        glm::vec3{maximum.x, maximum.y, maximum.z},
+        glm::vec3{minimum.x, maximum.y, maximum.z},
+    };
+    constexpr std::array<std::array<size_t, 2>, 12> edges = {{
+        {0, 1}, {1, 2}, {2, 3}, {3, 0},
+        {4, 5}, {5, 6}, {6, 7}, {7, 4},
+        {0, 4}, {1, 5}, {2, 6}, {3, 7},
+    }};
+
+    AabbEdgeVertices vertices;
+    size_t vertexIndex = 0;
+    for (const auto& edge : edges) {
+        vertices[vertexIndex++] = corners[edge[0]];
+        vertices[vertexIndex++] = corners[edge[1]];
+    }
+    return vertices;
+}
+
+namespace {
+
+void renderWorldLines(
+    EntityDebug& lines,
+    std::span<const glm::vec3> vertices,
+    const glm::mat4& viewProjection,
+    const glm::vec4& color
+) {
+    if (!lines.initialized || vertices.empty()) {
+        return;
+    }
+
+    lines.shader->bind();
+    if (lines.locViewProjection >= 0) {
+        glUniformMatrix4fv(
+            lines.locViewProjection,
+            1,
+            GL_FALSE,
+            glm::value_ptr(viewProjection));
+    }
+    const glm::vec3 origin(0.0f);
+    const glm::vec3 right(1.0f, 0.0f, 0.0f);
+    const glm::vec3 up(0.0f, 1.0f, 0.0f);
+    const glm::vec3 forward(0.0f, 0.0f, 1.0f);
+    if (lines.locFieldOrigin >= 0) {
+        glUniform3fv(lines.locFieldOrigin, 1, glm::value_ptr(origin));
+    }
+    if (lines.locFieldRight >= 0) {
+        glUniform3fv(lines.locFieldRight, 1, glm::value_ptr(right));
+    }
+    if (lines.locFieldUp >= 0) {
+        glUniform3fv(lines.locFieldUp, 1, glm::value_ptr(up));
+    }
+    if (lines.locFieldForward >= 0) {
+        glUniform3fv(lines.locFieldForward, 1, glm::value_ptr(forward));
+    }
+    if (lines.locCellSize >= 0) {
+        glUniform1f(lines.locCellSize, 1.0f);
+    }
+    if (lines.locColor >= 0) {
+        glUniform4fv(lines.locColor, 1, glm::value_ptr(color));
+    }
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+
+    glBindVertexArray(lines.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, lines.vbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(vertices.size_bytes()),
+        vertices.data(),
+        GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(
+        0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(vertices.size()));
+
+    glDepthMask(GL_TRUE);
+    glEnable(GL_CULL_FACE);
+    glBindVertexArray(0);
+    glUseProgram(0);
 }
 
 } // namespace
@@ -602,76 +704,49 @@ void renderEntityDebugBoxes(DebugState& debug,
         return;
     }
 
-    constexpr size_t kCubeVertexCount = sizeof(kCubeVertices) / (sizeof(float) * 3);
     std::vector<glm::vec3> vertices;
-    vertices.reserve(world->entities().size() * kCubeVertexCount);
+    vertices.reserve(
+        world->entities().size() * AabbEdgeVertices{}.size());
 
     world->entities().forEach([&](const Entity::Entity& entity) {
         const Entity::Aabb& bounds = entity.worldBounds();
-        glm::vec3 center = (bounds.min + bounds.max) * 0.5f;
-        glm::vec3 size = bounds.max - bounds.min;
-
-        for (size_t i = 0; i < kCubeVertexCount; ++i) {
-            size_t base = i * 3;
-            glm::vec3 local(kCubeVertices[base + 0],
-                            kCubeVertices[base + 1],
-                            kCubeVertices[base + 2]);
-            vertices.push_back(center + local * size);
-        }
+        const AabbEdgeVertices edges =
+            makeAabbEdgeVertices(bounds.min, bounds.max);
+        vertices.insert(vertices.end(), edges.begin(), edges.end());
     });
 
-    if (vertices.empty()) {
+    renderWorldLines(
+        debug.entityDebug,
+        vertices,
+        projection * view,
+        glm::vec4(1.0f, 0.1f, 0.1f, 0.9f));
+}
+
+void renderBlockTargetOutline(
+    DebugState& debug,
+    const Voxel::BlockRegistry& registry,
+    const Voxel::BlockTarget* target,
+    const glm::mat4& view,
+    const glm::mat4& projection
+) {
+    if (!target || !debug.entityDebug.initialized) {
         return;
     }
-
-    glm::mat4 viewProjection = projection * view;
-
-    debug.entityDebug.shader->bind();
-    if (debug.entityDebug.locViewProjection >= 0) {
-        glUniformMatrix4fv(debug.entityDebug.locViewProjection, 1, GL_FALSE,
-                           glm::value_ptr(viewProjection));
+    const auto bounds = Voxel::blockTargetBounds(registry, *target);
+    if (!bounds) {
+        return;
     }
-    if (debug.entityDebug.locFieldOrigin >= 0) {
-        glUniform3fv(debug.entityDebug.locFieldOrigin, 1, glm::value_ptr(glm::vec3(0.0f)));
-    }
-    if (debug.entityDebug.locFieldRight >= 0) {
-        glUniform3fv(debug.entityDebug.locFieldRight, 1, glm::value_ptr(glm::vec3(1.0f, 0.0f, 0.0f)));
-    }
-    if (debug.entityDebug.locFieldUp >= 0) {
-        glUniform3fv(debug.entityDebug.locFieldUp, 1, glm::value_ptr(glm::vec3(0.0f, 1.0f, 0.0f)));
-    }
-    if (debug.entityDebug.locFieldForward >= 0) {
-        glUniform3fv(debug.entityDebug.locFieldForward, 1, glm::value_ptr(glm::vec3(0.0f, 0.0f, 1.0f)));
-    }
-    if (debug.entityDebug.locCellSize >= 0) {
-        glUniform1f(debug.entityDebug.locCellSize, 1.0f);
-    }
-    if (debug.entityDebug.locColor >= 0) {
-        glm::vec4 color(1.0f, 0.1f, 0.1f, 0.9f);
-        glUniform4fv(debug.entityDebug.locColor, 1, glm::value_ptr(color));
-    }
-
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-
-    glBindVertexArray(debug.entityDebug.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, debug.entityDebug.vbo);
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(vertices.size() * sizeof(glm::vec3)),
-                 vertices.data(),
-                 GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
-    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
-
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    glDepthMask(GL_TRUE);
-    glEnable(GL_CULL_FACE);
-    glBindVertexArray(0);
-    glUseProgram(0);
+    const glm::vec3 expansion(kBlockTargetOutlineExpansion);
+    const AabbEdgeVertices vertices = makeAabbEdgeVertices(
+        glm::vec3{
+            bounds->min[0], bounds->min[1], bounds->min[2]} - expansion,
+        glm::vec3{
+            bounds->max[0], bounds->max[1], bounds->max[2]} + expansion);
+    renderWorldLines(
+        debug.entityDebug,
+        vertices,
+        projection * view,
+        glm::vec4(0.05f, 0.05f, 0.05f, 1.0f));
 }
 
 } // namespace Rigel::Render

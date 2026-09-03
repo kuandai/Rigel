@@ -500,6 +500,32 @@ TEST_CASE(BlockTargeting_UsesEverySupportedOrthogonalOrientation) {
     }
 }
 
+TEST_CASE(BlockTargeting_TargetBoundsUseOrientedSelectedCuboid) {
+    TargetingFixture fixture;
+    const BlockID oriented = fixture.add(
+        model(
+            "invented:outline_orientation",
+            {cuboid({{0.0f, 0.25f, 0.1f},
+                     {0.25f, 0.75f, 0.9f}})}),
+        BlockModelOrientation::RotateY90);
+    const BlockTarget target{
+        .block = {4, -2, 7},
+        .state = BlockState{oriented},
+        .cuboidIndex = 0,
+    };
+
+    const auto bounds = blockTargetBounds(
+        fixture.resources.registry(), target);
+
+    CHECK(bounds.has_value());
+    CHECK_EQ(bounds->min, (std::array<float, 3>{4.1f, -1.75f, 7.0f}));
+    CHECK_EQ(bounds->max, (std::array<float, 3>{4.9f, -1.25f, 7.25f}));
+
+    BlockTarget invalid = target;
+    invalid.cuboidIndex = 1;
+    CHECK(!blockTargetBounds(fixture.resources.registry(), invalid));
+}
+
 TEST_CASE(BlockTargeting_DdaFindsOverhangingOwnerAndGlobalNearestSurface) {
     TargetingFixture fixture;
     const BlockID nearOverhang = fixture.add(model(

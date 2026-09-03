@@ -1679,7 +1679,10 @@ void Application::run() {
                         m_impl->camera.forward,
                         width,
                         height,
-                        deltaTime});
+                        deltaTime,
+                        m_impl->world.blockTarget
+                            ? &*m_impl->world.blockTarget
+                            : nullptr});
 #if defined(RIGEL_ENABLE_IMGUI)
                     UI::renderProfilerWindow(
                         m_impl->renderer.profilerWindowEnabled());

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Block.h"
+#include "BlockModel.h"
 
 #include <glm/vec3.hpp>
 
@@ -10,6 +10,7 @@
 namespace Rigel::Voxel {
 
 class World;
+class BlockRegistry;
 
 /** Exact declared block-model surface selected by a world-space ray. */
 struct BlockTarget {
@@ -34,5 +35,10 @@ std::optional<BlockTarget> raycastBlock(
     const glm::vec3& origin,
     const glm::vec3& direction,
     float maxDistance);
+
+/** Resolve the selected cuboid's oriented world-space bounds. */
+std::optional<BlockModelBounds> blockTargetBounds(
+    const BlockRegistry& registry,
+    const BlockTarget& target);
 
 } // namespace Rigel::Voxel

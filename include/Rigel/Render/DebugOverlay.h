@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include <GL/glew.h>
@@ -14,7 +15,12 @@
 
 namespace Rigel {
 namespace Asset { class AssetManager; class ShaderAsset; }
-namespace Voxel { class WorldView; class World; }
+namespace Voxel {
+class BlockRegistry;
+class WorldView;
+class World;
+struct BlockTarget;
+}
 
 namespace Render {
 
@@ -80,6 +86,13 @@ struct DebugFieldPresentation {
     float cellSize = 0.0f;
 };
 
+using AabbEdgeVertices = std::array<glm::vec3, 24>;
+
+/** Build the twelve non-diagonal edges of an axis-aligned box. */
+AabbEdgeVertices makeAabbEdgeVertices(
+    const glm::vec3& minimum,
+    const glm::vec3& maximum);
+
 void initDebugField(DebugState& debug, Asset::AssetManager& assets);
 
 void initFrameGraph(DebugState& debug, Asset::AssetManager& assets);
@@ -110,6 +123,13 @@ void renderEntityDebugBoxes(DebugState& debug,
                             const Voxel::World* world,
                             const glm::mat4& view,
                             const glm::mat4& projection);
+
+void renderBlockTargetOutline(
+    DebugState& debug,
+    const Voxel::BlockRegistry& registry,
+    const Voxel::BlockTarget* target,
+    const glm::mat4& view,
+    const glm::mat4& projection);
 
 } // namespace Render
 } // namespace Rigel

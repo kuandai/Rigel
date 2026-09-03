@@ -6,7 +6,7 @@
 
 namespace Rigel {
 namespace Asset { class AssetManager; }
-namespace Voxel { class World; class WorldView; }
+namespace Voxel { class World; class WorldView; struct BlockTarget; }
 
 namespace Render {
 
@@ -22,6 +22,7 @@ struct FrameRenderContext {
     int viewportWidth = 0;
     int viewportHeight = 0;
     float deltaTime = 0.0f;
+    const Voxel::BlockTarget* blockTarget = nullptr;
 };
 
 class FrameRenderer {

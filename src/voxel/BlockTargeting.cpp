@@ -1,6 +1,7 @@
 #include "Rigel/Voxel/BlockTargeting.h"
 
 #include "BlockModelGeometry.h"
+#include "BlockTargetingDetail.h"
 #include "Rigel/Voxel/RayAabb.h"
 #include "Rigel/Voxel/World.h"
 
@@ -168,17 +169,22 @@ std::optional<ModelHit> intersectFullCube(
     };
 }
 
+template<bool CountWork>
 std::optional<ModelHit> intersectModel(
     const BlockModelInstance& instance,
     const glm::ivec3& owner,
     const glm::vec3& origin,
     const glm::vec3& direction,
-    float maxDistance
+    float maxDistance,
+    detail::BlockRaycastCounters* counters
 ) {
     if (!instance || instance->isEmpty()) {
         return std::nullopt;
     }
     if (instance->isFullCube()) {
+        if constexpr (CountWork) {
+            ++counters->canonicalCubeTests;
+        }
         return intersectFullCube(
             owner, origin, direction, maxDistance);
     }
@@ -187,6 +193,9 @@ std::optional<ModelHit> intersectModel(
     const auto& cuboids = instance->cuboids();
     for (size_t cuboidIndex = 0;
          cuboidIndex < cuboids.size(); ++cuboidIndex) {
+        if constexpr (CountWork) {
+            ++counters->cuboidsTested;
+        }
         const BlockModelCuboid& cuboid = cuboids[cuboidIndex];
         const BlockModelBounds bounds = detail::orientedBounds(
             cuboid.bounds, instance.orientation);
@@ -196,6 +205,9 @@ std::optional<ModelHit> intersectModel(
              sourceFaceIndex < DirectionCount; ++sourceFaceIndex) {
             if (!cuboid.faces[sourceFaceIndex]) {
                 continue;
+            }
+            if constexpr (CountWork) {
+                ++counters->declaredFacesTested;
             }
             const Direction face = detail::orientedDirection(
                 static_cast<Direction>(sourceFaceIndex),
@@ -379,11 +391,15 @@ bool advanceCell(int& coordinate, const DdaAxis& axis) {
 
 } // namespace
 
-std::optional<BlockTarget> raycastBlock(
+namespace {
+
+template<bool CountWork>
+std::optional<BlockTarget> raycastBlockImpl(
     const World& world,
     const glm::vec3& origin,
     const glm::vec3& direction,
-    float maxDistance
+    float maxDistance,
+    detail::BlockRaycastCounters* counters
 ) {
     if (!finite(origin) || !std::isfinite(maxDistance) ||
         maxDistance < 0.0f) {
@@ -433,6 +449,9 @@ std::optional<BlockTarget> raycastBlock(
     while (cellEntryDistance <=
            static_cast<double>(maxDistance) +
                BlockRayIntersectionTolerance) {
+        if constexpr (CountWork) {
+            ++counters->ddaCellsVisited;
+        }
         const auto candidates = ownerCandidateRange(cell, *modelExtents);
         if (candidates) {
             for (int64_t wideX = candidates->first[0];
@@ -446,23 +465,35 @@ std::optional<BlockTarget> raycastBlock(
                             static_cast<int>(wideY),
                             static_cast<int>(wideZ),
                         };
+                        if constexpr (CountWork) {
+                            ++counters->ownerCandidateSlots;
+                        }
                         // Candidate boxes translate monotonically with the
                         // DDA. An owner can therefore enter only once, so a
                         // single previous box is an allocation-free visited
                         // set for the complete ray.
                         if (previousCandidates &&
                             previousCandidates->contains(owner)) {
+                            if constexpr (CountWork) {
+                                ++counters->ownerCandidateRetestsAvoided;
+                            }
                             continue;
+                        }
+                        if constexpr (CountWork) {
+                            ++counters->ownersTested;
                         }
                         const BlockState state = world.getBlock(
                             owner.x, owner.y, owner.z);
                         if (state.isAir()) {
                             continue;
                         }
+                        if constexpr (CountWork) {
+                            ++counters->nonAirOwnersTested;
+                        }
                         const BlockType& type = registry.getType(state.id);
-                        const auto modelHit = intersectModel(
+                        const auto modelHit = intersectModel<CountWork>(
                             type.model, owner, origin,
-                            *normalizedDirection, maxDistance);
+                            *normalizedDirection, maxDistance, counters);
                         if (!modelHit) {
                             continue;
                         }
@@ -525,6 +556,30 @@ std::optional<BlockTarget> raycastBlock(
     }
 
     return best;
+}
+
+} // namespace
+
+std::optional<BlockTarget> raycastBlock(
+    const World& world,
+    const glm::vec3& origin,
+    const glm::vec3& direction,
+    float maxDistance
+) {
+    return raycastBlockImpl<false>(
+        world, origin, direction, maxDistance, nullptr);
+}
+
+std::optional<BlockTarget> detail::raycastBlockWithCounters(
+    const World& world,
+    const glm::vec3& origin,
+    const glm::vec3& direction,
+    float maxDistance,
+    BlockRaycastCounters& counters
+) {
+    counters = {};
+    return raycastBlockImpl<true>(
+        world, origin, direction, maxDistance, &counters);
 }
 
 std::optional<BlockModelBounds> blockTargetBounds(

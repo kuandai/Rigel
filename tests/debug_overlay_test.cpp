@@ -1,5 +1,8 @@
 #include "TestFramework.h"
 #include "OpenGLFixture.h"
+#include "GeneratorDefinitionTestRegistry.h"
+
+#include "FrameRendererTestAccess.h"
 
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Entity/Entity.h"
@@ -157,14 +160,58 @@ Rigel::Voxel::BlockID registerOutlineBlock(
     return registry.registerBlock(identifier, std::move(type));
 }
 
-size_t darkPixelCount(int width, int height) {
+struct FramebufferPixels {
+    std::vector<unsigned char> color;
+    std::vector<float> depth;
+};
+
+FramebufferPixels readFramebufferPixels(int width, int height) {
+    FramebufferPixels pixels{
+        .color = std::vector<unsigned char>(
+            static_cast<size_t>(width * height * 4)),
+        .depth = std::vector<float>(
+            static_cast<size_t>(width * height)),
+    };
+    glReadPixels(
+        0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
+        pixels.color.data());
+    glReadPixels(
+        0, 0, width, height, GL_DEPTH_COMPONENT, GL_FLOAT,
+        pixels.depth.data());
+    return pixels;
+}
+
+std::vector<unsigned char> readTexturePixels(
+    GLuint texture,
+    int width,
+    int height
+) {
     std::vector<unsigned char> pixels(
         static_cast<size_t>(width * height * 4));
-    glReadPixels(
-        0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    GLint previousTexture = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glGetTexImage(
+        GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
+    return pixels;
+}
+
+size_t scenePixelCount(const FramebufferPixels& pixels) {
+    return static_cast<size_t>(std::count_if(
+        pixels.depth.begin(), pixels.depth.end(), [](float depth) {
+            return depth < 1.0f;
+        }));
+}
+
+size_t darkScenePixelCount(const FramebufferPixels& pixels) {
     size_t count = 0;
-    for (size_t index = 0; index < pixels.size(); index += 4) {
-        if (pixels[index] < 32) {
+    for (size_t index = 0; index < pixels.depth.size(); ++index) {
+        const size_t colorIndex = index * 4;
+        if (pixels.depth[index] < 1.0f &&
+            pixels.color[colorIndex] < 32 &&
+            pixels.color[colorIndex + 1] < 32 &&
+            pixels.color[colorIndex + 2] < 32) {
             ++count;
         }
     }
@@ -592,36 +639,82 @@ TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
     assets.clearCache();
 }
 
-TEST_CASE(DebugOverlay_FrameTargetUsesStableProjectionAcrossTaaModes) {
+TEST_CASE(DebugOverlay_FrameTargetDepthAndHistoryAcrossTaaModes) {
     using namespace Rigel::Voxel;
 
-    constexpr int extent = 64;
+    constexpr int extent = 96;
     Rigel::Test::HiddenOpenGLContext context(extent, extent);
     context.require();
     Rigel::Asset::AssetManager assets;
     assets.loadManifest("manifest.yaml");
 
     WorldResources resources;
-    BlockType type;
-    const std::string identifier = "invented:frame_outline";
-    type.identifier = identifier;
-    const BlockID block = resources.registry().registerBlock(
-        identifier, std::move(type));
+    constexpr std::string_view texturePath =
+        "textures/invented/frame_foreground.png";
+    const std::vector<unsigned char> texturePixels(
+        static_cast<size_t>(
+            resources.textureAtlas().tileSize() *
+            resources.textureAtlas().tileSize() * 4),
+        255);
+    resources.textureAtlas().addTexture(
+        std::string(texturePath), texturePixels.data());
+    resources.textureAtlas().upload();
+
+    BlockType foregroundType;
+    const std::string identifier = "invented:frame_foreground";
+    foregroundType.identifier = identifier;
+    foregroundType.isOpaque = true;
+    foregroundType.textures = FaceTextures::uniform(
+        std::string(texturePath));
+    const BlockID foreground = resources.registry().registerBlock(
+        identifier, std::move(foregroundType));
     World world(resources);
     WorldView view(world, resources);
     view.initialize(assets);
+
+    auto generator = Rigel::Test::makeWorldGeneratorFixture(
+        resources.registry(),
+        Rigel::Test::generatorDefinitionFixture(
+            identifier, identifier, identifier),
+        1u);
+    world.setGenerator(generator);
+    view.setGenerator(generator);
+    StreamingConfig streaming;
+    streaming.viewDistanceChunks = 0;
+    streaming.unloadDistanceChunks = 0;
+    streaming.genQueueLimit = 0;
+    streaming.meshQueueLimit = 0;
+    streaming.updateBudgetPerFrame = 0;
+    streaming.applyBudgetPerFrame = 0;
+    streaming.workerThreads = 0;
+    streaming.maxResidentChunks = 0;
+    view.setStreamConfig(streaming);
+
+    const ChunkCoord chunkCoord{0, 0, 0};
+    Chunk& chunk = world.chunkManager().getOrCreateChunk(chunkCoord);
+    chunk.setBlock(
+        0, 0, 1, BlockState{foreground}, resources.registry());
+    chunk.setWorldGenVersion(generator->semanticsVersion());
+    chunk.setLoadedFromDisk(true);
+    view.updateStreaming(chunkCoord.toWorldCenter());
+    view.updateMeshes();
+    CHECK(view.meshStore().contains(chunkCoord));
 
     Rigel::Render::FrameRenderer renderer;
     renderer.initialize(assets);
     constexpr float verticalFovDegrees = 60.0f;
     renderer.setVerticalFovDegrees(verticalFovDegrees);
 
-    const BlockTarget target{
-        .block = {0, 0, 0},
-        .state = BlockState{block},
+    const BlockTarget visibleTarget{
+        .block = {0, 0, 1},
+        .state = BlockState{foreground},
     };
-    const glm::vec3 cameraPosition{0.5f, 0.5f, 3.0f};
-    const glm::vec3 cameraTarget{0.5f, 0.5f, 0.5f};
+    const BlockTarget occludedTarget{
+        .block = {0, 0, 0},
+        .state = BlockState{foreground},
+    };
+    const glm::vec3 cameraPosition{0.5f, 0.5f, 4.0f};
+    const glm::vec3 cameraTarget{0.5f, 0.5f, 1.0f};
     const glm::mat4 expectedViewProjection = glm::perspective(
         glm::radians(verticalFovDegrees), 1.0f, 0.1f,
         view.projectionFarPlaneWorldUnits()) * glm::lookAt(
@@ -635,11 +728,13 @@ TEST_CASE(DebugOverlay_FrameTargetUsesStableProjectionAcrossTaaModes) {
     CHECK(viewProjectionLocation >= 0);
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
 
-    for (const bool taaEnabled : {false, true}) {
-        RenderProfile profile = view.renderProfile();
-        profile.temporalAA.enabled = taaEnabled;
-        view.setRenderProfileForDiagnostics(profile);
-
+    const auto render = [&](const BlockTarget* target) {
+        // TAA renders the scene into an offscreen framebuffer. Clear any
+        // default-framebuffer depth left by the other mode so these checks
+        // require the current frame's scene-depth resolve.
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glClearDepth(1.0);
+        glClear(GL_DEPTH_BUFFER_BIT);
         renderer.render({
             .world = world,
             .worldView = view,
@@ -648,8 +743,19 @@ TEST_CASE(DebugOverlay_FrameTargetUsesStableProjectionAcrossTaaModes) {
             .cameraForward = glm::normalize(cameraTarget - cameraPosition),
             .viewportWidth = extent,
             .viewportHeight = extent,
-            .blockTarget = &target,
+            .blockTarget = target,
         });
+        CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+        return readFramebufferPixels(extent, extent);
+    };
+
+    for (const bool taaEnabled : {false, true}) {
+        RenderProfile profile = view.renderProfile();
+        profile.temporalAA.enabled = taaEnabled;
+        profile.temporalAA.blend = 1.0f;
+        view.setRenderProfileForDiagnostics(profile);
+
+        const FramebufferPixels visible = render(&visibleTarget);
 
         std::array<float, 16> actualViewProjection{};
         glGetUniformfv(
@@ -662,21 +768,37 @@ TEST_CASE(DebugOverlay_FrameTargetUsesStableProjectionAcrossTaaModes) {
             CHECK_NEAR(
                 actualViewProjection[index], expected[index], 0.00001f);
         }
-        CHECK(darkPixelCount(extent, extent) > 0);
-        CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+        CHECK(scenePixelCount(visible) > 100);
+        CHECK(darkScenePixelCount(visible) > 0);
+        CHECK_EQ(
+            Rigel::Render::FrameRendererTestAccess::temporalHistoryValid(
+                renderer),
+            taaEnabled);
+        if (taaEnabled) {
+            const GLuint historyTexture = static_cast<GLuint>(
+                Rigel::Render::FrameRendererTestAccess::
+                    temporalHistoryColorTexture(renderer));
+            CHECK(historyTexture != 0);
+            const FramebufferPixels history{
+                .color = readTexturePixels(
+                    historyTexture, extent, extent),
+                .depth = visible.depth,
+            };
+            CHECK_EQ(
+                darkScenePixelCount(history),
+                static_cast<size_t>(0));
+        }
 
-        renderer.render({
-            .world = world,
-            .worldView = view,
-            .cameraPosition = cameraPosition,
-            .cameraTarget = cameraTarget,
-            .cameraForward = glm::normalize(cameraTarget - cameraPosition),
-            .viewportWidth = extent,
-            .viewportHeight = extent,
-            .blockTarget = nullptr,
-        });
-        CHECK_EQ(darkPixelCount(extent, extent), static_cast<size_t>(0));
-        CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+        // The owning cube at z=0 is fully behind the rendered cube at z=1.
+        // This also follows a visible target so a TAA history contamination
+        // would leave dark pixels on scene depth when the target changes.
+        const FramebufferPixels occluded = render(&occludedTarget);
+        CHECK(scenePixelCount(occluded) > 100);
+        CHECK_EQ(darkScenePixelCount(occluded), static_cast<size_t>(0));
+
+        const FramebufferPixels absent = render(nullptr);
+        CHECK(scenePixelCount(absent) > 100);
+        CHECK_EQ(darkScenePixelCount(absent), static_cast<size_t>(0));
     }
 
     renderer.release();

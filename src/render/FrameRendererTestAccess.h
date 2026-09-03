@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <utility>
 
 #include <glm/mat4x4.hpp>
@@ -18,6 +19,8 @@ public:
         float nearPlane,
         float farPlane);
     static bool temporalHistoryValid(const FrameRenderer& renderer);
+    static uint32_t temporalHistoryColorTexture(
+        const FrameRenderer& renderer);
     static void markTemporalHistoryValid(FrameRenderer& renderer);
     static glm::vec2 nextTemporalJitter(
         FrameRenderer& renderer,

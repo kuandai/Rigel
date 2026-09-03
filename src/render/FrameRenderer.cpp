@@ -502,6 +502,11 @@ bool FrameRendererTestAccess::temporalHistoryValid(
     return renderer.m_impl->taa.historyValid;
 }
 
+uint32_t FrameRendererTestAccess::temporalHistoryColorTexture(
+    const FrameRenderer& renderer) {
+    return renderer.m_impl->taa.history[renderer.m_impl->taa.historyIndex];
+}
+
 void FrameRendererTestAccess::markTemporalHistoryValid(
     FrameRenderer& renderer) {
     renderer.m_impl->taa.historyValid = true;

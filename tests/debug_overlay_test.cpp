@@ -197,6 +197,21 @@ std::vector<unsigned char> readTexturePixels(
     return pixels;
 }
 
+std::vector<float> readDepthTexturePixels(
+    GLuint texture,
+    int width,
+    int height
+) {
+    std::vector<float> pixels(static_cast<size_t>(width * height));
+    GLint previousTexture = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glGetTexImage(
+        GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, pixels.data());
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
+    return pixels;
+}
+
 size_t scenePixelCount(const FramebufferPixels& pixels) {
     return static_cast<size_t>(std::count_if(
         pixels.depth.begin(), pixels.depth.end(), [](float depth) {
@@ -204,14 +219,11 @@ size_t scenePixelCount(const FramebufferPixels& pixels) {
         }));
 }
 
-size_t darkScenePixelCount(const FramebufferPixels& pixels) {
+size_t darkPixelCount(const std::vector<unsigned char>& pixels) {
     size_t count = 0;
-    for (size_t index = 0; index < pixels.depth.size(); ++index) {
-        const size_t colorIndex = index * 4;
-        if (pixels.depth[index] < 1.0f &&
-            pixels.color[colorIndex] < 32 &&
-            pixels.color[colorIndex + 1] < 32 &&
-            pixels.color[colorIndex + 2] < 32) {
+    for (size_t index = 0; index < pixels.size(); index += 4) {
+        if (pixels[index] < 32 && pixels[index + 1] < 32 &&
+            pixels[index + 2] < 32) {
             ++count;
         }
     }
@@ -726,6 +738,26 @@ TEST_CASE(DebugOverlay_FrameTargetDepthAndHistoryAcrossTaaModes) {
     const GLint viewProjectionLocation =
         lineShader->uniform("u_viewProjection");
     CHECK(viewProjectionLocation >= 0);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    GLint defaultDepthBits = 0;
+    GLint defaultStencilBits = 0;
+    glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER,
+        GL_DEPTH,
+        GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE,
+        &defaultDepthBits);
+    glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER,
+        GL_STENCIL,
+        GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE,
+        &defaultStencilBits);
+    if (defaultDepthBits < 24 || defaultStencilBits < 8) {
+        throw Rigel::Test::TestFailure(
+            "Production-style framebuffer returned depth/stencil bits " +
+            std::to_string(defaultDepthBits) + "/" +
+            std::to_string(defaultStencilBits));
+    }
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
 
     const auto render = [&](const BlockTarget* target) {
@@ -768,8 +800,22 @@ TEST_CASE(DebugOverlay_FrameTargetDepthAndHistoryAcrossTaaModes) {
             CHECK_NEAR(
                 actualViewProjection[index], expected[index], 0.00001f);
         }
-        CHECK(scenePixelCount(visible) > 100);
-        CHECK(darkScenePixelCount(visible) > 0);
+        if (taaEnabled) {
+            const GLuint sceneDepthTexture = static_cast<GLuint>(
+                Rigel::Render::FrameRendererTestAccess::
+                    temporalSceneDepthTexture(renderer));
+            CHECK(sceneDepthTexture != 0);
+            const FramebufferPixels offscreenScene{
+                .color = visible.color,
+                .depth = readDepthTexturePixels(
+                    sceneDepthTexture, extent, extent),
+            };
+            CHECK(scenePixelCount(offscreenScene) > 100);
+            CHECK_EQ(scenePixelCount(visible), static_cast<size_t>(0));
+        } else {
+            CHECK(scenePixelCount(visible) > 100);
+        }
+        CHECK(darkPixelCount(visible.color) > 0);
         CHECK_EQ(
             Rigel::Render::FrameRendererTestAccess::temporalHistoryValid(
                 renderer),
@@ -779,26 +825,21 @@ TEST_CASE(DebugOverlay_FrameTargetDepthAndHistoryAcrossTaaModes) {
                 Rigel::Render::FrameRendererTestAccess::
                     temporalHistoryColorTexture(renderer));
             CHECK(historyTexture != 0);
-            const FramebufferPixels history{
-                .color = readTexturePixels(
-                    historyTexture, extent, extent),
-                .depth = visible.depth,
-            };
+            const std::vector<unsigned char> history = readTexturePixels(
+                historyTexture, extent, extent);
             CHECK_EQ(
-                darkScenePixelCount(history),
+                darkPixelCount(history),
                 static_cast<size_t>(0));
         }
 
         // The owning cube at z=0 is fully behind the rendered cube at z=1.
         // This also follows a visible target so a TAA history contamination
-        // would leave dark pixels on scene depth when the target changes.
+        // would leave dark presentation pixels when the target changes.
         const FramebufferPixels occluded = render(&occludedTarget);
-        CHECK(scenePixelCount(occluded) > 100);
-        CHECK_EQ(darkScenePixelCount(occluded), static_cast<size_t>(0));
+        CHECK_EQ(darkPixelCount(occluded.color), static_cast<size_t>(0));
 
         const FramebufferPixels absent = render(nullptr);
-        CHECK(scenePixelCount(absent) > 100);
-        CHECK_EQ(darkScenePixelCount(absent), static_cast<size_t>(0));
+        CHECK_EQ(darkPixelCount(absent.color), static_cast<size_t>(0));
     }
 
     renderer.release();

@@ -96,6 +96,10 @@ public:
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        // Match the production window request. GLFW's default stencil hint is
+        // intentionally retained so tests exercise the usual packed 24/8
+        // window framebuffer selected by desktop drivers.
+        glfwWindowHint(GLFW_DEPTH_BITS, 24);
 
         m_window = glfwCreateWindow(
             width, height, "Rigel test", nullptr, nullptr);
@@ -193,6 +197,7 @@ private:
             EGL_BLUE_SIZE, 8,
             EGL_ALPHA_SIZE, 8,
             EGL_DEPTH_SIZE, 24,
+            EGL_STENCIL_SIZE, 8,
             EGL_NONE,
         };
         EGLConfig config = nullptr;

@@ -169,11 +169,8 @@ struct FrameRenderer::Impl {
 
         glGenTextures(1, &taa.sceneDepth);
         glBindTexture(GL_TEXTURE_2D, taa.sceneDepth);
-        // The application requests a 24-bit default depth buffer. Matching
-        // that format keeps the post-resolve depth blit valid so stable
-        // overlays can remain conventionally depth-tested.
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
-                     GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0,
+                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -193,8 +190,8 @@ struct FrameRenderer::Impl {
         glGenTextures(2, taa.historyDepth.data());
         for (GLuint& texture : taa.historyDepth) {
             glBindTexture(GL_TEXTURE_2D, texture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
-                         GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0,
+                         GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -313,22 +310,21 @@ struct FrameRenderer::Impl {
         glBindVertexArray(0);
         glUseProgram(0);
 
+        // Keep the resolved history texture free of presentation-only world
+        // lines. Copy its color back onto the scene target, whose compatible
+        // depth attachment still contains this frame's geometry, and let the
+        // caller composite stable overlays there before presenting color.
         glBindFramebuffer(GL_READ_FRAMEBUFFER, taa.resolveFbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, taa.sceneFbo);
         glBlitFramebuffer(0, 0, taa.width, taa.height,
                           0, 0, taa.width, taa.height,
                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, taa.sceneFbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glBlitFramebuffer(0, 0, taa.width, taa.height,
-                          0, 0, taa.width, taa.height,
-                          GL_DEPTH_BUFFER_BIT, GL_NEAREST);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, taa.sceneFbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, taa.resolveFbo);
         glBlitFramebuffer(0, 0, taa.width, taa.height,
                           0, 0, taa.width, taa.height,
                           GL_DEPTH_BUFFER_BIT, GL_NEAREST);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, taa.sceneFbo);
 
         glEnable(GL_DEPTH_TEST);
         glDepthMask(GL_TRUE);
@@ -340,6 +336,22 @@ struct FrameRenderer::Impl {
         taa.historyIndex = writeIndex;
         taa.prevViewProjection = viewProjection;
         return true;
+    }
+
+    void presentTaa() {
+        if (taa.sceneFbo == 0 || taa.width <= 0 || taa.height <= 0) {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            return;
+        }
+
+        // Only color crosses into the window framebuffer. Its implementation-
+        // selected depth/stencil format therefore cannot invalidate the blit.
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, taa.sceneFbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, taa.width, taa.height,
+                          0, 0, taa.width, taa.height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 };
 
@@ -434,21 +446,26 @@ void FrameRenderer::render(const FrameRenderContext& context) {
                 jitter * 0.5f,
                 profile.temporalAA.blend);
         }
-        glViewport(0, 0, context.viewportWidth, context.viewportHeight);
     } else {
         renderEntityDebugBoxes(
             m_impl->debug, &context.world, view, projectionNoJitter);
     }
 
-    // Selection feedback is composited after the resolved scene. This keeps
-    // it out of temporal history and uses the stable projection while still
-    // testing against scene depth (resolved depth is blitted above for TAA).
+    // Selection feedback is composited after the resolved scene. With TAA it
+    // stays in the engine-owned scene target, keeping it out of history while
+    // testing against scene depth without depending on the window's depth
+    // format. The stable projection keeps the line presentation stationary.
     renderBlockTargetOutline(
         m_impl->debug,
         context.world.blockRegistry(),
         context.blockTarget,
         view,
         projectionNoJitter);
+
+    if (useTaa) {
+        m_impl->presentTaa();
+        glViewport(0, 0, context.viewportWidth, context.viewportHeight);
+    }
 
     renderDebugField(
         m_impl->debug,
@@ -505,6 +522,11 @@ bool FrameRendererTestAccess::temporalHistoryValid(
 uint32_t FrameRendererTestAccess::temporalHistoryColorTexture(
     const FrameRenderer& renderer) {
     return renderer.m_impl->taa.history[renderer.m_impl->taa.historyIndex];
+}
+
+uint32_t FrameRendererTestAccess::temporalSceneDepthTexture(
+    const FrameRenderer& renderer) {
+    return renderer.m_impl->taa.sceneDepth;
 }
 
 void FrameRendererTestAccess::markTemporalHistoryValid(

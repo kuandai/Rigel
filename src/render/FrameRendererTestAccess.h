@@ -21,6 +21,8 @@ public:
     static bool temporalHistoryValid(const FrameRenderer& renderer);
     static uint32_t temporalHistoryColorTexture(
         const FrameRenderer& renderer);
+    static uint32_t temporalSceneDepthTexture(
+        const FrameRenderer& renderer);
     static void markTemporalHistoryValid(FrameRenderer& renderer);
     static glm::vec2 nextTemporalJitter(
         FrameRenderer& renderer,

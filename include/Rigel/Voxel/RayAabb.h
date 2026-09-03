@@ -11,10 +11,12 @@ namespace Rigel::Voxel {
 /**
  * The single tolerance used by block-model ray intersection.
  *
- * Directions at or below this magnitude are parallel, points within this
- * distance of a slab boundary are on that boundary, and distances within
- * this amount are ties. AABB edge and corner ties choose the lowest-valued
- * Direction, making their normals stable.
+ * Points within this distance of a slab boundary are on that boundary, and
+ * distances within this amount are ties. Only zero direction components are
+ * parallel: every finite nonzero component is followed across the whole
+ * finite ray so accumulated motion cannot escape a tangent slab unnoticed.
+ * AABB edge and corner ties choose the lowest-valued Direction, making their
+ * normals stable.
  */
 inline constexpr float BlockRayIntersectionTolerance = 1.0e-5f;
 

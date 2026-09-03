@@ -2,6 +2,8 @@
 
 #include "Rigel/Voxel/RayAabb.h"
 
+#include <array>
+#include <cmath>
 #include <limits>
 
 namespace {
@@ -54,6 +56,22 @@ TEST_CASE(RayAabb_HandlesParallelBoundaryAndNegativeCoordinates) {
     CHECK(!intersectRayAabb(
         {-6.0f, -4.0f - BlockRayIntersectionTolerance * 2.0f, -2.0f},
         {1.0f, 0.0f, 0.0f}, boundsMin, boundsMax, 2.0f));
+}
+
+TEST_CASE(RayAabb_TracksNearParallelMotionAcrossFiniteRay) {
+    const std::array tangentDirections{
+        BlockRayIntersectionTolerance,
+        std::nextafter(BlockRayIntersectionTolerance, 0.0f),
+    };
+
+    for (const float tangentDirection : tangentDirections) {
+        CHECK(!intersectRayAabb(
+            {-8.0f, 0.99995f, 0.5f},
+            {1.0f, tangentDirection, 0.0f},
+            {0.0f, 0.0f, 0.0f},
+            {1.0f, 1.0f, 1.0f},
+            8.0f));
+    }
 }
 
 TEST_CASE(RayAabb_UsesDeterministicEdgeAndCornerNormals) {

@@ -72,7 +72,7 @@ std::optional<RayAabbInterval> intersectRayAabb(
         const double minimum = boundsMin[axis];
         const double maximum = boundsMax[axis];
 
-        if (std::abs(axisDirection) <= BlockRayIntersectionTolerance) {
+        if (axisDirection == 0.0) {
             if (axisOrigin < minimum - BlockRayIntersectionTolerance ||
                 axisOrigin > maximum + BlockRayIntersectionTolerance) {
                 return std::nullopt;

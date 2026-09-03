@@ -116,6 +116,30 @@ TEST_CASE(BlockTargeting_FullCubeReturnsExactSurfaceData) {
     checkPosition(target->position, {-1.0f, 1.25f, 0.5f});
 }
 
+TEST_CASE(BlockTargeting_FullCubeTracksNearParallelTangentMotion) {
+    const glm::vec3 origin{-8.0f, 0.99995f, 0.5f};
+    const glm::vec3 direction{
+        1.0f, BlockRayIntersectionTolerance, 0.0f};
+
+    TargetingFixture fullCubeFixture;
+    const BlockID fullCube = fullCubeFixture.addFullCube();
+    fullCubeFixture.world.setBlock(0, 0, 0, BlockState{fullCube});
+    const auto fullCubeHit = raycastBlock(
+        fullCubeFixture.world, origin, direction, 8.0f);
+
+    TargetingFixture declaredFacesFixture;
+    const BlockID declaredFaces = declaredFacesFixture.add(model(
+        "invented:declared_cube",
+        {cuboid({{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}})}));
+    declaredFacesFixture.world.setBlock(
+        0, 0, 0, BlockState{declaredFaces});
+    const auto declaredFacesHit = raycastBlock(
+        declaredFacesFixture.world, origin, direction, 8.0f);
+
+    CHECK(!fullCubeHit);
+    CHECK(!declaredFacesHit);
+}
+
 TEST_CASE(BlockTargeting_InsideOriginSelectsNearestForwardExit) {
     TargetingFixture fixture;
     const BlockID cube = fixture.addFullCube();

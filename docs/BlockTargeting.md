@@ -151,6 +151,9 @@ or arbitrary-triangle outline path.
   orientations, not OBBs, convex hulls, general planes, or arbitrary triangle
   meshes.
 - The outline does not remove internal edges or compute a silhouette union.
+- Target origins and model bounds use single-precision world coordinates, so
+  block owners beyond the contiguous integer range of `float` (approximately
+  +/-2^24) are not distinguishable exactly by the canonical-cube fast path.
 - Player physics, stair traversal, and entity collision are outside this
   subsystem.
 

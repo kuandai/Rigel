@@ -250,9 +250,16 @@ probes. Stationary initial overlap is not depenetrated. The complete asset,
 query, movement, and limitation contract is documented in
 `docs/BlockCollision.md`.
 
-Edit raycasting remains cell-based and stops at any occupied cell rather than
-intersecting model or collision-shape bounds. Visual geometry outside `[0, 1]`
-does not extend raycasting.
+Edit raycasting retains grid DDA but treats occupancy only as a candidate. It
+selects the globally nearest declared face of an oriented visual model,
+continues through empty model space, and expands possible owner coordinates
+from registry-wide visual extents so geometry outside `[0, 1]` remains
+selectable. Empty models do not hit, zero-thickness two-sided cuboid surfaces
+do, and a positive-volume inside origin selects its nearest forward exit. The
+result carries the owning state and coordinate, exact world distance and
+position, cardinal face and normal, and deterministic cuboid index. Physical
+collision never supplies selection geometry. `docs/BlockTargeting.md`
+documents the tolerance, broadphase, stopping, caller, and outline contracts.
 
 Opacity, emitted light, and attenuation likewise remain source-authored
 block-registration properties. Rigel does not infer collision or lighting from
@@ -263,10 +270,12 @@ cuboid coverage.
 - Normalized block geometry is limited to measured single/multiple axis-aligned
   cuboids and the closed right-angle block-state orientation set. There is no
   general model transform or scene graph.
-- Plane primitives, animated block textures, and non-16-by-16 block textures
-  are not supported. The importer omits those states instead of approximating
-  them.
-- Edit raycasting operates on occupied cells rather than collision boxes.
+- Source plane primitives, animated block textures, and non-16-by-16 block
+  textures are not supported. The importer omits those states instead of
+  approximating them. Normalized zero-thickness cuboids remain supported when
+  they declare positive-area cardinal surfaces.
+- Edit raycasting targets visual cuboid faces rather than collision boxes. It
+  does not target entities, OBBs, convex shapes, or arbitrary triangles.
 - Static stair boxes do not provide step-up traversal, and the player-controlled
   camera does not use entity physics.
 - Static collision has no entity-to-entity, convex/non-AABB, visual-plane, or
@@ -283,6 +292,7 @@ cuboid coverage.
 ## Related Docs
 
 - `docs/BlockGallery.md`
+- `docs/BlockTargeting.md`
 - `docs/BlockCollision.md`
 - `docs/ApplicationLifecycle.md`
 - `docs/WorldGeneration.md`

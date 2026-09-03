@@ -17,6 +17,7 @@ window from the same state. When enabled the tooling draws:
 - Frame time graph (ms per frame).
 - ImGui profiler window (flame graph of per-frame scopes).
 - Entity bounds wireframes.
+- Current block selection outline.
 
 The GL overlays are toggled by the `debug_overlay` action (F1 by default). The
 ImGui profiler window is toggled independently by the `imgui_overlay` action
@@ -29,6 +30,9 @@ locations plus the former shipped `no_carvers` overlay locations. Detected
 entries are reported with their current owner or replacement. The diagnostic
 does not enumerate directories or parse those files, and Release startup does
 not run the check.
+
+The block outline is selection feedback rather than an opt-in diagnostic. It
+is drawn whenever a target exists, even while F1 overlays are disabled.
 
 ---
 
@@ -163,6 +167,15 @@ If TAA is enabled, entity debug boxes are drawn before the TAA resolve and are
 subject to the jitter/resolve pass. The chunk field and frame graph render after
 TAA, so they are stable.
 
+The same entity-debug shader, VAO, and dynamic VBO also draw the selected
+block model. A shared AABB helper emits exactly twelve non-diagonal edges per
+cuboid. Selection expands each oriented visual bound by `0.002` world units,
+uses depth testing without depth writes, and restores relevant caller GL
+state. It is independent of the entity-box/F1 enable check. With TAA the
+selection outline is composited after resolve using retained scene depth and a
+non-jittered projection, then only color is presented. See
+`docs/BlockTargeting.md` for geometry and ownership details.
+
 ---
 
 ## 7. Benchmark Logging
@@ -246,7 +259,89 @@ regression. Cross-machine or cross-revision comparisons should use the same
 fixture and command; model-heavy time should be interpreted with its much
 larger emitted mesh counts rather than compared as equal output.
 
-### 7.2 Entity collision benchmark
+### 7.2 Block targeting benchmark
+
+`Rigel_block_targeting_benchmark` measures the production shape-aware
+`raycastBlock` path without the renderer, player, or streaming scheduler. It is
+built only when `RIGEL_BUILD_BENCHMARKS=ON`. Its immutable registry, model
+geometry, populated worlds, and rays are deterministic invented inputs; it
+does not read generated assets or change runtime configuration.
+
+The five workloads are:
+
+- `empty_long`: one empty 128-cell ray segment;
+- `dense_full_cubes`: 64 rays into an 8-by-8-by-8 canonical-cube volume;
+- `mixed_partial_models`: exact rays against isolated slab, post, stair,
+  two-sided zero-thickness crossed surfaces, and overhanging models;
+- `gallery_like_density`: 256 downward rays over a 16-by-16 grid at the
+  production gallery's four-cell spacing; and
+- `long_range_target`: one 512-unit ray to a cube owned at X=384.
+
+Before warmup or timing, the executable checks every expected owning block,
+state, distance, face, and cuboid index. It requires a frozen seven-type
+registry, the direct canonical-cube model identity, and aggregate invented
+extents of `[-0.25, 1.25]` on every axis. It also runs the instrumented and
+normal entry points over the same cases and rejects any difference.
+
+Validation reports DDA cells, candidate slots, reused candidates, owners and
+non-air owners tested, direct cube tests, cuboids, and declared faces. Candidate
+accounting must balance exactly and reports zero executed retests. A
+benchmark-local replacement of global allocation functions proves that both
+the validation pass and every timed raycast perform zero heap allocations.
+
+Use an out-of-tree Release build:
+
+```bash
+rigel_release_build=../Rigel-build-release
+conan install . --output-folder="$rigel_release_build" --build=missing \
+  -s build_type=Release
+cmake -S . -B "$rigel_release_build" \
+  -DCMAKE_TOOLCHAIN_FILE="$rigel_release_build/conan_toolchain.cmake" \
+  -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DRIGEL_BUILD_BENCHMARKS=ON
+cmake --build "$rigel_release_build" --parallel \
+  --target Rigel_block_targeting_benchmark
+ctest --test-dir "$rigel_release_build" --output-on-failure \
+  -R Rigel_block_targeting_benchmark_options
+"$rigel_release_build/Rigel_block_targeting_benchmark" \
+  --iterations 30 --warmup 5 --rays 256
+```
+
+Timed iterations are limited to 1-100, warmups to 0-20, and rays per sample to
+1-8,192. Defaults are 20 iterations, three warmups, and 256 rays. The
+`--validate-only` mode checks fixture output without emitting workload timing.
+The focused CTest additionally checks pre-timing validation, exact candidate
+context, allocation evidence, bounded option handling, validate-only behavior,
+and rejection of invalid or repeated options.
+
+Output reports nanoseconds per ray with nearest-rank P50/P95, a result checksum,
+and the slowest mean as a fraction of one 60 Hz frame. The empty and long-range
+cases deliberately expose linear DDA traversal cost; the dense and mixed cases
+exercise early stopping and the specialized cube path. Cross-machine or
+cross-revision comparisons should use the same options and fixture rather than
+treating one capture as a universal threshold.
+
+A Release capture on 2026-09-02 used GNU 16.1.1 on Linux x86_64 with a 12th
+Gen Intel Core i7-12700 and 20 reported hardware threads. The exact performance
+invocation was the final command above. Each workload completed 30 timed
+samples of 256 rays after five warmups:
+
+| Workload | Mean | P50 | P95 | Hot-path allocations |
+| --- | ---: | ---: | ---: | ---: |
+| `empty_long` | 11.815 us | 11.819 us | 12.369 us | 0 |
+| `dense_full_cubes` | 0.759 us | 0.754 us | 0.795 us | 0 |
+| `mixed_partial_models` | 0.577 us | 0.576 us | 0.581 us | 0 |
+| `gallery_like_density` | 1.037 us | 1.027 us | 1.073 us | 0 |
+| `long_range_target` | 54.113 us | 54.005 us | 54.952 us | 0 |
+
+The deliberate 512-unit long-range case was the slowest mean at `0.003` of a
+16.667 ms frame, or about 0.3 percent, including benchmark harness overhead.
+The normal application casts one center ray with an eight-unit maximum. The
+capture therefore supports the current once-per-frame use without adding a
+BVH or broad segment-volume scan.
+
+### 7.3 Entity collision benchmark
 
 `Rigel_entity_collision_benchmark` measures the production
 `Entity::update`, axis-separated block query/resolver, and multi-entity tick

@@ -109,15 +109,20 @@ Per frame:
    callback-fed key and mouse-button state and notify action listeners.
 4. Apply cursor-capture actions, then update camera and interaction logic.
    - Mouse look is applied if the cursor is captured.
-   - Block edit raycasts use semantic remove/place action edges; demo entity
-     spawning uses its developer action press edge.
+   - The application resolves one shape-aware center `BlockTarget`, then block
+     edits use its owning coordinate and selected-face normal with semantic
+     remove/place action edges. A successful edit refreshes the target before
+     presentation and rendering. Demo entity spawning uses its developer
+     action press edge.
 5. Tick entities (`World::tickEntities`).
 6. Update chunk streaming (load/generation/mesh decisions).
 7. Drain and apply completed generation, load, and mesh work.
 8. Read the refreshed streaming lifecycle snapshot and log state transitions.
-9. Submit the active world, camera, viewport, and frame time to `FrameRenderer`.
+9. Submit the active world, camera, viewport, frame time, and already-resolved
+   optional block target to `FrameRenderer`.
    - `FrameRenderer` handles camera matrices, TAA, world drawing, and debug
-     overlays.
+     overlays. It draws selection feedback but does not raycast or mutate the
+     world.
 10. Render the ImGui profiler window, end the profiler and ImGui frames, and
     swap buffers.
 

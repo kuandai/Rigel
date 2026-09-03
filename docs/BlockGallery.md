@@ -91,12 +91,14 @@ then shows the full block-state identifier, one-based catalog position and
 catalog size, zero-based grid coordinate, normalized model identifier, cuboid
 count, orientation, base and effective render layers, compact texture-slot layer
 mapping, collision shape, culling and opacity flags, and resolved
-texture-binding count. Collision is reported as `none`, `full cube`, `one box`,
-or an exact box count; conservative fallback provenance is appended when
-present. Culling diagnostic cells replace the catalog position with their case
-label, case ordinal, and pair-cell ordinal while retaining the same collision
-line. The current renderer does not draw a separate reticle; the camera's
-center ray is the crosshair direction. Empty space and the reference floor show
+texture-binding count. It also reports the selected cuboid's one-based position
+within the model, cardinal face, and exact ray distance in blocks. Collision is
+reported as `none`, `full cube`, `one box`, or an exact box count; conservative
+fallback provenance is appended when present. Culling diagnostic cells replace
+the catalog position with their case label, case ordinal, and pair-cell ordinal
+while retaining the same collision and hit lines. The current renderer does
+not draw a separate reticle; the camera's center ray is the crosshair
+direction. Empty space and the reference floor show
 `No catalog specimen targeted.`
 
 Effective layers are listed once in render order and include both the block
@@ -108,16 +110,20 @@ runtime `BlockType` and its normalized model slot order, and derives collision
 text directly from `BlockCollisionShape`. The ImGui layer displays those values
 without inspecting importer state or reinterpreting visual model geometry.
 
-The gallery does not draw targeted collision wireframes. The existing
-wireframe path is owned by entity-bound diagnostics and receives neither a
-gallery target nor block collision geometry; collision inspection remains at
+The gallery does not draw targeted collision wireframes. The selection outline
+reuses the entity-debug line shader and GPU buffers, but its bounds come from
+the oriented visual model. It is always available as selection feedback and is
+not controlled by the F1 diagnostics toggle. Collision inspection remains at
 the compact presentation boundary rather than adding a separate renderer or
 launch option.
 
-Targeting intentionally uses the normal whole-cell DDA. It identifies the first
-occupied block cell on the camera ray, not the visible cuboid face under a
-pixel. This is especially noticeable for slabs, thin geometry, and geometry
-that extends outside its owning cell.
+Targeting uses the normal grid DDA with an overhang-aware owner search, then
+intersects declared oriented model faces. Rays pass through slab empty space,
+gaps, missing faces, and empty models; zero-thickness two-sided crop surfaces
+remain selectable. Geometry outside its owning cell is found from the frozen
+registry's aggregate visual extents, while catalog identity remains attached
+to the owning coordinate. See `docs/BlockTargeting.md` for the exact hit,
+inside-origin, tie, stopping, and outline behavior.
 
 ## Catalog and coordinates
 
@@ -219,10 +225,14 @@ broader Cosmic Reach coverage:
 - Animated block textures and non-16-by-16 block textures are unsupported;
   affected source states are omitted under the importer's disjoint provenance
   reasons.
-- Targeting is independent of collision: the first non-air block cell is a
-  hit, including a registration with `collision: none`. Partial geometry does
-  not shrink the target cell, and out-of-cell geometry does not extend the
-  targeting ray into another cell.
+- Targeting is independent of collision: declared visual model faces can hit
+  with `collision: none`, while collision-only space cannot. It supports
+  normalized cuboid faces, including measured zero-thickness two-sided
+  surfaces, but not source plane primitives, arbitrary triangles, OBBs, convex
+  selection, or entities.
+- The outline draws every oriented cuboid independently. It is not a
+  silhouette union, so internal edges may remain visible on multi-cuboid
+  models.
 - Model ambient occlusion is simplified. Cube-style AO applies only when a
   normalized face requests it and spans a complete unit-cell boundary; other
   model faces use the fully unoccluded level, and only a closed full-cell model
@@ -256,6 +266,7 @@ and the rest of the CTest workflow.
 ## Related documentation
 
 - `docs/VoxelEngine.md`
+- `docs/BlockTargeting.md`
 - `docs/AssetOwnership.md`
 - `docs/CosmicReachImportParity.md`
 - `docs/RenderingPipeline.md`

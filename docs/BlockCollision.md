@@ -132,8 +132,9 @@ The collision path intentionally does not provide:
 - entity-to-entity collision;
 - collision for the player-controlled camera, which moves independently of
   `Entity` physics;
-- model-accurate or partial-shape edit raycasts: edit targeting hits an entire
-  occupied block cell;
+- block selection from physical collision boxes: edit targeting instead uses
+  declared oriented visual-model cuboid faces, as documented in
+  `docs/BlockTargeting.md`;
 - convex, rotated, sloped, or other non-AABB colliders;
 - automatic collision for visual plane primitives;
 - generalized initial-overlap depenetration; or

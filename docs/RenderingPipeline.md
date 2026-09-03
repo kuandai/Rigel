@@ -38,8 +38,12 @@ source.
    - Calls `EntityRenderer::render`.
 6. Optional TAA resolve blends history into the current frame.
 7. Entity debug bounds render before the resolve when TAA is enabled (or after
-   the world when it is disabled); the chunk visualizer and frame graph render
-   after the resolve.
+   the world when it is disabled).
+8. The current block-model selection outline renders with the stable
+   non-jittered projection and scene depth, independent of the F1 diagnostics
+   toggle. With TAA it is added after resolve but before color presentation, so
+   it does not enter temporal history.
+9. The chunk visualizer and frame graph render after the resolved scene.
 
 ---
 
@@ -197,6 +201,8 @@ The shipped profile keeps TAA disabled, so history is invalidated each frame.
 
 ## 7. Known Limitations
 
+- Selection outlines draw the twelve AABB edges of each model cuboid rather
+  than a silhouette union; multi-cuboid internal edges may remain visible.
 - No frustum culling; distance-only culling for voxels.
 - Shadow cascades use a camera-centered cube instead of fitting the frustum.
 - Transparent layer does not receive shadows in the main pass.
@@ -208,6 +214,7 @@ The shipped profile keeps TAA disabled, so history is invalidated each frame.
 
 - `docs/ShaderSystem.md`
 - `docs/EntitySystem.md`
+- `docs/BlockTargeting.md`
 - `docs/VoxelEngine.md`
 - `docs/DebugTooling.md`
 - `docs/ConfigurationSystem.md`

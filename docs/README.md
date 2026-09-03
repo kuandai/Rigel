@@ -21,6 +21,8 @@ implementation and how the systems fit together.
 
 ### Voxel + World
 
+- `docs/BlockTargeting.md` (model-surface raycasts, exact hits, and selection
+  outlines)
 - `docs/BlockCollision.md` (normalized physical shapes, world queries, and entity sweeps)
 - `docs/BlockGallery.md` (developer launch, navigation, catalog, and visual review)
 - `docs/WorldGeneration.md` (strict graph generation, pipeline, streaming)

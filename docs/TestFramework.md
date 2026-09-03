@@ -157,8 +157,14 @@ the resulting color and depth buffers. The alpha-cutout check confirms that
 transparent crop texels expose the farther gallery floor, the water check
 requires its authored blend strength, and the mixed table check distinguishes
 opaque wood from fractional glass. The opaque slab check confirms that partial
-opaque models are not blended. Diagnostic targeting and labels are checked from
-the same catalog metadata before capture. For visual review, set
+opaque models are not blended. Shape-aware targeting checks exact owner, state,
+distance, position, cardinal face and normal, and cuboid index for real slab,
+stair, furniture, ladder, handrail, door, machine, two-sided crop, and piston
+overhang registrations. Diagnostic targeting and labels are checked from the
+same catalog metadata before capture. The main synthetic OpenGL suite also
+exercises target-outline depth occlusion, F1 independence, state restoration,
+resource teardown, and TAA history isolation through software EGL. For visual
+review, set
 `RIGEL_GALLERY_CAPTURE_DIRECTORY` to an absolute directory outside the source
 tree. The test validates every representative before publishing the captures
 as one complete set. It writes one vertically oriented PPM per view

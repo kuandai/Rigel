@@ -12,6 +12,8 @@
 namespace Rigel::Voxel {
 namespace {
 
+constexpr size_t MaximumTargetOwnerCandidatesPerCell = 512;
+
 std::optional<BlockModelBounds> orientedVisualExtents(
     const BlockModelInstance& instance
 ) {
@@ -72,6 +74,33 @@ void includeExtents(
     }
 }
 
+void validateTargetCandidateVolume(
+    const std::optional<BlockModelBounds>& extents
+) {
+    if (!extents) {
+        return;
+    }
+
+    size_t candidateVolume = 1;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        const double span = static_cast<double>(extents->max[axis]) -
+            static_cast<double>(extents->min[axis]);
+        // Integer owners can overlap a unit cell across the model span plus
+        // the cell itself. One additional coordinate unit conservatively
+        // covers both targeting tolerance margins in candidateRange().
+        const double candidateCount =
+            std::floor(span + 2.0) + 1.0;
+        if (candidateCount >
+            static_cast<double>(
+                MaximumTargetOwnerCandidatesPerCell / candidateVolume)) {
+            throw BlockRegistrationError(
+                "Aggregate block model bounds exceed the 512-owner "
+                "targeting limit");
+        }
+        candidateVolume *= static_cast<size_t>(candidateCount);
+    }
+}
+
 } // namespace
 
 BlockRegistry::BlockRegistry() {
@@ -123,6 +152,9 @@ BlockID BlockRegistry::registerBlock(const std::string& identifier, BlockType ty
 
     const std::optional<BlockModelBounds> visualExtents =
         orientedVisualExtents(type.model);
+    std::optional<BlockModelBounds> combinedExtents = m_modelExtents;
+    includeExtents(combinedExtents, visualExtents);
+    validateTargetCandidateVolume(combinedExtents);
 
     BlockID id{static_cast<uint16_t>(m_types.size())};
 
@@ -130,7 +162,7 @@ BlockID BlockRegistry::registerBlock(const std::string& identifier, BlockType ty
 
     m_types.push_back(std::move(type));
     m_identifierMap[actualId] = id;
-    includeExtents(m_modelExtents, visualExtents);
+    m_modelExtents = combinedExtents;
 
     spdlog::debug("Registered block: {} (ID {})", actualId, id.type);
 

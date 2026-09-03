@@ -192,8 +192,7 @@ std::optional<ModelHit> intersectModel(
 
             const size_t normalAxis = directionAxis(face);
             const double axisDirection = direction[normalAxis];
-            if (std::abs(axisDirection) <=
-                BlockRayIntersectionTolerance) {
+            if (axisDirection == 0.0) {
                 continue;
             }
             const double facing = axisDirection * directionSign(face);
@@ -209,10 +208,10 @@ std::optional<ModelHit> intersectModel(
                 continue;
             }
             if (inside) {
-                if (facing <= BlockRayIntersectionTolerance) {
+                if (facing <= 0.0) {
                     continue;
                 }
-            } else if (facing >= -BlockRayIntersectionTolerance &&
+            } else if (facing >= 0.0 &&
                        std::abs(rawDistance) >
                            BlockRayIntersectionTolerance) {
                 continue;
@@ -289,12 +288,12 @@ void setupAxis(
     int block,
     DdaAxis& axis
 ) {
-    if (direction > BlockRayIntersectionTolerance) {
+    if (direction > 0.0f) {
         axis.step = 1;
         axis.nextBoundaryDistance =
             (static_cast<double>(block) + 1.0 - origin) / direction;
         axis.boundaryInterval = 1.0 / direction;
-    } else if (direction < -BlockRayIntersectionTolerance) {
+    } else if (direction < 0.0f) {
         axis.step = -1;
         axis.nextBoundaryDistance =
             (origin - static_cast<double>(block)) / -direction;

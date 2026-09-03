@@ -103,7 +103,11 @@ public:
     size_t size() const { return m_types.size(); }
     /// @}
 
-    /** Aggregate local bounds of every registered oriented visual model. */
+    /**
+     * Aggregate local bounds of every registered oriented visual model.
+     * Registration keeps the resulting targeting search at no more than 512
+     * possible owning blocks per traversed cell.
+     */
     const std::optional<BlockModelBounds>& modelExtents() const {
         return m_modelExtents;
     }

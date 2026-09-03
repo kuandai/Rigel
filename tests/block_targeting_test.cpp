@@ -140,6 +140,60 @@ TEST_CASE(BlockTargeting_FullCubeTracksNearParallelTangentMotion) {
     CHECK(!declaredFacesHit);
 }
 
+TEST_CASE(BlockTargeting_DeclaredFaceFollowsShallowIncidence) {
+    TargetingFixture fixture;
+    const BlockID shallowFace = fixture.add(model(
+        "invented:shallow_face",
+        {cuboid(
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}},
+            {Direction::NegY})}));
+    fixture.world.setBlock(0, 0, 0, BlockState{shallowFace});
+
+    const float shallowMotion =
+        BlockRayIntersectionTolerance * 0.5f;
+    const auto target = raycastBlock(
+        fixture.world,
+        {-0.5f, -shallowMotion * 0.5f, 0.5f},
+        {1.0f, shallowMotion, 0.0f},
+        1.0f);
+
+    CHECK(target.has_value());
+    CHECK_EQ(target->state.id, shallowFace);
+    CHECK_EQ(target->face, Direction::NegY);
+    CHECK_EQ(target->normal, (glm::ivec3{0, -1, 0}));
+    CHECK_NEAR(target->distance, 0.5f, 0.00001f);
+    checkPosition(target->position, {0.0f, 0.0f, 0.5f});
+}
+
+TEST_CASE(BlockTargeting_DdaAccumulatesEveryNonzeroAxis) {
+    TargetingFixture fixture;
+    const float shallowMotion =
+        BlockRayIntersectionTolerance * 0.5f;
+    const BlockID inset = fixture.add(model(
+        "invented:inset_after_shallow_boundary",
+        {cuboid(
+            {{0.0f, BlockRayIntersectionTolerance * 2.0f, 0.25f},
+             {1.0f, 0.5f, 0.75f}},
+            {Direction::NegX})}));
+    fixture.world.setBlock(4, 1, 0, BlockState{inset});
+
+    const auto target = raycastBlock(
+        fixture.world,
+        {-0.5f, 1.0f - shallowMotion * 0.5f, 0.5f},
+        {1.0f, shallowMotion, 0.0f},
+        5.0f);
+
+    CHECK(target.has_value());
+    CHECK_EQ(target->state.id, inset);
+    CHECK_EQ(target->block, (glm::ivec3{4, 1, 0}));
+    CHECK_EQ(target->face, Direction::NegX);
+    CHECK_NEAR(target->distance, 4.5f, 0.00001f);
+    CHECK_NEAR(
+        target->position.y,
+        1.0f + BlockRayIntersectionTolerance * 2.0f,
+        0.00001f);
+}
+
 TEST_CASE(BlockTargeting_InsideOriginSelectsNearestForwardExit) {
     TargetingFixture fixture;
     const BlockID cube = fixture.addFullCube();

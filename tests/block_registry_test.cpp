@@ -53,3 +53,35 @@ TEST_CASE(BlockRegistry_RejectsUnboundedTargetCandidateVolume) {
     CHECK_EQ(registry.size(), static_cast<size_t>(1));
     CHECK(!registry.modelExtents().has_value());
 }
+
+TEST_CASE(BlockRegistry_AggregatesMeasuredOrientedVisualExtents) {
+    BlockModelCuboid cuboid;
+    cuboid.bounds = {
+        {-0.25f, 0.0f, 0.0f}, {1.25f, 1.0f, 1.0f}};
+    for (auto& modelFace : cuboid.faces) {
+        modelFace = BlockModelFace{.textureSlot = "invented"};
+    }
+    const auto geometry = std::make_shared<const BlockModel>(
+        "invented:oriented_overhang_model",
+        std::vector<std::string>{"invented"},
+        std::vector<BlockModelCuboid>{cuboid});
+
+    BlockRegistry registry;
+    const auto add = [&](const std::string& identifier,
+                         BlockModelOrientation orientation) {
+        BlockType type;
+        type.model = BlockModelInstance(geometry);
+        type.model.orientation = orientation;
+        registry.registerBlock(identifier, std::move(type));
+    };
+    add("invented:x_overhang", BlockModelOrientation::Identity);
+    add("invented:y_overhang", BlockModelOrientation::RotateZ90);
+    add("invented:z_overhang", BlockModelOrientation::RotateY90);
+
+    const auto& extents = registry.modelExtents();
+    CHECK(extents.has_value());
+    for (size_t axis = 0; axis < 3; ++axis) {
+        CHECK_EQ(extents->min[axis], -0.25f);
+        CHECK_EQ(extents->max[axis], 1.25f);
+    }
+}

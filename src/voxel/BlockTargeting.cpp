@@ -27,6 +27,20 @@ struct ModelHit {
     size_t cuboidIndex = 0;
 };
 
+struct OwnerCandidateRange {
+    std::array<int, 3> first{};
+    std::array<int, 3> last{};
+
+    bool contains(const glm::ivec3& owner) const {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            if (owner[axis] < first[axis] || owner[axis] > last[axis]) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
 bool finite(const glm::vec3& value) {
     return std::isfinite(value.x) &&
         std::isfinite(value.y) &&
@@ -301,8 +315,11 @@ void setupAxis(
     }
 }
 
-bool coordinateBlock(float coordinate, int& block) {
-    const double floored = std::floor(static_cast<double>(coordinate));
+bool coordinateBlock(double coordinate, int& block) {
+    if (!std::isfinite(coordinate)) {
+        return false;
+    }
+    const double floored = std::floor(coordinate);
     if (floored < std::numeric_limits<int>::min() ||
         floored > std::numeric_limits<int>::max()) {
         return false;
@@ -335,6 +352,22 @@ bool candidateRange(
     return first <= last;
 }
 
+std::optional<OwnerCandidateRange> ownerCandidateRange(
+    const glm::ivec3& cell,
+    const BlockModelBounds& modelExtents
+) {
+    OwnerCandidateRange result;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (!candidateRange(
+                cell[axis], modelExtents.min[axis],
+                modelExtents.max[axis], result.first[axis],
+                result.last[axis])) {
+            return std::nullopt;
+        }
+    }
+    return result;
+}
+
 bool advanceCell(int& coordinate, const DdaAxis& axis) {
     if ((axis.step > 0 && coordinate == std::numeric_limits<int>::max()) ||
         (axis.step < 0 && coordinate == std::numeric_limits<int>::min())) {
@@ -361,6 +394,19 @@ std::optional<BlockTarget> raycastBlock(
         return std::nullopt;
     }
 
+    // Reject the segment before traversal if any point at its far endpoint
+    // falls outside the integer block-coordinate domain. Because the segment
+    // is linear, representable endpoints also bound every intermediate cell.
+    for (size_t axis = 0; axis < 3; ++axis) {
+        const double endpoint = static_cast<double>(origin[axis]) +
+            static_cast<double>((*normalizedDirection)[axis]) *
+                static_cast<double>(maxDistance);
+        int endpointCell = 0;
+        if (!coordinateBlock(endpoint, endpointCell)) {
+            return std::nullopt;
+        }
+    }
+
     const BlockRegistry& registry = world.blockRegistry();
     const auto& modelExtents = registry.modelExtents();
     if (!modelExtents) {
@@ -382,28 +428,32 @@ std::optional<BlockTarget> raycastBlock(
     }
 
     std::optional<BlockTarget> best;
+    std::optional<OwnerCandidateRange> previousCandidates;
     double cellEntryDistance = 0.0;
     while (cellEntryDistance <=
            static_cast<double>(maxDistance) +
                BlockRayIntersectionTolerance) {
-        std::array<int, 3> first{};
-        std::array<int, 3> last{};
-        bool validRange = true;
-        for (size_t axis = 0; axis < 3; ++axis) {
-            validRange = validRange && candidateRange(
-                cell[axis], modelExtents->min[axis],
-                modelExtents->max[axis], first[axis], last[axis]);
-        }
-
-        if (validRange) {
-            for (int64_t wideX = first[0]; wideX <= last[0]; ++wideX) {
-                for (int64_t wideY = first[1]; wideY <= last[1]; ++wideY) {
-                    for (int64_t wideZ = first[2]; wideZ <= last[2]; ++wideZ) {
+        const auto candidates = ownerCandidateRange(cell, *modelExtents);
+        if (candidates) {
+            for (int64_t wideX = candidates->first[0];
+                 wideX <= candidates->last[0]; ++wideX) {
+                for (int64_t wideY = candidates->first[1];
+                     wideY <= candidates->last[1]; ++wideY) {
+                    for (int64_t wideZ = candidates->first[2];
+                         wideZ <= candidates->last[2]; ++wideZ) {
                         const glm::ivec3 owner{
                             static_cast<int>(wideX),
                             static_cast<int>(wideY),
                             static_cast<int>(wideZ),
                         };
+                        // Candidate boxes translate monotonically with the
+                        // DDA. An owner can therefore enter only once, so a
+                        // single previous box is an allocation-free visited
+                        // set for the complete ray.
+                        if (previousCandidates &&
+                            previousCandidates->contains(owner)) {
+                            continue;
+                        }
                         const BlockState state = world.getBlock(
                             owner.x, owner.y, owner.z);
                         if (state.isAir()) {
@@ -434,12 +484,17 @@ std::optional<BlockTarget> raycastBlock(
                 }
             }
         }
+        previousCandidates = candidates;
 
         double nextDistance = std::numeric_limits<double>::infinity();
         for (const DdaAxis& axis : axes) {
             nextDistance = std::min(
                 nextDistance, axis.nextBoundaryDistance);
         }
+        // Every owner whose model can meet the ray before the next boundary
+        // belongs to the current candidate box and has now been tested. Keep
+        // walking through a boundary-distance tie; otherwise no untested
+        // owner can replace the best hit.
         if (best && nextDistance >
                 static_cast<double>(best->distance) +
                     BlockRayIntersectionTolerance) {

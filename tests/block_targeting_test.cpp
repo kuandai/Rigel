@@ -238,6 +238,23 @@ TEST_CASE(BlockTargeting_BoundaryOriginsHaveDeterministicSurfaceHits) {
     }
 }
 
+TEST_CASE(BlockTargeting_EdgeTiesAcrossNegativeOwnersAreStable) {
+    TargetingFixture fixture;
+    const BlockID cube = fixture.addFullCube();
+    fixture.world.setBlock(-1, 0, -1, BlockState{cube});
+    fixture.world.setBlock(0, -1, -1, BlockState{cube});
+
+    const auto target = raycastBlock(
+        fixture.world, {0.5f, 0.5f, -0.5f}, {-1.0f, -1.0f, 0.0f}, 2.0f);
+
+    CHECK(target.has_value());
+    CHECK_EQ(target->block, (glm::ivec3{-1, 0, -1}));
+    CHECK_EQ(target->face, Direction::PosX);
+    CHECK_EQ(target->normal, (glm::ivec3{1, 0, 0}));
+    CHECK_NEAR(target->distance, 0.70710677f, 0.00001f);
+    checkPosition(target->position, {0.0f, 0.0f, -0.5f});
+}
+
 TEST_CASE(BlockTargeting_IntersectsSlabsPostsAndStairs) {
     TargetingFixture fixture;
     const BlockID slab = fixture.add(model(
@@ -284,6 +301,38 @@ TEST_CASE(BlockTargeting_IntersectsSlabsPostsAndStairs) {
     CHECK_EQ(upperStep->state.id, stairs);
     CHECK_EQ(upperStep->cuboidIndex, static_cast<size_t>(1));
     CHECK_NEAR(upperStep->position.y, 1.0f, 0.00001f);
+}
+
+TEST_CASE(BlockTargeting_OccupiedEmptySpaceReachesBackgroundSurface) {
+    TargetingFixture fixture;
+    const BlockID slab = fixture.add(model(
+        "invented:pass_through_slab",
+        {cuboid({{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}})}));
+    const BlockID gap = fixture.add(model(
+        "invented:pass_through_gap",
+        {
+            cuboid({{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.25f}}),
+            cuboid({{0.0f, 0.0f, 0.75f}, {1.0f, 1.0f, 1.0f}}),
+        }));
+    const BlockID background = fixture.addFullCube();
+    fixture.world.setBlock(0, 0, 0, BlockState{slab});
+    fixture.world.setBlock(2, 0, 0, BlockState{background});
+    fixture.world.setBlock(5, 0, 0, BlockState{gap});
+    fixture.world.setBlock(7, 0, 0, BlockState{background});
+
+    const auto throughSlab = raycastBlock(
+        fixture.world, {-1.0f, 0.75f, 0.5f}, {1.0f, 0.0f, 0.0f}, 4.0f);
+    CHECK(throughSlab.has_value());
+    CHECK_EQ(throughSlab->state.id, background);
+    CHECK_EQ(throughSlab->block, (glm::ivec3{2, 0, 0}));
+    CHECK_NEAR(throughSlab->distance, 3.0f, 0.00001f);
+
+    const auto throughGap = raycastBlock(
+        fixture.world, {4.0f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, 4.0f);
+    CHECK(throughGap.has_value());
+    CHECK_EQ(throughGap->state.id, background);
+    CHECK_EQ(throughGap->block, (glm::ivec3{7, 0, 0}));
+    CHECK_NEAR(throughGap->distance, 3.0f, 0.00001f);
 }
 
 TEST_CASE(BlockTargeting_MultiCuboidSelectionIsNearestThenIndexStable) {
@@ -479,6 +528,66 @@ TEST_CASE(BlockTargeting_DdaFindsOverhangingOwnerAndGlobalNearestSurface) {
     CHECK_EQ(extents->max[0], 1.0f);
 }
 
+TEST_CASE(BlockTargeting_DdaWaitsForLaterOwnerBeforeStopping) {
+    TargetingFixture fixture;
+    const BlockID fartherKnownHit = fixture.add(model(
+        "invented:known_farther_surface",
+        {cuboid({{0.9f, 0.25f, 0.25f},
+                 {1.0f, 0.75f, 0.75f}})}));
+    const BlockID laterOwner = fixture.add(model(
+        "invented:later_owner_protrusion",
+        {cuboid({{-0.25f, 0.25f, 0.25f},
+                 {0.25f, 0.75f, 0.75f}})}));
+    fixture.world.setBlock(1, 0, 0, BlockState{fartherKnownHit});
+    fixture.world.setBlock(2, 0, 0, BlockState{laterOwner});
+
+    const auto target = raycastBlock(
+        fixture.world, {0.1f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, 3.0f);
+
+    CHECK(target.has_value());
+    CHECK_EQ(target->state.id, laterOwner);
+    CHECK_EQ(target->block, (glm::ivec3{2, 0, 0}));
+    CHECK_EQ(target->face, Direction::NegX);
+    CHECK_NEAR(target->distance, 1.65f, 0.00001f);
+    CHECK_NEAR(target->position.x, 1.75f, 0.00001f);
+}
+
+TEST_CASE(BlockTargeting_FindsMeasuredForwardAndLateralOverhangs) {
+    TargetingFixture fixture;
+    const BlockID pistonLike = fixture.add(model(
+        "invented:piston_like_overhang",
+        {cuboid({{0.75f, 0.25f, 0.25f},
+                 {1.25f, 0.75f, 0.75f}})}));
+    const BlockID torchLike = fixture.add(
+        model(
+            "invented:wall_torch_scale_overhang",
+            {cuboid({{-0.00625f, 0.25f, 0.25f},
+                     {0.125f, 0.75f, 0.75f}})}),
+        BlockModelOrientation::Identity,
+        BlockCollisionShape::empty());
+    const BlockID background = fixture.addFullCube();
+    fixture.world.setBlock(0, 0, 4, BlockState{pistonLike});
+    fixture.world.setBlock(1, 0, -2, BlockState{torchLike});
+    fixture.world.setBlock(0, 0, -3, BlockState{background});
+
+    const auto pistonTarget = raycastBlock(
+        fixture.world, {2.0f, 0.5f, 4.5f}, {-1.0f, 0.0f, 0.0f}, 2.0f);
+    CHECK(pistonTarget.has_value());
+    CHECK_EQ(pistonTarget->state.id, pistonLike);
+    CHECK_EQ(pistonTarget->block, (glm::ivec3{0, 0, 4}));
+    CHECK_EQ(pistonTarget->face, Direction::PosX);
+    CHECK_NEAR(pistonTarget->distance, 0.75f, 0.00001f);
+
+    const auto torchTarget = raycastBlock(
+        fixture.world, {0.995f, 0.5f, 0.5f},
+        {0.0f, 0.0f, -1.0f}, 4.0f);
+    CHECK(torchTarget.has_value());
+    CHECK_EQ(torchTarget->state.id, torchLike);
+    CHECK_EQ(torchTarget->block, (glm::ivec3{1, 0, -2}));
+    CHECK_EQ(torchTarget->face, Direction::PosZ);
+    CHECK_NEAR(torchTarget->distance, 1.75f, 0.00001f);
+}
+
 TEST_CASE(BlockTargeting_VisibleCollisionNoneModelWinsBeforeSolidBlock) {
     TargetingFixture fixture;
     const BlockID visible = fixture.add(
@@ -525,6 +634,9 @@ TEST_CASE(BlockTargeting_RejectsInvalidAndOutOfRangeRays) {
         fixture.world,
         {static_cast<float>(std::numeric_limits<int>::max()), 0.5f, 0.5f},
         {-1.0f, 0.0f, 0.0f}, 8.0f));
+    CHECK(!raycastBlock(
+        fixture.world, {0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f},
+        std::numeric_limits<float>::max()));
     CHECK(!raycastBlock(
         fixture.world, {0.5f, 0.5f, 0.5f}, {0.0f, 0.0f, -1.0f}, 2.4f));
 

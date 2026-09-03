@@ -665,6 +665,12 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
     CHECK_EQ(report.skipped, static_cast<size_t>(1));
     CHECK_EQ(preparedRegistry.size(), static_cast<size_t>(2021));
     CHECK_EQ(preparedAtlas.textureCount(), static_cast<size_t>(276));
+    const auto& visualExtents = preparedRegistry.modelExtents();
+    CHECK(visualExtents.has_value());
+    for (size_t axis = 0; axis < 3; ++axis) {
+        CHECK_EQ(visualExtents->min[axis], -0.25f);
+        CHECK_EQ(visualExtents->max[axis], 1.25f);
+    }
 
     struct CollisionCensus {
         size_t empty = 0;

@@ -169,8 +169,11 @@ struct FrameRenderer::Impl {
 
         glGenTextures(1, &taa.sceneDepth);
         glBindTexture(GL_TEXTURE_2D, taa.sceneDepth);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0,
-                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        // The application requests a 24-bit default depth buffer. Matching
+        // that format keeps the post-resolve depth blit valid so stable
+        // overlays can remain conventionally depth-tested.
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
+                     GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -190,8 +193,8 @@ struct FrameRenderer::Impl {
         glGenTextures(2, taa.historyDepth.data());
         for (GLuint& texture : taa.historyDepth) {
             glBindTexture(GL_TEXTURE_2D, texture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0,
-                         GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
+                         GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

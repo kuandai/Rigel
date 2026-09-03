@@ -633,6 +633,7 @@ TEST_CASE(DebugOverlay_FrameTargetUsesStableProjectionAcrossTaaModes) {
     const GLint viewProjectionLocation =
         lineShader->uniform("u_viewProjection");
     CHECK(viewProjectionLocation >= 0);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
 
     for (const bool taaEnabled : {false, true}) {
         RenderProfile profile = view.renderProfile();

@@ -219,6 +219,43 @@ TEST_CASE(BlockTargeting_InsideOriginSelectsNearestForwardExit) {
         0.7f));
 }
 
+TEST_CASE(BlockTargeting_DeclaredModelInsideOriginRequiresForwardExitFace) {
+    const BlockModelBounds bounds{
+        {0.1f, 0.2f, 0.3f}, {0.8f, 0.9f, 0.7f}};
+
+    TargetingFixture closedFixture;
+    const BlockID closed = closedFixture.add(model(
+        "invented:inside_declared_faces",
+        {cuboid(bounds, {Direction::NegX, Direction::PosX})}));
+    closedFixture.world.setBlock(0, 0, 0, BlockState{closed});
+
+    const auto exit = raycastBlock(
+        closedFixture.world,
+        {0.4f, 0.5f, 0.5f},
+        {1.0f, 0.0f, 0.0f},
+        1.0f);
+    CHECK(exit.has_value());
+    if (!exit) {
+        return;
+    }
+    CHECK_EQ(exit->state.id, closed);
+    CHECK_EQ(exit->face, Direction::PosX);
+    CHECK_EQ(exit->normal, (glm::ivec3{1, 0, 0}));
+    CHECK_NEAR(exit->distance, 0.4f, 0.00001f);
+    checkPosition(exit->position, {0.8f, 0.5f, 0.5f});
+
+    TargetingFixture openFixture;
+    const BlockID open = openFixture.add(model(
+        "invented:inside_without_forward_exit",
+        {cuboid(bounds, {Direction::NegX})}));
+    openFixture.world.setBlock(0, 0, 0, BlockState{open});
+    CHECK(!raycastBlock(
+        openFixture.world,
+        {0.4f, 0.5f, 0.5f},
+        {1.0f, 0.0f, 0.0f},
+        1.0f));
+}
+
 TEST_CASE(BlockTargeting_BoundaryOriginsHaveDeterministicSurfaceHits) {
     TargetingFixture fixture;
     const BlockID cube = fixture.addFullCube();

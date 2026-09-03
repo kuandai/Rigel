@@ -8,6 +8,28 @@
 
 using namespace Rigel::Voxel;
 
+namespace {
+
+BlockType modelType(
+    const std::string& identifier,
+    const BlockModelBounds& bounds
+) {
+    BlockModelCuboid cuboid;
+    cuboid.bounds = bounds;
+    cuboid.faces[static_cast<size_t>(Direction::PosX)] =
+        BlockModelFace{.textureSlot = "invented"};
+
+    BlockType type;
+    type.identifier = identifier;
+    type.model = std::make_shared<const BlockModel>(
+        identifier + "_model",
+        std::vector<std::string>{"invented"},
+        std::vector<BlockModelCuboid>{cuboid});
+    return type;
+}
+
+} // namespace
+
 TEST_CASE(BlockRegistry_RegisterAndLookup) {
     BlockRegistry registry;
     CHECK_EQ(registry.size(), static_cast<size_t>(1));
@@ -52,6 +74,62 @@ TEST_CASE(BlockRegistry_RejectsUnboundedTargetCandidateVolume) {
     CHECK_THROWS(registry.registerBlock(extreme.identifier, extreme));
     CHECK_EQ(registry.size(), static_cast<size_t>(1));
     CHECK(!registry.modelExtents().has_value());
+}
+
+TEST_CASE(BlockRegistry_EnforcesTargetCandidateLimitAndBatchRollback) {
+    BlockRegistry boundary;
+    const std::string atLimit = "invented:target_limit_512";
+    boundary.registerBlock(
+        atLimit,
+        modelType(atLimit, {{0.0f, 0.0f, 0.0f}, {5.0f, 5.0f, 5.0f}}));
+    CHECK_EQ(boundary.size(), static_cast<size_t>(2));
+    CHECK(boundary.hasIdentifier(atLimit));
+    CHECK(boundary.modelExtents().has_value());
+    if (!boundary.modelExtents()) {
+        return;
+    }
+    for (size_t axis = 0; axis < 3; ++axis) {
+        CHECK_EQ(boundary.modelExtents()->min[axis], 0.0f);
+        CHECK_EQ(boundary.modelExtents()->max[axis], 5.0f);
+    }
+
+    const std::string aboveLimit = "invented:target_limit_513_plus";
+    CHECK_THROWS(boundary.registerBlock(
+        aboveLimit,
+        modelType(
+            aboveLimit,
+            {{0.0f, 0.0f, 0.0f}, {6.0f, 5.0f, 5.0f}})));
+    CHECK_EQ(boundary.size(), static_cast<size_t>(2));
+    CHECK(!boundary.hasIdentifier(aboveLimit));
+    CHECK(boundary.modelExtents().has_value());
+    if (!boundary.modelExtents()) {
+        return;
+    }
+    for (size_t axis = 0; axis < 3; ++axis) {
+        CHECK_EQ(boundary.modelExtents()->min[axis], 0.0f);
+        CHECK_EQ(boundary.modelExtents()->max[axis], 5.0f);
+    }
+
+    BlockRegistry batch;
+    const std::string negative = "invented:batch_negative_extent";
+    const std::string positive = "invented:batch_positive_extent";
+    std::vector<std::pair<std::string, BlockType>> additions;
+    additions.emplace_back(
+        negative,
+        modelType(
+            negative,
+            {{-2.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}));
+    additions.emplace_back(
+        positive,
+        modelType(
+            positive,
+            {{0.0f, 0.0f, 0.0f}, {4.0f, 5.0f, 5.0f}}));
+
+    CHECK_THROWS(batch.registerBlocks(std::move(additions)));
+    CHECK_EQ(batch.size(), static_cast<size_t>(1));
+    CHECK(!batch.hasIdentifier(negative));
+    CHECK(!batch.hasIdentifier(positive));
+    CHECK(!batch.modelExtents().has_value());
 }
 
 TEST_CASE(BlockRegistry_AggregatesMeasuredOrientedVisualExtents) {

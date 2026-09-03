@@ -1124,6 +1124,116 @@ TEST_CASE(GeneratedAssets_QueryAndCollideWithNormalizedShapes) {
 #endif
 }
 
+TEST_CASE(GeneratedAssets_TargetRepresentativeModelSurfaces) {
+#ifndef RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS
+    SKIP_TEST("representative targeting expectations target Cosmic Reach 0.6.1");
+#else
+    Rigel::Asset::AssetManager assets;
+    assets.loadManifest("manifest.yaml");
+
+    WorldResources resources;
+    BlockModelRegistry models;
+    TextureAtlas atlas;
+    const BlockLoadReport report = BlockLoader{}.loadFromManifest(
+        assets, models, resources.registry(), atlas);
+    CHECK_EQ(report.failed, static_cast<size_t>(0));
+    CHECK_EQ(report.loaded, static_cast<size_t>(2020));
+    CHECK_EQ(resources.registry().size(), static_cast<size_t>(2021));
+    resources.registry().freeze();
+
+    struct ExactTargetCase {
+        std::string_view identifier;
+        glm::ivec3 owner;
+        glm::vec3 origin;
+        glm::vec3 direction;
+        float distance;
+        glm::vec3 position;
+        glm::ivec3 normal;
+        Direction face;
+        size_t cuboidIndex;
+    };
+    const std::array cases = {
+        ExactTargetCase{
+            SlabId,
+            {0, 0, 0}, {0.5f, 1.5f, 0.5f}, {0.0f, -1.0f, 0.0f},
+            1.0f, {0.5f, 0.5f, 0.5f}, {0, 1, 0},
+            Direction::PosY, 0},
+        ExactTargetCase{
+            StairId,
+            {4, 0, 0}, {4.25f, 1.5f, 0.5f}, {0.0f, -1.0f, 0.0f},
+            1.0f, {4.25f, 0.5f, 0.5f}, {0, 1, 0},
+            Direction::PosY, 3},
+        ExactTargetCase{
+            MultiCuboidId,
+            {8, 0, 0}, {7.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f},
+            0.9375f, {8.4375f, 0.5f, 0.5f}, {-1, 0, 0},
+            Direction::NegX, 5},
+        ExactTargetCase{
+            LadderId,
+            {12, 0, 0}, {11.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f},
+            1.49375f, {12.99375f, 0.5f, 0.5f}, {-1, 0, 0},
+            Direction::NegX, 0},
+        ExactTargetCase{
+            HandrailId,
+            {16, 0, 0}, {15.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f},
+            1.49375f, {16.99375f, 0.5f, 0.5f}, {-1, 0, 0},
+            Direction::NegX, 0},
+        ExactTargetCase{
+            DoorId,
+            {20, 0, 0}, {20.5f, 0.5f, 1.5f}, {0.0f, 0.0f, -1.0f},
+            0.5f, {20.5f, 0.5f, 1.0f}, {0, 0, 1},
+            Direction::PosZ, 0},
+        ExactTargetCase{
+            MachineMultiCuboidId,
+            {24, 0, 0}, {23.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f},
+            0.5625f, {24.0625f, 0.5f, 0.5f}, {-1, 0, 0},
+            Direction::NegX, 1},
+        ExactTargetCase{
+            AlphaCutoutId,
+            {28, 0, 0}, {27.5f, 0.5f, 0.25f}, {1.0f, 0.0f, 0.0f},
+            1.0f, {28.5f, 0.5f, 0.25f}, {-1, 0, 0},
+            Direction::NegX, 0},
+        ExactTargetCase{
+            PistonHeadId,
+            {32, 0, 0}, {31.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f},
+            0.25f, {31.75f, 0.5f, 0.5f}, {-1, 0, 0},
+            Direction::NegX, 1},
+    };
+
+    World world(resources);
+    for (const ExactTargetCase& testCase : cases) {
+        const BlockState state{
+            requireBlockId(resources.registry(), testCase.identifier)};
+        world.setBlock(
+            testCase.owner.x, testCase.owner.y, testCase.owner.z, state);
+    }
+
+    for (const ExactTargetCase& testCase : cases) {
+        const auto target = raycastBlock(
+            world, testCase.origin, testCase.direction, 2.0f);
+        CHECK(target);
+        CHECK_EQ(target->block, testCase.owner);
+        CHECK_EQ(
+            target->state,
+            (BlockState{
+                requireBlockId(resources.registry(), testCase.identifier)}));
+        CHECK_EQ(target->normal, testCase.normal);
+        CHECK_EQ(target->face, testCase.face);
+        CHECK_EQ(target->cuboidIndex, testCase.cuboidIndex);
+        CHECK_NEAR(target->distance, testCase.distance, 0.00001f);
+        CHECK_NEAR(target->position.x, testCase.position.x, 0.00001f);
+        CHECK_NEAR(target->position.y, testCase.position.y, 0.00001f);
+        CHECK_NEAR(target->position.z, testCase.position.z, 0.00001f);
+    }
+
+    CHECK(requireBlock(resources.registry(), AlphaCutoutId).collision.isEmpty());
+    const auto& extents = resources.registry().modelExtents();
+    CHECK(extents);
+    CHECK_EQ(extents->min, (std::array{-0.25f, -0.25f, -0.25f}));
+    CHECK_EQ(extents->max, (std::array{1.25f, 1.25f, 1.25f}));
+#endif
+}
+
 TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
 #ifndef RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS
     SKIP_TEST("representative model expectations target Cosmic Reach 0.6.1");

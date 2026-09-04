@@ -95,11 +95,6 @@ AabbEdgeVertices makeAabbEdgeVertices(
     const glm::vec3& translation = glm::vec3{0.0f},
     float expansion = 0.0f);
 
-/** Compatibility overload for callers that already hold separate bounds. */
-AabbEdgeVertices makeAabbEdgeVertices(
-    const glm::vec3& minimum,
-    const glm::vec3& maximum);
-
 /**
  * Build tightly packed GL_LINES vertices for any number of world-space boxes.
  * Translation and non-negative expansion are applied to every input box.

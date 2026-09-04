@@ -200,13 +200,6 @@ AabbEdgeVertices makeAabbEdgeVertices(
     return vertices;
 }
 
-AabbEdgeVertices makeAabbEdgeVertices(
-    const glm::vec3& minimum,
-    const glm::vec3& maximum
-) {
-    return makeAabbEdgeVertices(Entity::Aabb{minimum, maximum});
-}
-
 std::vector<glm::vec3> buildAabbEdgeLinePresentation(
     std::span<const Entity::Aabb> boxes,
     const glm::vec3& translation,

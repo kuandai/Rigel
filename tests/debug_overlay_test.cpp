@@ -386,7 +386,7 @@ TEST_CASE(DebugOverlay_AabbEdgesContainTwelveUniqueNonDiagonalEdges) {
     const glm::vec3 minimum{-2.0f, 3.0f, 5.0f};
     const glm::vec3 maximum{7.0f, 11.0f, 13.0f};
     const auto vertices =
-        Rigel::Render::makeAabbEdgeVertices(minimum, maximum);
+        Rigel::Render::makeAabbEdgeVertices({minimum, maximum});
     std::set<std::pair<int, int>> uniqueEdges;
 
     const auto cornerIndex = [&](const glm::vec3& vertex) {

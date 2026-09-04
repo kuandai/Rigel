@@ -582,27 +582,4 @@ std::optional<BlockTarget> detail::raycastBlockWithCounters(
         world, origin, direction, maxDistance, &counters);
 }
 
-std::optional<BlockModelBounds> blockTargetBounds(
-    const BlockRegistry& registry,
-    const BlockTarget& target
-) {
-    if (target.state.id.type >= registry.size()) {
-        return std::nullopt;
-    }
-    const BlockModelInstance& instance =
-        registry.getType(target.state.id).model;
-    if (!instance || target.cuboidIndex >= instance->cuboids().size()) {
-        return std::nullopt;
-    }
-
-    BlockModelBounds bounds = detail::orientedBounds(
-        instance->cuboids()[target.cuboidIndex].bounds,
-        instance.orientation);
-    for (size_t axis = 0; axis < 3; ++axis) {
-        bounds.min[axis] += static_cast<float>(target.block[axis]);
-        bounds.max[axis] += static_cast<float>(target.block[axis]);
-    }
-    return bounds;
-}
-
 } // namespace Rigel::Voxel

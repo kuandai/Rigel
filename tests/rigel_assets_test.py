@@ -25,6 +25,49 @@ import rigel_assets
 from tests import single_cuboid_fixture
 
 
+def descendant_commands(pid: int) -> list[bytes]:
+    children_path = Path(f"/proc/{pid}/task/{pid}/children")
+    if children_path.is_file():
+        try:
+            child_pids = children_path.read_text(encoding="utf-8").split()
+        except FileNotFoundError:
+            return []
+        commands: list[bytes] = []
+        for child_pid in child_pids:
+            try:
+                commands.append(Path(f"/proc/{child_pid}/cmdline").read_bytes())
+            except FileNotFoundError:
+                continue
+            commands.extend(descendant_commands(int(child_pid)))
+        return commands
+
+    try:
+        output = subprocess.check_output(
+            ["ps", "-ax", "-o", "pid=", "-o", "ppid=", "-o", "command="],
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+
+    children_by_parent: dict[str, list[tuple[str, str]]] = {}
+    for line in output.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        child_pid, ppid, command = parts
+        children_by_parent.setdefault(ppid, []).append((child_pid, command))
+
+    commands: list[bytes] = []
+
+    def walk(parent: str) -> None:
+        for child_pid, command in children_by_parent.get(parent, []):
+            commands.append(command.encode())
+            walk(child_pid)
+
+    walk(str(pid))
+    return commands
+
+
 def write_jar(path: Path, entries: dict[str, bytes] | None = None) -> None:
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in (entries or {"base/version.txt": b"test"}).items():
@@ -343,10 +386,14 @@ class ProvisioningTest(unittest.TestCase):
             previous = os.environ.get(rigel_assets.JAR_ENVIRONMENT_VARIABLE)
             os.environ[rigel_assets.JAR_ENVIRONMENT_VARIABLE] = str(environment)
             try:
-                self.assertEqual(rigel_assets.resolve_jar(root)[0], environment)
-                self.assertEqual(rigel_assets.resolve_jar(root, explicit)[0], explicit)
+                self.assertEqual(
+                    rigel_assets.resolve_jar(root)[0], environment.resolve())
+                self.assertEqual(
+                    rigel_assets.resolve_jar(root, explicit)[0],
+                    explicit.resolve())
                 os.environ.pop(rigel_assets.JAR_ENVIRONMENT_VARIABLE)
-                self.assertEqual(rigel_assets.resolve_jar(root)[0], staged)
+                self.assertEqual(
+                    rigel_assets.resolve_jar(root)[0], staged.resolve())
             finally:
                 if previous is None:
                     os.environ.pop(rigel_assets.JAR_ENVIRONMENT_VARIABLE, None)
@@ -1293,7 +1340,9 @@ class ImportFoundationTest(unittest.TestCase):
                     for path in snapshots.iterdir()
                     if path.is_dir() and rigel_assets._is_sha256(path.name)
                 ]
-                self.assertEqual(generations, [snapshot])
+                self.assertEqual(
+                    [path.resolve() for path in generations],
+                    [snapshot.resolve()])
                 self.assertEqual(
                     sum(
                         path.stat().st_size
@@ -1477,21 +1526,8 @@ target_embed_resources(Dummy "${{GENERATED_ROOT}}")
 
                 deadline = time.monotonic() + 10
                 snapshot_reader_waiting = False
-                children_path = Path(
-                    f"/proc/{configure.pid}/task/{configure.pid}/children"
-                )
                 while time.monotonic() < deadline and configure.poll() is None:
-                    try:
-                        child_pids = children_path.read_text(
-                            encoding="utf-8"
-                        ).split()
-                    except FileNotFoundError:
-                        child_pids = []
-                    for child_pid in child_pids:
-                        try:
-                            command = Path(f"/proc/{child_pid}/cmdline").read_bytes()
-                        except FileNotFoundError:
-                            continue
+                    for command in descendant_commands(configure.pid):
                         if b"rigel_assets.py" in command and b"snapshot" in command:
                             snapshot_reader_waiting = True
                             break

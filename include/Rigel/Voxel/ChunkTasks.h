@@ -89,7 +89,7 @@ public:
     // protected by the pool mutex. This deliberately cannot run user code.
     class SubmissionCommitAccounting {
     public:
-        SubmissionCommitAccounting() noexcept = default;
+        SubmissionCommitAccounting() noexcept {}
 
         explicit SubmissionCommitAccounting(
             std::atomic<uint64_t>& submissions,
@@ -163,10 +163,12 @@ public:
             }
             if (priority == Priority::High) {
                 m_highPriorityJobs.emplace_back(id);
-                m_highPriorityJobs.back().run.swap(job);
+                m_highPriorityJobs.back().run =
+                    std::make_unique<std::function<void()>>(std::move(job));
             } else {
                 m_jobs.emplace_back(id);
-                m_jobs.back().run.swap(job);
+                m_jobs.back().run =
+                    std::make_unique<std::function<void()>>(std::move(job));
             }
             accounting.commit(
                 m_nextSubmissionCommitEntered,
@@ -274,7 +276,10 @@ private:
         }
 
         JobId id = 0;
-        std::function<void()> run;
+        // libc++ std::function::swap can destroy small-object callables.
+        // unique_ptr swap is a pointer exchange, so reentrant destructors
+        // cannot run while the pool mutex is held.
+        std::unique_ptr<std::function<void()>> run;
     };
 
     static_assert(!std::is_move_constructible_v<PendingJob>);
@@ -323,7 +328,7 @@ private:
 
     void workerLoop() {
         for (;;) {
-            std::function<void()> job;
+            std::unique_ptr<std::function<void()>> job;
             {
                 std::unique_lock<std::mutex> lock(m_mutex);
                 m_cv.wait(lock, [this]() {
@@ -341,7 +346,9 @@ private:
                 queue.pop_front();
             }
             try {
-                job();
+                if (job && *job) {
+                    (*job)();
+                }
             } catch (...) {
                 // Typed jobs are responsible for publishing failure results.
                 // Keep an unexpected worker exception from terminating the process.

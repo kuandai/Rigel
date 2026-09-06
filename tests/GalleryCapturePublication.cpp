@@ -15,6 +15,9 @@
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <fcntl.h>
+#include <stdio.h>
 #endif
 
 namespace Rigel::Test {
@@ -156,6 +159,16 @@ std::error_code atomicExchangeDirectories(
             AT_FDCWD,
             second.c_str(),
             RenameExchange) == 0) {
+        return {};
+    }
+    return {errno, std::generic_category()};
+#elif defined(__APPLE__)
+    if (::renameatx_np(
+            AT_FDCWD,
+            first.c_str(),
+            AT_FDCWD,
+            second.c_str(),
+            RENAME_SWAP) == 0) {
         return {};
     }
     return {errno, std::generic_category()};

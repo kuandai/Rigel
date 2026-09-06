@@ -14,9 +14,24 @@ using DecompressFn = int (*)(const char* src, char* dst, int compressedSize, int
 class Lz4Library {
 public:
     Lz4Library() {
-        handle = dlopen("liblz4.so.1", RTLD_LAZY);
-        if (!handle) {
-            handle = dlopen("liblz4.so", RTLD_LAZY);
+#ifdef __APPLE__
+        static constexpr const char* kCandidates[] = {
+            "liblz4.dylib",
+            "liblz4.1.dylib",
+            "/opt/homebrew/lib/liblz4.dylib",
+            "/usr/local/lib/liblz4.dylib",
+        };
+#else
+        static constexpr const char* kCandidates[] = {
+            "liblz4.so.1",
+            "liblz4.so",
+        };
+#endif
+        for (const char* candidate : kCandidates) {
+            handle = dlopen(candidate, RTLD_LAZY);
+            if (handle) {
+                break;
+            }
         }
         if (!handle) {
             return;

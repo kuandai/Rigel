@@ -114,7 +114,17 @@ function(target_embed_resources TARGET_NAME)
     set(REGISTRY_ENTRIES "")
     set(REGISTRY_KEYS "")
     set(EXTERN_DECLS "")
-    set(ASSEMBLY_CONTENT ".section .rodata\n")
+    if(APPLE)
+        # Mach-O C symbols are underscored. .align N is 2^N on Apple as, so
+        # use .p2align for a 16-byte boundary.
+        set(ASSEMBLY_CONTENT ".section __TEXT,__const\n")
+        set(ASM_SYMBOL_PREFIX "_")
+        set(ASM_ALIGN ".p2align 4")
+    else()
+        set(ASSEMBLY_CONTENT ".section .rodata\n")
+        set(ASM_SYMBOL_PREFIX "")
+        set(ASM_ALIGN ".align 16")
+    endif()
     set(RESOURCE_DEPENDENCIES "")
     set(LOGICAL_RESOURCE_PATHS "")
 
@@ -123,10 +133,17 @@ function(target_embed_resources TARGET_NAME)
             message(FATAL_ERROR "Resource root does not exist: ${RESOURCE_DIR}")
         endif()
         file(GLOB_RECURSE ROOT_RESOURCES CONFIGURE_DEPENDS "${RESOURCE_DIR}/*")
+        list(FILTER ROOT_RESOURCES EXCLUDE REGEX "[/\\\\]\\.DS_Store$")
+        list(FILTER ROOT_RESOURCES EXCLUDE REGEX "[/\\\\]\\._")
         list(SORT ROOT_RESOURCES)
 
         foreach(FILE_PATH IN LISTS ROOT_RESOURCES)
             if(IS_DIRECTORY "${FILE_PATH}")
+                continue()
+            endif()
+            get_filename_component(RESOURCE_FILENAME "${FILE_PATH}" NAME)
+            if(RESOURCE_FILENAME STREQUAL ".DS_Store" OR
+               RESOURCE_FILENAME MATCHES "^\\._")
                 continue()
             endif()
             file(RELATIVE_PATH REL_PATH "${RESOURCE_DIR}" "${FILE_PATH}")
@@ -144,16 +161,18 @@ function(target_embed_resources TARGET_NAME)
             set(SYMBOL_NAME "${SAFE_NAME}_${SHORT_HASH}")
             set(SYM_START "_binary_${SYMBOL_NAME}_start")
             set(SYM_END "_binary_${SYMBOL_NAME}_end")
+            set(ASM_START "${ASM_SYMBOL_PREFIX}${SYM_START}")
+            set(ASM_END "${ASM_SYMBOL_PREFIX}${SYM_END}")
 
             string(REPLACE "\\" "\\\\" INC_PATH "${FILE_PATH}")
             string(REPLACE "\"" "\\\"" INC_PATH "${INC_PATH}")
             string(APPEND ASSEMBLY_CONTENT
-                ".global ${SYM_START}\n"
-                ".global ${SYM_END}\n"
-                ".align 16\n"
-                "${SYM_START}:\n"
+                ".globl ${ASM_START}\n"
+                ".globl ${ASM_END}\n"
+                "${ASM_ALIGN}\n"
+                "${ASM_START}:\n"
                 "    .incbin \"${INC_PATH}\"\n"
-                "${SYM_END}:\n")
+                "${ASM_END}:\n")
             string(APPEND REGISTRY_ENTRIES
                 "    { \"${REL_PATH}\", { ${SYM_START}, ${SYM_END} } },\n")
             string(APPEND REGISTRY_KEYS "    \"${REL_PATH}\",\n")

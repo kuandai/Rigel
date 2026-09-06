@@ -5,6 +5,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(RIGEL_BUILD_TESTS "Build Rigel tests" ON)
 
+if(APPLE)
+    # Apple's OpenGL headers are deprecated in favor of Metal. Rigel still
+    # targets the supported 4.1 core profile on macOS.
+    add_compile_definitions(GL_SILENCE_DEPRECATION)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 if(NOT CMAKE_BUILD_TYPE)

@@ -136,8 +136,8 @@ TEST_CASE(GalleryCapturePublication_HandoffFailurePreservesPublishedSet) {
 }
 
 TEST_CASE(GalleryCapturePublication_ReplacementRemainsContinuouslyVisible) {
-#if !defined(__linux__)
-    SKIP_TEST("Atomic gallery capture replacement is validated on Linux");
+#if !defined(__linux__) && !defined(__APPLE__)
+    SKIP_TEST("Atomic gallery capture replacement is validated on Linux and macOS");
 #else
     Rigel::Test::TemporaryDirectory directory(
         "rigel_gallery_capture_visibility");

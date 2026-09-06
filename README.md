@@ -13,24 +13,29 @@ world and provides:
   persistence.
 
 The CMake project is currently versioned `0.0.0`, and debug builds identify
-themselves as a Developer Preview. Linux with GCC is the tested build
-environment; other platforms and Clang are not currently verified. See
+themselves as a Developer Preview. Linux with GCC and macOS with Apple Clang
+are the tested native build environments. See
 [`docs/README.md`](docs/README.md) for the implemented architecture and known
 limitations.
 
 ## Build Instructions
 
-This project uses CMake for the build system and Conan (2.x) for dependency management. Compilation has only been
-tested on Linux.
+This project uses CMake for the build system and Conan (2.x) for dependency management. Native compilation is
+tested on Linux with GCC and on macOS with Apple Clang for the host architecture
+(Apple Silicon `arm64` or Intel `x86_64`). The build follows Conan's detected
+profile and does not produce a universal binary.
 
 ### Prerequisites
 
 Ensure you have the following installed:
 
-* **C++ Compiler** GCC 12.2 supporting C++20. Clang may work, untested
+* **C++ Compiler** GCC 12.2 or Apple Clang, supporting C++20
 * **CMake** Version 3.20+
 * **Conan 2.x** `pip install conan`
-* **OpenGL** Version 4.1 core with GLSL 4.10 support
+* **OpenGL** Version 4.1 core with GLSL 4.10 support. On macOS this is the
+  last supported system OpenGL profile (Metal-backed).
+* **macOS** Xcode Command Line Tools (`xcode-select --install`) and a Cocoa
+  desktop session to run the app or OpenGL tests
 
 ### Interactive Runtime Assets
 
@@ -105,12 +110,12 @@ cmake -S . -B build-release \
   -DCMAKE_TOOLCHAIN_FILE=build-release/conan_toolchain.cmake \
   -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
   -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release --parallel $(nproc) --target Rigel
+cmake --build build-release --parallel "$(getconf _NPROCESSORS_ONLN)" --target Rigel
 ```
 
 To build and run the tests:
 
 ```bash
-cmake --build build-release --parallel $(nproc) --target Rigel_tests
-ctest --test-dir build-release --output-on-failure --parallel $(nproc)
+cmake --build build-release --parallel "$(getconf _NPROCESSORS_ONLN)" --target Rigel_tests
+ctest --test-dir build-release --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
 ```

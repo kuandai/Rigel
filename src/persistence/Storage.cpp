@@ -334,7 +334,11 @@ private:
 class FileByteReader final : public ByteReader {
 public:
     explicit FileByteReader(const std::string& path)
-        : m_path(path), m_stream(path, std::ios::binary), m_size(0) {
+        : m_path(path), m_size(0) {
+        // libc++ may satisfy later reads from a pre-truncation buffer.
+        // Disable buffering so a shrink is visible as a physical read failure.
+        m_stream.rdbuf()->pubsetbuf(nullptr, 0);
+        m_stream.open(path, std::ios::binary);
         if (!m_stream.is_open()) {
             throw StorageReadError("Failed to open file for reading: " + path);
         }

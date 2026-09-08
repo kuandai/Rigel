@@ -92,8 +92,8 @@ their base and resulting revisions and contain the complete atomic edit projecti
 plus ordered outcomes.
 
 Replica application validates manifest, world, zone, completeness, bounds, stable
-keys, duplicate cells, revision continuity, and monotonic publication ticks before
-swapping visible state.
+keys, duplicate cells, revision continuity, and strictly advancing ticks for newer
+publications before swapping visible state.
 Malformed, missing, future-based, or oversized input requires a fresh baseline.
 A slow replica whose queue fills is marked as needing resnapshot without blocking
 or corrupting other replicas. Each replica applies one aggregate byte cap to its

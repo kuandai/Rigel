@@ -342,7 +342,7 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             if (m_state->hasBaseline && value.revision < m_state->revision) {
                 return fail();
             }
-            if (m_state->hasBaseline && value.tick < m_state->tick) {
+            if (m_state->hasBaseline && value.tick <= m_state->tick) {
                 return fail();
             }
             const auto nextBytes = LoopbackReplica::State::retainedBytes(next);

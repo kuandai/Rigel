@@ -983,7 +983,7 @@ TEST_CASE(LoopbackReplica_rejects_regressing_publication_ticks) {
     const CellAddress address{5, 0, 5};
     const CellBounds interest{address, address};
 
-    {
+    for (const Tick tickRegression : {Tick{0}, Tick{1}}) {
         HostFixture fixture;
         auto connection = fixture.host->connectReplica(interest);
         auto replica = std::move(*connection.replica);
@@ -1009,7 +1009,7 @@ TEST_CASE(LoopbackReplica_rejects_regressing_publication_ticks) {
         CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Duplicate);
 
         duplicate.revision = previousRevision + 1;
-        duplicate.tick = previousTick - 1;
+        duplicate.tick = previousTick - tickRegression;
         duplicate.cells.front().state = {"rigel:water", 0, 0};
         CHECK_EQ(
             replica.accept(std::make_shared<const PublicationMessage>(duplicate)),
@@ -1115,7 +1115,8 @@ TEST_CASE(LoopbackReplica_rejects_oversized_string_payloads_by_bytes) {
 TEST_CASE(SimulationHost_preflights_long_baselines_and_resnapshot_retries) {
     auto makeHost = [](size_t byteLimit) {
         struct Fixture {
-            Voxel::WorldResources resources;
+            std::unique_ptr<Voxel::WorldResources> resources =
+                std::make_unique<Voxel::WorldResources>();
             std::shared_ptr<Voxel::WorldGenerator> generator;
             std::unique_ptr<SimulationHost> host;
             std::string blockKey;
@@ -1125,11 +1126,11 @@ TEST_CASE(SimulationHost_preflights_long_baselines_and_resnapshot_retries) {
         fixture.zone = "rigel:" + std::string(2048, 'z');
         Voxel::BlockType block;
         block.identifier = fixture.blockKey;
-        fixture.resources.registry().registerBlock(
+        fixture.resources->registry().registerBlock(
             fixture.blockKey, std::move(block));
-        fixture.resources.registry().freeze();
+        fixture.resources->registry().freeze();
         fixture.generator = std::make_shared<Voxel::WorldGenerator>(
-            fixture.resources.registry(),
+            fixture.resources->registry(),
             flatDefinition(
                 fixture.blockKey, fixture.blockKey, fixture.blockKey), 17);
         SimulationHostConfig config;
@@ -1142,7 +1143,7 @@ TEST_CASE(SimulationHost_preflights_long_baselines_and_resnapshot_retries) {
         config.maxReplicas = 1;
         config.maxReplicaBytes = byteLimit;
         fixture.host = std::make_unique<SimulationHost>(
-            fixture.resources, fixture.generator, std::move(config));
+            *fixture.resources, fixture.generator, std::move(config));
         return fixture;
     };
 

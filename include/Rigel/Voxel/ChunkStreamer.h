@@ -188,6 +188,10 @@ public:
     void setChunkLoadExecutionStateCallback(
         ChunkLoadExecutionStateCallback executionState);
     void setChunkEvictionCallback(ChunkEvictionCallback evict);
+    /** Restrict this streamer to an exact, already-owned presentation set.
+     * Missing chunks wait for their publication; they are never loaded,
+     * generated, or evicted by the streamer. Must be set before update(). */
+    void setResidentPresentationChunks(std::vector<ChunkCoord> chunks);
     void markSpawnDiscoveryComplete();
     void prioritizeMesh(ChunkCoord coord);
 
@@ -448,6 +452,9 @@ private:
     std::vector<ChunkCoord> m_desired;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_desiredSet;
     std::unordered_map<ChunkCoord, size_t, ChunkCoordHash> m_desiredPriority;
+    std::vector<ChunkCoord> m_residentPresentationChunks;
+    std::unordered_set<ChunkCoord, ChunkCoordHash>
+        m_residentPresentationSet;
     std::array<PendingMeshQueue, 2> m_pendingMeshQueues;
     std::unordered_map<ChunkCoord,
                        PendingMeshRequest,

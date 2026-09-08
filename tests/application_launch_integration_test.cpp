@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <string>
 #include <utility>
 
@@ -43,6 +44,7 @@ struct HeadlessRuntimeState {
     size_t polls = 0;
     size_t closeAfterPolls = 0;
     size_t renderedFrames = 0;
+    std::chrono::milliseconds pollDelay{0};
 };
 
 HeadlessRuntimeState* g_runtime = nullptr;
@@ -111,6 +113,9 @@ int windowShouldClose(GLFWwindow*) {
     return g_runtime->shouldClose ? GLFW_TRUE : GLFW_FALSE;
 }
 void pollEvents() {
+    if (g_runtime->pollDelay.count() > 0) {
+        std::this_thread::sleep_for(g_runtime->pollDelay);
+    }
     ++g_runtime->polls;
     if (g_runtime->closeAfterPolls != 0 &&
         g_runtime->polls >= g_runtime->closeAfterPolls) {
@@ -234,6 +239,15 @@ TEST_CASE(Application_NormalAuthorityRejectsUnknownSaveWithoutMutation) {
     std::filesystem::create_directories(saveRoot);
     const auto markerPath = saveRoot / "unknown-format.bin";
     std::ofstream(markerPath, std::ios::binary) << "preserve me";
+    const auto legacyRegion =
+        saveRoot / "zones/rigel/default/regions/region_0_0_0.cosmicreach";
+    const auto legacyEntities =
+        saveRoot / "zones/rigel/default/entities/entityRegion_0_0_0.crbin";
+    std::filesystem::create_directories(legacyRegion.parent_path());
+    std::filesystem::create_directories(legacyEntities.parent_path());
+    std::ofstream(legacyRegion, std::ios::binary) << "legacy chunks";
+    std::ofstream(legacyEntities, std::ios::binary) << "legacy entities";
+    std::filesystem::create_directory(saveRoot / "authority");
     const std::filesystem::path preferencesPath =
         directory.path() / "config/user-preferences.yaml";
     Rigel::Preferences::UserPreferencesStore(preferencesPath)
@@ -245,7 +259,117 @@ TEST_CASE(Application_NormalAuthorityRejectsUnknownSaveWithoutMutation) {
     std::string contents;
     std::getline(marker, contents);
     CHECK_EQ(contents, std::string("preserve me"));
-    CHECK(!std::filesystem::exists(saveRoot / "authority"));
+    CHECK(std::filesystem::is_directory(saveRoot / "authority"));
+    CHECK_EQ(std::filesystem::file_size(legacyRegion), uintmax_t{13});
+    CHECK_EQ(std::filesystem::file_size(legacyEntities), uintmax_t{15});
+}
+
+TEST_CASE(Application_NormalAuthorityMeshesEditsAndRecoversPublishedReplica) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_normal_authority_presentation");
+    ScopedCurrentDirectory currentDirectory(directory.path());
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+    HeadlessRuntimeState runtime;
+    runtime.videoMode.width = 1280;
+    runtime.videoMode.height = 720;
+    runtime.videoMode.refreshRate = 60;
+    runtime.pollDelay = std::chrono::milliseconds(2);
+    g_runtime = &runtime;
+
+    Rigel::Preferences::UserPreferences preferences;
+    preferences.display.vsync = false;
+    preferences.display.fpsLimit = 120;
+    preferences.graphics.viewDistanceChunks = 8;
+    preferences.graphics.shadows = false;
+    const std::filesystem::path preferencesPath =
+        directory.path() / "config/user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath)
+        .saveRequested(preferences);
+
+    const auto first =
+        Rigel::ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
+            headlessRuntimeApi(), preferencesPath, true);
+    CHECK_EQ(first.authorityChunkCount, size_t{2});
+    CHECK_EQ(first.residentChunkCount, size_t{2});
+    CHECK_EQ(first.readyChunkCount, size_t{2});
+    CHECK(first.drawnChunkCount > 0);
+    CHECK(first.meshJobsStarted >= 2);
+    CHECK(first.meshJobsAccepted >= 2);
+    CHECK_EQ(first.generationJobsStarted, uint64_t{0});
+    CHECK_EQ(first.evictionFailures, size_t{0});
+    CHECK(first.targetSelected);
+    CHECK(first.editSubmitted);
+    CHECK(first.editApplied);
+    CHECK(first.editedMeshRebuilt);
+    CHECK(first.recoveredEditPresent);
+    CHECK_EQ(first.acceptedEdits, uint64_t{1});
+    CHECK_EQ(first.rejectedEdits, uint64_t{0});
+    CHECK(first.viewDistanceRejected);
+    CHECK(first.modeledEntityPublished);
+    CHECK(first.modeledEntityRemoved);
+    CHECK(first.renderedFrames < 600);
+
+    runtime.shouldClose = false;
+    runtime.polls = 0;
+    const auto reopened =
+        Rigel::ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
+            headlessRuntimeApi(), preferencesPath, false, first.editedCell);
+    g_runtime = nullptr;
+    CHECK(reopened.checkpointRecovered);
+    CHECK(reopened.recoveredEditPresent);
+    CHECK_EQ(reopened.authorityChunkCount, size_t{2});
+    CHECK_EQ(reopened.residentChunkCount, size_t{2});
+    CHECK_EQ(reopened.readyChunkCount, size_t{2});
+    CHECK(reopened.drawnChunkCount > 0);
+    CHECK_EQ(reopened.generationJobsStarted, uint64_t{0});
+    CHECK_EQ(reopened.evictionFailures, size_t{0});
+    CHECK(reopened.viewDistanceRejected);
+    CHECK(reopened.modeledEntityPublished);
+    CHECK(reopened.modeledEntityRemoved);
+    CHECK(reopened.renderedFrames < 600);
+}
+
+TEST_CASE(Application_NormalAuthorityRejectsLegacyDataBesideValidCheckpoint) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_normal_authority_mixed_valid_save");
+    ScopedCurrentDirectory currentDirectory(directory.path());
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+    HeadlessRuntimeState runtime;
+    runtime.videoMode.width = 1280;
+    runtime.videoMode.height = 720;
+    runtime.videoMode.refreshRate = 60;
+    const std::filesystem::path preferencesPath =
+        directory.path() / "config/user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath)
+        .saveRequested({});
+    runNormalApplication(runtime, preferencesPath);
+
+    const auto saveRoot = directory.path() / "saves/world_0";
+    const auto current = saveRoot / "authority/current";
+    std::ifstream currentInput(current, std::ios::binary);
+    const std::string currentBefore{
+        std::istreambuf_iterator<char>(currentInput),
+        std::istreambuf_iterator<char>()};
+    const auto legacyRegion =
+        saveRoot / "zones/rigel/default/regions/region_0_0_0.cosmicreach";
+    const auto legacyEntities =
+        saveRoot / "zones/rigel/default/entities/entityRegion_0_0_0.crbin";
+    std::filesystem::create_directories(legacyRegion.parent_path());
+    std::filesystem::create_directories(legacyEntities.parent_path());
+    std::ofstream(legacyRegion, std::ios::binary) << "legacy chunks";
+    std::ofstream(legacyEntities, std::ios::binary) << "legacy entities";
+
+    CHECK_THROWS(runNormalApplication(runtime, preferencesPath));
+    g_runtime = nullptr;
+    std::ifstream currentAfterInput(current, std::ios::binary);
+    const std::string currentAfter{
+        std::istreambuf_iterator<char>(currentAfterInput),
+        std::istreambuf_iterator<char>()};
+    CHECK_EQ(currentAfter, currentBefore);
+    CHECK_EQ(std::filesystem::file_size(legacyRegion), uintmax_t{13});
+    CHECK_EQ(std::filesystem::file_size(legacyEntities), uintmax_t{15});
 }
 
 TEST_CASE(Application_BlockGalleryLaunchUsesProductionLifecycle) {

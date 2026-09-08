@@ -239,9 +239,12 @@ horizontal chunk and the chunk immediately below it. It is deliberately not gene
 streaming authority. `WorldView` receives a separately allocated replica `World`;
 the host's mutable world is never passed to input or rendering. A loopback baseline
 populates the replica before readiness, and only revision-continuous change batches
-alter it afterward. Changed chunks drive mesh priority. Fixed streaming attention
-stays on the pinned center, so camera motion cannot generate, load, evict, or claim
-authority over terrain outside the initial coverage.
+alter it afterward. Each published chunk carries the saved generator semantics
+version into the replica. `WorldView` meshes an exact resident-presentation set of
+the two authority chunks; missing members wait for publication and the streamer
+cannot load, generate, or evict them. Changed chunks drive mesh priority. Camera
+motion and View Distance preference changes therefore cannot claim terrain outside
+the initial coverage; a live View Distance change is rejected for this mode.
 
 Input captures remove/place press edges against the replica's shape-aware target.
 The graphical client converts compact block IDs to semantic states, records the
@@ -250,6 +253,14 @@ nothing immediately. The host re-raycasts exact coverage at a fixed tick. Outcom
 and cell changes return in that tick's immutable publication. Holding a key cannot
 submit another command because edge capture occurs once per presentation frame,
 even when the host performs multiple catch-up ticks.
+
+The graphical client tracks every accepted command until its terminal outcome. If
+the host's bounded receipt table is full and no old-session command remains pending,
+the client starts the host's next monotonic session and retries that same intent
+once with command id one. Capacity reached while an outcome is pending is returned
+as a typed deferred replacement instead of clearing deduplication state or silently
+disabling later edits. Other observer, replica, and host refusals are likewise
+reported as typed submission results and counted.
 
 The replica also replaces its entity set from each coherent publication. It alone
 loads cosmetic model assets; entity removal drops the replica entity before the

@@ -168,6 +168,12 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     const int previousUnloadDistance = std::max(
         previousViewDistance, m_config.unloadDistanceChunks);
     m_config = config;
+    if (!m_residentPresentationChunks.empty() &&
+        m_config.maxResidentChunks != 0 &&
+        m_residentPresentationChunks.size() > m_config.maxResidentChunks) {
+        throw std::invalid_argument(
+            "resident presentation exceeds the configured chunk capacity");
+    }
     if (m_viewDistancePolicy) {
         m_config.viewDistanceChunks =
             m_viewDistancePolicy->desiredRadiusChunks();
@@ -385,6 +391,34 @@ void ChunkStreamer::setConfig(const StreamingConfig& config) {
     m_nextPendingMeshSequence = 1;
     ensureThreadPool();
     refreshDiagnostics(false);
+}
+
+void ChunkStreamer::setResidentPresentationChunks(
+    std::vector<ChunkCoord> chunks) {
+    if (m_initialStreamingBegun) {
+        throw std::logic_error(
+            "resident presentation chunks must be fixed before streaming");
+    }
+    if (chunks.empty()) {
+        throw std::invalid_argument(
+            "resident presentation requires at least one chunk");
+    }
+    std::sort(chunks.begin(), chunks.end());
+    if (std::adjacent_find(chunks.begin(), chunks.end()) != chunks.end()) {
+        throw std::invalid_argument(
+            "resident presentation chunks must be unique");
+    }
+    if (m_config.maxResidentChunks != 0 &&
+        chunks.size() > m_config.maxResidentChunks) {
+        throw std::invalid_argument(
+            "resident presentation exceeds the configured chunk capacity");
+    }
+    m_residentPresentationChunks = std::move(chunks);
+    m_residentPresentationSet.clear();
+    m_residentPresentationSet.reserve(m_residentPresentationChunks.size());
+    for (const ChunkCoord coord : m_residentPresentationChunks) {
+        m_residentPresentationSet.insert(coord);
+    }
 }
 
 ChunkStreamer::ViewDistancePolicyState ChunkStreamer::applyViewDistancePolicy(
@@ -1067,10 +1101,13 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     int viewRadiusSq = viewDistance * viewDistance;
     int unloadRadiusSq = unloadDistance * unloadDistance;
 
+    const bool residentPresentation =
+        !m_residentPresentationChunks.empty();
     const bool demandShapeChanged = !m_lastCenter ||
-        *m_lastCenter != center ||
-        m_lastViewDistance != viewDistance ||
-        m_lastUnloadDistance != unloadDistance;
+        (!residentPresentation &&
+         (*m_lastCenter != center ||
+          m_lastViewDistance != viewDistance ||
+          m_lastUnloadDistance != unloadDistance));
     const bool generatorRequestedRebuild = m_desiredSetRebuildPending;
     bool rebuildDesired = demandShapeChanged || generatorRequestedRebuild;
     bool cacheEvictionNeeded = demandShapeChanged;
@@ -1101,45 +1138,55 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
         m_loadGenQueue.clear();
         m_loadGenQueued.clear();
 
-        const int minWorldChunkY = worldToChunk(
-            0, m_generator->definition().bounds.minY, 0).y;
-        const int maxWorldChunkY = worldToChunk(
-            0, m_generator->definition().bounds.maxY, 0).y;
-        const int64_t requestedMinChunkY =
-            static_cast<int64_t>(center.y) - viewDistance;
-        const int64_t requestedMaxChunkY =
-            static_cast<int64_t>(center.y) + viewDistance;
-        const int64_t firstChunkY = std::max<int64_t>(
-            requestedMinChunkY, minWorldChunkY);
-        const int64_t lastChunkY = std::min<int64_t>(
-            requestedMaxChunkY, maxWorldChunkY);
-        const size_t diameter = static_cast<size_t>(viewDistance * 2 + 1);
-        const size_t clippedLayerCount = firstChunkY <= lastChunkY
-            ? static_cast<size_t>(lastChunkY - firstChunkY + 1)
-            : 0;
-        desiredBuildCoordinatesSkippedByWorldBounds =
-            static_cast<uint64_t>(
-                diameter * diameter * (diameter - clippedLayerCount));
-
         std::vector<ChunkImportance> desired;
-        desired.reserve(diameter * diameter * clippedLayerCount);
+        if (residentPresentation) {
+            desired.reserve(m_residentPresentationChunks.size());
+            for (const ChunkCoord coord : m_residentPresentationChunks) {
+                ++desiredBuildCoordinatesInspected;
+                desired.push_back(chunkImportance(center, coord));
+            }
+        } else {
+            const int minWorldChunkY = worldToChunk(
+                0, m_generator->definition().bounds.minY, 0).y;
+            const int maxWorldChunkY = worldToChunk(
+                0, m_generator->definition().bounds.maxY, 0).y;
+            const int64_t requestedMinChunkY =
+                static_cast<int64_t>(center.y) - viewDistance;
+            const int64_t requestedMaxChunkY =
+                static_cast<int64_t>(center.y) + viewDistance;
+            const int64_t firstChunkY = std::max<int64_t>(
+                requestedMinChunkY, minWorldChunkY);
+            const int64_t lastChunkY = std::min<int64_t>(
+                requestedMaxChunkY, maxWorldChunkY);
+            const size_t diameter =
+                static_cast<size_t>(viewDistance * 2 + 1);
+            const size_t clippedLayerCount = firstChunkY <= lastChunkY
+                ? static_cast<size_t>(lastChunkY - firstChunkY + 1)
+                : 0;
+            desiredBuildCoordinatesSkippedByWorldBounds =
+                static_cast<uint64_t>(
+                    diameter * diameter *
+                    (diameter - clippedLayerCount));
+            desired.reserve(diameter * diameter * clippedLayerCount);
 
-        for (int dz = -viewDistance; dz <= viewDistance; ++dz) {
-            for (int64_t chunkY = firstChunkY;
-                 chunkY <= lastChunkY; ++chunkY) {
-                for (int dx = -viewDistance; dx <= viewDistance; ++dx) {
-                    ++desiredBuildCoordinatesInspected;
-                    ChunkCoord coord{
-                        center.x + dx,
-                        static_cast<int32_t>(chunkY),
-                        center.z + dz};
-                    const ChunkImportance importance =
-                        chunkImportance(center, coord);
-                    if (importance.distanceSquared >
-                        static_cast<uint64_t>(viewRadiusSq)) {
-                        continue;
+            for (int dz = -viewDistance; dz <= viewDistance; ++dz) {
+                for (int64_t chunkY = firstChunkY;
+                     chunkY <= lastChunkY; ++chunkY) {
+                    for (int dx = -viewDistance;
+                         dx <= viewDistance; ++dx) {
+                        ++desiredBuildCoordinatesInspected;
+                        ChunkCoord coord{
+                            center.x + dx,
+                            static_cast<int32_t>(chunkY),
+                            center.z + dz};
+                        const ChunkImportance importance =
+                            chunkImportance(center, coord);
+                        if (importance.distanceSquared >
+                            static_cast<uint64_t>(viewRadiusSq)) {
+                            continue;
+                        }
+                        desired.push_back(importance);
                     }
-                    desired.push_back(importance);
                 }
             }
         }
@@ -1514,6 +1561,11 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
                 continue;
             }
 
+            if (residentPresentation) {
+                m_states.erase(coord);
+                continue;
+            }
+
             queuePendingGeneration(coord);
             ++queued;
         }
@@ -1522,7 +1574,7 @@ void ChunkStreamer::update(const glm::vec3& cameraPos) {
     dispatchPendingGenerations(schedulerCoordinatesInspected);
     dispatchPendingMeshes(schedulerCoordinatesInspected);
 
-    if (rebuildDesired && demandShapeChanged &&
+    if (!residentPresentation && rebuildDesired && demandShapeChanged &&
         !boundedResidentReconciliation) {
         PROFILE_SCOPE("Streaming/Update/Evict");
         std::vector<ChunkCoord> toEvict;
@@ -2846,6 +2898,10 @@ void ChunkStreamer::queueLoadedNeighbors(ChunkCoord coord) {
 }
 
 bool ChunkStreamer::hasDirectStreamingDemand(ChunkCoord coord) const {
+    if (!m_residentPresentationChunks.empty()) {
+        return m_residentPresentationSet.find(coord) !=
+            m_residentPresentationSet.end();
+    }
     if (!chunkIntersectsWorldBounds(coord) ||
         m_desiredSet.find(coord) == m_desiredSet.end()) {
         return false;
@@ -2866,6 +2922,12 @@ bool ChunkStreamer::chunkIntersectsWorldBounds(ChunkCoord coord) const {
 }
 
 std::optional<size_t> ChunkStreamer::dirtyMeshPriority(ChunkCoord coord) const {
+    if (!m_residentPresentationChunks.empty()) {
+        auto priority = m_desiredPriority.find(coord);
+        return priority == m_desiredPriority.end()
+            ? std::nullopt
+            : std::optional<size_t>{priority->second};
+    }
     if (!chunkIntersectsWorldBounds(coord)) {
         return std::nullopt;
     }

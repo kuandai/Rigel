@@ -20238,3 +20238,56 @@ TEST_CASE(ChunkStreamer_SettledWorld_RegeneratesAfterVersionChange) {
     CHECK_EQ(changed.meshJobsStarted, meshJobsStarted);
     CHECK_EQ(changed.lastUpdateSchedulerCoordinatesInspected, static_cast<uint64_t>(0));
 }
+
+TEST_CASE(ChunkStreamer_ResidentPresentationMeshesOnlyPublishedChunks) {
+    ChunkManager manager;
+    BlockRegistry registry;
+    WorldMeshStore meshStore;
+    auto generator = makeGenerator(registry);
+    const BlockID stone = registry.findByIdentifier("rigel:stone").value();
+    const std::vector<ChunkCoord> published{{0, 0, 0}, {0, 1, 0}};
+    for (const ChunkCoord coord : published) {
+        Chunk& chunk = manager.getOrCreateChunk(coord);
+        chunk.setWorldGenVersion(generator->semanticsVersion());
+        chunk.setBlock(0, 0, 0, BlockState{stone}, registry);
+    }
+
+    ChunkStreamer streamer(
+        manager, meshStore, registry, nullptr, generator);
+    StreamingConfig stream;
+    stream.viewDistanceChunks = 0;
+    stream.unloadDistanceChunks = 1;
+    stream.workerThreads = 0;
+    stream.maxResidentChunks = published.size();
+    streamer.setConfig(stream);
+    streamer.setResidentPresentationChunks(published);
+    streamer.markSpawnDiscoveryComplete();
+
+    for (int update = 0; update < 6; ++update) {
+        streamer.update(glm::vec3{0.0f});
+        streamer.processCompletions();
+    }
+
+    CHECK_EQ(
+        Rigel::Voxel::detail::ChunkStreamerTestAccess::desiredCoordinates(
+            streamer).size(),
+        published.size());
+    for (const ChunkCoord coord : published) {
+        CHECK(Rigel::Voxel::detail::ChunkStreamerTestAccess::desiredContains(
+            streamer, coord));
+        CHECK(meshStore.contains(coord));
+    }
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted, uint64_t{0});
+    CHECK_EQ(streamer.diagnostics().eviction.pending, size_t{0});
+    CHECK_EQ(manager.loadedChunkCount(), published.size());
+
+    const auto beforeMove = streamer.workMetrics();
+    streamer.update(glm::vec3{4096.0f, -4096.0f, 2048.0f});
+    streamer.processCompletions();
+    CHECK_EQ(streamer.workMetrics().generationJobsStarted,
+             beforeMove.generationJobsStarted);
+    CHECK_EQ(streamer.workMetrics().desiredBuildCoordinatesInspected,
+             beforeMove.desiredBuildCoordinatesInspected);
+    CHECK_EQ(manager.loadedChunkCount(), published.size());
+    CHECK(!manager.getChunk({1, 0, 0}));
+}

@@ -76,6 +76,7 @@ public:
     void setChunkLoadExecutionStateCallback(
         ChunkStreamer::ChunkLoadExecutionStateCallback executionState);
     void setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback evict);
+    void setResidentPresentationChunks(std::vector<ChunkCoord> chunks);
     void setStreamConfig(const StreamingConfig& config);
     void setBenchmark(ChunkBenchmarkStats* stats);
     void setVisibilityTracer(std::shared_ptr<ChunkVisibilityTracer> tracer);

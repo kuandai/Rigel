@@ -5,8 +5,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace Rigel {
@@ -105,6 +107,30 @@ struct ApplicationBlockGalleryLifecycleState {
     uint64_t renderedFrames = 0;
 };
 
+struct ApplicationNormalAuthorityLifecycleState {
+    size_t authorityChunkCount = 0;
+    size_t residentChunkCount = 0;
+    size_t readyChunkCount = 0;
+    size_t drawnChunkCount = 0;
+    uint64_t generationJobsStarted = 0;
+    uint64_t meshJobsStarted = 0;
+    uint64_t meshJobsAccepted = 0;
+    size_t evictionFailures = 0;
+    uint64_t renderedFrames = 0;
+    uint64_t acceptedEdits = 0;
+    uint64_t rejectedEdits = 0;
+    std::array<int, 3> editedCell{};
+    bool targetSelected = false;
+    bool editSubmitted = false;
+    bool editApplied = false;
+    bool editedMeshRebuilt = false;
+    bool checkpointRecovered = false;
+    bool recoveredEditPresent = false;
+    bool viewDistanceRejected = false;
+    bool modeledEntityPublished = false;
+    bool modeledEntityRemoved = false;
+};
+
 class ApplicationTestAccess {
 public:
     static void construct(ApplicationConstructionHooks hooks);
@@ -131,6 +157,12 @@ public:
         const char* const* argv,
         GlfwRuntime::Api runtimeApi,
         std::filesystem::path userPreferencesPath);
+    static ApplicationNormalAuthorityLifecycleState
+    runNormalAuthorityLaunchLifecycle(
+        GlfwRuntime::Api runtimeApi,
+        std::filesystem::path userPreferencesPath,
+        bool submitEdit,
+        std::optional<std::array<int, 3>> expectedRemovedCell = std::nullopt);
     static std::optional<PreferenceApplyResult>
     consumeViewDistanceOwnerForTesting(
         ApplicationPreferences& preferences,
@@ -142,6 +174,8 @@ public:
     static void observeBlockGalleryLaunchInitialized(
         Application& application);
     static void observeBlockGalleryLaunchFrame(
+        Application& application);
+    static void observeNormalAuthorityLaunchFrame(
         Application& application);
 };
 

@@ -92,7 +92,11 @@ Shutdown persists world state and releases resources.
      `SimulationHost` over two pinned generated chunks. It creates a separate
      replica `World`, connects an in-process loopback baseline, and gives only
      that replica to `WorldView`. Unknown or incompatible save roots are
-     rejected without rewriting them.
+     rejected without rewriting them. An existing authority root may contain
+     only its checkpoint directory, generator/settings/backend identity files,
+     and the checkpoint lease file. Legacy regions, entity records, players, or
+     any other sibling entry make the root mixed and reject startup even when
+     the checkpoint itself is valid.
    - In block-gallery mode `WorldGenerator` is attached to the existing
      presentation world and the view keeps the prior read-only path.
 8. Establish mode-specific entities.
@@ -104,8 +108,9 @@ Shutdown persists world state and releases resources.
 9. In gallery mode, create the async chunk loader and wire it into `WorldView`.
    Normal bounded mode has no disk-loader or generation path after bootstrap.
 10. Install streaming policy and prepare the requested shadow state. The gallery
-    uses automatic streaming. Normal mode fixes a zero-radius view on the pinned
-    authority center; camera motion cannot admit new terrain.
+    uses automatic streaming. Normal mode installs the exact two published chunks
+    as its resident presentation set; camera motion and View Distance changes
+    cannot admit new terrain.
 11. Snap the camera to the first air block, populate the normal replica baseline,
     mark spawn discovery complete, and initialize `FrameRenderer`.
 
@@ -130,8 +135,9 @@ Per frame:
    loopback client installs each coherent publication into the independent
    replica and prioritizes meshes for changed chunks. The gallery directly
    ticks its presentation-only entities with clamped frame time.
-6. Update chunk streaming. Normal mode keeps attention on the pinned authority
-   center; the gallery performs its existing load/generation decisions.
+6. Update chunk streaming. Normal mode schedules meshes only for its exact resident
+   authority publications; the gallery performs its existing load/generation
+   decisions.
 7. Drain and apply completed generation, load, and mesh work.
 8. Read the refreshed streaming lifecycle snapshot and log state transitions.
 9. Submit the active world, camera, viewport, frame time, and already-resolved

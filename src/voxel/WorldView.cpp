@@ -110,6 +110,11 @@ void WorldView::setChunkEvictionCallback(ChunkStreamer::ChunkEvictionCallback ev
     m_streamer.setChunkEvictionCallback(std::move(evict));
 }
 
+void WorldView::setResidentPresentationChunks(
+    std::vector<ChunkCoord> chunks) {
+    m_streamer.setResidentPresentationChunks(std::move(chunks));
+}
+
 void WorldView::setStreamConfig(const StreamingConfig& config) {
     StreamingConfig effective = config;
     if (m_viewDistancePolicy) {

@@ -79,7 +79,7 @@ constexpr std::string_view kBlockGalleryVirtualRoot =
 constexpr float kBlockTargetDistance = 8.0f;
 constexpr std::string_view kAuthorityCheckpointDirectory = "authority";
 
-bool emptyOrAuthoritySave(
+bool emptyOrBoundedAuthoritySave(
     Persistence::StorageBackend& storage,
     const std::string& root
 ) {
@@ -88,17 +88,28 @@ bool emptyOrAuthoritySave(
     if (kind != Persistence::StorageEntryKind::Directory) return false;
     bool empty = true;
     bool authority = false;
+    bool onlyAuthorityMetadata = true;
     storage.forEachEntry(root, [&](const std::string& name) {
         empty = false;
-        if (std::filesystem::path(name).filename() ==
-            kAuthorityCheckpointDirectory) {
+        const std::string leaf =
+            std::filesystem::path(name).filename().string();
+        if (leaf == kAuthorityCheckpointDirectory) {
             authority = storage.entryKind(root + "/" +
                 std::string(kAuthorityCheckpointDirectory)) ==
                 Persistence::StorageEntryKind::Directory;
+        } else if (leaf == "world-settings.yaml" ||
+                   leaf == "generator-definition.yaml" ||
+                   leaf == "worldInfo.json" ||
+                   leaf == "authority.rigel-bootstrap.lock") {
+            onlyAuthorityMetadata = onlyAuthorityMetadata &&
+                storage.entryKind(root + "/" + leaf) ==
+                    Persistence::StorageEntryKind::RegularFile;
+        } else {
+            onlyAuthorityMetadata = false;
         }
-        return true;
+        return onlyAuthorityMetadata;
     });
-    return empty || authority;
+    return empty || (authority && onlyAuthorityMetadata);
 }
 
 void applyInstalledPersistencePolicy(
@@ -250,6 +261,21 @@ struct BlockGalleryLaunchLifecycleProbe {
 
 BlockGalleryLaunchLifecycleProbe* g_blockGalleryLaunchLifecycleProbe = nullptr;
 
+struct NormalAuthorityLaunchLifecycleProbe {
+    ApplicationNormalAuthorityLifecycleState* state = nullptr;
+    bool submitEdit = false;
+    std::optional<std::array<int, 3>> expectedRemovedCell;
+    bool editInputQueued = false;
+    bool editInputReleased = false;
+    bool spawnInputQueued = false;
+    bool spawnInputReleased = false;
+    std::optional<Entity::EntityId> modeledEntity;
+    uint64_t meshAcceptancesBeforeEdit = 0;
+};
+
+NormalAuthorityLaunchLifecycleProbe* g_normalAuthorityLaunchLifecycleProbe =
+    nullptr;
+
 double viewDistanceBoundaryTime() {
     return 0.0;
 }
@@ -319,6 +345,16 @@ void observeViewDistanceBoundary(
     throw ViewDistanceBoundaryObserved{};
 }
 
+void observeNormalAuthorityViewDistance(
+    Application&,
+    const std::optional<PreferenceApplyResult>& result
+) {
+    if (g_normalAuthorityLaunchLifecycleProbe && result) {
+        g_normalAuthorityLaunchLifecycleProbe->state->viewDistanceRejected =
+            result->status == PreferenceApplyStatus::Rejected;
+    }
+}
+
 } // namespace
 
 struct Application::Impl {
@@ -349,6 +385,7 @@ struct Application::Impl {
         std::unique_ptr<Simulation::SimulationHost> authorityHost;
         std::unique_ptr<detail::GraphicalAuthorityClient> authorityClient;
         Simulation::CellBounds authorityBounds;
+        std::vector<Voxel::ChunkCoord> authorityChunks;
         glm::vec3 authorityViewCenter{};
         Entity::EntityId observer;
         Simulation::SessionId session = 0;
@@ -546,7 +583,7 @@ void Application::initialize() {
     const Persistence::PersistenceContext bootstrapPersistenceContext =
         m_impl->world.worldSet.persistenceContext(
             m_impl->world.activeWorldId);
-    if (!blockGallery && !emptyOrAuthoritySave(
+    if (!blockGallery && !emptyOrBoundedAuthoritySave(
             *bootstrapPersistenceContext.storage,
             bootstrapPersistenceContext.rootPath)) {
         throw std::runtime_error(
@@ -798,6 +835,7 @@ void Application::initialize() {
                 {center.x, center.y - 1, center.z},
                 center,
             };
+            m_impl->world.authorityChunks = hostConfig.preloadedChunks;
             hostConfig.maxPreloadedChunks = 2;
             hostConfig.maxSnapshotCells = 2 * Voxel::Chunk::VOLUME;
 
@@ -889,6 +927,8 @@ void Application::initialize() {
             boundedStreaming.unloadDistanceChunks = 1;
             boundedStreaming.maxResidentChunks = 2;
             m_impl->world.worldView->setStreamConfig(boundedStreaming);
+            m_impl->world.worldView->setResidentPresentationChunks(
+                m_impl->world.authorityChunks);
         }
         const PreferenceApplyResult shadowStartup =
             m_impl->preferences->initializeShadows(
@@ -1352,6 +1392,105 @@ ApplicationTestAccess::runBlockGalleryLaunchLifecycle(
     return observed;
 }
 
+ApplicationNormalAuthorityLifecycleState
+ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
+    GlfwRuntime::Api runtimeApi,
+    std::filesystem::path userPreferencesPath,
+    bool submitEdit,
+    std::optional<std::array<int, 3>> expectedRemovedCell
+) {
+    if (g_normalAuthorityLaunchLifecycleProbe) {
+        throw std::logic_error(
+            "A normal authority launch lifecycle exercise is already active");
+    }
+
+    ApplicationNormalAuthorityLifecycleState observed;
+    NormalAuthorityLaunchLifecycleProbe probe{
+        .state = &observed,
+        .submitEdit = submitEdit,
+        .expectedRemovedCell = expectedRemovedCell,
+    };
+    g_normalAuthorityLaunchLifecycleProbe = &probe;
+    ApplicationConstructionHooks hooks;
+    hooks.runtimeApi = runtimeApi;
+    hooks.userPreferencesPath = std::move(userPreferencesPath);
+    hooks.initializeWindowIntegrations = false;
+
+    try {
+        Application application(std::make_unique<Application::Impl>(
+            std::move(hooks)));
+        Application::Impl& impl = *application.m_impl;
+        impl.afterViewDistanceFrameBoundary =
+            &observeNormalAuthorityViewDistance;
+        if (!impl.world.authorityHost || !impl.world.authorityClient ||
+            !impl.world.replicaWorld || !impl.world.worldView) {
+            throw std::runtime_error(
+                "normal authority lifecycle did not initialize");
+        }
+        observed.authorityChunkCount = impl.world.authorityChunks.size();
+        observed.checkpointRecovered =
+            expectedRemovedCell.has_value() &&
+            impl.world.authorityHost->tick() > 0;
+
+        std::optional<Simulation::CellAddress> selected;
+        if (expectedRemovedCell) {
+            selected = Simulation::CellAddress{
+                (*expectedRemovedCell)[0],
+                (*expectedRemovedCell)[1],
+                (*expectedRemovedCell)[2]};
+            observed.editedCell = *expectedRemovedCell;
+        } else {
+            const auto& bounds = impl.world.authorityBounds;
+            for (int x = bounds.min.x; x <= bounds.max.x && !selected; ++x) {
+                for (int z = bounds.min.z; z <= bounds.max.z && !selected; ++z) {
+                    for (int y = bounds.max.y - 1;
+                         y >= bounds.min.y; --y) {
+                        const Simulation::ExactBlockRead cell =
+                            impl.world.authorityHost->read({x, y, z});
+                        const Simulation::ExactBlockRead above =
+                            impl.world.authorityHost->read({x, y + 1, z});
+                        if (cell.status == Simulation::ExactReadStatus::Known &&
+                            above.status == Simulation::ExactReadStatus::Known &&
+                            cell.state.blockKey != "base:air" &&
+                            above.state.blockKey == "base:air") {
+                            selected = Simulation::CellAddress{x, y, z};
+                            observed.editedCell = {x, y, z};
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (!selected) {
+            throw std::runtime_error(
+                "normal authority lifecycle found no editable surface");
+        }
+        impl.camera.position = {
+            static_cast<float>(selected->x) + 0.5f,
+            static_cast<float>(selected->y) + 2.0f,
+            static_cast<float>(selected->z) + 0.5f,
+        };
+        impl.camera.pitch = -89.0f;
+        impl.camera.yaw = 0.0f;
+        impl.camera.forward = {0.0f, -1.0f, 0.0f};
+        impl.camera.target = impl.camera.position + impl.camera.forward;
+        const int requested =
+            application.requestedPreferences().graphics.viewDistanceChunks;
+        application.applyViewDistance(
+            requested == Preferences::kMaximumViewDistanceChunks
+                ? requested - 1
+                : requested + 1);
+
+        application.run();
+        application.close();
+    } catch (...) {
+        g_normalAuthorityLaunchLifecycleProbe = nullptr;
+        throw;
+    }
+    g_normalAuthorityLaunchLifecycleProbe = nullptr;
+    return observed;
+}
+
 void ApplicationTestAccess::observeBlockGalleryLaunchInitialized(
     Application& application
 ) {
@@ -1579,6 +1718,134 @@ void ApplicationTestAccess::observeBlockGalleryLaunchFrame(
     }
 }
 
+void ApplicationTestAccess::observeNormalAuthorityLaunchFrame(
+    Application& application
+) {
+    if (!g_normalAuthorityLaunchLifecycleProbe) return;
+    auto& probe = *g_normalAuthorityLaunchLifecycleProbe;
+    auto& observed = *probe.state;
+    Application::Impl& impl = *application.m_impl;
+    if (!impl.world.authorityHost || !impl.world.authorityClient ||
+        !impl.world.replicaWorld || !impl.world.worldView) {
+        impl.runtime.requestWindowClose();
+        return;
+    }
+
+    ++observed.renderedFrames;
+    observed.residentChunkCount =
+        impl.world.replicaWorld->chunkManager().loadedChunkCount();
+    const auto& work = impl.world.worldView->streamingMetrics();
+    observed.generationJobsStarted = work.generationJobsStarted;
+    observed.meshJobsStarted = work.meshJobsStarted;
+    observed.meshJobsAccepted = work.meshJobsAccepted;
+    observed.evictionFailures =
+        impl.world.worldView->streamingDiagnostics()
+            .eviction.terminalErrors;
+    observed.acceptedEdits =
+        impl.world.authorityClient->submissionStats().accepted;
+    observed.rejectedEdits =
+        impl.world.authorityClient->submissionStats().rejected;
+
+    observed.readyChunkCount = 0;
+    observed.drawnChunkCount = 0;
+    std::vector<Voxel::ChunkStreamer::DebugChunkState> debug;
+    const Voxel::ChunkCoord debugCenter =
+        impl.world.authorityChunks.front();
+    impl.world.worldView->getChunkDebugStates(debug, debugCenter, 1);
+    for (const Voxel::ChunkCoord coord : impl.world.authorityChunks) {
+        const Voxel::Chunk* chunk =
+            impl.world.replicaWorld->chunkManager().getChunk(coord);
+        const auto state = std::find_if(
+            debug.begin(), debug.end(), [&](const auto& candidate) {
+                return candidate.coord == coord;
+            });
+        if (chunk && state != debug.end() &&
+            (state->pipelineOwner ==
+                 Voxel::ChunkStreamer::DebugPipelineOwner::Complete ||
+             impl.world.worldView->meshStore().contains(coord))) {
+            ++observed.readyChunkCount;
+        }
+        if (state != debug.end() &&
+            state->drawEvidence ==
+                Voxel::ChunkStreamer::DebugDrawEvidence::Drawn) {
+            ++observed.drawnChunkCount;
+        }
+    }
+
+    const glm::ivec3 edited{
+        observed.editedCell[0],
+        observed.editedCell[1],
+        observed.editedCell[2]};
+    observed.recoveredEditPresent =
+        impl.world.replicaWorld->getBlock(edited.x, edited.y, edited.z).isAir();
+
+    if (!probe.spawnInputQueued && observed.readyChunkCount ==
+            observed.authorityChunkCount) {
+        impl.input.handleKeyEvent(GLFW_KEY_F2, GLFW_PRESS);
+        probe.spawnInputQueued = true;
+    } else if (probe.spawnInputQueued && !probe.spawnInputReleased) {
+        impl.input.handleKeyEvent(GLFW_KEY_F2, GLFW_RELEASE);
+        probe.spawnInputReleased = true;
+    }
+
+    impl.world.replicaWorld->entities().forEach(
+        [&](const Entity::Entity& entity) {
+            if (!entity.modelIdentifier().empty()) {
+                observed.modeledEntityPublished = true;
+                if (!probe.modeledEntity) probe.modeledEntity = entity.id();
+            }
+        });
+    if (probe.modeledEntity &&
+        impl.world.authorityHost->world().entities().get(*probe.modeledEntity)) {
+        impl.world.authorityHost->despawnEntity(*probe.modeledEntity);
+    } else if (probe.modeledEntity &&
+               !impl.world.replicaWorld->entities().get(*probe.modeledEntity)) {
+        observed.modeledEntityRemoved = true;
+    }
+
+    if (probe.submitEdit && !probe.editInputQueued &&
+        observed.readyChunkCount == observed.authorityChunkCount &&
+        observed.drawnChunkCount > 0 && impl.world.blockTarget &&
+        impl.world.blockTarget->block == edited) {
+        observed.targetSelected = true;
+        probe.meshAcceptancesBeforeEdit = work.meshJobsAccepted;
+        impl.input.handleMouseButtonEvent(
+            GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS);
+        probe.editInputQueued = true;
+    } else if (probe.editInputQueued && !probe.editInputReleased) {
+        impl.input.handleMouseButtonEvent(
+            GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE);
+        probe.editInputReleased = true;
+    }
+
+    for (const auto& outcome : impl.world.authorityClient->outcomes()) {
+        if (outcome.status == Simulation::CommandOutcomeStatus::Applied) {
+            observed.editApplied = true;
+        }
+    }
+    observed.editSubmitted = observed.acceptedEdits > 0;
+    observed.editedMeshRebuilt = observed.editApplied &&
+        work.meshJobsAccepted > probe.meshAcceptancesBeforeEdit;
+
+    const bool streamingReady =
+        observed.authorityChunkCount == 2 &&
+        observed.residentChunkCount == 2 &&
+        observed.readyChunkCount == 2 &&
+        observed.drawnChunkCount > 0 &&
+        observed.generationJobsStarted == 0 &&
+        observed.evictionFailures == 0;
+    const bool editReady = probe.submitEdit
+        ? observed.targetSelected && observed.editSubmitted &&
+            observed.editApplied && observed.recoveredEditPresent &&
+            observed.editedMeshRebuilt
+        : observed.recoveredEditPresent;
+    if ((streamingReady && editReady && observed.viewDistanceRejected &&
+         observed.modeledEntityPublished && observed.modeledEntityRemoved) ||
+        observed.renderedFrames >= 600) {
+        impl.runtime.requestWindowClose();
+    }
+}
+
 std::optional<PreferenceApplyResult>
 ApplicationTestAccess::consumeViewDistanceOwnerForTesting(
     ApplicationPreferences& preferences,
@@ -1798,9 +2065,18 @@ void Application::run() {
                         mutationMode,
                         [&](Input::GameplayBlockEditAction action,
                             const Voxel::BlockTarget& target) {
-                            return m_impl->world.authorityClient &&
+                            if (!m_impl->world.authorityClient) return false;
+                            const auto result =
                                 m_impl->world.authorityClient->submit(
                                     action, target, m_impl->camera);
+                            if (!result.accepted()) {
+                                spdlog::warn(
+                                    "Simulation authority rejected graphical "
+                                    "edit: client_status={} host_status={}",
+                                    static_cast<int>(result.status),
+                                    static_cast<int>(result.hostStatus));
+                            }
+                            return result.accepted();
                         });
                     bool presentationChanged = false;
                     if (m_impl->world.authorityClient) {
@@ -2004,6 +2280,7 @@ void Application::run() {
                 m_impl->renderer.clear(width, height);
             }
             ApplicationTestAccess::observeBlockGalleryLaunchFrame(*this);
+            ApplicationTestAccess::observeNormalAuthorityLaunchFrame(*this);
         }
         Core::Profiler::endFrame();
 

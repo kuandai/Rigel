@@ -11,6 +11,9 @@
 #include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldResources.h"
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -56,6 +59,30 @@ void operator delete(void* pointer) noexcept {
 
 void operator delete(void* pointer, std::size_t) noexcept {
     std::free(pointer);
+}
+
+TEST_CASE(EntitySimulationState_allocation_failure_preserves_existing_state) {
+    for (size_t failure = 0; failure < 16; ++failure) {
+        Rigel::Entity::Entity entity;
+        entity.setPosition({1, 2, 3});
+        entity.addTag("retained");
+        const auto before = entity.simulationState();
+        auto replacement = before;
+        replacement.position = {8, 9, 10};
+        replacement.tags = {std::string(64, 'a'), std::string(64, 'b')};
+        replacement.modelIdentifier = std::string(128, 'm');
+        bool failed = false;
+        failureAllocationSize = 0;
+        allocationsBeforeFailure = failure;
+        failAllocation = true;
+        try {
+            entity.restoreSimulationState(replacement);
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        failAllocation = false;
+        CHECK_EQ(entity.simulationState(), failed ? before : replacement);
+    }
 }
 #endif
 
@@ -573,6 +600,56 @@ TEST_CASE(SimulationHost_recording_rejects_envelope_mismatch_and_event_gap) {
     HostFixture overflow(bounded);
     overflow.start();
     CHECK(!overflow.host->recording().has_value());
+}
+
+TEST_CASE(SimulationHost_rejects_nonfinite_entity_tint_before_admission) {
+    HostFixture fixture;
+    const size_t before = fixture.host->world().entities().size();
+    for (const float invalid : {
+             std::numeric_limits<float>::quiet_NaN(),
+             std::numeric_limits<float>::infinity(),
+             -std::numeric_limits<float>::infinity()}) {
+        for (int component = 0; component < 4; ++component) {
+            auto entity = std::make_unique<Entity::Entity>();
+            glm::vec4 tint(1.0f);
+            tint[component] = invalid;
+            entity->setRenderTint(tint);
+            CHECK(fixture.host->spawnEntity(std::move(entity)).isNull());
+            CHECK_EQ(fixture.host->world().entities().size(), before);
+        }
+    }
+}
+
+TEST_CASE(SimulationHost_checkpoint_capture_rejects_nonfinite_live_state) {
+    HostFixture fixture;
+    auto& world = const_cast<Voxel::World&>(fixture.host->world());
+    world.entities().get(fixture.actor)->setVelocity(
+        {std::numeric_limits<float>::infinity(), 0, 0});
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager manager(storage, "/invalid-state");
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::UnsupportedState);
+    CHECK(!storage->exists("/invalid-state/current"));
+    CHECK(!fixture.host->recording().has_value());
+}
+
+TEST_CASE(SimulationHost_recording_decoder_rejects_nonfinite_entity_scalar) {
+    HostFixture fixture({}, {5.5f, 6.0f, 5.5f}, {123.25f, 0, 0});
+    auto recording = fixture.host->recording();
+    CHECK(recording.has_value());
+    const uint32_t bits = std::bit_cast<uint32_t>(123.25f);
+    const std::array<uint8_t, 4> marker{
+        static_cast<uint8_t>(bits >> 24), static_cast<uint8_t>(bits >> 16),
+        static_cast<uint8_t>(bits >> 8), static_cast<uint8_t>(bits)};
+    auto& bytes = recording->bytes;
+    const auto scalar = std::search(bytes.begin(), bytes.end(), marker.begin(), marker.end());
+    CHECK(scalar != bytes.end());
+    CHECK(std::search(scalar + 4, bytes.end(), marker.begin(), marker.end()) == bytes.end());
+    // The current experimental recording uses big-endian IEEE float scalars.
+    const std::array<uint8_t, 4> infinity{0x7f, 0x80, 0, 0};
+    std::copy(infinity.begin(), infinity.end(), scalar);
+    CHECK_EQ(SimulationHost::resimulate(
+        fixture.resources, fixture.generator, *recording, {17ms}).status,
+        ResimulationStatus::MalformedRecording);
 }
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES

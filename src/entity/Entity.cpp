@@ -301,6 +301,38 @@ void Entity::restoreSimulationState(const EntitySimulationState& state) {
     if (state.typeId != m_typeId) {
         throw std::invalid_argument("entity simulation type mismatch");
     }
+    for (int axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(state.position[axis]) ||
+            !std::isfinite(state.velocity[axis]) ||
+            !std::isfinite(state.acceleration[axis]) ||
+            !std::isfinite(state.viewDirection[axis]) ||
+            !std::isfinite(state.localBounds.min[axis]) ||
+            !std::isfinite(state.localBounds.max[axis]) ||
+            state.localBounds.min[axis] >= state.localBounds.max[axis] ||
+            !std::isfinite(state.position[axis] + state.localBounds.min[axis]) ||
+            !std::isfinite(state.position[axis] + state.localBounds.max[axis])) {
+            throw std::invalid_argument("invalid entity simulation geometry or motion");
+        }
+    }
+    if (!std::isfinite(state.gravityModifier) ||
+        !std::isfinite(state.floorFriction)) {
+        throw std::invalid_argument("non-finite entity simulation rule state");
+    }
+    for (int component = 0; component < 4; ++component) {
+        if (!std::isfinite(state.renderTint[component])) {
+            throw std::invalid_argument("non-finite entity simulation tint");
+        }
+    }
+    for (size_t i = 1; i < state.tags.size(); ++i) {
+        if (state.tags[i - 1] >= state.tags[i]) {
+            throw std::invalid_argument("entity simulation tags are not canonical");
+        }
+    }
+    // Construct all owning payloads before replacing any visible state.
+    EntityTagList tags;
+    for (const auto& tag : state.tags) tags.add(tag);
+    std::string modelIdentifier = state.modelIdentifier;
+
     m_id = state.id;
     m_position = state.position;
     m_velocity = state.velocity;
@@ -313,10 +345,9 @@ void Entity::restoreSimulationState(const EntitySimulationState& state) {
     m_collidedZ = state.collidedZ;
     m_floorFriction = state.floorFriction;
     m_localBounds = state.localBounds;
-    m_tags.clear();
-    for (const auto& tag : state.tags) m_tags.add(tag);
+    m_tags = std::move(tags);
     m_model = {};
-    m_modelIdentifier = state.modelIdentifier;
+    m_modelIdentifier = std::move(modelIdentifier);
     m_renderTint = state.renderTint;
     updateWorldBounds();
 }

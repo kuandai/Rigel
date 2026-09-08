@@ -80,7 +80,12 @@ public:
         u32(static_cast<uint32_t>(value >> 32));
         u32(static_cast<uint32_t>(value));
     }
-    void floating(float value) { u32(std::bit_cast<uint32_t>(value)); }
+    void floating(float value) {
+        if (!std::isfinite(value)) {
+            throw std::invalid_argument("non-finite checkpoint scalar");
+        }
+        u32(std::bit_cast<uint32_t>(value));
+    }
     void string(std::string_view value) {
         if (value.size() > std::numeric_limits<uint32_t>::max()) {
             throw std::length_error("checkpoint string exceeds format limit");
@@ -120,7 +125,13 @@ public:
     }
     int32_t i32() { return static_cast<int32_t>(u32()); }
     uint64_t u64() { return (uint64_t{u32()} << 32) | u32(); }
-    float floating() { return std::bit_cast<float>(u32()); }
+    float floating() {
+        const float value = std::bit_cast<float>(u32());
+        if (!std::isfinite(value)) {
+            throw std::invalid_argument("non-finite checkpoint scalar");
+        }
+        return value;
+    }
     std::string string(size_t limit) {
         const size_t size = u32();
         if (size > limit) throw std::runtime_error("checkpoint string exceeds limit");
@@ -1379,7 +1390,9 @@ Entity::EntityId SimulationHost::spawnEntity(
         !retainedStorageFits ||
         !m_content->supportsEntity(*entity) || !finite(entity->position()) ||
         !finite(entity->velocity()) || !finite(entity->acceleration()) ||
-        !finite(entity->viewDirection())) {
+        !finite(entity->viewDirection()) ||
+        !finite(glm::vec3(entity->renderTint())) ||
+        !std::isfinite(entity->renderTint().w)) {
         return Entity::EntityId::Null();
     }
     prepareRecordingBaseline();

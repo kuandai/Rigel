@@ -310,6 +310,7 @@ if (RIGEL_BUILD_TESTS)
     set(CPU_SEMANTIC_TEST_SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpu_semantic_lifecycle_test.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/content_manifest_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/entity_simulation_state_test.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/simulation_host_test.cpp)
     add_executable(Rigel_cpu_semantic_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp

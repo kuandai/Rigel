@@ -124,6 +124,12 @@ states, or block meaning reject capture or recovery. The current admitted rule h
 no mutable RNG; the checkpoint records that RNG scheme explicitly, while generator
 randomness remains fixed by the generator definition and seed in the manifest.
 
+Restored entity state must have finite motion, rule values, tint and bounds,
+strictly ordered local bounds, finite translated world bounds, matching type
+identity, and sorted unique tags. Validation and owning-payload allocation finish
+before replacing the entity, so malformed input or allocation failure leaves its
+previous state intact.
+
 Each immutable payload binds its generation and parent cut hash. After the payload
 is committed, a small atomic pointer publishes that generation, ancestry, cut,
 payload length, and payload hash. Only a durable pointer advances acknowledged

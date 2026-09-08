@@ -8,6 +8,8 @@ struct Aabb {
     glm::vec3 min{0.0f};
     glm::vec3 max{0.0f};
 
+    bool operator==(const Aabb&) const = default;
+
     glm::vec3 size() const { return max - min; }
 
     bool intersects(const Aabb& other) const {

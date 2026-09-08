@@ -98,7 +98,8 @@ public:
 
     /** Complete built-in state used by authority checkpoints and replay. */
     EntitySimulationState simulationState() const;
-    /** Restore state previously returned by simulationState(). */
+    /** Restore finite state with valid bounds and sorted unique tags.
+     * Validation and allocation complete before existing state is replaced. */
     void restoreSimulationState(const EntitySimulationState& state);
 
 protected:

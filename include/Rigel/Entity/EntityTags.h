@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <algorithm>
 #include <cstddef>
 #include <limits>
 #include <optional>

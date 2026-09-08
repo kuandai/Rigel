@@ -51,6 +51,18 @@ struct HostFixture {
             }
             resources.registry().registerBlock(identifier, std::move(type));
         }
+        Voxel::BlockModelCuboid overhang;
+        overhang.bounds = {{-1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
+        overhang.faces[static_cast<size_t>(Voxel::Direction::PosY)] =
+            Voxel::BlockModelFace{.textureSlot = "surface"};
+        Voxel::BlockType overhanging;
+        overhanging.identifier = "rigel:overhang";
+        overhanging.model = std::make_shared<const Voxel::BlockModel>(
+            "rigel:overhang_model", std::vector<std::string>{"surface"},
+            std::vector<Voxel::BlockModelCuboid>{std::move(overhang)});
+        overhanging.collision = Voxel::BlockCollisionShape::empty();
+        resources.registry().registerBlock(
+            "rigel:overhang", std::move(overhanging));
         resources.registry().freeze();
         generator = std::make_shared<Voxel::WorldGenerator>(
             resources.registry(), flatDefinition(), 17);
@@ -259,6 +271,23 @@ TEST_CASE(SimulationHost_interaction_cannot_cross_unavailable_terrain) {
         fixture.host->submit(command).outcome->status,
         CommandOutcomeStatus::Unavailable);
     CHECK_NE(fixture.host->read(target).state.blockKey, std::string("base:air"));
+}
+
+TEST_CASE(SimulationHost_ignores_unavailable_terrain_behind_a_known_hit) {
+    SimulationHostConfig config;
+    config.domain = {{0, -32, 0}, {31, 8, 31}};
+    config.preloadedChunks = {{0, 0, 0}};
+    config.maxPreloadedChunks = 1;
+    config.maxSnapshotCells = 50'000;
+    HostFixture fixture(config);
+    fixture.start();
+    EditCommand command = fixture.removeCommand(1);
+    command.interaction->maxDistance = 20.0f;
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(
+        fixture.host->submit(command).outcome->status,
+        CommandOutcomeStatus::Applied);
 }
 
 TEST_CASE(SimulationHost_rejects_content_and_shape_invalid_interactions) {

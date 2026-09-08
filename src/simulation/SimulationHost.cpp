@@ -3,6 +3,7 @@
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/Chunk.h"
+#include "Rigel/Voxel/RayAabb.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldResources.h"
@@ -485,19 +486,20 @@ void SimulationHost::runTick() {
         if (outcome.status == CommandOutcomeStatus::Applied && command.interaction) {
             const InteractionIntent& intent = *command.interaction;
             const float directionLength = glm::length(intent.direction);
-            bool exactCoverage = std::isfinite(directionLength) &&
+            bool validRay = std::isfinite(directionLength) &&
                 directionLength > 0.0f && std::isfinite(intent.maxDistance) &&
                 intent.maxDistance >= 0.0f;
-            if (exactCoverage) {
+            std::optional<Voxel::BlockTarget> target;
+            if (validRay) {
                 const glm::vec3 direction = intent.direction / directionLength;
                 const glm::vec3 endpoint =
                     intent.origin + direction * intent.maxDistance;
                 CellBounds coverage;
                 const auto& extents =
                     m_impl->world->blockRegistry().modelExtents();
-                if (!extents) exactCoverage = false;
+                if (!extents) validRay = false;
                 for (size_t axis = 0; axis < 3; ++axis) {
-                    if (!exactCoverage) break;
+                    if (!validRay) break;
                     const double firstCell = std::floor(std::min(
                         static_cast<double>(intent.origin[axis]),
                         static_cast<double>(endpoint[axis])));
@@ -511,31 +513,51 @@ void SimulationHost::runTick() {
                     if (!std::isfinite(low) || !std::isfinite(high) ||
                         low < std::numeric_limits<int>::min() ||
                         high > std::numeric_limits<int>::max()) {
-                        exactCoverage = false;
+                        validRay = false;
                         break;
                     }
                     component(coverage.min, axis) = static_cast<int>(low);
                     component(coverage.max, axis) = static_cast<int>(high);
                 }
-                if (exactCoverage && !boundsWithin(coverage, m_config.domain)) {
-                    outcome.status = CommandOutcomeStatus::OutsideDomain;
-                    exactCoverage = false;
+                if (validRay && !coverage.volume(m_config.maxSnapshotCells)) {
+                    validRay = false;
                 }
-                if (exactCoverage) {
-                    const auto first = Voxel::worldToChunk(
-                        coverage.min.x, coverage.min.y, coverage.min.z);
-                    const auto last = Voxel::worldToChunk(
-                        coverage.max.x, coverage.max.y, coverage.max.z);
-                    for (int64_t z = first.z; exactCoverage && z <= last.z; ++z) {
-                        for (int64_t y = first.y; exactCoverage && y <= last.y; ++y) {
-                            for (int64_t x = first.x; x <= last.x; ++x) {
-                                if (!m_impl->world->chunkManager().hasChunk({
-                                        static_cast<int32_t>(x),
-                                        static_cast<int32_t>(y),
-                                        static_cast<int32_t>(z)})) {
-                                    exactCoverage = false;
+                if (validRay) {
+                    target = Voxel::raycastBlock(
+                        *m_impl->world, intent.origin, intent.direction,
+                        intent.maxDistance);
+                    const float relevantDistance =
+                        target ? target->distance : intent.maxDistance;
+                    for (int64_t x = coverage.min.x;
+                         outcome.status == CommandOutcomeStatus::Applied &&
+                         x <= coverage.max.x; ++x) {
+                        for (int64_t y = coverage.min.y;
+                             outcome.status == CommandOutcomeStatus::Applied &&
+                             y <= coverage.max.y; ++y) {
+                            for (int64_t z = coverage.min.z;
+                                 z <= coverage.max.z; ++z) {
+                                const CellAddress owner{
+                                    static_cast<int>(x), static_cast<int>(y),
+                                    static_cast<int>(z)};
+                                const ExactBlockRead candidate = read(owner);
+                                if (candidate.status == ExactReadStatus::Known) continue;
+                                const glm::vec3 minimum{
+                                    x + (*extents).min[0],
+                                    y + (*extents).min[1],
+                                    z + (*extents).min[2]};
+                                const glm::vec3 maximum{
+                                    x + (*extents).max[0],
+                                    y + (*extents).max[1],
+                                    z + (*extents).max[2]};
+                                if (!Voxel::intersectRayAabb(
+                                        intent.origin, direction, minimum, maximum,
+                                        relevantDistance)) continue;
+                                if (candidate.status == ExactReadStatus::OutsideDomain) {
+                                    outcome.status = CommandOutcomeStatus::OutsideDomain;
+                                } else if (candidate.status == ExactReadStatus::Unavailable) {
                                     outcome.status = CommandOutcomeStatus::Unavailable;
-                                    break;
+                                } else {
+                                    outcome.status = CommandOutcomeStatus::InvalidRequest;
                                 }
                             }
                         }
@@ -545,10 +567,7 @@ void SimulationHost::runTick() {
                 outcome.status = CommandOutcomeStatus::InvalidRequest;
             }
 
-            if (exactCoverage) {
-                const auto target = Voxel::raycastBlock(
-                    *m_impl->world, intent.origin, intent.direction,
-                    intent.maxDistance);
+            if (validRay && outcome.status == CommandOutcomeStatus::Applied) {
                 if (!target || addressOf(target->block) != intent.expectedTarget ||
                     target->face != intent.expectedFace) {
                     outcome.status = CommandOutcomeStatus::TargetMismatch;

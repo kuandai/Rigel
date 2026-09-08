@@ -69,6 +69,7 @@ inline constexpr std::string_view NoEntityPush = "no_entity_push";
 inline constexpr std::string_view NoBuoyancy = "no_buoyancy";
 inline constexpr std::string_view NoSaveInChunks = "no_save_in_chunks";
 inline constexpr std::string_view NoClip = "noclip";
+inline constexpr std::string_view LocalObserver = "local_observer";
 inline constexpr std::string_view Sneaking = "sneaking";
 inline constexpr std::string_view UsingJetpack = "using_jetpack";
 } // namespace EntityTags

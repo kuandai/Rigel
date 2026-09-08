@@ -2619,6 +2619,103 @@ TEST_CASE(LoopbackReplica_rejects_oversized_string_payloads_by_bytes) {
     CHECK(replica.needsResnapshot());
 }
 
+TEST_CASE(LoopbackReplica_resnapshot_carries_complete_entity_presentation) {
+    HostFixture fixture;
+    auto entity = std::make_unique<Entity::Entity>();
+    entity->setPosition({4.5f, 3.0f, 4.5f});
+    const Entity::EntityId entityId =
+        fixture.host->spawnEntity(std::move(entity));
+    CHECK(!entityId.isNull());
+
+    auto connection = fixture.host->connectReplica({{3, -1, 3}, {7, 3, 7}});
+    CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+    auto replica = std::move(*connection.replica);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+    const auto* initial = replica.appliedPublication();
+    CHECK(initial != nullptr);
+    const auto& initialEntities = std::get<WorldBaseline>(*initial).entities;
+    CHECK_EQ(initialEntities.size(), size_t{2});
+    CHECK(std::any_of(
+        initialEntities.begin(), initialEntities.end(),
+        [&](const PublishedEntity& value) {
+            return value.state.id == entityId;
+        }));
+
+    WorldChangeBatch wrongBase{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = "base:default",
+        .baseRevision = 20,
+        .revision = 21,
+        .tick = 1,
+    };
+    CHECK_EQ(
+        replica.accept(std::make_shared<const PublicationMessage>(wrongBase)),
+        ReplicaAcceptStatus::Queued);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::NeedsResnapshot);
+    CHECK_EQ(
+        fixture.host->resnapshot(replica),
+        ReplicaConnectStatus::Connected);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+    const auto* restored = replica.appliedPublication();
+    CHECK(restored != nullptr);
+    const auto& restoredEntities = std::get<WorldBaseline>(*restored).entities;
+    CHECK_EQ(restoredEntities.size(), size_t{2});
+    CHECK(std::any_of(
+        restoredEntities.begin(), restoredEntities.end(),
+        [&](const PublishedEntity& value) {
+            return value.state.id == entityId;
+        }));
+}
+
+TEST_CASE(LoopbackReplica_copies_and_validates_entity_presentation_payloads) {
+    HostFixture fixture;
+    auto connection = fixture.host->connectReplica({{3, -1, 3}, {7, 3, 7}});
+    CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+
+    WorldChangeBatch batch{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = "base:default",
+        .baseRevision = replica.revision(),
+        .revision = replica.revision() + 1,
+        .tick = replica.tick() + 1,
+    };
+    batch.entities.push_back({
+        fixture.host->world().entities().get(fixture.actor)->simulationState()});
+    const glm::vec3 admittedPosition = batch.entities.front().state.position;
+    auto aliased = std::make_shared<PublicationMessage>(std::move(batch));
+    CHECK_EQ(replica.accept(aliased), ReplicaAcceptStatus::Queued);
+    std::get<WorldChangeBatch>(*aliased).entities.front().state.position.x =
+        std::numeric_limits<float>::quiet_NaN();
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+    const auto* applied = replica.appliedPublication();
+    CHECK(applied != nullptr);
+    CHECK_EQ(
+        std::get<WorldChangeBatch>(*applied).entities.front().state.position,
+        admittedPosition);
+
+    WorldChangeBatch unsupported{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = "base:default",
+        .baseRevision = replica.revision(),
+        .revision = replica.revision() + 1,
+        .tick = replica.tick() + 1,
+    };
+    auto unsupportedState =
+        fixture.host->world().entities().get(fixture.actor)->simulationState();
+    unsupportedState.modelIdentifier = "entity_models/not_in_manifest";
+    unsupported.entities.push_back({std::move(unsupportedState)});
+    CHECK_EQ(
+        replica.accept(std::make_shared<const PublicationMessage>(
+            std::move(unsupported))),
+        ReplicaAcceptStatus::RejectedOversized);
+    CHECK(replica.needsResnapshot());
+}
+
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES
 TEST_CASE(SimulationHost_preflights_aggregate_dictionary_storage_without_replicas) {
     Voxel::WorldResources resources;

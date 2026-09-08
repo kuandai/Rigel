@@ -3,6 +3,7 @@
 #include "ContentManifest.h"
 
 #include <Rigel/Entity/EntityId.h>
+#include <Rigel/Entity/Entity.h>
 #include <Rigel/Voxel/Block.h>
 #include <Rigel/Voxel/BlockTargeting.h>
 #include <Rigel/Voxel/ChunkCoord.h>
@@ -82,6 +83,19 @@ public:
 
 private:
     explicit AuthorityEditCapability(std::weak_ptr<const uint8_t> owner)
+        : m_owner(std::move(owner)) {}
+
+    std::weak_ptr<const uint8_t> m_owner;
+    friend class SimulationHost;
+};
+
+/** Host-bound permission for the existing trusted local free-fly observer. */
+class LocalObserverCapability final {
+public:
+    LocalObserverCapability(const LocalObserverCapability&) = default;
+
+private:
+    explicit LocalObserverCapability(std::weak_ptr<const uint8_t> owner)
         : m_owner(std::move(owner)) {}
 
     std::weak_ptr<const uint8_t> m_owner;
@@ -169,6 +183,12 @@ struct PublishedCell {
     bool operator==(const PublishedCell&) const = default;
 };
 
+struct PublishedEntity {
+    Entity::EntitySimulationState state;
+
+    bool operator==(const PublishedEntity&) const = default;
+};
+
 struct WorldBaseline {
     ContentManifestId content;
     Voxel::WorldId world = Voxel::kDefaultWorldId;
@@ -178,6 +198,7 @@ struct WorldBaseline {
     Revision revision = 0;
     bool complete = true;
     std::vector<PublishedCell> cells;
+    std::vector<PublishedEntity> entities;
 };
 
 struct WorldChangeBatch {
@@ -189,6 +210,7 @@ struct WorldChangeBatch {
     Tick tick = 0;
     bool complete = true;
     std::vector<PublishedCell> changes;
+    std::vector<PublishedEntity> entities;
     std::vector<CommandOutcome> outcomes;
 };
 
@@ -218,6 +240,9 @@ public:
     ReplicaPumpStatus pumpOne();
     ExactBlockRead read(CellAddress address) const;
     std::optional<CommandOutcome> takeOutcome();
+    /** Immutable message accepted by the most recent successful pump. The
+     * pointer remains valid until the next pump or resnapshot operation. */
+    const PublicationMessage* appliedPublication() const;
 
     bool needsResnapshot() const;
     Revision revision() const;
@@ -239,6 +264,14 @@ enum class SessionStartStatus {
     Busy,
     ContentMismatch,
     ActorUnavailable,
+};
+
+enum class ObserverPoseStatus {
+    Applied,
+    InvalidCapability,
+    ActorUnavailable,
+    UnsupportedActor,
+    InvalidPosition,
 };
 
 enum class ReplicaConnectStatus {
@@ -336,6 +369,17 @@ public:
     AuthorityEditCapability authorityEditCapability() const {
         return AuthorityEditCapability(m_authorityEditKey);
     }
+    LocalObserverCapability localObserverCapability() const {
+        return LocalObserverCapability(m_authorityEditKey);
+    }
+    /** Admit a trusted local developer-camera pose between ticks. The
+     * admission is part of recordings and is visible to later commands and
+     * the next checkpoint cut. It is not a general movement proposal. */
+    ObserverPoseStatus admitLocalObserverPose(
+        Entity::EntityId actor,
+        const glm::vec3& position,
+        const LocalObserverCapability& capability);
+    SessionId nextSessionId() const;
     SubmitResult submit(EditCommand command);
     SubmitResult submit(
         EditCommand command,

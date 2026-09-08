@@ -361,6 +361,35 @@ std::optional<size_t> entityStateRetainedBytes(
     return total;
 }
 
+bool validPublishedEntity(
+    const ContentDictionary& content,
+    const Entity::EntitySimulationState& state,
+    size_t tagLimit,
+    size_t stringLimit
+) {
+    if (state.id.isNull() || !content.supportsEntityState(state) ||
+        state.tags.size() > tagLimit || state.typeId.size() > stringLimit ||
+        state.modelIdentifier.size() > stringLimit ||
+        !finite(state.position) || !finite(state.velocity) ||
+        !finite(state.acceleration) || !finite(state.viewDirection) ||
+        !finite(state.localBounds.min) || !finite(state.localBounds.max) ||
+        !finite(glm::vec3(state.renderTint)) ||
+        !std::isfinite(state.renderTint.w) ||
+        !std::isfinite(state.gravityModifier) ||
+        !std::isfinite(state.floorFriction)) {
+        return false;
+    }
+    size_t tagBytes = 0;
+    for (size_t index = 0; index < state.tags.size(); ++index) {
+        if (state.tags[index].size() > stringLimit - tagBytes ||
+            (index && state.tags[index - 1] >= state.tags[index])) {
+            return false;
+        }
+        tagBytes += state.tags[index].size();
+    }
+    return tagBytes <= stringLimit;
+}
+
 Voxel::BlockCollisionBox translated(
     const Voxel::BlockCollisionBox& box,
     CellAddress address
@@ -403,12 +432,17 @@ struct LoopbackReplica::State {
     size_t queueLimit = 0;
     size_t cellLimit = 0;
     size_t changeLimit = 0;
+    size_t entityLimit = 0;
+    size_t entityTagLimit = 0;
+    size_t entityStringLimit = 0;
     size_t byteLimit = 0;
     size_t queueBytes = 0;
     size_t cellBytes = 0;
+    size_t appliedBytes = 0;
     std::vector<std::shared_ptr<const PublicationMessage>> queue;
     std::vector<PublishedCell> cells;
     std::vector<CommandOutcome> outcomes;
+    std::shared_ptr<const PublicationMessage> appliedPublication;
     Revision revision = 0;
     Tick tick = 0;
     bool hasBaseline = false;
@@ -501,6 +535,14 @@ struct LoopbackReplica::State {
             }();
             const auto cellBytes = retainedBytes(cells);
             if (!cellBytes || !addBytes(total, *cellBytes)) return false;
+            if (!addElements(
+                    total, value.entities.capacity(), sizeof(PublishedEntity))) {
+                return false;
+            }
+            for (const auto& entity : value.entities) {
+                const auto bytes = entityStateRetainedBytes(entity.state);
+                if (!bytes || !addBytes(total, *bytes)) return false;
+            }
             if constexpr (std::is_same_v<T, WorldChangeBatch>) {
                 if (!addElements(
                         total, value.outcomes.capacity(), sizeof(CommandOutcome))) {
@@ -522,6 +564,8 @@ struct LoopbackReplica::State {
         clearQueue();
         std::vector<PublishedCell>().swap(cells);
         std::vector<CommandOutcome>().swap(outcomes);
+        appliedPublication.reset();
+        appliedBytes = 0;
         cellBytes = 0;
         hasBaseline = false;
     }
@@ -544,6 +588,19 @@ struct LoopbackReplica::State {
             for (const auto& cell : cells) {
                 if (!content->contains(cell.state.blockKey)) return true;
             }
+            if (value.entities.size() > entityLimit) return true;
+            for (size_t index = 0; index < value.entities.size(); ++index) {
+                if (!validPublishedEntity(
+                        *content, value.entities[index].state,
+                        entityTagLimit, entityStringLimit) ||
+                    std::any_of(
+                        value.entities.begin(), value.entities.begin() + index,
+                        [&](const PublishedEntity& earlier) {
+                            return earlier.state.id == value.entities[index].state.id;
+                        })) {
+                    return true;
+                }
+            }
             if constexpr (std::is_same_v<T, WorldChangeBatch>) {
                 return value.outcomes.size() > changeLimit;
             }
@@ -556,6 +613,7 @@ struct LoopbackReplica::State {
             *bytes > byteLimit ||
             !addBytes(aggregate, cellBytes) ||
             !addBytes(aggregate, queueBytes) ||
+            !addBytes(aggregate, appliedBytes) ||
             !addBytes(aggregate, bytes.value_or(0)) || aggregate > byteLimit) {
             markGap();
             return ReplicaAcceptStatus::RejectedOversized;
@@ -596,6 +654,8 @@ ReplicaAcceptStatus LoopbackReplica::accept(
 }
 
 ReplicaPumpStatus LoopbackReplica::pumpOne() {
+    m_state->appliedPublication.reset();
+    m_state->appliedBytes = 0;
     if (m_state->gap) return ReplicaPumpStatus::NeedsResnapshot;
     if (m_state->queue.empty()) return ReplicaPumpStatus::Idle;
     auto message = std::move(m_state->queue.front());
@@ -666,6 +726,8 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             m_state->revision = value.revision;
             m_state->tick = value.tick;
             m_state->hasBaseline = true;
+            m_state->appliedPublication = std::move(message);
+            m_state->appliedBytes = *messageBytes;
             return ReplicaPumpStatus::Applied;
         } else {
             // Validate a publication's own structure before classifying an
@@ -767,12 +829,18 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             m_state->cellBytes = *nextBytes;
             m_state->revision = value.revision;
             m_state->tick = value.tick;
+            m_state->appliedPublication = std::move(message);
+            m_state->appliedBytes = *messageBytes;
             return ReplicaPumpStatus::Applied;
         }
         }, *message);
     } catch (...) {
         return fail();
     }
+}
+
+const PublicationMessage* LoopbackReplica::appliedPublication() const {
+    return m_state->appliedPublication.get();
 }
 
 std::optional<CommandOutcome> LoopbackReplica::takeOutcome() {
@@ -823,9 +891,14 @@ struct SimulationHost::Impl {
         Entity::EntityId actor;
         ContentManifestId content;
     };
+    struct ObserverPoseAdmission {
+        Entity::EntityId actor;
+        glm::vec3 position{};
+    };
     struct CommandAdmission { EditCommand command; bool privileged = false; };
     using Admission = std::variant<
-        SpawnAdmission, DespawnAdmission, SessionAdmission, CommandAdmission>;
+        SpawnAdmission, DespawnAdmission, SessionAdmission,
+        ObserverPoseAdmission, CommandAdmission>;
     struct RecordedAdmission { Tick afterTick = 0; Admission value; };
 
     std::unique_ptr<Voxel::World> world;
@@ -1372,6 +1445,10 @@ std::optional<SimulationRecording> SimulationHost::recording() const {
                 } else if constexpr (std::is_same_v<T, Impl::SessionAdmission>) {
                     out.u8(3); out.u64(value.session); encodeId(out, value.actor);
                     out.bytes(value.content.bytes().data(), 32);
+                } else if constexpr (
+                    std::is_same_v<T, Impl::ObserverPoseAdmission>) {
+                    out.u8(5); encodeId(out, value.actor);
+                    encodeVec3(out, value.position);
                 } else {
                     out.u8(4); out.boolean(value.privileged);
                     encodeCommand(out, value.command);
@@ -1443,6 +1520,9 @@ ResimulationResult SimulationHost::resimulate(
                 events.push_back({afterTick, Impl::CommandAdmission{
                     decodeCommand(in, host->m_config.maxChangesPerCommand,
                                   host->m_config.maxCommandBytes), privileged}});
+            } else if (kind == 5) {
+                events.push_back({afterTick, Impl::ObserverPoseAdmission{
+                    decodeId(in), decodeVec3(in)}});
             } else {
                 return result;
             }
@@ -1466,6 +1546,12 @@ ResimulationResult SimulationHost::resimulate(
                         return host->startSession(
                             value.session, value.actor, value.content) ==
                             SessionStartStatus::Started;
+                    } else if constexpr (
+                        std::is_same_v<T, Impl::ObserverPoseAdmission>) {
+                        return host->admitLocalObserverPose(
+                            value.actor, value.position,
+                            host->localObserverCapability()) ==
+                            ObserverPoseStatus::Applied;
                     } else {
                         const SubmitResult submitted = value.privileged
                             ? host->submit(value.command, host->authorityEditCapability())
@@ -1625,6 +1711,47 @@ bool SimulationHost::despawnEntity(Entity::EntityId entity) {
         }
     }
     return m_impl->world->entities().despawn(entity);
+}
+
+ObserverPoseStatus SimulationHost::admitLocalObserverPose(
+    Entity::EntityId actor,
+    const glm::vec3& position,
+    const LocalObserverCapability& capability
+) {
+    if (capability.m_owner.lock() != m_authorityEditKey) {
+        return ObserverPoseStatus::InvalidCapability;
+    }
+    Entity::Entity* entity = m_impl->world->entities().get(actor);
+    if (!entity) return ObserverPoseStatus::ActorUnavailable;
+    if (actor != m_impl->sessionActor ||
+        !entity->hasTag(Entity::EntityTags::NoClip) ||
+        !entity->hasTag(Entity::EntityTags::LocalObserver)) {
+        return ObserverPoseStatus::UnsupportedActor;
+    }
+    if (!finite(position)) return ObserverPoseStatus::InvalidPosition;
+
+    prepareRecordingBaseline();
+    if (!m_impl->recordingGap) {
+        try {
+            if (m_impl->recordingAdmissions.size() >= m_config.maxReplayEvents) {
+                throw std::length_error("recording event cap exceeded");
+            }
+            m_impl->recordingAdmissions.push_back({
+                m_tick, Impl::ObserverPoseAdmission{actor, position}});
+            if (!recordingWithinLimit()) discardRecording();
+        } catch (...) {
+            discardRecording();
+        }
+    }
+    entity->setPosition(position);
+    return ObserverPoseStatus::Applied;
+}
+
+SessionId SimulationHost::nextSessionId() const {
+    if (m_impl->sessionHighWater == std::numeric_limits<SessionId>::max()) {
+        return 0;
+    }
+    return m_impl->sessionHighWater + 1;
 }
 
 SessionStartStatus SimulationHost::startSession(
@@ -1824,6 +1951,15 @@ void SimulationHost::runTick() {
     };
     batch.changes.reserve(m_config.maxChangesPerCommand);
     batch.outcomes.reserve(1);
+    const auto entityIds = m_impl->world->entities().sortedIds();
+    batch.entities.reserve(entityIds.size());
+    for (const auto id : entityIds) {
+        const Entity::Entity* entity = m_impl->world->entities().get(id);
+        if (!entity || !m_content->supportsEntity(*entity)) {
+            throw std::runtime_error("publication contains unsupported entity meaning");
+        }
+        batch.entities.push_back({entity->simulationState()});
+    }
 
     if (receipt) {
         const EditCommand& command = receipt->command;
@@ -2029,6 +2165,10 @@ void SimulationHost::runTick() {
                 m_impl->world->blockRegistry().getType(local.id).collision;
             for (const auto& box : shape.boxes()) {
                 if (overlap(actor->worldBounds(), translated(box, mutation.address))) {
+                    if (actor->hasTag(Entity::EntityTags::LocalObserver) &&
+                        actor->hasTag(Entity::EntityTags::NoClip)) {
+                        continue;
+                    }
                     outcome.status = CommandOutcomeStatus::PlacementCollision;
                     batch.changes.clear();
                     commits.clear();
@@ -2045,7 +2185,7 @@ void SimulationHost::runTick() {
         batch.outcomes.push_back(outcome);
     }
 
-    auto message = std::make_shared<const PublicationMessage>(std::move(batch));
+    auto mutableMessage = std::make_shared<PublicationMessage>(std::move(batch));
 
     m_impl->world->entities().prepareTick();
 
@@ -2082,6 +2222,17 @@ void SimulationHost::runTick() {
     m_impl->world->entities().tickPrepared(
         static_cast<float>(m_config.tickRate.denominator) /
         static_cast<float>(m_config.tickRate.numerator));
+    auto& publishedBatch = std::get<WorldChangeBatch>(*mutableMessage);
+    for (auto& published : publishedBatch.entities) {
+        const Entity::Entity* entity =
+            m_impl->world->entities().get(published.state.id);
+        if (!entity) {
+            throw std::logic_error("published entity disappeared during built-in tick");
+        }
+        entity->refreshSimulationStateDynamics(published.state);
+    }
+    std::shared_ptr<const PublicationMessage> message =
+        std::move(mutableMessage);
     m_tick = nextTick;
     m_revision = nextRevision;
     if (receipt) {
@@ -2128,6 +2279,9 @@ ReplicaConnection SimulationHost::connectReplica(CellBounds interest) {
         state->queueLimit = m_config.maxReplicaQueue;
         state->cellLimit = m_config.maxSnapshotCells;
         state->changeLimit = m_config.maxChangesPerCommand;
+        state->entityLimit = m_config.maxEntities;
+        state->entityTagLimit = m_config.maxEntityTags;
+        state->entityStringLimit = m_config.maxEntityTagBytes;
         state->byteLimit = m_config.maxReplicaBytes;
         state->queue.reserve(m_config.maxReplicaQueue);
         const auto storageBytes = state->retainedStorageBytes();
@@ -2156,6 +2310,15 @@ ReplicaConnection SimulationHost::connectReplica(CellBounds interest) {
                     baseline.cells.push_back({address, cell.state});
                 }
             }
+        }
+        const auto entityIds = m_impl->world->entities().sortedIds();
+        baseline.entities.reserve(entityIds.size());
+        for (const auto id : entityIds) {
+            const Entity::Entity* entity = m_impl->world->entities().get(id);
+            if (!entity || !m_content->supportsEntity(*entity)) {
+                return {.status = ReplicaConnectStatus::Capacity};
+            }
+            baseline.entities.push_back({entity->simulationState()});
         }
 
         if (state->enqueue(std::make_shared<const PublicationMessage>(
@@ -2220,6 +2383,16 @@ ReplicaConnectStatus SimulationHost::resnapshot(LoopbackReplica& replica) {
                     baseline.cells.push_back({address, cell.state});
                 }
             }
+        }
+
+        const auto entityIds = m_impl->world->entities().sortedIds();
+        baseline.entities.reserve(entityIds.size());
+        for (const auto id : entityIds) {
+            const Entity::Entity* entity = m_impl->world->entities().get(id);
+            if (!entity || !m_content->supportsEntity(*entity)) {
+                return ReplicaConnectStatus::Capacity;
+            }
+            baseline.entities.push_back({entity->simulationState()});
         }
 
         auto message = std::make_shared<const PublicationMessage>(

@@ -98,6 +98,9 @@ public:
 
     /** Complete built-in state used by authority checkpoints and replay. */
     EntitySimulationState simulationState() const;
+    /** Refresh non-owning/dynamic fields in an already captured state without
+     * allocation. Type, tags, and model identity must still describe this entity. */
+    void refreshSimulationStateDynamics(EntitySimulationState& state) const noexcept;
     /** Restore finite state with valid bounds and sorted unique tags.
      * Validation and allocation complete before existing state is replaced. */
     void restoreSimulationState(const EntitySimulationState& state);

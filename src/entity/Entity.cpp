@@ -297,6 +297,24 @@ EntitySimulationState Entity::simulationState() const {
     };
 }
 
+void Entity::refreshSimulationStateDynamics(
+    EntitySimulationState& state
+) const noexcept {
+    state.id = m_id;
+    state.position = m_position;
+    state.velocity = m_velocity;
+    state.acceleration = m_acceleration;
+    state.viewDirection = m_viewDirection;
+    state.gravityModifier = m_gravityModifier;
+    state.onGround = m_onGround;
+    state.collidedX = m_collidedX;
+    state.collidedY = m_collidedY;
+    state.collidedZ = m_collidedZ;
+    state.floorFriction = m_floorFriction;
+    state.localBounds = m_localBounds;
+    state.renderTint = m_renderTint;
+}
+
 void Entity::restoreSimulationState(const EntitySimulationState& state) {
     if (state.typeId != m_typeId) {
         throw std::invalid_argument("entity simulation type mismatch");

@@ -18,6 +18,7 @@ class WorldGenerator;
 
 namespace Rigel::Entity {
 class Entity;
+struct EntitySimulationState;
 }
 
 namespace Rigel::Simulation {
@@ -89,6 +90,8 @@ public:
     bool supportsState(const SemanticBlockState& state) const;
     /** True only for the built-in entity rule and hitbox bound by this manifest. */
     bool supportsEntity(const Entity::Entity& entity) const;
+    bool supportsEntityState(
+        const Entity::EntitySimulationState& state) const;
     void requireIdentity(const ContentManifestId& identity) const;
 
 private:

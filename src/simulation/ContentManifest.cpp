@@ -174,13 +174,16 @@ std::string blockRecord(const Voxel::BlockType& type) {
 std::string entityRuleRecord() {
     CanonicalWriter out;
     out.string("rigel.entity-rule");
-    out.u32(1);
+    out.u32(2);
     out.string("rigel:entity");
     out.string("axis-sweep-block-collision-v1");
     out.string("gravity-friction-tags-v1");
     for (float value : {-0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f}) {
         out.floating(value);
     }
+    out.string("cosmetic-model-identity-v1");
+    out.string("entity_models/model_drone_interceptor");
+    out.string("entity_models/demo_cube");
     return out.data();
 }
 
@@ -321,11 +324,19 @@ bool ContentDictionary::supportsState(const SemanticBlockState& state) const {
 }
 
 bool ContentDictionary::supportsEntity(const Entity::Entity& entity) const {
-    const auto& bounds = entity.localBounds();
     return typeid(entity) == typeid(Entity::Entity) &&
-        entity.typeId() == "rigel:entity" && !entity.model() &&
-        entity.modelIdentifier().empty() &&
-        bounds.min == glm::vec3(-0.5f) && bounds.max == glm::vec3(0.5f);
+        !entity.model() && supportsEntityState(entity.simulationState());
+}
+
+bool ContentDictionary::supportsEntityState(
+    const Entity::EntitySimulationState& state
+) const {
+    return state.typeId == "rigel:entity" &&
+        (state.modelIdentifier.empty() ||
+         state.modelIdentifier == "entity_models/model_drone_interceptor" ||
+         state.modelIdentifier == "entity_models/demo_cube") &&
+        state.localBounds.min == glm::vec3(-0.5f) &&
+        state.localBounds.max == glm::vec3(0.5f);
 }
 
 SemanticBlockState ContentDictionary::semanticState(Voxel::BlockState state) const {

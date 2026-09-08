@@ -103,6 +103,9 @@ struct SimulationCheckpointManager::Impl {
     std::atomic<bool> running{false};
     uint64_t latestGeneration = 0;
     uint64_t latestStateHash = 0;
+    std::weak_ptr<const uint8_t> lineageOwner;
+    std::weak_ptr<const uint8_t> pendingOwner;
+    bool lineageVerified = true;
     bool uncertain = false;
     std::optional<CheckpointRecoveryStatus> invalidRoot;
     std::string invalidDetail;
@@ -151,6 +154,7 @@ struct SimulationCheckpointManager::Impl {
             }
             latestGeneration = pointer.generation;
             latestStateHash = pointer.stateHash;
+            lineageVerified = false;
         } catch (const std::invalid_argument& error) {
             invalidRoot = CheckpointRecoveryStatus::Incompatible;
             invalidDetail = error.what();
@@ -182,6 +186,11 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
 ) {
     if (m_impl->uncertain) return CheckpointRequestStatus::Uncertain;
     if (m_impl->invalidRoot) return CheckpointRequestStatus::UnsupportedState;
+    if (m_impl->latestGeneration != 0 &&
+        (!m_impl->lineageVerified ||
+         m_impl->lineageOwner.lock() != host.m_authorityEditKey)) {
+        return CheckpointRequestStatus::UnsupportedState;
+    }
     if (m_impl->running.load(std::memory_order_acquire)) {
         return CheckpointRequestStatus::Coalesced;
     }
@@ -220,6 +229,7 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
         .revision = host.revision(),
     };
     auto* impl = m_impl.get();
+    impl->pendingOwner = host.m_authorityEditKey;
     impl->running.store(true, std::memory_order_release);
     impl->writer = std::thread([
         impl, payload = std::move(payload), pointer]() mutable {
@@ -283,6 +293,8 @@ std::optional<CheckpointOutcome> SimulationCheckpointManager::poll() {
     if (result->status == CheckpointWriteStatus::Durable) {
         m_impl->latestGeneration = result->generation;
         m_impl->latestStateHash = result->stateHash;
+        m_impl->lineageOwner = m_impl->pendingOwner;
+        m_impl->lineageVerified = !m_impl->lineageOwner.expired();
     } else if (result->status == CheckpointWriteStatus::DurabilityUnknown) {
         m_impl->uncertain = true;
     }
@@ -332,6 +344,8 @@ CheckpointRecovery SimulationCheckpointManager::recover(
             host->stateHash() != pointer.stateHash) {
             throw std::runtime_error("checkpoint cut does not match pointer");
         }
+        m_impl->lineageOwner = host->m_authorityEditKey;
+        m_impl->lineageVerified = true;
         return {CheckpointRecoveryStatus::Recovered, pointer.generation,
                 std::move(host), {}};
     } catch (const ContentManifestError& error) {

@@ -607,11 +607,9 @@ TEST_CASE(SimulationCheckpoint_publishes_the_captured_cut_and_restores_pending_w
     recovered.host->advance(17ms);
     CHECK_EQ(recovered.host->stateHash(), appliedHash);
 
-    auto next = std::make_unique<Entity::Entity>();
-    const auto nextId = recovered.host->spawnEntity(std::move(next));
-    CHECK_EQ(nextId.counter, fixture.actor.counter + 1);
-
-    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(manager.request(*fixture.host),
+             CheckpointRequestStatus::UnsupportedState);
+    CHECK_EQ(manager.request(*recovered.host), CheckpointRequestStatus::Started);
     const auto newer = waitForCheckpoint(manager);
     CHECK_EQ(newer.status, CheckpointWriteStatus::Durable);
     CHECK_EQ(newer.generation, uint64_t{2});
@@ -619,6 +617,9 @@ TEST_CASE(SimulationCheckpoint_publishes_the_captured_cut_and_restores_pending_w
     CHECK_EQ(newest.status, CheckpointRecoveryStatus::Recovered);
     CHECK_EQ(newest.generation, uint64_t{2});
     CHECK_EQ(newest.host->stateHash(), appliedHash);
+    auto next = std::make_unique<Entity::Entity>();
+    const auto nextId = newest.host->spawnEntity(std::move(next));
+    CHECK_EQ(nextId.counter, fixture.actor.counter + 1);
 }
 
 TEST_CASE(SimulationCheckpoint_preserves_unknown_roots_and_blocks_uncertainty) {
@@ -670,6 +671,9 @@ TEST_CASE(SimulationCheckpoint_filesystem_reopens_the_acknowledged_generation) {
 
     auto storage = std::make_shared<Persistence::FilesystemBackend>();
     SimulationCheckpointManager reopened(storage, root);
+    CHECK_EQ(
+        reopened.request(*fixture.host),
+        CheckpointRequestStatus::UnsupportedState);
     auto recovered = reopened.recover(fixture.resources, fixture.generator);
     CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
     CHECK_EQ(recovered.generation, uint64_t{1});

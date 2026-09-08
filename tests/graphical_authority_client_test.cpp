@@ -15,18 +15,75 @@
 
 #include <GLFW/glfw3.h>
 
+#include <array>
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <memory>
+#include <new>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+namespace {
+bool failAllocation = false;
+size_t allocationsBeforeFailure = 0;
+size_t failureAllocationSize = 0;
+}
+
+void* operator new(std::size_t bytes) {
+    if (failAllocation &&
+        (failureAllocationSize == 0 || bytes == failureAllocationSize)) {
+        if (allocationsBeforeFailure == 0) {
+            failAllocation = false;
+            throw std::bad_alloc();
+        }
+        --allocationsBeforeFailure;
+    }
+    if (void* allocation = std::malloc(bytes == 0 ? 1 : bytes)) {
+        return allocation;
+    }
+    throw std::bad_alloc();
+}
+
+void operator delete(void* pointer) noexcept {
+    std::free(pointer);
+}
+
+void operator delete(void* pointer, std::size_t) noexcept {
+    std::free(pointer);
+}
+#endif
+
 namespace {
 
 using namespace Rigel;
 using namespace std::chrono_literals;
+
+class SwitchableEntityModelLoader final : public Asset::IAssetLoader {
+public:
+    explicit SwitchableEntityModelLoader(std::shared_ptr<bool> fail)
+        : m_fail(std::move(fail)) {
+    }
+
+    std::string_view category() const override { return "entity_models"; }
+
+    std::shared_ptr<Asset::AssetBase> load(
+        const Asset::LoadContext& context
+    ) override {
+        if (*m_fail) {
+            throw Asset::AssetLoadError(
+                context.id, "injected presentation model failure");
+        }
+        return m_loader.load(context);
+    }
+
+private:
+    std::shared_ptr<bool> m_fail;
+    Entity::EntityModelLoader m_loader;
+};
 
 Voxel::GeneratorDefinitionData flatDefinition() {
     auto data = Test::generatorDefinitionFixture(
@@ -77,7 +134,11 @@ struct GraphicalFixture {
 
     uint64_t setupCommand = 100;
 
-    explicit GraphicalFixture(size_t maxSessionReceipts = 256)
+    explicit GraphicalFixture(
+        size_t maxSessionReceipts = 256,
+        bool connectClient = true,
+        std::string initialModel = "entity_models/demo_cube",
+        std::shared_ptr<bool> modelLoadFailure = {})
         : replica(resources) {
         Voxel::BlockType stone;
         stone.identifier = "rigel:stone";
@@ -89,8 +150,15 @@ struct GraphicalFixture {
             resources, "rigel:overhang",
             {{-0.25f, 0.0f, 0.0f}, {0.25f, 1.0f, 1.0f}});
         resources.registry().freeze();
-        assets.registerLoader(
-            "entity_models", std::make_unique<Entity::EntityModelLoader>());
+        if (modelLoadFailure) {
+            assets.registerLoader(
+                "entity_models",
+                std::make_unique<SwitchableEntityModelLoader>(
+                    std::move(modelLoadFailure)));
+        } else {
+            assets.registerLoader(
+                "entity_models", std::make_unique<Entity::EntityModelLoader>());
+        }
         assets.registerLoader(
             "entity_anims",
             std::make_unique<Entity::EntityAnimationSetLoader>());
@@ -115,7 +183,9 @@ struct GraphicalFixture {
         CHECK(!observer.isNull());
         auto modeled = std::make_unique<Entity::Entity>();
         modeled->setPosition({7.5f, 2.0f, 7.5f});
-        modeled->setModelIdentifier("entity_models/demo_cube");
+        if (!initialModel.empty()) {
+            modeled->setModelIdentifier(std::move(initialModel));
+        }
         modeledEntity = host->spawnEntity(std::move(modeled));
         CHECK(!modeledEntity.isNull());
         CHECK_EQ(host->startSession(
@@ -123,14 +193,30 @@ struct GraphicalFixture {
             Simulation::SessionStartStatus::Started);
 
         replica.setGenerator(generator);
-        client = std::make_unique<detail::GraphicalAuthorityClient>(
-            *host, replica, assets, config.domain, observer, 1, "rigel:stone");
+        if (connectClient) {
+            connect();
+        }
         window.cursorCaptured = true;
         auto bindings = std::make_shared<Input::InputBindings>();
         bindings->bind("remove_block", GLFW_KEY_R);
         bindings->bind("place_block", GLFW_KEY_P);
         input.setBindings(std::move(bindings));
         input.beginFrame();
+    }
+
+    void connect() {
+        const Simulation::CellBounds interest{
+            {-4, -4, -4}, {20, 8, 20}};
+        client = std::make_unique<detail::GraphicalAuthorityClient>(
+            *host, replica, assets, interest,
+            observer, 1, "rigel:stone");
+    }
+
+    Entity::EntityId spawnModeled(std::string identifier) {
+        auto entity = std::make_unique<Entity::Entity>();
+        entity->setPosition({8.5f, 2.0f, 8.5f});
+        entity->setModelIdentifier(std::move(identifier));
+        return host->spawnEntity(std::move(entity));
     }
 
     std::optional<Voxel::BlockTarget> target() const {
@@ -242,6 +328,226 @@ TEST_CASE(GraphicalAuthorityClient_InputQueuesTickAndAppliesPublication) {
     CHECK(fixture.host->despawnEntity(fixture.modeledEntity));
     fixture.client->advance(17ms);
     CHECK(!fixture.replica.entities().get(fixture.modeledEntity));
+}
+
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+TEST_CASE(GraphicalAuthorityClient_BaselineAllocationFailureLeavesWorldEmpty) {
+    GraphicalFixture fixture(256, false, "");
+    failureAllocationSize = sizeof(std::array<
+        Voxel::BlockState, Voxel::Chunk::SUBCHUNK_VOLUME>);
+    allocationsBeforeFailure = 0;
+    failAllocation = true;
+    CHECK_THROWS(fixture.connect());
+    failAllocation = false;
+    failureAllocationSize = 0;
+
+    CHECK_EQ(fixture.replica.chunkManager().loadedChunkCount(), size_t{0});
+    CHECK_EQ(fixture.replica.entities().size(), size_t{0});
+
+    fixture.connect();
+    CHECK_EQ(fixture.client->revision(), fixture.host->revision());
+    CHECK_EQ(fixture.replica.entities().size(),
+             fixture.host->world().entities().size());
+}
+
+TEST_CASE(GraphicalAuthorityClient_ChangeAllocationFailureRetriesWholeCut) {
+    GraphicalFixture fixture(256, true, "");
+    const Simulation::Revision visibleRevision = fixture.client->revision();
+    const auto selected = fixture.target();
+    CHECK(selected.has_value());
+    const Simulation::CellAddress removed{
+        selected->block.x, selected->block.y, selected->block.z};
+    CHECK(fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove,
+        *selected,
+        fixture.camera).accepted());
+
+    const std::array<Simulation::CellAddress, 2> placed{{
+        {1, 7, 1}, {17, 7, 17},
+    }};
+    Simulation::EditCommand command{
+        .session = 1,
+        .command = fixture.setupCommand++,
+        .actor = fixture.observer,
+        .world = fixture.host->world().id(),
+        .zone = "base:default",
+        .content = fixture.host->content().identity(),
+        .action = Simulation::EditAction::Atomic,
+    };
+    for (const auto address : placed) {
+        command.mutations.push_back({
+            .address = address,
+            .expected = fixture.host->read(address).state,
+            .replacement = {"rigel:stone", 0, 0},
+        });
+    }
+    CHECK_EQ(
+        fixture.host->submit(
+            std::move(command), fixture.host->authorityEditCapability()).status,
+        Simulation::SubmitStatus::Accepted);
+    const Entity::EntityId added =
+        fixture.spawnModeled("entity_models/demo_cube");
+    CHECK(!added.isNull());
+
+    const auto removedBefore = fixture.replica.getBlock(
+        removed.x, removed.y, removed.z);
+    const glm::vec3 entityBefore = fixture.replica.entities()
+        .get(fixture.modeledEntity)->position();
+    failureAllocationSize = sizeof(std::array<
+        Voxel::BlockState, Voxel::Chunk::SUBCHUNK_VOLUME>);
+    allocationsBeforeFailure = 0;
+    failAllocation = true;
+    CHECK_NO_THROW(fixture.client->advance(34ms));
+    failAllocation = false;
+    failureAllocationSize = 0;
+
+    CHECK_EQ(fixture.client->revision(), visibleRevision);
+    CHECK(fixture.client->projectionRetryPending());
+    CHECK_EQ(fixture.replica.getBlock(
+                 removed.x, removed.y, removed.z), removedBefore);
+    for (const auto address : placed) {
+        CHECK(fixture.replica.getBlock(
+            address.x, address.y, address.z).isAir());
+        CHECK_EQ(fixture.host->read(address).state.blockKey,
+                 std::string("rigel:stone"));
+    }
+    CHECK(!fixture.replica.entities().get(added));
+    CHECK_EQ(fixture.replica.entities().get(
+                 fixture.modeledEntity)->position(), entityBefore);
+    CHECK_EQ(fixture.client->pendingSubmissionCount(), size_t{1});
+    CHECK(fixture.client->outcomes().empty());
+
+    CHECK_NO_THROW(fixture.client->advance(0ns));
+    CHECK(!fixture.client->projectionRetryPending());
+    CHECK_EQ(fixture.client->revision(), fixture.host->revision());
+    CHECK(fixture.replica.getBlock(
+        removed.x, removed.y, removed.z).isAir());
+    for (const auto address : placed) {
+        CHECK(!fixture.replica.getBlock(
+            address.x, address.y, address.z).isAir());
+    }
+    const Entity::Entity* projected = fixture.replica.entities().get(added);
+    CHECK(projected);
+    CHECK(projected->model());
+    CHECK_EQ(fixture.replica.entities().get(
+                 fixture.modeledEntity)->position(),
+             fixture.host->world().entities().get(
+                 fixture.modeledEntity)->position());
+    CHECK_EQ(fixture.client->pendingSubmissionCount(), size_t{0});
+    CHECK_EQ(fixture.client->outcomes().size(), size_t{2});
+
+    fixture.client->advance(0ns);
+    CHECK(fixture.client->outcomes().empty());
+    const auto nextTarget = fixture.target();
+    CHECK(nextTarget.has_value());
+    CHECK(fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove,
+        *nextTarget,
+        fixture.camera).accepted());
+    fixture.client->advance(17ms);
+    CHECK_EQ(fixture.client->pendingSubmissionCount(), size_t{0});
+    CHECK_EQ(fixture.client->outcomes().size(), size_t{1});
+}
+#endif
+
+TEST_CASE(GraphicalAuthorityClient_BaselineModelFailureLeavesWorldEmpty) {
+    auto failModel = std::make_shared<bool>(true);
+    GraphicalFixture failingLoader(
+        256, false, "entity_models/demo_cube", failModel);
+    CHECK_THROWS(failingLoader.connect());
+    CHECK_EQ(failingLoader.replica.chunkManager().loadedChunkCount(), size_t{0});
+    CHECK_EQ(failingLoader.replica.entities().size(), size_t{0});
+
+    *failModel = false;
+    failingLoader.connect();
+    CHECK(failingLoader.replica.entities().get(
+        failingLoader.modeledEntity)->model());
+
+    GraphicalFixture missing(
+        256, false, "entity_models/model_drone_interceptor");
+    if (!missing.assets.exists("entity_models/model_drone_interceptor")) {
+        CHECK_THROWS(missing.connect());
+        CHECK_EQ(missing.replica.chunkManager().loadedChunkCount(), size_t{0});
+        CHECK_EQ(missing.replica.entities().size(), size_t{0});
+    }
+}
+
+TEST_CASE(GraphicalAuthorityClient_ChangeModelFailureRetainsRetry) {
+    auto failModel = std::make_shared<bool>(false);
+    GraphicalFixture fixture(256, true, "", failModel);
+    const Simulation::Revision visibleRevision = fixture.client->revision();
+    const size_t visibleEntities = fixture.replica.entities().size();
+    const Entity::EntityId added =
+        fixture.spawnModeled("entity_models/demo_cube");
+    CHECK(!added.isNull());
+
+    *failModel = true;
+    CHECK_NO_THROW(fixture.client->advance(17ms));
+    CHECK_EQ(fixture.client->revision(), visibleRevision);
+    CHECK(fixture.client->projectionRetryPending());
+    CHECK_EQ(fixture.replica.entities().size(), visibleEntities);
+    CHECK(!fixture.replica.entities().get(added));
+    CHECK_NO_THROW(fixture.client->advance(17ms));
+    CHECK_EQ(fixture.host->revision(), visibleRevision + 1);
+
+    *failModel = false;
+    CHECK_NO_THROW(fixture.client->advance(0ns));
+    CHECK(!fixture.client->projectionRetryPending());
+    CHECK_EQ(fixture.client->revision(), fixture.host->revision());
+    CHECK_EQ(fixture.client->revision(), visibleRevision + 2);
+    CHECK(fixture.replica.entities().get(added));
+    CHECK(fixture.replica.entities().get(added)->model());
+
+    GraphicalFixture missing(256, true, "");
+    if (!missing.assets.exists("entity_models/model_drone_interceptor")) {
+        const Simulation::Revision missingRevision = missing.client->revision();
+        const Entity::EntityId unavailable =
+            missing.spawnModeled("entity_models/model_drone_interceptor");
+        CHECK(!unavailable.isNull());
+        CHECK_NO_THROW(missing.client->advance(17ms));
+        CHECK_EQ(missing.client->revision(), missingRevision);
+        CHECK(missing.client->projectionRetryPending());
+        CHECK(!missing.replica.entities().get(unavailable));
+        CHECK_NO_THROW(missing.client->advance(17ms));
+        CHECK_EQ(missing.host->revision(), missingRevision + 1);
+        CHECK_EQ(missing.client->revision(), missingRevision);
+    }
+}
+
+TEST_CASE(GraphicalAuthorityClient_RetryResnapshotsAfterProducerPressure) {
+    auto failModel = std::make_shared<bool>(false);
+    GraphicalFixture fixture(256, true, "", failModel);
+    const auto selected = fixture.target();
+    CHECK(selected.has_value());
+    const Simulation::Revision visibleRevision = fixture.client->revision();
+    CHECK(fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove,
+        *selected,
+        fixture.camera).accepted());
+    const Entity::EntityId added =
+        fixture.spawnModeled("entity_models/demo_cube");
+    CHECK(!added.isNull());
+
+    *failModel = true;
+    fixture.client->advance(17ms);
+    CHECK(fixture.client->projectionRetryPending());
+    CHECK_EQ(fixture.client->revision(), visibleRevision);
+    CHECK_EQ(fixture.client->pendingSubmissionCount(), size_t{1});
+
+    for (int pass = 0; pass < 5; ++pass) {
+        fixture.host->advance(250ms);
+    }
+    *failModel = false;
+    fixture.client->advance(0ns);
+    CHECK(!fixture.client->projectionRetryPending());
+    CHECK_EQ(fixture.client->revision(), fixture.host->revision());
+    CHECK(fixture.replica.entities().get(added));
+    CHECK_EQ(fixture.client->pendingSubmissionCount(), size_t{0});
+    CHECK_EQ(fixture.client->outcomes().size(), size_t{1});
+    CHECK_EQ(fixture.client->outcomes().front().status,
+             Simulation::CommandOutcomeStatus::Applied);
+    fixture.client->advance(0ns);
+    CHECK(fixture.client->outcomes().empty());
 }
 
 TEST_CASE(GraphicalAuthorityClient_ReattachesToRecoveredPendingSession) {

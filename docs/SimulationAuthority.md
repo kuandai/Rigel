@@ -304,6 +304,21 @@ Pending command IDs restored from the checkpoint are installed in the same
 bounded client accounting before the first recovered tick, so session rotation
 remains deferred until those outcomes arrive.
 
+Graphical projection is transactional with respect to each semantic publication.
+The client resolves block IDs and model assets, constructs a complete replacement
+entity set, clones only affected chunks, and reserves chunk-map, mesh-notification,
+changed-chunk, and outcome bookkeeping before installation. Installation itself
+cannot allocate. A failed baseline therefore never exposes a partially populated
+world, while a failed change leaves the previous visible revision intact. The
+loopback publication and unread outcomes remain owned by the client for retry;
+later calls retry projection before admitting more host time. Elapsed time received
+while projection remains blocked is retained and passed to the host after recovery.
+If an independently advancing producer overflows the semantic queue meanwhile,
+the client finishes its retained cut, resnapshots the latest baseline, and recovers
+terminal outcomes for its bounded pending command identities from host receipts.
+This path does not copy unchanged chunks or rebuild renderer model instances whose
+entity ID and retained model handle are unchanged.
+
 The replica also replaces its entity set from each coherent publication. It alone
 loads cosmetic model assets; entity removal drops the replica entity before the
 renderer prunes its model instance. The block gallery keeps its previous read-only

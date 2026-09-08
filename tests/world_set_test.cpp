@@ -3,8 +3,10 @@
 #include "GeneratorDefinitionTestRegistry.h"
 
 #include "Rigel/Asset/AssetLoader.h"
+#include "Rigel/Asset/Types.h"
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/WorldSet.h"
+#include "Rigel/Voxel/WorldView.h"
 
 #include <memory>
 #include <vector>
@@ -98,7 +100,7 @@ TEST_CASE(WorldSet_MultipleWorldsHaveIndependentChunks) {
     CHECK(second.getBlock(0, 0, 0).isAir());
 }
 
-TEST_CASE(WorldSet_CreateViewPublishesOnlyAfterInitialization) {
+TEST_CASE(WorldView_InitializationFailureLeavesOwnedWorldIntact) {
     Rigel::Asset::AssetManager assets;
     auto loader = std::make_unique<ThrowOnceShaderLoader>();
     auto* loaderProbe = loader.get();
@@ -115,31 +117,28 @@ TEST_CASE(WorldSet_CreateViewPublishesOnlyAfterInitialization) {
 
     std::string diagnostic;
     try {
-        worldSet.createView(9, assets);
+        WorldView failing(originalWorld, worldSet.resources());
+        failing.initialize(assets);
     } catch (const std::runtime_error& error) {
         diagnostic = error.what();
     }
     CHECK_EQ(diagnostic, "injected voxel shader failure");
-    CHECK(worldSet.findView(9) == nullptr);
     CHECK_EQ(&worldSet.world(9), &originalWorld);
     CHECK_EQ(worldSet.world(9).getBlock(0, 0, 0).id, solidId);
     CHECK_EQ(loaderProbe->voxelLoadCount, 1);
 
-    WorldView& initialized = worldSet.createView(9, assets);
-    CHECK_EQ(worldSet.findView(9), &initialized);
-    CHECK_EQ(&initialized.world(), &originalWorld);
-    CHECK_EQ(loaderProbe->voxelLoadCount, 2);
-
-    WorldView& duplicate = worldSet.createView(9, assets);
-    CHECK_EQ(&duplicate, &initialized);
-    CHECK_EQ(loaderProbe->voxelLoadCount, 2);
-
-    initialized.clear();
+    {
+        WorldView initialized(originalWorld, worldSet.resources());
+        initialized.initialize(assets);
+        CHECK_EQ(&initialized.world(), &originalWorld);
+        CHECK_EQ(loaderProbe->voxelLoadCount, 2);
+        initialized.clear();
+    }
     worldSet.clear();
     CHECK(!worldSet.hasWorld(9));
 }
 
-TEST_CASE(WorldSet_OptionalShadowFailuresPublishDegradedView) {
+TEST_CASE(WorldView_OptionalShadowFailuresAllowDegradedInitialization) {
     Rigel::Test::LogCapture logs("voxel-shadow-failure-test");
     Rigel::Asset::AssetManager assets;
     auto loader = std::make_unique<OptionalShadowFailureLoader>();
@@ -149,23 +148,23 @@ TEST_CASE(WorldSet_OptionalShadowFailuresPublishDegradedView) {
 
     WorldSet worldSet;
     World& world = worldSet.createWorld(10);
-    WorldView* view = nullptr;
-    CHECK_NO_THROW(view = &worldSet.createView(10, assets));
-    CHECK(view != nullptr);
-    CHECK_EQ(worldSet.findView(10), view);
-    CHECK_EQ(&view->world(), &world);
-    CHECK_EQ(loaderProbe->failureCount, static_cast<size_t>(2));
-    const auto output = logs.output();
-    CHECK_EQ(Rigel::Test::countOccurrences(
-                 output,
-                 "Optional startup resource 'shaders/voxel_shadow_depth'"),
-             static_cast<size_t>(1));
-    CHECK_EQ(Rigel::Test::countOccurrences(
-                 output,
-                 "Optional startup resource 'shaders/voxel_shadow_transmit'"),
-             static_cast<size_t>(1));
+    {
+        WorldView view(world, worldSet.resources());
+        CHECK_NO_THROW(view.initialize(assets));
+        CHECK_EQ(&view.world(), &world);
+        CHECK_EQ(loaderProbe->failureCount, static_cast<size_t>(2));
+        const auto output = logs.output();
+        CHECK_EQ(Rigel::Test::countOccurrences(
+                     output,
+                     "Optional startup resource 'shaders/voxel_shadow_depth'"),
+                 static_cast<size_t>(1));
+        CHECK_EQ(Rigel::Test::countOccurrences(
+                     output,
+                     "Optional startup resource 'shaders/voxel_shadow_transmit'"),
+                 static_cast<size_t>(1));
 
-    view->clear();
+        view.clear();
+    }
     worldSet.clear();
 }
 
@@ -188,50 +187,49 @@ TEST_CASE(WorldSet_ClearDestroysAllWorldsAndCanRepeatDuringTeardown) {
         worldSet.resources().registry(), generation, 1u);
     world.setGenerator(generator);
 
-    WorldView& view = worldSet.createView(1, assets);
-    StreamingConfig streaming;
-    streaming.viewDistanceChunks = 0;
-    streaming.unloadDistanceChunks = 0;
-    streaming.genQueueLimit = 0;
-    streaming.meshQueueLimit = 0;
-    streaming.updateBudgetPerFrame = 0;
-    streaming.applyBudgetPerFrame = 0;
-    streaming.workerThreads = 0;
-    streaming.maxResidentChunks = 0;
-    view.setStreamConfig(streaming);
-
     const ChunkCoord coord{0, 0, 0};
     Chunk& chunk = world.chunkManager().getOrCreateChunk(coord);
     chunk.setBlock(0, 0, 0, BlockState{solidId}, worldSet.resources().registry());
     chunk.setWorldGenVersion(generator->semanticsVersion());
     chunk.setLoadedFromDisk(true);
-    view.updateStreaming(coord.toWorldCenter());
-    view.updateMeshes();
+    {
+        WorldView view(world, worldSet.resources());
+        view.initialize(assets);
+        view.setGenerator(generator);
+        StreamingConfig streaming;
+        streaming.viewDistanceChunks = 0;
+        streaming.unloadDistanceChunks = 0;
+        streaming.genQueueLimit = 0;
+        streaming.meshQueueLimit = 0;
+        streaming.updateBudgetPerFrame = 0;
+        streaming.applyBudgetPerFrame = 0;
+        streaming.workerThreads = 0;
+        streaming.maxResidentChunks = 0;
+        view.setStreamConfig(streaming);
+        view.updateStreaming(coord.toWorldCenter());
+        view.updateMeshes();
+
+        CHECK(view.meshStore().contains(coord));
+        std::vector<ChunkStreamer::DebugChunkState> states;
+        view.getChunkDebugStates(states, coord, 0);
+        CHECK_EQ(states.size(), static_cast<size_t>(1));
+        CHECK_EQ(states.front().coord, coord);
+        CHECK_EQ(states.front().state,
+                 ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
+
+        view.clear();
+        CHECK(world.chunkManager().hasChunk(coord));
+        CHECK(!view.meshStore().contains(coord));
+        view.getChunkDebugStates(states, coord, 0);
+        CHECK(states.empty());
+    }
 
     worldSet.createWorld(2).setBlock(ChunkSize, 0, 0, BlockState{});
-
     CHECK(worldSet.hasWorld(1));
-    CHECK_EQ(worldSet.findView(1), &view);
-    CHECK(view.meshStore().contains(coord));
-    std::vector<ChunkStreamer::DebugChunkState> states;
-    view.getChunkDebugStates(states, coord, 0);
-    CHECK_EQ(states.size(), static_cast<size_t>(1));
-    CHECK_EQ(states.front().coord, coord);
-    CHECK_EQ(states.front().state,
-             ChunkStreamer::DebugState::AcceptedNonemptyGeometry);
-
-    view.clear();
-    CHECK(world.chunkManager().hasChunk(coord));
-    CHECK(!view.meshStore().contains(coord));
-    view.getChunkDebugStates(states, coord, 0);
-    CHECK(states.empty());
-    CHECK_EQ(worldSet.findView(1), &view);
 
     worldSet.clear();
 
     CHECK(!worldSet.hasWorld(1));
     CHECK(!worldSet.hasWorld(2));
-    CHECK(worldSet.findView(1) == nullptr);
-    CHECK(worldSet.findView(2) == nullptr);
     CHECK_NO_THROW(worldSet.clear());
 }

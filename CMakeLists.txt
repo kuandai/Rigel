@@ -4,6 +4,7 @@ project(Rigel VERSION 0.0.0 LANGUAGES CXX ASM)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(RIGEL_BUILD_TESTS "Build Rigel tests" ON)
+option(RIGEL_BUILD_GRAPHICS "Build Rigel graphical client and renderer" ON)
 
 if(APPLE)
     # Apple's OpenGL headers are deprecated in favor of Metal. Rigel still
@@ -27,6 +28,41 @@ file(GLOB_RECURSE SOURCES
 list(REMOVE_ITEM SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
 )
+
+set(RIGEL_GRAPHICS_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderAsset.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderCompiler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ShaderLoader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/TextureLoader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/Application.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/ApplicationPreferences.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/GlfwRuntime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/entity/EntityModelInstance.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/entity/EntityRenderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/input/GameplayInput.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/input/InputBindings.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/input/InputBindingsLoader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/input/InputState.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/input/PhysicalInput.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/input/keys.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/persistence/AsyncChunkLoader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/preferences/UserPreferences.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/render/CameraProjection.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/render/DebugOverlay.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/render/FrameRenderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/render/TemporalJitter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui/ImGuiBackends.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui/ImGuiLayer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/ChunkRenderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/ChunkStreamer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/ChunkVisibilityTrace.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/MeshBuilder.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/TextureAtlas.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/ViewDistancePolicy.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/VoxelVertex.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/WorldView.cpp
+)
+list(REMOVE_ITEM SOURCES ${RIGEL_GRAPHICS_SOURCES})
 
 # Asset preparation and embedding
 include(cmake/AssetResources.cmake)
@@ -70,7 +106,7 @@ if(RIGEL_RESOLVED_COSMIC_REACH_JAR)
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py"
         "${RIGEL_RESOLVED_COSMIC_REACH_JAR}"
-        "${CMAKE_CURRENT_BINARY_DIR}/embedded/RigelLib_resources.S")
+        "${CMAKE_CURRENT_BINARY_DIR}/embedded/RigelSemantic_resources.S")
     if(RIGEL_SYNCHRONIZED_COSMIC_REACH_JAR_SHA256 STREQUAL
        "58a2cc3b79b5413cfa0f2e4ae3b37f44ed7f11a5e828de57f9f3f71599ac570e")
         set(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS ON)
@@ -95,14 +131,14 @@ else()
         "  -DRIGEL_COSMIC_REACH_JAR=/absolute/path/Cosmic-Reach.jar")
 endif()
 
-add_library(RigelLib ${SOURCES})
+add_library(RigelSemantic ${SOURCES})
 
-target_compile_definitions(RigelLib PRIVATE
+target_compile_definitions(RigelSemantic PRIVATE
     $<$<CONFIG:Debug>:DEBUG>
     $<$<CONFIG:Debug>:RIGEL_ENABLE_PROFILER>
 )
 
-target_embed_resources(RigelLib ${RIGEL_RESOURCE_ROOTS})
+target_embed_resources(RigelSemantic ${RIGEL_RESOURCE_ROOTS})
 
 if(RIGEL_GENERATED_RESOURCE_ROOT)
     rigel_retire_generated_resource_snapshots(
@@ -112,27 +148,16 @@ if(RIGEL_GENERATED_RESOURCE_ROOT)
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rigel_assets.py")
 endif()
 
-target_include_directories(RigelLib
+target_include_directories(RigelSemantic
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_BINARY_DIR}/include
 )
 
-add_executable(${PROJECT_NAME} src/main.cpp)
-
 # Conan 2 generates these configs in build folder
 find_package(spdlog REQUIRED)
-find_package(glew REQUIRED)
-find_package(glfw3 REQUIRED)
-find_package(OpenGL REQUIRED)
 find_package(ryml REQUIRED)
-find_package(stb REQUIRED)
 find_package(glm REQUIRED)
-find_package(imgui REQUIRED)
-
-if (NOT RIGEL_IMGUI_BINDINGS_DIR)
-    message(FATAL_ERROR "The dependency toolchain must provide RIGEL_IMGUI_BINDINGS_DIR")
-endif()
 
 set(RIGEL_GIT_HASH "")
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -154,36 +179,65 @@ configure_file(
     @ONLY
 )
 
-target_link_libraries(RigelLib
+target_link_libraries(RigelSemantic
     PUBLIC
         spdlog::spdlog
-        GLEW::GLEW
-        glfw
         ryml::ryml
         glm::glm
-    PRIVATE
-        OpenGL::GL
-        stb::stb
-        imgui::imgui
 )
-
-target_include_directories(RigelLib PRIVATE "${RIGEL_IMGUI_BINDINGS_DIR}")
-target_compile_definitions(RigelLib PRIVATE RIGEL_ENABLE_IMGUI IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
 
 if (CMAKE_DL_LIBS)
-    target_link_libraries(RigelLib PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(RigelSemantic PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
-target_link_libraries(${PROJECT_NAME}
-    PRIVATE
-        RigelLib
-)
+if(RIGEL_BUILD_GRAPHICS)
+    find_package(glew REQUIRED)
+    find_package(glfw3 REQUIRED)
+    find_package(OpenGL REQUIRED)
+    find_package(stb REQUIRED)
+    find_package(imgui REQUIRED)
 
-set_target_properties(${PROJECT_NAME} PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
+    if(NOT RIGEL_IMGUI_BINDINGS_DIR)
+        message(FATAL_ERROR
+            "The dependency toolchain must provide RIGEL_IMGUI_BINDINGS_DIR")
+    endif()
+
+    add_library(RigelLib ${RIGEL_GRAPHICS_SOURCES})
+    target_compile_definitions(RigelLib PRIVATE
+        $<$<CONFIG:Debug>:DEBUG>
+        RIGEL_ENABLE_IMGUI
+        IMGUI_IMPL_OPENGL_LOADER_CUSTOM
+    )
+    target_include_directories(RigelLib
+        PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_BINARY_DIR}/include
+        PRIVATE
+            "${RIGEL_IMGUI_BINDINGS_DIR}"
+    )
+    target_link_libraries(RigelLib
+        PUBLIC
+            RigelSemantic
+            GLEW::GLEW
+            glfw
+        PRIVATE
+            OpenGL::GL
+            stb::stb
+            imgui::imgui
+    )
+
+    add_executable(${PROJECT_NAME} src/main.cpp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE RigelLib)
+
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+endif()
 
 option(RIGEL_BUILD_BENCHMARKS "Build Rigel performance benchmarks" OFF)
+if(RIGEL_BUILD_BENCHMARKS AND NOT RIGEL_BUILD_GRAPHICS)
+    message(FATAL_ERROR "Rigel benchmarks require RIGEL_BUILD_GRAPHICS=ON")
+endif()
 if (RIGEL_BUILD_BENCHMARKS)
     add_executable(Rigel_entity_collision_benchmark
         ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/entity_collision_benchmark.cpp
@@ -245,10 +299,35 @@ if (RIGEL_BUILD_BENCHMARKS)
     target_link_libraries(Rigel_streaming_assessment_benchmark PRIVATE RigelLib)
 endif()
 
-get_target_property(RIGEL_LIBRARY_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
+if(RIGEL_BUILD_GRAPHICS)
+    get_target_property(
+        RIGEL_LIBRARY_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
+endif()
 
 if (RIGEL_BUILD_TESTS)
     enable_testing()
+
+    set(CPU_SEMANTIC_TEST_SOURCE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpu_semantic_lifecycle_test.cpp)
+    add_executable(Rigel_cpu_semantic_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/TestFramework.cpp
+        ${CPU_SEMANTIC_TEST_SOURCE}
+    )
+    target_include_directories(Rigel_cpu_semantic_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_compile_definitions(Rigel_cpu_semantic_tests PRIVATE
+        RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(Rigel_cpu_semantic_tests PRIVATE RigelSemantic)
+    add_test(NAME Rigel_cpu_semantic_tests COMMAND Rigel_cpu_semantic_tests)
+    add_test(
+        NAME Rigel_cpu_semantic_linkage
+        COMMAND ${CMAKE_COMMAND}
+            "-DSEMANTIC_EXECUTABLE=$<TARGET_FILE:Rigel_cpu_semantic_tests>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpu_semantic_linkage_test.cmake
+    )
+
+    if(RIGEL_BUILD_GRAPHICS)
 
     if(RIGEL_EXPECT_COSMIC_REACH_0_6_1_ASSETS AND UNIX AND NOT APPLE)
         find_package(OpenGL REQUIRED COMPONENTS EGL)
@@ -279,6 +358,7 @@ if (RIGEL_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/application_launch_integration_test.cpp
     )
     list(REMOVE_ITEM TEST_SOURCES
+        ${CPU_SEMANTIC_TEST_SOURCE}
         ${PROFILER_TEST_SOURCE}
         ${BLOCK_ASSET_FAILURE_TEST_SOURCE}
         ${ASSET_MANIFEST_VALIDATION_TEST_SOURCE}
@@ -615,5 +695,6 @@ if (RIGEL_BUILD_TESTS)
     get_target_property(RIGEL_LIBRARY_TEST_COMPILE_DEFINITIONS RigelLib COMPILE_DEFINITIONS)
     if (NOT RIGEL_LIBRARY_TEST_COMPILE_DEFINITIONS STREQUAL RIGEL_LIBRARY_COMPILE_DEFINITIONS)
         message(FATAL_ERROR "Test targets must not change RigelLib compile definitions")
+    endif()
     endif()
 endif()

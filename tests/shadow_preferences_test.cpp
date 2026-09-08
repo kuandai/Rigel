@@ -4,6 +4,7 @@
 #include "ApplicationPreferences.h"
 #include "Rigel/Asset/AssetLoader.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Asset/ShaderLoader.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Voxel/World.h"
@@ -148,6 +149,8 @@ public:
         , view(world, resources)
         , path(m_directory.path() / "user-preferences.yaml") {
         context.require();
+        assets.registerLoader(
+            "shaders", std::make_unique<Rigel::Asset::ShaderLoader>());
         assets.loadManifest("manifest.yaml");
         view.initialize(assets);
 

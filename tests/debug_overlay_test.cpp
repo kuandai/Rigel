@@ -5,6 +5,7 @@
 #include "FrameRendererTestAccess.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Asset/ShaderLoader.h"
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/input/GameplayInput.h"
 #include "Rigel/input/InputBindingsLoader.h"
@@ -534,6 +535,8 @@ TEST_CASE(DebugOverlay_TargetOutlineRendersWithoutDiagnosticsToggle) {
     Rigel::Test::HiddenOpenGLContext context;
     context.require();
     Rigel::Asset::AssetManager assets;
+    assets.registerLoader(
+        "shaders", std::make_unique<Rigel::Asset::ShaderLoader>());
     assets.loadManifest("manifest.yaml");
     Rigel::Render::DebugState debug;
     Rigel::Render::initEntityDebug(debug, assets);
@@ -658,20 +661,13 @@ TEST_CASE(DebugOverlay_FrameTargetDepthAndHistoryAcrossTaaModes) {
     Rigel::Test::HiddenOpenGLContext context(extent, extent);
     context.require();
     Rigel::Asset::AssetManager assets;
+    assets.registerLoader(
+        "shaders", std::make_unique<Rigel::Asset::ShaderLoader>());
     assets.loadManifest("manifest.yaml");
 
     WorldResources resources;
     constexpr std::string_view texturePath =
         "textures/invented/frame_foreground.png";
-    const std::vector<unsigned char> texturePixels(
-        static_cast<size_t>(
-            resources.textureAtlas().tileSize() *
-            resources.textureAtlas().tileSize() * 4),
-        255);
-    resources.textureAtlas().addTexture(
-        std::string(texturePath), texturePixels.data());
-    resources.textureAtlas().upload();
-
     BlockType foregroundType;
     const std::string identifier = "invented:frame_foreground";
     foregroundType.identifier = identifier;
@@ -682,6 +678,13 @@ TEST_CASE(DebugOverlay_FrameTargetDepthAndHistoryAcrossTaaModes) {
         identifier, std::move(foregroundType));
     World world(resources);
     WorldView view(world, resources);
+    const std::vector<unsigned char> texturePixels(
+        static_cast<size_t>(
+            view.textureAtlas().tileSize() *
+            view.textureAtlas().tileSize() * 4),
+        255);
+    view.textureAtlas().addTexture(
+        std::string(texturePath), texturePixels.data());
     view.initialize(assets);
 
     auto generator = Rigel::Test::makeWorldGeneratorFixture(
@@ -844,7 +847,6 @@ TEST_CASE(DebugOverlay_FrameTargetDepthAndHistoryAcrossTaaModes) {
 
     renderer.release();
     view.releaseRenderResources();
-    resources.releaseRenderResources();
     assets.clearCache();
 }
 
@@ -852,6 +854,8 @@ TEST_CASE(DebugOverlay_EntityBoxesRetainSharedResourceLifecycle) {
     Rigel::Test::HiddenOpenGLContext context;
     context.require();
     Rigel::Asset::AssetManager assets;
+    assets.registerLoader(
+        "shaders", std::make_unique<Rigel::Asset::ShaderLoader>());
     assets.loadManifest("manifest.yaml");
     Rigel::Render::DebugState debug;
     Rigel::Render::initEntityDebug(debug, assets);

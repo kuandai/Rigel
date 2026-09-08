@@ -53,7 +53,9 @@ Shutdown persists world state and releases resources.
    - Cursor, focus, character, and scroll callbacks also feed camera or ImGui
      state as applicable.
 5. Load the asset manifest and register loaders.
-   - `input`, `entity_models`, `entity_anims` loaders are registered.
+   - Graphical texture and shader loaders plus `input`, `entity_models`, and
+     `entity_anims` loaders are registered before manifest loading. The asset
+     manager itself installs only the CPU-safe raw loader.
    - `shaders/voxel` is required. Failure to load it aborts view creation; the
      failed candidate is not published, so a later call can retry normally.
    - Voxel depth and transmission shadow shaders are optional independently.
@@ -73,18 +75,20 @@ Shutdown persists world state and releases resources.
    - ImGui initialization is optional. A false result or exception emits one
      warning naming ImGui, cleans partial UI state, and continues without UI.
 6. Initialize world resources.
-   - Block registry, texture atlas, and other shared resources.
-   - Failed block definitions, an all-air registry, or an empty texture atlas
-     abort world bootstrap before spawn discovery.
-   - Successful initialization records loaded block and texture counts.
+   - Normalized block models and registrations are parsed into the shared
+     semantic registry without decoding or uploading textures.
+   - Failed block definitions or an all-air registry abort world bootstrap
+     before spawn discovery.
 7. Load save-owned world identity and create the `WorldView` for the active
    `World`.
+   - The view derives and uploads its texture atlas from the complete registry.
    - For a new world, Rigel stages backend world metadata with world settings
      and the generator snapshot, verifies the authoritative format probe, and
      atomically publishes the complete save while holding the per-world
      bootstrap lock. A root without the authoritative backend marker is
      rejected unchanged before either runtime owner receives a generator.
-   - `WorldGenerator` is then attached to both.
+   - `WorldGenerator` is attached to the semantic world by bootstrap, then the
+     application attaches the same immutable generator to the view.
 8. Load entity data from disk (chunks are lazy-loaded).
    - `loadBootstrapEntities(...)` first requires the published settings,
      generator snapshot, and backend identity. Only then may it replay an

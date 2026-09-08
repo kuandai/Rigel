@@ -9,6 +9,7 @@
 #include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 #include "Rigel/Voxel/BlockType.h"
 #include "Rigel/Voxel/GeneratorDefinition.h"
+#include "Rigel/Voxel/WorldView.h"
 
 #include <condition_variable>
 #include <exception>
@@ -286,7 +287,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_world_id_rejects_before_pu
         worldSet,
         2,
         world,
-        view,
         resolver,
         context));
 
@@ -326,7 +326,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_preowned_world_rejects_before_publ
         worldSet,
         1,
         world,
-        view,
         resolver,
         context));
 
@@ -340,7 +339,7 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_preowned_world_rejects_before_publ
     checkStreamingMetricsEqual(view.streamingMetrics(), before);
 }
 
-TEST_CASE(ApplicationWorldGenerationBootstrap_mismatched_view_rejects_before_publication) {
+TEST_CASE(ApplicationWorldGenerationBootstrap_unrelated_view_remains_detached) {
     Rigel::Test::TemporaryDirectory directory(
         "rigel_application_bootstrap_mismatched_view");
     const auto root = directory.path() / "world_1";
@@ -353,28 +352,26 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_mismatched_view_rejects_before_pub
     Rigel::Voxel::WorldView view(
         unrelatedWorld, worldSet.resources());
     const auto context = worldSet.persistenceContext(1);
-    worldSet.setPersistenceActiveFormat(1, "cr");
     const auto before = view.streamingMetrics();
     size_t resolverCalls = 0;
     Rigel::Persistence::NewWorldGenerationFactory resolver = [&] {
         ++resolverCalls;
-        return creation(404u, 0.25f, "must not split ownership");
+        return creation(404u, 0.25f, "semantic bootstrap");
     };
 
-    CHECK_THROWS(Rigel::detail::bootstrapApplicationWorldGeneration(
+    CHECK_NO_THROW(Rigel::detail::bootstrapApplicationWorldGeneration(
         worldSet,
         1,
         world,
-        view,
         resolver,
         context));
 
-    CHECK_EQ(resolverCalls, size_t{0});
-    CHECK(!std::filesystem::exists(root));
+    CHECK_EQ(resolverCalls, size_t{1});
+    CHECK(std::filesystem::exists(root));
     CHECK_EQ(
         worldSet.persistenceContext(1).preferredFormat,
-        std::string("cr"));
-    CHECK(world.generator() == nullptr);
+        std::string("memory"));
+    CHECK(world.generator() != nullptr);
     CHECK(unrelatedWorld.generator() == nullptr);
     CHECK(view.generator() == nullptr);
     checkStreamingMetricsEqual(view.streamingMetrics(), before);
@@ -396,7 +393,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_published_save_never_resolves_inst
             publishingSet,
             1,
             world,
-            view,
             deferredCreation(creation(101u, 0.25f, "published")),
             publishingSet.persistenceContext(1));
     }
@@ -416,7 +412,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_published_save_never_resolves_inst
             reopeningSet,
             1,
             world,
-            view,
             resolver,
             reopeningSet.persistenceContext(1));
 
@@ -447,7 +442,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_missing_save_resolves_once_without
         worldSet,
         1,
         world,
-        view,
         resolver,
         worldSet.persistenceContext(1)));
     CHECK_EQ(resolverCalls, size_t{1});
@@ -504,7 +498,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_publish_while_waiting_skips_resolv
                     firstSet,
                     1,
                     firstWorld,
-                    firstView,
                     firstResolver,
                     firstSet.persistenceContext(1)));
         } catch (...) {
@@ -522,7 +515,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_publish_while_waiting_skips_resolv
                     waitingSet,
                     1,
                     waitingWorld,
-                    waitingView,
                     waitingResolver,
                     waitingSet.persistenceContext(1)));
         } catch (...) {
@@ -567,7 +559,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_failure_never_installs_generator) 
             worldSet,
             1,
             world,
-            view,
             deferredCreation(creation(101, 0.25f, "failure")),
             context));
         CHECK(world.generator() == nullptr);
@@ -605,7 +596,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_malformed_save_starts_no_generatio
         worldSet,
         1,
         world,
-        view,
         deferredCreation(creation(999u, -1.0f, "installed fallback")),
         worldSet.persistenceContext(1)));
     CHECK(world.generator() == nullptr);
@@ -633,11 +623,12 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_reload_uses_saved_snapshot) {
             worldSet,
             1,
             world,
-            view,
             deferredCreation(installedAtCreation),
             worldSet.persistenceContext(1));
         CHECK_EQ(result.generator->seed(), 111u);
         CHECK_EQ(result.generator, world.generator());
+        CHECK(view.generator() == nullptr);
+        view.setGenerator(result.generator);
         CHECK_EQ(result.generator, view.generator());
     }
 
@@ -657,7 +648,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_reload_uses_saved_snapshot) {
             worldSet,
             1,
             world,
-            view,
             deferredCreation(installed),
             worldSet.persistenceContext(1));
         CHECK_EQ(result.persistenceFormat, std::string("memory"));
@@ -666,6 +656,8 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_reload_uses_saved_snapshot) {
             result.generator->definition().densityGraph.nodes.front().value,
             0.25f);
         CHECK_EQ(result.generator, world.generator());
+        CHECK(view.generator() == nullptr);
+        view.setGenerator(result.generator);
         CHECK_EQ(result.generator, view.generator());
     }
 }
@@ -686,7 +678,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_creation_starts_no_generat
         worldSet,
         1,
         world,
-        view,
         deferredCreation(input),
         worldSet.persistenceContext(1)));
     CHECK(world.generator() == nullptr);
@@ -724,7 +715,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_gallery_bounds_reject_before_publi
         worldSet,
         1,
         world,
-        view,
         resolver,
         context,
         gallery));
@@ -765,7 +755,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_markerless_save_fails_unchanged) {
             worldSet,
             1,
             world,
-            view,
             deferredCreation(saved),
             worldSet.persistenceContext(1));
         storage->remove((root / "world.meta").string());
@@ -781,7 +770,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_markerless_save_fails_unchanged) {
             worldSet,
             1,
             world,
-            view,
             Rigel::Persistence::NewWorldGenerationFactory{},
             worldSet.persistenceContext(1)));
         CHECK(world.generator() == nullptr);
@@ -812,7 +800,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_weak_evidence_fails_unchanged) {
             publishingSet,
             1,
             publishingWorld,
-            publishingView,
             deferredCreation(saved),
             publishingSet.persistenceContext(1));
     }
@@ -827,7 +814,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_weak_evidence_fails_unchanged) {
         reopeningSet,
         1,
         world,
-        view,
         Rigel::Persistence::NewWorldGenerationFactory{},
         reopeningSet.persistenceContext(1)));
     CHECK(world.generator() == nullptr);
@@ -856,7 +842,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_corrupt_backend_identity_fails_unc
             publishingSet,
             1,
             publishingWorld,
-            publishingView,
             deferredCreation(
                 creation(445, 0.5f, "corrupt identity world")),
             publishingSet.persistenceContext(1));
@@ -873,7 +858,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_corrupt_backend_identity_fails_unc
         reopeningSet,
         1,
         world,
-        view,
         Rigel::Persistence::NewWorldGenerationFactory{},
         reopeningSet.persistenceContext(1)));
     CHECK(world.generator() == nullptr);
@@ -901,7 +885,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_saved_content_is_not_claim
             publishingSet,
             1,
             publishingWorld,
-            publishingView,
             deferredCreation(
                 creation(555, 0.5f, "unavailable content world")),
             publishingSet.persistenceContext(1));
@@ -914,7 +897,6 @@ TEST_CASE(ApplicationWorldGenerationBootstrap_invalid_saved_content_is_not_claim
         reopeningSet,
         1,
         world,
-        view,
         Rigel::Persistence::NewWorldGenerationFactory{},
         reopeningSet.persistenceContext(1)));
     CHECK(world.generator() == nullptr);

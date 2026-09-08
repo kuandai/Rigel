@@ -4,6 +4,7 @@
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Asset/ShaderCompiler.h"
 #include "Rigel/Asset/ShaderLoader.h"
+#include "Rigel/Asset/Types.h"
 
 #include <array>
 #include <charconv>
@@ -204,6 +205,7 @@ TEST_CASE(ShaderCompiler_ManifestShaderVersionsMatchRuntime) {
             Rigel::Render::kOpenGLContextMinorVersion * 10);
 
     AssetManager assets;
+    assets.registerLoader("shaders", std::make_unique<ShaderLoader>());
     CHECK_NO_THROW(assets.loadManifest("manifest.yaml"));
 
     std::unordered_set<std::string> checkedPaths;
@@ -227,6 +229,7 @@ TEST_CASE(ShaderCompiler_ShippedProgramsCompileAndLink) {
     context.require();
 
     AssetManager assets;
+    assets.registerLoader("shaders", std::make_unique<ShaderLoader>());
     CHECK_NO_THROW(assets.loadManifest("manifest.yaml"));
 
     size_t compiledPrograms = 0;

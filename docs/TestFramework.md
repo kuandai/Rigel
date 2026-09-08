@@ -10,6 +10,9 @@ run in Rigel.
 Rigel uses a minimal in-tree test harness located in `tests/`:
 
 - Most tests are compiled into `Rigel_tests` and link against `RigelLib`.
+- `Rigel_cpu_semantic_tests` links only `RigelSemantic`, constructs real block,
+  model, generator, world, and entity objects, and has a linkage test that
+  rejects GL, EGL, GLFW, or GLEW libraries.
 - Profiler tests are compiled into `Rigel_profiler_tests` with an isolated
   profiler implementation so test instrumentation does not change `RigelLib`.
 - Block asset failure coverage is compiled into
@@ -38,6 +41,7 @@ There is no external testing library (Catch2, GoogleTest, etc.).
 Tests are controlled by the CMake option:
 
 - `RIGEL_BUILD_TESTS` (default `ON`)
+- `RIGEL_BUILD_GRAPHICS` (default `ON`)
 
 To disable tests, append `-DRIGEL_BUILD_TESTS=OFF` to either configure command
 below.
@@ -47,6 +51,7 @@ below.
 When enabled, CMake adds:
 
 - `Rigel_tests` (test executable)
+- `Rigel_cpu_semantic_tests` (available with graphics enabled or disabled)
 - `Rigel_profiler_tests` (profiler test executable)
 - `Rigel_block_asset_failure_tests` (missing-resource test executable)
 - `Rigel_public_header_consumer` (public dependency interface check)
@@ -80,6 +85,21 @@ cmake -S . -B "$rigel_release_build" \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build "$rigel_release_build" --parallel
 ctest --test-dir "$rigel_release_build" --output-on-failure --parallel
+```
+
+To configure the CPU semantic boundary without installing or discovering
+graphics packages, use the matching Conan option and CMake option:
+
+```bash
+rigel_cpu_build=../Rigel-build-cpu
+conan install . --output-folder="$rigel_cpu_build" --build=missing \
+  -s build_type=Debug -o '&:with_graphics=False' \
+  -c tools.cmake.cmaketoolchain:user_presets=""
+cmake -S . -B "$rigel_cpu_build" \
+  -DCMAKE_TOOLCHAIN_FILE="$rigel_cpu_build/conan_toolchain.cmake" \
+  -DCMAKE_BUILD_TYPE=Debug -DRIGEL_BUILD_GRAPHICS=OFF
+cmake --build "$rigel_cpu_build" --parallel 8
+ctest --test-dir "$rigel_cpu_build" --output-on-failure
 ```
 
 Those commands are source-only gates only when all three JAR selectors are

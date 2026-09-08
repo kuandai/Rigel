@@ -83,9 +83,11 @@ The manifest category determines which loader handles the asset.
 | `entity_anims` | `EntityAnimationSetLoader` | Loads entity animations. |
 | `generator_definitions` | `GeneratorDefinitionLoader` | Strictly loads the complete named generator-definition set. |
 
-The default loaders (`raw`, `textures`, `shaders`) are registered automatically
-when `AssetManager::loadManifest()` is called. Other loaders must be registered
-explicitly in application startup.
+`RawLoader` is the only loader registered automatically by `AssetManager`.
+The graphical application registers `TextureLoader` and `ShaderLoader` before
+loading the manifest; CPU semantic consumers do not construct or link those
+loaders. Input, entity model, entity animation, and generator loaders are also
+registered explicitly by their owning consumer.
 
 ## Embedded Category Scanning
 
@@ -102,6 +104,11 @@ use as the asset name. If missing, the path (sans prefix/suffix) is used.
 This allows entity assets and textures to be used without explicit manifest
 entries. `BlockLoader` separately discovers normalized
 `models/blocks/*.yaml` resources before `blocks/*.yaml` resources.
+
+Normalized block parsing retains texture paths as logical identifiers. It does
+not decode images or populate an atlas. A `WorldView` constructs its own
+`TextureAtlas` from the completed `BlockRegistry`, then uploads that atlas when
+the view is initialized with a graphics context.
 
 ## Normalized block models
 

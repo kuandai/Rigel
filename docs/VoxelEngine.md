@@ -7,12 +7,13 @@ behavior is covered by the linked subsystem documents.
 ## Ownership
 
 - `WorldSet` owns world entries, shared `WorldResources`, and persistence
-  services. Each entry contains one `World` and optionally one `WorldView`.
-- `WorldResources` owns the set-wide `BlockRegistry` and `TextureAtlas`.
+  services. Each entry contains one `World`.
+- `WorldResources` owns the set-wide semantic `BlockRegistry`.
 - `World` owns authoritative chunk data through `ChunkManager`, entities, a
   `WorldGenerator`, and persistence providers.
 - `WorldView` owns derived state: `ChunkStreamer`, `WorldMeshStore`,
-  `ChunkRenderer`, `EntityRenderer`, shaders, and the internal `RenderProfile`.
+  `ChunkRenderer`, `EntityRenderer`, `TextureAtlas`, shaders, and the internal
+  `RenderProfile`.
 - `FrameRenderer` owns frame-level camera matrices, TAA, and debug overlays and
   delegates world drawing to the active `WorldView`.
 
@@ -36,10 +37,11 @@ byte containing sky and block light nibbles.
 - Emitted-light and attenuation values
 
 `BlockRegistry` assigns sequential IDs and supports lookup by ID or identifier.
-`WorldResources::initialize()` uses `BlockLoader` to load block assets and build
-the texture atlas before worlds are created. Initialization rejects failed block
-definitions, an all-air registry, or an empty atlas. A successful interactive
-startup logs the loaded definition and texture counts before spawn discovery.
+`WorldResources::initialize()` uses `BlockLoader` to load block assets before
+worlds are created. Initialization rejects failed block definitions or an
+all-air registry. A graphical `WorldView` later derives its texture atlas from
+the frozen registry's logical texture paths. A successful interactive startup
+logs the loaded definition and texture counts before spawn discovery.
 The candidate registry is published atomically and then frozen before chunk
 mesh workers can read it. Registrations transitively retain immutable,
 Rigel-normalized `BlockModel` geometry.
@@ -227,7 +229,7 @@ then draws frame-level debug overlays.
 
 ## Texture Atlas
 
-The set-wide `TextureAtlas` stores one 16-by-16 RGBA block texture per
+Each `WorldView` owns a `TextureAtlas` with one 16-by-16 RGBA block texture per
 `GL_TEXTURE_2D_ARRAY` layer by default. It also uploads one average-tint texel
 per layer for transparent shadow transmittance. Mesh vertices select a layer;
 canonical cube faces use normalized zero-to-one UVs, while normalized models

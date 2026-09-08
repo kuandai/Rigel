@@ -5,6 +5,7 @@
 #include "ApplicationTestAccess.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Asset/ShaderCompiler.h"
+#include "Rigel/Asset/ShaderLoader.h"
 #include "Rigel/Preferences/UserPreferences.h"
 #include "Rigel/Voxel/ChunkRenderer.h"
 #include "Rigel/Voxel/StreamingConfig.h"
@@ -586,6 +587,8 @@ TEST_CASE(ChunkRenderer_PreservesTextureLayersAcrossByteBoundary) {
     atlas.upload();
 
     Asset::AssetManager assets;
+    assets.registerLoader(
+        "shaders", std::make_unique<Asset::ShaderLoader>());
     assets.loadManifest("manifest.yaml");
     const auto voxelShader = assets.get<Asset::ShaderAsset>("shaders/voxel");
     const auto shadowDepthShader =
@@ -642,6 +645,8 @@ TEST_CASE(ChunkRenderer_PreservesAuthoredAlphaAndLayerDepthPolicy) {
     atlas.upload();
 
     Asset::AssetManager assets;
+    assets.registerLoader(
+        "shaders", std::make_unique<Asset::ShaderLoader>());
     assets.loadManifest("manifest.yaml");
     const auto voxelShader = assets.get<Asset::ShaderAsset>("shaders/voxel");
     CHECK_EQ(

@@ -5,6 +5,7 @@
 #include "ApplicationPreferences.h"
 #include "ApplicationTestAccess.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Asset/ShaderLoader.h"
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/Memory/MemoryFormat.h"
 #include "Rigel/Persistence/PersistenceService.h"
@@ -346,18 +347,12 @@ TEST_CASE(WorldView_ViewPolicyDrivesFrameProjectionAndShadowCeiling) {
     context.require();
 
     Rigel::Asset::AssetManager assets;
+    assets.registerLoader(
+        "shaders", std::make_unique<Rigel::Asset::ShaderLoader>());
     assets.loadManifest("manifest.yaml");
     WorldResources resources;
     constexpr std::string_view texturePath =
         "textures/test/world_view_policy.png";
-    const std::vector<unsigned char> pixels(
-        static_cast<size_t>(
-            resources.textureAtlas().tileSize() *
-            resources.textureAtlas().tileSize() * 4),
-        255);
-    resources.textureAtlas().addTexture(
-        std::string(texturePath), pixels.data());
-    resources.textureAtlas().upload();
     BlockType solid;
     solid.identifier = "test:world_view_policy_solid";
     solid.isOpaque = true;
@@ -366,6 +361,12 @@ TEST_CASE(WorldView_ViewPolicyDrivesFrameProjectionAndShadowCeiling) {
         resources.registry().registerBlock(solid.identifier, solid);
     World world(resources);
     WorldView view(world, resources);
+    const std::vector<unsigned char> pixels(
+        static_cast<size_t>(
+            view.textureAtlas().tileSize() *
+            view.textureAtlas().tileSize() * 4),
+        255);
+    view.textureAtlas().addTexture(std::string(texturePath), pixels.data());
     view.initialize(assets);
 
     GeneratorDefinitionData generation =
@@ -484,7 +485,6 @@ TEST_CASE(WorldView_ViewPolicyDrivesFrameProjectionAndShadowCeiling) {
         0.0001f);
 
     view.releaseRenderResources();
-    resources.releaseRenderResources();
     assets.clearCache();
 }
 
@@ -493,6 +493,8 @@ TEST_CASE(WorldView_DebugDrawEvidenceTracksRenderedMeshRevision) {
     context.require();
 
     Rigel::Asset::AssetManager assets;
+    assets.registerLoader(
+        "shaders", std::make_unique<Rigel::Asset::ShaderLoader>());
     assets.loadManifest("manifest.yaml");
 
     WorldResources resources;

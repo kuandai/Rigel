@@ -2,6 +2,8 @@
 #include "OpenGLFixture.h"
 
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Asset/ShaderLoader.h"
+#include "Rigel/Asset/Types.h"
 
 using namespace Rigel::Asset;
 
@@ -74,12 +76,13 @@ TEST_CASE(AssetManager_ShaderEntriesHaveRequiredStages) {
     CHECK(shaderCount > 0);
 }
 
-TEST_CASE(AssetManager_CustomLoaderBeforeManifestKeepsShaderLoader) {
+TEST_CASE(AssetManager_ExplicitRenderLoaderSurvivesManifestLoading) {
     Rigel::Test::HiddenOpenGLContext context;
     context.require();
 
     AssetManager assets;
     assets.registerLoader("input", std::make_unique<InputLoader>());
+    assets.registerLoader("shaders", std::make_unique<ShaderLoader>());
     assets.loadManifest("manifest.yaml");
 
     const auto shader = assets.get<ShaderAsset>("shaders/voxel");

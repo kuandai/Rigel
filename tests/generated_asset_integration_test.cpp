@@ -4,6 +4,7 @@
 #include "OpenGLFixture.h"
 #include "ResourceRegistry.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Asset/ShaderLoader.h"
 #include "Rigel/Asset/Types.h"
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Render/FrameRenderer.h"
@@ -636,9 +637,8 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
 
     BlockModelRegistry models;
     BlockRegistry preparedRegistry;
-    TextureAtlas preparedAtlas;
     const BlockLoadReport report = BlockLoader{}.loadFromManifest(
-        assets, models, preparedRegistry, preparedAtlas);
+        assets, models, preparedRegistry);
     CHECK(report.modelsLoaded > 0);
     CHECK_EQ(report.modelsFailed, static_cast<size_t>(0));
     CHECK_EQ(report.failed, static_cast<size_t>(0));
@@ -664,7 +664,6 @@ TEST_CASE(GeneratedAssets_LoadNormalizedBlockDefinitions) {
     CHECK_EQ(report.loaded, static_cast<size_t>(2020));
     CHECK_EQ(report.skipped, static_cast<size_t>(1));
     CHECK_EQ(preparedRegistry.size(), static_cast<size_t>(2021));
-    CHECK_EQ(preparedAtlas.textureCount(), static_cast<size_t>(276));
     const auto& visualExtents = preparedRegistry.modelExtents();
     CHECK(visualExtents.has_value());
     for (size_t axis = 0; axis < 3; ++axis) {
@@ -851,9 +850,8 @@ TEST_CASE(GeneratedAssets_QueryAndCollideWithNormalizedShapes) {
 
     WorldResources resources;
     BlockModelRegistry models;
-    TextureAtlas atlas;
     const BlockLoadReport report = BlockLoader{}.loadFromManifest(
-        assets, models, resources.registry(), atlas);
+        assets, models, resources.registry());
     CHECK_EQ(report.failed, static_cast<size_t>(0));
     CHECK_EQ(report.loaded, static_cast<size_t>(2020));
     resources.registry().freeze();
@@ -1133,9 +1131,8 @@ TEST_CASE(GeneratedAssets_TargetRepresentativeModelSurfaces) {
 
     WorldResources resources;
     BlockModelRegistry models;
-    TextureAtlas atlas;
     const BlockLoadReport report = BlockLoader{}.loadFromManifest(
-        assets, models, resources.registry(), atlas);
+        assets, models, resources.registry());
     CHECK_EQ(report.failed, static_cast<size_t>(0));
     CHECK_EQ(report.loaded, static_cast<size_t>(2020));
     CHECK_EQ(resources.registry().size(), static_cast<size_t>(2021));
@@ -1242,6 +1239,8 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     context.require();
 
     Rigel::Asset::AssetManager assets;
+    assets.registerLoader(
+        "shaders", std::make_unique<Rigel::Asset::ShaderLoader>());
     assets.loadManifest("manifest.yaml");
 
     WorldResources resources;
@@ -1249,7 +1248,10 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     CHECK(resources.initialized());
     CHECK(resources.registry().frozen());
     CHECK_EQ(resources.registry().size(), static_cast<size_t>(2021));
-    CHECK_EQ(resources.textureAtlas().textureCount(), static_cast<size_t>(276));
+    TextureAtlas atlas;
+    atlas.loadFromRegistry(resources.registry());
+    atlas.upload();
+    CHECK_EQ(atlas.textureCount(), static_cast<size_t>(276));
 
     const auto generator = loadPreparedGeneratorDefinitionSnapshot(
         assets, resources.registry(), "rigel:default");
@@ -1280,7 +1282,7 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
              &slab, &stair, &door, &ladder, &alphaCutout, &mixedTable,
              &pistonHead}) {
         CHECK(!block->model->isFullCube());
-        checkTextureBindings(*block, resources.textureAtlas());
+        checkTextureBindings(*block, atlas);
     }
 
     CHECK_EQ(slab.model->cuboids().size(), static_cast<size_t>(1));
@@ -1328,36 +1330,36 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
              std::pair{VegetationId, RenderLayer::Cutout},
          }) {
         checkExclusiveMeshLayer(
-            buildOne(resources.registry(), resources.textureAtlas(), identifier),
+            buildOne(resources.registry(), atlas, identifier),
             expectedLayer);
     }
 
     const ChunkMesh slabMesh = buildOne(
-        resources.registry(), resources.textureAtlas(), SlabId);
+        resources.registry(), atlas, SlabId);
     checkMeshCardinality(slabMesh, 24, 36, RenderLayer::Opaque);
     const PositionRange slabRange = positionRange(slabMesh);
     CHECK_EQ(slabRange.min[1], 1.0f);
     CHECK_EQ(slabRange.max[1], 1.5f);
 
     const ChunkMesh stairMesh = buildOne(
-        resources.registry(), resources.textureAtlas(), StairId);
+        resources.registry(), atlas, StairId);
     checkMeshCardinality(stairMesh, 40, 60, RenderLayer::Opaque);
 
     const ChunkMesh doorMesh = buildOne(
-        resources.registry(), resources.textureAtlas(), DoorId);
+        resources.registry(), atlas, DoorId);
     checkMeshCardinality(doorMesh, 24, 36, RenderLayer::Opaque);
     const PositionRange doorRange = positionRange(doorMesh);
     CHECK_NEAR(doorRange.max[2] - doorRange.min[2], 0.125f, 0.00001f);
 
     const ChunkMesh ladderMesh = buildOne(
-        resources.registry(), resources.textureAtlas(), LadderId);
+        resources.registry(), atlas, LadderId);
     checkMeshCardinality(ladderMesh, 8, 12, RenderLayer::Cutout);
     const PositionRange ladderRange = positionRange(ladderMesh);
     CHECK_NEAR(
         ladderRange.max[0] - ladderRange.min[0], 0.00625f, 0.00001f);
 
     const ChunkMesh alphaCutoutMesh = buildOne(
-        resources.registry(), resources.textureAtlas(), AlphaCutoutId);
+        resources.registry(), atlas, AlphaCutoutId);
     checkMeshCardinality(
         alphaCutoutMesh, 16, 24, RenderLayer::Cutout);
 
@@ -1369,7 +1371,7 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
         mixedTable.renderLayerForTextureSlot("top"),
         RenderLayer::Transparent);
     const ChunkMesh mixedTableMesh = buildOne(
-        resources.registry(), resources.textureAtlas(), MultiCuboidId);
+        resources.registry(), atlas, MultiCuboidId);
     CHECK_EQ(mixedTableMesh.vertexCount(), static_cast<size_t>(144));
     CHECK_EQ(mixedTableMesh.indexCount(), static_cast<size_t>(216));
     CHECK_EQ(
@@ -1382,7 +1384,7 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
         static_cast<uint32_t>(36));
 
     const ChunkMesh pistonMesh = buildOne(
-        resources.registry(), resources.textureAtlas(), PistonHeadId);
+        resources.registry(), atlas, PistonHeadId);
     checkMeshCardinality(pistonMesh, 48, 72, RenderLayer::Opaque);
     const PositionRange pistonRange = positionRange(pistonMesh);
     CHECK_EQ(pistonRange.min[0], 0.75f);
@@ -1412,7 +1414,7 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     ChunkMesh mesh = MeshBuilder{}.build({
         .chunk = chunk,
         .registry = resources.registry(),
-        .atlas = &resources.textureAtlas(),
+        .atlas = &atlas,
         .neighbors = {},
     });
     CHECK_EQ(mesh.vertexCount(), static_cast<size_t>(160));
@@ -1438,7 +1440,7 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     std::set<uint16_t> expectedLayers;
     for (const std::string_view path : expectedTextures) {
         const TextureHandle handle =
-            resources.textureAtlas().findTexture(std::string(path));
+            atlas.findTexture(std::string(path));
         CHECK(handle.isValid());
         expectedLayers.insert(handle.index);
     }
@@ -1457,7 +1459,7 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
 
     WorldRenderContext renderContext;
     renderContext.meshes = &store;
-    renderContext.atlas = &resources.textureAtlas();
+    renderContext.atlas = &atlas;
     renderContext.shader =
         assets.get<Rigel::Asset::ShaderAsset>("shaders/voxel");
     renderContext.renderDistanceWorldUnits = 128.0f;
@@ -1472,7 +1474,7 @@ TEST_CASE(GeneratedAssets_BuildUploadAndSubmitRepresentativeModels) {
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
 
     renderer.releaseResources();
-    resources.releaseRenderResources();
+    atlas.releaseGPU();
 #endif
 }
 
@@ -1485,9 +1487,13 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     context.require();
 
     Rigel::Asset::AssetManager assets;
+    assets.registerLoader(
+        "shaders", std::make_unique<Rigel::Asset::ShaderLoader>());
     assets.loadManifest("manifest.yaml");
     WorldResources resources;
     resources.initialize(assets);
+    TextureAtlas atlas;
+    atlas.loadFromRegistry(resources.registry());
 
     const BlockGalleryCatalog catalog(resources.registry());
     auto gallery = std::make_shared<const BlockGalleryChunkGenerator>(
@@ -1558,7 +1564,7 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
         const ChunkMesh mesh = MeshBuilder{}.build({
             .chunk = chunk,
             .registry = resources.registry(),
-            .atlas = &resources.textureAtlas(),
+            .atlas = &atlas,
             .neighbors = {},
         });
         CHECK_EQ(
@@ -1581,7 +1587,7 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
             const ChunkMesh isolatedMesh = MeshBuilder{}.build({
                 .chunk = isolated,
                 .registry = resources.registry(),
-                .atlas = &resources.textureAtlas(),
+                .atlas = &atlas,
                 .neighbors = {},
             });
             CHECK(
@@ -1791,6 +1797,5 @@ TEST_CASE(GeneratedAssets_RenderGallerySpecimensThroughFrameRenderer) {
     renderer.release();
     view.clear();
     view.releaseRenderResources();
-    resources.releaseRenderResources();
 #endif
 }

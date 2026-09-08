@@ -100,6 +100,45 @@ an earlier cut. Consumers must pump these bounded publications, or explicitly
 recover after falling behind. Host entity
 IDs are allocated by the host rather than by entity constructors.
 
+Entity spawn/despawn, session start, and command submission are inter-tick
+admissions. Their effects are immediately visible to an owner-side checkpoint and
+to the next tick; they never appear partway through a tick. The recording stores
+successful admissions in that same order with the tick after which they became
+visible. Rejected calls are observations, not replay inputs.
+
+## Checkpoints and replay
+
+`SimulationCheckpointManager` is the sole live publisher for one supplied save
+root. It holds the storage root lock for its lifetime and permits one asynchronous
+writer. A request copies one coherent host cut before returning; requests arriving
+while that write or its terminal outcome is outstanding coalesce without a second
+capture. Destruction joins the writer before releasing the root lock.
+
+Checkpoint payloads contain the complete semantic dictionary, content/generator
+manifest, normalized loaded-chunk coverage and block states, complete admitted
+built-in entity state, tick and time debt, allocator, session, command receipts,
+admission counters, configuration, and pending decisions. Compact block IDs in the
+payload index the saved semantic dictionary and are rebound only after its stable
+keys and manifest match the current process. Unsupported entity rules, models,
+states, or block meaning reject capture or recovery.
+
+Each immutable payload binds its generation and parent cut hash. After the payload
+is committed, a small atomic pointer publishes that generation, ancestry, cut,
+payload length, and payload hash. Only a durable pointer advances acknowledged
+history. A definitely unpublished error permits a later request; a pointer commit
+whose durability is unknown blocks both later publication and recovery through
+that manager. Unknown root entries and incompatible pointer formats are reported
+without rewriting or removing them. Historical payloads never replace the live
+pointer.
+
+State playback recovers the exact saved cut. Command resimulation is separate:
+`recording()` returns the initial state plus the ordered successful inter-tick
+admissions, and `resimulate()` applies them to the real CPU host while advancing
+with caller-supplied frame pacing. It compares a canonical semantic hash at the
+declared final tick and reports envelope mismatch, malformed input, or divergence.
+The envelope is the current built-in CPU entity rule and bounded terrain; this is
+not a claim of cross-platform floating-point or external physics lockstep.
+
 ## Loopback replicas
 
 Connecting a replica captures a complete immutable baseline and installs its

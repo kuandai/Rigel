@@ -3,6 +3,8 @@
 
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Entity/EntityTags.h"
+#include "Rigel/Persistence/InMemoryStorage.h"
+#include "Rigel/Simulation/SimulationCheckpoint.h"
 #include "Rigel/Simulation/SimulationHost.h"
 #include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
@@ -10,10 +12,13 @@
 #include "Rigel/Voxel/WorldResources.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
+#include <thread>
 #include <vector>
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES
@@ -178,6 +183,103 @@ struct HostFixture {
             SessionStartStatus::Started);
     }
 };
+
+class CheckpointFaultStorage final : public Persistence::StorageBackend {
+public:
+    enum class Fault { None, DelayPayload, PointerUncertain };
+
+    explicit CheckpointFaultStorage(Fault fault)
+        : m_fault(fault), m_storage(
+              std::make_shared<Persistence::InMemoryStorageBackend>()) {}
+
+    class Session final : public Persistence::AtomicWriteSession {
+    public:
+        Session(CheckpointFaultStorage& owner, std::string path,
+                std::unique_ptr<Persistence::AtomicWriteSession> delegate)
+            : m_owner(owner), m_path(std::move(path)),
+              m_delegate(std::move(delegate)) {}
+        Persistence::ByteWriter& writer() override { return m_delegate->writer(); }
+        void commit() override {
+            if (m_owner.m_fault == Fault::DelayPayload && m_path.ends_with(".bin")) {
+                std::unique_lock lock(m_owner.m_mutex);
+                m_owner.m_payloadWaiting = true;
+                m_owner.m_changed.notify_all();
+                m_owner.m_changed.wait(lock, [&] { return m_owner.m_releasePayload; });
+            }
+            m_delegate->commit();
+            if (m_owner.m_fault == Fault::PointerUncertain &&
+                m_path.ends_with("/current")) {
+                throw Persistence::AtomicFilePublicationError(
+                    Persistence::AtomicFilePublicationState::PublishedDurabilityUncertain,
+                    "injected post-publication sync failure");
+            }
+        }
+        void abort() override { m_delegate->abort(); }
+    private:
+        CheckpointFaultStorage& m_owner;
+        std::string m_path;
+        std::unique_ptr<Persistence::AtomicWriteSession> m_delegate;
+    };
+
+    void waitForPayload() {
+        std::unique_lock lock(m_mutex);
+        m_changed.wait(lock, [&] { return m_payloadWaiting; });
+    }
+    void releasePayload() {
+        std::lock_guard lock(m_mutex);
+        m_releasePayload = true;
+        m_changed.notify_all();
+    }
+
+    std::unique_ptr<Persistence::ByteReader> openRead(const std::string& path) override {
+        return m_storage->openRead(path);
+    }
+    std::unique_ptr<Persistence::AtomicWriteSession> openWrite(
+        const std::string& path) override {
+        return std::make_unique<Session>(*this, path, m_storage->openWrite(path));
+    }
+    bool exists(const std::string& path) override { return m_storage->exists(path); }
+    Persistence::StorageEntryKind entryKind(const std::string& path) override {
+        return m_storage->entryKind(path);
+    }
+    void forEachEntry(const std::string& path,
+                      const Persistence::StorageEntryVisitor& visitor) override {
+        m_storage->forEachEntry(path, visitor);
+    }
+    void mkdirs(const std::string& path) override { m_storage->mkdirs(path); }
+    bool createDirectoryExclusive(const std::string& path) override {
+        return m_storage->createDirectoryExclusive(path);
+    }
+    bool createFileExclusive(const std::string& path,
+                             const std::string& contents) override {
+        return m_storage->createFileExclusive(path, contents);
+    }
+    std::unique_ptr<Persistence::WorldGenerationBootstrapLock>
+    lockWorldGenerationBootstrap(const std::string& root) override {
+        return m_storage->lockWorldGenerationBootstrap(root);
+    }
+    void remove(const std::string& path) override { m_storage->remove(path); }
+    void publishDirectory(const std::string& staged,
+                          const std::string& final) override {
+        m_storage->publishDirectory(staged, final);
+    }
+
+private:
+    Fault m_fault;
+    std::shared_ptr<Persistence::InMemoryStorageBackend> m_storage;
+    std::mutex m_mutex;
+    std::condition_variable m_changed;
+    bool m_payloadWaiting = false;
+    bool m_releasePayload = false;
+};
+
+CheckpointOutcome waitForCheckpoint(SimulationCheckpointManager& manager) {
+    for (size_t attempt = 0; attempt < 100'000; ++attempt) {
+        if (auto outcome = manager.poll()) return *outcome;
+        std::this_thread::yield();
+    }
+    throw Test::TestFailure("checkpoint writer did not terminate");
+}
 
 void pumpBaseline(LoopbackReplica& replica) {
     CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
@@ -471,6 +573,107 @@ TEST_CASE(SimulationHost_recording_rejects_envelope_mismatch_and_event_gap) {
     HostFixture overflow(bounded);
     overflow.start();
     CHECK(!overflow.host->recording().has_value());
+}
+
+TEST_CASE(SimulationCheckpoint_publishes_the_captured_cut_and_restores_pending_work) {
+    HostFixture fixture;
+    fixture.start();
+    const EditCommand command = fixture.removeCommand(1);
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    const uint64_t capturedHash = fixture.host->stateHash();
+
+    auto storage = std::make_shared<CheckpointFaultStorage>(
+        CheckpointFaultStorage::Fault::DelayPayload);
+    SimulationCheckpointManager manager(storage, "/save");
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    storage->waitForPayload();
+
+    fixture.host->advance(17ms);
+    const uint64_t appliedHash = fixture.host->stateHash();
+    CHECK(appliedHash != capturedHash);
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Coalesced);
+    storage->releasePayload();
+    const auto outcome = waitForCheckpoint(manager);
+    CHECK_EQ(outcome.status, CheckpointWriteStatus::Durable);
+    CHECK_EQ(outcome.stateHash, capturedHash);
+
+    auto recovered = manager.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(recovered.generation, uint64_t{1});
+    CHECK_EQ(recovered.host->stateHash(), capturedHash);
+    CHECK_EQ(
+        recovered.host->submit(command).status,
+        SubmitStatus::DuplicatePending);
+    recovered.host->advance(17ms);
+    CHECK_EQ(recovered.host->stateHash(), appliedHash);
+
+    auto next = std::make_unique<Entity::Entity>();
+    const auto nextId = recovered.host->spawnEntity(std::move(next));
+    CHECK_EQ(nextId.counter, fixture.actor.counter + 1);
+
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    const auto newer = waitForCheckpoint(manager);
+    CHECK_EQ(newer.status, CheckpointWriteStatus::Durable);
+    CHECK_EQ(newer.generation, uint64_t{2});
+    auto newest = manager.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(newest.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(newest.generation, uint64_t{2});
+    CHECK_EQ(newest.host->stateHash(), appliedHash);
+}
+
+TEST_CASE(SimulationCheckpoint_preserves_unknown_roots_and_blocks_uncertainty) {
+    HostFixture fixture;
+    auto unknownStorage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    {
+        auto write = unknownStorage->openWrite("/unknown/foreign.save");
+        write->writer().writeU32(0x12345678);
+        write->commit();
+    }
+    SimulationCheckpointManager unknown(unknownStorage, "/unknown");
+    CHECK_EQ(
+        unknown.request(*fixture.host),
+        CheckpointRequestStatus::UnsupportedState);
+    CHECK_EQ(
+        unknown.recover(fixture.resources, fixture.generator).status,
+        CheckpointRecoveryStatus::Incompatible);
+    CHECK(unknownStorage->exists("/unknown/foreign.save"));
+
+    auto uncertainStorage = std::make_shared<CheckpointFaultStorage>(
+        CheckpointFaultStorage::Fault::PointerUncertain);
+    SimulationCheckpointManager uncertain(uncertainStorage, "/save");
+    CHECK_EQ(uncertain.request(*fixture.host), CheckpointRequestStatus::Started);
+    const auto failed = waitForCheckpoint(uncertain);
+    CHECK_EQ(failed.status, CheckpointWriteStatus::DurabilityUnknown);
+    CHECK(uncertain.durabilityUncertain());
+    CHECK_EQ(
+        uncertain.request(*fixture.host),
+        CheckpointRequestStatus::Uncertain);
+    CHECK_EQ(
+        uncertain.recover(fixture.resources, fixture.generator).status,
+        CheckpointRecoveryStatus::Corrupt);
+}
+
+TEST_CASE(SimulationCheckpoint_filesystem_reopens_the_acknowledged_generation) {
+    HostFixture fixture;
+    fixture.host->advance(17ms);
+    const uint64_t expectedHash = fixture.host->stateHash();
+    Test::TemporaryDirectory directory("rigel_simulation_checkpoint");
+    const std::string root = (directory.path() / "world").string();
+    {
+        auto storage = std::make_shared<Persistence::FilesystemBackend>();
+        SimulationCheckpointManager manager(storage, root);
+        CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+        CHECK_EQ(
+            waitForCheckpoint(manager).status,
+            CheckpointWriteStatus::Durable);
+    }
+
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    SimulationCheckpointManager reopened(storage, root);
+    auto recovered = reopened.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(recovered.generation, uint64_t{1});
+    CHECK_EQ(recovered.host->stateHash(), expectedHash);
 }
 
 TEST_CASE(SimulationHost_admits_edit_once_and_retains_session_receipts) {

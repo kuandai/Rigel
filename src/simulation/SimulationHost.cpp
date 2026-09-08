@@ -910,6 +910,7 @@ std::vector<uint8_t> SimulationHost::checkpointBytes(
     out.u64(m_tick); out.u64(m_revision);
     out.u64(includeTimeDebt ? m_timeDebt : 0);
     out.u32(m_nextEntityId); out.u64(m_impl->nextAdmission);
+    out.u32(0); // No admitted rule consumes mutable RNG state in this envelope.
     out.u64(m_impl->currentSession); out.u64(m_impl->sessionHighWater);
     encodeId(out, m_impl->sessionActor);
 
@@ -1031,6 +1032,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     const Tick tick = in.u64(); const Revision revision = in.u64();
     const uint64_t timeDebt = in.u64(); const uint32_t nextEntityId = in.u32();
     const uint64_t nextAdmission = in.u64();
+    if (in.u32() != 0) throw std::runtime_error("checkpoint RNG scheme is unsupported");
     const SessionId currentSession = in.u64();
     const SessionId sessionHighWater = in.u64();
     const Entity::EntityId sessionActor = decodeId(in);
@@ -1162,15 +1164,19 @@ uint64_t SimulationHost::stateHash() const {
 }
 
 std::optional<SimulationRecording> SimulationHost::recording() const {
-    if (m_impl->recordingGap || m_impl->recordingBaseline.empty()) {
-        return std::nullopt;
-    }
+    if (m_impl->recordingGap) return std::nullopt;
     try {
+        const std::vector<uint8_t> currentBaseline =
+            m_impl->recordingBaseline.empty()
+                ? checkpointBytes(0, 0)
+                : std::vector<uint8_t>{};
+        const auto& baseline = m_impl->recordingBaseline.empty()
+            ? currentBaseline : m_impl->recordingBaseline;
         Encoder out(m_config.maxReplayBytes);
         out.u64(RecordingMagic); out.u32(StateFormatVersion);
         out.bytes(m_content->identity().bytes().data(), 32);
         out.u64(m_tick); const uint64_t hash = stateHash(); out.u64(hash);
-        out.blob(m_impl->recordingBaseline);
+        out.blob(baseline);
         out.u32(static_cast<uint32_t>(m_impl->recordingAdmissions.size()));
         for (const auto& event : m_impl->recordingAdmissions) {
             out.u64(event.afterTick);
@@ -1374,7 +1380,9 @@ Entity::EntityId SimulationHost::spawnEntity(
         return Entity::EntityId::Null();
     }
     prepareRecordingBaseline();
-    entity->setId({1, m_config.world, m_nextEntityId++});
+    const uint32_t allocatedId = m_nextEntityId++;
+    entity->setId({1, m_config.world, allocatedId});
+    bool recorded = false;
     if (!m_impl->recordingGap) {
         try {
             if (m_impl->recordingAdmissions.size() >= m_config.maxReplayEvents) {
@@ -1382,12 +1390,24 @@ Entity::EntityId SimulationHost::spawnEntity(
             }
             m_impl->recordingAdmissions.push_back({
                 m_tick, Impl::SpawnAdmission{entity->simulationState()}});
+            recorded = true;
         } catch (...) {
             m_impl->recordingGap = true;
             m_impl->recordingAdmissions.clear();
         }
     }
-    return m_impl->world->entities().spawn(std::move(entity));
+    try {
+        const Entity::EntityId result =
+            m_impl->world->entities().spawn(std::move(entity));
+        if (!result.isNull()) return result;
+    } catch (...) {
+        m_nextEntityId = allocatedId;
+        if (recorded) m_impl->recordingAdmissions.pop_back();
+        throw;
+    }
+    m_nextEntityId = allocatedId;
+    if (recorded) m_impl->recordingAdmissions.pop_back();
+    return Entity::EntityId::Null();
 }
 
 bool SimulationHost::despawnEntity(Entity::EntityId entity) {

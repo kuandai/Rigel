@@ -120,7 +120,9 @@ built-in entity state, tick and time debt, allocator, session, command receipts,
 admission counters, configuration, and pending decisions. Compact block IDs in the
 payload index the saved semantic dictionary and are rebound only after its stable
 keys and manifest match the current process. Unsupported entity rules, models,
-states, or block meaning reject capture or recovery.
+states, or block meaning reject capture or recovery. The current admitted rule has
+no mutable RNG; the checkpoint records that RNG scheme explicitly, while generator
+randomness remains fixed by the generator definition and seed in the manifest.
 
 Each immutable payload binds its generation and parent cut hash. After the payload
 is committed, a small atomic pointer publishes that generation, ancestry, cut,

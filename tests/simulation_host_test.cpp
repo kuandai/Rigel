@@ -575,6 +575,22 @@ TEST_CASE(SimulationHost_recording_rejects_envelope_mismatch_and_event_gap) {
     CHECK(!overflow.host->recording().has_value());
 }
 
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+TEST_CASE(SimulationHost_failed_spawn_does_not_consume_authority_identity) {
+    HostFixture fixture;
+    auto failed = std::make_unique<Entity::Entity>();
+    allocationsBeforeFailure = 0;
+    failureAllocationSize = 0;
+    failAllocation = true;
+    CHECK_THROWS(fixture.host->spawnEntity(std::move(failed)));
+    failAllocation = false;
+
+    const auto admitted = fixture.host->spawnEntity(
+        std::make_unique<Entity::Entity>());
+    CHECK_EQ(admitted.counter, fixture.actor.counter + 1);
+}
+#endif
+
 TEST_CASE(SimulationCheckpoint_publishes_the_captured_cut_and_restores_pending_work) {
     HostFixture fixture;
     fixture.start();

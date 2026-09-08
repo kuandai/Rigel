@@ -97,6 +97,10 @@ coordinates map correctly.
 `ChunkManager` owns loaded chunks and provides world-coordinate block access.
 Reading an unloaded coordinate returns air; writing creates the containing
 chunk. A changed boundary block invalidates the loaded neighbor on that face.
+That convenience read remains for standalone world and rendering consumers.
+`SimulationHost` instead exposes typed exact reads and enables finite collision
+coverage on its world, so unloaded terrain cannot authorize targeting, editing,
+or entity contact. See `docs/SimulationAuthority.md`.
 
 Chunk state distinguishes two kinds of change:
 

@@ -44,6 +44,11 @@ physics limitations.
 - `tick(dt)` to update entities
 - iteration over all entities
 
+Entity constructors leave IDs null. `WorldEntities::spawn()` assigns a missing ID
+at the collection owner; `SimulationHost` assigns its deterministic host ID before
+spawning. Tick traversal sorts IDs, so unordered-map layout cannot choose update
+order. Scratch capacity is reserved during spawn rather than during a tick.
+
 ### 3.2 Persistence Grouping
 
 `WorldEntities` keeps one authoritative collection. Saving derives each

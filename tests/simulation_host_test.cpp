@@ -220,6 +220,47 @@ TEST_CASE(SimulationHost_admits_edit_once_and_retains_session_receipts) {
         SessionStartStatus::OldSession);
 }
 
+TEST_CASE(SimulationHost_orders_racing_edits_against_authoritative_state) {
+    HostFixture fixture;
+    fixture.start();
+    const EditCommand first = fixture.removeCommand(1);
+    EditCommand second = first;
+    second.command = 2;
+    CHECK_EQ(fixture.host->submit(first).status, SubmitStatus::Accepted);
+    CHECK_EQ(fixture.host->submit(second).status, SubmitStatus::Accepted);
+
+    fixture.host->advance(17ms);
+    fixture.host->advance(17ms);
+    const auto firstResult = fixture.host->submit(first);
+    const auto secondResult = fixture.host->submit(second);
+    CHECK_EQ(firstResult.outcome->status, CommandOutcomeStatus::Applied);
+    CHECK_EQ(secondResult.outcome->status, CommandOutcomeStatus::TargetMismatch);
+    CHECK(firstResult.outcome->admission < secondResult.outcome->admission);
+}
+
+TEST_CASE(SimulationHost_interaction_cannot_cross_unavailable_terrain) {
+    SimulationHostConfig config;
+    config.domain = {{0, -4, 0}, {63, 8, 31}};
+    config.preloadedChunks = {{0, -1, 0}, {0, 0, 0}};
+    config.maxPreloadedChunks = 2;
+    config.maxSnapshotCells = 30'000;
+    HostFixture fixture(config);
+    fixture.start();
+    const CellAddress target = fixture.surface(31, 5);
+    EditCommand command = fixture.removeCommand(1);
+    command.interaction->origin = {31.5f, 6.0f, 5.5f};
+    command.interaction->expectedTarget = target;
+    command.interaction->expectedTargetState = fixture.host->read(target).state;
+    command.mutations.front().address = target;
+    command.mutations.front().expected = fixture.host->read(target).state;
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(
+        fixture.host->submit(command).outcome->status,
+        CommandOutcomeStatus::Unavailable);
+    CHECK_NE(fixture.host->read(target).state.blockKey, std::string("base:air"));
+}
+
 TEST_CASE(SimulationHost_rejects_content_and_shape_invalid_interactions) {
     HostFixture fixture({}, {5.5f, 1.5f, 5.5f});
     fixture.start();
@@ -295,6 +336,9 @@ TEST_CASE(LoopbackReplica_baseline_delta_gap_and_resnapshot_are_bounded) {
     auto secondConnection = fixture.host->connectReplica(interest);
     CHECK_EQ(firstConnection.status, ReplicaConnectStatus::Connected);
     CHECK_EQ(secondConnection.status, ReplicaConnectStatus::Connected);
+    CHECK_EQ(
+        fixture.host->connectReplica(interest).status,
+        ReplicaConnectStatus::Capacity);
     auto first = std::move(*firstConnection.replica);
     auto slow = std::move(*secondConnection.replica);
     pumpBaseline(first);
@@ -341,6 +385,19 @@ TEST_CASE(LoopbackReplica_rejects_incomplete_and_oversized_messages) {
     auto replica = std::move(*connection.replica);
     pumpBaseline(replica);
 
+    WorldChangeBatch duplicate{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = "base:default",
+        .baseRevision = replica.revision(),
+        .revision = replica.revision(),
+        .tick = replica.tick(),
+    };
+    CHECK_EQ(
+        replica.accept(std::make_shared<const PublicationMessage>(duplicate)),
+        ReplicaAcceptStatus::Queued);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Duplicate);
+
     WorldChangeBatch oversized{
         .content = fixture.host->content().identity(),
         .world = 0,
@@ -366,6 +423,17 @@ TEST_CASE(LoopbackReplica_rejects_incomplete_and_oversized_messages) {
         .tick = replica.tick() + 1,
         .complete = false,
     };
+    CHECK_EQ(
+        replica.accept(std::make_shared<const PublicationMessage>(incomplete)),
+        ReplicaAcceptStatus::Queued);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::NeedsResnapshot);
+
+    CHECK_EQ(fixture.host->resnapshot(replica), ReplicaConnectStatus::Connected);
+    pumpBaseline(replica);
+    incomplete.complete = true;
+    incomplete.content = {};
+    incomplete.baseRevision = replica.revision();
+    incomplete.revision = replica.revision() + 1;
     CHECK_EQ(
         replica.accept(std::make_shared<const PublicationMessage>(incomplete)),
         ReplicaAcceptStatus::Queued);

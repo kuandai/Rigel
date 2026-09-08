@@ -61,6 +61,22 @@ bool addElements(size_t& total, size_t count, size_t elementSize) {
     return addBytes(total, count * elementSize);
 }
 
+bool validOutcomeStatus(CommandOutcomeStatus status) {
+    switch (status) {
+        case CommandOutcomeStatus::Applied:
+        case CommandOutcomeStatus::NoChange:
+        case CommandOutcomeStatus::StaleState:
+        case CommandOutcomeStatus::TargetMismatch:
+        case CommandOutcomeStatus::Unavailable:
+        case CommandOutcomeStatus::OutsideDomain:
+        case CommandOutcomeStatus::InvalidRequest:
+        case CommandOutcomeStatus::ActorUnavailable:
+        case CommandOutcomeStatus::PlacementCollision:
+            return true;
+    }
+    return false;
+}
+
 std::optional<size_t> commandRetainedBytes(const EditCommand& command) {
     size_t total = sizeof(EditCommand);
     if (!addBytes(total, command.zone.capacity()) ||
@@ -127,6 +143,7 @@ struct LoopbackReplica::State {
     size_t cellBytes = 0;
     std::vector<std::shared_ptr<const PublicationMessage>> queue;
     std::vector<PublishedCell> cells;
+    std::vector<CommandOutcome> outcomes;
     Revision revision = 0;
     Tick tick = 0;
     bool hasBaseline = false;
@@ -157,7 +174,9 @@ struct LoopbackReplica::State {
         }
 
         size_t total = sizeof(State);
-        if (!addBytes(total, zoneBytes + 1) ||
+        const auto dictionaryBytes = content.retainedStorageBytes();
+        if (!dictionaryBytes || !addBytes(total, *dictionaryBytes) ||
+            !addBytes(total, zoneBytes + 1) ||
             !addElements(
                 total, queueLimit,
                 sizeof(std::shared_ptr<const PublicationMessage>)) ||
@@ -172,10 +191,15 @@ struct LoopbackReplica::State {
 
     std::optional<size_t> retainedStorageBytes() const {
         size_t total = sizeof(State);
-        if (!addBytes(total, zone.capacity()) ||
+        const auto dictionaryBytes = content
+            ? content->retainedStorageBytes() : std::nullopt;
+        if (!dictionaryBytes || !addBytes(total, *dictionaryBytes) ||
+            !addBytes(total, zone.capacity()) ||
             !addElements(
                 total, queue.capacity(),
-                sizeof(std::shared_ptr<const PublicationMessage>))) {
+                sizeof(std::shared_ptr<const PublicationMessage>)) ||
+            !addElements(
+                total, outcomes.capacity(), sizeof(CommandOutcome))) {
             return std::nullopt;
         }
         return total;
@@ -232,6 +256,7 @@ struct LoopbackReplica::State {
         gap = true;
         clearQueue();
         std::vector<PublishedCell>().swap(cells);
+        std::vector<CommandOutcome>().swap(outcomes);
         cellBytes = 0;
         hasBaseline = false;
     }
@@ -354,12 +379,34 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
                 !addBytes(transient, *nextBytes) ||
                 transient > m_state->byteLimit) return fail();
             m_state->cells.swap(next);
+            std::vector<CommandOutcome>().swap(m_state->outcomes);
             m_state->cellBytes = *nextBytes;
             m_state->revision = value.revision;
             m_state->tick = value.tick;
             m_state->hasBaseline = true;
             return ReplicaPumpStatus::Applied;
         } else {
+            for (size_t index = 0; index < value.outcomes.size(); ++index) {
+                const auto& outcome = value.outcomes[index];
+                if (outcome.session == 0 || outcome.command == 0 ||
+                    outcome.admission == 0 || outcome.tick != value.tick ||
+                    outcome.revision != value.revision ||
+                    !validOutcomeStatus(outcome.status)) {
+                    return fail();
+                }
+                const auto duplicate = [&](const CommandOutcome& other) {
+                    return other.session == outcome.session &&
+                        other.command == outcome.command;
+                };
+                if (std::any_of(
+                        m_state->outcomes.begin(), m_state->outcomes.end(),
+                        duplicate) ||
+                    std::any_of(
+                        value.outcomes.begin(), value.outcomes.begin() + index,
+                        duplicate)) {
+                    return fail();
+                }
+            }
             if (!m_state->hasBaseline) return fail();
             if (value.revision <= m_state->revision) {
                 return ReplicaPumpStatus::Duplicate;
@@ -369,13 +416,22 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
                 value.tick <= m_state->tick) return fail();
             const auto storageBytes = m_state->retainedStorageBytes();
             size_t projectedTransient = storageBytes.value_or(0);
+            size_t projectedOutcomeCount = m_state->outcomes.size();
             if (!storageBytes ||
+                !addBytes(projectedOutcomeCount, value.outcomes.size()) ||
                 !addBytes(projectedTransient, m_state->cellBytes) ||
                 !addBytes(projectedTransient, m_state->queueBytes) ||
                 !addBytes(projectedTransient, *messageBytes) ||
                 !addBytes(projectedTransient, m_state->cellBytes) ||
+                !addElements(
+                    projectedTransient,
+                    projectedOutcomeCount,
+                    sizeof(CommandOutcome)) ||
                 projectedTransient > m_state->byteLimit) return fail();
             std::vector<PublishedCell> next = m_state->cells;
+            std::vector<CommandOutcome> nextOutcomes = m_state->outcomes;
+            nextOutcomes.insert(
+                nextOutcomes.end(), value.outcomes.begin(), value.outcomes.end());
             std::vector<CellAddress> seen;
             seen.reserve(value.changes.size());
             for (const auto& change : value.changes) {
@@ -396,14 +452,22 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
                 found->state = change.state;
             }
             const auto nextBytes = LoopbackReplica::State::retainedBytes(next);
+            size_t nextOutcomeBytes = 0;
+            if (!addElements(
+                    nextOutcomeBytes, nextOutcomes.capacity(),
+                    sizeof(CommandOutcome))) {
+                return fail();
+            }
             size_t transient = storageBytes.value_or(0);
             if (!storageBytes || !nextBytes ||
                 !addBytes(transient, m_state->cellBytes) ||
                 !addBytes(transient, m_state->queueBytes) ||
                 !addBytes(transient, *messageBytes) ||
                 !addBytes(transient, *nextBytes) ||
+                !addBytes(transient, nextOutcomeBytes) ||
                 transient > m_state->byteLimit) return fail();
             m_state->cells.swap(next);
+            m_state->outcomes.swap(nextOutcomes);
             m_state->cellBytes = *nextBytes;
             m_state->revision = value.revision;
             m_state->tick = value.tick;
@@ -413,6 +477,16 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
     } catch (...) {
         return fail();
     }
+}
+
+std::optional<CommandOutcome> LoopbackReplica::takeOutcome() {
+    if (m_state->outcomes.empty()) return std::nullopt;
+    CommandOutcome result = m_state->outcomes.front();
+    m_state->outcomes.erase(m_state->outcomes.begin());
+    if (m_state->outcomes.empty()) {
+        std::vector<CommandOutcome>().swap(m_state->outcomes);
+    }
+    return result;
 }
 
 ExactBlockRead LoopbackReplica::read(CellAddress address) const {
@@ -468,6 +542,8 @@ SimulationHost::SimulationHost(
         m_config.maxEntities == 0 ||
         m_config.maxChangesPerCommand == 0 || m_config.maxCommandBytes == 0 ||
         m_config.maxReplicaBytes == 0 ||
+        m_config.zone.capacity() > m_config.maxCommandBytes ||
+        m_config.preloadedChunks.capacity() > m_config.maxPreloadedChunks ||
         !std::isfinite(m_config.maxInteractionDistance) ||
         m_config.maxInteractionDistance <= 0.0f) {
         throw std::invalid_argument("invalid bounded simulation host configuration");
@@ -520,6 +596,7 @@ SimulationHost::SimulationHost(
         m_impl->world->chunkManager().getOrCreateChunk(chunkCoord).copyFrom(
             generated.blocks, resources.registry());
     }
+    std::vector<Voxel::ChunkCoord>().swap(m_config.preloadedChunks);
 
     m_impl->receipts.reserve(m_config.maxSessionReceipts);
     m_impl->replicas.reserve(m_config.maxReplicas);
@@ -551,10 +628,18 @@ ExactBlockRead SimulationHost::read(CellAddress address) const {
 Entity::EntityId SimulationHost::spawnEntity(
     std::unique_ptr<Entity::Entity> entity
 ) {
+    const auto tagBytes = entity
+        ? entity->tags().retainedStorageBytes() : std::nullopt;
+    size_t semanticBytes = tagBytes.value_or(0);
+    const bool retainedStorageFits = tagBytes &&
+        addBytes(semanticBytes, entity->typeId().capacity()) &&
+        addBytes(semanticBytes, entity->modelIdentifier().capacity()) &&
+        addBytes(semanticBytes, entity->model().id().capacity()) &&
+        semanticBytes <= m_config.maxEntityTagBytes;
     if (!entity || m_nextEntityId == 0 || !entity->id().isNull() ||
         m_impl->world->entities().size() >= m_config.maxEntities ||
         entity->tags().size() > m_config.maxEntityTags ||
-        !entity->tags().retainedStringsFit(m_config.maxEntityTagBytes) ||
+        !retainedStorageFits ||
         !m_content->supportsEntity(*entity) || !finite(entity->position()) ||
         !finite(entity->velocity()) || !finite(entity->viewDirection())) {
         return Entity::EntityId::Null();

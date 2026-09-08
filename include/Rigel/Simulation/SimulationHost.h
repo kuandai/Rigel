@@ -215,6 +215,7 @@ public:
     ReplicaAcceptStatus accept(std::shared_ptr<const PublicationMessage> message);
     ReplicaPumpStatus pumpOne();
     ExactBlockRead read(CellAddress address) const;
+    std::optional<CommandOutcome> takeOutcome();
 
     bool needsResnapshot() const;
     Revision revision() const;

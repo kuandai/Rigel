@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -23,15 +25,26 @@ public:
 
     void clear() { m_tags.clear(); }
     size_t size() const { return m_tags.size(); }
-    bool retainedStringsFit(size_t byteLimit) const {
-        size_t retained = 0;
+    std::optional<size_t> retainedStorageBytes() const {
+        if (m_tags.bucket_count() >
+            std::numeric_limits<size_t>::max() / sizeof(void*)) {
+            return std::nullopt;
+        }
+        size_t retained = m_tags.bucket_count() * sizeof(void*);
+        if (m_tags.size() >
+            (std::numeric_limits<size_t>::max() - retained) /
+                sizeof(std::string)) {
+            return std::nullopt;
+        }
+        retained += m_tags.size() * sizeof(std::string);
         for (const std::string& tag : m_tags) {
-            if (tag.capacity() > byteLimit - retained) {
-                return false;
+            if (tag.capacity() >
+                std::numeric_limits<size_t>::max() - retained) {
+                return std::nullopt;
             }
             retained += tag.capacity();
         }
-        return true;
+        return retained;
     }
 
 private:

@@ -9,11 +9,12 @@ fixed ticks, and `LoopbackReplica::pumpOne()` applies queued publications.
 ## Content binding
 
 `ContentDictionary` is constructed from a frozen `BlockRegistry` and the installed
-`WorldGenerator`. It retains sorted canonical semantic records for every block and
-the generator inputs, and exposes their SHA-256 manifest identity. A block record
-includes its stable identifier, selection model and orientation, collision shape
-and provenance, opacity, culling, and light behavior. Cosmetic texture paths and
-render layers are not simulation identity.
+`WorldGenerator`. It hashes canonical semantic records for every block and the
+generator inputs into its SHA-256 manifest identity, then retains only the sorted
+stable-key/local-ID mapping needed at runtime. A block record includes its stable
+identifier, selection model and orientation, collision shape and provenance,
+opacity, culling, and light behavior. Cosmetic texture paths and render layers are
+not simulation identity.
 
 Publications and commands carry stable block keys plus metadata and light bytes.
 The dictionary maps these records to the current registry's compact `BlockID` only
@@ -37,15 +38,21 @@ hitbox. This bounded host admits only exact `Entity` instances using that rule a
 hitbox, with no entity model attached. Virtual subclasses, custom local bounds,
 preassigned IDs, non-finite state, and model-derived hitboxes are rejected before
 spawn because their simulation or replay meaning is outside this manifest.
-Configured entity-count, tag-count, and retained tag-string limits bound admitted
-entity state. The host is the symmetric spawn/despawn owner; removing the active
-session actor causes its already admitted commands to complete as actor unavailable.
+Configured entity-count, tag-count, and retained semantic-storage limits bound admitted
+entity state. The retained byte check includes tag hash buckets, tag string objects
+and capacities, and the fixed entity-type and empty model-handle/identifier capacities,
+so a logically empty but churned container is rejected. The host is the symmetric
+spawn/despawn owner; removing the active session actor causes its already admitted
+commands to complete as actor unavailable.
 
 ## Exact bounded terrain
 
 The host configuration declares one inclusive cell domain and explicit resource
 caps. Construction synchronously generates either every chunk intersecting that
-domain or the configured subset. Exact reads distinguish known block state
+domain or the configured subset. Moved configuration strings or preload vectors
+whose retained capacity exceeds their corresponding command or chunk cap
+are rejected, and accepted preload coordinates are released from the retained
+configuration after terrain construction. Exact reads distinguish known block state
 (including air), unavailable chunks, coordinates outside the domain, and invalid
 local state.
 
@@ -93,12 +100,17 @@ plus ordered outcomes.
 
 Replica application validates manifest, world, zone, completeness, bounds, stable
 keys, duplicate cells, revision continuity, and strictly advancing ticks for newer
-publications before swapping visible state.
+publications before swapping visible state. It also validates each outcome's
+identity and publication cut, installs outcomes atomically with that cut, and makes
+them available in order through `takeOutcome()`.
 Malformed, missing, future-based, or oversized input requires a fresh baseline.
 A slow replica whose queue fills is marked as needing resnapshot without blocking
 or corrupting other replicas. Each replica applies one aggregate byte cap to its
 installed cells, queued immutable messages, replica container storage, string
-storage, and apply-time copy. Before copying a baseline zone or cell key or
+storage, retained outcome capacity, the complete shared content dictionary, and
+apply-time copies. Counting the complete dictionary for every replica keeps the
+per-replica bound valid even when a replica outlives its host and resource owner.
+Before copying a baseline zone or cell key or
 reserving its cell vector, the producer checks a conservative worst-case bound
 using the frozen dictionary's longest key and the configured interest, queue, and
 byte limits. Allocation failure leaves a connection unregistered or an existing

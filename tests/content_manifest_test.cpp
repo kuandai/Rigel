@@ -15,7 +15,12 @@ namespace {
 
 using namespace Rigel;
 
-Voxel::BlockType block(std::string identifier, bool raised) {
+Voxel::BlockType block(
+    std::string identifier,
+    bool raised,
+    float modelBottom = 0.25f,
+    float collisionBottom = 0.25f
+) {
     Voxel::BlockType type;
     type.identifier = std::move(identifier);
     type.isOpaque = !raised;
@@ -25,10 +30,10 @@ Voxel::BlockType block(std::string identifier, bool raised) {
             "fixture:raised",
             std::vector<std::string>{"surface"},
             std::vector<Voxel::BlockModelCuboid>{Voxel::BlockModelCuboid{
-                .bounds = {{0.0f, 0.25f, 0.0f}, {1.0f, 1.0f, 1.0f}},
+                .bounds = {{0.0f, modelBottom, 0.0f}, {1.0f, 1.0f, 1.0f}},
             }});
         type.collision = Voxel::BlockCollisionShape::boxes({{
-            .min = {0.0f, 0.25f, 0.0f},
+            .min = {0.0f, collisionBottom, 0.0f},
             .max = {1.0f, 1.0f, 1.0f},
         }});
     }
@@ -40,14 +45,23 @@ struct ManifestFixture {
     std::shared_ptr<Voxel::WorldGenerator> generator;
 };
 
-ManifestFixture fixture(bool reverse, uint32_t seed = 91) {
+ManifestFixture fixture(
+    bool reverse,
+    uint32_t seed = 91,
+    float modelBottom = 0.25f,
+    float collisionBottom = 0.25f
+) {
     ManifestFixture result;
     if (reverse) {
-        result.registry.registerBlock("rigel:raised", block("rigel:raised", true));
+        result.registry.registerBlock(
+            "rigel:raised",
+            block("rigel:raised", true, modelBottom, collisionBottom));
         result.registry.registerBlock("rigel:stone", block("rigel:stone", false));
     } else {
         result.registry.registerBlock("rigel:stone", block("rigel:stone", false));
-        result.registry.registerBlock("rigel:raised", block("rigel:raised", true));
+        result.registry.registerBlock(
+            "rigel:raised",
+            block("rigel:raised", true, modelBottom, collisionBottom));
     }
     result.registry.freeze();
     auto definition = Test::generatorDefinitionFixture(
@@ -105,6 +119,22 @@ TEST_CASE(ContentManifest_rejects_mismatch_and_unfrozen_content) {
         "base:air", "base:air", "base:air");
     Voxel::WorldGenerator generator(mutableRegistry, definition, 1);
     CHECK_THROWS(Simulation::ContentDictionary(mutableRegistry, generator));
+}
+
+TEST_CASE(ContentManifest_changes_for_visual_and_collision_geometry) {
+    auto original = fixture(false);
+    auto changedModel = fixture(false, 91, 0.125f, 0.25f);
+    auto changedCollision = fixture(false, 91, 0.25f, 0.125f);
+    Simulation::ContentDictionary originalDictionary(
+        original.registry, *original.generator);
+    Simulation::ContentDictionary modelDictionary(
+        changedModel.registry, *changedModel.generator);
+    Simulation::ContentDictionary collisionDictionary(
+        changedCollision.registry, *changedCollision.generator);
+
+    CHECK_NE(originalDictionary.identity(), modelDictionary.identity());
+    CHECK_NE(originalDictionary.identity(), collisionDictionary.identity());
+    CHECK_NE(modelDictionary.identity(), collisionDictionary.identity());
 }
 
 TEST_CASE(ContentManifest_rejects_unrepresented_gallery_generation) {

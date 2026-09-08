@@ -119,7 +119,8 @@ struct HostFixture {
             config.maxPreloadedChunks = 8;
             config.maxSnapshotCells = 25'000;
         }
-        host = std::make_unique<SimulationHost>(resources, generator, config);
+        host = std::make_unique<SimulationHost>(
+            resources, generator, std::move(config));
         auto entity = std::make_unique<Entity::Entity>();
         entity->addTag(Entity::EntityTags::NoClip);
         entity->setPosition(actorPosition);
@@ -198,6 +199,25 @@ TEST_CASE(SimulationHost_exact_reads_preserve_known_air_and_unavailable) {
         std::string("base:air"));
     CHECK_EQ(fixture.host->read({40, 7, 1}).status, ExactReadStatus::Unavailable);
     CHECK_EQ(fixture.host->read({64, 7, 1}).status, ExactReadStatus::OutsideDomain);
+}
+
+TEST_CASE(SimulationHost_exact_reads_report_invalid_stored_state) {
+    SimulationHostConfig config;
+    config.domain = {{0, 0, 0}, {31, 7, 7}};
+    config.preloadedChunks = {{0, 0, 0}};
+    config.maxPreloadedChunks = 1;
+    config.maxSnapshotCells = 8'000;
+    HostFixture fixture(config);
+
+    const CellAddress address{1, 7, 1};
+    auto& world = const_cast<Voxel::World&>(fixture.host->world());
+    auto* chunk = world.chunkManager().getChunk({0, 0, 0});
+    CHECK(chunk != nullptr);
+    chunk->setBlock(
+        address.x, address.y, address.z,
+        {Voxel::BlockID{std::numeric_limits<uint16_t>::max()}, 0, 0});
+
+    CHECK_EQ(fixture.host->read(address).status, ExactReadStatus::InvalidState);
 }
 
 TEST_CASE(SimulationHost_entity_motion_stops_at_unavailable_frontier) {
@@ -783,7 +803,7 @@ TEST_CASE(SimulationHost_bounds_and_removes_owned_entities) {
     SimulationHostConfig config;
     config.maxEntities = 2;
     config.maxEntityTags = 2;
-    config.maxEntityTagBytes = 128;
+    config.maxEntityTagBytes = 256;
     HostFixture fixture(config);
     fixture.start();
 
@@ -822,6 +842,50 @@ TEST_CASE(SimulationHost_bounds_and_removes_owned_entities) {
         fixture.host->submit(command).outcome->status,
         CommandOutcomeStatus::ActorUnavailable);
     CHECK_EQ(fixture.host->world().entities().size(), static_cast<size_t>(1));
+}
+
+TEST_CASE(SimulationHost_rejects_overretained_config_and_entity_storage) {
+    {
+        SimulationHostConfig config;
+        config.zone.reserve(config.maxCommandBytes + 1);
+        CHECK_THROWS(HostFixture(std::move(config)));
+    }
+    {
+        SimulationHostConfig config;
+        config.preloadedChunks = {{0, 0, 0}};
+        config.preloadedChunks.reserve(config.maxPreloadedChunks + 1);
+        CHECK_THROWS(HostFixture(std::move(config)));
+    }
+
+    HostFixture fixture;
+    auto churnedTags = std::make_unique<Entity::Entity>();
+    for (size_t index = 0; index < 256; ++index) {
+        churnedTags->addTag("churn:" + std::to_string(index));
+    }
+    for (size_t index = 0; index < 256; ++index) {
+        churnedTags->removeTag("churn:" + std::to_string(index));
+    }
+    CHECK_EQ(churnedTags->tags().size(), static_cast<size_t>(0));
+    CHECK(fixture.host->spawnEntity(std::move(churnedTags)).isNull());
+
+    std::string retainedType;
+    retainedType.reserve(4096);
+    retainedType = "rigel:entity";
+    CHECK(fixture.host->spawnEntity(
+        std::make_unique<Entity::Entity>(std::move(retainedType))).isNull());
+
+    auto retainedEmptyModel = std::make_unique<Entity::Entity>();
+    std::string emptyModel;
+    emptyModel.reserve(4096);
+    retainedEmptyModel->setModelIdentifier(std::move(emptyModel));
+    CHECK(fixture.host->spawnEntity(std::move(retainedEmptyModel)).isNull());
+
+    auto retainedEmptyHandle = std::make_unique<Entity::Entity>();
+    std::string emptyHandleId;
+    emptyHandleId.reserve(4096);
+    retainedEmptyHandle->setModel(Asset::Handle<Entity::EntityModelAsset>(
+        {}, std::move(emptyHandleId)));
+    CHECK(fixture.host->spawnEntity(std::move(retainedEmptyHandle)).isNull());
 }
 
 TEST_CASE(SimulationHost_fixed_tick_is_render_pacing_independent_and_retains_debt) {
@@ -910,6 +974,76 @@ TEST_CASE(LoopbackReplica_baseline_delta_gap_and_resnapshot_are_bounded) {
         first.accept(std::make_shared<const PublicationMessage>(future)),
         ReplicaAcceptStatus::Queued);
     CHECK_EQ(first.pumpOne(), ReplicaPumpStatus::NeedsResnapshot);
+}
+
+TEST_CASE(LoopbackReplica_delivers_validated_authoritative_outcomes) {
+    HostFixture fixture;
+    fixture.start();
+    const CellAddress target = fixture.surface();
+    auto connection = fixture.host->connectReplica({target, target});
+    CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+
+    const EditCommand command = fixture.removeCommand(1);
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    const auto authoritative = fixture.host->submit(command).outcome;
+    CHECK(authoritative.has_value());
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+    CHECK_EQ(replica.takeOutcome(), authoritative);
+    CHECK(!replica.takeOutcome().has_value());
+
+    WorldChangeBatch malformed{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = "base:default",
+        .baseRevision = replica.revision(),
+        .revision = replica.revision() + 1,
+        .tick = replica.tick() + 1,
+        .outcomes = {{
+            .session = 1,
+            .command = 2,
+            .admission = 2,
+            .tick = replica.tick(),
+            .revision = replica.revision() + 1,
+            .status = CommandOutcomeStatus::NoChange,
+        }},
+    };
+    CHECK_EQ(
+        replica.accept(std::make_shared<const PublicationMessage>(malformed)),
+        ReplicaAcceptStatus::Queued);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::NeedsResnapshot);
+    CHECK(!replica.takeOutcome().has_value());
+}
+
+TEST_CASE(LoopbackReplica_survives_authority_and_resource_teardown_with_bound_state) {
+    std::optional<LoopbackReplica> survivor;
+    std::optional<CommandOutcome> authoritative;
+    CellAddress target;
+    {
+        HostFixture fixture;
+        fixture.start();
+        target = fixture.surface();
+        auto connection = fixture.host->connectReplica({target, target});
+        CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+        auto replica = std::move(*connection.replica);
+        pumpBaseline(replica);
+
+        const EditCommand command = fixture.removeCommand(1);
+        CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+        fixture.host->advance(17ms);
+        authoritative = fixture.host->submit(command).outcome;
+        CHECK(authoritative.has_value());
+        CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+        survivor.emplace(std::move(replica));
+    }
+
+    CHECK_EQ(survivor->read(target).status, ExactReadStatus::Known);
+    const SemanticBlockState air{"base:air", 0, 0};
+    CHECK_EQ(survivor->read(target).state, air);
+    CHECK_EQ(survivor->takeOutcome(), authoritative);
+    CHECK(!survivor->takeOutcome().has_value());
 }
 
 TEST_CASE(LoopbackReplica_rejects_incomplete_and_oversized_messages) {

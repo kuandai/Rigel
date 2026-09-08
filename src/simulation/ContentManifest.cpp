@@ -210,7 +210,7 @@ ContentDictionary::ContentDictionary(
     for (size_t index = 0; index < registry.size(); ++index) {
         const auto localId = Voxel::BlockID{static_cast<uint16_t>(index)};
         const auto& type = registry.getType(localId);
-        m_entries.push_back({type.identifier, localId, blockRecord(type)});
+        m_entries.push_back({type.identifier, localId});
     }
     std::sort(m_entries.begin(), m_entries.end(), [](const auto& a, const auto& b) {
         return a.blockKey < b.blockKey;
@@ -230,7 +230,7 @@ ContentDictionary::ContentDictionary(
     for (const auto& entry : m_entries) {
         m_byLocalId[entry.localId.type] = &entry;
         manifest.string(entry.blockKey);
-        manifest.string(entry.semanticRecord);
+        manifest.string(blockRecord(registry.getType(entry.localId)));
     }
     manifest.string(entityRuleRecord());
 
@@ -240,9 +240,32 @@ ContentDictionary::ContentDictionary(
     generatorRecord.u32(generator.seed());
     generatorRecord.string(
         Voxel::serializeGeneratorDefinitionSnapshot(generator.definition()));
-    m_generatorRecord = generatorRecord.data();
-    manifest.string(m_generatorRecord);
+    manifest.string(generatorRecord.data());
     m_identity = sha256(manifest.data());
+}
+
+std::optional<size_t> ContentDictionary::retainedStorageBytes() const {
+    size_t total = sizeof(ContentDictionary);
+    if (m_entries.capacity() >
+            (std::numeric_limits<size_t>::max() - total) /
+                sizeof(ContentDictionaryEntry)) {
+        return std::nullopt;
+    }
+    total += m_entries.capacity() * sizeof(ContentDictionaryEntry);
+    for (const auto& entry : m_entries) {
+        if (entry.blockKey.capacity() >
+            std::numeric_limits<size_t>::max() - total) {
+            return std::nullopt;
+        }
+        total += entry.blockKey.capacity();
+    }
+    if (m_byLocalId.capacity() >
+            (std::numeric_limits<size_t>::max() - total) /
+                sizeof(const ContentDictionaryEntry*)) {
+        return std::nullopt;
+    }
+    total += m_byLocalId.capacity() * sizeof(const ContentDictionaryEntry*);
+    return total;
 }
 
 Voxel::BlockID ContentDictionary::localId(std::string_view stableKey) const {

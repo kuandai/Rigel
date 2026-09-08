@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -48,7 +49,6 @@ struct SemanticBlockState {
 struct ContentDictionaryEntry {
     std::string blockKey;
     Voxel::BlockID localId;
-    std::string semanticRecord;
 };
 
 class ContentManifestError : public std::runtime_error {
@@ -58,8 +58,8 @@ public:
 
 /**
  * Frozen mapping between stable semantic keys and one process-local registry.
- * The retained canonical records are the authority; the digest is only their
- * compact identity.
+ * Canonical model, collision, entity-rule, and generator records contribute to
+ * the identity but are not retained after construction.
  */
 class ContentDictionary final {
 public:
@@ -76,7 +76,8 @@ public:
     const std::vector<ContentDictionaryEntry>& entries() const {
         return m_entries;
     }
-    const std::string& generatorRecord() const { return m_generatorRecord; }
+    /** Complete retained object, container, and string storage for this mapping. */
+    std::optional<size_t> retainedStorageBytes() const;
 
     Voxel::BlockID localId(std::string_view stableKey) const;
     SemanticBlockState semanticState(Voxel::BlockState state) const;
@@ -91,7 +92,6 @@ public:
 private:
     std::vector<ContentDictionaryEntry> m_entries;
     std::vector<const ContentDictionaryEntry*> m_byLocalId;
-    std::string m_generatorRecord;
     ContentManifestId m_identity;
 };
 

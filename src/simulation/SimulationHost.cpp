@@ -132,6 +132,55 @@ struct LoopbackReplica::State {
     bool hasBaseline = false;
     bool gap = false;
 
+    static std::optional<size_t> conservativeBaselineBytes(
+        const ContentDictionary& content,
+        size_t zoneBytes,
+        size_t cellCount,
+        size_t queueLimit
+    ) {
+        size_t maximumKeyBytes = 1;
+        for (const auto& entry : content.entries()) {
+            if (entry.blockKey.size() == std::numeric_limits<size_t>::max()) {
+                return std::nullopt;
+            }
+            maximumKeyBytes = std::max(
+                maximumKeyBytes, entry.blockKey.size() + 1);
+        }
+        if (zoneBytes == std::numeric_limits<size_t>::max()) {
+            return std::nullopt;
+        }
+
+        size_t cellsBytes = 0;
+        if (!addElements(cellsBytes, cellCount, sizeof(PublishedCell)) ||
+            !addElements(cellsBytes, cellCount, maximumKeyBytes)) {
+            return std::nullopt;
+        }
+
+        size_t total = sizeof(State);
+        if (!addBytes(total, zoneBytes + 1) ||
+            !addElements(
+                total, queueLimit,
+                sizeof(std::shared_ptr<const PublicationMessage>)) ||
+            !addBytes(total, sizeof(PublicationMessage)) ||
+            !addBytes(total, zoneBytes + 1) ||
+            !addBytes(total, cellsBytes) ||
+            !addBytes(total, cellsBytes)) {
+            return std::nullopt;
+        }
+        return total;
+    }
+
+    std::optional<size_t> retainedStorageBytes() const {
+        size_t total = sizeof(State);
+        if (!addBytes(total, zone.capacity()) ||
+            !addElements(
+                total, queue.capacity(),
+                sizeof(std::shared_ptr<const PublicationMessage>))) {
+            return std::nullopt;
+        }
+        return total;
+    }
+
     static std::optional<size_t> retainedBytes(
         const std::vector<PublishedCell>& value
     ) {
@@ -182,7 +231,7 @@ struct LoopbackReplica::State {
     void markGap() {
         gap = true;
         clearQueue();
-        cells.clear();
+        std::vector<PublishedCell>().swap(cells);
         cellBytes = 0;
         hasBaseline = false;
     }
@@ -213,8 +262,11 @@ struct LoopbackReplica::State {
             return false;
         }, *message);
         const auto bytes = retainedBytes(*message);
-        size_t aggregate = cellBytes;
-        if (structurallyOversized || !bytes || *bytes > byteLimit ||
+        const auto storageBytes = retainedStorageBytes();
+        size_t aggregate = storageBytes.value_or(0);
+        if (structurallyOversized || !storageBytes || !bytes ||
+            *bytes > byteLimit ||
+            !addBytes(aggregate, cellBytes) ||
             !addBytes(aggregate, queueBytes) ||
             !addBytes(aggregate, bytes.value_or(0)) || aggregate > byteLimit) {
             markGap();
@@ -265,8 +317,10 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
                 value.cells.size() != *volume) return fail();
             const auto projectedBytes =
                 LoopbackReplica::State::retainedBytes(value.cells);
-            size_t projectedTransient = m_state->cellBytes;
-            if (!projectedBytes ||
+            const auto storageBytes = m_state->retainedStorageBytes();
+            size_t projectedTransient = storageBytes.value_or(0);
+            if (!storageBytes || !projectedBytes ||
+                !addBytes(projectedTransient, m_state->cellBytes) ||
                 !addBytes(projectedTransient, m_state->queueBytes) ||
                 !addBytes(projectedTransient, *messageBytes) ||
                 !addBytes(projectedTransient, *projectedBytes) ||
@@ -288,9 +342,14 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             if (m_state->hasBaseline && value.revision < m_state->revision) {
                 return fail();
             }
+            if (m_state->hasBaseline && value.tick < m_state->tick) {
+                return fail();
+            }
             const auto nextBytes = LoopbackReplica::State::retainedBytes(next);
-            size_t transient = m_state->cellBytes;
-            if (!nextBytes || !addBytes(transient, m_state->queueBytes) ||
+            size_t transient = storageBytes.value_or(0);
+            if (!storageBytes || !nextBytes ||
+                !addBytes(transient, m_state->cellBytes) ||
+                !addBytes(transient, m_state->queueBytes) ||
                 !addBytes(transient, *messageBytes) ||
                 !addBytes(transient, *nextBytes) ||
                 transient > m_state->byteLimit) return fail();
@@ -307,9 +366,12 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             }
             if (value.baseRevision != m_state->revision ||
                 value.revision != value.baseRevision + 1 ||
-                value.tick < m_state->tick) return fail();
-            size_t projectedTransient = m_state->cellBytes;
-            if (!addBytes(projectedTransient, m_state->queueBytes) ||
+                value.tick <= m_state->tick) return fail();
+            const auto storageBytes = m_state->retainedStorageBytes();
+            size_t projectedTransient = storageBytes.value_or(0);
+            if (!storageBytes ||
+                !addBytes(projectedTransient, m_state->cellBytes) ||
+                !addBytes(projectedTransient, m_state->queueBytes) ||
                 !addBytes(projectedTransient, *messageBytes) ||
                 !addBytes(projectedTransient, m_state->cellBytes) ||
                 projectedTransient > m_state->byteLimit) return fail();
@@ -334,8 +396,10 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
                 found->state = change.state;
             }
             const auto nextBytes = LoopbackReplica::State::retainedBytes(next);
-            size_t transient = m_state->cellBytes;
-            if (!nextBytes || !addBytes(transient, m_state->queueBytes) ||
+            size_t transient = storageBytes.value_or(0);
+            if (!storageBytes || !nextBytes ||
+                !addBytes(transient, m_state->cellBytes) ||
+                !addBytes(transient, m_state->queueBytes) ||
                 !addBytes(transient, *messageBytes) ||
                 !addBytes(transient, *nextBytes) ||
                 transient > m_state->byteLimit) return fail();
@@ -950,8 +1014,8 @@ void SimulationHost::runTick() {
 }
 
 ReplicaConnection SimulationHost::connectReplica(CellBounds interest) {
-    if (!boundsWithin(interest, m_config.domain) ||
-        !interest.volume(m_config.maxSnapshotCells)) {
+    const auto volume = interest.volume(m_config.maxSnapshotCells);
+    if (!boundsWithin(interest, m_config.domain) || !volume) {
         return {.status = ReplicaConnectStatus::InvalidInterest};
     }
     m_impl->replicas.erase(std::remove_if(
@@ -962,49 +1026,63 @@ ReplicaConnection SimulationHost::connectReplica(CellBounds interest) {
         return {.status = ReplicaConnectStatus::Capacity};
     }
 
-    WorldBaseline baseline{
-        .content = m_content->identity(),
-        .world = m_config.world,
-        .zone = m_config.zone,
-        .bounds = interest,
-        .tick = m_tick,
-        .revision = m_revision,
-    };
-    baseline.cells.reserve(*interest.volume(m_config.maxSnapshotCells));
-    for (int64_t x = interest.min.x; x <= interest.max.x; ++x) {
-        for (int64_t y = interest.min.y; y <= interest.max.y; ++y) {
-            for (int64_t z = interest.min.z; z <= interest.max.z; ++z) {
-                const CellAddress address{
-                    static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)};
-                const ExactBlockRead cell = read(address);
-                if (cell.status != ExactReadStatus::Known) {
-                    return {.status = ReplicaConnectStatus::InvalidInterest};
-                }
-                baseline.cells.push_back({address, cell.state});
-            }
-        }
-    }
-
-    auto state = std::make_shared<LoopbackReplica::State>();
-    state->content = m_content;
-    state->world = m_config.world;
-    state->zone = m_config.zone;
-    state->interest = interest;
-    state->queueLimit = m_config.maxReplicaQueue;
-    state->cellLimit = m_config.maxSnapshotCells;
-    state->changeLimit = m_config.maxChangesPerCommand;
-    state->byteLimit = m_config.maxReplicaBytes;
-    state->queue.reserve(m_config.maxReplicaQueue);
-    state->cells.reserve(baseline.cells.size());
-    if (state->enqueue(std::make_shared<const PublicationMessage>(
-            std::move(baseline))) != ReplicaAcceptStatus::Queued) {
+    const auto requiredBytes = LoopbackReplica::State::conservativeBaselineBytes(
+        *m_content, m_config.zone.size(), *volume, m_config.maxReplicaQueue);
+    if (!requiredBytes || *requiredBytes > m_config.maxReplicaBytes) {
         return {.status = ReplicaConnectStatus::Capacity};
     }
-    m_impl->replicas.push_back(state);
-    return {
-        .status = ReplicaConnectStatus::Connected,
-        .replica = LoopbackReplica(std::move(state)),
-    };
+
+    try {
+        auto state = std::make_shared<LoopbackReplica::State>();
+        state->content = m_content;
+        state->world = m_config.world;
+        state->zone = m_config.zone;
+        state->interest = interest;
+        state->queueLimit = m_config.maxReplicaQueue;
+        state->cellLimit = m_config.maxSnapshotCells;
+        state->changeLimit = m_config.maxChangesPerCommand;
+        state->byteLimit = m_config.maxReplicaBytes;
+        state->queue.reserve(m_config.maxReplicaQueue);
+        const auto storageBytes = state->retainedStorageBytes();
+        if (!storageBytes || *storageBytes > m_config.maxReplicaBytes) {
+            return {.status = ReplicaConnectStatus::Capacity};
+        }
+
+        WorldBaseline baseline{
+            .content = m_content->identity(),
+            .world = m_config.world,
+            .zone = m_config.zone,
+            .bounds = interest,
+            .tick = m_tick,
+            .revision = m_revision,
+        };
+        baseline.cells.reserve(*volume);
+        for (int64_t x = interest.min.x; x <= interest.max.x; ++x) {
+            for (int64_t y = interest.min.y; y <= interest.max.y; ++y) {
+                for (int64_t z = interest.min.z; z <= interest.max.z; ++z) {
+                    const CellAddress address{
+                        static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)};
+                    const ExactBlockRead cell = read(address);
+                    if (cell.status != ExactReadStatus::Known) {
+                        return {.status = ReplicaConnectStatus::InvalidInterest};
+                    }
+                    baseline.cells.push_back({address, cell.state});
+                }
+            }
+        }
+
+        if (state->enqueue(std::make_shared<const PublicationMessage>(
+                std::move(baseline))) != ReplicaAcceptStatus::Queued) {
+            return {.status = ReplicaConnectStatus::Capacity};
+        }
+        m_impl->replicas.push_back(state);
+        return {
+            .status = ReplicaConnectStatus::Connected,
+            .replica = LoopbackReplica(std::move(state)),
+        };
+    } catch (const std::bad_alloc&) {
+        return {.status = ReplicaConnectStatus::Capacity};
+    }
 }
 
 ReplicaConnectStatus SimulationHost::resnapshot(LoopbackReplica& replica) {
@@ -1017,36 +1095,53 @@ ReplicaConnectStatus SimulationHost::resnapshot(LoopbackReplica& replica) {
         });
     if (!connected) return ReplicaConnectStatus::InvalidInterest;
 
-    state->markGap();
-
-    WorldBaseline baseline{
-        .content = m_content->identity(),
-        .world = m_config.world,
-        .zone = m_config.zone,
-        .bounds = state->interest,
-        .tick = m_tick,
-        .revision = m_revision,
-    };
-    baseline.cells.reserve(*state->interest.volume(m_config.maxSnapshotCells));
-    for (int64_t x = state->interest.min.x; x <= state->interest.max.x; ++x) {
-        for (int64_t y = state->interest.min.y; y <= state->interest.max.y; ++y) {
-            for (int64_t z = state->interest.min.z; z <= state->interest.max.z; ++z) {
-                const CellAddress address{
-                    static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)};
-                const ExactBlockRead cell = read(address);
-                if (cell.status != ExactReadStatus::Known) {
-                    return ReplicaConnectStatus::InvalidInterest;
-                }
-                baseline.cells.push_back({address, cell.state});
-            }
-        }
-    }
-    auto message = std::make_shared<const PublicationMessage>(std::move(baseline));
-    state->gap = false;
-    if (state->enqueue(std::move(message)) != ReplicaAcceptStatus::Queued) {
+    const auto volume = state->interest.volume(m_config.maxSnapshotCells);
+    const auto requiredBytes = volume
+        ? LoopbackReplica::State::conservativeBaselineBytes(
+              *m_content, m_config.zone.size(), *volume,
+              m_config.maxReplicaQueue)
+        : std::nullopt;
+    if (!requiredBytes || *requiredBytes > m_config.maxReplicaBytes) {
         return ReplicaConnectStatus::Capacity;
     }
-    return ReplicaConnectStatus::Connected;
+
+    state->markGap();
+
+    try {
+        WorldBaseline baseline{
+            .content = m_content->identity(),
+            .world = m_config.world,
+            .zone = m_config.zone,
+            .bounds = state->interest,
+            .tick = m_tick,
+            .revision = m_revision,
+        };
+        baseline.cells.reserve(*volume);
+        for (int64_t x = state->interest.min.x; x <= state->interest.max.x; ++x) {
+            for (int64_t y = state->interest.min.y; y <= state->interest.max.y; ++y) {
+                for (int64_t z = state->interest.min.z; z <= state->interest.max.z; ++z) {
+                    const CellAddress address{
+                        static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)};
+                    const ExactBlockRead cell = read(address);
+                    if (cell.status != ExactReadStatus::Known) {
+                        return ReplicaConnectStatus::InvalidInterest;
+                    }
+                    baseline.cells.push_back({address, cell.state});
+                }
+            }
+        }
+
+        auto message = std::make_shared<const PublicationMessage>(
+            std::move(baseline));
+        state->gap = false;
+        if (state->enqueue(std::move(message)) != ReplicaAcceptStatus::Queued) {
+            return ReplicaConnectStatus::Capacity;
+        }
+        return ReplicaConnectStatus::Connected;
+    } catch (const std::bad_alloc&) {
+        state->markGap();
+        return ReplicaConnectStatus::Capacity;
+    }
 }
 
 } // namespace Rigel::Simulation

@@ -4,6 +4,7 @@
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Entity/EntityTags.h"
 #include "Rigel/Simulation/SimulationHost.h"
+#include "Rigel/Voxel/Chunk.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 #include "Rigel/Voxel/WorldResources.h"
@@ -18,12 +19,24 @@
 namespace {
 bool failAllocation = false;
 size_t allocationsBeforeFailure = 0;
+size_t failureAllocationSize = 0;
+bool trackAllocations = false;
+size_t trackedAllocations = 0;
+size_t trackedAllocationBytes = 0;
 }
 
 void* operator new(std::size_t bytes) {
-    if (failAllocation && allocationsBeforeFailure-- == 0) {
-        failAllocation = false;
-        throw std::bad_alloc();
+    if (trackAllocations) {
+        ++trackedAllocations;
+        trackedAllocationBytes += bytes;
+    }
+    if (failAllocation &&
+        (failureAllocationSize == 0 || bytes == failureAllocationSize)) {
+        if (allocationsBeforeFailure == 0) {
+            failAllocation = false;
+            throw std::bad_alloc();
+        }
+        --allocationsBeforeFailure;
     }
     if (void* allocation = std::malloc(bytes == 0 ? 1 : bytes)) {
         return allocation;
@@ -46,9 +59,13 @@ using namespace Rigel;
 using namespace Rigel::Simulation;
 using namespace std::chrono_literals;
 
-Voxel::GeneratorDefinitionData flatDefinition() {
+Voxel::GeneratorDefinitionData flatDefinition(
+    std::string solid = "rigel:stone",
+    std::string surface = "rigel:grass",
+    std::string water = "rigel:water"
+) {
     auto data = Test::generatorDefinitionFixture(
-        "rigel:stone", "rigel:grass", "rigel:water");
+        std::move(solid), std::move(surface), std::move(water));
     data.bounds = {-31, 30};
     data.terrain.seaLevel = -10;
     data.terrain.densityOutput = "terrain";
@@ -292,6 +309,7 @@ TEST_CASE(SimulationHost_prepared_atomic_writes_survive_allocation_failure) {
             SubmitStatus::Accepted);
 
         allocationsBeforeFailure = failureIndex;
+        failureAllocationSize = 0;
         failAllocation = true;
         bool threw = false;
         try {
@@ -322,6 +340,60 @@ TEST_CASE(SimulationHost_prepared_atomic_writes_survive_allocation_failure) {
     }
     CHECK(observedFailure);
     CHECK(observedSuccess);
+}
+
+TEST_CASE(SimulationHost_second_empty_subchunk_prepare_is_atomic_on_failure) {
+    SimulationHostConfig config;
+    config.domain = {{0, 0, 0}, {31, 31, 30}};
+    config.preloadedChunks = {{0, 0, 0}};
+    config.maxPreloadedChunks = 1;
+    config.maxSnapshotCells = 32'768;
+    HostFixture fixture(config);
+    fixture.start();
+    const auto capability = fixture.host->authorityEditCapability();
+    const CellAddress first{10, 20, 10};
+    const CellAddress second{20, 20, 10};
+    EditCommand command{
+        .session = 1,
+        .command = 1,
+        .actor = fixture.actor,
+        .world = 0,
+        .zone = "base:default",
+        .content = fixture.host->content().identity(),
+        .action = EditAction::Atomic,
+        .mutations = {
+            {first, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
+            {second, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
+        },
+    };
+    CHECK_EQ(
+        fixture.host->submit(command, capability).status,
+        SubmitStatus::Accepted);
+
+    failureAllocationSize = sizeof(std::array<
+        Voxel::BlockState, Voxel::Chunk::SUBCHUNK_VOLUME>);
+    allocationsBeforeFailure = 1;
+    failAllocation = true;
+    CHECK_THROWS(fixture.host->advance(17ms));
+    const bool reachedSecondSubchunkAllocation = !failAllocation;
+    failAllocation = false;
+    failureAllocationSize = 0;
+    CHECK(reachedSecondSubchunkAllocation);
+
+    CHECK_EQ(fixture.host->tick(), Tick{0});
+    CHECK_EQ(fixture.host->revision(), Revision{0});
+    CHECK_EQ(fixture.host->read(first).state.blockKey, std::string("base:air"));
+    CHECK_EQ(fixture.host->read(second).state.blockKey, std::string("base:air"));
+    CHECK_EQ(
+        fixture.host->submit(command, capability).status,
+        SubmitStatus::DuplicatePending);
+
+    CHECK_EQ(fixture.host->advance(0ns).ticksRun, static_cast<size_t>(1));
+    CHECK_EQ(fixture.host->read(first).state.blockKey, std::string("rigel:stone"));
+    CHECK_EQ(fixture.host->read(second).state.blockKey, std::string("rigel:stone"));
+    const auto completed = fixture.host->submit(command, capability);
+    CHECK_EQ(completed.status, SubmitStatus::DuplicateComplete);
+    CHECK_EQ(completed.outcome->status, CommandOutcomeStatus::Applied);
 }
 #endif
 
@@ -907,6 +979,76 @@ TEST_CASE(LoopbackReplica_rejects_incomplete_and_oversized_messages) {
         ReplicaConnectStatus::InvalidInterest);
 }
 
+TEST_CASE(LoopbackReplica_rejects_regressing_publication_ticks) {
+    const CellAddress address{5, 0, 5};
+    const CellBounds interest{address, address};
+
+    {
+        HostFixture fixture;
+        auto connection = fixture.host->connectReplica(interest);
+        auto replica = std::move(*connection.replica);
+        pumpBaseline(replica);
+        fixture.host->advance(34ms);
+        CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+        CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+        const auto previousRevision = replica.revision();
+        const auto previousTick = replica.tick();
+
+        WorldBaseline duplicate{
+            .content = fixture.host->content().identity(),
+            .world = 0,
+            .zone = "base:default",
+            .bounds = interest,
+            .tick = previousTick,
+            .revision = previousRevision,
+            .cells = {{address, fixture.host->read(address).state}},
+        };
+        CHECK_EQ(
+            replica.accept(std::make_shared<const PublicationMessage>(duplicate)),
+            ReplicaAcceptStatus::Queued);
+        CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Duplicate);
+
+        duplicate.revision = previousRevision + 1;
+        duplicate.tick = previousTick - 1;
+        duplicate.cells.front().state = {"rigel:water", 0, 0};
+        CHECK_EQ(
+            replica.accept(std::make_shared<const PublicationMessage>(duplicate)),
+            ReplicaAcceptStatus::Queued);
+        CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::NeedsResnapshot);
+        CHECK_EQ(replica.revision(), previousRevision);
+        CHECK_EQ(replica.tick(), previousTick);
+        CHECK_EQ(replica.read(address).status, ExactReadStatus::Unavailable);
+    }
+
+    {
+        HostFixture fixture;
+        auto connection = fixture.host->connectReplica(interest);
+        auto replica = std::move(*connection.replica);
+        pumpBaseline(replica);
+        fixture.host->advance(17ms);
+        CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+        const auto previousRevision = replica.revision();
+        const auto previousTick = replica.tick();
+        WorldChangeBatch unchangedTick{
+            .content = fixture.host->content().identity(),
+            .world = 0,
+            .zone = "base:default",
+            .baseRevision = previousRevision,
+            .revision = previousRevision + 1,
+            .tick = previousTick,
+            .changes = {{address, {"rigel:water", 0, 0}}},
+        };
+        CHECK_EQ(
+            replica.accept(std::make_shared<const PublicationMessage>(
+                unchangedTick)),
+            ReplicaAcceptStatus::Queued);
+        CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::NeedsResnapshot);
+        CHECK_EQ(replica.revision(), previousRevision);
+        CHECK_EQ(replica.tick(), previousTick);
+        CHECK_EQ(replica.read(address).status, ExactReadStatus::Unavailable);
+    }
+}
+
 TEST_CASE(LoopbackReplica_rejects_unrepresentable_air_state) {
     HostFixture fixture;
     auto connection = fixture.host->connectReplica({{5, 0, 5}, {5, 0, 5}});
@@ -968,3 +1110,95 @@ TEST_CASE(LoopbackReplica_rejects_oversized_string_payloads_by_bytes) {
         ReplicaAcceptStatus::RejectedOversized);
     CHECK(replica.needsResnapshot());
 }
+
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+TEST_CASE(SimulationHost_preflights_long_baselines_and_resnapshot_retries) {
+    auto makeHost = [](size_t byteLimit) {
+        struct Fixture {
+            Voxel::WorldResources resources;
+            std::shared_ptr<Voxel::WorldGenerator> generator;
+            std::unique_ptr<SimulationHost> host;
+            std::string blockKey;
+            std::string zone;
+        } fixture;
+        fixture.blockKey = "rigel:" + std::string(2048, 'b');
+        fixture.zone = "rigel:" + std::string(2048, 'z');
+        Voxel::BlockType block;
+        block.identifier = fixture.blockKey;
+        fixture.resources.registry().registerBlock(
+            fixture.blockKey, std::move(block));
+        fixture.resources.registry().freeze();
+        fixture.generator = std::make_shared<Voxel::WorldGenerator>(
+            fixture.resources.registry(),
+            flatDefinition(
+                fixture.blockKey, fixture.blockKey, fixture.blockKey), 17);
+        SimulationHostConfig config;
+        config.zone = fixture.zone;
+        config.domain = {{0, 0, 0}, {0, 0, 0}};
+        config.preloadedChunks = {{0, 0, 0}};
+        config.maxPreloadedChunks = 1;
+        config.maxSnapshotCells = 1;
+        config.maxReplicaQueue = 1;
+        config.maxReplicas = 1;
+        config.maxReplicaBytes = byteLimit;
+        fixture.host = std::make_unique<SimulationHost>(
+            fixture.resources, fixture.generator, std::move(config));
+        return fixture;
+    };
+
+    auto rejected = makeHost(1024);
+    trackedAllocations = 0;
+    trackedAllocationBytes = 0;
+    trackAllocations = true;
+    const auto rejectedConnection = rejected.host->connectReplica(
+        {{0, 0, 0}, {0, 0, 0}});
+    trackAllocations = false;
+    CHECK_EQ(rejectedConnection.status, ReplicaConnectStatus::Capacity);
+    CHECK_EQ(trackedAllocations, static_cast<size_t>(0));
+    CHECK_EQ(trackedAllocationBytes, static_cast<size_t>(0));
+
+    auto accepted = makeHost(16 * 1024);
+    failureAllocationSize = 0;
+    allocationsBeforeFailure = 0;
+    failAllocation = true;
+    CHECK_EQ(
+        accepted.host->connectReplica({{0, 0, 0}, {0, 0, 0}}).status,
+        ReplicaConnectStatus::Capacity);
+    failAllocation = false;
+    auto connection = accepted.host->connectReplica({{0, 0, 0}, {0, 0, 0}});
+    CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+    CHECK_EQ(replica.read({0, 0, 0}).state.blockKey, accepted.blockKey);
+
+    WorldChangeBatch wrongBase{
+        .content = accepted.host->content().identity(),
+        .world = 0,
+        .zone = accepted.zone,
+        .baseRevision = 1,
+        .revision = 2,
+        .tick = 1,
+    };
+    CHECK_EQ(
+        replica.accept(std::make_shared<const PublicationMessage>(wrongBase)),
+        ReplicaAcceptStatus::Queued);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::NeedsResnapshot);
+
+    failureAllocationSize = 0;
+    allocationsBeforeFailure = 0;
+    failAllocation = true;
+    CHECK_EQ(
+        accepted.host->resnapshot(replica),
+        ReplicaConnectStatus::Capacity);
+    failAllocation = false;
+    CHECK(replica.needsResnapshot());
+    CHECK_EQ(replica.queuedMessages(), static_cast<size_t>(0));
+    CHECK_EQ(replica.read({0, 0, 0}).status, ExactReadStatus::Unavailable);
+
+    CHECK_EQ(
+        accepted.host->resnapshot(replica),
+        ReplicaConnectStatus::Connected);
+    pumpBaseline(replica);
+    CHECK_EQ(replica.read({0, 0, 0}).status, ExactReadStatus::Known);
+}
+#endif

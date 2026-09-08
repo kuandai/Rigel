@@ -92,14 +92,20 @@ their base and resulting revisions and contain the complete atomic edit projecti
 plus ordered outcomes.
 
 Replica application validates manifest, world, zone, completeness, bounds, stable
-keys, duplicate cells, and revision continuity before swapping visible state.
+keys, duplicate cells, revision continuity, and monotonic publication ticks before
+swapping visible state.
 Malformed, missing, future-based, or oversized input requires a fresh baseline.
 A slow replica whose queue fills is marked as needing resnapshot without blocking
 or corrupting other replicas. Each replica applies one aggregate byte cap to its
-installed cells, queued immutable messages, string storage, and apply-time copy;
-message count and element caps remain independent. The host retains no unused
-publication ring. Command payloads have a per-receipt byte cap, and the receipt
-count therefore bounds aggregate session memory.
+installed cells, queued immutable messages, replica container storage, string
+storage, and apply-time copy. Before copying a baseline zone or cell key or
+reserving its cell vector, the producer checks a conservative worst-case bound
+using the frozen dictionary's longest key and the configured interest, queue, and
+byte limits. Allocation failure leaves a connection unregistered or an existing
+replica requiring resnapshot so the operation can be retried. Message count and
+element caps remain independent. The host retains no unused publication ring.
+Command payloads have a per-receipt byte cap, and the receipt count therefore
+bounds aggregate session memory.
 
 This publication stream is process-local applied state. It does not acknowledge
 durability, define a wire codec, or expose transport or authentication behavior.

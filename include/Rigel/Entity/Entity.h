@@ -3,17 +3,13 @@
 #include "Aabb.h"
 #include "EntityId.h"
 #include "EntityModel.h"
-#include "EntityModelInstance.h"
-#include "EntityRenderContext.h"
 #include "EntityTags.h"
 
 #include <Rigel/Asset/Handle.h>
-#include <Rigel/Asset/AssetManager.h>
 
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
-#include <memory>
 #include <string>
 
 namespace Rigel::Voxel {
@@ -59,9 +55,6 @@ public:
     bool isNoClip() const { return hasTag(EntityTags::NoClip); }
 
     virtual void update(Voxel::World& world, float dt);
-    virtual void render(const EntityRenderContext& ctx,
-                        const glm::mat4& modelMatrix,
-                        bool shouldRender);
 
     /**
      * Select a loaded model and use its hitbox. A missing model or a model
@@ -75,11 +68,6 @@ public:
      */
     void setModelIdentifier(std::string identifier);
     const std::string& modelIdentifier() const { return m_modelIdentifier; }
-
-    EntityModelInstance* modelInstance() const { return m_modelInstance.get(); }
-    void clearModelInstance();
-    bool ensureModelInstance(Asset::AssetManager& assets,
-                             const Asset::Handle<Asset::ShaderAsset>& shader);
 
     void setRenderTint(const glm::vec4& tint) { m_renderTint = tint; }
     const glm::vec4& renderTint() const { return m_renderTint; }
@@ -115,7 +103,6 @@ protected:
     EntityTagList m_tags;
     Asset::Handle<EntityModelAsset> m_model;
     std::string m_modelIdentifier;
-    std::unique_ptr<EntityModelInstance> m_modelInstance;
     glm::vec4 m_renderTint{1.0f};
 
 private:

@@ -24,6 +24,9 @@ struct ShaderAsset;
 namespace Rigel::Entity {
 
 class Entity;
+namespace detail {
+struct EntityRendererTestAccess;
+}
 
 class EntityModelInstance {
 public:
@@ -75,6 +78,8 @@ private:
     size_t m_vertexCount = 0;
     std::vector<Vertex> m_cpuVertices;
     bool m_meshDirty = true;
+
+    friend struct detail::EntityRendererTestAccess;
 };
 
 } // namespace Rigel::Entity

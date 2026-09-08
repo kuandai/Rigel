@@ -203,19 +203,9 @@ const Aabb& Entity::defaultLocalBounds() {
     return bounds;
 }
 
-void Entity::render(const EntityRenderContext& ctx,
-                    const glm::mat4& modelMatrix,
-                    bool shouldRender) {
-    if (m_modelInstance) {
-        m_modelInstance->setTint(m_renderTint);
-        m_modelInstance->render(ctx, *this, modelMatrix, shouldRender);
-    }
-}
-
 void Entity::setModel(Asset::Handle<EntityModelAsset> model) {
     m_modelIdentifier = model.id();
     m_model = std::move(model);
-    m_modelInstance.reset();
     if (m_model && m_model->hitbox) {
         setLocalBounds(*m_model->hitbox);
     } else {
@@ -226,24 +216,7 @@ void Entity::setModel(Asset::Handle<EntityModelAsset> model) {
 void Entity::setModelIdentifier(std::string identifier) {
     m_model = {};
     m_modelIdentifier = std::move(identifier);
-    m_modelInstance.reset();
     setLocalBounds(defaultLocalBounds());
-}
-
-void Entity::clearModelInstance() {
-    m_modelInstance.reset();
-}
-
-bool Entity::ensureModelInstance(Asset::AssetManager& assets,
-                                 const Asset::Handle<Asset::ShaderAsset>& shader) {
-    if (m_modelInstance) {
-        return true;
-    }
-    if (!m_model) {
-        return false;
-    }
-    m_modelInstance = m_model->createInstance(assets, shader);
-    return m_modelInstance != nullptr;
 }
 
 void Entity::applyFloorFriction(float friction) {

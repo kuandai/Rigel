@@ -16,14 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace Rigel::Asset {
-class AssetManager;
-struct ShaderAsset;
-}
-
 namespace Rigel::Entity {
-
-class EntityModelInstance;
 
 enum class EntityLightingMode {
     Lit,
@@ -70,9 +63,6 @@ struct EntityModelAsset : public Asset::AssetBase,
 
     const EntityBone* findBone(std::string_view name) const;
 
-    std::unique_ptr<EntityModelInstance> createInstance(
-        Asset::AssetManager& assets,
-        const Asset::Handle<Asset::ShaderAsset>& shader) const;
 };
 
 } // namespace Rigel::Entity

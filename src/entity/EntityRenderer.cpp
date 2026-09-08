@@ -1,15 +1,18 @@
 #include "Rigel/Entity/EntityRenderer.h"
 
 #include "Rigel/Entity/Entity.h"
+#include "Rigel/Entity/EntityModelInstance.h"
 #include "Rigel/Entity/Aabb.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Asset/Types.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_access.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <exception>
+#include <unordered_set>
 #include <spdlog/spdlog.h>
 
 namespace Rigel::Entity {
@@ -45,9 +48,52 @@ float computeEntityAo(const Voxel::World& world, const Aabb& bounds) {
     return std::clamp(ao, 0.3f, 1.0f);
 }
 
+std::unique_ptr<EntityModelInstance> createModelInstance(
+    Asset::AssetManager& assets,
+    const Asset::Handle<EntityModelAsset>& model,
+    const Asset::Handle<Asset::ShaderAsset>& shader
+) {
+    Asset::Handle<Asset::ShaderAsset> resolvedShader = shader;
+    if (model->lighting == EntityLightingMode::Unlit) {
+        if (assets.exists("shaders/entity_unlit")) {
+            resolvedShader = assets.get<Asset::ShaderAsset>(
+                "shaders/entity_unlit");
+        } else {
+            spdlog::warn(
+                "EntityRenderer: unlit shader missing, falling back to lit shader");
+        }
+    }
+    if (!resolvedShader) {
+        spdlog::warn(
+            "EntityRenderer: shader handle missing when creating instance");
+        return nullptr;
+    }
+
+    std::unordered_map<
+        std::string, Asset::Handle<Asset::TextureAsset>> resolvedTextures;
+    resolvedTextures.reserve(model->textures.size());
+    for (const auto& [slot, assetId] : model->textures) {
+        if (!assets.exists(assetId)) {
+            spdlog::warn(
+                "EntityRenderer: texture '{}' not found in manifest", assetId);
+            continue;
+        }
+        resolvedTextures.emplace(
+            slot, assets.get<Asset::TextureAsset>(assetId));
+    }
+
+    return std::make_unique<EntityModelInstance>(
+        std::shared_ptr<const EntityModelAsset>(model.shared()),
+        resolvedShader,
+        std::move(resolvedTextures));
+}
+
 } // namespace
 
+EntityRenderer::~EntityRenderer() = default;
+
 void EntityRenderer::initialize(Asset::AssetManager& assets) {
+    release();
     m_assets = &assets;
     const auto loadOptionalShader = [&assets](
         const char* id,
@@ -80,7 +126,8 @@ void EntityRenderer::render(Voxel::World& world, const EntityRenderContext& ctx)
         const Aabb& bounds = entity.worldBounds();
         bool visible = isVisible(bounds, planes);
 
-        if (!entity.ensureModelInstance(*m_assets, m_shader)) {
+        EntityModelInstance* instance = instanceFor(entity);
+        if (!instance) {
             return;
         }
 
@@ -91,8 +138,10 @@ void EntityRenderer::render(Voxel::World& world, const EntityRenderContext& ctx)
         glm::mat4 modelMatrix = glm::translate(glm::mat4(1.0f), entity.position() + renderOffset);
         EntityRenderContext localCtx = ctx;
         localCtx.ambientOcclusion = computeEntityAo(world, bounds);
-        entity.render(localCtx, modelMatrix, visible);
+        instance->setTint(entity.renderTint());
+        instance->render(localCtx, entity, modelMatrix, visible);
     });
+    prune(world);
 }
 
 void EntityRenderer::renderShadowCasters(Voxel::World& world,
@@ -104,11 +153,7 @@ void EntityRenderer::renderShadowCasters(Voxel::World& world,
 
     world.entities().forEach([&](Entity& entity) {
         const Aabb& bounds = entity.worldBounds();
-        if (!entity.ensureModelInstance(*m_assets, m_shader)) {
-            return;
-        }
-
-        auto* instance = entity.modelInstance();
+        EntityModelInstance* instance = instanceFor(entity);
         if (!instance) {
             return;
         }
@@ -121,6 +166,59 @@ void EntityRenderer::renderShadowCasters(Voxel::World& world,
         instance->renderShadow(ctx, entity, modelMatrix, shadowCtx.lightViewProjection,
                                m_shadowShader, true);
     });
+    prune(world);
+}
+
+EntityModelInstance* EntityRenderer::instanceFor(Entity& entity) {
+    const auto& model = entity.model();
+    if (!model || !m_assets) {
+        m_instances.erase(entity.id());
+        return nullptr;
+    }
+
+    auto found = m_instances.find(entity.id());
+    if (found != m_instances.end() && found->second.model == model) {
+        return found->second.instance.get();
+    }
+
+    RenderEntry replacement{
+        .model = model,
+        .instance = createModelInstance(*m_assets, model, m_shader),
+    };
+    if (!replacement.instance) {
+        m_instances.erase(entity.id());
+        return nullptr;
+    }
+    auto [entry, inserted] = m_instances.insert_or_assign(
+        entity.id(), std::move(replacement));
+    static_cast<void>(inserted);
+    return entry->second.instance.get();
+}
+
+void EntityRenderer::prune(const Voxel::World& world) {
+    std::unordered_set<EntityId, EntityIdHash> live;
+    live.reserve(world.entities().size());
+    world.entities().forEach([&](const Entity& entity) {
+        live.insert(entity.id());
+    });
+    for (auto entry = m_instances.begin(); entry != m_instances.end();) {
+        if (!live.contains(entry->first)) {
+            entry = m_instances.erase(entry);
+        } else {
+            ++entry;
+        }
+    }
+}
+
+void EntityRenderer::clear() {
+    m_instances.clear();
+}
+
+void EntityRenderer::release() {
+    clear();
+    m_shader = {};
+    m_shadowShader = {};
+    m_assets = nullptr;
 }
 
 bool EntityRenderer::isVisible(const Aabb& bounds, const glm::mat4& viewProjection) {

@@ -69,9 +69,14 @@ voxel blocks around the entity bounds center.
 
 Rendering is delegated to `EntityModelInstance`:
 
-- Each entity lazily creates a model instance the first time it renders.
+- `EntityRenderer` lazily creates one model instance for each rendered entity.
+- Changing an entity's model replaces that render-owned instance; despawn,
+  view clearing, and renderer release destroy it.
 - The instance stores CPU vertices and uploads to a dynamic VBO.
 - Bone animations are evaluated each frame and trigger mesh rebuilds.
+
+`Entity` retains only semantic state: its model handle and identifier select
+geometry and hitbox behavior, but it does not own or destroy GPU instances.
 
 Shadows use a separate render path that writes into the voxel shadow cascades.
 

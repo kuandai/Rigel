@@ -6,13 +6,17 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace Rigel::Simulation {
 namespace {
 
 constexpr uint32_t PointerMagic = 0x52474350; // RGCP
-constexpr uint32_t PointerVersion = 1;
+constexpr uint32_t RootMagic = 0x52474353; // RGCS
+constexpr uint32_t PendingMagic = 0x5247504E; // RGPN
+constexpr uint32_t PointerVersion = 2;
 constexpr size_t MaximumPointerBytes = 512;
+constexpr size_t MaximumPayloadBytes = 256ULL * 1024 * 1024;
 
 uint64_t readU64(Persistence::ByteReader& reader) {
     const uint32_t high = reader.readU32();
@@ -45,11 +49,34 @@ struct PointerRecord {
 };
 
 std::string payloadPath(const std::string& root, uint64_t generation) {
-    return root + "/checkpoints/" + std::to_string(generation) + ".bin";
+    // Only the inactive slot is replaced. The active payload survives failures
+    // until a newer pointer is durably published; uncertain publication freezes reuse.
+    return root + "/checkpoints/" + std::to_string(generation % 2) + ".bin";
 }
 
 std::string pendingPublicationPath(const std::string& root) {
     return root + "/publication-pending";
+}
+
+void writeFormatRecord(Persistence::StorageBackend& storage,
+                       const std::string& path, uint32_t magic) {
+    auto write = storage.openWrite(path);
+    write->writer().writeU32(magic);
+    write->writer().writeU32(PointerVersion);
+    write->writer().flush();
+    write->commit();
+}
+
+void requireFormatRecord(Persistence::StorageBackend& storage,
+                         const std::string& path, uint32_t magic) {
+    if (storage.entryKind(path) != Persistence::StorageEntryKind::RegularFile) {
+        throw std::invalid_argument("checkpoint format record is not a regular file");
+    }
+    auto read = storage.openRead(path);
+    if (read->size() != 8 || read->readU32() != magic ||
+        read->readU32() != PointerVersion) {
+        throw std::invalid_argument("checkpoint format record is incompatible");
+    }
 }
 
 PointerRecord readPointer(
@@ -125,6 +152,7 @@ struct SimulationCheckpointManager::Impl {
         const auto rootKind = storage->entryKind(root);
         if (rootKind == Persistence::StorageEntryKind::Missing) {
             storage->mkdirs(root + "/checkpoints");
+            writeFormatRecord(*storage, root + "/format", RootMagic);
             return;
         }
         if (rootKind != Persistence::StorageEntryKind::Directory) {
@@ -133,33 +161,63 @@ struct SimulationCheckpointManager::Impl {
             return;
         }
         bool unknown = false;
+        bool empty = true;
         storage->forEachEntry(root, [&](const std::string& name) {
+            empty = false;
             const std::string leaf = std::filesystem::path(name).filename().string();
             if (leaf != "current" && leaf != "checkpoints" &&
-                leaf != "publication-pending") unknown = true;
-            return true;
+                leaf != "publication-pending" && leaf != "format") unknown = true;
+            return !unknown;
         });
         if (unknown) {
             invalidRoot = CheckpointRecoveryStatus::Incompatible;
             invalidDetail = "checkpoint root contains an unknown format";
             return;
         }
+        if (empty) {
+            storage->mkdirs(root + "/checkpoints");
+            writeFormatRecord(*storage, root + "/format", RootMagic);
+            return;
+        }
+        try {
+            requireFormatRecord(*storage, root + "/format", RootMagic);
+        } catch (const std::exception& error) {
+            invalidRoot = CheckpointRecoveryStatus::Incompatible;
+            invalidDetail = error.what();
+            return;
+        }
         const auto currentKind = storage->entryKind(root + "/current");
         const auto checkpointsKind = storage->entryKind(root + "/checkpoints");
         if (checkpointsKind == Persistence::StorageEntryKind::Missing) {
-            if (currentKind != Persistence::StorageEntryKind::Missing) {
-                invalidRoot = CheckpointRecoveryStatus::Corrupt;
-                invalidDetail = "checkpoint payload directory is missing";
-                return;
-            }
-            storage->mkdirs(root + "/checkpoints");
+            invalidRoot = CheckpointRecoveryStatus::Corrupt;
+            invalidDetail = "checkpoint payload directory is missing";
+            return;
         } else if (checkpointsKind != Persistence::StorageEntryKind::Directory) {
             invalidRoot = CheckpointRecoveryStatus::Incompatible;
             invalidDetail = "checkpoint payload path is incompatible";
             return;
         }
+        storage->forEachEntry(root + "/checkpoints", [&](const std::string& name) {
+            const std::string leaf = std::filesystem::path(name).filename().string();
+            if ((leaf != "0.bin" && leaf != "1.bin") ||
+                storage->entryKind(root + "/checkpoints/" + leaf) !=
+                    Persistence::StorageEntryKind::RegularFile) unknown = true;
+            return !unknown;
+        });
+        if (unknown) {
+            invalidRoot = CheckpointRecoveryStatus::Incompatible;
+            invalidDetail = "checkpoint slots contain an unknown format";
+            return;
+        }
         if (storage->entryKind(pendingPublicationPath(root)) !=
             Persistence::StorageEntryKind::Missing) {
+            try {
+                requireFormatRecord(*storage, pendingPublicationPath(root), PendingMagic);
+            } catch (const std::exception& error) {
+                invalidRoot = CheckpointRecoveryStatus::Incompatible;
+                invalidDetail = error.what();
+                return;
+            }
             uncertain = true;
         }
         if (currentKind == Persistence::StorageEntryKind::Missing) return;
@@ -219,20 +277,16 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
     if (m_impl->latestGeneration == std::numeric_limits<uint64_t>::max()) {
         return CheckpointRequestStatus::UnsupportedState;
     }
-    uint64_t generation = m_impl->latestGeneration + 1;
-    while (m_impl->storage->entryKind(payloadPath(m_impl->root, generation)) !=
-           Persistence::StorageEntryKind::Missing) {
-        if (generation == std::numeric_limits<uint64_t>::max()) {
-            return CheckpointRequestStatus::UnsupportedState;
-        }
-        ++generation;
-    }
+    const uint64_t generation = m_impl->latestGeneration + 1;
 
     std::vector<uint8_t> payload;
     uint64_t stateHash = 0;
     try {
         stateHash = host.stateHash();
         payload = host.checkpointBytes(generation, m_impl->latestCutHash);
+        if (payload.size() > MaximumPayloadBytes) {
+            return CheckpointRequestStatus::UnsupportedState;
+        }
     } catch (...) {
         return CheckpointRequestStatus::UnsupportedState;
     }
@@ -249,7 +303,7 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
     impl->pendingOwner = host.m_authorityEditKey;
     impl->pendingCutHash = pointer.payloadHash;
     impl->running.store(true, std::memory_order_release);
-    impl->writer = std::thread([
+    auto writeCheckpoint = [
         impl, payload = std::move(payload), pointer]() mutable {
         CheckpointOutcome outcome{
             .status = CheckpointWriteStatus::NotPublished,
@@ -259,6 +313,7 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
             .stateHash = pointer.stateHash,
         };
         bool pointerCommitStarted = false;
+        bool pendingCommitStarted = false;
         bool pendingPublicationWritten = false;
         try {
             auto payloadWrite = impl->storage->openWrite(
@@ -269,9 +324,10 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
 
             auto pendingWrite = impl->storage->openWrite(
                 pendingPublicationPath(impl->root));
-            writeU64(pendingWrite->writer(), pointer.generation);
-            writeU64(pendingWrite->writer(), pointer.payloadHash);
+            pendingWrite->writer().writeU32(PendingMagic);
+            pendingWrite->writer().writeU32(PointerVersion);
             pendingWrite->writer().flush();
+            pendingCommitStarted = true;
             pendingWrite->commit();
             pendingPublicationWritten = true;
 
@@ -284,18 +340,20 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
             pendingPublicationWritten = false;
             outcome.status = CheckpointWriteStatus::Durable;
         } catch (const Persistence::AtomicFilePublicationError& error) {
-            if (pointerCommitStarted && error.state() ==
+            if ((pointerCommitStarted || pendingCommitStarted) && error.state() ==
                     Persistence::AtomicFilePublicationState::PublishedDurabilityUncertain) {
                 outcome.status = CheckpointWriteStatus::DurabilityUnknown;
             }
             outcome.detail = error.what();
         } catch (const std::exception& error) {
-            outcome.status = pointerCommitStarted
+            outcome.status = (pointerCommitStarted ||
+                              (pendingCommitStarted && !pendingPublicationWritten))
                 ? CheckpointWriteStatus::DurabilityUnknown
                 : CheckpointWriteStatus::NotPublished;
             outcome.detail = error.what();
         } catch (...) {
-            outcome.status = pointerCommitStarted
+            outcome.status = (pointerCommitStarted ||
+                              (pendingCommitStarted && !pendingPublicationWritten))
                 ? CheckpointWriteStatus::DurabilityUnknown
                 : CheckpointWriteStatus::NotPublished;
             outcome.detail = "unknown checkpoint storage failure";
@@ -314,7 +372,17 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
             impl->terminal = std::move(outcome);
         }
         impl->running.store(false, std::memory_order_release);
-    });
+    };
+    try {
+        impl->writer = std::thread(std::move(writeCheckpoint));
+    } catch (...) {
+        // No worker exists and no storage operation has begun. A failed thread
+        // allocation must not leave the manager permanently reporting in-flight work.
+        impl->pendingOwner.reset();
+        impl->pendingCutHash = 0;
+        impl->running.store(false, std::memory_order_release);
+        throw;
+    }
     return CheckpointRequestStatus::Started;
 }
 
@@ -365,7 +433,7 @@ CheckpointRecovery SimulationCheckpointManager::recover(
         const PointerRecord pointer = readPointer(*m_impl->storage, m_impl->root);
         if (pointer.generation != m_impl->latestGeneration ||
             pointer.payloadHash != m_impl->latestCutHash ||
-            pointer.payloadBytes > 256ULL * 1024 * 1024) {
+            pointer.payloadBytes > MaximumPayloadBytes) {
             throw std::runtime_error("checkpoint pointer changed outside live owner");
         }
         auto payload = readPayload(

@@ -226,6 +226,8 @@ public:
         DelayPayload,
         PointerNotPublished,
         PointerUncertain,
+        PendingUncertain,
+        RemovePending,
     };
 
     explicit CheckpointFaultStorage(
@@ -255,6 +257,12 @@ public:
                     "injected pre-publication failure");
             }
             m_delegate->commit();
+            if (m_path.ends_with("/publication-pending") &&
+                m_owner.takeFault(Fault::PendingUncertain)) {
+                throw Persistence::AtomicFilePublicationError(
+                    Persistence::AtomicFilePublicationState::PublishedDurabilityUncertain,
+                    "injected pending-marker sync failure");
+            }
             if (m_path.ends_with("/current") &&
                 m_owner.takeFault(Fault::PointerUncertain)) {
                 throw Persistence::AtomicFilePublicationError(
@@ -286,6 +294,11 @@ public:
         return true;
     }
 
+    void setFault(Fault fault) {
+        std::lock_guard lock(m_mutex);
+        m_fault = fault;
+    }
+
     std::unique_ptr<Persistence::ByteReader> openRead(const std::string& path) override {
         return m_storage->openRead(path);
     }
@@ -313,7 +326,12 @@ public:
     lockWorldGenerationBootstrap(const std::string& root) override {
         return m_storage->lockWorldGenerationBootstrap(root);
     }
-    void remove(const std::string& path) override { m_storage->remove(path); }
+    void remove(const std::string& path) override {
+        if (path.ends_with("/publication-pending") && takeFault(Fault::RemovePending)) {
+            throw std::runtime_error("injected pending-marker removal failure");
+        }
+        m_storage->remove(path);
+    }
     void publishDirectory(const std::string& staged,
                           const std::string& final) override {
         m_storage->publishDirectory(staged, final);
@@ -990,6 +1008,11 @@ TEST_CASE(SimulationCheckpoint_preserves_unknown_roots_and_blocks_uncertainty) {
 
     auto partialStorage = std::make_shared<Persistence::InMemoryStorageBackend>();
     {
+        SimulationCheckpointManager initialized(partialStorage, "/partial");
+    }
+    // Reach missing-payload-directory validation within a recognized format.
+    partialStorage->remove("/partial/checkpoints");
+    {
         auto write = partialStorage->openWrite("/partial/current");
         write->writer().writeU32(0x12345678);
         write->commit();
@@ -1086,7 +1109,7 @@ TEST_CASE(SimulationCheckpoint_filesystem_failure_retry_and_orphan_are_safe) {
     SimulationCheckpointManager reopened(filesystem, root);
     auto recovered = reopened.recover(fixture.resources, fixture.generator);
     CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
-    CHECK_EQ(recovered.generation, uint64_t{2});
+    CHECK_EQ(recovered.generation, uint64_t{1});
 }
 
 TEST_CASE(SimulationCheckpoint_teardown_joins_writer_before_releasing_root) {
@@ -1135,8 +1158,108 @@ TEST_CASE(SimulationCheckpoint_full_saved_cut_hash_is_the_next_parent) {
     CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
     const auto pointer = readStorageBytes(*storage, "/save/current");
     CHECK_EQ(readBigU64(pointer, 16), firstCutHash);
-    CHECK_NE(testHash(readStorageBytes(*storage, "/save/checkpoints/2.bin")),
+    CHECK_NE(testHash(readStorageBytes(*storage, "/save/checkpoints/0.bin")),
              firstCutHash);
+}
+
+TEST_CASE(SimulationCheckpoint_fence_failures_preserve_the_acknowledged_payload) {
+    for (const auto fault : {CheckpointFaultStorage::Fault::PendingUncertain,
+                             CheckpointFaultStorage::Fault::RemovePending}) {
+        HostFixture fixture;
+        Test::TemporaryDirectory directory("rigel_checkpoint_fence");
+        const std::string root = (directory.path() / "world").string();
+        auto filesystem = std::make_shared<Persistence::FilesystemBackend>();
+        std::vector<uint8_t> acknowledgedPayload;
+        {
+            auto storage = std::make_shared<CheckpointFaultStorage>(
+                CheckpointFaultStorage::Fault::None, filesystem);
+            SimulationCheckpointManager manager(storage, root);
+            CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+            CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+            acknowledgedPayload = readStorageBytes(*filesystem, root + "/checkpoints/1.bin");
+            fixture.host->advance(17ms);
+            storage->setFault(fault);
+            CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+            CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::DurabilityUnknown);
+            CHECK(manager.durabilityUncertain());
+            CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Uncertain);
+        }
+        SimulationCheckpointManager reopened(filesystem, root);
+        CHECK(reopened.durabilityUncertain());
+        CHECK_EQ(reopened.request(*fixture.host), CheckpointRequestStatus::Uncertain);
+        CHECK_EQ(reopened.recover(fixture.resources, fixture.generator).status,
+                 CheckpointRecoveryStatus::Corrupt);
+        CHECK_EQ(readStorageBytes(*filesystem, root + "/checkpoints/1.bin"),
+                 acknowledgedPayload);
+        CHECK(filesystem->list(root + "/checkpoints").size() <= 2);
+    }
+}
+
+TEST_CASE(SimulationCheckpoint_reuses_bounded_slots_through_success_and_failure) {
+    SimulationHostConfig config;
+    config.domain = {{0, 0, 0}, {7, 7, 7}};
+    config.maxPreloadedChunks = 1;
+    config.maxSnapshotCells = 512;
+    HostFixture fixture(config);
+    Test::TemporaryDirectory directory("rigel_checkpoint_slots");
+    const std::string root = (directory.path() / "world").string();
+    auto filesystem = std::make_shared<Persistence::FilesystemBackend>();
+    auto storage = std::make_shared<CheckpointFaultStorage>(
+        CheckpointFaultStorage::Fault::None, filesystem);
+    SimulationCheckpointManager manager(storage, root);
+    for (uint64_t generation = 1; generation <= 12; ++generation) {
+        fixture.host->advance(17ms);
+        CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+        const auto saved = waitForCheckpoint(manager);
+        CHECK_EQ(saved.status, CheckpointWriteStatus::Durable);
+        CHECK_EQ(saved.generation, generation);
+        CHECK(filesystem->list(root + "/checkpoints").size() <= 2);
+    }
+    const auto acknowledgedPointer = readStorageBytes(*filesystem, root + "/current");
+    const auto acknowledgedPayload = readStorageBytes(*filesystem, root + "/checkpoints/0.bin");
+    for (int failure = 0; failure < 12; ++failure) {
+        fixture.host->advance(17ms);
+        storage->setFault(CheckpointFaultStorage::Fault::PointerNotPublished);
+        CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+        const auto failed = waitForCheckpoint(manager);
+        CHECK_EQ(failed.status, CheckpointWriteStatus::NotPublished);
+        CHECK_EQ(failed.generation, uint64_t{13});
+        CHECK_EQ(readStorageBytes(*filesystem, root + "/current"), acknowledgedPointer);
+        CHECK_EQ(readStorageBytes(*filesystem, root + "/checkpoints/0.bin"), acknowledgedPayload);
+        CHECK_EQ(filesystem->list(root + "/checkpoints").size(), size_t{2});
+    }
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    auto recovered = manager.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(recovered.generation, uint64_t{13});
+    CHECK_EQ(recovered.host->stateHash(), fixture.host->stateHash());
+}
+
+TEST_CASE(SimulationCheckpoint_preserves_incompatible_container_versions) {
+    HostFixture fixture;
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    {
+        SimulationCheckpointManager manager(storage, "/save");
+        CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+        CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    }
+    auto format = readStorageBytes(*storage, "/save/format");
+    writeBigU32(format, 4, 1);
+    {
+        auto write = storage->openWrite("/save/format");
+        write->writer().writeBytes(format.data(), format.size());
+        write->commit();
+    }
+    const auto pointer = readStorageBytes(*storage, "/save/current");
+    const auto payload = readStorageBytes(*storage, "/save/checkpoints/1.bin");
+    SimulationCheckpointManager incompatible(storage, "/save");
+    CHECK_EQ(incompatible.request(*fixture.host), CheckpointRequestStatus::UnsupportedState);
+    CHECK_EQ(incompatible.recover(fixture.resources, fixture.generator).status,
+             CheckpointRecoveryStatus::Incompatible);
+    CHECK_EQ(readStorageBytes(*storage, "/save/format"), format);
+    CHECK_EQ(readStorageBytes(*storage, "/save/current"), pointer);
+    CHECK_EQ(readStorageBytes(*storage, "/save/checkpoints/1.bin"), payload);
 }
 
 TEST_CASE(SimulationCheckpoint_incompatible_recovery_does_not_change_files) {

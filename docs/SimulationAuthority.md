@@ -134,7 +134,7 @@ must be unique and mutually consistent; pending and aggregate receipt limits are
 reapplied. Validation and owning-payload allocation finish on the unpublished
 candidate, so malformed input cannot replace the live host or alter save files.
 
-Each immutable payload binds its generation and the complete serialized parent-cut
+Each captured payload binds its generation and the complete serialized parent-cut
 hash, including scheduler debt. This durable ancestry is deliberately distinct
 from the frame-pacing-independent simulation comparison hash. After the payload
 is committed, a small atomic pointer publishes that generation, ancestry, cut,
@@ -144,8 +144,22 @@ presence survives manager teardown and makes recovery and later publication stop
 conservatively after a post-replacement durability uncertainty. Only a durable
 pointer advances acknowledged history. A definitely unpublished error removes the
 fence and permits a later request. Unknown root entries and incompatible pointer
-formats are reported without rewriting or removing them. Historical payloads
-never replace the live pointer.
+formats are reported without rewriting or removing them. Uncertainty in either
+the fence commit or pointer commit blocks reuse, including after reopening.
+
+The current storage policy uses two alternating payload slots. Generation identity
+is in the payload/pointer, not the filename. Only the inactive slot is replaced,
+so repeated failures cannot accumulate orphan files or overwrite the last
+acknowledged payload. Two retained payloads plus one staged atomic replacement
+bound payload storage to three times the per-payload limit during a write (the
+format imposes a 256 MiB maximum per payload); pointer/format/fence records are
+small and fixed-size. Uncertain publication preserves both slots for inspection.
+This is not a historical-checkpoint archive or a permanent storage requirement.
+The versioned root marker establishes ownership of the fixed slot names. Earlier
+development formats fail explicitly; no automatic conversion or destructive
+rewrite is attempted. An in-flight `Coalesced` request captures nothing newer:
+the caller retains its save demand and requests the current cut after polling
+the terminal result, whose tick/revision alone describe acknowledged progress.
 
 State playback recovers the exact saved cut. Command resimulation is separate:
 `recording()` returns the initial state plus the ordered successful inter-tick

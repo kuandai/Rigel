@@ -82,6 +82,8 @@ public:
     SemanticBlockState semanticState(Voxel::BlockState state) const;
     Voxel::BlockState localState(const SemanticBlockState& state) const;
     bool contains(std::string_view stableKey) const;
+    /** True when current authoritative chunk storage preserves this state exactly. */
+    bool supportsState(const SemanticBlockState& state) const;
     /** True only for the built-in entity rule and hitbox bound by this manifest. */
     bool supportsEntity(const Entity::Entity& entity) const;
     void requireIdentity(const ContentManifestId& identity) const;

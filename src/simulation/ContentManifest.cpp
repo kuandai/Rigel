@@ -267,6 +267,12 @@ bool ContentDictionary::contains(std::string_view stableKey) const {
     return found != m_entries.end() && found->blockKey == stableKey;
 }
 
+bool ContentDictionary::supportsState(const SemanticBlockState& state) const {
+    return contains(state.blockKey) &&
+        (state.blockKey != "base:air" ||
+         (state.metadata == 0 && state.lightLevel == 0));
+}
+
 bool ContentDictionary::supportsEntity(const Entity::Entity& entity) const {
     const auto& bounds = entity.localBounds();
     return typeid(entity) == typeid(Entity::Entity) &&

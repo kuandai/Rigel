@@ -510,6 +510,56 @@ TEST_CASE(SimulationHost_places_on_the_admitted_tick_and_publishes_destination) 
              std::string("rigel:stone"));
 }
 
+TEST_CASE(SimulationHost_rejects_unrepresentable_air_without_publication) {
+    SimulationHostConfig config;
+    config.domain = {{0, 0, 0}, {31, 30, 31}};
+    config.preloadedChunks = {{0, 0, 0}};
+    config.maxPreloadedChunks = 1;
+    config.maxSnapshotCells = 32'768;
+    HostFixture fixture(config);
+    fixture.start();
+    const CellAddress address{5, 20, 5};
+    const SemanticBlockState air = fixture.host->read(address).state;
+    CHECK_EQ(air, (SemanticBlockState{"base:air", 0, 0}));
+
+    auto connection = fixture.host->connectReplica({address, address});
+    CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+
+    EditCommand unsupported{
+        .session = 1,
+        .command = 1,
+        .actor = fixture.actor,
+        .world = 0,
+        .zone = "base:default",
+        .content = fixture.host->content().identity(),
+        .action = EditAction::Atomic,
+        .mutations = {{address, air, {"base:air", 1, 7}}},
+    };
+    const auto capability = fixture.host->authorityEditCapability();
+    CHECK_EQ(
+        fixture.host->submit(unsupported, capability).status,
+        SubmitStatus::InvalidRequest);
+    CHECK_EQ(fixture.host->revision(), Revision{0});
+    CHECK_EQ(fixture.host->read(address).state, air);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Idle);
+    CHECK_EQ(replica.read(address).state, air);
+
+    EditCommand supported = unsupported;
+    supported.command = 2;
+    supported.mutations.front().replacement = {"rigel:stone", 1, 7};
+    CHECK_EQ(
+        fixture.host->submit(supported, capability).status,
+        SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+    CHECK_EQ(fixture.host->read(address).state,
+             supported.mutations.front().replacement);
+    CHECK_EQ(replica.read(address).state,
+             supported.mutations.front().replacement);
+}
+
 TEST_CASE(SimulationHost_rejects_unbound_and_nonfinite_interactions) {
     {
         HostFixture fixture;
@@ -855,6 +905,29 @@ TEST_CASE(LoopbackReplica_rejects_incomplete_and_oversized_messages) {
     CHECK_EQ(
         fixture.host->connectReplica({{-5, 0, 0}, {1, 1, 1}}).status,
         ReplicaConnectStatus::InvalidInterest);
+}
+
+TEST_CASE(LoopbackReplica_rejects_unrepresentable_air_state) {
+    HostFixture fixture;
+    auto connection = fixture.host->connectReplica({{5, 0, 5}, {5, 0, 5}});
+    CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+
+    WorldChangeBatch invalid{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = "base:default",
+        .baseRevision = replica.revision(),
+        .revision = replica.revision() + 1,
+        .tick = replica.tick() + 1,
+        .changes = {{{5, 0, 5}, {"base:air", 1, 7}}},
+    };
+    CHECK_EQ(
+        replica.accept(std::make_shared<const PublicationMessage>(invalid)),
+        ReplicaAcceptStatus::Queued);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::NeedsResnapshot);
+    CHECK_EQ(replica.read({5, 0, 5}).status, ExactReadStatus::Unavailable);
 }
 
 TEST_CASE(LoopbackReplica_rejects_oversized_string_payloads_by_bytes) {

@@ -277,7 +277,7 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             });
             for (size_t index = 0; index < next.size(); ++index) {
                 if (!value.bounds.contains(next[index].address) ||
-                    !m_state->content->contains(next[index].state.blockKey) ||
+                    !m_state->content->supportsState(next[index].state) ||
                     (index && next[index - 1].address == next[index].address)) {
                     return fail();
                 }
@@ -317,7 +317,7 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             std::vector<CellAddress> seen;
             seen.reserve(value.changes.size());
             for (const auto& change : value.changes) {
-                if (!m_state->content->contains(change.state.blockKey) ||
+                if (!m_state->content->supportsState(change.state) ||
                     std::find(seen.begin(), seen.end(), change.address) != seen.end()) {
                     return fail();
                 }
@@ -587,6 +587,20 @@ SubmitResult SimulationHost::submit(EditCommand command, bool privileged) {
         if (!m_content->contains(mutation.expected.blockKey) ||
             !m_content->contains(mutation.replacement.blockKey)) {
             return {.status = SubmitStatus::ContentMismatch};
+        }
+        if (!m_content->supportsState(mutation.expected) ||
+            !m_content->supportsState(mutation.replacement)) {
+            return {.status = SubmitStatus::InvalidRequest};
+        }
+    }
+    if (command.interaction) {
+        if (!m_content->contains(
+                command.interaction->expectedTargetState.blockKey)) {
+            return {.status = SubmitStatus::ContentMismatch};
+        }
+        if (!m_content->supportsState(
+                command.interaction->expectedTargetState)) {
+            return {.status = SubmitStatus::InvalidRequest};
         }
     }
     if (m_impl->receipts.size() >= m_config.maxSessionReceipts) {

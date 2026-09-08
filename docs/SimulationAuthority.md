@@ -22,6 +22,12 @@ the manifest identity, while a generator seed or semantic rule change does.
 Untyped block extension data is rejected because its simulation meaning cannot be
 encoded safely.
 
+The current authoritative chunk storage preserves metadata and packed light bytes
+for non-air blocks. Air is representable only as canonical `base:air` with both
+bytes zero because empty subchunks are compressed. Commands reject noncanonical
+air before admission, and replicas reject it before changing visible state; the
+host never acknowledges or publishes a state different from retained storage.
+
 The developer block-gallery generator has additional runtime placements beyond
 its serialized terrain definition. This initial authority rejects that generator
 explicitly rather than assigning it the ordinary empty generator's identity.

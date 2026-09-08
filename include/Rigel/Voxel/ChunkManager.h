@@ -11,7 +11,6 @@
 #include "Chunk.h"
 #include "ChunkCoord.h"
 
-#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -20,6 +19,9 @@
 
 namespace Rigel::Persistence {
 class AsyncChunkLoader;
+}
+namespace Rigel::detail {
+class GraphicalAuthorityClient;
 }
 
 namespace Rigel::Voxel {
@@ -49,6 +51,31 @@ class ChunkStreamer;
  * @endcode
  */
 class ChunkManager {
+private:
+    class PreparedChunkReplacements final {
+    public:
+        PreparedChunkReplacements(PreparedChunkReplacements&& other) noexcept;
+        PreparedChunkReplacements& operator=(
+            PreparedChunkReplacements&& other) noexcept;
+        ~PreparedChunkReplacements();
+
+        PreparedChunkReplacements(const PreparedChunkReplacements&) = delete;
+        PreparedChunkReplacements& operator=(
+            const PreparedChunkReplacements&) = delete;
+
+    private:
+        PreparedChunkReplacements() = default;
+        void discard() noexcept;
+
+        ChunkManager* m_owner = nullptr;
+        std::vector<std::unique_ptr<Chunk>> m_replacements;
+        std::vector<ChunkCoord> m_insertedSlots;
+        std::vector<ChunkCoord> m_neighborInvalidations;
+        std::vector<ChunkCoord> m_insertedNotifications;
+
+        friend class ChunkManager;
+    };
+
 public:
     ChunkManager() = default;
     ChunkManager(const ChunkManager&) = delete;
@@ -156,6 +183,12 @@ private:
     friend class Chunk;
     friend class ChunkStreamer;
     friend class Rigel::Persistence::AsyncChunkLoader;
+    friend class Rigel::detail::GraphicalAuthorityClient;
+
+    PreparedChunkReplacements prepareChunkReplacements(
+        std::vector<std::unique_ptr<Chunk>> replacements);
+    void installChunkReplacements(
+        PreparedChunkReplacements prepared) noexcept;
 
     void unloadChunk(ChunkCoord coord, bool invalidateNeighbors);
     void invalidateFaceNeighbors(ChunkCoord coord);
@@ -163,7 +196,7 @@ private:
     std::vector<ChunkCoord> consumeDirtyMeshNotifications();
 
     std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> m_chunks;
-    std::deque<ChunkCoord> m_dirtyMeshQueue;
+    std::vector<ChunkCoord> m_dirtyMeshQueue;
     std::unordered_set<ChunkCoord, ChunkCoordHash> m_dirtyMeshQueued;
     const BlockRegistry* m_registry = nullptr;
 };

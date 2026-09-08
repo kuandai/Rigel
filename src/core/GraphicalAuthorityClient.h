@@ -75,8 +75,9 @@ public:
     const std::vector<Simulation::CommandOutcome>& outcomes() const {
         return m_outcomes;
     }
-    Simulation::Revision revision() const { return m_replica.revision(); }
-    Simulation::Tick tick() const { return m_replica.tick(); }
+    Simulation::Revision revision() const { return m_visibleRevision; }
+    Simulation::Tick tick() const { return m_visibleTick; }
+    bool projectionRetryPending() const { return m_projectionBlocked; }
     Simulation::SessionId session() const { return m_session; }
     size_t pendingSubmissionCount() const { return m_pendingSubmissions.size(); }
     const GraphicalEditSubmissionStats& submissionStats() const {
@@ -84,10 +85,9 @@ public:
     }
 
 private:
-    void drainPublications();
+    bool drainPublications() noexcept;
     void apply(const Simulation::PublicationMessage& publication);
-    void applyCell(const Simulation::PublishedCell& cell);
-    void applyEntities(const std::vector<Simulation::PublishedEntity>& entities);
+    void deferElapsed(std::chrono::nanoseconds elapsed);
 
     Simulation::SimulationHost* m_host = nullptr;
     Voxel::World* m_replicaWorld = nullptr;
@@ -102,7 +102,14 @@ private:
     std::string m_placeBlockKey;
     std::vector<Voxel::ChunkCoord> m_changedChunks;
     std::vector<Simulation::CommandOutcome> m_outcomes;
+    std::shared_ptr<const Simulation::PublicationMessage> m_pendingPublication;
     GraphicalEditSubmissionStats m_submissionStats;
+    Simulation::Revision m_visibleRevision = 0;
+    Simulation::Tick m_visibleTick = 0;
+    std::chrono::nanoseconds m_deferredElapsed{0};
+    bool m_hasVisiblePublication = false;
+    bool m_projectionPending = false;
+    bool m_projectionBlocked = false;
 };
 
 } // namespace Rigel::detail

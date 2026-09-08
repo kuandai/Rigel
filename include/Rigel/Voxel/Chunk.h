@@ -17,6 +17,10 @@
 #include <span>
 #include <cstdint>
 
+namespace Rigel::detail {
+class GraphicalAuthorityClient;
+}
+
 namespace Rigel::Voxel {
 
 /**
@@ -205,6 +209,10 @@ public:
 private:
     friend class ChunkManager;
     friend class ChunkStreamer;
+    friend class Rigel::detail::GraphicalAuthorityClient;
+
+    /** Deep-copy this chunk into an uninstalled replacement. */
+    std::unique_ptr<Chunk> cloneForReplacement() const;
 
     struct Subchunk {
         std::unique_ptr<std::array<BlockState, SUBCHUNK_VOLUME>> blocks;

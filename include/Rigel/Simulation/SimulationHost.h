@@ -243,6 +243,9 @@ public:
     /** Immutable message accepted by the most recent successful pump. The
      * pointer remains valid until the next pump or resnapshot operation. */
     const PublicationMessage* appliedPublication() const;
+    /** Shared ownership of the most recently applied immutable message. */
+    std::shared_ptr<const PublicationMessage>
+        appliedPublicationHandle() const noexcept;
 
     bool needsResnapshot() const;
     Revision revision() const;
@@ -376,6 +379,9 @@ public:
     /** Bounded immutable cursor used to reattach a local client after
      * checkpoint recovery without replacing admitted commands. */
     std::optional<ActiveSessionState> activeSession() const;
+    /** Return a terminal receipt for bounded local-client recovery. */
+    std::optional<CommandOutcome> completedOutcome(
+        SessionId session, CommandId command) const;
     AuthorityEditCapability authorityEditCapability() const {
         return AuthorityEditCapability(m_authorityEditKey);
     }

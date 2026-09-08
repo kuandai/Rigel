@@ -10,6 +10,9 @@
 namespace Rigel::Voxel {
 class World;
 }
+namespace Rigel::detail {
+class GraphicalAuthorityClient;
+}
 
 namespace Rigel::Entity {
 
@@ -34,6 +37,9 @@ public:
     size_t size() const { return m_entities.size(); }
 
 private:
+    friend class Rigel::detail::GraphicalAuthorityClient;
+
+    void installPreparedEntities(WorldEntities& prepared) noexcept;
     Voxel::World* m_world = nullptr;
     std::unordered_map<EntityId, std::unique_ptr<Entity>, EntityIdHash> m_entities;
     std::vector<EntityId> m_tickIds;

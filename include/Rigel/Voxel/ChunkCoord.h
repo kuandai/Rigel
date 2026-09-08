@@ -65,7 +65,7 @@ struct ChunkCoord {
  * Uses spatial hashing with large primes for good distribution.
  */
 struct ChunkCoordHash {
-    std::size_t operator()(const ChunkCoord& c) const {
+    std::size_t operator()(const ChunkCoord& c) const noexcept {
         return Rigel::Util::spatialHash3D(c.x, c.y, c.z);
     }
 };

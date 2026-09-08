@@ -3,6 +3,7 @@
 #include "Rigel/Voxel/World.h"
 
 #include <algorithm>
+#include <exception>
 #include <stdexcept>
 #include <vector>
 
@@ -79,6 +80,18 @@ std::vector<EntityId> WorldEntities::sortedIds() const {
     for (const auto& [id, _] : m_entities) result.push_back(id);
     std::sort(result.begin(), result.end());
     return result;
+}
+
+void WorldEntities::installPreparedEntities(
+    WorldEntities& prepared
+) noexcept {
+    if (m_isTicking || m_tickPrepared || prepared.m_isTicking ||
+        prepared.m_tickPrepared) {
+        std::terminate();
+    }
+    m_entities.swap(prepared.m_entities);
+    m_tickIds.clear();
+    m_pendingDespawns.clear();
 }
 
 void WorldEntities::prepareTick() {

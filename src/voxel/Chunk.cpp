@@ -241,6 +241,29 @@ void Chunk::copyBlocks(std::span<BlockState> out) const {
     }
 }
 
+std::unique_ptr<Chunk> Chunk::cloneForReplacement() const {
+    auto replacement = std::make_unique<Chunk>(m_position);
+    for (size_t index = 0; index < m_subchunks.size(); ++index) {
+        const Subchunk& source = m_subchunks[index];
+        if (!source.blocks) continue;
+        Subchunk& destination = replacement->m_subchunks[index];
+        destination.blocks = std::make_unique<
+            std::array<BlockState, SUBCHUNK_VOLUME>>(*source.blocks);
+        destination.nonAirCount = source.nonAirCount;
+        destination.opaqueCount = source.opaqueCount;
+    }
+    replacement->m_nonAirCount = m_nonAirCount;
+    replacement->m_opaqueCount = m_opaqueCount;
+    replacement->m_persistDirty = m_persistDirty;
+    replacement->m_loadedFromDisk = m_loadedFromDisk;
+    replacement->m_worldGenVersion = m_worldGenVersion;
+    replacement->m_dirty = true;
+    replacement->m_meshInvalidationPending = true;
+    const uint32_t nextRevision = m_meshRevision + 1;
+    replacement->m_meshRevision = nextRevision == 0 ? 1 : nextRevision;
+    return replacement;
+}
+
 void Chunk::fillInternal(BlockState state, const BlockRegistry* registry) {
     for (Subchunk& subchunk : m_subchunks) {
         subchunk.clear();

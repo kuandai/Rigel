@@ -843,6 +843,11 @@ const PublicationMessage* LoopbackReplica::appliedPublication() const {
     return m_state->appliedPublication.get();
 }
 
+std::shared_ptr<const PublicationMessage>
+LoopbackReplica::appliedPublicationHandle() const noexcept {
+    return m_state->appliedPublication;
+}
+
 std::optional<CommandOutcome> LoopbackReplica::takeOutcome() {
     if (m_state->outcomes.empty()) return std::nullopt;
     CommandOutcome result = m_state->outcomes.front();
@@ -1775,6 +1780,22 @@ std::optional<ActiveSessionState> SimulationHost::activeSession() const {
     state.nextCommand = highWater == std::numeric_limits<CommandId>::max()
         ? 0 : highWater + 1;
     return state;
+}
+
+std::optional<CommandOutcome> SimulationHost::completedOutcome(
+    SessionId session,
+    CommandId command
+) const {
+    const auto found = std::find_if(
+        m_impl->receipts.begin(), m_impl->receipts.end(),
+        [&](const Impl::Receipt& receipt) {
+            return receipt.command.session == session &&
+                receipt.command.command == command;
+        });
+    if (found == m_impl->receipts.end() || found->pending) {
+        return std::nullopt;
+    }
+    return found->outcome;
 }
 
 SessionStartStatus SimulationHost::startSession(

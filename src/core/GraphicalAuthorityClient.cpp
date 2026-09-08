@@ -7,6 +7,9 @@
 #include "Rigel/Voxel/World.h"
 
 #include <algorithm>
+#include <array>
+#include <exception>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 
@@ -15,6 +18,35 @@ namespace {
 
 Simulation::CellAddress addressOf(const glm::ivec3& value) {
     return {value.x, value.y, value.z};
+}
+
+struct PreparedCell {
+    Simulation::CellAddress address;
+    Voxel::BlockState state;
+    Voxel::ChunkCoord chunk;
+};
+
+Simulation::Revision revisionOf(
+    const Simulation::PublicationMessage& publication
+) {
+    return std::visit([](const auto& value) { return value.revision; },
+                      publication);
+}
+
+Simulation::Tick tickOf(const Simulation::PublicationMessage& publication) {
+    return std::visit([](const auto& value) { return value.tick; }, publication);
+}
+
+size_t outcomeCountOf(
+    const Simulation::PublicationMessage& publication
+) {
+    return std::visit([](const auto& value) -> size_t {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, Simulation::WorldChangeBatch>) {
+            return value.outcomes.size();
+        }
+        return 0;
+    }, publication);
 }
 
 } // namespace
@@ -57,9 +89,9 @@ GraphicalAuthorityClient::GraphicalAuthorityClient(
                 "invalid recovered graphical client command cursor");
         }
     }
-    drainPublications();
-    if (m_replica.revision() != host.revision() ||
-        m_replica.tick() != host.tick()) {
+    if (!drainPublications() || !m_hasVisiblePublication ||
+        m_visibleRevision != host.revision() ||
+        m_visibleTick != host.tick()) {
         throw std::runtime_error("bounded graphical replica baseline is incomplete");
     }
 }
@@ -168,41 +200,96 @@ GraphicalEditSubmitResult GraphicalAuthorityClient::submit(
 Simulation::AdvanceResult GraphicalAuthorityClient::advance(
     std::chrono::nanoseconds elapsed
 ) {
+    if (elapsed.count() < 0) {
+        throw std::invalid_argument("simulation elapsed time cannot be negative");
+    }
     m_changedChunks.clear();
     m_outcomes.clear();
+    if (!drainPublications()) {
+        deferElapsed(elapsed);
+        return {.timeDebtRemaining = true};
+    }
+    if (m_deferredElapsed.count() != 0) {
+        if (elapsed > std::chrono::nanoseconds::max() - m_deferredElapsed) {
+            throw std::overflow_error("deferred graphical simulation time overflow");
+        }
+        elapsed += m_deferredElapsed;
+        m_deferredElapsed = std::chrono::nanoseconds{0};
+    }
     const Simulation::AdvanceResult result = m_host->advance(elapsed);
     drainPublications();
     return result;
 }
 
-void GraphicalAuthorityClient::drainPublications() {
+void GraphicalAuthorityClient::deferElapsed(
+    std::chrono::nanoseconds elapsed
+) {
+    if (elapsed > std::chrono::nanoseconds::max() - m_deferredElapsed) {
+        throw std::overflow_error("deferred graphical simulation time overflow");
+    }
+    m_deferredElapsed += elapsed;
+}
+
+bool GraphicalAuthorityClient::drainPublications() noexcept {
+    if (m_projectionPending) {
+        if (!m_pendingPublication) {
+            m_projectionBlocked = true;
+            return false;
+        }
+        try {
+            apply(*m_pendingPublication);
+        } catch (...) {
+            m_projectionBlocked = true;
+            return false;
+        }
+        m_projectionPending = false;
+        m_pendingPublication.reset();
+    }
     for (;;) {
         const Simulation::ReplicaPumpStatus status = m_replica.pumpOne();
         if (status == Simulation::ReplicaPumpStatus::Idle) break;
         if (status == Simulation::ReplicaPumpStatus::NeedsResnapshot) {
-            if (m_host->resnapshot(m_replica) !=
-                Simulation::ReplicaConnectStatus::Connected) {
-                throw std::runtime_error("bounded graphical replica lost continuity");
+            try {
+                if (m_host->resnapshot(m_replica) !=
+                    Simulation::ReplicaConnectStatus::Connected) {
+                    m_projectionBlocked = true;
+                    return false;
+                }
+            } catch (...) {
+                m_projectionBlocked = true;
+                return false;
             }
             continue;
         }
         if (status == Simulation::ReplicaPumpStatus::Applied) {
-            const auto* publication = m_replica.appliedPublication();
-            if (!publication) {
-                throw std::runtime_error("graphical replica applied no publication");
+            m_pendingPublication = m_replica.appliedPublicationHandle();
+            if (!m_pendingPublication) {
+                m_projectionBlocked = true;
+                return false;
             }
-            apply(*publication);
+            m_projectionPending = true;
+            try {
+                apply(*m_pendingPublication);
+            } catch (...) {
+                m_projectionBlocked = true;
+                return false;
+            }
+            m_projectionPending = false;
+            m_pendingPublication.reset();
         }
     }
-    while (auto outcome = m_replica.takeOutcome()) {
-        m_pendingSubmissions.erase({outcome->session, outcome->command});
-        m_outcomes.push_back(*outcome);
-    }
+    m_projectionBlocked = false;
+    return true;
 }
 
 void GraphicalAuthorityClient::apply(
     const Simulation::PublicationMessage& publication
 ) {
+    std::vector<PreparedCell> preparedCells;
+    const std::vector<Simulation::PublishedEntity>* publishedEntities = nullptr;
+    const std::vector<Simulation::CommandOutcome>* publishedOutcomes = nullptr;
+    const bool baseline = std::holds_alternative<Simulation::WorldBaseline>(
+        publication);
     std::visit([&](const auto& value) {
         using T = std::decay_t<decltype(value)>;
         const auto& cells = [&]() -> const std::vector<Simulation::PublishedCell>& {
@@ -212,66 +299,87 @@ void GraphicalAuthorityClient::apply(
                 return value.changes;
             }
         }();
-        for (const auto& cell : cells) applyCell(cell);
-        applyEntities(value.entities);
-    }, publication);
-}
-
-void GraphicalAuthorityClient::applyCell(
-    const Simulation::PublishedCell& cell
-) {
-    m_replicaWorld->setBlock(
-        cell.address.x, cell.address.y, cell.address.z,
-        m_host->content().localState(cell.state));
-    const Voxel::ChunkCoord chunk = Voxel::worldToChunk(
-        cell.address.x, cell.address.y, cell.address.z);
-    Voxel::Chunk* installed =
-        m_replicaWorld->chunkManager().getChunk(chunk);
-    const auto& generator = m_replicaWorld->generator();
-    if (!installed || !generator) {
-        throw std::runtime_error(
-            "graphical replica could not retain its published chunk");
-    }
-    installed->setWorldGenVersion(generator->semanticsVersion());
-    if (std::find(m_changedChunks.begin(), m_changedChunks.end(), chunk) ==
-        m_changedChunks.end()) {
-        m_changedChunks.push_back(chunk);
-    }
-}
-
-void GraphicalAuthorityClient::applyEntities(
-    const std::vector<Simulation::PublishedEntity>& entities
-) {
-    const auto current = m_replicaWorld->entities().sortedIds();
-    for (const Entity::EntityId id : current) {
-        const bool present = std::any_of(
-            entities.begin(), entities.end(), [&](const auto& entity) {
-                return entity.state.id == id;
+        preparedCells.reserve(cells.size());
+        for (const auto& cell : cells) {
+            preparedCells.push_back({
+                .address = cell.address,
+                .state = m_host->content().localState(cell.state),
+                .chunk = Voxel::worldToChunk(
+                    cell.address.x, cell.address.y, cell.address.z),
             });
-        if (!present) m_replicaWorld->entities().despawn(id);
+        }
+        publishedEntities = &value.entities;
+        if constexpr (std::is_same_v<T, Simulation::WorldChangeBatch>) {
+            publishedOutcomes = &value.outcomes;
+        }
+    }, publication);
+
+    const auto& generator = m_replicaWorld->generator();
+    if (!generator) {
+        throw std::runtime_error(
+            "graphical replica has no publication generator");
+    }
+    std::sort(preparedCells.begin(), preparedCells.end(),
+              [](const PreparedCell& first, const PreparedCell& second) {
+                  if (first.chunk != second.chunk) {
+                      return first.chunk < second.chunk;
+                  }
+                  return first.address < second.address;
+              });
+
+    std::vector<std::unique_ptr<Voxel::Chunk>> replacements;
+    std::vector<Voxel::ChunkCoord> changedChunks;
+    size_t affectedChunkCount = 0;
+    for (size_t index = 0; index < preparedCells.size(); ++index) {
+        if (index == 0 || preparedCells[index - 1].chunk !=
+                              preparedCells[index].chunk) {
+            ++affectedChunkCount;
+        }
+    }
+    replacements.reserve(affectedChunkCount);
+    changedChunks.reserve(affectedChunkCount);
+    for (size_t first = 0; first < preparedCells.size();) {
+        const Voxel::ChunkCoord coord = preparedCells[first].chunk;
+        size_t last = first + 1;
+        while (last < preparedCells.size() &&
+               preparedCells[last].chunk == coord) {
+            ++last;
+        }
+        const Voxel::Chunk* current =
+            m_replicaWorld->chunkManager().getChunk(coord);
+        std::unique_ptr<Voxel::Chunk> replacement = baseline || !current
+            ? std::make_unique<Voxel::Chunk>(coord)
+            : current->cloneForReplacement();
+        for (size_t index = first; index < last; ++index) {
+            int localX = 0;
+            int localY = 0;
+            int localZ = 0;
+            const auto& cell = preparedCells[index];
+            Voxel::worldToLocal(
+                cell.address.x, cell.address.y, cell.address.z,
+                localX, localY, localZ);
+            replacement->setBlock(
+                localX, localY, localZ, cell.state,
+                m_replicaWorld->blockRegistry());
+        }
+        replacement->setWorldGenVersion(generator->semanticsVersion());
+        replacements.push_back(std::move(replacement));
+        changedChunks.push_back(coord);
+        first = last;
     }
 
-    for (const auto& published : entities) {
-        Entity::Entity* entity =
-            m_replicaWorld->entities().get(published.state.id);
+    Entity::WorldEntities stagedEntities;
+    stagedEntities.bind(m_replicaWorld);
+    for (const auto& published : *publishedEntities) {
+        auto entity = std::make_unique<Entity::Entity>(published.state.typeId);
+        entity->restoreSimulationState(published.state);
         Asset::Handle<Entity::EntityModelAsset> retainedModel;
-        if (entity &&
-            entity->modelIdentifier() == published.state.modelIdentifier) {
-            retainedModel = entity->model();
+        if (const Entity::Entity* current =
+                m_replicaWorld->entities().get(published.state.id);
+            current && current->modelIdentifier() ==
+                           published.state.modelIdentifier) {
+            retainedModel = current->model();
         }
-        if (!entity) {
-            auto created = std::make_unique<Entity::Entity>(
-                published.state.typeId);
-            created->restoreSimulationState(published.state);
-            if (m_replicaWorld->entities().spawn(std::move(created)) !=
-                published.state.id) {
-                throw std::runtime_error("graphical entity replica could not spawn");
-            }
-            entity = m_replicaWorld->entities().get(published.state.id);
-        } else {
-            entity->restoreSimulationState(published.state);
-        }
-
         if (!published.state.modelIdentifier.empty()) {
             if (!retainedModel &&
                 !m_assets->exists(published.state.modelIdentifier)) {
@@ -285,6 +393,49 @@ void GraphicalAuthorityClient::applyEntities(
                       published.state.modelIdentifier));
             entity->setLocalBounds(published.state.localBounds);
         }
+        if (stagedEntities.spawn(std::move(entity)) != published.state.id) {
+            throw std::runtime_error("graphical entity replica could not stage");
+        }
+    }
+
+    m_changedChunks.reserve(m_changedChunks.size() + changedChunks.size());
+    std::vector<Simulation::CommandOutcome> recoveredOutcomes;
+    if (baseline) {
+        recoveredOutcomes.reserve(m_pendingSubmissions.size());
+        for (const auto& [session, command] : m_pendingSubmissions) {
+            if (auto outcome = m_host->completedOutcome(session, command)) {
+                recoveredOutcomes.push_back(*outcome);
+            }
+        }
+    }
+    const size_t outcomeCount = baseline
+        ? recoveredOutcomes.size() : outcomeCountOf(publication);
+    m_outcomes.reserve(m_outcomes.size() + outcomeCount);
+    auto preparedChunks =
+        m_replicaWorld->chunkManager().prepareChunkReplacements(
+            std::move(replacements));
+
+    m_replicaWorld->chunkManager().installChunkReplacements(
+        std::move(preparedChunks));
+    m_replicaWorld->entities().installPreparedEntities(stagedEntities);
+    for (const Voxel::ChunkCoord coord : changedChunks) {
+        if (std::find(m_changedChunks.begin(), m_changedChunks.end(), coord) ==
+            m_changedChunks.end()) {
+            m_changedChunks.push_back(coord);
+        }
+    }
+    m_visibleRevision = revisionOf(publication);
+    m_visibleTick = tickOf(publication);
+    m_hasVisiblePublication = true;
+    for (size_t index = 0; index < outcomeCount; ++index) {
+        const Simulation::CommandOutcome& outcome = baseline
+            ? recoveredOutcomes[index] : (*publishedOutcomes)[index];
+        if (auto replicaOutcome = m_replica.takeOutcome();
+            replicaOutcome && *replicaOutcome != outcome) {
+            std::terminate();
+        }
+        m_pendingSubmissions.erase({outcome.session, outcome.command});
+        m_outcomes.push_back(outcome);
     }
 }
 

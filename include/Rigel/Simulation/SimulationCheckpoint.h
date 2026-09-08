@@ -35,6 +35,7 @@ struct CheckpointOutcome {
 enum class CheckpointRecoveryStatus {
     Recovered,
     Empty,
+    PublicationPending,
     Incompatible,
     Corrupt,
 };
@@ -65,6 +66,7 @@ public:
     bool writeInFlight() const;
     bool durabilityUncertain() const;
 
+    /** Poll the terminal write outcome before attempting recovery on this owner. */
     CheckpointRecovery recover(
         Voxel::WorldResources& resources,
         std::shared_ptr<const Voxel::WorldGenerator> generator);

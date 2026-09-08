@@ -160,12 +160,17 @@ development formats fail explicitly; no automatic conversion or destructive
 rewrite is attempted. An in-flight `Coalesced` request captures nothing newer:
 the caller retains its save demand and requests the current cut after polling
 the terminal result, whose tick/revision alone describe acknowledged progress.
+Recovery on the live manager reports `PublicationPending` while a write is running
+or its terminal outcome has not been polled. It neither consumes that outcome nor
+mistakes the previously observed pointer for the completed write's cut.
 
 State playback recovers the exact saved cut. Command resimulation is separate:
 `recording()` returns the initial state plus the ordered successful inter-tick
 admissions, and `resimulate()` applies them to the real CPU host while advancing
 with caller-supplied frame pacing. It compares a canonical semantic hash at the
 declared final tick and reports envelope mismatch, malformed input, or divergence.
+The final cut and every admission must be at or after the saved baseline tick;
+a recording cannot report success for a different tick than the one it declares.
 The replay byte policy covers the retained baseline, admission containers, and
 owned event payloads rather than only the eventual encoding. Exceeding either the
 event or aggregate byte limit creates a permanent detectable gap and immediately

@@ -419,7 +419,18 @@ CheckpointRecovery SimulationCheckpointManager::recover(
     Voxel::WorldResources& resources,
     std::shared_ptr<const Voxel::WorldGenerator> generator
 ) {
-    if (m_impl->running.load(std::memory_order_acquire) || m_impl->uncertain) {
+    if (m_impl->running.load(std::memory_order_acquire)) {
+        return {CheckpointRecoveryStatus::PublicationPending, 0, nullptr,
+                "checkpoint writer has not reached a terminal outcome"};
+    }
+    {
+        std::lock_guard lock(m_impl->outcomeMutex);
+        if (m_impl->terminal) {
+            return {CheckpointRecoveryStatus::PublicationPending, 0, nullptr,
+                    "poll the checkpoint outcome before recovery"};
+        }
+    }
+    if (m_impl->uncertain) {
         return {CheckpointRecoveryStatus::Corrupt, 0, nullptr,
                 "checkpoint publication is not resolved"};
     }

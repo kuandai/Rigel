@@ -1260,6 +1260,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     if (!in.done()) throw std::runtime_error("checkpoint has trailing bytes");
 
     config.preloadedChunks.clear();
+    config.preloadedChunks.reserve(chunkCount);
     for (const auto& chunk : chunks) config.preloadedChunks.push_back(chunk.coord);
     auto host = std::unique_ptr<SimulationHost>(
         new SimulationHost(resources, std::move(generator), config));
@@ -1408,6 +1409,7 @@ ResimulationResult SimulationHost::resimulate(
             finalHash != recording.finalHash) return result;
         auto baseline = in.blob(256ULL * 1024 * 1024);
         auto host = restoreCheckpointBytes(resources, generator, baseline, 0, 0);
+        if (host->tick() > finalTick) return result;
         if (host->content().identity() != content) {
             result.status = ResimulationStatus::EnvelopeMismatch;
             return result;
@@ -1421,7 +1423,8 @@ ResimulationResult SimulationHost::resimulate(
         events.reserve(count);
         for (size_t i = 0; i < count; ++i) {
             const Tick afterTick = in.u64(); const uint8_t kind = in.u8();
-            if (afterTick > finalTick || (i && afterTick < events.back().afterTick)) {
+            if (afterTick < host->tick() || afterTick > finalTick ||
+                (i && afterTick < events.back().afterTick)) {
                 return result;
             }
             if (kind == 1) {

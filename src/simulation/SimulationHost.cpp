@@ -672,7 +672,8 @@ Entity::EntityId SimulationHost::spawnEntity(
         entity->tags().size() > m_config.maxEntityTags ||
         !retainedStorageFits ||
         !m_content->supportsEntity(*entity) || !finite(entity->position()) ||
-        !finite(entity->velocity()) || !finite(entity->viewDirection())) {
+        !finite(entity->velocity()) || !finite(entity->acceleration()) ||
+        !finite(entity->viewDirection())) {
         return Entity::EntityId::Null();
     }
     entity->setId({1, m_config.world, m_nextEntityId++});

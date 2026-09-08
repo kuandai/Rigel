@@ -29,6 +29,7 @@ public:
 
     const glm::vec3& position() const { return m_position; }
     const glm::vec3& velocity() const { return m_velocity; }
+    const glm::vec3& acceleration() const { return m_acceleration; }
     const glm::vec3& viewDirection() const { return m_viewDirection; }
 
     void setPosition(const glm::vec3& pos);

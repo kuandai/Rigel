@@ -799,6 +799,36 @@ TEST_CASE(SimulationHost_rejects_entity_rules_outside_its_manifest) {
         CommandOutcomeStatus::Applied);
 }
 
+TEST_CASE(SimulationHost_validates_pending_entity_acceleration_before_admission) {
+    HostFixture fixture;
+    const auto count = fixture.host->world().entities().size();
+    for (int axis = 0; axis < 3; ++axis) {
+        for (const float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                                   std::numeric_limits<float>::infinity(),
+                                   -std::numeric_limits<float>::infinity()}) {
+            auto entity = std::make_unique<Entity::Entity>();
+            entity->setPosition({5.5f, 6.0f, 5.5f});
+            glm::vec3 acceleration{0.0f};
+            acceleration[axis] = invalid;
+            entity->accelerate(acceleration);
+            CHECK(fixture.host->spawnEntity(std::move(entity)).isNull());
+        }
+    }
+    CHECK_EQ(fixture.host->world().entities().size(), count);
+    auto valid = std::make_unique<Entity::Entity>();
+    valid->setPosition({5.5f, 6.0f, 5.5f});
+    valid->addTag(Entity::EntityTags::NoClip);
+    valid->accelerate({3.0f, 0.0f, 0.0f});
+    const auto id = fixture.host->spawnEntity(std::move(valid));
+    CHECK(!id.isNull());
+    CHECK_EQ(fixture.host->world().entities().get(id)->acceleration(),
+             glm::vec3(3.0f, 0.0f, 0.0f));
+    fixture.host->advance(17ms);
+    CHECK_NEAR(fixture.host->world().entities().get(id)->velocity().x,
+               3.0f / 60.0f, 0.00001f);
+    CHECK_EQ(fixture.host->world().entities().get(id)->acceleration(), glm::vec3(0));
+}
+
 TEST_CASE(SimulationHost_bounds_and_removes_owned_entities) {
     SimulationHostConfig config;
     config.maxEntities = 2;

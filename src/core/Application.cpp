@@ -862,35 +862,58 @@ void Application::initialize() {
                     recovery.detail);
             }
 
-            m_impl->world.authorityHost->world().entities().forEach(
-                [&](const Entity::Entity& entity) {
-                    if (m_impl->world.observer.isNull() &&
-                        entity.hasTag(Entity::EntityTags::LocalObserver) &&
-                        entity.hasTag(Entity::EntityTags::NoClip)) {
-                        m_impl->world.observer = entity.id();
-                        m_impl->camera.position = entity.position();
-                    }
-                });
-            if (m_impl->world.observer.isNull()) {
-                auto observer = std::make_unique<Entity::Entity>();
-                observer->addTag(Entity::EntityTags::NoClip);
-                observer->addTag(Entity::EntityTags::LocalObserver);
-                observer->setPosition(m_impl->camera.position);
-                m_impl->world.observer =
-                    m_impl->world.authorityHost->spawnEntity(
-                        std::move(observer));
-            }
-            m_impl->world.session =
-                m_impl->world.authorityHost->nextSessionId();
-            if (m_impl->world.observer.isNull() ||
-                m_impl->world.session == 0 ||
-                m_impl->world.authorityHost->startSession(
-                    m_impl->world.session,
-                    m_impl->world.observer,
-                    m_impl->world.authorityHost->content().identity()) !=
-                    Simulation::SessionStartStatus::Started) {
-                throw std::runtime_error(
-                    "Bounded graphical authority session could not start");
+            Simulation::CommandId nextCommand = 1;
+            std::vector<Simulation::CommandId> pendingCommands;
+            const auto recoveredSession =
+                m_impl->world.authorityHost->activeSession();
+            if (recoveredSession &&
+                !recoveredSession->pendingCommands.empty()) {
+                const Entity::Entity* observer =
+                    m_impl->world.authorityHost->world().entities().get(
+                        recoveredSession->actor);
+                if (!observer ||
+                    !observer->hasTag(Entity::EntityTags::LocalObserver) ||
+                    !observer->hasTag(Entity::EntityTags::NoClip) ||
+                    recoveredSession->nextCommand == 0) {
+                    throw std::runtime_error(
+                        "Recovered graphical authority session is unsupported");
+                }
+                m_impl->world.observer = recoveredSession->actor;
+                m_impl->world.session = recoveredSession->session;
+                m_impl->camera.position = observer->position();
+                nextCommand = recoveredSession->nextCommand;
+                pendingCommands = recoveredSession->pendingCommands;
+            } else {
+                m_impl->world.authorityHost->world().entities().forEach(
+                    [&](const Entity::Entity& entity) {
+                        if (m_impl->world.observer.isNull() &&
+                            entity.hasTag(Entity::EntityTags::LocalObserver) &&
+                            entity.hasTag(Entity::EntityTags::NoClip)) {
+                            m_impl->world.observer = entity.id();
+                            m_impl->camera.position = entity.position();
+                        }
+                    });
+                if (m_impl->world.observer.isNull()) {
+                    auto observer = std::make_unique<Entity::Entity>();
+                    observer->addTag(Entity::EntityTags::NoClip);
+                    observer->addTag(Entity::EntityTags::LocalObserver);
+                    observer->setPosition(m_impl->camera.position);
+                    m_impl->world.observer =
+                        m_impl->world.authorityHost->spawnEntity(
+                            std::move(observer));
+                }
+                m_impl->world.session =
+                    m_impl->world.authorityHost->nextSessionId();
+                if (m_impl->world.observer.isNull() ||
+                    m_impl->world.session == 0 ||
+                    m_impl->world.authorityHost->startSession(
+                        m_impl->world.session,
+                        m_impl->world.observer,
+                        m_impl->world.authorityHost->content().identity()) !=
+                        Simulation::SessionStartStatus::Started) {
+                    throw std::runtime_error(
+                        "Bounded graphical authority session could not start");
+                }
             }
 
             m_impl->world.replicaWorld = std::make_unique<Voxel::World>(
@@ -911,7 +934,9 @@ void Application::initialize() {
                     m_impl->world.authorityBounds,
                     m_impl->world.observer,
                     m_impl->world.session,
-                    placeBlockKey);
+                    placeBlockKey,
+                    nextCommand,
+                    std::move(pendingCommands));
         }
 
         Core::Profiler::setEnabled(
@@ -1428,9 +1453,12 @@ ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
                 "normal authority lifecycle did not initialize");
         }
         observed.authorityChunkCount = impl.world.authorityChunks.size();
+        const auto activeSession =
+            impl.world.authorityHost->activeSession();
         observed.checkpointRecovered =
             expectedRemovedCell.has_value() &&
-            impl.world.authorityHost->tick() > 0;
+            (impl.world.authorityHost->tick() > 0 ||
+             (activeSession && !activeSession->pendingCommands.empty()));
 
         std::optional<Simulation::CellAddress> selected;
         if (expectedRemovedCell) {
@@ -1488,6 +1516,103 @@ ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
         throw;
     }
     g_normalAuthorityLaunchLifecycleProbe = nullptr;
+    return observed;
+}
+
+ApplicationPendingEditCloseState
+ApplicationTestAccess::closeNormalAuthorityWithPendingEdit(
+    GlfwRuntime::Api runtimeApi,
+    std::filesystem::path userPreferencesPath
+) {
+    ApplicationConstructionHooks hooks;
+    hooks.runtimeApi = runtimeApi;
+    hooks.userPreferencesPath = std::move(userPreferencesPath);
+    hooks.initializeWindowIntegrations = false;
+    Application application(std::make_unique<Application::Impl>(
+        std::move(hooks)));
+    Application::Impl& impl = *application.m_impl;
+    if (!impl.world.authorityHost || !impl.world.authorityClient ||
+        !impl.world.replicaWorld) {
+        throw std::runtime_error(
+            "normal authority pending-edit lifecycle did not initialize");
+    }
+
+    std::optional<Simulation::CellAddress> selected;
+    const auto& bounds = impl.world.authorityBounds;
+    for (int x = bounds.min.x; x <= bounds.max.x && !selected; ++x) {
+        for (int z = bounds.min.z; z <= bounds.max.z && !selected; ++z) {
+            for (int y = bounds.max.y - 1; y >= bounds.min.y; --y) {
+                const Simulation::ExactBlockRead cell =
+                    impl.world.authorityHost->read({x, y, z});
+                const Simulation::ExactBlockRead above =
+                    impl.world.authorityHost->read({x, y + 1, z});
+                if (cell.status == Simulation::ExactReadStatus::Known &&
+                    above.status == Simulation::ExactReadStatus::Known &&
+                    cell.state.blockKey != "base:air" &&
+                    above.state.blockKey == "base:air") {
+                    selected = Simulation::CellAddress{x, y, z};
+                    break;
+                }
+            }
+        }
+    }
+    if (!selected) {
+        throw std::runtime_error(
+            "normal authority pending-edit lifecycle found no editable surface");
+    }
+
+    impl.camera.position = {
+        static_cast<float>(selected->x) + 0.5f,
+        static_cast<float>(selected->y) + 2.0f,
+        static_cast<float>(selected->z) + 0.5f,
+    };
+    impl.camera.pitch = -89.0f;
+    impl.camera.yaw = 0.0f;
+    impl.camera.forward = {0.0f, -1.0f, 0.0f};
+    impl.camera.target = impl.camera.position + impl.camera.forward;
+    const auto target = Voxel::raycastBlock(
+        *impl.world.replicaWorld,
+        impl.camera.position,
+        impl.camera.forward,
+        kBlockTargetDistance);
+
+    ApplicationPendingEditCloseState observed;
+    observed.editedCell = {selected->x, selected->y, selected->z};
+    observed.authorityTick = impl.world.authorityHost->tick();
+    observed.targetSelected = target && target->block == glm::ivec3{
+        selected->x, selected->y, selected->z};
+    if (!observed.targetSelected) {
+        throw std::runtime_error(
+            "normal authority pending-edit lifecycle selected no exact target");
+    }
+
+    const auto authoritativeBefore =
+        impl.world.authorityHost->read(*selected);
+    const Voxel::BlockState replicaBefore = impl.world.replicaWorld->getBlock(
+        selected->x, selected->y, selected->z);
+    impl.input.beginFrame();
+    impl.input.handleMouseButtonEvent(GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS);
+    impl.input.beginFrame();
+    observed.editSubmitted = Input::handleBlockEdits(
+        impl.input,
+        impl.window,
+        &*target,
+        Input::GameplayMutationMode::ReadWrite,
+        [&](Input::GameplayBlockEditAction action,
+            const Voxel::BlockTarget& hit) {
+            return impl.world.authorityClient->submit(
+                action, hit, impl.camera).accepted();
+        });
+    const auto authoritativeAfter =
+        impl.world.authorityHost->read(*selected);
+    observed.authorityUnchangedBeforeClose =
+        impl.world.authorityHost->tick() == observed.authorityTick &&
+        authoritativeAfter.status == authoritativeBefore.status &&
+        authoritativeAfter.state == authoritativeBefore.state;
+    observed.replicaUnchangedBeforeClose =
+        impl.world.replicaWorld->getBlock(
+            selected->x, selected->y, selected->z) == replicaBefore;
+    application.close();
     return observed;
 }
 
@@ -1821,6 +1946,7 @@ void ApplicationTestAccess::observeNormalAuthorityLaunchFrame(
     for (const auto& outcome : impl.world.authorityClient->outcomes()) {
         if (outcome.status == Simulation::CommandOutcomeStatus::Applied) {
             observed.editApplied = true;
+            ++observed.appliedEditOutcomes;
         }
     }
     observed.editSubmitted = observed.acceptedEdits > 0;

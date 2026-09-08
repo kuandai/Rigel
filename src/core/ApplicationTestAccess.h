@@ -119,6 +119,7 @@ struct ApplicationNormalAuthorityLifecycleState {
     uint64_t renderedFrames = 0;
     uint64_t acceptedEdits = 0;
     uint64_t rejectedEdits = 0;
+    uint64_t appliedEditOutcomes = 0;
     std::array<int, 3> editedCell{};
     bool targetSelected = false;
     bool editSubmitted = false;
@@ -129,6 +130,15 @@ struct ApplicationNormalAuthorityLifecycleState {
     bool viewDistanceRejected = false;
     bool modeledEntityPublished = false;
     bool modeledEntityRemoved = false;
+};
+
+struct ApplicationPendingEditCloseState {
+    std::array<int, 3> editedCell{};
+    uint64_t authorityTick = 0;
+    bool targetSelected = false;
+    bool editSubmitted = false;
+    bool authorityUnchangedBeforeClose = false;
+    bool replicaUnchangedBeforeClose = false;
 };
 
 class ApplicationTestAccess {
@@ -163,6 +173,10 @@ public:
         std::filesystem::path userPreferencesPath,
         bool submitEdit,
         std::optional<std::array<int, 3>> expectedRemovedCell = std::nullopt);
+    static ApplicationPendingEditCloseState
+    closeNormalAuthorityWithPendingEdit(
+        GlfwRuntime::Api runtimeApi,
+        std::filesystem::path userPreferencesPath);
     static std::optional<PreferenceApplyResult>
     consumeViewDistanceOwnerForTesting(
         ApplicationPreferences& preferences,

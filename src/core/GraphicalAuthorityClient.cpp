@@ -26,7 +26,9 @@ GraphicalAuthorityClient::GraphicalAuthorityClient(
     Simulation::CellBounds interest,
     Entity::EntityId observer,
     Simulation::SessionId session,
-    std::string placeBlockKey
+    std::string placeBlockKey,
+    Simulation::CommandId nextCommand,
+    std::vector<Simulation::CommandId> pendingCommands
 ) : m_host(&host),
     m_replicaWorld(&replicaWorld),
     m_assets(&assets),
@@ -41,11 +43,19 @@ GraphicalAuthorityClient::GraphicalAuthorityClient(
     m_observerCapability(host.localObserverCapability()),
     m_observer(observer),
     m_session(session),
+    m_nextCommand(nextCommand),
     m_placeBlockKey(std::move(placeBlockKey)) {
-    if (session == 0 || observer.isNull() ||
+    if (session == 0 || observer.isNull() || nextCommand == 0 ||
         !host.content().contains(m_placeBlockKey) ||
         m_placeBlockKey == "base:air") {
         throw std::invalid_argument("invalid bounded graphical client session");
+    }
+    for (const Simulation::CommandId command : pendingCommands) {
+        if (command == 0 || command >= nextCommand ||
+            !m_pendingSubmissions.emplace(session, command).second) {
+            throw std::invalid_argument(
+                "invalid recovered graphical client command cursor");
+        }
     }
     drainPublications();
     if (m_replica.revision() != host.revision() ||

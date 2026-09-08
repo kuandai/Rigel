@@ -330,6 +330,50 @@ TEST_CASE(Application_NormalAuthorityMeshesEditsAndRecoversPublishedReplica) {
     CHECK(reopened.renderedFrames < 600);
 }
 
+TEST_CASE(Application_NormalAuthorityRecoversAcceptedEditBeforeItsFirstTick) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_normal_authority_pending_edit");
+    ScopedCurrentDirectory currentDirectory(directory.path());
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+    HeadlessRuntimeState runtime;
+    runtime.videoMode.width = 1280;
+    runtime.videoMode.height = 720;
+    runtime.videoMode.refreshRate = 60;
+    runtime.pollDelay = std::chrono::milliseconds(2);
+    g_runtime = &runtime;
+
+    Rigel::Preferences::UserPreferences preferences;
+    preferences.display.vsync = false;
+    preferences.display.fpsLimit = 120;
+    preferences.graphics.shadows = false;
+    const std::filesystem::path preferencesPath =
+        directory.path() / "config/user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath)
+        .saveRequested(preferences);
+
+    const auto closed =
+        Rigel::ApplicationTestAccess::closeNormalAuthorityWithPendingEdit(
+            headlessRuntimeApi(), preferencesPath);
+    CHECK(closed.targetSelected);
+    CHECK(closed.editSubmitted);
+    CHECK(closed.authorityUnchangedBeforeClose);
+    CHECK(closed.replicaUnchangedBeforeClose);
+
+    runtime.shouldClose = false;
+    runtime.polls = 0;
+    const auto reopened =
+        Rigel::ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
+            headlessRuntimeApi(), preferencesPath, false, closed.editedCell);
+    g_runtime = nullptr;
+    CHECK(reopened.checkpointRecovered);
+    CHECK(reopened.recoveredEditPresent);
+    CHECK(reopened.editApplied);
+    CHECK_EQ(reopened.appliedEditOutcomes, uint64_t{1});
+    CHECK_EQ(reopened.acceptedEdits, uint64_t{0});
+    CHECK_EQ(reopened.rejectedEdits, uint64_t{0});
+}
+
 TEST_CASE(Application_NormalAuthorityRejectsLegacyDataBesideValidCheckpoint) {
     Rigel::Test::TemporaryDirectory directory(
         "rigel_application_normal_authority_mixed_valid_save");

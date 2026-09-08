@@ -286,6 +286,13 @@ struct ReplicaConnection {
     std::optional<LoopbackReplica> replica;
 };
 
+struct ActiveSessionState {
+    SessionId session = 0;
+    Entity::EntityId actor;
+    CommandId nextCommand = 1;
+    std::vector<CommandId> pendingCommands;
+};
+
 struct TickRate {
     uint32_t numerator = 60;
     uint32_t denominator = 1;
@@ -366,6 +373,9 @@ public:
         SessionId session,
         Entity::EntityId actor,
         const ContentManifestId& content);
+    /** Bounded immutable cursor used to reattach a local client after
+     * checkpoint recovery without replacing admitted commands. */
+    std::optional<ActiveSessionState> activeSession() const;
     AuthorityEditCapability authorityEditCapability() const {
         return AuthorityEditCapability(m_authorityEditKey);
     }

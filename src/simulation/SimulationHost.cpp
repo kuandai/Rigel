@@ -1754,6 +1754,29 @@ SessionId SimulationHost::nextSessionId() const {
     return m_impl->sessionHighWater + 1;
 }
 
+std::optional<ActiveSessionState> SimulationHost::activeSession() const {
+    if (m_impl->currentSession == 0 || m_impl->sessionActor.isNull()) {
+        return std::nullopt;
+    }
+
+    ActiveSessionState state{
+        .session = m_impl->currentSession,
+        .actor = m_impl->sessionActor,
+    };
+    CommandId highWater = 0;
+    state.pendingCommands.reserve(m_config.maxPendingCommands);
+    for (const auto& receipt : m_impl->receipts) {
+        highWater = std::max(highWater, receipt.command.command);
+        if (receipt.pending) {
+            state.pendingCommands.push_back(receipt.command.command);
+        }
+    }
+    std::sort(state.pendingCommands.begin(), state.pendingCommands.end());
+    state.nextCommand = highWater == std::numeric_limits<CommandId>::max()
+        ? 0 : highWater + 1;
+    return state;
+}
+
 SessionStartStatus SimulationHost::startSession(
     SessionId session,
     Entity::EntityId actor,

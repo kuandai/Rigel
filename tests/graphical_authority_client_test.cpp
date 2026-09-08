@@ -6,6 +6,8 @@
 #include "Rigel/Entity/Entity.h"
 #include "Rigel/Entity/EntityModelLoader.h"
 #include "Rigel/Entity/EntityTags.h"
+#include "Rigel/Persistence/InMemoryStorage.h"
+#include "Rigel/Simulation/SimulationCheckpoint.h"
 #include "Rigel/Voxel/BlockTargeting.h"
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldGenerator.h"
@@ -17,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -239,6 +242,82 @@ TEST_CASE(GraphicalAuthorityClient_InputQueuesTickAndAppliesPublication) {
     CHECK(fixture.host->despawnEntity(fixture.modeledEntity));
     fixture.client->advance(17ms);
     CHECK(!fixture.replica.entities().get(fixture.modeledEntity));
+}
+
+TEST_CASE(GraphicalAuthorityClient_ReattachesToRecoveredPendingSession) {
+    GraphicalFixture fixture;
+    const auto selected = fixture.target();
+    CHECK(selected.has_value());
+    const Simulation::CellAddress address{
+        selected->block.x, selected->block.y, selected->block.z};
+    CHECK(fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove,
+        *selected,
+        fixture.camera).accepted());
+    CHECK_NE(fixture.host->read(address).state.blockKey,
+             std::string("base:air"));
+
+    auto storage =
+        std::make_shared<Persistence::InMemoryStorageBackend>();
+    {
+        Simulation::SimulationCheckpointManager manager(
+            storage, "/graphical-pending");
+        CHECK_EQ(manager.request(*fixture.host),
+                 Simulation::CheckpointRequestStatus::Started);
+        while (manager.writeInFlight()) std::this_thread::yield();
+        const auto outcome = manager.poll();
+        CHECK(outcome.has_value());
+        CHECK_EQ(outcome->status,
+                 Simulation::CheckpointWriteStatus::Durable);
+    }
+
+    fixture.client.reset();
+    fixture.host.reset();
+    Simulation::SimulationCheckpointManager reopened(
+        storage, "/graphical-pending");
+    auto recovery = reopened.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(recovery.status,
+             Simulation::CheckpointRecoveryStatus::Recovered);
+    CHECK(recovery.host != nullptr);
+    const auto session = recovery.host->activeSession();
+    CHECK(session.has_value());
+    CHECK_EQ(session->session, Simulation::SessionId{1});
+    CHECK_EQ(session->actor, fixture.observer);
+    CHECK_EQ(session->nextCommand, Simulation::CommandId{2});
+    CHECK_EQ(session->pendingCommands,
+             std::vector<Simulation::CommandId>{1});
+    CHECK_EQ(recovery.host->startSession(
+        recovery.host->nextSessionId(),
+        fixture.observer,
+        recovery.host->content().identity()),
+        Simulation::SessionStartStatus::Busy);
+
+    Voxel::World resumedReplica(fixture.resources);
+    resumedReplica.setGenerator(fixture.generator);
+    detail::GraphicalAuthorityClient resumed(
+        *recovery.host,
+        resumedReplica,
+        fixture.assets,
+        {{-4, -4, -4}, {20, 8, 20}},
+        session->actor,
+        session->session,
+        "rigel:stone",
+        session->nextCommand,
+        session->pendingCommands);
+    CHECK_EQ(resumed.pendingSubmissionCount(), size_t{1});
+
+    const auto advanced = resumed.advance(17ms);
+    CHECK_EQ(advanced.ticksRun, size_t{1});
+    CHECK_EQ(resumed.outcomes().size(), size_t{1});
+    CHECK_EQ(resumed.outcomes().front().status,
+             Simulation::CommandOutcomeStatus::Applied);
+    CHECK_EQ(resumed.pendingSubmissionCount(), size_t{0});
+    CHECK_EQ(recovery.host->read(address).state.blockKey,
+             std::string("base:air"));
+    CHECK(resumedReplica.getBlock(address.x, address.y, address.z).isAir());
+
+    resumed.advance(17ms);
+    CHECK(resumed.outcomes().empty());
 }
 
 TEST_CASE(GraphicalAuthorityClient_NoTargetAndReadOnlyDoNotSubmit) {

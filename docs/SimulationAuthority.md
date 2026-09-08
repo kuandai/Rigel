@@ -115,6 +115,14 @@ to the next tick; they never appear partway through a tick. The recording stores
 successful admissions in that same order with the tick after which they became
 visible. Rejected calls are observations, not replay inputs.
 
+A checkpoint can therefore contain accepted commands that have not reached their
+first tick. The host exposes a bounded immutable active-session cursor containing
+the actor, next unused command ID, and pending command IDs. Normal graphical
+startup reattaches to that session when pending commands exist, rather than
+clearing its receipts or advancing a hidden recovery tick. The ordinary fixed
+tick then applies each command once and publishes its terminal outcome to the
+new replica. A recovered session with no pending commands is replaced normally.
+
 ## Checkpoints and replay
 
 `SimulationCheckpointManager` is the sole live publisher for one supplied save
@@ -261,6 +269,9 @@ once with command id one. Capacity reached while an outcome is pending is return
 as a typed deferred replacement instead of clearing deduplication state or silently
 disabling later edits. Other observer, replica, and host refusals are likewise
 reported as typed submission results and counted.
+Pending command IDs restored from the checkpoint are installed in the same
+bounded client accounting before the first recovered tick, so session rotation
+remains deferred until those outcomes arrive.
 
 The replica also replaces its entity set from each coherent publication. It alone
 loads cosmetic model assets; entity removal drops the replica entity before the

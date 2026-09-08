@@ -100,9 +100,12 @@ Shutdown persists world state and releases resources.
    - In block-gallery mode `WorldGenerator` is attached to the existing
      presentation world and the view keeps the prior read-only path.
 8. Establish mode-specific entities.
-   - Normal mode uses the checkpoint's complete built-in entity state, starts
-     one local observer session, and publishes entity presentation state through
-     the same loopback stream as block changes.
+   - Normal mode uses the checkpoint's complete built-in entity state. It starts
+     one local observer session for a new or quiescent cut, or reattaches the
+     saved local observer session when accepted commands are still pending.
+     Those commands retain their receipt and admission order until the ordinary
+     fixed tick publishes their outcomes. Entity presentation state uses the
+     same loopback stream as block changes.
    - The gallery alone calls `loadBootstrapEntities(...)` for its presentation
      world.
 9. In gallery mode, create the async chunk loader and wire it into `WorldView`.

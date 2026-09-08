@@ -59,7 +59,9 @@ public:
         Simulation::CellBounds interest,
         Entity::EntityId observer,
         Simulation::SessionId session,
-        std::string placeBlockKey);
+        std::string placeBlockKey,
+        Simulation::CommandId nextCommand = 1,
+        std::vector<Simulation::CommandId> pendingCommands = {});
 
     GraphicalEditSubmitResult submit(
         Input::GameplayBlockEditAction action,

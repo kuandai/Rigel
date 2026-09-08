@@ -655,6 +655,19 @@ TEST_CASE(SimulationCheckpoint_preserves_unknown_roots_and_blocks_uncertainty) {
         CheckpointRecoveryStatus::Incompatible);
     CHECK(unknownStorage->exists("/unknown/foreign.save"));
 
+    auto partialStorage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    {
+        auto write = partialStorage->openWrite("/partial/current");
+        write->writer().writeU32(0x12345678);
+        write->commit();
+    }
+    SimulationCheckpointManager partial(partialStorage, "/partial");
+    CHECK_EQ(
+        partial.recover(fixture.resources, fixture.generator).status,
+        CheckpointRecoveryStatus::Corrupt);
+    CHECK(!partialStorage->exists("/partial/checkpoints"));
+    CHECK(partialStorage->exists("/partial/current"));
+
     auto uncertainStorage = std::make_shared<CheckpointFaultStorage>(
         CheckpointFaultStorage::Fault::PointerUncertain);
     SimulationCheckpointManager uncertain(uncertainStorage, "/save");

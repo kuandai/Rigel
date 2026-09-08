@@ -136,16 +136,21 @@ struct SimulationCheckpointManager::Impl {
             invalidDetail = "checkpoint root contains an unknown format";
             return;
         }
+        const auto currentKind = storage->entryKind(root + "/current");
         const auto checkpointsKind = storage->entryKind(root + "/checkpoints");
         if (checkpointsKind == Persistence::StorageEntryKind::Missing) {
+            if (currentKind != Persistence::StorageEntryKind::Missing) {
+                invalidRoot = CheckpointRecoveryStatus::Corrupt;
+                invalidDetail = "checkpoint payload directory is missing";
+                return;
+            }
             storage->mkdirs(root + "/checkpoints");
         } else if (checkpointsKind != Persistence::StorageEntryKind::Directory) {
             invalidRoot = CheckpointRecoveryStatus::Incompatible;
             invalidDetail = "checkpoint payload path is incompatible";
             return;
         }
-        if (storage->entryKind(root + "/current") ==
-            Persistence::StorageEntryKind::Missing) return;
+        if (currentKind == Persistence::StorageEntryKind::Missing) return;
         try {
             const PointerRecord pointer = readPointer(*storage, root);
             if (storage->entryKind(payloadPath(root, pointer.generation)) !=

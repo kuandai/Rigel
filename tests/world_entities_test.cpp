@@ -4,6 +4,8 @@
 #include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldResources.h"
 
+#include <vector>
+
 using namespace Rigel::Entity;
 using namespace Rigel::Voxel;
 
@@ -54,6 +56,17 @@ public:
 private:
     bool& m_requested;
     bool& m_destroyed;
+};
+
+class OrderProbeEntity final : public Entity {
+public:
+    explicit OrderProbeEntity(std::vector<EntityId>& order)
+        : m_order(order) {}
+
+    void update(World&, float) override { m_order.push_back(id()); }
+
+private:
+    std::vector<EntityId>& m_order;
 };
 
 } // namespace
@@ -152,4 +165,22 @@ TEST_CASE(WorldEntities_OwnerDestructionDestroysEntity) {
     }
 
     CHECK(destroyed);
+}
+
+TEST_CASE(WorldEntities_AssignsIdsOnSpawnAndTicksInStableIdOrder) {
+    WorldResources resources;
+    World world(resources);
+    std::vector<EntityId> order;
+    auto later = std::make_unique<OrderProbeEntity>(order);
+    auto earlier = std::make_unique<OrderProbeEntity>(order);
+    CHECK(later->id().isNull());
+    later->setId({2, 0, 0});
+    earlier->setId({1, 0, 0});
+    CHECK_EQ(world.entities().spawn(std::move(later)), (EntityId{2, 0, 0}));
+    CHECK_EQ(world.entities().spawn(std::move(earlier)), (EntityId{1, 0, 0}));
+
+    world.tickEntities(1.0f);
+    CHECK_EQ(order.size(), static_cast<size_t>(2));
+    CHECK_EQ(order[0], (EntityId{1, 0, 0}));
+    CHECK_EQ(order[1], (EntityId{2, 0, 0}));
 }

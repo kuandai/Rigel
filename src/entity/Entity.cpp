@@ -178,8 +178,7 @@ bool isSupported(Voxel::World& world, const Aabb& box) {
 } // namespace
 
 Entity::Entity(std::string typeId)
-    : m_id(EntityId::New())
-    , m_typeId(std::move(typeId))
+    : m_typeId(std::move(typeId))
 {
     updateWorldBounds();
 }

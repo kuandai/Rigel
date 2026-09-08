@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <compare>
 #include <functional>
 
 namespace Rigel::Entity {
@@ -11,6 +12,7 @@ struct EntityId {
     uint32_t counter = 0;
 
     bool operator==(const EntityId&) const = default;
+    auto operator<=>(const EntityId&) const = default;
 
     bool isNull() const { return time == 0 && random == 0 && counter == 0; }
 

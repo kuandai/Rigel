@@ -2,6 +2,7 @@
 
 #include "Rigel/Voxel/World.h"
 
+#include <algorithm>
 #include <vector>
 
 namespace Rigel::Entity {
@@ -19,6 +20,8 @@ EntityId WorldEntities::spawn(std::unique_ptr<Entity> entity) {
         id = EntityId::New();
         entity->setId(id);
     }
+    m_tickIds.reserve(m_entities.size() + 1);
+    m_pendingDespawns.reserve(m_entities.size() + 1);
     auto [it, inserted] = m_entities.emplace(id, std::move(entity));
     if (!inserted) {
         return EntityId::Null();
@@ -75,12 +78,12 @@ void WorldEntities::tick(float dt) {
         return;
     }
     m_isTicking = true;
-    std::vector<EntityId> ids;
-    ids.reserve(m_entities.size());
+    m_tickIds.clear();
     for (auto& [id, _] : m_entities) {
-        ids.push_back(id);
+        m_tickIds.push_back(id);
     }
-    for (const EntityId& id : ids) {
+    std::sort(m_tickIds.begin(), m_tickIds.end());
+    for (const EntityId& id : m_tickIds) {
         auto it = m_entities.find(id);
         if (it == m_entities.end()) {
             continue;

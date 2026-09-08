@@ -18,6 +18,7 @@
 #include <Rigel/Entity/WorldEntities.h>
 
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -28,6 +29,11 @@ class ProviderRegistry;
 namespace Rigel::Voxel {
 
 class WorldResources;
+
+struct BlockCoordinateBounds {
+    std::array<int, 3> min{};
+    std::array<int, 3> max{};
+};
 
 /**
  * @brief Authoritative voxel space.
@@ -110,6 +116,9 @@ public:
      */
     BlockState getBlock(int wx, int wy, int wz) const;
 
+    /** Require complete loaded collision coverage inside a finite domain. */
+    void requireExactCollisionCoverage(BlockCoordinateBounds domain);
+
     /**
      * Visit physical block boxes overlapping world-space bounds.
      *
@@ -165,6 +174,7 @@ private:
     ChunkManager m_chunkManager;
     Entity::WorldEntities m_entities;
     std::shared_ptr<const WorldGenerator> m_generator;
+    std::optional<BlockCoordinateBounds> m_exactCollisionDomain;
     bool m_initialized = false;
     std::shared_ptr<Rigel::Persistence::ProviderRegistry> m_persistenceProviders;
 

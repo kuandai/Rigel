@@ -31,6 +31,7 @@ public:
 private:
     Voxel::World* m_world = nullptr;
     std::unordered_map<EntityId, std::unique_ptr<Entity>, EntityIdHash> m_entities;
+    std::vector<EntityId> m_tickIds;
     std::vector<EntityId> m_pendingDespawns;
     bool m_isTicking = false;
 };

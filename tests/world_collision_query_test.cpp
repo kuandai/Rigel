@@ -367,3 +367,30 @@ TEST_CASE(WorldCollisionQuery_RejectsUnsafeAndOversizedBoundsBeforeTraversal) {
         {-1.0f, 0.0f, 0.0f},
     });
 }
+
+TEST_CASE(WorldCollisionQuery_ExactDomainRejectsMissingCoverageBeforeCallbacks) {
+    WorldResources resources;
+    World world(resources);
+    world.requireExactCollisionCoverage({
+        .min = {0, 0, 0},
+        .max = {63, 31, 31},
+    });
+    world.chunkManager().getOrCreateChunk({0, 0, 0});
+
+    size_t visits = 0;
+    CHECK(!world.forEachCollisionBox(
+        {{31.5f, 1.0f, 1.0f}, {32.5f, 2.0f, 2.0f}},
+        [&](const BlockCollisionBox&) { ++visits; }));
+    CHECK_EQ(visits, static_cast<size_t>(0));
+
+    world.chunkManager().getOrCreateChunk({1, 0, 0});
+    CHECK(world.forEachCollisionBox(
+        {{31.5f, 1.0f, 1.0f}, {32.5f, 2.0f, 2.0f}},
+        [&](const BlockCollisionBox&) { ++visits; }));
+    CHECK_EQ(visits, static_cast<size_t>(0));
+
+    CHECK(!world.forEachCollisionBox(
+        {{63.5f, 1.0f, 1.0f}, {64.5f, 2.0f, 2.0f}},
+        [&](const BlockCollisionBox&) { ++visits; }));
+    CHECK_EQ(visits, static_cast<size_t>(0));
+}

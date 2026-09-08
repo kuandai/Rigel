@@ -178,6 +178,15 @@ BlockState World::getBlock(int wx, int wy, int wz) const {
     return m_chunkManager.getBlock(wx, wy, wz);
 }
 
+void World::requireExactCollisionCoverage(BlockCoordinateBounds domain) {
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (domain.min[axis] > domain.max[axis]) {
+            throw std::invalid_argument("exact collision domain is unordered");
+        }
+    }
+    m_exactCollisionDomain = domain;
+}
+
 bool World::forEachCollisionBox(
     const BlockCollisionBox& bounds,
     void* context,
@@ -186,6 +195,31 @@ bool World::forEachCollisionBox(
     CollisionQueryRange range;
     if (!collisionQueryRange(bounds, range)) {
         return false;
+    }
+
+    if (m_exactCollisionDomain) {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            if (range.min[axis] < m_exactCollisionDomain->min[axis] ||
+                range.max[axis] > m_exactCollisionDomain->max[axis]) {
+                return false;
+            }
+        }
+        const ChunkCoord first = worldToChunk(
+            range.min[0], range.min[1], range.min[2]);
+        const ChunkCoord last = worldToChunk(
+            range.max[0], range.max[1], range.max[2]);
+        for (int64_t z = first.z; z <= last.z; ++z) {
+            for (int64_t y = first.y; y <= last.y; ++y) {
+                for (int64_t x = first.x; x <= last.x; ++x) {
+                    if (!m_chunkManager.hasChunk({
+                            static_cast<int32_t>(x),
+                            static_cast<int32_t>(y),
+                            static_cast<int32_t>(z)})) {
+                        return false;
+                    }
+                }
+            }
+        }
     }
 
     const BlockRegistry& registry = blockRegistry();

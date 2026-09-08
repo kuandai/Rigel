@@ -87,7 +87,10 @@ unavailable, invalid, or out-of-domain member rejects the whole edit.
 The clock uses a rational ticks-per-second rate and integer nanosecond debt.
 `advance()` runs at most the configured catch-up count and retains remaining debt.
 Each tick admits at most one queued command in arrival order, ticks entities in
-sorted `EntityId` order, and then publishes one completed-tick revision. Host entity
+sorted `EntityId` order, and then publishes one completed-tick revision. An empty
+cell delta still communicates completed simulation time; it is not a duplicate of
+an earlier cut. Consumers must pump these bounded publications, or explicitly
+recover after falling behind. Host entity
 IDs are allocated by the host rather than by entity constructors.
 
 ## Loopback replicas
@@ -104,6 +107,10 @@ publications before swapping visible state. It also validates each outcome's
 identity and publication cut, installs outcomes atomically with that cut, and makes
 them available in order through `takeOutcome()`.
 Malformed, missing, future-based, or oversized input requires a fresh baseline.
+Old deltas must still have a valid base/result pair and valid cells/outcomes before
+being ignored as duplicates. Repeated delivery never duplicates an unread outcome.
+`resnapshot()` repairs only replicas already needing recovery; a healthy replica
+returns `NotNeeded` and retains its readable cut, queued changes, and outcomes.
 A slow replica whose queue fills is marked as needing resnapshot without blocking
 or corrupting other replicas. Each replica applies one aggregate byte cap to its
 installed cells, queued immutable messages, replica container storage, string

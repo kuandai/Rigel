@@ -991,6 +991,20 @@ TEST_CASE(LoopbackReplica_delivers_validated_authoritative_outcomes) {
     const auto authoritative = fixture.host->submit(command).outcome;
     CHECK(authoritative.has_value());
     CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+    const WorldChangeBatch repeated{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = "base:default",
+        .baseRevision = replica.revision() - 1,
+        .revision = replica.revision(),
+        .tick = replica.tick(),
+        .changes = {{target, fixture.host->read(target).state}},
+        .outcomes = {*authoritative},
+    };
+    CHECK_EQ(replica.accept(std::make_shared<const PublicationMessage>(repeated)),
+             ReplicaAcceptStatus::Queued);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Duplicate);
+    CHECK(!replica.needsResnapshot());
     CHECK_EQ(replica.takeOutcome(), authoritative);
     CHECK(!replica.takeOutcome().has_value());
 
@@ -1053,12 +1067,14 @@ TEST_CASE(LoopbackReplica_rejects_incomplete_and_oversized_messages) {
     auto connection = fixture.host->connectReplica({{3, -1, 3}, {7, 3, 7}});
     auto replica = std::move(*connection.replica);
     pumpBaseline(replica);
+    fixture.host->advance(17ms);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
 
     WorldChangeBatch duplicate{
         .content = fixture.host->content().identity(),
         .world = 0,
         .zone = "base:default",
-        .baseRevision = replica.revision(),
+        .baseRevision = replica.revision() - 1,
         .revision = replica.revision(),
         .tick = replica.tick(),
     };
@@ -1183,6 +1199,33 @@ TEST_CASE(LoopbackReplica_rejects_regressing_publication_ticks) {
     }
 }
 
+TEST_CASE(LoopbackReplica_validates_old_batch_structure_before_duplicate_detection) {
+    for (int malformed = 0; malformed < 3; ++malformed) {
+        HostFixture fixture;
+        const CellAddress address{5, 0, 5};
+        auto connection = fixture.host->connectReplica({address, address});
+        auto replica = std::move(*connection.replica);
+        pumpBaseline(replica);
+        fixture.host->advance(17ms);
+        CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+        WorldChangeBatch old{
+            .content = fixture.host->content().identity(),
+            .world = 0,
+            .zone = "base:default",
+            .baseRevision = replica.revision() - 1,
+            .revision = replica.revision(),
+            .tick = replica.tick(),
+            .changes = {{address, fixture.host->read(address).state}},
+        };
+        if (malformed == 0) old.baseRevision = old.revision + 1;
+        if (malformed == 1) old.changes.front().state = {"base:air", 1, 7};
+        if (malformed == 2) old.changes.push_back(old.changes.front());
+        CHECK_EQ(replica.accept(std::make_shared<const PublicationMessage>(old)),
+                 ReplicaAcceptStatus::Queued);
+        CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::NeedsResnapshot);
+    }
+}
+
 TEST_CASE(LoopbackReplica_rejects_unrepresentable_air_state) {
     HostFixture fixture;
     auto connection = fixture.host->connectReplica({{5, 0, 5}, {5, 0, 5}});
@@ -1246,6 +1289,37 @@ TEST_CASE(LoopbackReplica_rejects_oversized_string_payloads_by_bytes) {
 }
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES
+TEST_CASE(SimulationHost_healthy_replica_refresh_preserves_cut_and_pending_delivery) {
+    HostFixture fixture;
+    fixture.start();
+    const auto address = fixture.surface();
+    auto connection = fixture.host->connectReplica({address, address});
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+    const auto before = replica.read(address).state;
+    const auto tick = replica.tick();
+    const auto revision = replica.revision();
+    const auto command = fixture.removeCommand(1);
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(replica.queuedMessages(), size_t{1});
+
+    failureAllocationSize = 0;
+    allocationsBeforeFailure = 0;
+    failAllocation = true;
+    const auto status = fixture.host->resnapshot(replica);
+    failAllocation = false;
+    CHECK_EQ(status, ReplicaConnectStatus::NotNeeded);
+    CHECK(!replica.needsResnapshot());
+    CHECK_EQ(replica.read(address).status, ExactReadStatus::Known);
+    CHECK_EQ(replica.read(address).state, before);
+    CHECK_EQ(replica.tick(), tick);
+    CHECK_EQ(replica.revision(), revision);
+    CHECK_EQ(replica.queuedMessages(), size_t{1});
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+    CHECK_EQ(replica.takeOutcome(), fixture.host->submit(command).outcome);
+}
+
 TEST_CASE(SimulationHost_preflights_long_baselines_and_resnapshot_retries) {
     auto makeHost = [](size_t byteLimit) {
         struct Fixture {

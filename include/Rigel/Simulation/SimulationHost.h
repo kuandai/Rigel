@@ -241,6 +241,7 @@ enum class SessionStartStatus {
 
 enum class ReplicaConnectStatus {
     Connected,
+    NotNeeded,
     InvalidInterest,
     Capacity,
 };

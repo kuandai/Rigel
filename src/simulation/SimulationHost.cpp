@@ -386,6 +386,21 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             m_state->hasBaseline = true;
             return ReplicaPumpStatus::Applied;
         } else {
+            // Validate a publication's own structure before classifying an
+            // already-applied revision. Redelivery is harmless, malformed
+            // history is not a valid duplicate.
+            if (!m_state->hasBaseline || value.revision == 0 ||
+                value.baseRevision != value.revision - 1 || value.tick == 0) {
+                return fail();
+            }
+            for (size_t index = 0; index < value.changes.size(); ++index) {
+                const auto& change = value.changes[index];
+                if (!m_state->content->supportsState(change.state) ||
+                    std::any_of(value.changes.begin(), value.changes.begin() + index,
+                        [&](const PublishedCell& earlier) {
+                            return earlier.address == change.address;
+                        })) return fail();
+            }
             for (size_t index = 0; index < value.outcomes.size(); ++index) {
                 const auto& outcome = value.outcomes[index];
                 if (outcome.session == 0 || outcome.command == 0 ||
@@ -399,21 +414,24 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
                         other.command == outcome.command;
                 };
                 if (std::any_of(
-                        m_state->outcomes.begin(), m_state->outcomes.end(),
-                        duplicate) ||
-                    std::any_of(
                         value.outcomes.begin(), value.outcomes.begin() + index,
                         duplicate)) {
                     return fail();
                 }
             }
-            if (!m_state->hasBaseline) return fail();
             if (value.revision <= m_state->revision) {
                 return ReplicaPumpStatus::Duplicate;
             }
             if (value.baseRevision != m_state->revision ||
                 value.revision != value.baseRevision + 1 ||
                 value.tick <= m_state->tick) return fail();
+            for (const auto& outcome : value.outcomes) {
+                if (std::any_of(m_state->outcomes.begin(), m_state->outcomes.end(),
+                    [&](const CommandOutcome& earlier) {
+                        return earlier.session == outcome.session &&
+                            earlier.command == outcome.command;
+                    })) return fail();
+            }
             const auto storageBytes = m_state->retainedStorageBytes();
             size_t projectedTransient = storageBytes.value_or(0);
             size_t projectedOutcomeCount = m_state->outcomes.size();
@@ -429,17 +447,13 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
                     sizeof(CommandOutcome)) ||
                 projectedTransient > m_state->byteLimit) return fail();
             std::vector<PublishedCell> next = m_state->cells;
-            std::vector<CommandOutcome> nextOutcomes = m_state->outcomes;
+            std::vector<CommandOutcome> nextOutcomes;
+            nextOutcomes.reserve(projectedOutcomeCount);
+            nextOutcomes.insert(nextOutcomes.end(),
+                m_state->outcomes.begin(), m_state->outcomes.end());
             nextOutcomes.insert(
                 nextOutcomes.end(), value.outcomes.begin(), value.outcomes.end());
-            std::vector<CellAddress> seen;
-            seen.reserve(value.changes.size());
             for (const auto& change : value.changes) {
-                if (!m_state->content->supportsState(change.state) ||
-                    std::find(seen.begin(), seen.end(), change.address) != seen.end()) {
-                    return fail();
-                }
-                seen.push_back(change.address);
                 if (!m_state->interest.contains(change.address)) continue;
                 const auto found = std::lower_bound(
                     next.begin(), next.end(), change.address,
@@ -1179,6 +1193,10 @@ ReplicaConnectStatus SimulationHost::resnapshot(LoopbackReplica& replica) {
             return locked && locked == state;
         });
     if (!connected) return ReplicaConnectStatus::InvalidInterest;
+    // Recovery replaces a failed replica only. Proactive refresh of a healthy
+    // subscription is unnecessary and must not discard its readable cut or
+    // unread outcomes if preparing a replacement would fail.
+    if (!state->gap) return ReplicaConnectStatus::NotNeeded;
 
     const auto volume = state->interest.volume(m_config.maxSnapshotCells);
     const auto requiredBytes = volume

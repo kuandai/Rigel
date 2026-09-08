@@ -54,7 +54,7 @@ GraphicalAuthorityClient::GraphicalAuthorityClient(
     }
 }
 
-bool GraphicalAuthorityClient::submit(
+GraphicalEditSubmitResult GraphicalAuthorityClient::submit(
     Input::GameplayBlockEditAction action,
     const Voxel::BlockTarget& target,
     const Input::CameraState& camera
@@ -63,7 +63,8 @@ bool GraphicalAuthorityClient::submit(
         m_host->admitLocalObserverPose(
             m_observer, camera.position, m_observerCapability) !=
             Simulation::ObserverPoseStatus::Applied) {
-        return false;
+        ++m_submissionStats.rejected;
+        return {.status = GraphicalEditSubmitStatus::ObserverRejected};
     }
 
     Simulation::EditCommand command{
@@ -90,7 +91,11 @@ bool GraphicalAuthorityClient::submit(
         ? target.block : target.block + target.normal;
     const Simulation::CellAddress destinationAddress = addressOf(destination);
     const Simulation::ExactBlockRead expected = m_replica.read(destinationAddress);
-    if (expected.status != Simulation::ExactReadStatus::Known) return false;
+    if (expected.status != Simulation::ExactReadStatus::Known) {
+        ++m_submissionStats.rejected;
+        return {.status =
+                    GraphicalEditSubmitStatus::ReplicaStateUnavailable};
+    }
     command.mutations.push_back({
         .address = destinationAddress,
         .expected = expected.state,
@@ -99,10 +104,55 @@ bool GraphicalAuthorityClient::submit(
             : Simulation::SemanticBlockState{m_placeBlockKey, 0, 0},
     });
 
-    const Simulation::SubmitResult result = m_host->submit(std::move(command));
-    if (result.status != Simulation::SubmitStatus::Accepted) return false;
+    Simulation::SubmitResult result = m_host->submit(command);
+    bool replacedSession = false;
+    if (result.status == Simulation::SubmitStatus::ReceiptCapacity) {
+        if (!m_pendingSubmissions.empty()) {
+            ++m_submissionStats.rejected;
+            return {
+                .status =
+                    GraphicalEditSubmitStatus::SessionReplacementDeferred,
+                .hostStatus = result.status,
+            };
+        }
+        const Simulation::SessionId replacement = m_host->nextSessionId();
+        if (replacement == 0 ||
+            m_host->startSession(
+                replacement, m_observer, m_host->content().identity()) !=
+                Simulation::SessionStartStatus::Started) {
+            ++m_submissionStats.rejected;
+            return {
+                .status =
+                    GraphicalEditSubmitStatus::SessionReplacementFailed,
+                .hostStatus = result.status,
+            };
+        }
+        m_session = replacement;
+        m_nextCommand = 1;
+        command.session = m_session;
+        command.command = m_nextCommand;
+        result = m_host->submit(command);
+        replacedSession = true;
+    }
+    if (result.status != Simulation::SubmitStatus::Accepted) {
+        ++m_submissionStats.rejected;
+        return {
+            .status = GraphicalEditSubmitStatus::HostRejected,
+            .hostStatus = result.status,
+        };
+    }
+    m_pendingSubmissions.emplace(m_session, m_nextCommand);
     ++m_nextCommand;
-    return true;
+    ++m_submissionStats.accepted;
+    if (replacedSession) {
+        ++m_submissionStats.sessionReplacements;
+    }
+    return {
+        .status = replacedSession
+            ? GraphicalEditSubmitStatus::AcceptedAfterSessionReplacement
+            : GraphicalEditSubmitStatus::Accepted,
+        .hostStatus = result.status,
+    };
 }
 
 Simulation::AdvanceResult GraphicalAuthorityClient::advance(
@@ -135,6 +185,7 @@ void GraphicalAuthorityClient::drainPublications() {
         }
     }
     while (auto outcome = m_replica.takeOutcome()) {
+        m_pendingSubmissions.erase({outcome->session, outcome->command});
         m_outcomes.push_back(*outcome);
     }
 }
@@ -164,6 +215,14 @@ void GraphicalAuthorityClient::applyCell(
         m_host->content().localState(cell.state));
     const Voxel::ChunkCoord chunk = Voxel::worldToChunk(
         cell.address.x, cell.address.y, cell.address.z);
+    Voxel::Chunk* installed =
+        m_replicaWorld->chunkManager().getChunk(chunk);
+    const auto& generator = m_replicaWorld->generator();
+    if (!installed || !generator) {
+        throw std::runtime_error(
+            "graphical replica could not retain its published chunk");
+    }
+    installed->setWorldGenVersion(generator->semanticsVersion());
     if (std::find(m_changedChunks.begin(), m_changedChunks.end(), chunk) ==
         m_changedChunks.end()) {
         m_changedChunks.push_back(chunk);

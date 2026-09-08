@@ -5,7 +5,9 @@
 
 #include <chrono>
 #include <optional>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Rigel::Voxel {
@@ -16,6 +18,35 @@ class AssetManager;
 }
 
 namespace Rigel::detail {
+
+enum class GraphicalEditSubmitStatus {
+    Accepted,
+    AcceptedAfterSessionReplacement,
+    ObserverRejected,
+    ReplicaStateUnavailable,
+    SessionReplacementDeferred,
+    SessionReplacementFailed,
+    HostRejected,
+};
+
+struct GraphicalEditSubmitResult {
+    GraphicalEditSubmitStatus status =
+        GraphicalEditSubmitStatus::HostRejected;
+    Simulation::SubmitStatus hostStatus =
+        Simulation::SubmitStatus::InvalidRequest;
+
+    bool accepted() const {
+        return status == GraphicalEditSubmitStatus::Accepted ||
+            status ==
+                GraphicalEditSubmitStatus::AcceptedAfterSessionReplacement;
+    }
+};
+
+struct GraphicalEditSubmissionStats {
+    uint64_t accepted = 0;
+    uint64_t rejected = 0;
+    uint64_t sessionReplacements = 0;
+};
 
 /** Application-thread loopback client for the bounded normal world. It owns
  * no authority storage: publications are copied into an independent World. */
@@ -30,7 +61,7 @@ public:
         Simulation::SessionId session,
         std::string placeBlockKey);
 
-    bool submit(
+    GraphicalEditSubmitResult submit(
         Input::GameplayBlockEditAction action,
         const Voxel::BlockTarget& target,
         const Input::CameraState& camera);
@@ -44,6 +75,11 @@ public:
     }
     Simulation::Revision revision() const { return m_replica.revision(); }
     Simulation::Tick tick() const { return m_replica.tick(); }
+    Simulation::SessionId session() const { return m_session; }
+    size_t pendingSubmissionCount() const { return m_pendingSubmissions.size(); }
+    const GraphicalEditSubmissionStats& submissionStats() const {
+        return m_submissionStats;
+    }
 
 private:
     void drainPublications();
@@ -59,9 +95,12 @@ private:
     Entity::EntityId m_observer;
     Simulation::SessionId m_session = 0;
     Simulation::CommandId m_nextCommand = 1;
+    std::set<std::pair<Simulation::SessionId, Simulation::CommandId>>
+        m_pendingSubmissions;
     std::string m_placeBlockKey;
     std::vector<Voxel::ChunkCoord> m_changedChunks;
     std::vector<Simulation::CommandOutcome> m_outcomes;
+    GraphicalEditSubmissionStats m_submissionStats;
 };
 
 } // namespace Rigel::detail

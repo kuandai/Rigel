@@ -14,7 +14,11 @@
 #include <GLFW/glfw3.h>
 
 #include <chrono>
+#include <limits>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -35,6 +39,26 @@ Voxel::GeneratorDefinitionData flatDefinition() {
     return data;
 }
 
+Voxel::BlockID addModelBlock(
+    Voxel::WorldResources& resources,
+    std::string identifier,
+    Voxel::BlockModelBounds bounds
+) {
+    Voxel::BlockModelCuboid cuboid;
+    cuboid.bounds = bounds;
+    for (auto& face : cuboid.faces) {
+        face = Voxel::BlockModelFace{.textureSlot = "invented"};
+    }
+    Voxel::BlockType type;
+    type.identifier = identifier;
+    type.model = Voxel::BlockModelInstance(
+        std::make_shared<const Voxel::BlockModel>(
+            identifier + "_model",
+            std::vector<std::string>{"invented"},
+            std::vector<Voxel::BlockModelCuboid>{cuboid}));
+    return resources.registry().registerBlock(identifier, std::move(type));
+}
+
 struct GraphicalFixture {
     Voxel::WorldResources resources;
     std::shared_ptr<Voxel::WorldGenerator> generator;
@@ -48,10 +72,19 @@ struct GraphicalFixture {
     Input::WindowState window;
     Input::InputState input;
 
-    GraphicalFixture() : replica(resources) {
+    uint64_t setupCommand = 100;
+
+    explicit GraphicalFixture(size_t maxSessionReceipts = 256)
+        : replica(resources) {
         Voxel::BlockType stone;
         stone.identifier = "rigel:stone";
         resources.registry().registerBlock("rigel:stone", std::move(stone));
+        addModelBlock(
+            resources, "rigel:slab",
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.5f, 1.0f}});
+        addModelBlock(
+            resources, "rigel:overhang",
+            {{-0.25f, 0.0f, 0.0f}, {0.25f, 1.0f, 1.0f}});
         resources.registry().freeze();
         assets.registerLoader(
             "entity_models", std::make_unique<Entity::EntityModelLoader>());
@@ -66,6 +99,7 @@ struct GraphicalFixture {
         config.domain = {{-4, -4, -4}, {20, 8, 20}};
         config.maxPreloadedChunks = 8;
         config.maxSnapshotCells = 25'000;
+        config.maxSessionReceipts = maxSessionReceipts;
         host = std::make_unique<Simulation::SimulationHost>(
             resources, generator, config);
         auto entity = std::make_unique<Entity::Entity>();
@@ -107,8 +141,34 @@ struct GraphicalFixture {
             Input::GameplayMutationMode::ReadWrite,
             [&](Input::GameplayBlockEditAction action,
                 const Voxel::BlockTarget& selected) {
-                return client->submit(action, selected, camera);
+                return client->submit(action, selected, camera).accepted();
             });
+    }
+
+    void install(std::vector<std::pair<Simulation::CellAddress, std::string>> cells) {
+        Simulation::EditCommand command{
+            .session = 1,
+            .command = setupCommand++,
+            .actor = observer,
+            .world = host->world().id(),
+            .zone = "base:default",
+            .content = host->content().identity(),
+            .action = Simulation::EditAction::Atomic,
+        };
+        for (auto& [address, replacement] : cells) {
+            command.mutations.push_back({
+                .address = address,
+                .expected = host->read(address).state,
+                .replacement = {std::move(replacement), 0, 0},
+            });
+        }
+        CHECK_EQ(
+            host->submit(std::move(command), host->authorityEditCapability())
+                .status,
+            Simulation::SubmitStatus::Accepted);
+        client->advance(17ms);
+        CHECK_EQ(client->outcomes().back().status,
+                 Simulation::CommandOutcomeStatus::Applied);
     }
 };
 
@@ -194,8 +254,140 @@ TEST_CASE(GraphicalAuthorityClient_NoTargetAndReadOnlyDoNotSubmit) {
         Input::GameplayMutationMode::ReadOnly,
         [&](Input::GameplayBlockEditAction action,
             const Voxel::BlockTarget& target) {
-            return fixture.client->submit(action, target, fixture.camera);
+            return fixture.client->submit(
+                action, target, fixture.camera).accepted();
         }));
     fixture.client->advance(17ms);
     CHECK(fixture.client->outcomes().empty());
+}
+
+TEST_CASE(GraphicalAuthorityClient_SessionCapacityRotatesAfterTerminalOutcome) {
+    GraphicalFixture fixture(1);
+    const auto selected = fixture.target();
+    CHECK(selected.has_value());
+
+    auto first = fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove, *selected, fixture.camera);
+    CHECK(first.accepted());
+    CHECK_EQ(fixture.client->pendingSubmissionCount(), size_t{1});
+
+    const auto deferred = fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove, *selected, fixture.camera);
+    CHECK_EQ(
+        deferred.status,
+        detail::GraphicalEditSubmitStatus::SessionReplacementDeferred);
+    CHECK_EQ(deferred.hostStatus, Simulation::SubmitStatus::ReceiptCapacity);
+    CHECK_EQ(fixture.client->session(), Simulation::SessionId{1});
+
+    fixture.client->advance(17ms);
+    CHECK_EQ(fixture.client->pendingSubmissionCount(), size_t{0});
+    const auto replacement = fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove, *selected, fixture.camera);
+    CHECK_EQ(
+        replacement.status,
+        detail::GraphicalEditSubmitStatus::AcceptedAfterSessionReplacement);
+    CHECK_EQ(fixture.client->session(), Simulation::SessionId{2});
+    fixture.client->advance(17ms);
+
+    const auto& stats = fixture.client->submissionStats();
+    CHECK_EQ(stats.accepted, uint64_t{2});
+    CHECK_EQ(stats.rejected, uint64_t{1});
+    CHECK_EQ(stats.sessionReplacements, uint64_t{1});
+
+    Input::CameraState invalidCamera = fixture.camera;
+    invalidCamera.position.x = std::numeric_limits<float>::quiet_NaN();
+    CHECK_EQ(
+        fixture.client->submit(
+            Input::GameplayBlockEditAction::Remove,
+            *selected,
+            invalidCamera).status,
+        detail::GraphicalEditSubmitStatus::ObserverRejected);
+    CHECK_EQ(fixture.client->submissionStats().rejected, uint64_t{2});
+}
+
+TEST_CASE(GraphicalAuthorityClient_AuthorityValidatesPartialShapeFaces) {
+    GraphicalFixture fixture;
+    fixture.install({
+        {{0, 2, 0}, "rigel:stone"},
+        {{0, 2, 1}, "rigel:slab"},
+    });
+
+    fixture.camera.position = {0.5f, 2.75f, 2.5f};
+    fixture.camera.forward = {0.0f, 0.0f, -1.0f};
+    auto beyondPartial = fixture.target();
+    CHECK(beyondPartial.has_value());
+    CHECK_EQ(beyondPartial->block, (glm::ivec3{0, 2, 0}));
+
+    Voxel::BlockTarget wrongFace = *beyondPartial;
+    wrongFace.face = Voxel::Direction::PosY;
+    const auto rejected = fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove,
+        wrongFace,
+        fixture.camera);
+    CHECK(rejected.accepted());
+    fixture.client->advance(17ms);
+    CHECK_EQ(fixture.client->outcomes().back().status,
+             Simulation::CommandOutcomeStatus::TargetMismatch);
+    CHECK(!fixture.replica.getBlock(0, 2, 0).isAir());
+
+    const auto removal = fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove,
+        *beyondPartial,
+        fixture.camera);
+    CHECK(removal.accepted());
+    fixture.client->advance(17ms);
+    CHECK_EQ(fixture.client->outcomes().back().status,
+             Simulation::CommandOutcomeStatus::Applied);
+    CHECK(fixture.replica.getBlock(0, 2, 0).isAir());
+    CHECK_EQ(
+        fixture.resources.registry()
+            .getType(fixture.replica.getBlock(0, 2, 1).id).identifier,
+        std::string("rigel:slab"));
+
+    fixture.camera.position = {0.5f, 2.75f, 1.5f};
+    fixture.camera.forward = {0.0f, -1.0f, 0.0f};
+    const auto slabTop = fixture.target();
+    CHECK(slabTop.has_value());
+    CHECK_EQ(slabTop->normal, (glm::ivec3{0, 1, 0}));
+    const auto placement = fixture.client->submit(
+        Input::GameplayBlockEditAction::Place, *slabTop, fixture.camera);
+    CHECK(placement.accepted());
+    fixture.client->advance(17ms);
+    CHECK_EQ(fixture.client->outcomes().back().status,
+             Simulation::CommandOutcomeStatus::Applied);
+    CHECK_EQ(
+        fixture.resources.registry()
+            .getType(fixture.replica.getBlock(0, 3, 1).id).identifier,
+        std::string("rigel:stone"));
+}
+
+TEST_CASE(GraphicalAuthorityClient_AuthorityValidatesOverhangOwner) {
+    GraphicalFixture fixture;
+    fixture.install({{{1, 2, 0}, "rigel:overhang"}});
+    fixture.camera.position = {0.5f, 2.5f, 0.5f};
+    fixture.camera.forward = {1.0f, 0.0f, 0.0f};
+    const auto selected = fixture.target();
+    CHECK(selected.has_value());
+    CHECK_EQ(selected->block, (glm::ivec3{1, 2, 0}));
+    CHECK_NEAR(selected->position.x, 0.75f, 0.00001f);
+
+    Voxel::BlockTarget wrongOwner = *selected;
+    wrongOwner.block = {0, 2, 0};
+    const auto rejected = fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove,
+        wrongOwner,
+        fixture.camera);
+    CHECK(rejected.accepted());
+    fixture.client->advance(17ms);
+    CHECK_EQ(fixture.client->outcomes().back().status,
+             Simulation::CommandOutcomeStatus::TargetMismatch);
+    CHECK(!fixture.replica.getBlock(1, 2, 0).isAir());
+
+    const auto result = fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove, *selected, fixture.camera);
+    CHECK(result.accepted());
+    fixture.client->advance(17ms);
+    CHECK_EQ(fixture.client->outcomes().back().status,
+             Simulation::CommandOutcomeStatus::Applied);
+    CHECK(fixture.replica.getBlock(1, 2, 0).isAir());
 }

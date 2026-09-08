@@ -3,6 +3,7 @@
 #include "ResourceRegistry.h"
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Voxel/BlockLoader.h"
+#include "Rigel/Voxel/TextureAtlas.h"
 #include "Rigel/Voxel/WorldResources.h"
 
 #include <array>
@@ -13,29 +14,27 @@
 using namespace Rigel::Asset;
 using namespace Rigel::Voxel;
 
-TEST_CASE(WorldResources_RejectsMissingBlockTexture) {
+TEST_CASE(TextureAtlas_RejectsMissingBlockTextureWithoutDiscardingSemantics) {
     ResourceRegistry::SetScenario(ResourceRegistry::Scenario::MissingTexture);
     AssetManager assets;
     WorldResources resources;
+    CHECK_NO_THROW(resources.initialize(assets));
+    CHECK(resources.initialized());
+    CHECK_EQ(resources.registry().size(), static_cast<size_t>(2));
+
+    TextureAtlas atlas;
     std::string diagnostic;
-
     try {
-        resources.initialize(assets);
-    } catch (const std::exception& e) {
-        diagnostic = e.what();
+        atlas.loadFromRegistry(resources.registry());
+    } catch (const std::exception& error) {
+        diagnostic = error.what();
     }
-
     CHECK(!diagnostic.empty());
-    CHECK(!resources.initialized());
-    CHECK(diagnostic.find("0 definitions loaded") != std::string::npos);
-    CHECK(diagnostic.find("1 failed") != std::string::npos);
-    CHECK(diagnostic.find("0 textures loaded") != std::string::npos);
-    CHECK(diagnostic.find("scripts/rigel_assets.py stage") != std::string::npos);
-    CHECK(diagnostic.find("blocks/required_block.yaml") != std::string::npos);
     CHECK(diagnostic.find("textures/blocks/required.png") != std::string::npos);
+    CHECK_EQ(atlas.textureCount(), static_cast<size_t>(0));
 }
 
-TEST_CASE(BlockLoader_RollsBackEarlierTexturesAfterLateResourceFailure) {
+TEST_CASE(TextureAtlas_RollsBackEarlierTexturesAfterLateResourceFailure) {
     constexpr std::string_view modelYaml = R"(
 id: two_textures
 texture_slots: [first, second]
@@ -63,50 +62,27 @@ textures:
             std::span<const char>(blockYaml.data(), blockYaml.size())}};
     BlockModelRegistry models;
     BlockRegistry blocks;
-    TextureAtlas atlas;
-
     BlockLoader loader;
     const BlockLoadReport report = loader.loadDefinitions(
-        "test", modelDefinitions, blockDefinitions, models, blocks, atlas);
+        "test", modelDefinitions, blockDefinitions, models, blocks);
 
-    CHECK_EQ(report.failed, static_cast<size_t>(1));
-    CHECK_EQ(report.modelsLoaded, static_cast<size_t>(0));
-    CHECK_EQ(report.loaded, static_cast<size_t>(0));
-    CHECK_EQ(models.size(), static_cast<size_t>(2));
-    CHECK_EQ(blocks.size(), static_cast<size_t>(1));
+    CHECK_EQ(report.failed, static_cast<size_t>(0));
+    CHECK_EQ(report.modelsLoaded, static_cast<size_t>(1));
+    CHECK_EQ(report.loaded, static_cast<size_t>(1));
+    CHECK(models.find("test:two_textures"));
+    CHECK(blocks.findByIdentifier("test:late_texture_failure"));
+
+    TextureAtlas atlas;
+    CHECK_THROWS(atlas.loadFromRegistry(blocks));
     CHECK_EQ(atlas.textureCount(), static_cast<size_t>(0));
-    CHECK(!models.find("test:two_textures"));
-    CHECK(!blocks.findByIdentifier("test:late_texture_failure"));
-    CHECK(report.representativeFailures.front().reason.find("z_missing.png") !=
-          std::string::npos);
 }
 
-TEST_CASE(WorldResources_PostLoadRejectionIsPristineAndRetryable) {
+TEST_CASE(WorldResources_AcceptsTexturelessSemanticBlock) {
     ResourceRegistry::SetScenario(ResourceRegistry::Scenario::TexturelessBlock);
     AssetManager assets;
     WorldResources resources;
 
-    std::string firstDiagnostic;
-    std::string secondDiagnostic;
-    try {
-        resources.initialize(assets);
-    } catch (const std::exception& error) {
-        firstDiagnostic = error.what();
-    }
-
-    CHECK(!firstDiagnostic.empty());
-    CHECK(!resources.initialized());
-    CHECK_EQ(resources.registry().size(), static_cast<size_t>(1));
-    CHECK_EQ(resources.textureAtlas().textureCount(), static_cast<size_t>(0));
-
-    try {
-        resources.initialize(assets);
-    } catch (const std::exception& error) {
-        secondDiagnostic = error.what();
-    }
-
-    CHECK_EQ(secondDiagnostic, firstDiagnostic);
-    CHECK(!resources.initialized());
-    CHECK_EQ(resources.registry().size(), static_cast<size_t>(1));
-    CHECK_EQ(resources.textureAtlas().textureCount(), static_cast<size_t>(0));
+    CHECK_NO_THROW(resources.initialize(assets));
+    CHECK(resources.initialized());
+    CHECK_EQ(resources.registry().size(), static_cast<size_t>(2));
 }

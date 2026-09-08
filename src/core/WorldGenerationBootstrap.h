@@ -18,7 +18,6 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     Voxel::WorldSet& worldSet,
     Voxel::WorldId worldId,
     Voxel::World& world,
-    Voxel::WorldView& worldView,
     const Persistence::NewWorldGenerationFactory& creationFactory,
     const Persistence::PersistenceContext& context,
     std::shared_ptr<const Voxel::BlockGalleryChunkGenerator> blockGallery = {});

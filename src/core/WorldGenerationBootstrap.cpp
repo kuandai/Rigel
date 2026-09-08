@@ -11,8 +11,7 @@ namespace {
 void validateRuntimeTargets(
     Voxel::WorldSet& worldSet,
     Voxel::WorldId worldId,
-    Voxel::World& world,
-    Voxel::WorldView& worldView) {
+    Voxel::World& world) {
     if (!worldSet.hasWorld(worldId)
         || &worldSet.world(worldId) != &world
         || world.id() != worldId) {
@@ -23,10 +22,6 @@ void validateRuntimeTargets(
         throw std::invalid_argument(
             "World generation target already owns a generator");
     }
-    if (&worldView.world() != &world || worldView.generator()) {
-        throw std::invalid_argument(
-            "World generation view target does not match the world");
-    }
 }
 
 } // namespace
@@ -35,11 +30,10 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     Voxel::WorldSet& worldSet,
     Voxel::WorldId worldId,
     Voxel::World& world,
-    Voxel::WorldView& worldView,
     const Persistence::NewWorldGenerationFactory& creationFactory,
     const Persistence::PersistenceContext& context,
     std::shared_ptr<const Voxel::BlockGalleryChunkGenerator> blockGallery) {
-    validateRuntimeTargets(worldSet, worldId, world, worldView);
+    validateRuntimeTargets(worldSet, worldId, world);
 
     const Voxel::BlockRegistry& registry = worldSet.resources().registry();
     Persistence::NewWorldGenerationFactory compatibleCreationFactory =
@@ -72,7 +66,6 @@ ApplicationWorldGenerationBootstrapResult bootstrapApplicationWorldGeneration(
     worldSet.setPersistenceActiveFormat(
         worldId, bootstrapped.persistenceFormat);
     world.setGenerator(generator);
-    worldView.setGenerator(generator);
 
     ApplicationWorldGenerationBootstrapResult result;
     result.generator = std::move(generator);

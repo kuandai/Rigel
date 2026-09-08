@@ -1,7 +1,5 @@
 #include "Rigel/Asset/AssetManager.h"
 #include "Rigel/Asset/RawLoader.h"
-#include "Rigel/Asset/TextureLoader.h"
-#include "Rigel/Asset/ShaderLoader.h"
 #include "ResourceRegistry.h"
 #include "Rigel/Util/Ryml.h"
 
@@ -166,15 +164,9 @@ std::span<const char> LoadContext::loadResource(const std::string& path) const {
 void AssetManager::loadManifest(const std::string& path) {
     spdlog::info("Loading asset manifest: {}", path);
 
-    // Register each built-in loader unless that category was explicitly replaced.
+    // Raw bytes are the only loader owned by the semantic asset kernel.
     if (!m_loaders.contains("raw")) {
         registerLoader("raw", std::make_unique<RawLoader>());
-    }
-    if (!m_loaders.contains("textures")) {
-        registerLoader("textures", std::make_unique<TextureLoader>());
-    }
-    if (!m_loaders.contains("shaders")) {
-        registerLoader("shaders", std::make_unique<ShaderLoader>());
     }
 
     // Get raw manifest data from embedded resources

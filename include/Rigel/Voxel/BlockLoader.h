@@ -9,7 +9,6 @@
  */
 
 #include "BlockRegistry.h"
-#include "TextureAtlas.h"
 #include <Rigel/Asset/AssetManager.h>
 
 #include <cstddef>
@@ -50,7 +49,7 @@ struct BlockModelDefinitionSource {
  * @brief Loads block definitions from asset manifests.
  *
  * Parses YAML block entries and registers block types with the registry
- * while loading textures into the atlas.
+ * while retaining logical texture paths for graphical attachment.
  *
  * @section manifest_format Manifest Format
  *
@@ -111,7 +110,7 @@ struct BlockModelDefinitionSource {
  * @code
  * BlockLoader loader;
  * BlockModelRegistry models;
- * loader.loadFromManifest(assets, models, registry, atlas);
+ * loader.loadFromManifest(assets, models, registry);
  *
  * // After loading, block IDs can be looked up by identifier
  * auto stoneId = registry.findByIdentifier("rigel:stone");
@@ -125,20 +124,17 @@ public:
     /**
      * @brief Load all blocks from the embedded blocks directory.
      *
-     * Scans embedded model, block, and texture resources, validates them as
-     * one group, then publishes the immutable models and blocks atomically.
+     * Scans embedded model and block resources, validates them as one group,
+     * then publishes the immutable models and blocks atomically.
      *
      * @param assets The asset manager containing the manifest
      * @param registry The block registry to register types with
-     * @param atlas The texture atlas to load textures into
-     *
      * @return Counts and representative failures from the load
      */
     BlockLoadReport loadFromManifest(
         Asset::AssetManager& assets,
         BlockModelRegistry& models,
-        BlockRegistry& registry,
-        TextureAtlas& atlas
+        BlockRegistry& registry
     );
 
     /**
@@ -153,16 +149,14 @@ public:
         std::span<const BlockModelDefinitionSource> modelDefinitions,
         std::span<const BlockDefinitionSource> definitions,
         BlockModelRegistry& models,
-        BlockRegistry& registry,
-        TextureAtlas& atlas
+        BlockRegistry& registry
     );
 
     /** Compatibility seam for synthetic cube-only definitions. */
     BlockLoadReport loadDefinitions(
         std::string_view assetNamespace,
         std::span<const BlockDefinitionSource> definitions,
-        BlockRegistry& registry,
-        TextureAtlas& atlas
+        BlockRegistry& registry
     );
 };
 

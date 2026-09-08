@@ -1,9 +1,11 @@
 #include "Rigel/Voxel/TextureAtlas.h"
+#include "Rigel/Voxel/BlockRegistry.h"
 #include "ResourceRegistry.h"
 
 #include <stb_image.h>
 #include <spdlog/spdlog.h>
 #include <cstring>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -135,13 +137,6 @@ TextureHandle TextureAtlas::addTexture(const std::string& path, const unsigned c
     return handle;
 }
 
-void TextureAtlas::rollbackTo(size_t textureCount) noexcept {
-    while (m_entries.size() > textureCount) {
-        m_pathToHandle.erase(m_entries.back().path);
-        m_entries.pop_back();
-    }
-}
-
 TextureHandle TextureAtlas::addTextureFromResource(const std::string& path) {
     // Check if already added
     auto it = m_pathToHandle.find(path);
@@ -187,6 +182,29 @@ TextureHandle TextureAtlas::addTextureFromResource(const std::string& path) {
     stbi_image_free(pixels);
 
     return handle;
+}
+
+void TextureAtlas::loadFromRegistry(const BlockRegistry& registry) {
+    std::set<std::string> paths;
+    for (const BlockType& block : registry) {
+        for (const std::string& path : block.textures.faces) {
+            if (!path.empty()) {
+                paths.insert(path);
+            }
+        }
+        for (const auto& [slot, path] : block.textures.named()) {
+            static_cast<void>(slot);
+            if (!path.empty()) {
+                paths.insert(path);
+            }
+        }
+    }
+
+    TextureAtlas prepared(m_config);
+    for (const std::string& path : paths) {
+        prepared.addTextureFromResource(path);
+    }
+    swap(prepared);
 }
 
 TextureHandle TextureAtlas::findTexture(const std::string& path) const {

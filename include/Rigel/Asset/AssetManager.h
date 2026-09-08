@@ -77,7 +77,7 @@
  */
 
 #include "Handle.h"
-#include "Types.h"
+#include "RawAsset.h"
 #include "AssetLoader.h"
 
 #include <exception>
@@ -89,7 +89,7 @@
 #include <typeindex>
 #include <unordered_map>
 #include <unordered_set>
-#include <GL/glew.h>
+#include <cstdint>
 #include <ryml.hpp>
 
 namespace Rigel::Voxel {
@@ -231,7 +231,7 @@ public:
      * @param stage The OpenGL stage that failed (GL_VERTEX_SHADER, etc.)
      * @param log The OpenGL compiler info log
      */
-    ShaderCompileError(const std::string& id, GLenum stage, const std::string& log)
+    ShaderCompileError(const std::string& id, uint32_t stage, const std::string& log)
         : AssetLoadError(id, "Shader compilation failed")
         , m_stage(stage)
         , m_log(log)
@@ -241,7 +241,7 @@ public:
      * @brief Get the shader stage that failed to compile.
      * @return GL_VERTEX_SHADER or GL_FRAGMENT_SHADER
      */
-    GLenum stage() const { return m_stage; }
+    uint32_t stage() const { return m_stage; }
 
     /**
      * @brief Get the OpenGL compiler error log.
@@ -250,7 +250,7 @@ public:
     const std::string& log() const { return m_log; }
 
 private:
-    GLenum m_stage;
+    uint32_t m_stage;
     std::string m_log;
 };
 
@@ -316,7 +316,8 @@ private:
  * // 1. Create manager
  * AssetManager assets;
  *
- * // 2. Load manifest (registers built-in loaders automatically)
+ * // 2. Register consumer-owned loaders, then load the manifest
+ * assets.registerLoader("textures", std::make_unique<TextureLoader>());
  * assets.loadManifest("manifest.yaml");
  *
  * // 3. Access assets (loaded on first request, cached thereafter)
@@ -335,12 +336,11 @@ private:
  *
  * @section loaders Loader System
  *
- * Built-in loaders are registered automatically:
+ * The CPU-safe built-in loader is registered automatically:
  * - "raw" → RawLoader
- * - "textures" → TextureLoader
- * - "shaders" → ShaderLoader
  *
- * Custom loaders can be registered via registerLoader():
+ * Graphics and other consumer-owned loaders are registered explicitly via
+ * registerLoader():
  * @code
  * assets.registerLoader("models", std::make_unique<ModelLoader>());
  * @endcode

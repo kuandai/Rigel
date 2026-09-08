@@ -11,10 +11,7 @@ namespace Rigel::Voxel {
 
 namespace {
 
-std::string unusableBlockAssetsMessage(
-    const BlockLoadReport& report,
-    size_t textureCount
-) {
+std::string unusableBlockAssetsMessage(const BlockLoadReport& report) {
     std::ostringstream message;
     message << "Block assets are unusable: "
             << report.modelsLoaded << " models loaded, "
@@ -22,8 +19,7 @@ std::string unusableBlockAssetsMessage(
             << report.loaded << " definitions loaded, "
             << report.failed << " failed, "
             << report.skipped << " skipped ("
-            << report.discovered << " discovered); "
-            << textureCount << " textures loaded. "
+            << report.discovered << " discovered). "
             << "Cosmic Reach runtime assets have not been prepared or are invalid. "
                "Run 'python3 scripts/rigel_assets.py stage /path/to/Cosmic-Reach.jar' "
                "and reconfigure Rigel.";
@@ -52,35 +48,25 @@ void WorldResources::initialize(Asset::AssetManager& assets) {
 
     BlockModelRegistry models;
     BlockRegistry registry;
-    TextureAtlas textureAtlas;
     BlockLoader loader;
     BlockLoadReport report = loader.loadFromManifest(
-        assets, models, registry, textureAtlas);
-    const size_t textureCount = textureAtlas.textureCount();
+        assets, models, registry);
     if (report.modelsFailed != 0 || report.failed != 0 || report.loaded == 0 ||
-        registry.size() <= 1 ||
-        textureCount == 0) {
-        throw std::runtime_error(unusableBlockAssetsMessage(report, textureCount));
+        registry.size() <= 1) {
+        throw std::runtime_error(unusableBlockAssetsMessage(report));
     }
 
-    textureAtlas.upload();
     registry.freeze();
     spdlog::info(
         "world.resources models.loaded={} blocks.loaded={} blocks.failed={} "
-        "blocks.skipped={} blocks.discovered={} textures.loaded={}",
+        "blocks.skipped={} blocks.discovered={}",
         report.modelsLoaded, report.loaded,
         report.failed,
         report.skipped,
-        report.discovered,
-        textureCount
+        report.discovered
     );
     m_registry.swap(registry);
-    m_textureAtlas.swap(textureAtlas);
     m_initialized = true;
-}
-
-void WorldResources::releaseRenderResources() {
-    m_textureAtlas.releaseGPU();
 }
 
 } // namespace Rigel::Voxel

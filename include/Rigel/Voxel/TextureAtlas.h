@@ -17,6 +17,8 @@
 
 namespace Rigel::Voxel {
 
+class BlockRegistry;
+
 /**
  * @brief Handle to a texture in the atlas.
  */
@@ -131,6 +133,9 @@ public:
      */
     TextureHandle addTextureFromResource(const std::string& path);
 
+    /** Decode every unique logical texture referenced by a semantic registry. */
+    void loadFromRegistry(const BlockRegistry& registry);
+
     /**
      * @brief Find texture handle by path.
      *
@@ -195,10 +200,6 @@ public:
     void releaseGPU();
 
 private:
-    friend class BlockLoader;
-
-    void rollbackTo(size_t textureCount) noexcept;
-
     Config m_config;
     GLuint m_textureArray = 0;
     GLuint m_tintArray = 0;

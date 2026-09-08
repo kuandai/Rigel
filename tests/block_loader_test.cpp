@@ -68,12 +68,6 @@ BlockModelDefinitionSource modelDefinition(
     return {path, std::span<const char>(data.data(), data.size())};
 }
 
-void addSyntheticTexture(TextureAtlas& atlas, std::string_view path) {
-    const std::vector<unsigned char> pixels(
-        static_cast<size_t>(atlas.tileSize() * atlas.tileSize() * 4), 255);
-    atlas.addTexture(std::string(path), pixels.data());
-}
-
 std::string readTextFile(const std::filesystem::path& path) {
     std::ifstream stream(path);
     if (!stream) {
@@ -119,21 +113,12 @@ std::string collisionCardinalityDefinition(
 
 TEST_CASE(BlockLoader_LoadsSyntheticDefinitions) {
     BlockRegistry registry;
-    TextureAtlas atlas;
-    const std::vector<unsigned char> pixels(
-        static_cast<size_t>(atlas.tileSize() * atlas.tileSize() * 4),
-        255
-    );
     const std::array<const char*, 4> texturePaths = {
         "textures/test/stone.png",
         "textures/test/glass.png",
         "textures/test/grass_top.png",
         "textures/test/grass_side.png"
     };
-    for (const char* path : texturePaths) {
-        atlas.addTexture(path, pixels.data());
-    }
-
     BlockLoader loader;
     const std::array definitions = {
         definition("blocks/test_stone.yaml", kStone),
@@ -142,7 +127,7 @@ TEST_CASE(BlockLoader_LoadsSyntheticDefinitions) {
         definition("blocks/test_grass_full.yaml", kFullGrass),
     };
 
-    BlockLoadReport report = loader.loadDefinitions("test", definitions, registry, atlas);
+    BlockLoadReport report = loader.loadDefinitions("test", definitions, registry);
     CHECK_EQ(report.loaded, static_cast<size_t>(4));
     CHECK_EQ(
         report.discovered,
@@ -239,9 +224,8 @@ textures: {}
     };
 
     BlockRegistry blocks;
-    TextureAtlas atlas;
     const BlockLoadReport report =
-        BlockLoader{}.loadDefinitions("test", definitions, blocks, atlas);
+        BlockLoader{}.loadDefinitions("test", definitions, blocks);
 
     CHECK_EQ(report.loaded, definitions.size());
     CHECK_EQ(report.failed, static_cast<size_t>(0));
@@ -295,10 +279,8 @@ TEST_CASE(BlockLoader_RejectsMissingCollisionAndRemovedSolidField) {
         const std::array definitions = {
             definition("blocks/invalid_authority.yaml", yaml)};
         BlockRegistry blocks;
-        TextureAtlas atlas;
-
         const BlockLoadReport report =
-            BlockLoader{}.loadDefinitions("test", definitions, blocks, atlas);
+            BlockLoader{}.loadDefinitions("test", definitions, blocks);
 
         CHECK_EQ(report.loaded, static_cast<size_t>(0));
         CHECK_EQ(report.failed, static_cast<size_t>(1));
@@ -332,10 +314,8 @@ TEST_CASE(BlockLoader_RejectsMalformedCollisionShapesAtomically) {
         const std::array definitions = {
             definition("blocks/bad_collision.yaml", yaml)};
         BlockRegistry blocks;
-        TextureAtlas atlas;
-
         const BlockLoadReport report =
-            BlockLoader{}.loadDefinitions("test", definitions, blocks, atlas);
+            BlockLoader{}.loadDefinitions("test", definitions, blocks);
 
         CHECK_EQ(report.loaded, static_cast<size_t>(0));
         CHECK_EQ(report.failed, static_cast<size_t>(1));
@@ -358,9 +338,8 @@ TEST_CASE(BlockLoader_EnforcesNormalizedCollisionBoxCardinality) {
     };
 
     BlockRegistry blocks;
-    TextureAtlas atlas;
     const BlockLoadReport boundaryReport = BlockLoader{}.loadDefinitions(
-        "test", boundaryDefinition, blocks, atlas);
+        "test", boundaryDefinition, blocks);
 
     CHECK_EQ(boundaryReport.loaded, static_cast<size_t>(1));
     CHECK_EQ(boundaryReport.failed, static_cast<size_t>(0));
@@ -372,7 +351,7 @@ TEST_CASE(BlockLoader_EnforcesNormalizedCollisionBoxCardinality) {
         BlockCollisionShape::MaximumBoxes);
 
     const BlockLoadReport excessiveReport = BlockLoader{}.loadDefinitions(
-        "test", excessiveDefinition, blocks, atlas);
+        "test", excessiveDefinition, blocks);
 
     CHECK_EQ(excessiveReport.loaded, static_cast<size_t>(0));
     CHECK_EQ(excessiveReport.failed, static_cast<size_t>(1));
@@ -424,9 +403,6 @@ textures:
   cap: textures/test/post_cap.png
 )";
 
-    TextureAtlas atlas;
-    addSyntheticTexture(atlas, "textures/test/post_side.png");
-    addSyntheticTexture(atlas, "textures/test/post_cap.png");
     BlockModelRegistry models;
     BlockRegistry blocks;
     const std::array modelDefinitions = {
@@ -436,7 +412,7 @@ textures:
 
     BlockLoader loader;
     const BlockLoadReport report = loader.loadDefinitions(
-        "test", modelDefinitions, blockDefinitions, models, blocks, atlas);
+        "test", modelDefinitions, blockDefinitions, models, blocks);
     CHECK_EQ(report.modelsLoaded, static_cast<size_t>(1));
     CHECK_EQ(report.loaded, static_cast<size_t>(1));
     CHECK_EQ(report.modelsFailed, static_cast<size_t>(0));
@@ -490,8 +466,6 @@ texture_render_layers:
 textures:
   surface: textures/test/post.png
 )";
-    TextureAtlas atlas;
-    addSyntheticTexture(atlas, "textures/test/post.png");
     BlockModelRegistry models;
     BlockRegistry blocks;
     const std::array modelDefinitions = {
@@ -500,7 +474,7 @@ textures:
         definition("blocks/bad_post.yaml", blockYaml)};
 
     const BlockLoadReport report = BlockLoader{}.loadDefinitions(
-        "test", modelDefinitions, blockDefinitions, models, blocks, atlas);
+        "test", modelDefinitions, blockDefinitions, models, blocks);
 
     CHECK_EQ(report.failed, static_cast<size_t>(1));
     CHECK_EQ(report.modelsLoaded, static_cast<size_t>(0));
@@ -535,12 +509,10 @@ TEST_CASE(BlockLoader_LoadsImportedSingleCuboidFixture) {
         definition("blocks/test__ledge[facing=east].yaml", generatedYaml),
     };
 
-    TextureAtlas atlas;
-    addSyntheticTexture(atlas, "textures/blocks/ledge.png");
     BlockModelRegistry models;
     BlockRegistry blocks;
     const BlockLoadReport report = BlockLoader{}.loadDefinitions(
-        "base", modelDefinitions, blockDefinitions, models, blocks, atlas);
+        "base", modelDefinitions, blockDefinitions, models, blocks);
     CHECK_EQ(report.modelsLoaded, static_cast<size_t>(1));
     CHECK_EQ(report.loaded, static_cast<size_t>(2));
     CHECK_EQ(report.modelsFailed, static_cast<size_t>(0));
@@ -612,11 +584,10 @@ cuboids:
 
     BlockModelRegistry models;
     BlockRegistry blocks;
-    TextureAtlas atlas;
     const std::array modelDefinitions = {
         modelDefinition("models/blocks/directional.yaml", modelYaml)};
     const BlockLoadReport report = BlockLoader{}.loadDefinitions(
-        "test", modelDefinitions, blockDefinitions, models, blocks, atlas);
+        "test", modelDefinitions, blockDefinitions, models, blocks);
 
     CHECK_EQ(report.loaded, cases.size());
     const auto sharedModel = models.find("test:directional");
@@ -698,13 +669,12 @@ textures: {}
     for (size_t index = 0; index < invalidBlocks.size(); ++index) {
         BlockModelRegistry models;
         BlockRegistry blocks;
-        TextureAtlas atlas;
         const std::array modelDefinitions = {
             modelDefinition("models/blocks/directional.yaml", modelYaml)};
         const std::array blockDefinitions = {definition(
             "blocks/bad.yaml", invalidBlocks[index])};
         const BlockLoadReport report = BlockLoader{}.loadDefinitions(
-            "test", modelDefinitions, blockDefinitions, models, blocks, atlas);
+            "test", modelDefinitions, blockDefinitions, models, blocks);
 
         CHECK_EQ(report.failed, static_cast<size_t>(1));
         CHECK_EQ(report.loaded, static_cast<size_t>(0));
@@ -757,14 +727,13 @@ cuboids: [{bounds: [0, 0, 0, 1, 1, 1], faces: {pos_x: {texture: all, shading: di
     for (size_t index = 0; index < invalidModels.size(); ++index) {
         BlockModelRegistry models;
         BlockRegistry blocks;
-        TextureAtlas atlas;
         const std::string path =
             "models/blocks/invalid_" + std::to_string(index) + ".yaml";
         const std::array definitions = {
             modelDefinition(path, invalidModels[index])};
         const BlockLoadReport report = loader.loadDefinitions(
             "test", definitions, std::span<const BlockDefinitionSource>{},
-            models, blocks, atlas);
+            models, blocks);
         CHECK_EQ(report.modelsFailed, static_cast<size_t>(1));
         CHECK_EQ(report.modelsLoaded, static_cast<size_t>(0));
         CHECK_EQ(models.size(), static_cast<size_t>(2));
@@ -788,12 +757,10 @@ cuboids:
     };
     BlockModelRegistry models;
     BlockRegistry blocks;
-    TextureAtlas atlas;
-
     BlockLoader loader;
     const BlockLoadReport report = loader.loadDefinitions(
         "test", definitions, std::span<const BlockDefinitionSource>{},
-        models, blocks, atlas);
+        models, blocks);
     CHECK_EQ(report.modelsFailed, static_cast<size_t>(1));
     CHECK_EQ(report.modelsLoaded, static_cast<size_t>(0));
     CHECK(!models.find("test:repeated"));
@@ -824,12 +791,9 @@ textures:
         definition("blocks/incomplete.yaml", blockYaml)};
     BlockModelRegistry models;
     BlockRegistry blocks;
-    TextureAtlas atlas;
-    addSyntheticTexture(atlas, "textures/test/first.png");
-
     BlockLoader loader;
     const BlockLoadReport report = loader.loadDefinitions(
-        "test", modelDefinitions, blockDefinitions, models, blocks, atlas);
+        "test", modelDefinitions, blockDefinitions, models, blocks);
     CHECK_EQ(report.failed, static_cast<size_t>(1));
     CHECK_EQ(report.modelsLoaded, static_cast<size_t>(0));
     CHECK_EQ(report.loaded, static_cast<size_t>(0));
@@ -859,7 +823,6 @@ textures: {}
         definition("blocks/over_capacity.yaml", blockYaml)};
     BlockModelRegistry models;
     BlockRegistry blocks;
-    TextureAtlas atlas;
     for (size_t index = blocks.size(); index < 65535; ++index) {
         BlockType type;
         type.model = BlockModel::empty();
@@ -870,11 +833,10 @@ textures: {}
 
     BlockLoader loader;
     CHECK_THROWS(loader.loadDefinitions(
-        "test", modelDefinitions, blockDefinitions, models, blocks, atlas));
+        "test", modelDefinitions, blockDefinitions, models, blocks));
 
     CHECK_EQ(models.size(), static_cast<size_t>(2));
     CHECK_EQ(blocks.size(), originalBlockCount);
-    CHECK_EQ(atlas.textureCount(), static_cast<size_t>(0));
     CHECK(!models.find("test:capacity_model"));
     CHECK(!blocks.findByIdentifier("test:over_capacity"));
 }

@@ -3,9 +3,7 @@
 #include "World.h"
 #include "WorldId.h"
 #include "WorldResources.h"
-#include "WorldView.h"
 
-#include <Rigel/Asset/AssetManager.h>
 #include <Rigel/Persistence/PersistenceService.h>
 
 #include <memory>
@@ -26,26 +24,16 @@ public:
     void initializeResources(Asset::AssetManager& assets);
 
     World& createWorld(WorldId id);
-    WorldView& createView(WorldId id, Asset::AssetManager& assets);
 
     bool hasWorld(WorldId id) const;
     World& world(WorldId id);
     const World& world(WorldId id) const;
 
-    WorldView* findView(WorldId id);
-    const WorldView* findView(WorldId id) const;
-    WorldView& view(WorldId id);
-
     /**
-     * @brief Destroy every view and world during application teardown.
+     * @brief Destroy every world during application teardown.
      *
-     * @pre Asynchronous chunk loaders are stopped and their callbacks detached
-     * from every view.
-     * @pre Active views have been cleared, and no world or view references will
-     * be used after this call.
-     *
-     * Views are destroyed before the worlds and chunk managers to which they
-     * are bound.
+     * @pre Render views and asynchronous chunk loaders have already released
+     * their references to these worlds.
      */
     void clear();
 
@@ -66,7 +54,6 @@ public:
 private:
     struct WorldEntry {
         World world;
-        std::unique_ptr<WorldView> view;
         std::string persistenceFormat;
     };
 

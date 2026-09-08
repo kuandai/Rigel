@@ -1,3 +1,5 @@
+#include <GL/glew.h>
+
 #include "Rigel/Application.h"
 #include "ApplicationPreferences.h"
 #include "ApplicationEntry.h"
@@ -7,6 +9,8 @@
 #include "StreamingPolicy.h"
 #include "WorldGenerationBootstrap.h"
 #include "Rigel/Asset/AssetManager.h"
+#include "Rigel/Asset/ShaderLoader.h"
+#include "Rigel/Asset/TextureLoader.h"
 #include "Rigel/Core/Profiler.h"
 #include "Rigel/Entity/EntityModelLoader.h"
 #include "Rigel/Persistence/AsyncChunkLoader.h"
@@ -27,12 +31,12 @@
 #include "Rigel/Voxel/ChunkTasks.h"
 #include "Rigel/Voxel/GeneratorDefinitionLoader.h"
 #include "Rigel/Voxel/WorldSet.h"
+#include "Rigel/Voxel/WorldView.h"
 #include "Rigel/Persistence/WorldPersistence.h"
 #include "Rigel/Voxel/WorldSpawn.h"
 #include "Rigel/UI/ImGuiLayer.h"
 #include "Rigel/input/GameplayInput.h"
 #include <spdlog/spdlog.h>
-#include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include "Rigel/input/InputBindingsLoader.h"
 #include "Rigel/version.h"
@@ -301,6 +305,7 @@ struct Application::Impl {
         Voxel::WorldSet worldSet;
         Voxel::WorldId activeWorldId = Voxel::WorldSet::defaultWorldId();
         Voxel::World* world = nullptr;
+        std::unique_ptr<Voxel::WorldView> ownedWorldView;
         Voxel::WorldView* worldView = nullptr;
         std::shared_ptr<Persistence::AsyncChunkLoader> chunkLoader;
         std::unique_ptr<const Voxel::BlockGalleryCatalog> galleryCatalog;
@@ -610,10 +615,14 @@ void Application::initialize() {
     }
 
     try {
-        m_impl->assets.loadManifest("manifest.yaml");
+        m_impl->assets.registerLoader(
+            "textures", std::make_unique<Asset::TextureLoader>());
+        m_impl->assets.registerLoader(
+            "shaders", std::make_unique<Asset::ShaderLoader>());
         m_impl->assets.registerLoader("input", std::make_unique<Input::InputBindingsLoader>());
         m_impl->assets.registerLoader("entity_models", std::make_unique<Entity::EntityModelLoader>());
         m_impl->assets.registerLoader("entity_anims", std::make_unique<Entity::EntityAnimationSetLoader>());
+        m_impl->assets.loadManifest("manifest.yaml");
         detail::StreamingPolicy streamingPolicy =
             detail::makeAutomaticStreamingPolicy();
         const Voxel::StreamingConfig& streamingConfig =
@@ -641,7 +650,10 @@ void Application::initialize() {
         m_impl->imguiOverlayListener.enabled = &m_impl->renderer.profilerWindowEnabled();
         m_impl->input.addListener(&m_impl->imguiOverlayListener);
 
-        m_impl->world.worldView = &m_impl->world.worldSet.createView(m_impl->world.activeWorldId, m_impl->assets);
+        m_impl->world.ownedWorldView = std::make_unique<Voxel::WorldView>(
+            *m_impl->world.world, m_impl->world.worldSet.resources());
+        m_impl->world.ownedWorldView->initialize(m_impl->assets);
+        m_impl->world.worldView = m_impl->world.ownedWorldView.get();
         Persistence::NewWorldGenerationFactory creationFactory = [&] {
             if (m_impl->world.galleryGenerator) {
                 return Persistence::NewWorldGeneration{
@@ -665,11 +677,11 @@ void Application::initialize() {
                 m_impl->world.worldSet,
                 m_impl->world.activeWorldId,
                 *m_impl->world.world,
-                *m_impl->world.worldView,
                 creationFactory,
                 bootstrapPersistenceContext,
                 m_impl->world.galleryGenerator);
         auto generator = std::move(bootstrapped.generator);
+        m_impl->world.worldView->setGenerator(generator);
         m_impl->world.settings = std::move(bootstrapped.settings);
         Persistence::PersistenceContext persistenceContext =
             bootstrapPersistenceContext;
@@ -919,9 +931,6 @@ void Application::Impl::shutdown() noexcept {
     completeShutdownStage(ApplicationShutdownStage::UserInterfaceReleased);
 
     Voxel::WorldView* activeView = world.worldView;
-    if (!activeView) {
-        activeView = world.worldSet.findView(world.activeWorldId);
-    }
     if (activeView) {
         disconnectChunkLoader(*activeView);
     }
@@ -938,6 +947,7 @@ void Application::Impl::shutdown() noexcept {
     world.galleryTargetPresentation.reset();
     world.galleryGenerator.reset();
     world.galleryCatalog.reset();
+    world.ownedWorldView.reset();
     world.worldSet.clear();
     world.worldView = nullptr;
     world.world = nullptr;
@@ -945,7 +955,6 @@ void Application::Impl::shutdown() noexcept {
     completeShutdownStage(ApplicationShutdownStage::WorldsReleased);
 
     if (openGLInitialized && hasContext) {
-        world.worldSet.resources().releaseRenderResources();
         renderer.release();
     }
     completeShutdownStage(ApplicationShutdownStage::RenderResourcesReleased);
@@ -1182,7 +1191,7 @@ void ApplicationTestAccess::observeBlockGalleryLaunchInitialized(
     observed.gallerySpecimenCount = catalog.entries().size();
     observed.emptyGeometryExclusionCount =
         catalog.emptyGeometryExclusions().size();
-    observed.textureCount = resources.textureAtlas().textureCount();
+    observed.textureCount = impl.world.worldView->textureAtlas().textureCount();
     observed.worldBootstrapped =
         impl.world.world->generator() &&
         impl.world.world->generator() == impl.world.worldView->generator() &&

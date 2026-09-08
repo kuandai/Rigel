@@ -1,7 +1,6 @@
 #pragma once
 
 #include "BlockRegistry.h"
-#include "TextureAtlas.h"
 
 #include <Rigel/Asset/AssetManager.h>
 
@@ -14,17 +13,11 @@ public:
     BlockRegistry& registry() { return m_registry; }
     const BlockRegistry& registry() const { return m_registry; }
 
-    TextureAtlas& textureAtlas() { return m_textureAtlas; }
-    const TextureAtlas& textureAtlas() const { return m_textureAtlas; }
-
     bool initialized() const { return m_initialized; }
-
-    void releaseRenderResources();
 
 private:
     // Block registrations transitively retain their immutable shared models.
     BlockRegistry m_registry;
-    TextureAtlas m_textureAtlas;
     bool m_initialized = false;
 };
 

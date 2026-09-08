@@ -433,7 +433,6 @@ struct ParsedBlock {
     std::string source;
     std::string identifier;
     BlockType type;
-    std::vector<std::string> texturePaths;
 };
 
 std::unordered_map<std::string, std::string> parseTextureMap(
@@ -738,14 +737,7 @@ ParsedBlock parseBlock(
         }
     }
 
-    ParsedBlock result{std::string(source), std::move(identifier),
-                       std::move(type), {}};
-    for (const auto& [slot, path] : bindings) result.texturePaths.push_back(path);
-    std::sort(result.texturePaths.begin(), result.texturePaths.end());
-    result.texturePaths.erase(
-        std::unique(result.texturePaths.begin(), result.texturePaths.end()),
-        result.texturePaths.end());
-    return result;
+    return {std::string(source), std::move(identifier), std::move(type)};
 }
 
 } // namespace
@@ -753,8 +745,7 @@ ParsedBlock parseBlock(
 BlockLoadReport BlockLoader::loadFromManifest(
     Asset::AssetManager& assets,
     BlockModelRegistry& models,
-    BlockRegistry& registry,
-    TextureAtlas& atlas
+    BlockRegistry& registry
 ) {
     std::vector<BlockModelDefinitionSource> modelDefinitions;
     std::vector<BlockDefinitionSource> blockDefinitions;
@@ -769,7 +760,7 @@ BlockLoadReport BlockLoader::loadFromManifest(
         }
     }
     return loadDefinitions(
-        assets.ns(), modelDefinitions, blockDefinitions, models, registry, atlas);
+        assets.ns(), modelDefinitions, blockDefinitions, models, registry);
 }
 
 BlockLoadReport BlockLoader::loadDefinitions(
@@ -777,8 +768,7 @@ BlockLoadReport BlockLoader::loadDefinitions(
     std::span<const BlockModelDefinitionSource> modelDefinitions,
     std::span<const BlockDefinitionSource> definitions,
     BlockModelRegistry& models,
-    BlockRegistry& registry,
-    TextureAtlas& atlas
+    BlockRegistry& registry
 ) {
     BlockLoadReport report;
     report.modelsDiscovered = modelDefinitions.size();
@@ -855,41 +845,14 @@ BlockLoadReport BlockLoader::loadDefinitions(
     }
     preparedRegistry.registerBlocks(std::move(registrations));
 
-    const size_t originalTextureCount = atlas.textureCount();
-    try {
-        for (const ParsedBlock& block : stagedBlocks) {
-            try {
-                for (const std::string& path : block.texturePaths) {
-                    atlas.addTextureFromResource(path);
-                }
-            } catch (const std::exception& error) {
-                ++report.failed;
-                addFailure(report, block.source, error.what());
-            }
-        }
-    } catch (...) {
-        atlas.rollbackTo(originalTextureCount);
-        throw;
-    }
-    if (report.failed != 0) {
-        atlas.rollbackTo(originalTextureCount);
-        report.skipped += stagedBlocks.size() - report.failed;
-        return report;
-    }
-
     report.modelsLoaded = stagedModels.size();
     report.loaded = stagedBlocks.size();
 
-    try {
-        spdlog::info(
-            "Block assets: {} models and {} blocks loaded ({} model failures, "
-            "{} block failures, {} blocks skipped)",
-            report.modelsLoaded, report.loaded, report.modelsFailed,
-            report.failed, report.skipped);
-    } catch (...) {
-        atlas.rollbackTo(originalTextureCount);
-        throw;
-    }
+    spdlog::info(
+        "Block assets: {} models and {} blocks loaded ({} model failures, "
+        "{} block failures, {} blocks skipped)",
+        report.modelsLoaded, report.loaded, report.modelsFailed,
+        report.failed, report.skipped);
     models.swap(preparedModels);
     registry.swap(preparedRegistry);
     return report;
@@ -898,13 +861,12 @@ BlockLoadReport BlockLoader::loadDefinitions(
 BlockLoadReport BlockLoader::loadDefinitions(
     std::string_view assetNamespace,
     std::span<const BlockDefinitionSource> definitions,
-    BlockRegistry& registry,
-    TextureAtlas& atlas
+    BlockRegistry& registry
 ) {
     BlockModelRegistry models;
     return loadDefinitions(
         assetNamespace, std::span<const BlockModelDefinitionSource>{},
-        definitions, models, registry, atlas);
+        definitions, models, registry);
 }
 
 } // namespace Rigel::Voxel

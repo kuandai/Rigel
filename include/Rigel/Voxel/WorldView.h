@@ -3,6 +3,7 @@
 #include "ChunkBenchmark.h"
 #include "ChunkRenderer.h"
 #include "ChunkStreamer.h"
+#include "TextureAtlas.h"
 #include "ViewDistancePolicy.h"
 #include "World.h"
 #include "WorldMeshStore.h"
@@ -47,6 +48,8 @@ public:
     const World& world() const { return *m_world; }
 
     const WorldMeshStore& meshStore() const { return m_meshStore; }
+    TextureAtlas& textureAtlas() { return m_textureAtlas; }
+    const TextureAtlas& textureAtlas() const { return m_textureAtlas; }
 
     // Exact low-level replacement for renderer diagnostics and tests. Normal
     // application startup uses the shipped profile.
@@ -149,6 +152,7 @@ private:
     WorldResources* m_resources = nullptr;
     ChunkRenderer m_renderer;
     WorldMeshStore m_meshStore;
+    TextureAtlas m_textureAtlas;
     ChunkStreamer m_streamer;
     RenderProfile m_renderProfile;
     std::shared_ptr<const ViewDistancePolicy> m_viewDistancePolicy;

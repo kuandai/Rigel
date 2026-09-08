@@ -12,7 +12,7 @@ WorldView::WorldView(World& world, WorldResources& resources)
     , m_streamer(world.chunkManager(),
                  m_meshStore,
                  resources.registry(),
-                 &resources.textureAtlas(),
+                 &m_textureAtlas,
                  world.generator())
 {}
 
@@ -21,6 +21,11 @@ void WorldView::initialize(Asset::AssetManager& assets) {
         spdlog::warn("WorldView::initialize called multiple times");
         return;
     }
+
+    if (m_textureAtlas.textureCount() == 0) {
+        m_textureAtlas.loadFromRegistry(m_resources->registry());
+    }
+    m_textureAtlas.upload();
 
     try {
         m_shader = assets.get<Asset::ShaderAsset>("shaders/voxel");
@@ -247,7 +252,7 @@ void WorldView::render(const glm::mat4& view,
 
     WorldRenderContext ctx;
     ctx.meshes = &m_meshStore;
-    ctx.atlas = &m_resources->textureAtlas();
+    ctx.atlas = &m_textureAtlas;
     ctx.shader = m_shader;
     ctx.shadowDepthShader = m_shadowDepthShader;
     ctx.shadowTransmitShader = m_shadowTransmitShader;
@@ -323,13 +328,16 @@ void WorldView::prioritizeChunkMesh(ChunkCoord coord) {
 }
 
 void WorldView::clear() {
+    m_entityRenderer.clear();
     m_meshStore.clear();
     m_renderer.clearCache();
     m_streamer.reset();
 }
 
 void WorldView::releaseRenderResources() {
+    m_entityRenderer.release();
     m_renderer.releaseResources();
+    m_textureAtlas.releaseGPU();
     m_shader = {};
     m_shadowDepthShader = {};
     m_shadowTransmitShader = {};

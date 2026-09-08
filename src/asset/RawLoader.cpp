@@ -1,6 +1,6 @@
 #include "Rigel/Asset/RawLoader.h"
 #include "Rigel/Asset/AssetManager.h"
-#include "Rigel/Asset/Types.h"
+#include "Rigel/Asset/RawAsset.h"
 #include "ResourceRegistry.h"
 
 #include <spdlog/spdlog.h>

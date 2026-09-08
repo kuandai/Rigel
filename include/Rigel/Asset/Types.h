@@ -42,7 +42,7 @@
  * @see Handle for type-safe asset references
  */
 
-#include "AssetLoader.h"
+#include "RawAsset.h"
 
 #include <vector>
 #include <string>
@@ -52,67 +52,6 @@
 #include <GL/glew.h>
 
 namespace Rigel::Asset {
-
-/**
- * @brief Raw binary data asset for configuration files and custom formats.
- *
- * RawAsset stores a copy of file data as a vector of bytes. This is useful
- * for files that need custom parsing (YAML, JSON, custom binary formats).
- *
- * @section usage Usage
- *
- * @code
- * auto config = assets.get<RawAsset>("raw/config");
- *
- * // Access raw bytes
- * const std::vector<char>& bytes = config->data;
- *
- * // For text files, use str() for a string_view
- * std::string_view text = config->str();
- *
- * // Parse as YAML
- * ryml::Tree tree = ryml::parse_in_arena(
- *     ryml::csubstr(text.data(), text.size())
- * );
- * @endcode
- *
- * @section manifest Manifest Configuration
- *
- * @code{.yaml}
- * raw:
- *   config:
- *     path: config.yaml
- * @endcode
- *
- * @note Unlike LoadContext::loadResource() which returns a view into static
- *       data, RawAsset owns a copy of the data that persists with the asset.
- *
- * @see RawLoader for loading implementation
- */
-struct RawAsset : AssetBase {
-    /**
-     * @brief The raw file data.
-     *
-     * Contains a copy of the file contents as loaded from the ResourceRegistry.
-     * For text files, this includes any encoding (typically UTF-8).
-     */
-    std::vector<char> data;
-
-    /**
-     * @brief Get the data as a string view.
-     *
-     * Convenience method for accessing text-based files as a string_view.
-     * No decoding is performed; the view represents the raw bytes.
-     *
-     * @return String view over the data vector
-     *
-     * @note The returned view is valid as long as this RawAsset exists
-     *       and the data vector is not modified.
-     */
-    std::string_view str() const {
-        return std::string_view(data.data(), data.size());
-    }
-};
 
 /**
  * @brief OpenGL 2D texture asset loaded from an image file.

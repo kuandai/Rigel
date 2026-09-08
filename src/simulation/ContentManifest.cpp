@@ -195,7 +195,8 @@ std::string ContentManifestId::hex() const {
 
 ContentDictionary::ContentDictionary(
     const Voxel::BlockRegistry& registry,
-    const Voxel::WorldGenerator& generator
+    const Voxel::WorldGenerator& generator,
+    size_t maxRetainedBytes
 ) {
     if (!registry.frozen()) {
         throw ContentManifestError(
@@ -204,6 +205,25 @@ ContentDictionary::ContentDictionary(
     if (generator.usesBlockGallery()) {
         throw ContentManifestError(
             "block gallery generation is unsupported by simulation authority");
+    }
+
+    // Reject aggregate key storage before copying any registry entry. Include
+    // both lookup tables and inline-string capacity in this conservative estimate.
+    size_t projectedBytes = 0;
+    const auto charge = [&](size_t bytes) {
+        if (bytes > maxRetainedBytes - projectedBytes) {
+            throw ContentManifestError("content dictionary exceeds retained byte limit");
+        }
+        projectedBytes += bytes;
+    };
+    charge(sizeof(ContentDictionary));
+    const size_t inlineStringCapacity = std::string{}.capacity();
+    for (size_t index = 0; index < registry.size(); ++index) {
+        charge(sizeof(ContentDictionaryEntry) + sizeof(const ContentDictionaryEntry*));
+        const auto& key = registry.getType(
+            Voxel::BlockID{static_cast<uint16_t>(index)}).identifier;
+        charge(std::max(key.size(), inlineStringCapacity));
+        charge(1);
     }
 
     m_entries.reserve(registry.size());
@@ -223,6 +243,10 @@ ContentDictionary::ContentDictionary(
     }
 
     m_byLocalId.resize(registry.size());
+    const auto retainedBytes = retainedStorageBytes();
+    if (!retainedBytes || *retainedBytes > maxRetainedBytes) {
+        throw ContentManifestError("content dictionary exceeds retained byte limit");
+    }
     CanonicalWriter manifest;
     manifest.string("rigel.content-manifest");
     manifest.u32(2);

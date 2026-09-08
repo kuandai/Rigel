@@ -23,6 +23,13 @@ the manifest identity, while a generator seed or semantic rule change does.
 Untyped block extension data is rejected because its simulation meaning cannot be
 encoded safely.
 
+The host's `maxContentBytes` policy bounds the retained dictionary independently
+of replica limits (16 MiB by default). Construction preflights aggregate stable-key
+and lookup-table storage before copying keys, then verifies actual retained
+capacity before exposing the dictionary. Replica budgets also account for their
+shared dictionary ownership. The asset registry itself remains owned by semantic
+content initialization; this dictionary cap is not a general asset-memory budget.
+
 The current authoritative chunk storage preserves metadata and packed light bytes
 for non-air blocks. Air is representable only as canonical `base:air` with both
 bytes zero because empty subchunks are compressed. Commands reject noncanonical

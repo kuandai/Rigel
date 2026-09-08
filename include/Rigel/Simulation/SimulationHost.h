@@ -273,6 +273,7 @@ struct SimulationHostConfig {
     size_t maxEntityTags = 16;
     size_t maxEntityTagBytes = 1024;
     size_t maxCommandBytes = 64 * 1024;
+    size_t maxContentBytes = ContentDictionary::kDefaultMaxRetainedBytes;
     size_t maxReplicaBytes = 64 * 1024 * 1024;
     float maxInteractionDistance = 8.0f;
     size_t maxCatchUpTicks = 8;

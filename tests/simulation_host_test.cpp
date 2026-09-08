@@ -1121,6 +1121,51 @@ TEST_CASE(LoopbackReplica_owns_publications_independently_of_mutable_sender_alia
     CHECK(!replica.needsResnapshot());
 }
 
+TEST_CASE(LoopbackReplica_queued_authority_messages_survive_all_producer_teardown) {
+    for (const bool pumpInitialBaseline : {false, true}) {
+        std::optional<LoopbackReplica> survivor;
+        std::optional<CommandOutcome> expectedOutcome;
+        CellAddress target;
+        SemanticBlockState expected;
+        {
+            HostFixture fixture;
+            fixture.start();
+            target = fixture.surface();
+            auto connection = fixture.host->connectReplica({target, target});
+            survivor.emplace(std::move(*connection.replica));
+            if (pumpInitialBaseline) pumpBaseline(*survivor);
+            const auto command = fixture.removeCommand(1);
+            CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+            fixture.host->advance(17ms);
+            expectedOutcome = fixture.host->submit(command).outcome;
+            expected = fixture.host->read(target).state;
+            CHECK_EQ(survivor->queuedMessages(), pumpInitialBaseline ? size_t{1} : size_t{2});
+        }
+        if (!pumpInitialBaseline) CHECK_EQ(survivor->pumpOne(), ReplicaPumpStatus::Applied);
+        CHECK_EQ(survivor->pumpOne(), ReplicaPumpStatus::Applied);
+        CHECK_EQ(survivor->read(target).state, expected);
+        CHECK_EQ(survivor->takeOutcome(), expectedOutcome);
+        CHECK_EQ(survivor->pumpOne(), ReplicaPumpStatus::Idle);
+    }
+}
+
+TEST_CASE(SimulationHost_reclaims_disconnected_replica_capacity) {
+    SimulationHostConfig config;
+    config.maxReplicas = 1;
+    HostFixture fixture(config);
+    const auto target = fixture.surface();
+    {
+        auto connection = fixture.host->connectReplica({target, target});
+        CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+        CHECK_EQ(fixture.host->connectReplica({target, target}).status,
+                 ReplicaConnectStatus::Capacity);
+    }
+    auto replacement = fixture.host->connectReplica({target, target});
+    CHECK_EQ(replacement.status, ReplicaConnectStatus::Connected);
+    pumpBaseline(*replacement.replica);
+    CHECK_EQ(replacement.replica->read(target).state, fixture.host->read(target).state);
+}
+
 TEST_CASE(LoopbackReplica_rejects_incomplete_and_oversized_messages) {
     SimulationHostConfig config;
     config.maxChangesPerCommand = 2;
@@ -1350,6 +1395,42 @@ TEST_CASE(LoopbackReplica_rejects_oversized_string_payloads_by_bytes) {
 }
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES
+TEST_CASE(SimulationHost_preflights_aggregate_dictionary_storage_without_replicas) {
+    Voxel::WorldResources resources;
+    std::string material;
+    for (int index = 0; index < 16; ++index) {
+        const auto key = "rigel:" + std::to_string(index) + std::string(1024, 'k');
+        Voxel::BlockType block;
+        block.identifier = key;
+        resources.registry().registerBlock(key, std::move(block));
+        material = key;
+    }
+    resources.registry().freeze();
+    auto generator = std::make_shared<Voxel::WorldGenerator>(resources.registry(),
+        flatDefinition(material, material, material), 17);
+    SimulationHostConfig config;
+    config.maxContentBytes = 4096;
+    config.domain = {{0, 0, 0}, {0, 0, 0}};
+    trackedAllocationBytes = 0;
+    trackAllocations = true;
+    bool rejected = false;
+    try {
+        SimulationHost host(resources, generator, config);
+    } catch (const ContentManifestError& error) {
+        rejected = std::string_view(error.what()).find("retained byte limit") !=
+            std::string_view::npos;
+    }
+    trackAllocations = false;
+    CHECK(rejected);
+    // Only small host/error setup may allocate: the 16 KiB key table was never copied.
+    CHECK(trackedAllocationBytes < config.maxContentBytes);
+    config.maxContentBytes = 64 * 1024;
+    SimulationHost accepted(resources, generator, config);
+    const auto retained = accepted.content().retainedStorageBytes();
+    CHECK(retained.has_value());
+    CHECK(*retained <= config.maxContentBytes);
+}
+
 TEST_CASE(LoopbackReplica_preflights_public_copy_and_recovers_from_copy_failure) {
     for (const bool oversized : {false, true}) {
         SimulationHostConfig config;

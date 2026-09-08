@@ -586,7 +586,7 @@ SimulationHost::SimulationHost(
     }
 
     m_content = std::make_shared<const ContentDictionary>(
-        resources.registry(), *generator);
+        resources.registry(), *generator, m_config.maxContentBytes);
     m_impl->world = std::make_unique<Voxel::World>(resources);
     m_impl->world->setId(m_config.world);
     m_impl->world->setGenerator(generator);

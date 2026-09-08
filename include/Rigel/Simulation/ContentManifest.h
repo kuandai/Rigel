@@ -63,9 +63,11 @@ public:
  */
 class ContentDictionary final {
 public:
+    static constexpr size_t kDefaultMaxRetainedBytes = 16 * 1024 * 1024;
     ContentDictionary(
         const Voxel::BlockRegistry& registry,
-        const Voxel::WorldGenerator& generator);
+        const Voxel::WorldGenerator& generator,
+        size_t maxRetainedBytes = kDefaultMaxRetainedBytes);
 
     ContentDictionary(const ContentDictionary&) = delete;
     ContentDictionary& operator=(const ContentDictionary&) = delete;

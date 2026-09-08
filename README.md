@@ -1,11 +1,14 @@
 # Rigel
 
-Rigel is a voxel engine prototype. The current application opens a single local
-world and provides:
+Rigel is a voxel engine prototype. The current application provides:
 
-* deterministic, seed-based terrain generation with climate and biome
-  selection, caves, surface materials, and simple structures;
-* background chunk loading, generation, meshing, and distance-based streaming;
+* a normal local mode whose CPU simulation host owns two preloaded, pinned
+  chunks, advances fixed ticks, validates semantic block edits, and publishes
+  immutable changes to a separate graphical replica;
+* coherent local checkpoints plus bounded state playback and command
+  resimulation for that normal mode;
+* a read-only block gallery that retains background chunk loading, generation,
+  meshing, and distance-based streaming;
 * OpenGL 4.1 rendering for voxel layers and entities, with player-controlled
   Shadows On/Off and internal temporal anti-aliasing and debug paths; and
 * global player preferences, save-owned world identity and generator
@@ -17,6 +20,14 @@ themselves as a Developer Preview. Linux with GCC and macOS with Apple Clang
 are the tested native build environments. See
 [`docs/README.md`](docs/README.md) for the implemented architecture and known
 limitations.
+
+Normal mode is not a general terrain-streaming game world. Its two chunks are
+the complete exact authority domain: camera movement does not extend it, the
+frontier is explicitly unavailable, and View Distance changes are rejected.
+The free-fly camera is a trusted local observer whose finite pose is admitted
+and recorded before an edit; it is not a network movement or player-controller
+interface. See [`docs/SimulationAuthority.md`](docs/SimulationAuthority.md) for
+the current limits, command outcomes, save policy, and replay envelope.
 
 ## Build Instructions
 
@@ -86,6 +97,31 @@ A source-only checkout with no JAR still configures, builds, and runs the unit
 tests. Attempting interactive world startup without generated CR assets fails
 with preparation instructions rather than silently creating an incomplete
 world.
+
+### Graphics-Disabled Semantic Validation
+
+The simulation authority and its real semantic parser/world/generator path can
+be built without discovering or linking the graphics dependency graph. The
+Conan and CMake graphics options must agree:
+
+```bash
+rigel_cpu_build=../Rigel-build-cpu
+conan install . --output-folder="$rigel_cpu_build" --build=missing \
+  -s build_type=Release -o '&:with_graphics=False' \
+  -c tools.cmake.cmaketoolchain:user_presets=""
+cmake -S . -B "$rigel_cpu_build" \
+  -DCMAKE_TOOLCHAIN_FILE="$rigel_cpu_build/conan_toolchain.cmake" \
+  -DCMAKE_BUILD_TYPE=Release -DRIGEL_BUILD_GRAPHICS=OFF
+cmake --build "$rigel_cpu_build" --parallel 8 \
+  --target RigelSemantic Rigel_cpu_semantic_tests
+ctest --test-dir "$rigel_cpu_build" --output-on-failure \
+  -R '^Rigel_cpu_semantic_(tests|linkage)$'
+```
+
+`RigelSemantic` is the CPU library, and `Rigel_cpu_semantic_tests` is the actual
+CPU regression host used for edit, checkpoint, recovery, and resimulation
+coverage. Rigel does not currently install a standalone dedicated-server
+executable. The linkage CTest rejects GL, EGL, GLFW, and GLEW dependencies.
 
 ### One-Time Setup
 

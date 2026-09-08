@@ -98,9 +98,18 @@ conan install . --output-folder="$rigel_cpu_build" --build=missing \
 cmake -S . -B "$rigel_cpu_build" \
   -DCMAKE_TOOLCHAIN_FILE="$rigel_cpu_build/conan_toolchain.cmake" \
   -DCMAKE_BUILD_TYPE=Debug -DRIGEL_BUILD_GRAPHICS=OFF
-cmake --build "$rigel_cpu_build" --parallel 8
-ctest --test-dir "$rigel_cpu_build" --output-on-failure
+cmake --build "$rigel_cpu_build" --parallel 8 \
+  --target RigelSemantic Rigel_cpu_semantic_tests
+ctest --test-dir "$rigel_cpu_build" --output-on-failure \
+  -R '^Rigel_cpu_semantic_(tests|linkage)$'
 ```
+
+`RigelSemantic` is the graphics-independent production library.
+`Rigel_cpu_semantic_tests` is a regression executable that hosts the real CPU
+semantic initialization, fixed-tick, edit, publication, checkpoint, recovery,
+and resimulation paths. It is not an installed production dedicated-server
+executable; Rigel does not currently provide one. The companion linkage test
+fails if this host acquires GL, EGL, GLFW, or GLEW dependencies.
 
 Those commands are source-only gates only when all three JAR selectors are
 absent: the `RIGEL_COSMIC_REACH_JAR` CMake cache value, the environment

@@ -6,6 +6,29 @@ and revisioned publications. Submission, simulation, and replica consumption are
 separate operations: `submit()` only admits owned command data, `advance()` runs
 fixed ticks, and `LoopbackReplica::pumpOne()` applies queued publications.
 
+## Current policy and limits
+
+The normal application deliberately configures a small local authority. These
+are current policy values, not a promise that future worlds use the same bounds:
+
+| Resource or rule | Current normal-mode policy |
+| --- | --- |
+| Exact terrain | Two vertically adjacent 32-cubed chunks (65,536 cells), generated before tick zero and pinned |
+| Fixed time | 60 ticks/second; at most 8 catch-up ticks per `advance()`, with remaining nanosecond debt retained |
+| Interaction | At most 8 cells per atomic command and 8 world units of reach |
+| Session commands | 64 pending, 256 retained receipts, and 64 KiB of owned payload per receipt |
+| Replicas | 8 connections, 32 queued publications per connection, and 64 MiB retained per replica |
+| Entities | 256 built-in entities; 16 tags and 1 KiB of retained semantic strings and tag storage per entity |
+| Semantic dictionary | 16 MiB retained by the host |
+| Checkpoint and replay | 64 MiB configured for each checkpoint or recording; 4,096 replay admissions |
+
+The checkpoint encoding also rejects any single payload above its independent
+256 MiB format ceiling. Constructors can select smaller or different fixture
+limits, but normal startup overrides terrain coverage to exactly the two chunks
+above. Resource exhaustion is a typed refusal or recovery requirement; it does
+not authorize eviction of receipts, partial commands, missing terrain, or
+unmodeled entity state.
+
 ## Content binding
 
 `ContentDictionary` is constructed from a frozen `BlockRegistry` and the installed
@@ -124,6 +147,14 @@ tick then applies each command once and publishes its terminal outcome to the
 new replica. A recovered session with no pending commands is replaced normally.
 
 ## Checkpoints and replay
+
+Normal saves use a dedicated authority checkpoint directory alongside the
+save-owned generator, settings, and backend identity. They do not import legacy
+region, player, or entity files into the authority. An existing normal save root
+with those entries, unknown siblings, an incompatible checkpoint marker, or a
+mixture of authority and legacy data is rejected without rewriting or deleting
+it. Conversion is not automatic; use an explicitly fresh destination when the
+old data must be preserved.
 
 `SimulationCheckpointManager` is the sole live publisher for one supplied save
 root. It holds the storage root lock for its lifetime and permits one asynchronous

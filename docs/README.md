@@ -26,7 +26,8 @@ implementation and how the systems fit together.
 - `docs/BlockCollision.md` (normalized physical shapes, world queries, and entity sweeps)
 - `docs/BlockGallery.md` (developer launch, navigation, catalog, and visual review)
 - `docs/WorldGeneration.md` (strict graph generation, pipeline, streaming)
-- `docs/SimulationAuthority.md` (bounded fixed ticks, semantic commands, loopback replicas)
+- `docs/SimulationAuthority.md` (bounded fixed ticks, semantic commands,
+  loopback replicas, checkpoints, and replay)
 - `docs/RenderingPipeline.md` (voxel rendering, TAA, shadows)
 - `docs/ShaderSystem.md` (shader assets and compilation)
 - `docs/VoxelEngine.md` (block models, meshing, and chunk structures)

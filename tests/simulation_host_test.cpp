@@ -34,9 +34,15 @@ size_t failureAllocationSize = 0;
 bool trackAllocations = false;
 size_t trackedAllocations = 0;
 size_t trackedAllocationBytes = 0;
+thread_local size_t allocationCeiling = 0;
+thread_local bool allocationCeilingExceeded = false;
 }
 
 void* operator new(std::size_t bytes) {
+    if (allocationCeiling && bytes > allocationCeiling) {
+        allocationCeilingExceeded = true;
+        throw std::bad_alloc();
+    }
     if (trackAllocations) {
         ++trackedAllocations;
         trackedAllocationBytes += bytes;
@@ -372,15 +378,19 @@ struct CheckpointLayout {
         size_t action = 0;
         size_t direction = 0;
         size_t outcome = 0;
+        size_t mutationCount = 0;
     };
 
     std::array<size_t, 17> limits{};
     size_t nextEntity = 0;
     std::vector<Receipt> receipts;
     std::vector<size_t> entities;
+    std::vector<size_t> entityTagCounts;
+    size_t chunkCount = 0;
 };
 
 CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
+    CheckpointLayout result;
     size_t at = 0;
     auto u8 = [&] { return bytes.at(at++); };
     auto u32 = [&] {
@@ -398,6 +408,7 @@ CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
     auto entity = [&] {
         const size_t id = at;
         skip(16); string(); skip(48 + 4 + 4 + 4 + 24);
+        result.entityTagCounts.push_back(at);
         const size_t tags = u32();
         for (size_t i = 0; i < tags; ++i) string();
         string(); skip(16);
@@ -411,13 +422,13 @@ CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
             skip(12 + 12 + 4 + 12);
             result.direction = at; skip(1); semantic();
         }
+        result.mutationCount = at;
         const size_t mutations = u32();
         for (size_t i = 0; i < mutations; ++i) {
             skip(12); semantic(); semantic();
         }
     };
 
-    CheckpointLayout result;
     skip(8 + 4 + 8 + 8 + 32 + 4); string();
     skip(24 + 8);
     for (size_t i = 0; i < result.limits.size(); ++i) {
@@ -446,6 +457,7 @@ CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
     }
     const size_t entities = u32();
     for (size_t i = 0; i < entities; ++i) result.entities.push_back(entity());
+    result.chunkCount = at;
     return result;
 }
 
@@ -1205,6 +1217,66 @@ TEST_CASE(SimulationCheckpoint_recovery_rejects_malformed_authority_state) {
     rejects([](auto& bytes, const auto& layout) {
         writeBigU64(bytes, layout.receipts.at(0).outcome, 2);
     });
+}
+
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+TEST_CASE(SimulationCheckpoint_preflights_collection_counts_before_allocation) {
+    for (int collection = 0; collection < 4; ++collection) {
+        HostFixture fixture;
+        fixture.start();
+        CHECK_EQ(fixture.host->submit(fixture.removeCommand(1)).status,
+                 SubmitStatus::Accepted);
+        allocationCeilingExceeded = false;
+        CheckpointRecoveryStatus status;
+        try {
+            status = recoverMutatedCheckpoint(fixture, [&](auto& bytes, const auto& layout) {
+                constexpr uint32_t forgedCount = 1'000'000;
+                if (collection == 0) {
+                    writeBigU64(bytes, layout.limits.at(7), forgedCount);
+                    writeBigU32(bytes, layout.entities.front() - 4, forgedCount);
+                } else if (collection == 1) {
+                    writeBigU64(bytes, layout.limits.at(8), forgedCount);
+                    writeBigU32(bytes, layout.entityTagCounts.front(), forgedCount);
+                } else if (collection == 2) {
+                    writeBigU64(bytes, layout.limits.at(2), forgedCount);
+                    writeBigU32(bytes, layout.receipts.front().mutationCount, forgedCount);
+                } else {
+                    writeBigU64(bytes, layout.limits.at(0), forgedCount);
+                    writeBigU32(bytes, layout.chunkCount, forgedCount);
+                }
+                // Intercept an unsafe request without allocating its advertised size.
+                // Only recovery runs under this thread-local guard; the writer is joined.
+                allocationCeiling = 8 * 1024 * 1024;
+            });
+        } catch (...) {
+            allocationCeiling = 0;
+            throw;
+        }
+        allocationCeiling = 0;
+        CHECK_EQ(status, CheckpointRecoveryStatus::Corrupt);
+        CHECK(!allocationCeilingExceeded);
+    }
+}
+#endif
+
+TEST_CASE(SimulationCheckpoint_preserves_pending_command_after_actor_removal) {
+    HostFixture fixture;
+    fixture.start();
+    const auto command = fixture.removeCommand(1);
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    CHECK(fixture.host->despawnEntity(fixture.actor));
+    SimulationCheckpointManager manager(
+        std::make_shared<Persistence::InMemoryStorageBackend>(), "/save");
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    auto restored = manager.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(restored.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(restored.host->stateHash(), fixture.host->stateHash());
+    restored.host->advance(17ms);
+    fixture.host->advance(17ms);
+    CHECK_EQ(restored.host->stateHash(), fixture.host->stateHash());
+    CHECK_EQ(restored.host->submit(command).outcome->status,
+             CommandOutcomeStatus::ActorUnavailable);
 }
 
 TEST_CASE(SimulationCheckpoint_live_root_owner_is_exclusive) {

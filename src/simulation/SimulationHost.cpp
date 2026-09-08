@@ -156,6 +156,15 @@ public:
         return result;
     }
     bool done() const { return m_at == m_data.size(); }
+    // Conservative encoded lower bounds prevent a corrupt count from reserving
+    // storage that cannot be justified by either input bytes or the saved budget.
+    void requireCollection(size_t count, size_t minimumEncodedBytes,
+                           size_t elementBytes, size_t retainedLimit) const {
+        if (count > (m_data.size() - m_at) / minimumEncodedBytes ||
+            count > retainedLimit / elementBytes) {
+            throw std::runtime_error("checkpoint collection exceeds input or storage limit");
+        }
+    }
 private:
     void require(size_t size) const {
         if (size > m_data.size() - m_at) {
@@ -218,6 +227,7 @@ Entity::EntitySimulationState decodeEntityState(
     state.localBounds = {decodeVec3(in), decodeVec3(in)};
     const size_t tags = in.u32();
     if (tags > tagLimit) throw std::runtime_error("checkpoint entity tag cap exceeded");
+    in.requireCollection(tags, 4, sizeof(std::string), stringLimit);
     state.tags.reserve(tags);
     for (size_t i = 0; i < tags; ++i) state.tags.push_back(in.string(stringLimit));
     state.modelIdentifier = in.string(stringLimit);
@@ -271,6 +281,7 @@ EditCommand decodeCommand(Decoder& in, size_t changes, size_t stringLimit) {
     }
     const size_t count = in.u32();
     if (count > changes) throw std::runtime_error("checkpoint mutation cap exceeded");
+    in.requireCollection(count, 24, sizeof(CellMutation), stringLimit);
     command.mutations.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         CellMutation mutation;
@@ -826,7 +837,6 @@ struct SimulationHost::Impl {
     uint64_t nextAdmission = 1;
     std::vector<uint8_t> recordingBaseline;
     std::vector<RecordedAdmission> recordingAdmissions;
-    size_t recordingBytes = 0;
     bool recordingGap = false;
 };
 
@@ -1034,7 +1044,6 @@ bool SimulationHost::recordingWithinLimit() {
         }, event.value);
         if (!retained || !addBytes(total, *retained)) return false;
     }
-    m_impl->recordingBytes = total;
     return total <= m_config.maxReplayBytes;
 }
 
@@ -1042,7 +1051,6 @@ void SimulationHost::discardRecording() {
     m_impl->recordingGap = true;
     std::vector<uint8_t>().swap(m_impl->recordingBaseline);
     std::vector<Impl::RecordedAdmission>().swap(m_impl->recordingAdmissions);
-    m_impl->recordingBytes = 0;
 }
 
 std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
@@ -1101,6 +1109,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         throw std::runtime_error("checkpoint dictionary count is invalid");
     }
     std::vector<std::string> dictionary;
+    in.requireCollection(dictionaryCount, 4, sizeof(std::string), config.maxContentBytes);
     dictionary.reserve(dictionaryCount);
     for (size_t i = 0; i < dictionaryCount; ++i) {
         dictionary.push_back(in.string(config.maxContentBytes));
@@ -1134,6 +1143,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         throw std::runtime_error("checkpoint receipt cap exceeded");
     }
     std::vector<SavedReceipt> receipts;
+    in.requireCollection(receiptCount, 10, sizeof(SavedReceipt), config.maxCheckpointBytes);
     receipts.reserve(receiptCount);
     size_t pendingReceipts = 0;
     size_t receiptBytes = 0;
@@ -1201,6 +1211,8 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         throw std::runtime_error("checkpoint entity cap exceeded");
     }
     std::vector<Entity::EntitySimulationState> entities;
+    in.requireCollection(entityCount, 16, sizeof(Entity::EntitySimulationState),
+                         config.maxCheckpointBytes);
     entities.reserve(entityCount);
     size_t entityBytes = 0;
     for (size_t i = 0; i < entityCount; ++i) {
@@ -1228,6 +1240,8 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         std::array<Voxel::BlockState, Voxel::Chunk::VOLUME> blocks;
     };
     std::vector<SavedChunk> chunks;
+    in.requireCollection(chunkCount, 12 + Voxel::Chunk::VOLUME * 6,
+                         sizeof(SavedChunk), config.maxCheckpointBytes);
     chunks.reserve(chunkCount);
     for (size_t i = 0; i < chunkCount; ++i) {
         SavedChunk chunk{{in.i32(), in.i32(), in.i32()}, {}};
@@ -1402,6 +1416,8 @@ ResimulationResult SimulationHost::resimulate(
         const size_t count = in.u32();
         if (count > host->m_config.maxReplayEvents) return result;
         std::vector<Impl::RecordedAdmission> events;
+        in.requireCollection(count, 9, sizeof(Impl::RecordedAdmission),
+                             host->m_config.maxReplayBytes);
         events.reserve(count);
         for (size_t i = 0; i < count; ++i) {
             const Tick afterTick = in.u64(); const uint8_t kind = in.u8();

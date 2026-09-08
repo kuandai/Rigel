@@ -9,8 +9,36 @@
 #include "Rigel/Voxel/WorldResources.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <memory>
+#include <new>
+
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+namespace {
+bool failAllocation = false;
+size_t allocationsBeforeFailure = 0;
+}
+
+void* operator new(std::size_t bytes) {
+    if (failAllocation && allocationsBeforeFailure-- == 0) {
+        failAllocation = false;
+        throw std::bad_alloc();
+    }
+    if (void* allocation = std::malloc(bytes == 0 ? 1 : bytes)) {
+        return allocation;
+    }
+    throw std::bad_alloc();
+}
+
+void operator delete(void* pointer) noexcept {
+    std::free(pointer);
+}
+
+void operator delete(void* pointer, std::size_t) noexcept {
+    std::free(pointer);
+}
+#endif
 
 namespace {
 
@@ -212,6 +240,91 @@ TEST_CASE(SimulationHost_atomic_failure_changes_neither_chunk) {
     CHECK_EQ(fixture.host->read(unavailable).status, ExactReadStatus::Unavailable);
 }
 
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+TEST_CASE(SimulationHost_prepared_atomic_writes_survive_allocation_failure) {
+    bool observedFailure = false;
+    bool observedSuccess = false;
+    for (size_t failureIndex = 0; failureIndex < 16; ++failureIndex) {
+        SimulationHostConfig config;
+        config.domain = {{0, 0, 0}, {31, 31, 30}};
+        config.preloadedChunks = {{0, 0, 0}};
+        config.maxPreloadedChunks = 1;
+        config.maxSnapshotCells = 32'768;
+        HostFixture fixture(config);
+        fixture.start();
+        const auto capability = fixture.host->authorityEditCapability();
+        const CellAddress first{10, 20, 10};
+        const CellAddress second{11, 20, 10};
+
+        EditCommand seed{
+            .session = 1,
+            .command = 1,
+            .actor = fixture.actor,
+            .world = 0,
+            .zone = "base:default",
+            .content = fixture.host->content().identity(),
+            .action = EditAction::Atomic,
+            .mutations = {{first, {"base:air", 0, 0},
+                           {"rigel:stone", 0, 0}}},
+        };
+        CHECK_EQ(
+            fixture.host->submit(seed, capability).status,
+            SubmitStatus::Accepted);
+        fixture.host->advance(17ms);
+        CHECK_EQ(fixture.host->read(first).state.blockKey,
+                 std::string("rigel:stone"));
+
+        EditCommand move{
+            .session = 1,
+            .command = 2,
+            .actor = fixture.actor,
+            .world = 0,
+            .zone = "base:default",
+            .content = fixture.host->content().identity(),
+            .action = EditAction::Atomic,
+            .mutations = {
+                {first, {"rigel:stone", 0, 0}, {"base:air", 0, 0}},
+                {second, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
+            },
+        };
+        CHECK_EQ(
+            fixture.host->submit(move, capability).status,
+            SubmitStatus::Accepted);
+
+        allocationsBeforeFailure = failureIndex;
+        failAllocation = true;
+        bool threw = false;
+        try {
+            fixture.host->advance(17ms);
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+        failAllocation = false;
+
+        if (threw) {
+            observedFailure = true;
+            CHECK_EQ(fixture.host->tick(), Tick{1});
+            CHECK_EQ(fixture.host->revision(), Revision{1});
+            CHECK_EQ(fixture.host->read(first).state.blockKey,
+                     std::string("rigel:stone"));
+            CHECK_EQ(fixture.host->read(second).state.blockKey,
+                     std::string("base:air"));
+            CHECK_EQ(
+                fixture.host->submit(move, capability).status,
+                SubmitStatus::DuplicatePending);
+        } else {
+            observedSuccess = true;
+            CHECK_EQ(fixture.host->read(first).state.blockKey,
+                     std::string("base:air"));
+            CHECK_EQ(fixture.host->read(second).state.blockKey,
+                     std::string("rigel:stone"));
+        }
+    }
+    CHECK(observedFailure);
+    CHECK(observedSuccess);
+}
+#endif
+
 TEST_CASE(SimulationHost_admits_edit_once_and_retains_session_receipts) {
     SimulationHostConfig config;
     config.maxPendingCommands = 1;
@@ -359,6 +472,44 @@ TEST_CASE(SimulationHost_rejects_content_and_shape_invalid_interactions) {
         SubmitStatus::ContentMismatch);
 }
 
+TEST_CASE(SimulationHost_places_on_the_admitted_tick_and_publishes_destination) {
+    HostFixture fixture;
+    fixture.start();
+    EditCommand place = fixture.removeCommand(1);
+    place.action = EditAction::Place;
+    const CellAddress target = place.interaction->expectedTarget;
+    const CellAddress destination{target.x, target.y + 1, target.z};
+    place.mutations.front() = {
+        destination,
+        {"base:air", 0, 0},
+        {"rigel:stone", 0, 0},
+    };
+
+    auto connection = fixture.host->connectReplica({destination, destination});
+    CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+    CHECK_EQ(replica.read(destination).state.blockKey, std::string("base:air"));
+
+    CHECK_EQ(fixture.host->submit(place).status, SubmitStatus::Accepted);
+    CHECK_EQ(
+        fixture.host->read(destination).state.blockKey,
+        std::string("base:air"));
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Idle);
+
+    CHECK_EQ(fixture.host->advance(17ms).ticksRun, static_cast<size_t>(1));
+    const auto completed = fixture.host->submit(place);
+    CHECK_EQ(completed.status, SubmitStatus::DuplicateComplete);
+    CHECK_EQ(completed.outcome->status, CommandOutcomeStatus::Applied);
+    CHECK_EQ(completed.outcome->tick, Tick{1});
+    CHECK_EQ(
+        fixture.host->read(destination).state.blockKey,
+        std::string("rigel:stone"));
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+    CHECK_EQ(replica.read(destination).state.blockKey,
+             std::string("rigel:stone"));
+}
+
 TEST_CASE(SimulationHost_rejects_unbound_and_nonfinite_interactions) {
     {
         HostFixture fixture;
@@ -504,6 +655,51 @@ TEST_CASE(SimulationHost_rejects_entity_rules_outside_its_manifest) {
     CHECK_EQ(
         fixture.host->submit(command).outcome->status,
         CommandOutcomeStatus::Applied);
+}
+
+TEST_CASE(SimulationHost_bounds_and_removes_owned_entities) {
+    SimulationHostConfig config;
+    config.maxEntities = 2;
+    config.maxEntityTags = 2;
+    config.maxEntityTagBytes = 128;
+    HostFixture fixture(config);
+    fixture.start();
+
+    auto second = std::make_unique<Entity::Entity>();
+    second->addTag(Entity::EntityTags::Passive);
+    const Entity::EntityId secondId = fixture.host->spawnEntity(std::move(second));
+    CHECK(!secondId.isNull());
+    CHECK_EQ(fixture.host->world().entities().size(), static_cast<size_t>(2));
+    CHECK(fixture.host->spawnEntity(
+        std::make_unique<Entity::Entity>()).isNull());
+
+    CHECK(fixture.host->despawnEntity(secondId));
+    CHECK(!fixture.host->despawnEntity(secondId));
+    CHECK_EQ(fixture.host->world().entities().size(), static_cast<size_t>(1));
+
+    auto tooManyTags = std::make_unique<Entity::Entity>();
+    tooManyTags->addTag("one");
+    tooManyTags->addTag("two");
+    tooManyTags->addTag("three");
+    CHECK(fixture.host->spawnEntity(std::move(tooManyTags)).isNull());
+
+    auto oversizedTag = std::make_unique<Entity::Entity>();
+    oversizedTag->addTag(std::string(256, 't'));
+    CHECK(fixture.host->spawnEntity(std::move(oversizedTag)).isNull());
+
+    const auto replacement = fixture.host->spawnEntity(
+        std::make_unique<Entity::Entity>());
+    CHECK(!replacement.isNull());
+    CHECK_NE(replacement, secondId);
+
+    const EditCommand command = fixture.removeCommand(1);
+    CHECK(fixture.host->despawnEntity(fixture.actor));
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(
+        fixture.host->submit(command).outcome->status,
+        CommandOutcomeStatus::ActorUnavailable);
+    CHECK_EQ(fixture.host->world().entities().size(), static_cast<size_t>(1));
 }
 
 TEST_CASE(SimulationHost_fixed_tick_is_render_pacing_independent_and_retains_debt) {

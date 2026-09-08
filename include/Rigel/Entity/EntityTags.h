@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -21,6 +22,17 @@ public:
     }
 
     void clear() { m_tags.clear(); }
+    size_t size() const { return m_tags.size(); }
+    bool retainedStringsFit(size_t byteLimit) const {
+        size_t retained = 0;
+        for (const std::string& tag : m_tags) {
+            if (tag.capacity() > byteLimit - retained) {
+                return false;
+            }
+            retained += tag.capacity();
+        }
+        return true;
+    }
 
 private:
     std::unordered_set<std::string> m_tags;

@@ -267,6 +267,9 @@ struct SimulationHostConfig {
     size_t maxSessionReceipts = 256;
     size_t maxReplicas = 8;
     size_t maxReplicaQueue = 32;
+    size_t maxEntities = 256;
+    size_t maxEntityTags = 16;
+    size_t maxEntityTagBytes = 1024;
     size_t maxCommandBytes = 64 * 1024;
     size_t maxReplicaBytes = 64 * 1024 * 1024;
     float maxInteractionDistance = 8.0f;
@@ -295,6 +298,7 @@ public:
     Revision revision() const { return m_revision; }
     ExactBlockRead read(CellAddress address) const;
     Entity::EntityId spawnEntity(std::unique_ptr<Entity::Entity> entity);
+    bool despawnEntity(Entity::EntityId entity);
 
     SessionStartStatus startSession(
         SessionId session,

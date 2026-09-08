@@ -2,6 +2,8 @@
 #include "GeneratorDefinitionTestRegistry.h"
 
 #include "Rigel/Simulation/ContentManifest.h"
+#include "Rigel/Voxel/BlockGalleryCatalog.h"
+#include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/WorldGenerator.h"
 
@@ -99,4 +101,25 @@ TEST_CASE(ContentManifest_rejects_mismatch_and_unfrozen_content) {
         "base:air", "base:air", "base:air");
     Voxel::WorldGenerator generator(mutableRegistry, definition, 1);
     CHECK_THROWS(Simulation::ContentDictionary(mutableRegistry, generator));
+}
+
+TEST_CASE(ContentManifest_rejects_unrepresented_gallery_generation) {
+    auto source = fixture(false);
+    const Voxel::BlockGalleryCatalog catalog(source.registry);
+    auto gallery = std::make_shared<const Voxel::BlockGalleryChunkGenerator>(
+        source.registry, catalog);
+    const auto identity = Voxel::prepareBlockGalleryGeneratorIdentity(
+        source.registry, gallery->worldBounds());
+    Voxel::WorldGenerator ordinary(source.registry, identity.data, 0);
+    Voxel::WorldGenerator galleryGenerator(
+        source.registry, identity.data, 0,
+        Voxel::kGeneratorSemanticsVersion, gallery);
+
+    CHECK(ordinary.matchesGenerationInputs(
+        galleryGenerator.definition(), galleryGenerator.seed(),
+        galleryGenerator.semanticsVersion()));
+    CHECK(!ordinary.matchesRuntimeGenerator(galleryGenerator));
+    CHECK_NO_THROW(Simulation::ContentDictionary(source.registry, ordinary));
+    CHECK_THROWS(
+        Simulation::ContentDictionary(source.registry, galleryGenerator));
 }

@@ -51,6 +51,7 @@ public:
     void addTag(std::string_view tag) { m_tags.add(tag); }
     void removeTag(std::string_view tag) { m_tags.remove(tag); }
     bool hasTag(std::string_view tag) const { return m_tags.has(tag); }
+    const EntityTagList& tags() const { return m_tags; }
 
     bool isNoClip() const { return hasTag(EntityTags::NoClip); }
 

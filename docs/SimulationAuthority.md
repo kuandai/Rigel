@@ -22,11 +22,18 @@ the manifest identity, while a generator seed or semantic rule change does.
 Untyped block extension data is rejected because its simulation meaning cannot be
 encoded safely.
 
+The developer block-gallery generator has additional runtime placements beyond
+its serialized terrain definition. This initial authority rejects that generator
+explicitly rather than assigning it the ordinary empty generator's identity.
+
 The manifest also binds the built-in entity update rule and its centered one-unit
 hitbox. This bounded host admits only exact `Entity` instances using that rule and
 hitbox, with no entity model attached. Virtual subclasses, custom local bounds,
 preassigned IDs, non-finite state, and model-derived hitboxes are rejected before
 spawn because their simulation or replay meaning is outside this manifest.
+Configured entity-count, tag-count, and retained tag-string limits bound admitted
+entity state. The host is the symmetric spawn/despawn owner; removing the active
+session actor causes its already admitted commands to complete as actor unavailable.
 
 ## Exact bounded terrain
 

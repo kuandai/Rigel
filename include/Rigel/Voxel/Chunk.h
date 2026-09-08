@@ -100,8 +100,10 @@ public:
      */
     void setBlock(int x, int y, int z, BlockState state, const BlockRegistry& registry);
 
-    /** Reserve cell storage so a following setBlock cannot allocate. */
+    /** Reserve and pin cell storage so prepared writes cannot reallocate. */
     void prepareBlockWrite(int x, int y, int z, BlockState state);
+    /** Release prepared-write pins and reclaim any subchunks left empty. */
+    void finishPreparedBlockWrites() noexcept;
 
     /**
      * @brief Fill entire chunk with a single block state.
@@ -226,6 +228,7 @@ private:
     uint32_t m_opaqueCount = 0;
     uint32_t m_meshRevision = 0;
     uint32_t m_worldGenVersion = 0;
+    uint8_t m_preparedSubchunks = 0;
     const uint64_t m_instanceId = s_nextInstanceId.fetch_add(1, std::memory_order_relaxed);
     ChunkManager* m_chunkManager = nullptr;
 

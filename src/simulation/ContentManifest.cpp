@@ -201,6 +201,10 @@ ContentDictionary::ContentDictionary(
         throw ContentManifestError(
             "content dictionary requires a frozen block registry");
     }
+    if (generator.usesBlockGallery()) {
+        throw ContentManifestError(
+            "block gallery generation is unsupported by simulation authority");
+    }
 
     m_entries.reserve(registry.size());
     for (size_t index = 0; index < registry.size(); ++index) {

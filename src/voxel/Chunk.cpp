@@ -65,8 +65,20 @@ void Chunk::prepareBlockWrite(int x, int y, int z, BlockState state) {
     assert(y >= 0 && y < SIZE);
     assert(z >= 0 && z < SIZE);
     if (!state.isAir()) {
-        m_subchunks[subchunkIndex(x, y, z)].allocate();
+        const int index = subchunkIndex(x, y, z);
+        m_subchunks[index].allocate();
+        m_preparedSubchunks |= static_cast<uint8_t>(1U << index);
     }
+}
+
+void Chunk::finishPreparedBlockWrites() noexcept {
+    for (int index = 0; index < SUBCHUNK_COUNT; ++index) {
+        if ((m_preparedSubchunks & static_cast<uint8_t>(1U << index)) != 0 &&
+            m_subchunks[index].nonAirCount == 0) {
+            m_subchunks[index].clear();
+        }
+    }
+    m_preparedSubchunks = 0;
 }
 
 void Chunk::setBlockInternal(int x, int y, int z, BlockState state, const BlockRegistry* registry) {
@@ -121,7 +133,8 @@ void Chunk::setBlockInternal(int x, int y, int z, BlockState state, const BlockR
         subchunk.opaqueCount = static_cast<uint32_t>(static_cast<int>(subchunk.opaqueCount) + delta);
     }
 
-    if (subchunk.nonAirCount == 0) {
+    if (subchunk.nonAirCount == 0 &&
+        (m_preparedSubchunks & static_cast<uint8_t>(1U << index)) == 0) {
         subchunk.clear();
     }
 

@@ -319,7 +319,8 @@ if (RIGEL_BUILD_TESTS)
     target_include_directories(Rigel_cpu_semantic_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_compile_definitions(Rigel_cpu_semantic_tests PRIVATE
-        RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}")
+        RIGEL_TEST_SOURCE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+        RIGEL_TEST_ALLOCATION_FAILURES)
     target_link_libraries(Rigel_cpu_semantic_tests PRIVATE RigelSemantic)
     add_test(NAME Rigel_cpu_semantic_tests COMMAND Rigel_cpu_semantic_tests)
     add_test(

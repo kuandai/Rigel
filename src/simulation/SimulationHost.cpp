@@ -401,6 +401,7 @@ SimulationHost::SimulationHost(
         m_config.tickRate.numerator == 0 || m_config.tickRate.denominator == 0 ||
         m_config.maxCatchUpTicks == 0 || m_config.maxPendingCommands == 0 ||
         m_config.maxSessionReceipts == 0 || m_config.maxReplicaQueue == 0 ||
+        m_config.maxEntities == 0 ||
         m_config.maxChangesPerCommand == 0 || m_config.maxCommandBytes == 0 ||
         m_config.maxReplicaBytes == 0 ||
         !std::isfinite(m_config.maxInteractionDistance) ||
@@ -487,12 +488,19 @@ Entity::EntityId SimulationHost::spawnEntity(
     std::unique_ptr<Entity::Entity> entity
 ) {
     if (!entity || m_nextEntityId == 0 || !entity->id().isNull() ||
+        m_impl->world->entities().size() >= m_config.maxEntities ||
+        entity->tags().size() > m_config.maxEntityTags ||
+        !entity->tags().retainedStringsFit(m_config.maxEntityTagBytes) ||
         !m_content->supportsEntity(*entity) || !finite(entity->position()) ||
         !finite(entity->velocity()) || !finite(entity->viewDirection())) {
         return Entity::EntityId::Null();
     }
     entity->setId({1, m_config.world, m_nextEntityId++});
     return m_impl->world->entities().spawn(std::move(entity));
+}
+
+bool SimulationHost::despawnEntity(Entity::EntityId entity) {
+    return m_impl->world->entities().despawn(entity);
 }
 
 SessionStartStatus SimulationHost::startSession(
@@ -877,16 +885,33 @@ void SimulationHost::runTick() {
     m_impl->world->entities().prepareTick();
 
     if (receipt && outcome.status == CommandOutcomeStatus::Applied) {
-        for (const auto& [address, state] : commits) {
-            auto* chunk = m_impl->world->chunkManager().getChunk(
-                Voxel::worldToChunk(address.x, address.y, address.z));
-            int x = 0, y = 0, z = 0;
-            Voxel::worldToLocal(address.x, address.y, address.z, x, y, z);
-            chunk->prepareBlockWrite(x, y, z, state);
+        std::vector<Voxel::Chunk*> preparedChunks;
+        preparedChunks.reserve(commits.size());
+        auto finishPreparedWrites = [&] {
+            for (Voxel::Chunk* chunk : preparedChunks) {
+                chunk->finishPreparedBlockWrites();
+            }
+        };
+        try {
+            for (const auto& [address, state] : commits) {
+                auto* chunk = m_impl->world->chunkManager().getChunk(
+                    Voxel::worldToChunk(address.x, address.y, address.z));
+                if (std::find(preparedChunks.begin(), preparedChunks.end(), chunk) ==
+                    preparedChunks.end()) {
+                    preparedChunks.push_back(chunk);
+                }
+                int x = 0, y = 0, z = 0;
+                Voxel::worldToLocal(address.x, address.y, address.z, x, y, z);
+                chunk->prepareBlockWrite(x, y, z, state);
+            }
+            for (const auto& [address, state] : commits) {
+                m_impl->world->setBlock(address.x, address.y, address.z, state);
+            }
+        } catch (...) {
+            finishPreparedWrites();
+            throw;
         }
-        for (const auto& [address, state] : commits) {
-            m_impl->world->setBlock(address.x, address.y, address.z, state);
-        }
+        finishPreparedWrites();
     }
 
     m_impl->world->entities().tickPrepared(

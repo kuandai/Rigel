@@ -82,6 +82,7 @@ public:
         uint32_t semanticsVersion) const;
     // Also compares process-local generation behavior that is not serialized.
     bool matchesRuntimeGenerator(const WorldGenerator& other) const;
+    bool usesBlockGallery() const { return m_blockGallery != nullptr; }
     bool shouldPersistGeneratedChunk(ChunkCoord coord) const;
 
     void generate(ChunkCoord coord, ChunkBuffer& out,

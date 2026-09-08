@@ -47,8 +47,7 @@ struct EntityAnimationSetAsset : public Asset::AssetBase {
     EntityAnimationSet set;
 };
 
-struct EntityModelAsset : public Asset::AssetBase,
-                          public std::enable_shared_from_this<EntityModelAsset> {
+struct EntityModelAsset : public Asset::AssetBase {
     float texWidth = 16.0f;
     float texHeight = 16.0f;
     float modelScale = 1.0f;

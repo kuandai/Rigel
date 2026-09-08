@@ -308,7 +308,8 @@ if (RIGEL_BUILD_TESTS)
     enable_testing()
 
     set(CPU_SEMANTIC_TEST_SOURCE
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpu_semantic_lifecycle_test.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpu_semantic_lifecycle_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/content_manifest_test.cpp)
     add_executable(Rigel_cpu_semantic_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/TestFramework.cpp

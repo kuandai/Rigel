@@ -60,6 +60,15 @@ void Chunk::setBlock(int x, int y, int z, BlockState state, const BlockRegistry&
     setBlockInternal(x, y, z, state, &registry);
 }
 
+void Chunk::prepareBlockWrite(int x, int y, int z, BlockState state) {
+    assert(x >= 0 && x < SIZE);
+    assert(y >= 0 && y < SIZE);
+    assert(z >= 0 && z < SIZE);
+    if (!state.isAir()) {
+        m_subchunks[subchunkIndex(x, y, z)].allocate();
+    }
+}
+
 void Chunk::setBlockInternal(int x, int y, int z, BlockState state, const BlockRegistry* registry) {
     assert(x >= 0 && x < SIZE);
     assert(y >= 0 && y < SIZE);

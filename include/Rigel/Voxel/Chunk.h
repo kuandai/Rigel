@@ -100,6 +100,9 @@ public:
      */
     void setBlock(int x, int y, int z, BlockState state, const BlockRegistry& registry);
 
+    /** Reserve cell storage so a following setBlock cannot allocate. */
+    void prepareBlockWrite(int x, int y, int z, BlockState state);
+
     /**
      * @brief Fill entire chunk with a single block state.
      * @param state The block state to fill with

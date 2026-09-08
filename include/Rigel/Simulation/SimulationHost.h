@@ -1,0 +1,304 @@
+#pragma once
+
+#include "ContentManifest.h"
+
+#include <Rigel/Entity/EntityId.h>
+#include <Rigel/Voxel/Block.h>
+#include <Rigel/Voxel/BlockTargeting.h>
+#include <Rigel/Voxel/ChunkCoord.h>
+#include <Rigel/Voxel/WorldId.h>
+
+#include <chrono>
+#include <compare>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <variant>
+#include <vector>
+
+namespace Rigel::Voxel {
+class World;
+class WorldGenerator;
+class WorldResources;
+}
+
+namespace Rigel::Entity {
+class Entity;
+}
+
+namespace Rigel::Simulation {
+
+struct CellAddress {
+    int x = 0;
+    int y = 0;
+    int z = 0;
+
+    bool operator==(const CellAddress&) const = default;
+    auto operator<=>(const CellAddress&) const = default;
+};
+
+struct CellBounds {
+    CellAddress min;
+    CellAddress max;
+
+    bool contains(CellAddress address) const;
+    std::optional<size_t> volume(size_t limit) const;
+    bool operator==(const CellBounds&) const = default;
+};
+
+enum class ExactReadStatus {
+    Known,
+    Unavailable,
+    OutsideDomain,
+    InvalidState,
+};
+
+struct ExactBlockRead {
+    ExactReadStatus status = ExactReadStatus::Unavailable;
+    SemanticBlockState state;
+};
+
+using SessionId = uint64_t;
+using CommandId = uint64_t;
+using Tick = uint64_t;
+using Revision = uint64_t;
+
+enum class EditAction {
+    Remove,
+    Place,
+    Atomic,
+};
+
+struct InteractionIntent {
+    glm::vec3 origin{};
+    glm::vec3 direction{};
+    float maxDistance = 0.0f;
+    CellAddress expectedTarget;
+    Voxel::Direction expectedFace = Voxel::Direction::PosX;
+    SemanticBlockState expectedTargetState;
+
+    bool operator==(const InteractionIntent&) const = default;
+};
+
+struct CellMutation {
+    CellAddress address;
+    SemanticBlockState expected;
+    SemanticBlockState replacement;
+
+    bool operator==(const CellMutation&) const = default;
+};
+
+struct EditCommand {
+    SessionId session = 0;
+    CommandId command = 0;
+    Entity::EntityId actor;
+    Voxel::WorldId world = Voxel::kDefaultWorldId;
+    std::string zone;
+    ContentManifestId content;
+    EditAction action = EditAction::Remove;
+    std::optional<InteractionIntent> interaction;
+    std::vector<CellMutation> mutations;
+
+    bool operator==(const EditCommand&) const = default;
+};
+
+enum class CommandOutcomeStatus {
+    Applied,
+    NoChange,
+    StaleState,
+    TargetMismatch,
+    Unavailable,
+    OutsideDomain,
+    InvalidRequest,
+    ActorUnavailable,
+    PlacementCollision,
+};
+
+struct CommandOutcome {
+    SessionId session = 0;
+    CommandId command = 0;
+    uint64_t admission = 0;
+    Tick tick = 0;
+    Revision revision = 0;
+    CommandOutcomeStatus status = CommandOutcomeStatus::InvalidRequest;
+
+    bool operator==(const CommandOutcome&) const = default;
+};
+
+enum class SubmitStatus {
+    Accepted,
+    DuplicatePending,
+    DuplicateComplete,
+    PayloadConflict,
+    OldSession,
+    ContentMismatch,
+    WrongDomain,
+    InvalidRequest,
+    ReceiptCapacity,
+    CommandCapacity,
+};
+
+struct SubmitResult {
+    SubmitStatus status = SubmitStatus::InvalidRequest;
+    std::optional<CommandOutcome> outcome;
+};
+
+struct PublishedCell {
+    CellAddress address;
+    SemanticBlockState state;
+
+    bool operator==(const PublishedCell&) const = default;
+};
+
+struct WorldBaseline {
+    ContentManifestId content;
+    Voxel::WorldId world = Voxel::kDefaultWorldId;
+    std::string zone;
+    CellBounds bounds;
+    Tick tick = 0;
+    Revision revision = 0;
+    bool complete = true;
+    std::vector<PublishedCell> cells;
+};
+
+struct WorldChangeBatch {
+    ContentManifestId content;
+    Voxel::WorldId world = Voxel::kDefaultWorldId;
+    std::string zone;
+    Revision baseRevision = 0;
+    Revision revision = 0;
+    Tick tick = 0;
+    bool complete = true;
+    std::vector<PublishedCell> changes;
+    std::vector<CommandOutcome> outcomes;
+};
+
+using PublicationMessage = std::variant<WorldBaseline, WorldChangeBatch>;
+
+enum class ReplicaAcceptStatus {
+    Queued,
+    QueueFull,
+    RejectedOversized,
+};
+
+enum class ReplicaPumpStatus {
+    Idle,
+    Applied,
+    Duplicate,
+    NeedsResnapshot,
+};
+
+class LoopbackReplica final {
+public:
+    LoopbackReplica(const LoopbackReplica&) = delete;
+    LoopbackReplica& operator=(const LoopbackReplica&) = delete;
+    LoopbackReplica(LoopbackReplica&&) noexcept = default;
+    LoopbackReplica& operator=(LoopbackReplica&&) noexcept = default;
+
+    ReplicaAcceptStatus accept(std::shared_ptr<const PublicationMessage> message);
+    ReplicaPumpStatus pumpOne();
+    ExactBlockRead read(CellAddress address) const;
+
+    bool needsResnapshot() const;
+    Revision revision() const;
+    Tick tick() const;
+    size_t queuedMessages() const;
+
+private:
+    struct State;
+    explicit LoopbackReplica(std::shared_ptr<State> state)
+        : m_state(std::move(state)) {}
+
+    std::shared_ptr<State> m_state;
+    friend class SimulationHost;
+};
+
+enum class SessionStartStatus {
+    Started,
+    OldSession,
+    Busy,
+    ContentMismatch,
+    ActorUnavailable,
+};
+
+enum class ReplicaConnectStatus {
+    Connected,
+    InvalidInterest,
+    Capacity,
+};
+
+struct ReplicaConnection {
+    ReplicaConnectStatus status = ReplicaConnectStatus::InvalidInterest;
+    std::optional<LoopbackReplica> replica;
+};
+
+struct TickRate {
+    uint32_t numerator = 60;
+    uint32_t denominator = 1;
+};
+
+struct SimulationHostConfig {
+    Voxel::WorldId world = Voxel::kDefaultWorldId;
+    std::string zone = "base:default";
+    CellBounds domain{{0, 0, 0}, {31, 31, 31}};
+    std::vector<Voxel::ChunkCoord> preloadedChunks;
+    TickRate tickRate;
+    size_t maxPreloadedChunks = 8;
+    size_t maxSnapshotCells = 262'144;
+    size_t maxChangesPerCommand = 8;
+    size_t maxPendingCommands = 64;
+    size_t maxSessionReceipts = 256;
+    size_t maxPublicationBatches = 128;
+    size_t maxReplicas = 8;
+    size_t maxReplicaQueue = 32;
+    size_t maxCatchUpTicks = 8;
+};
+
+struct AdvanceResult {
+    size_t ticksRun = 0;
+    bool timeDebtRemaining = false;
+};
+
+class SimulationHost final {
+public:
+    SimulationHost(
+        Voxel::WorldResources& resources,
+        std::shared_ptr<const Voxel::WorldGenerator> generator,
+        SimulationHostConfig config = {});
+    ~SimulationHost();
+
+    SimulationHost(const SimulationHost&) = delete;
+    SimulationHost& operator=(const SimulationHost&) = delete;
+
+    const ContentDictionary& content() const { return *m_content; }
+    const Voxel::World& world() const;
+    Tick tick() const { return m_tick; }
+    Revision revision() const { return m_revision; }
+    ExactBlockRead read(CellAddress address) const;
+    Entity::EntityId spawnEntity(std::unique_ptr<Entity::Entity> entity);
+
+    SessionStartStatus startSession(
+        SessionId session,
+        Entity::EntityId actor,
+        const ContentManifestId& content);
+    SubmitResult submit(EditCommand command);
+    AdvanceResult advance(std::chrono::nanoseconds elapsed);
+
+    ReplicaConnection connectReplica(CellBounds interest);
+    ReplicaConnectStatus resnapshot(LoopbackReplica& replica);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+    std::shared_ptr<const ContentDictionary> m_content;
+    SimulationHostConfig m_config;
+    Tick m_tick = 0;
+    Revision m_revision = 0;
+    uint64_t m_timeDebt = 0;
+    uint32_t m_nextEntityId = 1;
+
+    void runTick();
+};
+
+} // namespace Rigel::Simulation

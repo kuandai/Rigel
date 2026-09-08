@@ -1306,13 +1306,16 @@ ResimulationResult SimulationHost::resimulate(
             host->m_timeDebt += elapsedNs * host->m_config.tickRate.numerator;
             const uint64_t threshold =
                 uint64_t{host->m_config.tickRate.denominator} * 1'000'000'000ULL;
-            while (host->m_timeDebt >= threshold && host->m_tick < finalTick) {
+            size_t ticksThisFrame = 0;
+            while (host->m_timeDebt >= threshold && host->m_tick < finalTick &&
+                   ticksThisFrame < host->m_config.maxCatchUpTicks) {
                 if (!applyDue()) {
                     result.status = ResimulationStatus::Diverged;
                     return result;
                 }
                 host->runTick();
                 host->m_timeDebt -= threshold;
+                ++ticksThisFrame;
             }
             if (frame > 10'000'000) return result;
         }

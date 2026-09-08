@@ -261,9 +261,7 @@ struct LoopbackReplica::State {
         hasBaseline = false;
     }
 
-    ReplicaAcceptStatus enqueue(
-        std::shared_ptr<const PublicationMessage> message
-    ) {
+    ReplicaAcceptStatus checkEnqueue(const PublicationMessage* message) {
         if (!message) return ReplicaAcceptStatus::RejectedOversized;
         const bool structurallyOversized = std::visit([&](const auto& value) {
             using T = std::decay_t<decltype(value)>;
@@ -301,6 +299,14 @@ struct LoopbackReplica::State {
             markGap();
             return ReplicaAcceptStatus::QueueFull;
         }
+        return ReplicaAcceptStatus::Queued;
+    }
+
+    // Only the authority and the copying public ingress create these objects.
+    ReplicaAcceptStatus enqueue(std::shared_ptr<const PublicationMessage> message) {
+        const auto status = checkEnqueue(message.get());
+        if (status != ReplicaAcceptStatus::Queued) return status;
+        const auto bytes = retainedBytes(*message);
         queue.push_back(std::move(message));
         queueBytes += *bytes;
         return ReplicaAcceptStatus::Queued;
@@ -310,7 +316,18 @@ struct LoopbackReplica::State {
 ReplicaAcceptStatus LoopbackReplica::accept(
     std::shared_ptr<const PublicationMessage> message
 ) {
-    return m_state->enqueue(std::move(message));
+    const auto status = m_state->checkEnqueue(message.get());
+    if (status != ReplicaAcceptStatus::Queued) return status;
+    try {
+        // const on a shared_ptr target does not freeze a caller's mutable alias.
+        // Validate the complete source size before copying, then retain only an
+        // object constructed const with its own strings and containers.
+        return m_state->enqueue(
+            std::make_shared<const PublicationMessage>(*message));
+    } catch (const std::bad_alloc&) {
+        m_state->markGap();
+        return ReplicaAcceptStatus::RejectedOversized;
+    }
 }
 
 ReplicaPumpStatus LoopbackReplica::pumpOne() {

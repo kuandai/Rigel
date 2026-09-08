@@ -101,6 +101,11 @@ and cell storage; the host never exposes its mutable `World`. Change batches nam
 their base and resulting revisions and contain the complete atomic edit projection
 plus ordered outcomes.
 
+Public message ingestion validates payload capacity before taking a private
+immutable copy. A sender retaining a mutable shared-pointer alias cannot change or
+grow queued data afterward. The authority's own publications are constructed const
+and shared directly between its replicas without another per-recipient copy.
+
 Replica application validates manifest, world, zone, completeness, bounds, stable
 keys, duplicate cells, revision continuity, and strictly advancing ticks for newer
 publications before swapping visible state. It also validates each outcome's

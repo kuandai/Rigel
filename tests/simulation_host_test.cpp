@@ -1060,6 +1060,37 @@ TEST_CASE(LoopbackReplica_survives_authority_and_resource_teardown_with_bound_st
     CHECK(!survivor->takeOutcome().has_value());
 }
 
+TEST_CASE(LoopbackReplica_owns_publications_independently_of_mutable_sender_aliases) {
+    SimulationHostConfig config;
+    config.maxReplicaBytes = 64 * 1024;
+    HostFixture fixture(config);
+    const CellAddress address{5, 0, 5};
+    auto connection = fixture.host->connectReplica({address, address});
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+    const SemanticBlockState expected{"rigel:water", 0, 0};
+    auto sender = std::make_shared<PublicationMessage>(WorldChangeBatch{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = "base:default",
+        .baseRevision = replica.revision(),
+        .revision = replica.revision() + 1,
+        .tick = replica.tick() + 1,
+        .changes = {{address, expected}},
+    });
+    const auto ownersBefore = sender.use_count();
+    CHECK_EQ(replica.accept(sender), ReplicaAcceptStatus::Queued);
+    CHECK_EQ(sender.use_count(), ownersBefore);
+    auto& changed = std::get<WorldChangeBatch>(*sender);
+    changed.content = {};
+    changed.zone.assign(config.maxReplicaBytes * 2, 'x');
+    changed.changes.front().state = {"base:air", 1, 7};
+    changed.changes.reserve(config.maxReplicaBytes);
+    CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
+    CHECK_EQ(replica.read(address).state, expected);
+    CHECK(!replica.needsResnapshot());
+}
+
 TEST_CASE(LoopbackReplica_rejects_incomplete_and_oversized_messages) {
     SimulationHostConfig config;
     config.maxChangesPerCommand = 2;
@@ -1289,6 +1320,46 @@ TEST_CASE(LoopbackReplica_rejects_oversized_string_payloads_by_bytes) {
 }
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES
+TEST_CASE(LoopbackReplica_preflights_public_copy_and_recovers_from_copy_failure) {
+    for (const bool oversized : {false, true}) {
+        SimulationHostConfig config;
+        config.maxReplicaBytes = 64 * 1024;
+        HostFixture fixture(config);
+        const CellAddress address{5, 0, 5};
+        auto connection = fixture.host->connectReplica({address, address});
+        auto replica = std::move(*connection.replica);
+        pumpBaseline(replica);
+        auto sender = std::make_shared<PublicationMessage>(WorldChangeBatch{
+            .content = fixture.host->content().identity(),
+            .world = 0,
+            .zone = "base:default",
+            .baseRevision = replica.revision(),
+            .revision = replica.revision() + 1,
+            .tick = replica.tick() + 1,
+        });
+        if (oversized) {
+            std::get<WorldChangeBatch>(*sender).zone.reserve(
+                config.maxReplicaBytes * 2);
+        }
+        trackedAllocations = 0;
+        trackAllocations = oversized;
+        failureAllocationSize = 0;
+        allocationsBeforeFailure = 0;
+        failAllocation = !oversized;
+        const auto status = replica.accept(sender);
+        failAllocation = false;
+        trackAllocations = false;
+        CHECK_EQ(status, ReplicaAcceptStatus::RejectedOversized);
+        if (oversized) CHECK_EQ(trackedAllocations, size_t{0});
+        CHECK_EQ(sender.use_count(), 1L);
+        CHECK(replica.needsResnapshot());
+        CHECK_EQ(replica.queuedMessages(), size_t{0});
+        CHECK_EQ(fixture.host->resnapshot(replica), ReplicaConnectStatus::Connected);
+        pumpBaseline(replica);
+        CHECK_EQ(replica.read(address).state, fixture.host->read(address).state);
+    }
+}
+
 TEST_CASE(SimulationHost_healthy_replica_refresh_preserves_cut_and_pending_delivery) {
     HostFixture fixture;
     fixture.start();

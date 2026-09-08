@@ -15,7 +15,9 @@ constexpr uint32_t PointerVersion = 1;
 constexpr size_t MaximumPointerBytes = 512;
 
 uint64_t readU64(Persistence::ByteReader& reader) {
-    return (uint64_t{reader.readU32()} << 32) | reader.readU32();
+    const uint32_t high = reader.readU32();
+    const uint32_t low = reader.readU32();
+    return (uint64_t{high} << 32) | low;
 }
 
 void writeU64(Persistence::ByteWriter& writer, uint64_t value) {
@@ -44,6 +46,10 @@ struct PointerRecord {
 
 std::string payloadPath(const std::string& root, uint64_t generation) {
     return root + "/checkpoints/" + std::to_string(generation) + ".bin";
+}
+
+std::string pendingPublicationPath(const std::string& root) {
+    return root + "/publication-pending";
 }
 
 PointerRecord readPointer(
@@ -102,7 +108,8 @@ struct SimulationCheckpointManager::Impl {
     std::optional<CheckpointOutcome> terminal;
     std::atomic<bool> running{false};
     uint64_t latestGeneration = 0;
-    uint64_t latestStateHash = 0;
+    uint64_t latestCutHash = 0;
+    uint64_t pendingCutHash = 0;
     std::weak_ptr<const uint8_t> lineageOwner;
     std::weak_ptr<const uint8_t> pendingOwner;
     bool lineageVerified = true;
@@ -128,7 +135,8 @@ struct SimulationCheckpointManager::Impl {
         bool unknown = false;
         storage->forEachEntry(root, [&](const std::string& name) {
             const std::string leaf = std::filesystem::path(name).filename().string();
-            if (leaf != "current" && leaf != "checkpoints") unknown = true;
+            if (leaf != "current" && leaf != "checkpoints" &&
+                leaf != "publication-pending") unknown = true;
             return true;
         });
         if (unknown) {
@@ -150,6 +158,10 @@ struct SimulationCheckpointManager::Impl {
             invalidDetail = "checkpoint payload path is incompatible";
             return;
         }
+        if (storage->entryKind(pendingPublicationPath(root)) !=
+            Persistence::StorageEntryKind::Missing) {
+            uncertain = true;
+        }
         if (currentKind == Persistence::StorageEntryKind::Missing) return;
         try {
             const PointerRecord pointer = readPointer(*storage, root);
@@ -158,7 +170,7 @@ struct SimulationCheckpointManager::Impl {
                 throw std::runtime_error("checkpoint pointer payload is missing");
             }
             latestGeneration = pointer.generation;
-            latestStateHash = pointer.stateHash;
+            latestCutHash = pointer.payloadHash;
             lineageVerified = false;
         } catch (const std::invalid_argument& error) {
             invalidRoot = CheckpointRecoveryStatus::Incompatible;
@@ -220,13 +232,13 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
     uint64_t stateHash = 0;
     try {
         stateHash = host.stateHash();
-        payload = host.checkpointBytes(generation, m_impl->latestStateHash);
+        payload = host.checkpointBytes(generation, m_impl->latestCutHash);
     } catch (...) {
         return CheckpointRequestStatus::UnsupportedState;
     }
     const PointerRecord pointer{
         .generation = generation,
-        .parentHash = m_impl->latestStateHash,
+        .parentHash = m_impl->latestCutHash,
         .stateHash = stateHash,
         .payloadHash = hashBytes(payload),
         .payloadBytes = payload.size(),
@@ -235,6 +247,7 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
     };
     auto* impl = m_impl.get();
     impl->pendingOwner = host.m_authorityEditKey;
+    impl->pendingCutHash = pointer.payloadHash;
     impl->running.store(true, std::memory_order_release);
     impl->writer = std::thread([
         impl, payload = std::move(payload), pointer]() mutable {
@@ -246,6 +259,7 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
             .stateHash = pointer.stateHash,
         };
         bool pointerCommitStarted = false;
+        bool pendingPublicationWritten = false;
         try {
             auto payloadWrite = impl->storage->openWrite(
                 payloadPath(impl->root, pointer.generation));
@@ -253,11 +267,21 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
             payloadWrite->writer().flush();
             payloadWrite->commit();
 
+            auto pendingWrite = impl->storage->openWrite(
+                pendingPublicationPath(impl->root));
+            writeU64(pendingWrite->writer(), pointer.generation);
+            writeU64(pendingWrite->writer(), pointer.payloadHash);
+            pendingWrite->writer().flush();
+            pendingWrite->commit();
+            pendingPublicationWritten = true;
+
             auto pointerWrite = impl->storage->openWrite(impl->root + "/current");
             writePointer(pointerWrite->writer(), pointer);
             pointerWrite->writer().flush();
             pointerCommitStarted = true;
             pointerWrite->commit();
+            impl->storage->remove(pendingPublicationPath(impl->root));
+            pendingPublicationWritten = false;
             outcome.status = CheckpointWriteStatus::Durable;
         } catch (const Persistence::AtomicFilePublicationError& error) {
             if (pointerCommitStarted && error.state() ==
@@ -275,6 +299,15 @@ CheckpointRequestStatus SimulationCheckpointManager::request(
                 ? CheckpointWriteStatus::DurabilityUnknown
                 : CheckpointWriteStatus::NotPublished;
             outcome.detail = "unknown checkpoint storage failure";
+        }
+        if (outcome.status == CheckpointWriteStatus::NotPublished &&
+            pendingPublicationWritten) {
+            try {
+                impl->storage->remove(pendingPublicationPath(impl->root));
+            } catch (...) {
+                outcome.status = CheckpointWriteStatus::DurabilityUnknown;
+                outcome.detail = "checkpoint publication cleanup is uncertain";
+            }
         }
         {
             std::lock_guard lock(impl->outcomeMutex);
@@ -297,7 +330,7 @@ std::optional<CheckpointOutcome> SimulationCheckpointManager::poll() {
     if (!result) return std::nullopt;
     if (result->status == CheckpointWriteStatus::Durable) {
         m_impl->latestGeneration = result->generation;
-        m_impl->latestStateHash = result->stateHash;
+        m_impl->latestCutHash = m_impl->pendingCutHash;
         m_impl->lineageOwner = m_impl->pendingOwner;
         m_impl->lineageVerified = !m_impl->lineageOwner.expired();
     } else if (result->status == CheckpointWriteStatus::DurabilityUnknown) {
@@ -331,7 +364,7 @@ CheckpointRecovery SimulationCheckpointManager::recover(
     try {
         const PointerRecord pointer = readPointer(*m_impl->storage, m_impl->root);
         if (pointer.generation != m_impl->latestGeneration ||
-            pointer.stateHash != m_impl->latestStateHash ||
+            pointer.payloadHash != m_impl->latestCutHash ||
             pointer.payloadBytes > 256ULL * 1024 * 1024) {
             throw std::runtime_error("checkpoint pointer changed outside live owner");
         }

@@ -17,6 +17,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <future>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -213,11 +215,18 @@ struct HostFixture {
 
 class CheckpointFaultStorage final : public Persistence::StorageBackend {
 public:
-    enum class Fault { None, DelayPayload, PointerUncertain };
+    enum class Fault {
+        None,
+        DelayPayload,
+        PointerNotPublished,
+        PointerUncertain,
+    };
 
-    explicit CheckpointFaultStorage(Fault fault)
-        : m_fault(fault), m_storage(
-              std::make_shared<Persistence::InMemoryStorageBackend>()) {}
+    explicit CheckpointFaultStorage(
+        Fault fault,
+        std::shared_ptr<Persistence::StorageBackend> storage =
+            std::make_shared<Persistence::InMemoryStorageBackend>())
+        : m_fault(fault), m_storage(std::move(storage)) {}
 
     class Session final : public Persistence::AtomicWriteSession {
     public:
@@ -233,9 +242,15 @@ public:
                 m_owner.m_changed.notify_all();
                 m_owner.m_changed.wait(lock, [&] { return m_owner.m_releasePayload; });
             }
+            if (m_path.ends_with("/current") &&
+                m_owner.takeFault(Fault::PointerNotPublished)) {
+                throw Persistence::AtomicFilePublicationError(
+                    Persistence::AtomicFilePublicationState::NotPublished,
+                    "injected pre-publication failure");
+            }
             m_delegate->commit();
-            if (m_owner.m_fault == Fault::PointerUncertain &&
-                m_path.ends_with("/current")) {
+            if (m_path.ends_with("/current") &&
+                m_owner.takeFault(Fault::PointerUncertain)) {
                 throw Persistence::AtomicFilePublicationError(
                     Persistence::AtomicFilePublicationState::PublishedDurabilityUncertain,
                     "injected post-publication sync failure");
@@ -256,6 +271,13 @@ public:
         std::lock_guard lock(m_mutex);
         m_releasePayload = true;
         m_changed.notify_all();
+    }
+
+    bool takeFault(Fault expected) {
+        std::lock_guard lock(m_mutex);
+        if (m_fault != expected) return false;
+        m_fault = Fault::None;
+        return true;
     }
 
     std::unique_ptr<Persistence::ByteReader> openRead(const std::string& path) override {
@@ -293,7 +315,7 @@ public:
 
 private:
     Fault m_fault;
-    std::shared_ptr<Persistence::InMemoryStorageBackend> m_storage;
+    std::shared_ptr<Persistence::StorageBackend> m_storage;
     std::mutex m_mutex;
     std::condition_variable m_changed;
     bool m_payloadWaiting = false;
@@ -306,6 +328,155 @@ CheckpointOutcome waitForCheckpoint(SimulationCheckpointManager& manager) {
         std::this_thread::yield();
     }
     throw Test::TestFailure("checkpoint writer did not terminate");
+}
+
+std::vector<uint8_t> readStorageBytes(
+    Persistence::StorageBackend& storage, const std::string& path
+) {
+    auto reader = storage.openRead(path);
+    return reader->readAt(0, reader->size());
+}
+
+uint64_t readBigU64(const std::vector<uint8_t>& bytes, size_t offset) {
+    uint64_t value = 0;
+    for (size_t i = 0; i < 8; ++i) value = (value << 8) | bytes.at(offset + i);
+    return value;
+}
+
+uint64_t testHash(const std::vector<uint8_t>& bytes) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (const uint8_t byte : bytes) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+void writeBigU32(std::vector<uint8_t>& bytes, size_t offset, uint32_t value) {
+    for (size_t i = 0; i < 4; ++i) {
+        bytes.at(offset + i) = static_cast<uint8_t>(value >> (24 - i * 8));
+    }
+}
+
+void writeBigU64(std::vector<uint8_t>& bytes, size_t offset, uint64_t value) {
+    for (size_t i = 0; i < 8; ++i) {
+        bytes.at(offset + i) = static_cast<uint8_t>(value >> (56 - i * 8));
+    }
+}
+
+struct CheckpointLayout {
+    struct Receipt {
+        size_t command = 0;
+        size_t admission = 0;
+        size_t pending = 0;
+        size_t action = 0;
+        size_t direction = 0;
+        size_t outcome = 0;
+    };
+
+    std::array<size_t, 17> limits{};
+    size_t nextEntity = 0;
+    std::vector<Receipt> receipts;
+    std::vector<size_t> entities;
+};
+
+CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
+    size_t at = 0;
+    auto u8 = [&] { return bytes.at(at++); };
+    auto u32 = [&] {
+        uint32_t value = 0;
+        for (size_t i = 0; i < 4; ++i) value = (value << 8) | bytes.at(at + i);
+        at += 4;
+        return value;
+    };
+    auto skip = [&](size_t count) {
+        if (count > bytes.size() - at) throw Test::TestFailure("invalid checkpoint fixture");
+        at += count;
+    };
+    auto string = [&] { const size_t count = u32(); skip(count); };
+    auto semantic = [&] { string(); skip(2); };
+    auto entity = [&] {
+        const size_t id = at;
+        skip(16); string(); skip(48 + 4 + 4 + 4 + 24);
+        const size_t tags = u32();
+        for (size_t i = 0; i < tags; ++i) string();
+        string(); skip(16);
+        return id;
+    };
+    auto command = [&](CheckpointLayout::Receipt& result) {
+        result.command = at;
+        skip(8); skip(8); skip(16); skip(4); string(); skip(32);
+        result.action = at; skip(1);
+        if (u8()) {
+            skip(12 + 12 + 4 + 12);
+            result.direction = at; skip(1); semantic();
+        }
+        const size_t mutations = u32();
+        for (size_t i = 0; i < mutations; ++i) {
+            skip(12); semantic(); semantic();
+        }
+    };
+
+    CheckpointLayout result;
+    skip(8 + 4 + 8 + 8 + 32 + 4); string();
+    skip(24 + 8);
+    for (size_t i = 0; i < result.limits.size(); ++i) {
+        result.limits[i] = at;
+        skip(8);
+    }
+    skip(4);
+    const size_t dictionary = u32();
+    for (size_t i = 0; i < dictionary; ++i) string();
+    skip(8 + 8 + 8);
+    result.nextEntity = at; skip(4);
+    skip(8 + 4 + 8 + 8 + 16);
+    const size_t receipts = u32();
+    result.receipts.resize(receipts);
+    for (auto& receipt : result.receipts) {
+        command(receipt);
+        receipt.admission = at; skip(8);
+        receipt.pending = at;
+        const bool pending = u8();
+        const bool outcome = u8();
+        if (pending == outcome) throw Test::TestFailure("invalid checkpoint fixture phase");
+        if (outcome) {
+            receipt.outcome = at;
+            skip(8 * 5 + 1);
+        }
+    }
+    const size_t entities = u32();
+    for (size_t i = 0; i < entities; ++i) result.entities.push_back(entity());
+    return result;
+}
+
+CheckpointRecoveryStatus recoverMutatedCheckpoint(
+    HostFixture& fixture,
+    const std::function<void(std::vector<uint8_t>&, const CheckpointLayout&)>& mutate
+) {
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    {
+        SimulationCheckpointManager manager(storage, "/save");
+        CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+        CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    }
+    auto payload = readStorageBytes(*storage, "/save/checkpoints/1.bin");
+    const auto layout = checkpointLayout(payload);
+    mutate(payload, layout);
+    {
+        auto write = storage->openWrite("/save/checkpoints/1.bin");
+        write->writer().writeBytes(payload.data(), payload.size());
+        write->commit();
+    }
+    auto pointer = readStorageBytes(*storage, "/save/current");
+    writeBigU64(pointer, 32, testHash(payload));
+    writeBigU64(pointer, 40, payload.size());
+    {
+        auto write = storage->openWrite("/save/current");
+        write->writer().writeBytes(pointer.data(), pointer.size());
+        write->commit();
+    }
+    SimulationCheckpointManager reopened(storage, "/save");
+    return reopened.recover(fixture.resources, fixture.generator).status;
 }
 
 void pumpBaseline(LoopbackReplica& replica) {
@@ -552,29 +723,86 @@ TEST_CASE(SimulationHost_recording_resimulates_same_cut_across_frame_pacing) {
     config.domain = {{-4, -4, -4}, {20, 8, 20}};
     config.maxPreloadedChunks = 8;
     config.maxSnapshotCells = 25'000;
-    config.maxCatchUpTicks = 8;
-    HostFixture fixture(config, {5.5f, 6.0f, 5.5f}, {1.25f, 0.0f, -0.5f});
-    fixture.start();
-    const auto command = fixture.removeCommand(1);
-    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    config.maxCatchUpTicks = 1;
+    const std::vector<std::vector<std::chrono::nanoseconds>> pacingPatterns{
+        {33'333'333ns}, {16'666'667ns}, {6'944'444ns}, {250ms, 1ms, 7ms}};
 
-    while (fixture.host->tick() < 120) fixture.host->advance(33'333'333ns);
-    const auto recording = fixture.host->recording();
-    CHECK(recording.has_value());
-    CHECK(recording->finalTick >= Tick{120});
-    CHECK_EQ(recording->finalHash, fixture.host->stateHash());
+    std::vector<uint64_t> expectedHashes;
+    std::optional<SimulationRecording> expectedRecording;
+    for (size_t repeat = 0; repeat < 2; ++repeat) {
+        for (const auto& pacing : pacingPatterns) {
+            HostFixture fixture(
+                config, {5.5f, 6.0f, 5.5f}, {1.25f, 0.0f, -0.5f});
+            fixture.start();
+            CHECK_EQ(fixture.host->submit(fixture.removeCommand(1)).status,
+                     SubmitStatus::Accepted);
+            std::vector<uint64_t> hashes;
+            std::optional<Tick> admissionsAppliedAt;
+            Entity::EntityId temporary;
+            size_t frame = 0;
+            bool drainDebt = false;
+            while (fixture.host->tick() < 20) {
+                const Tick before = fixture.host->tick();
+                if (admissionsAppliedAt != before) {
+                    admissionsAppliedAt = before;
+                    if (before == 1) {
+                        auto rejected = fixture.removeCommand(90);
+                        rejected.action = static_cast<EditAction>(255);
+                        CHECK_EQ(fixture.host->submit(rejected).status,
+                                 SubmitStatus::InvalidRequest);
+                    } else if (before == 2) {
+                        CHECK_EQ(fixture.host->submit(fixture.removeCommand(2)).status,
+                                 SubmitStatus::Accepted);
+                    } else if (before == 3) {
+                        auto entity = std::make_unique<Entity::Entity>();
+                        entity->addTag(Entity::EntityTags::NoClip);
+                        entity->setPosition({8.0f, 7.0f, 8.0f});
+                        temporary = fixture.host->spawnEntity(std::move(entity));
+                        CHECK(!temporary.isNull());
+                    } else if (before == 4) {
+                        CHECK(fixture.host->despawnEntity(temporary));
+                    } else if (before == 5) {
+                        CHECK_EQ(fixture.host->startSession(
+                                     2, fixture.actor,
+                                     fixture.host->content().identity()),
+                                 SessionStartStatus::Started);
+                        CHECK_EQ(fixture.host->submit(fixture.removeCommand(91)).status,
+                                 SubmitStatus::OldSession);
+                    } else if (before == 6) {
+                        auto command = fixture.removeCommand(3);
+                        command.session = 2;
+                        CHECK_EQ(fixture.host->submit(command).status,
+                                 SubmitStatus::Accepted);
+                    }
+                }
+                const auto elapsed = drainDebt
+                    ? 0ns : pacing[frame++ % pacing.size()];
+                const auto advanced = fixture.host->advance(elapsed);
+                if (advanced.ticksRun == 1) hashes.push_back(fixture.host->stateHash());
+                drainDebt = advanced.timeDebtRemaining;
+            }
+            const auto recording = fixture.host->recording();
+            CHECK(recording.has_value());
+            CHECK_EQ(recording->finalHash, hashes.back());
+            if (expectedHashes.empty()) {
+                expectedHashes = hashes;
+                expectedRecording = recording;
+            } else {
+                CHECK_EQ(hashes, expectedHashes);
+                CHECK_EQ(recording->bytes, expectedRecording->bytes);
+            }
+        }
+    }
 
-    for (const auto pacing : std::vector<std::vector<std::chrono::nanoseconds>>{
-             {33'333'333ns}, {16'666'667ns}, {6'944'444ns},
-             {250ms, 1ms, 7ms}}) {
+    HostFixture replayFixture(config);
+    for (const auto& pacing : pacingPatterns) {
         auto replayed = SimulationHost::resimulate(
-            fixture.resources, fixture.generator, *recording, pacing);
+            replayFixture.resources, replayFixture.generator,
+            *expectedRecording, pacing);
         CHECK_EQ(replayed.status, ResimulationStatus::Complete);
-        CHECK_EQ(replayed.tick, recording->finalTick);
-        CHECK_EQ(replayed.stateHash, recording->finalHash);
+        CHECK_EQ(replayed.tick, expectedRecording->finalTick);
+        CHECK_EQ(replayed.stateHash, expectedRecording->finalHash);
         CHECK(replayed.host != nullptr);
-        CHECK_EQ(replayed.host->read(command.mutations.front().address).state.blockKey,
-                 std::string("base:air"));
     }
 }
 
@@ -600,6 +828,22 @@ TEST_CASE(SimulationHost_recording_rejects_envelope_mismatch_and_event_gap) {
     HostFixture overflow(bounded);
     overflow.start();
     CHECK(!overflow.host->recording().has_value());
+
+    bounded.maxReplayEvents = 64;
+    bounded.maxReplayBytes = 3 * 1024 * 1024;
+    bounded.zone = std::string(60 * 1024, 'z');
+    HostFixture byteOverflow(bounded);
+    byteOverflow.start();
+    CHECK(byteOverflow.host->recording().has_value());
+    for (CommandId id = 1; id <= 64; ++id) {
+        auto retained = byteOverflow.removeCommand(id);
+        retained.zone = bounded.zone;
+        CHECK_EQ(byteOverflow.host->submit(std::move(retained)).status,
+                 SubmitStatus::Accepted);
+    }
+    CHECK(!byteOverflow.host->recording().has_value());
+    CHECK_EQ(byteOverflow.host->advance(17ms).ticksRun, size_t{1});
+    CHECK(!byteOverflow.host->recording().has_value());
 }
 
 TEST_CASE(SimulationHost_rejects_nonfinite_entity_tint_before_admission) {
@@ -784,6 +1028,209 @@ TEST_CASE(SimulationCheckpoint_filesystem_reopens_the_acknowledged_generation) {
     CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
     CHECK_EQ(recovered.generation, uint64_t{1});
     CHECK_EQ(recovered.host->stateHash(), expectedHash);
+}
+
+TEST_CASE(SimulationCheckpoint_uncertain_filesystem_publication_survives_reopen) {
+    HostFixture fixture;
+    Test::TemporaryDirectory directory("rigel_checkpoint_uncertain");
+    const std::string root = (directory.path() / "world").string();
+    {
+        auto faulted = std::make_shared<CheckpointFaultStorage>(
+            CheckpointFaultStorage::Fault::PointerUncertain,
+            std::make_shared<Persistence::FilesystemBackend>());
+        SimulationCheckpointManager manager(faulted, root);
+        CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+        CHECK_EQ(waitForCheckpoint(manager).status,
+                 CheckpointWriteStatus::DurabilityUnknown);
+    }
+
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    SimulationCheckpointManager reopened(storage, root);
+    CHECK(reopened.durabilityUncertain());
+    CHECK_EQ(reopened.request(*fixture.host), CheckpointRequestStatus::Uncertain);
+    CHECK_EQ(reopened.recover(fixture.resources, fixture.generator).status,
+             CheckpointRecoveryStatus::Corrupt);
+    CHECK(storage->exists(root + "/publication-pending"));
+}
+
+TEST_CASE(SimulationCheckpoint_filesystem_failure_retry_and_orphan_are_safe) {
+    HostFixture fixture;
+    Test::TemporaryDirectory directory("rigel_checkpoint_retry");
+    const std::string root = (directory.path() / "world").string();
+    auto filesystem = std::make_shared<Persistence::FilesystemBackend>();
+    auto faulted = std::make_shared<CheckpointFaultStorage>(
+        CheckpointFaultStorage::Fault::PointerNotPublished, filesystem);
+    {
+        SimulationCheckpointManager manager(faulted, root);
+        CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+        CHECK_EQ(waitForCheckpoint(manager).status,
+                 CheckpointWriteStatus::NotPublished);
+        CHECK(!filesystem->exists(root + "/current"));
+        CHECK(!filesystem->exists(root + "/publication-pending"));
+        CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+        CHECK_EQ(waitForCheckpoint(manager).status,
+                 CheckpointWriteStatus::Durable);
+    }
+    SimulationCheckpointManager reopened(filesystem, root);
+    auto recovered = reopened.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(recovered.generation, uint64_t{2});
+}
+
+TEST_CASE(SimulationCheckpoint_teardown_joins_writer_before_releasing_root) {
+    HostFixture fixture;
+    Test::TemporaryDirectory directory("rigel_checkpoint_teardown");
+    const std::string root = (directory.path() / "world").string();
+    auto faulted = std::make_shared<CheckpointFaultStorage>(
+        CheckpointFaultStorage::Fault::DelayPayload,
+        std::make_shared<Persistence::FilesystemBackend>());
+    auto manager = std::make_unique<SimulationCheckpointManager>(faulted, root);
+    CHECK_EQ(manager->request(*fixture.host), CheckpointRequestStatus::Started);
+    faulted->waitForPayload();
+    auto teardown = std::async(std::launch::async,
+        [owned = std::move(manager)]() mutable { owned.reset(); });
+    CHECK_EQ(teardown.wait_for(20ms), std::future_status::timeout);
+    faulted->releasePayload();
+    CHECK_EQ(teardown.wait_for(2s), std::future_status::ready);
+
+    auto filesystem = std::make_shared<Persistence::FilesystemBackend>();
+    SimulationCheckpointManager reopened(filesystem, root);
+    auto recovered = reopened.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    recovered.host->advance(17ms);
+    CHECK_EQ(reopened.request(*recovered.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(reopened).generation, uint64_t{2});
+    CHECK_EQ(reopened.recover(fixture.resources, fixture.generator).generation,
+             uint64_t{2});
+}
+
+TEST_CASE(SimulationCheckpoint_full_saved_cut_hash_is_the_next_parent) {
+    HostFixture fixture;
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager manager(storage, "/save");
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    const auto first = waitForCheckpoint(manager);
+    CHECK_EQ(first.status, CheckpointWriteStatus::Durable);
+    const auto firstPayload = readStorageBytes(*storage, "/save/checkpoints/1.bin");
+    const uint64_t firstCutHash = testHash(firstPayload);
+
+    auto recovered = manager.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    const uint64_t comparisonHash = recovered.host->stateHash();
+    CHECK_EQ(recovered.host->advance(1ms).ticksRun, size_t{0});
+    CHECK_EQ(recovered.host->stateHash(), comparisonHash);
+    CHECK_EQ(manager.request(*recovered.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    const auto pointer = readStorageBytes(*storage, "/save/current");
+    CHECK_EQ(readBigU64(pointer, 16), firstCutHash);
+    CHECK_NE(testHash(readStorageBytes(*storage, "/save/checkpoints/2.bin")),
+             firstCutHash);
+}
+
+TEST_CASE(SimulationCheckpoint_incompatible_recovery_does_not_change_files) {
+    HostFixture fixture;
+    Test::TemporaryDirectory directory("rigel_checkpoint_identity");
+    const std::string root = (directory.path() / "world").string();
+    auto storage = std::make_shared<Persistence::FilesystemBackend>();
+    SimulationCheckpointManager manager(storage, root);
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    const auto pointerBefore = readStorageBytes(*storage, root + "/current");
+    const auto payloadBefore = readStorageBytes(*storage, root + "/checkpoints/1.bin");
+    auto otherGenerator = std::make_shared<Voxel::WorldGenerator>(
+        fixture.resources.registry(), flatDefinition(), 99);
+    CHECK_EQ(manager.recover(fixture.resources, otherGenerator).status,
+             CheckpointRecoveryStatus::Incompatible);
+    CHECK_EQ(readStorageBytes(*storage, root + "/current"), pointerBefore);
+    CHECK_EQ(readStorageBytes(*storage, root + "/checkpoints/1.bin"), payloadBefore);
+}
+
+TEST_CASE(SimulationCheckpoint_recovery_rejects_malformed_authority_state) {
+    SimulationHostConfig config;
+    config.maxPendingCommands = 2;
+    HostFixture fixture(config);
+    fixture.start();
+    CHECK_EQ(fixture.host->submit(fixture.removeCommand(1)).status,
+             SubmitStatus::Accepted);
+    CHECK_EQ(fixture.host->submit(fixture.removeCommand(2)).status,
+             SubmitStatus::Accepted);
+    auto extra = std::make_unique<Entity::Entity>();
+    extra->addTag(Entity::EntityTags::NoClip);
+    extra->setPosition({9, 7, 9});
+    CHECK(!fixture.host->spawnEntity(std::move(extra)).isNull());
+
+    auto rejects = [&](const auto& mutation) {
+        CHECK_EQ(recoverMutatedCheckpoint(fixture, mutation),
+                 CheckpointRecoveryStatus::Corrupt);
+    };
+    rejects([](auto& bytes, const auto& layout) {
+        bytes.at(layout.receipts.at(0).action) = 255;
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        bytes.at(layout.receipts.at(0).direction) = 255;
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        std::copy_n(bytes.begin() + layout.receipts.at(0).command + 8, 8,
+                    bytes.begin() + layout.receipts.at(1).command + 8);
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        std::copy_n(bytes.begin() + layout.receipts.at(0).admission, 8,
+                    bytes.begin() + layout.receipts.at(1).admission);
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        writeBigU64(bytes, layout.receipts.at(0).command, 2);
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        bytes.at(layout.receipts.at(0).pending) = 0;
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        writeBigU64(bytes, layout.limits.at(3), 1);
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        std::copy_n(bytes.begin() + layout.entities.at(0), 16,
+                    bytes.begin() + layout.entities.at(1));
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        writeBigU32(bytes, layout.nextEntity, 1);
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        writeBigU64(bytes, layout.limits.at(9), 1);
+    });
+    rejects([](auto& bytes, const auto& layout) {
+        writeBigU64(bytes, layout.limits.at(10), 32);
+    });
+    rejects([](auto& bytes, const auto&) { bytes.pop_back(); });
+
+    CHECK_EQ(fixture.host->advance(34ms).ticksRun, size_t{2});
+    rejects([](auto& bytes, const auto& layout) {
+        writeBigU64(bytes, layout.receipts.at(0).outcome, 2);
+    });
+}
+
+TEST_CASE(SimulationCheckpoint_live_root_owner_is_exclusive) {
+    Test::TemporaryDirectory directory("rigel_checkpoint_owner");
+    const std::string root = (directory.path() / "world").string();
+    auto first = std::make_unique<SimulationCheckpointManager>(
+        std::make_shared<Persistence::FilesystemBackend>(), root);
+    std::promise<void> attempting;
+    std::promise<void> acquired;
+    auto attempted = attempting.get_future();
+    auto completed = acquired.get_future();
+    std::thread contender([&] {
+        attempting.set_value();
+        SimulationCheckpointManager second(
+            std::make_shared<Persistence::FilesystemBackend>(), root);
+        acquired.set_value();
+    });
+    attempted.wait();
+    const bool blockedWhileOwned = completed.wait_for(20ms) ==
+        std::future_status::timeout;
+    first.reset();
+    const bool acquiredAfterRelease = completed.wait_for(2s) ==
+        std::future_status::ready;
+    contender.join();
+    CHECK(blockedWhileOwned);
+    CHECK(acquiredAfterRelease);
 }
 
 TEST_CASE(SimulationHost_admits_edit_once_and_retains_session_receipts) {
@@ -1092,6 +1539,12 @@ TEST_CASE(SimulationHost_rejects_unknown_action_values) {
     CHECK_EQ(
         fixture.host->submit(command).status,
         SubmitStatus::InvalidRequest);
+    CHECK_EQ(fixture.host->read(address).state, before);
+
+    auto invalidFace = fixture.removeCommand(2);
+    invalidFace.interaction->expectedFace = static_cast<Voxel::Direction>(255);
+    CHECK_EQ(fixture.host->submit(invalidFace).status,
+             SubmitStatus::InvalidRequest);
     CHECK_EQ(fixture.host->read(address).state, before);
 }
 

@@ -65,7 +65,7 @@ bool addElements(size_t& total, size_t count, size_t elementSize) {
 
 constexpr uint64_t CheckpointMagic = 0x524947454c435031ULL; // RIGELCP1
 constexpr uint64_t RecordingMagic = 0x524947454c525031ULL; // RIGELRP1
-constexpr uint32_t StateFormatVersion = 1;
+constexpr uint32_t StateFormatVersion = 2;
 
 class Encoder {
 public:
@@ -124,7 +124,11 @@ public:
         return value;
     }
     int32_t i32() { return static_cast<int32_t>(u32()); }
-    uint64_t u64() { return (uint64_t{u32()} << 32) | u32(); }
+    uint64_t u64() {
+        const uint32_t high = u32();
+        const uint32_t low = u32();
+        return (uint64_t{high} << 32) | low;
+    }
     float floating() {
         const float value = std::bit_cast<float>(u32());
         if (!std::isfinite(value)) {
@@ -303,6 +307,15 @@ bool validOutcomeStatus(CommandOutcomeStatus status) {
     return false;
 }
 
+bool validEditAction(EditAction action) {
+    return action == EditAction::Remove || action == EditAction::Place ||
+        action == EditAction::Atomic;
+}
+
+bool validDirection(Voxel::Direction direction) {
+    return static_cast<uint8_t>(direction) < Voxel::DirectionCount;
+}
+
 std::optional<size_t> commandRetainedBytes(const EditCommand& command) {
     size_t total = sizeof(EditCommand);
     if (!addBytes(total, command.zone.capacity()) ||
@@ -318,6 +331,21 @@ std::optional<size_t> commandRetainedBytes(const EditCommand& command) {
     if (command.interaction &&
         !addBytes(total, command.interaction->expectedTargetState.blockKey.capacity())) {
         return std::nullopt;
+    }
+    return total;
+}
+
+std::optional<size_t> entityStateRetainedBytes(
+    const Entity::EntitySimulationState& state
+) {
+    size_t total = sizeof(Entity::EntitySimulationState);
+    if (!addBytes(total, state.typeId.capacity()) ||
+        !addElements(total, state.tags.capacity(), sizeof(std::string)) ||
+        !addBytes(total, state.modelIdentifier.capacity())) {
+        return std::nullopt;
+    }
+    for (const auto& tag : state.tags) {
+        if (!addBytes(total, tag.capacity())) return std::nullopt;
     }
     return total;
 }
@@ -874,7 +902,9 @@ SimulationHost::SimulationHost(
 
     m_impl->receipts.reserve(m_config.maxSessionReceipts);
     m_impl->replicas.reserve(m_config.maxReplicas);
-    m_impl->recordingAdmissions.reserve(m_config.maxReplayEvents);
+    m_impl->recordingAdmissions.reserve(std::min(
+        m_config.maxReplayEvents,
+        m_config.maxReplayBytes / 2 / sizeof(Impl::RecordedAdmission)));
 }
 
 std::vector<uint8_t> SimulationHost::checkpointBytes(
@@ -973,16 +1003,46 @@ bool SimulationHost::prepareRecordingBaseline() {
     if (!m_impl->recordingBaseline.empty()) return true;
     try {
         m_impl->recordingBaseline = checkpointBytes(0, 0);
-        m_impl->recordingBytes = m_impl->recordingBaseline.size();
-        if (m_impl->recordingBytes > m_config.maxReplayBytes) {
+        if (!recordingWithinLimit()) {
             throw std::length_error("recording baseline exceeds byte cap");
         }
         return true;
     } catch (...) {
-        m_impl->recordingGap = true;
-        m_impl->recordingBaseline.clear();
+        discardRecording();
         return false;
     }
+}
+
+bool SimulationHost::recordingWithinLimit() {
+    size_t total = m_impl->recordingBaseline.capacity();
+    if (!addElements(
+            total, m_impl->recordingAdmissions.capacity(),
+            sizeof(Impl::RecordedAdmission))) {
+        return false;
+    }
+    for (const auto& event : m_impl->recordingAdmissions) {
+        const auto retained = std::visit([](const auto& value)
+                -> std::optional<size_t> {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, Impl::SpawnAdmission>) {
+                return entityStateRetainedBytes(value.state);
+            } else if constexpr (std::is_same_v<T, Impl::CommandAdmission>) {
+                return commandRetainedBytes(value.command);
+            } else {
+                return size_t{0};
+            }
+        }, event.value);
+        if (!retained || !addBytes(total, *retained)) return false;
+    }
+    m_impl->recordingBytes = total;
+    return total <= m_config.maxReplayBytes;
+}
+
+void SimulationHost::discardRecording() {
+    m_impl->recordingGap = true;
+    std::vector<uint8_t>().swap(m_impl->recordingBaseline);
+    std::vector<Impl::RecordedAdmission>().swap(m_impl->recordingAdmissions);
+    m_impl->recordingBytes = 0;
 }
 
 std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
@@ -1023,7 +1083,16 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         *target = static_cast<size_t>(value);
     }
     config.maxInteractionDistance = in.floating();
-    if (bytes.size() > config.maxCheckpointBytes) {
+    constexpr size_t HardSerializedBytes = 256ULL * 1024 * 1024;
+    if (bytes.size() > config.maxCheckpointBytes ||
+        config.maxCheckpointBytes > HardSerializedBytes ||
+        config.maxReplayBytes > HardSerializedBytes ||
+        config.maxSessionReceipts >
+            config.maxCheckpointBytes / sizeof(Impl::Receipt) ||
+        config.maxReplicas >
+            config.maxReplicaBytes / sizeof(std::weak_ptr<LoopbackReplica::State>) ||
+        config.maxReplayEvents >
+            config.maxReplayBytes / sizeof(Impl::RecordedAdmission)) {
         throw std::runtime_error("checkpoint exceeds saved byte limit");
     }
 
@@ -1047,6 +1116,14 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     const SessionId currentSession = in.u64();
     const SessionId sessionHighWater = in.u64();
     const Entity::EntityId sessionActor = decodeId(in);
+    if (tick != revision || nextEntityId == 0 || nextAdmission == 0 ||
+        currentSession != sessionHighWater ||
+        ((currentSession == 0) != sessionActor.isNull()) ||
+        (currentSession != 0 &&
+            (sessionActor.time != 1 || sessionActor.random != config.world ||
+             sessionActor.counter == 0 || sessionActor.counter >= nextEntityId))) {
+        throw std::runtime_error("checkpoint authority frontier is invalid");
+    }
 
     struct SavedReceipt {
         EditCommand command; uint64_t admission = 0; bool pending = false;
@@ -1058,6 +1135,8 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     }
     std::vector<SavedReceipt> receipts;
     receipts.reserve(receiptCount);
+    size_t pendingReceipts = 0;
+    size_t receiptBytes = 0;
     for (size_t i = 0; i < receiptCount; ++i) {
         SavedReceipt receipt;
         receipt.command = decodeCommand(
@@ -1077,6 +1156,43 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         if (receipt.pending == receipt.outcome.has_value()) {
             throw std::runtime_error("checkpoint receipt phase is invalid");
         }
+        if (receipt.command.session == 0 || receipt.command.command == 0 ||
+            receipt.command.session != currentSession || receipt.admission == 0 ||
+            receipt.admission >= nextAdmission ||
+            !validEditAction(receipt.command.action) ||
+            (receipt.command.action == EditAction::Atomic) ==
+                receipt.command.interaction.has_value() ||
+            (receipt.command.action != EditAction::Atomic &&
+                receipt.command.mutations.size() != 1) ||
+            receipt.command.mutations.empty() ||
+            (receipt.command.interaction &&
+                !validDirection(receipt.command.interaction->expectedFace))) {
+            throw std::runtime_error("checkpoint receipt command is invalid");
+        }
+        if (std::any_of(receipts.begin(), receipts.end(), [&](const auto& prior) {
+                return prior.command.command == receipt.command.command ||
+                    prior.admission == receipt.admission;
+            })) {
+            throw std::runtime_error("checkpoint receipt identity is duplicated");
+        }
+        const auto retained = commandRetainedBytes(receipt.command);
+        if (!retained || *retained > config.maxCommandBytes ||
+            !addBytes(receiptBytes, *retained) ||
+            receiptBytes > config.maxCheckpointBytes) {
+            throw std::runtime_error("checkpoint receipt storage exceeds limit");
+        }
+        if (receipt.pending && ++pendingReceipts > config.maxPendingCommands) {
+            throw std::runtime_error("checkpoint pending receipt cap exceeded");
+        }
+        if (receipt.outcome &&
+            (receipt.outcome->session != receipt.command.session ||
+             receipt.outcome->command != receipt.command.command ||
+             receipt.outcome->admission != receipt.admission ||
+             receipt.outcome->tick == 0 ||
+             receipt.outcome->tick != receipt.outcome->revision ||
+             receipt.outcome->tick > tick)) {
+            throw std::runtime_error("checkpoint receipt outcome is inconsistent");
+        }
         receipts.push_back(std::move(receipt));
     }
 
@@ -1086,16 +1202,25 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     }
     std::vector<Entity::EntitySimulationState> entities;
     entities.reserve(entityCount);
+    size_t entityBytes = 0;
     for (size_t i = 0; i < entityCount; ++i) {
         entities.push_back(decodeEntityState(
             in, config.maxEntityTags, config.maxEntityTagBytes));
         if (i && !(entities[i - 1].id < entities[i].id)) {
             throw std::runtime_error("checkpoint entity order is invalid");
         }
+        const auto& state = entities.back();
+        const auto retained = entityStateRetainedBytes(state);
+        if (state.id.time != 1 || state.id.random != config.world ||
+            state.id.counter == 0 || state.id.counter >= nextEntityId ||
+            !retained || !addBytes(entityBytes, *retained) ||
+            entityBytes > config.maxCheckpointBytes) {
+            throw std::runtime_error("checkpoint entity authority state is invalid");
+        }
     }
 
     const size_t chunkCount = in.u32();
-    if (chunkCount > config.maxPreloadedChunks) {
+    if (chunkCount == 0 || chunkCount > config.maxPreloadedChunks) {
         throw std::runtime_error("checkpoint chunk cap exceeded");
     }
     struct SavedChunk {
@@ -1148,9 +1273,41 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     for (const auto& state : entities) {
         auto entity = std::make_unique<Entity::Entity>(state.typeId);
         entity->restoreSimulationState(state);
-        if (!host->m_content->supportsEntity(*entity) ||
+        const auto tagBytes = entity->tags().retainedStorageBytes();
+        size_t semanticBytes = tagBytes.value_or(0);
+        if (!tagBytes ||
+            !addBytes(semanticBytes, entity->typeId().capacity()) ||
+            !addBytes(semanticBytes, entity->modelIdentifier().capacity()) ||
+            !addBytes(semanticBytes, entity->model().id().capacity()) ||
+            semanticBytes > config.maxEntityTagBytes ||
+            !host->m_content->supportsEntity(*entity) ||
             host->m_impl->world->entities().spawn(std::move(entity)) != state.id) {
             throw std::runtime_error("checkpoint entity state is unsupported");
+        }
+    }
+    for (const auto& saved : receipts) {
+        const auto& command = saved.command;
+        if (command.actor != sessionActor || command.world != config.world ||
+            command.zone != config.zone || command.content != savedContent) {
+            throw std::runtime_error("checkpoint receipt domain is invalid");
+        }
+        for (const auto& mutation : command.mutations) {
+            if (!host->m_content->contains(mutation.expected.blockKey) ||
+                !host->m_content->contains(mutation.replacement.blockKey) ||
+                !host->m_content->supportsState(mutation.expected) ||
+                !host->m_content->supportsState(mutation.replacement)) {
+                throw std::runtime_error("checkpoint receipt block state is invalid");
+            }
+        }
+        if (command.interaction &&
+            (!finite(command.interaction->origin) ||
+             !finite(command.interaction->direction) ||
+             !std::isfinite(command.interaction->maxDistance) ||
+             !host->m_content->contains(
+                 command.interaction->expectedTargetState.blockKey) ||
+             !host->m_content->supportsState(
+                 command.interaction->expectedTargetState))) {
+            throw std::runtime_error("checkpoint receipt interaction is invalid");
         }
     }
     host->m_impl->receipts.clear();
@@ -1241,6 +1398,7 @@ ResimulationResult SimulationHost::resimulate(
             result.status = ResimulationStatus::EnvelopeMismatch;
             return result;
         }
+        if (recording.bytes.size() > host->m_config.maxReplayBytes) return result;
         const size_t count = in.u32();
         if (count > host->m_config.maxReplayEvents) return result;
         std::vector<Impl::RecordedAdmission> events;
@@ -1406,10 +1564,10 @@ Entity::EntityId SimulationHost::spawnEntity(
             }
             m_impl->recordingAdmissions.push_back({
                 m_tick, Impl::SpawnAdmission{entity->simulationState()}});
-            recorded = true;
+            recorded = recordingWithinLimit();
+            if (!recorded) discardRecording();
         } catch (...) {
-            m_impl->recordingGap = true;
-            m_impl->recordingAdmissions.clear();
+            discardRecording();
         }
     }
     try {
@@ -1418,11 +1576,17 @@ Entity::EntityId SimulationHost::spawnEntity(
         if (!result.isNull()) return result;
     } catch (...) {
         m_nextEntityId = allocatedId;
-        if (recorded) m_impl->recordingAdmissions.pop_back();
+        if (recorded) {
+            m_impl->recordingAdmissions.pop_back();
+            recordingWithinLimit();
+        }
         throw;
     }
     m_nextEntityId = allocatedId;
-    if (recorded) m_impl->recordingAdmissions.pop_back();
+    if (recorded) {
+        m_impl->recordingAdmissions.pop_back();
+        recordingWithinLimit();
+    }
     return Entity::EntityId::Null();
 }
 
@@ -1430,12 +1594,15 @@ bool SimulationHost::despawnEntity(Entity::EntityId entity) {
     if (!m_impl->world->entities().get(entity)) return false;
     prepareRecordingBaseline();
     if (!m_impl->recordingGap) {
-        if (m_impl->recordingAdmissions.size() >= m_config.maxReplayEvents) {
-            m_impl->recordingGap = true;
-            m_impl->recordingAdmissions.clear();
-        } else {
+        try {
+            if (m_impl->recordingAdmissions.size() >= m_config.maxReplayEvents) {
+                throw std::length_error("recording event cap exceeded");
+            }
             m_impl->recordingAdmissions.push_back({
                 m_tick, Impl::DespawnAdmission{entity}});
+            if (!recordingWithinLimit()) discardRecording();
+        } catch (...) {
+            discardRecording();
         }
     }
     return m_impl->world->entities().despawn(entity);
@@ -1465,9 +1632,9 @@ SessionStartStatus SimulationHost::startSession(
             }
             m_impl->recordingAdmissions.push_back({
                 m_tick, Impl::SessionAdmission{session, actor, content}});
+            if (!recordingWithinLimit()) discardRecording();
         } catch (...) {
-            m_impl->recordingGap = true;
-            m_impl->recordingAdmissions.clear();
+            discardRecording();
         }
     }
     m_impl->receipts.clear();
@@ -1531,7 +1698,8 @@ SubmitResult SimulationHost::submit(EditCommand command, bool privileged) {
     if (command.interaction &&
         (!finite(command.interaction->origin) ||
          !finite(command.interaction->direction) ||
-         !std::isfinite(command.interaction->maxDistance))) {
+         !std::isfinite(command.interaction->maxDistance) ||
+         !validDirection(command.interaction->expectedFace))) {
         return {.status = SubmitStatus::InvalidRequest};
     }
     for (const auto& mutation : command.mutations) {
@@ -1575,9 +1743,9 @@ SubmitResult SimulationHost::submit(EditCommand command, bool privileged) {
             }
             m_impl->recordingAdmissions.push_back({
                 m_tick, Impl::CommandAdmission{command, privileged}});
+            if (!recordingWithinLimit()) discardRecording();
         } catch (...) {
-            m_impl->recordingGap = true;
-            m_impl->recordingAdmissions.clear();
+            discardRecording();
         }
     }
     m_impl->receipts.push_back({

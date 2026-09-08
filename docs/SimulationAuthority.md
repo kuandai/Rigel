@@ -124,26 +124,38 @@ states, or block meaning reject capture or recovery. The current admitted rule h
 no mutable RNG; the checkpoint records that RNG scheme explicitly, while generator
 randomness remains fixed by the generator definition and seed in the manifest.
 
-Restored entity state must have finite motion, rule values, tint and bounds,
-strictly ordered local bounds, finite translated world bounds, matching type
-identity, and sorted unique tags. Validation and owning-payload allocation finish
-before replacing the entity, so malformed input or allocation failure leaves its
-previous state intact.
+Restored state is validated as a complete authority cut before the candidate host
+is returned. Entity IDs must belong to the saved world's authority allocation
+domain and precede its saved frontier. Entity state must have finite motion, rule
+values, tint and bounds, strictly ordered local bounds, finite translated world
+bounds, matching type identity, sorted unique tags, and bounded aggregate owned
+storage. Session, receipt, command, admission, outcome, and allocator identities
+must be unique and mutually consistent; pending and aggregate receipt limits are
+reapplied. Validation and owning-payload allocation finish on the unpublished
+candidate, so malformed input cannot replace the live host or alter save files.
 
-Each immutable payload binds its generation and parent cut hash. After the payload
+Each immutable payload binds its generation and the complete serialized parent-cut
+hash, including scheduler debt. This durable ancestry is deliberately distinct
+from the frame-pacing-independent simulation comparison hash. After the payload
 is committed, a small atomic pointer publishes that generation, ancestry, cut,
-payload length, and payload hash. Only a durable pointer advances acknowledged
-history. A definitely unpublished error permits a later request; a pointer commit
-whose durability is unknown blocks both later publication and recovery through
-that manager. Unknown root entries and incompatible pointer formats are reported
-without rewriting or removing them. Historical payloads never replace the live
-pointer.
+payload length, and payload hash. A durable publication-pending fence is installed
+before pointer replacement and removed only after replacement succeeds. Its
+presence survives manager teardown and makes recovery and later publication stop
+conservatively after a post-replacement durability uncertainty. Only a durable
+pointer advances acknowledged history. A definitely unpublished error removes the
+fence and permits a later request. Unknown root entries and incompatible pointer
+formats are reported without rewriting or removing them. Historical payloads
+never replace the live pointer.
 
 State playback recovers the exact saved cut. Command resimulation is separate:
 `recording()` returns the initial state plus the ordered successful inter-tick
 admissions, and `resimulate()` applies them to the real CPU host while advancing
 with caller-supplied frame pacing. It compares a canonical semantic hash at the
 declared final tick and reports envelope mismatch, malformed input, or divergence.
+The replay byte policy covers the retained baseline, admission containers, and
+owned event payloads rather than only the eventual encoding. Exceeding either the
+event or aggregate byte limit creates a permanent detectable gap and immediately
+releases the unusable baseline and events.
 The envelope is the current built-in CPU entity rule and bounded terrain; this is
 not a claim of cross-platform floating-point or external physics lockstep.
 

@@ -374,6 +374,8 @@ private:
         uint64_t generation, uint64_t parentHash,
         bool includeTimeDebt = true) const;
     bool prepareRecordingBaseline();
+    bool recordingWithinLimit();
+    void discardRecording();
     static std::unique_ptr<SimulationHost> restoreCheckpointBytes(
         Voxel::WorldResources& resources,
         std::shared_ptr<const Voxel::WorldGenerator> generator,

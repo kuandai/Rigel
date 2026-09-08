@@ -11,12 +11,34 @@
 #include <glm/vec4.hpp>
 
 #include <string>
+#include <vector>
 
 namespace Rigel::Voxel {
 class World;
 }
 
 namespace Rigel::Entity {
+
+struct EntitySimulationState {
+    EntityId id;
+    std::string typeId;
+    glm::vec3 position{};
+    glm::vec3 velocity{};
+    glm::vec3 acceleration{};
+    glm::vec3 viewDirection{};
+    float gravityModifier = 1.0f;
+    bool onGround = false;
+    bool collidedX = false;
+    bool collidedY = false;
+    bool collidedZ = false;
+    float floorFriction = 0.1f;
+    Aabb localBounds{};
+    std::vector<std::string> tags;
+    std::string modelIdentifier;
+    glm::vec4 renderTint{1.0f};
+
+    bool operator==(const EntitySimulationState&) const = default;
+};
 
 class Entity {
 public:
@@ -73,6 +95,11 @@ public:
 
     void setRenderTint(const glm::vec4& tint) { m_renderTint = tint; }
     const glm::vec4& renderTint() const { return m_renderTint; }
+
+    /** Complete built-in state used by authority checkpoints and replay. */
+    EntitySimulationState simulationState() const;
+    /** Restore state previously returned by simulationState(). */
+    void restoreSimulationState(const EntitySimulationState& state);
 
 protected:
     void applyFloorFriction(float friction);

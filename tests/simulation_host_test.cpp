@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <vector>
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES
 namespace {
@@ -416,6 +417,61 @@ TEST_CASE(SimulationHost_second_empty_subchunk_prepare_is_atomic_on_failure) {
     CHECK_EQ(completed.outcome->status, CommandOutcomeStatus::Applied);
 }
 #endif
+
+TEST_CASE(SimulationHost_recording_resimulates_same_cut_across_frame_pacing) {
+    SimulationHostConfig config;
+    config.domain = {{-4, -4, -4}, {20, 8, 20}};
+    config.maxPreloadedChunks = 8;
+    config.maxSnapshotCells = 25'000;
+    config.maxCatchUpTicks = 8;
+    HostFixture fixture(config, {5.5f, 6.0f, 5.5f}, {1.25f, 0.0f, -0.5f});
+    fixture.start();
+    const auto command = fixture.removeCommand(1);
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+
+    while (fixture.host->tick() < 120) fixture.host->advance(33'333'333ns);
+    const auto recording = fixture.host->recording();
+    CHECK(recording.has_value());
+    CHECK(recording->finalTick >= Tick{120});
+    CHECK_EQ(recording->finalHash, fixture.host->stateHash());
+
+    for (const auto pacing : std::vector<std::vector<std::chrono::nanoseconds>>{
+             {33'333'333ns}, {16'666'667ns}, {6'944'444ns},
+             {250ms, 1ms, 7ms}}) {
+        auto replayed = SimulationHost::resimulate(
+            fixture.resources, fixture.generator, *recording, pacing);
+        CHECK_EQ(replayed.status, ResimulationStatus::Complete);
+        CHECK_EQ(replayed.tick, recording->finalTick);
+        CHECK_EQ(replayed.stateHash, recording->finalHash);
+        CHECK(replayed.host != nullptr);
+        CHECK_EQ(replayed.host->read(command.mutations.front().address).state.blockKey,
+                 std::string("base:air"));
+    }
+}
+
+TEST_CASE(SimulationHost_recording_rejects_envelope_mismatch_and_event_gap) {
+    SimulationHostConfig config;
+    config.domain = {{-4, -4, -4}, {20, 8, 20}};
+    config.maxPreloadedChunks = 8;
+    config.maxSnapshotCells = 25'000;
+    HostFixture fixture(config);
+    fixture.start();
+    fixture.host->advance(17ms);
+    const auto recording = fixture.host->recording();
+    CHECK(recording.has_value());
+
+    auto incompatibleGenerator = std::make_shared<Voxel::WorldGenerator>(
+        fixture.resources.registry(), flatDefinition(), 18);
+    auto mismatch = SimulationHost::resimulate(
+        fixture.resources, incompatibleGenerator, *recording, {17ms});
+    CHECK_EQ(mismatch.status, ResimulationStatus::EnvelopeMismatch);
+
+    SimulationHostConfig bounded = config;
+    bounded.maxReplayEvents = 1;
+    HostFixture overflow(bounded);
+    overflow.start();
+    CHECK(!overflow.host->recording().has_value());
+}
 
 TEST_CASE(SimulationHost_admits_edit_once_and_retains_session_receipts) {
     SimulationHostConfig config;

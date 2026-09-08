@@ -73,6 +73,14 @@ void WorldEntities::forEach(const std::function<void(const Entity&)>& fn) const 
     }
 }
 
+std::vector<EntityId> WorldEntities::sortedIds() const {
+    std::vector<EntityId> result;
+    result.reserve(m_entities.size());
+    for (const auto& [id, _] : m_entities) result.push_back(id);
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
 void WorldEntities::prepareTick() {
     if (m_isTicking) {
         throw std::logic_error("cannot prepare entity tick during update");

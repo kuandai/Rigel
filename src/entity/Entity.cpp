@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <glm/glm.hpp>
+#include <stdexcept>
 
 namespace Rigel::Entity {
 
@@ -273,6 +274,51 @@ void Entity::update(Voxel::World& world, float dt) {
     }
 
     m_acceleration = glm::vec3(0.0f);
+}
+
+EntitySimulationState Entity::simulationState() const {
+    return {
+        .id = m_id,
+        .typeId = m_typeId,
+        .position = m_position,
+        .velocity = m_velocity,
+        .acceleration = m_acceleration,
+        .viewDirection = m_viewDirection,
+        .gravityModifier = m_gravityModifier,
+        .onGround = m_onGround,
+        .collidedX = m_collidedX,
+        .collidedY = m_collidedY,
+        .collidedZ = m_collidedZ,
+        .floorFriction = m_floorFriction,
+        .localBounds = m_localBounds,
+        .tags = m_tags.sorted(),
+        .modelIdentifier = m_modelIdentifier,
+        .renderTint = m_renderTint,
+    };
+}
+
+void Entity::restoreSimulationState(const EntitySimulationState& state) {
+    if (state.typeId != m_typeId) {
+        throw std::invalid_argument("entity simulation type mismatch");
+    }
+    m_id = state.id;
+    m_position = state.position;
+    m_velocity = state.velocity;
+    m_acceleration = state.acceleration;
+    m_viewDirection = state.viewDirection;
+    m_gravityModifier = state.gravityModifier;
+    m_onGround = state.onGround;
+    m_collidedX = state.collidedX;
+    m_collidedY = state.collidedY;
+    m_collidedZ = state.collidedZ;
+    m_floorFriction = state.floorFriction;
+    m_localBounds = state.localBounds;
+    m_tags.clear();
+    for (const auto& tag : state.tags) m_tags.add(tag);
+    m_model = {};
+    m_modelIdentifier = state.modelIdentifier;
+    m_renderTint = state.renderTint;
+    updateWorldBounds();
 }
 
 } // namespace Rigel::Entity

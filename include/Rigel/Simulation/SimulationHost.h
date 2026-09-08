@@ -30,6 +30,8 @@ class Entity;
 
 namespace Rigel::Simulation {
 
+class SimulationCheckpointManager;
+
 struct CellAddress {
     int x = 0;
     int y = 0;
@@ -277,11 +279,35 @@ struct SimulationHostConfig {
     size_t maxReplicaBytes = 64 * 1024 * 1024;
     float maxInteractionDistance = 8.0f;
     size_t maxCatchUpTicks = 8;
+    size_t maxCheckpointBytes = 64 * 1024 * 1024;
+    size_t maxReplayEvents = 4096;
+    size_t maxReplayBytes = 64 * 1024 * 1024;
 };
 
 struct AdvanceResult {
     size_t ticksRun = 0;
     bool timeDebtRemaining = false;
+};
+
+struct SimulationRecording {
+    ContentManifestId content;
+    Tick finalTick = 0;
+    uint64_t finalHash = 0;
+    std::vector<uint8_t> bytes;
+};
+
+enum class ResimulationStatus {
+    Complete,
+    EnvelopeMismatch,
+    MalformedRecording,
+    Diverged,
+};
+
+struct ResimulationResult {
+    ResimulationStatus status = ResimulationStatus::MalformedRecording;
+    Tick tick = 0;
+    uint64_t stateHash = 0;
+    std::unique_ptr<SimulationHost> host;
 };
 
 class SimulationHost final {
@@ -319,6 +345,16 @@ public:
     ReplicaConnection connectReplica(CellBounds interest);
     ReplicaConnectStatus resnapshot(LoopbackReplica& replica);
 
+    /** Canonical semantic hash for a completed or inter-tick authority cut. */
+    uint64_t stateHash() const;
+    /** State baseline plus all accepted inter-tick admissions since construction. */
+    std::optional<SimulationRecording> recording() const;
+    static ResimulationResult resimulate(
+        Voxel::WorldResources& resources,
+        std::shared_ptr<const Voxel::WorldGenerator> generator,
+        const SimulationRecording& recording,
+        const std::vector<std::chrono::nanoseconds>& framePacing);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
@@ -333,6 +369,19 @@ private:
 
     SubmitResult submit(EditCommand command, bool privileged);
     void runTick();
+
+    std::vector<uint8_t> checkpointBytes(
+        uint64_t generation, uint64_t parentHash,
+        bool includeTimeDebt = true) const;
+    bool prepareRecordingBaseline();
+    static std::unique_ptr<SimulationHost> restoreCheckpointBytes(
+        Voxel::WorldResources& resources,
+        std::shared_ptr<const Voxel::WorldGenerator> generator,
+        const std::vector<uint8_t>& bytes,
+        uint64_t expectedGeneration,
+        uint64_t expectedParentHash);
+
+    friend class SimulationCheckpointManager;
 };
 
 } // namespace Rigel::Simulation

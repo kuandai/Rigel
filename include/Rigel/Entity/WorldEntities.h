@@ -24,6 +24,7 @@ public:
 
     void forEach(const std::function<void(Entity&)>& fn);
     void forEach(const std::function<void(const Entity&)>& fn) const;
+    std::vector<EntityId> sortedIds() const;
     /** Capture deterministic current-tick membership before a nonfailing commit. */
     void prepareTick();
     /** Tick the membership captured by prepareTick without allocating. */

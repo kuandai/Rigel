@@ -9,7 +9,9 @@
 #include "Rigel/Voxel/WorldResources.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstring>
 #include <glm/geometric.hpp>
 #include <limits>
 #include <stdexcept>
@@ -59,6 +61,219 @@ bool addBytes(size_t& total, size_t value) {
 bool addElements(size_t& total, size_t count, size_t elementSize) {
     if (count > std::numeric_limits<size_t>::max() / elementSize) return false;
     return addBytes(total, count * elementSize);
+}
+
+constexpr uint64_t CheckpointMagic = 0x524947454c435031ULL; // RIGELCP1
+constexpr uint64_t RecordingMagic = 0x524947454c525031ULL; // RIGELRP1
+constexpr uint32_t StateFormatVersion = 1;
+
+class Encoder {
+public:
+    explicit Encoder(size_t limit) : m_limit(limit) {}
+    void u8(uint8_t value) { bytes(&value, 1); }
+    void boolean(bool value) { u8(value ? 1 : 0); }
+    void u32(uint32_t value) {
+        for (int shift = 24; shift >= 0; shift -= 8) u8(value >> shift);
+    }
+    void i32(int32_t value) { u32(static_cast<uint32_t>(value)); }
+    void u64(uint64_t value) {
+        u32(static_cast<uint32_t>(value >> 32));
+        u32(static_cast<uint32_t>(value));
+    }
+    void floating(float value) { u32(std::bit_cast<uint32_t>(value)); }
+    void string(std::string_view value) {
+        if (value.size() > std::numeric_limits<uint32_t>::max()) {
+            throw std::length_error("checkpoint string exceeds format limit");
+        }
+        u32(static_cast<uint32_t>(value.size()));
+        bytes(reinterpret_cast<const uint8_t*>(value.data()), value.size());
+    }
+    void blob(const std::vector<uint8_t>& value) {
+        u64(value.size());
+        bytes(value.data(), value.size());
+    }
+    void bytes(const uint8_t* source, size_t size) {
+        if (size > m_limit - m_data.size()) {
+            throw std::length_error("checkpoint exceeds configured byte limit");
+        }
+        m_data.insert(m_data.end(), source, source + size);
+    }
+    std::vector<uint8_t> finish() { return std::move(m_data); }
+private:
+    size_t m_limit;
+    std::vector<uint8_t> m_data;
+};
+
+class Decoder {
+public:
+    explicit Decoder(const std::vector<uint8_t>& data) : m_data(data) {}
+    uint8_t u8() { require(1); return m_data[m_at++]; }
+    bool boolean() {
+        const uint8_t value = u8();
+        if (value > 1) throw std::runtime_error("invalid checkpoint boolean");
+        return value != 0;
+    }
+    uint32_t u32() {
+        uint32_t value = 0;
+        for (int i = 0; i < 4; ++i) value = (value << 8) | u8();
+        return value;
+    }
+    int32_t i32() { return static_cast<int32_t>(u32()); }
+    uint64_t u64() { return (uint64_t{u32()} << 32) | u32(); }
+    float floating() { return std::bit_cast<float>(u32()); }
+    std::string string(size_t limit) {
+        const size_t size = u32();
+        if (size > limit) throw std::runtime_error("checkpoint string exceeds limit");
+        require(size);
+        std::string result(
+            reinterpret_cast<const char*>(m_data.data() + m_at), size);
+        m_at += size;
+        return result;
+    }
+    std::vector<uint8_t> blob(size_t limit) {
+        const uint64_t size = u64();
+        if (size > limit) throw std::runtime_error("checkpoint blob exceeds limit");
+        require(static_cast<size_t>(size));
+        std::vector<uint8_t> result(
+            m_data.begin() + static_cast<std::ptrdiff_t>(m_at),
+            m_data.begin() + static_cast<std::ptrdiff_t>(m_at + size));
+        m_at += static_cast<size_t>(size);
+        return result;
+    }
+    bool done() const { return m_at == m_data.size(); }
+private:
+    void require(size_t size) const {
+        if (size > m_data.size() - m_at) {
+            throw std::runtime_error("truncated checkpoint");
+        }
+    }
+    const std::vector<uint8_t>& m_data;
+    size_t m_at = 0;
+};
+
+void encodeId(Encoder& out, const Entity::EntityId& id) {
+    out.u64(id.time); out.u32(id.random); out.u32(id.counter);
+}
+
+Entity::EntityId decodeId(Decoder& in) {
+    return {in.u64(), in.u32(), in.u32()};
+}
+
+void encodeVec3(Encoder& out, const glm::vec3& value) {
+    out.floating(value.x); out.floating(value.y); out.floating(value.z);
+}
+
+glm::vec3 decodeVec3(Decoder& in) {
+    return {in.floating(), in.floating(), in.floating()};
+}
+
+void encodeSemantic(Encoder& out, const SemanticBlockState& state) {
+    out.string(state.blockKey); out.u8(state.metadata); out.u8(state.lightLevel);
+}
+
+SemanticBlockState decodeSemantic(Decoder& in, size_t stringLimit) {
+    return {in.string(stringLimit), in.u8(), in.u8()};
+}
+
+void encodeEntityState(Encoder& out, const Entity::EntitySimulationState& state) {
+    encodeId(out, state.id); out.string(state.typeId);
+    encodeVec3(out, state.position); encodeVec3(out, state.velocity);
+    encodeVec3(out, state.acceleration); encodeVec3(out, state.viewDirection);
+    out.floating(state.gravityModifier); out.boolean(state.onGround);
+    out.boolean(state.collidedX); out.boolean(state.collidedY);
+    out.boolean(state.collidedZ); out.floating(state.floorFriction);
+    encodeVec3(out, state.localBounds.min); encodeVec3(out, state.localBounds.max);
+    out.u32(static_cast<uint32_t>(state.tags.size()));
+    for (const auto& tag : state.tags) out.string(tag);
+    out.string(state.modelIdentifier);
+    out.floating(state.renderTint.x); out.floating(state.renderTint.y);
+    out.floating(state.renderTint.z); out.floating(state.renderTint.w);
+}
+
+Entity::EntitySimulationState decodeEntityState(
+    Decoder& in, size_t tagLimit, size_t stringLimit
+) {
+    Entity::EntitySimulationState state;
+    state.id = decodeId(in); state.typeId = in.string(stringLimit);
+    state.position = decodeVec3(in); state.velocity = decodeVec3(in);
+    state.acceleration = decodeVec3(in); state.viewDirection = decodeVec3(in);
+    state.gravityModifier = in.floating(); state.onGround = in.boolean();
+    state.collidedX = in.boolean(); state.collidedY = in.boolean();
+    state.collidedZ = in.boolean(); state.floorFriction = in.floating();
+    state.localBounds = {decodeVec3(in), decodeVec3(in)};
+    const size_t tags = in.u32();
+    if (tags > tagLimit) throw std::runtime_error("checkpoint entity tag cap exceeded");
+    state.tags.reserve(tags);
+    for (size_t i = 0; i < tags; ++i) state.tags.push_back(in.string(stringLimit));
+    state.modelIdentifier = in.string(stringLimit);
+    state.renderTint = {in.floating(), in.floating(), in.floating(), in.floating()};
+    return state;
+}
+
+void encodeIntent(Encoder& out, const InteractionIntent& value) {
+    encodeVec3(out, value.origin); encodeVec3(out, value.direction);
+    out.floating(value.maxDistance);
+    out.i32(value.expectedTarget.x); out.i32(value.expectedTarget.y);
+    out.i32(value.expectedTarget.z); out.u8(static_cast<uint8_t>(value.expectedFace));
+    encodeSemantic(out, value.expectedTargetState);
+}
+
+void encodeCommand(Encoder& out, const EditCommand& command) {
+    out.u64(command.session); out.u64(command.command); encodeId(out, command.actor);
+    out.u32(command.world); out.string(command.zone);
+    out.bytes(command.content.bytes().data(), command.content.bytes().size());
+    out.u8(static_cast<uint8_t>(command.action));
+    out.boolean(command.interaction.has_value());
+    if (command.interaction) encodeIntent(out, *command.interaction);
+    out.u32(static_cast<uint32_t>(command.mutations.size()));
+    for (const auto& mutation : command.mutations) {
+        out.i32(mutation.address.x); out.i32(mutation.address.y);
+        out.i32(mutation.address.z); encodeSemantic(out, mutation.expected);
+        encodeSemantic(out, mutation.replacement);
+    }
+}
+
+ContentManifestId decodeManifest(Decoder& in) {
+    std::array<uint8_t, 32> bytes{};
+    for (auto& byte : bytes) byte = in.u8();
+    return ContentManifestId(bytes);
+}
+
+EditCommand decodeCommand(Decoder& in, size_t changes, size_t stringLimit) {
+    EditCommand command;
+    command.session = in.u64(); command.command = in.u64();
+    command.actor = decodeId(in); command.world = in.u32();
+    command.zone = in.string(stringLimit); command.content = decodeManifest(in);
+    command.action = static_cast<EditAction>(in.u8());
+    if (in.boolean()) {
+        InteractionIntent intent;
+        intent.origin = decodeVec3(in); intent.direction = decodeVec3(in);
+        intent.maxDistance = in.floating();
+        intent.expectedTarget = {in.i32(), in.i32(), in.i32()};
+        intent.expectedFace = static_cast<Voxel::Direction>(in.u8());
+        intent.expectedTargetState = decodeSemantic(in, stringLimit);
+        command.interaction = std::move(intent);
+    }
+    const size_t count = in.u32();
+    if (count > changes) throw std::runtime_error("checkpoint mutation cap exceeded");
+    command.mutations.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        CellMutation mutation;
+        mutation.address = {in.i32(), in.i32(), in.i32()};
+        mutation.expected = decodeSemantic(in, stringLimit);
+        mutation.replacement = decodeSemantic(in, stringLimit);
+        command.mutations.push_back(std::move(mutation));
+    }
+    return command;
+}
+
+uint64_t stableHash(const std::vector<uint8_t>& bytes) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (const uint8_t byte : bytes) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
 }
 
 bool validOutcomeStatus(CommandOutcomeStatus status) {
@@ -551,6 +766,18 @@ struct SimulationHost::Impl {
         bool pending = true;
     };
 
+    struct SpawnAdmission { Entity::EntitySimulationState state; };
+    struct DespawnAdmission { Entity::EntityId id; };
+    struct SessionAdmission {
+        SessionId session = 0;
+        Entity::EntityId actor;
+        ContentManifestId content;
+    };
+    struct CommandAdmission { EditCommand command; bool privileged = false; };
+    using Admission = std::variant<
+        SpawnAdmission, DespawnAdmission, SessionAdmission, CommandAdmission>;
+    struct RecordedAdmission { Tick afterTick = 0; Admission value; };
+
     std::unique_ptr<Voxel::World> world;
     std::vector<Receipt> receipts;
     std::vector<std::weak_ptr<LoopbackReplica::State>> replicas;
@@ -558,6 +785,10 @@ struct SimulationHost::Impl {
     SessionId sessionHighWater = 0;
     Entity::EntityId sessionActor;
     uint64_t nextAdmission = 1;
+    std::vector<uint8_t> recordingBaseline;
+    std::vector<RecordedAdmission> recordingAdmissions;
+    size_t recordingBytes = 0;
+    bool recordingGap = false;
 };
 
 SimulationHost::SimulationHost(
@@ -572,7 +803,8 @@ SimulationHost::SimulationHost(
         m_config.maxSessionReceipts == 0 || m_config.maxReplicaQueue == 0 ||
         m_config.maxEntities == 0 ||
         m_config.maxChangesPerCommand == 0 || m_config.maxCommandBytes == 0 ||
-        m_config.maxReplicaBytes == 0 ||
+        m_config.maxReplicaBytes == 0 || m_config.maxCheckpointBytes == 0 ||
+        m_config.maxReplayEvents == 0 || m_config.maxReplayBytes == 0 ||
         m_config.zone.capacity() > m_config.maxCommandBytes ||
         m_config.preloadedChunks.capacity() > m_config.maxPreloadedChunks ||
         !std::isfinite(m_config.maxInteractionDistance) ||
@@ -631,6 +863,471 @@ SimulationHost::SimulationHost(
 
     m_impl->receipts.reserve(m_config.maxSessionReceipts);
     m_impl->replicas.reserve(m_config.maxReplicas);
+    m_impl->recordingAdmissions.reserve(m_config.maxReplayEvents);
+}
+
+std::vector<uint8_t> SimulationHost::checkpointBytes(
+    uint64_t generation, uint64_t parentHash, bool includeTimeDebt
+) const {
+    Encoder out(m_config.maxCheckpointBytes);
+    out.u64(CheckpointMagic); out.u32(StateFormatVersion);
+    out.u64(generation); out.u64(parentHash);
+    out.bytes(m_content->identity().bytes().data(), 32);
+
+    std::vector<Voxel::ChunkCoord> chunks;
+    m_impl->world->chunkManager().forEachChunk(
+        [&](Voxel::ChunkCoord coord, const Voxel::Chunk&) { chunks.push_back(coord); });
+    std::sort(chunks.begin(), chunks.end());
+    if (chunks.size() > m_config.maxPreloadedChunks) {
+        throw std::runtime_error("checkpoint loaded chunk coverage exceeds cap");
+    }
+
+    out.u32(m_config.world); out.string(m_config.zone);
+    out.i32(m_config.domain.min.x); out.i32(m_config.domain.min.y);
+    out.i32(m_config.domain.min.z); out.i32(m_config.domain.max.x);
+    out.i32(m_config.domain.max.y); out.i32(m_config.domain.max.z);
+    out.u32(m_config.tickRate.numerator); out.u32(m_config.tickRate.denominator);
+    for (const size_t value : {
+             m_config.maxPreloadedChunks, m_config.maxSnapshotCells,
+             m_config.maxChangesPerCommand, m_config.maxPendingCommands,
+             m_config.maxSessionReceipts, m_config.maxReplicas,
+             m_config.maxReplicaQueue, m_config.maxEntities,
+             m_config.maxEntityTags, m_config.maxEntityTagBytes,
+             m_config.maxCommandBytes, m_config.maxContentBytes,
+             m_config.maxReplicaBytes, m_config.maxCatchUpTicks,
+             m_config.maxCheckpointBytes, m_config.maxReplayEvents,
+             m_config.maxReplayBytes}) out.u64(value);
+    out.floating(m_config.maxInteractionDistance);
+
+    out.u32(static_cast<uint32_t>(m_content->entries().size()));
+    std::vector<uint32_t> canonicalByLocal(m_content->entries().size());
+    for (size_t index = 0; index < m_content->entries().size(); ++index) {
+        const auto& entry = m_content->entries()[index];
+        out.string(entry.blockKey);
+        canonicalByLocal.at(entry.localId.type) = static_cast<uint32_t>(index);
+    }
+
+    out.u64(m_tick); out.u64(m_revision);
+    out.u64(includeTimeDebt ? m_timeDebt : 0);
+    out.u32(m_nextEntityId); out.u64(m_impl->nextAdmission);
+    out.u64(m_impl->currentSession); out.u64(m_impl->sessionHighWater);
+    encodeId(out, m_impl->sessionActor);
+
+    out.u32(static_cast<uint32_t>(m_impl->receipts.size()));
+    for (const auto& receipt : m_impl->receipts) {
+        encodeCommand(out, receipt.command); out.u64(receipt.admission);
+        out.boolean(receipt.pending); out.boolean(receipt.outcome.has_value());
+        if (receipt.outcome) {
+            const auto& value = *receipt.outcome;
+            out.u64(value.session); out.u64(value.command); out.u64(value.admission);
+            out.u64(value.tick); out.u64(value.revision);
+            out.u8(static_cast<uint8_t>(value.status));
+        }
+    }
+
+    const auto entityIds = m_impl->world->entities().sortedIds();
+    if (entityIds.size() > m_config.maxEntities) {
+        throw std::runtime_error("checkpoint entity cap exceeded");
+    }
+    out.u32(static_cast<uint32_t>(entityIds.size()));
+    for (const auto id : entityIds) {
+        const auto* entity = m_impl->world->entities().get(id);
+        if (!entity || !m_content->supportsEntity(*entity)) {
+            throw std::runtime_error("checkpoint contains unsupported entity meaning");
+        }
+        encodeEntityState(out, entity->simulationState());
+    }
+
+    out.u32(static_cast<uint32_t>(chunks.size()));
+    std::array<Voxel::BlockState, Voxel::Chunk::VOLUME> blocks{};
+    for (const auto coord : chunks) {
+        out.i32(coord.x); out.i32(coord.y); out.i32(coord.z);
+        const auto* chunk = m_impl->world->chunkManager().getChunk(coord);
+        chunk->copyBlocks(blocks);
+        for (const auto block : blocks) {
+            if (block.id.type >= canonicalByLocal.size() ||
+                !m_content->supportsState(m_content->semanticState(block))) {
+                throw std::runtime_error("checkpoint contains unsupported block state");
+            }
+            out.u32(canonicalByLocal[block.id.type]);
+            out.u8(block.metadata); out.u8(block.lightLevel);
+        }
+    }
+    return out.finish();
+}
+
+bool SimulationHost::prepareRecordingBaseline() {
+    if (m_impl->recordingGap) return false;
+    if (!m_impl->recordingBaseline.empty()) return true;
+    try {
+        m_impl->recordingBaseline = checkpointBytes(0, 0);
+        m_impl->recordingBytes = m_impl->recordingBaseline.size();
+        if (m_impl->recordingBytes > m_config.maxReplayBytes) {
+            throw std::length_error("recording baseline exceeds byte cap");
+        }
+        return true;
+    } catch (...) {
+        m_impl->recordingGap = true;
+        m_impl->recordingBaseline.clear();
+        return false;
+    }
+}
+
+std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
+    Voxel::WorldResources& resources,
+    std::shared_ptr<const Voxel::WorldGenerator> generator,
+    const std::vector<uint8_t>& bytes,
+    uint64_t expectedGeneration,
+    uint64_t expectedParentHash
+) {
+    if (bytes.size() > 256ULL * 1024 * 1024) {
+        throw std::runtime_error("checkpoint exceeds hard byte limit");
+    }
+    Decoder in(bytes);
+    if (in.u64() != CheckpointMagic || in.u32() != StateFormatVersion ||
+        in.u64() != expectedGeneration || in.u64() != expectedParentHash) {
+        throw std::runtime_error("checkpoint envelope mismatch");
+    }
+    const ContentManifestId savedContent = decodeManifest(in);
+    SimulationHostConfig config;
+    config.world = in.u32(); config.zone = in.string(64 * 1024);
+    config.domain.min = {in.i32(), in.i32(), in.i32()};
+    config.domain.max = {in.i32(), in.i32(), in.i32()};
+    config.tickRate = {in.u32(), in.u32()};
+    size_t* limits[] = {
+        &config.maxPreloadedChunks, &config.maxSnapshotCells,
+        &config.maxChangesPerCommand, &config.maxPendingCommands,
+        &config.maxSessionReceipts, &config.maxReplicas,
+        &config.maxReplicaQueue, &config.maxEntities, &config.maxEntityTags,
+        &config.maxEntityTagBytes, &config.maxCommandBytes,
+        &config.maxContentBytes, &config.maxReplicaBytes,
+        &config.maxCatchUpTicks, &config.maxCheckpointBytes,
+        &config.maxReplayEvents, &config.maxReplayBytes};
+    for (size_t* target : limits) {
+        const uint64_t value = in.u64();
+        if (value > std::numeric_limits<size_t>::max()) {
+            throw std::runtime_error("checkpoint configuration exceeds platform range");
+        }
+        *target = static_cast<size_t>(value);
+    }
+    config.maxInteractionDistance = in.floating();
+    if (bytes.size() > config.maxCheckpointBytes) {
+        throw std::runtime_error("checkpoint exceeds saved byte limit");
+    }
+
+    const size_t dictionaryCount = in.u32();
+    if (dictionaryCount == 0 || dictionaryCount > 65536) {
+        throw std::runtime_error("checkpoint dictionary count is invalid");
+    }
+    std::vector<std::string> dictionary;
+    dictionary.reserve(dictionaryCount);
+    for (size_t i = 0; i < dictionaryCount; ++i) {
+        dictionary.push_back(in.string(config.maxContentBytes));
+        if (i && dictionary[i - 1] >= dictionary[i]) {
+            throw std::runtime_error("checkpoint dictionary is not canonical");
+        }
+    }
+
+    const Tick tick = in.u64(); const Revision revision = in.u64();
+    const uint64_t timeDebt = in.u64(); const uint32_t nextEntityId = in.u32();
+    const uint64_t nextAdmission = in.u64();
+    const SessionId currentSession = in.u64();
+    const SessionId sessionHighWater = in.u64();
+    const Entity::EntityId sessionActor = decodeId(in);
+
+    struct SavedReceipt {
+        EditCommand command; uint64_t admission = 0; bool pending = false;
+        std::optional<CommandOutcome> outcome;
+    };
+    const size_t receiptCount = in.u32();
+    if (receiptCount > config.maxSessionReceipts) {
+        throw std::runtime_error("checkpoint receipt cap exceeded");
+    }
+    std::vector<SavedReceipt> receipts;
+    receipts.reserve(receiptCount);
+    for (size_t i = 0; i < receiptCount; ++i) {
+        SavedReceipt receipt;
+        receipt.command = decodeCommand(
+            in, config.maxChangesPerCommand, config.maxCommandBytes);
+        receipt.admission = in.u64(); receipt.pending = in.boolean();
+        if (in.boolean()) {
+            CommandOutcome value;
+            value.session = in.u64(); value.command = in.u64();
+            value.admission = in.u64(); value.tick = in.u64();
+            value.revision = in.u64();
+            value.status = static_cast<CommandOutcomeStatus>(in.u8());
+            if (!validOutcomeStatus(value.status)) {
+                throw std::runtime_error("checkpoint outcome is invalid");
+            }
+            receipt.outcome = value;
+        }
+        if (receipt.pending == receipt.outcome.has_value()) {
+            throw std::runtime_error("checkpoint receipt phase is invalid");
+        }
+        receipts.push_back(std::move(receipt));
+    }
+
+    const size_t entityCount = in.u32();
+    if (entityCount > config.maxEntities) {
+        throw std::runtime_error("checkpoint entity cap exceeded");
+    }
+    std::vector<Entity::EntitySimulationState> entities;
+    entities.reserve(entityCount);
+    for (size_t i = 0; i < entityCount; ++i) {
+        entities.push_back(decodeEntityState(
+            in, config.maxEntityTags, config.maxEntityTagBytes));
+        if (i && !(entities[i - 1].id < entities[i].id)) {
+            throw std::runtime_error("checkpoint entity order is invalid");
+        }
+    }
+
+    const size_t chunkCount = in.u32();
+    if (chunkCount > config.maxPreloadedChunks) {
+        throw std::runtime_error("checkpoint chunk cap exceeded");
+    }
+    struct SavedChunk {
+        Voxel::ChunkCoord coord;
+        std::array<Voxel::BlockState, Voxel::Chunk::VOLUME> blocks;
+    };
+    std::vector<SavedChunk> chunks;
+    chunks.reserve(chunkCount);
+    for (size_t i = 0; i < chunkCount; ++i) {
+        SavedChunk chunk{{in.i32(), in.i32(), in.i32()}, {}};
+        if (i && !(chunks.back().coord < chunk.coord)) {
+            throw std::runtime_error("checkpoint chunk order is invalid");
+        }
+        for (auto& block : chunk.blocks) {
+            const uint32_t semantic = in.u32();
+            if (semantic >= dictionary.size()) {
+                throw std::runtime_error("checkpoint block dictionary index is invalid");
+            }
+            block = {Voxel::BlockID{static_cast<uint16_t>(semantic)}, in.u8(), in.u8()};
+        }
+        chunks.push_back(std::move(chunk));
+    }
+    if (!in.done()) throw std::runtime_error("checkpoint has trailing bytes");
+
+    config.preloadedChunks.clear();
+    for (const auto& chunk : chunks) config.preloadedChunks.push_back(chunk.coord);
+    auto host = std::unique_ptr<SimulationHost>(
+        new SimulationHost(resources, std::move(generator), config));
+    host->m_content->requireIdentity(savedContent);
+    if (host->m_content->entries().size() != dictionary.size()) {
+        throw std::runtime_error("checkpoint semantic dictionary mismatch");
+    }
+    std::vector<Voxel::BlockID> localBySemantic(dictionary.size());
+    for (size_t i = 0; i < dictionary.size(); ++i) {
+        if (host->m_content->entries()[i].blockKey != dictionary[i]) {
+            throw std::runtime_error("checkpoint semantic dictionary mismatch");
+        }
+        localBySemantic[i] = host->m_content->entries()[i].localId;
+    }
+    for (auto& chunk : chunks) {
+        for (auto& block : chunk.blocks) {
+            block.id = localBySemantic.at(block.id.type);
+            if (!host->m_content->supportsState(host->m_content->semanticState(block))) {
+                throw std::runtime_error("checkpoint block state is unsupported");
+            }
+        }
+        host->m_impl->world->chunkManager().getChunk(chunk.coord)->copyFrom(
+            chunk.blocks, resources.registry());
+    }
+    for (const auto& state : entities) {
+        auto entity = std::make_unique<Entity::Entity>(state.typeId);
+        entity->restoreSimulationState(state);
+        if (!host->m_content->supportsEntity(*entity) ||
+            host->m_impl->world->entities().spawn(std::move(entity)) != state.id) {
+            throw std::runtime_error("checkpoint entity state is unsupported");
+        }
+    }
+    host->m_impl->receipts.clear();
+    for (auto& saved : receipts) {
+        host->m_impl->receipts.push_back({
+            std::move(saved.command), saved.admission,
+            saved.outcome, saved.pending});
+    }
+    host->m_tick = tick; host->m_revision = revision;
+    host->m_timeDebt = timeDebt; host->m_nextEntityId = nextEntityId;
+    host->m_impl->nextAdmission = nextAdmission;
+    host->m_impl->currentSession = currentSession;
+    host->m_impl->sessionHighWater = sessionHighWater;
+    host->m_impl->sessionActor = sessionActor;
+    host->m_impl->recordingBaseline.clear();
+    host->m_impl->recordingAdmissions.clear();
+    return host;
+}
+
+uint64_t SimulationHost::stateHash() const {
+    return stableHash(checkpointBytes(0, 0, false));
+}
+
+std::optional<SimulationRecording> SimulationHost::recording() const {
+    if (m_impl->recordingGap || m_impl->recordingBaseline.empty()) {
+        return std::nullopt;
+    }
+    try {
+        Encoder out(m_config.maxReplayBytes);
+        out.u64(RecordingMagic); out.u32(StateFormatVersion);
+        out.bytes(m_content->identity().bytes().data(), 32);
+        out.u64(m_tick); const uint64_t hash = stateHash(); out.u64(hash);
+        out.blob(m_impl->recordingBaseline);
+        out.u32(static_cast<uint32_t>(m_impl->recordingAdmissions.size()));
+        for (const auto& event : m_impl->recordingAdmissions) {
+            out.u64(event.afterTick);
+            std::visit([&](const auto& value) {
+                using T = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<T, Impl::SpawnAdmission>) {
+                    out.u8(1); encodeEntityState(out, value.state);
+                } else if constexpr (std::is_same_v<T, Impl::DespawnAdmission>) {
+                    out.u8(2); encodeId(out, value.id);
+                } else if constexpr (std::is_same_v<T, Impl::SessionAdmission>) {
+                    out.u8(3); out.u64(value.session); encodeId(out, value.actor);
+                    out.bytes(value.content.bytes().data(), 32);
+                } else {
+                    out.u8(4); out.boolean(value.privileged);
+                    encodeCommand(out, value.command);
+                }
+            }, event.value);
+        }
+        return SimulationRecording{
+            .content = m_content->identity(),
+            .finalTick = m_tick,
+            .finalHash = hash,
+            .bytes = out.finish(),
+        };
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+ResimulationResult SimulationHost::resimulate(
+    Voxel::WorldResources& resources,
+    std::shared_ptr<const Voxel::WorldGenerator> generator,
+    const SimulationRecording& recording,
+    const std::vector<std::chrono::nanoseconds>& framePacing
+) {
+    ResimulationResult result;
+    try {
+        if (recording.bytes.size() > 256ULL * 1024 * 1024 ||
+            framePacing.empty()) return result;
+        Decoder in(recording.bytes);
+        if (in.u64() != RecordingMagic || in.u32() != StateFormatVersion) {
+            return result;
+        }
+        const auto content = decodeManifest(in);
+        const Tick finalTick = in.u64(); const uint64_t finalHash = in.u64();
+        if (content != recording.content || finalTick != recording.finalTick ||
+            finalHash != recording.finalHash) return result;
+        auto baseline = in.blob(256ULL * 1024 * 1024);
+        auto host = restoreCheckpointBytes(resources, generator, baseline, 0, 0);
+        if (host->content().identity() != content) {
+            result.status = ResimulationStatus::EnvelopeMismatch;
+            return result;
+        }
+        const size_t count = in.u32();
+        if (count > host->m_config.maxReplayEvents) return result;
+        std::vector<Impl::RecordedAdmission> events;
+        events.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            const Tick afterTick = in.u64(); const uint8_t kind = in.u8();
+            if (afterTick > finalTick || (i && afterTick < events.back().afterTick)) {
+                return result;
+            }
+            if (kind == 1) {
+                events.push_back({afterTick, Impl::SpawnAdmission{
+                    decodeEntityState(in, host->m_config.maxEntityTags,
+                                      host->m_config.maxEntityTagBytes)}});
+            } else if (kind == 2) {
+                events.push_back({afterTick, Impl::DespawnAdmission{decodeId(in)}});
+            } else if (kind == 3) {
+                Impl::SessionAdmission value;
+                value.session = in.u64(); value.actor = decodeId(in);
+                value.content = decodeManifest(in);
+                events.push_back({afterTick, std::move(value)});
+            } else if (kind == 4) {
+                const bool privileged = in.boolean();
+                events.push_back({afterTick, Impl::CommandAdmission{
+                    decodeCommand(in, host->m_config.maxChangesPerCommand,
+                                  host->m_config.maxCommandBytes), privileged}});
+            } else {
+                return result;
+            }
+        }
+        if (!in.done()) return result;
+
+        size_t nextEvent = 0;
+        auto applyDue = [&]() -> bool {
+            while (nextEvent < events.size() &&
+                   events[nextEvent].afterTick == host->m_tick) {
+                bool accepted = std::visit([&](const auto& value) {
+                    using T = std::decay_t<decltype(value)>;
+                    if constexpr (std::is_same_v<T, Impl::SpawnAdmission>) {
+                        auto entity = std::make_unique<Entity::Entity>(value.state.typeId);
+                        entity->restoreSimulationState(value.state);
+                        entity->setId(Entity::EntityId::Null());
+                        return host->spawnEntity(std::move(entity)) == value.state.id;
+                    } else if constexpr (std::is_same_v<T, Impl::DespawnAdmission>) {
+                        return host->despawnEntity(value.id);
+                    } else if constexpr (std::is_same_v<T, Impl::SessionAdmission>) {
+                        return host->startSession(
+                            value.session, value.actor, value.content) ==
+                            SessionStartStatus::Started;
+                    } else {
+                        const SubmitResult submitted = value.privileged
+                            ? host->submit(value.command, host->authorityEditCapability())
+                            : host->submit(value.command);
+                        return submitted.status == SubmitStatus::Accepted;
+                    }
+                }, events[nextEvent].value);
+                if (!accepted) return false;
+                ++nextEvent;
+            }
+            return nextEvent == events.size() ||
+                events[nextEvent].afterTick > host->m_tick;
+        };
+
+        for (const auto elapsed : framePacing) {
+            if (elapsed.count() <= 0) return result;
+        }
+        size_t frame = 0;
+        while (host->m_tick < finalTick) {
+            const auto elapsed = framePacing[frame++ % framePacing.size()];
+            const uint64_t elapsedNs = static_cast<uint64_t>(elapsed.count());
+            if (elapsedNs > (std::numeric_limits<uint64_t>::max() -
+                    host->m_timeDebt) / host->m_config.tickRate.numerator) {
+                return result;
+            }
+            host->m_timeDebt += elapsedNs * host->m_config.tickRate.numerator;
+            const uint64_t threshold =
+                uint64_t{host->m_config.tickRate.denominator} * 1'000'000'000ULL;
+            while (host->m_timeDebt >= threshold && host->m_tick < finalTick) {
+                if (!applyDue()) {
+                    result.status = ResimulationStatus::Diverged;
+                    return result;
+                }
+                host->runTick();
+                host->m_timeDebt -= threshold;
+            }
+            if (frame > 10'000'000) return result;
+        }
+        if (!applyDue() || nextEvent != events.size()) {
+            result.status = ResimulationStatus::Diverged;
+            return result;
+        }
+        result.tick = host->tick(); result.stateHash = host->stateHash();
+        if (result.stateHash != finalHash) {
+            result.status = ResimulationStatus::Diverged;
+            return result;
+        }
+        result.status = ResimulationStatus::Complete;
+        result.host = std::move(host);
+        return result;
+    } catch (const ContentManifestError&) {
+        result.status = ResimulationStatus::EnvelopeMismatch;
+        return result;
+    } catch (...) {
+        return result;
+    }
 }
 
 SimulationHost::~SimulationHost() = default;
@@ -676,11 +1373,35 @@ Entity::EntityId SimulationHost::spawnEntity(
         !finite(entity->viewDirection())) {
         return Entity::EntityId::Null();
     }
+    prepareRecordingBaseline();
     entity->setId({1, m_config.world, m_nextEntityId++});
+    if (!m_impl->recordingGap) {
+        try {
+            if (m_impl->recordingAdmissions.size() >= m_config.maxReplayEvents) {
+                throw std::length_error("recording event cap exceeded");
+            }
+            m_impl->recordingAdmissions.push_back({
+                m_tick, Impl::SpawnAdmission{entity->simulationState()}});
+        } catch (...) {
+            m_impl->recordingGap = true;
+            m_impl->recordingAdmissions.clear();
+        }
+    }
     return m_impl->world->entities().spawn(std::move(entity));
 }
 
 bool SimulationHost::despawnEntity(Entity::EntityId entity) {
+    if (!m_impl->world->entities().get(entity)) return false;
+    prepareRecordingBaseline();
+    if (!m_impl->recordingGap) {
+        if (m_impl->recordingAdmissions.size() >= m_config.maxReplayEvents) {
+            m_impl->recordingGap = true;
+            m_impl->recordingAdmissions.clear();
+        } else {
+            m_impl->recordingAdmissions.push_back({
+                m_tick, Impl::DespawnAdmission{entity}});
+        }
+    }
     return m_impl->world->entities().despawn(entity);
 }
 
@@ -699,6 +1420,19 @@ SessionStartStatus SimulationHost::startSession(
     }
     if (actor.isNull() || !m_impl->world->entities().get(actor)) {
         return SessionStartStatus::ActorUnavailable;
+    }
+    prepareRecordingBaseline();
+    if (!m_impl->recordingGap) {
+        try {
+            if (m_impl->recordingAdmissions.size() >= m_config.maxReplayEvents) {
+                throw std::length_error("recording event cap exceeded");
+            }
+            m_impl->recordingAdmissions.push_back({
+                m_tick, Impl::SessionAdmission{session, actor, content}});
+        } catch (...) {
+            m_impl->recordingGap = true;
+            m_impl->recordingAdmissions.clear();
+        }
     }
     m_impl->receipts.clear();
     m_impl->currentSession = session;
@@ -796,6 +1530,19 @@ SubmitResult SimulationHost::submit(EditCommand command, bool privileged) {
     const auto retainedBytes = commandRetainedBytes(command);
     if (!retainedBytes || *retainedBytes > m_config.maxCommandBytes) {
         return {.status = SubmitStatus::CommandCapacity};
+    }
+    prepareRecordingBaseline();
+    if (!m_impl->recordingGap) {
+        try {
+            if (m_impl->recordingAdmissions.size() >= m_config.maxReplayEvents) {
+                throw std::length_error("recording event cap exceeded");
+            }
+            m_impl->recordingAdmissions.push_back({
+                m_tick, Impl::CommandAdmission{command, privileged}});
+        } catch (...) {
+            m_impl->recordingGap = true;
+            m_impl->recordingAdmissions.clear();
+        }
     }
     m_impl->receipts.push_back({
         .command = std::move(command),

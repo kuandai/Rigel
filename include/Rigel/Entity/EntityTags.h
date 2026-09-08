@@ -1,11 +1,14 @@
 #pragma once
 
+#include <algorithm>
+#include <algorithm>
 #include <cstddef>
 #include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <vector>
 
 namespace Rigel::Entity {
 
@@ -25,6 +28,11 @@ public:
 
     void clear() { m_tags.clear(); }
     size_t size() const { return m_tags.size(); }
+    std::vector<std::string> sorted() const {
+        std::vector<std::string> result(m_tags.begin(), m_tags.end());
+        std::sort(result.begin(), result.end());
+        return result;
+    }
     std::optional<size_t> retainedStorageBytes() const {
         if (m_tags.bucket_count() >
             std::numeric_limits<size_t>::max() / sizeof(void*)) {

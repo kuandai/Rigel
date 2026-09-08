@@ -45,6 +45,41 @@ bool overlap(const Entity::Aabb& actor, const Voxel::BlockCollisionBox& block) {
     return true;
 }
 
+bool finite(const glm::vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+        std::isfinite(value.z);
+}
+
+bool addBytes(size_t& total, size_t value) {
+    if (value > std::numeric_limits<size_t>::max() - total) return false;
+    total += value;
+    return true;
+}
+
+bool addElements(size_t& total, size_t count, size_t elementSize) {
+    if (count > std::numeric_limits<size_t>::max() / elementSize) return false;
+    return addBytes(total, count * elementSize);
+}
+
+std::optional<size_t> commandRetainedBytes(const EditCommand& command) {
+    size_t total = sizeof(EditCommand);
+    if (!addBytes(total, command.zone.capacity()) ||
+        !addElements(total, command.mutations.capacity(), sizeof(CellMutation))) {
+        return std::nullopt;
+    }
+    for (const auto& mutation : command.mutations) {
+        if (!addBytes(total, mutation.expected.blockKey.capacity()) ||
+            !addBytes(total, mutation.replacement.blockKey.capacity())) {
+            return std::nullopt;
+        }
+    }
+    if (command.interaction &&
+        !addBytes(total, command.interaction->expectedTargetState.blockKey.capacity())) {
+        return std::nullopt;
+    }
+    return total;
+}
+
 Voxel::BlockCollisionBox translated(
     const Voxel::BlockCollisionBox& box,
     CellAddress address
@@ -87,39 +122,118 @@ struct LoopbackReplica::State {
     size_t queueLimit = 0;
     size_t cellLimit = 0;
     size_t changeLimit = 0;
+    size_t byteLimit = 0;
+    size_t queueBytes = 0;
+    size_t cellBytes = 0;
     std::vector<std::shared_ptr<const PublicationMessage>> queue;
     std::vector<PublishedCell> cells;
     Revision revision = 0;
     Tick tick = 0;
     bool hasBaseline = false;
     bool gap = false;
+
+    static std::optional<size_t> retainedBytes(
+        const std::vector<PublishedCell>& value
+    ) {
+        size_t total = 0;
+        if (!addElements(total, value.capacity(), sizeof(PublishedCell))) {
+            return std::nullopt;
+        }
+        for (const auto& cell : value) {
+            if (!addBytes(total, cell.state.blockKey.capacity())) {
+                return std::nullopt;
+            }
+        }
+        return total;
+    }
+
+    static std::optional<size_t> retainedBytes(
+        const PublicationMessage& message
+    ) {
+        size_t total = sizeof(PublicationMessage);
+        const bool valid = std::visit([&](const auto& value) {
+            if (!addBytes(total, value.zone.capacity())) return false;
+            using T = std::decay_t<decltype(value)>;
+            const auto& cells = [&]() -> const std::vector<PublishedCell>& {
+                if constexpr (std::is_same_v<T, WorldBaseline>) {
+                    return value.cells;
+                } else {
+                    return value.changes;
+                }
+            }();
+            const auto cellBytes = retainedBytes(cells);
+            if (!cellBytes || !addBytes(total, *cellBytes)) return false;
+            if constexpr (std::is_same_v<T, WorldChangeBatch>) {
+                if (!addElements(
+                        total, value.outcomes.capacity(), sizeof(CommandOutcome))) {
+                    return false;
+                }
+            }
+            return true;
+        }, message);
+        return valid ? std::optional<size_t>(total) : std::nullopt;
+    }
+
+    void clearQueue() {
+        queue.clear();
+        queueBytes = 0;
+    }
+
+    void markGap() {
+        gap = true;
+        clearQueue();
+        cells.clear();
+        cellBytes = 0;
+        hasBaseline = false;
+    }
+
+    ReplicaAcceptStatus enqueue(
+        std::shared_ptr<const PublicationMessage> message
+    ) {
+        if (!message) return ReplicaAcceptStatus::RejectedOversized;
+        const bool structurallyOversized = std::visit([&](const auto& value) {
+            using T = std::decay_t<decltype(value)>;
+            const auto& cells = [&]() -> const std::vector<PublishedCell>& {
+                if constexpr (std::is_same_v<T, WorldBaseline>) {
+                    return value.cells;
+                } else {
+                    return value.changes;
+                }
+            }();
+            if (cells.size() > (std::is_same_v<T, WorldBaseline>
+                                    ? cellLimit : changeLimit)) {
+                return true;
+            }
+            for (const auto& cell : cells) {
+                if (!content->contains(cell.state.blockKey)) return true;
+            }
+            if constexpr (std::is_same_v<T, WorldChangeBatch>) {
+                return value.outcomes.size() > changeLimit;
+            }
+            return false;
+        }, *message);
+        const auto bytes = retainedBytes(*message);
+        size_t aggregate = cellBytes;
+        if (structurallyOversized || !bytes || *bytes > byteLimit ||
+            !addBytes(aggregate, queueBytes) ||
+            !addBytes(aggregate, bytes.value_or(0)) || aggregate > byteLimit) {
+            markGap();
+            return ReplicaAcceptStatus::RejectedOversized;
+        }
+        if (gap || queue.size() >= queueLimit) {
+            markGap();
+            return ReplicaAcceptStatus::QueueFull;
+        }
+        queue.push_back(std::move(message));
+        queueBytes += *bytes;
+        return ReplicaAcceptStatus::Queued;
+    }
 };
 
 ReplicaAcceptStatus LoopbackReplica::accept(
     std::shared_ptr<const PublicationMessage> message
 ) {
-    if (!message) return ReplicaAcceptStatus::RejectedOversized;
-    const bool oversized = std::visit([&](const auto& value) {
-        using T = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<T, WorldBaseline>) {
-            return value.cells.size() > m_state->cellLimit;
-        } else {
-            return value.changes.size() > m_state->changeLimit ||
-                value.outcomes.size() > m_state->changeLimit;
-        }
-    }, *message);
-    if (oversized) {
-        m_state->gap = true;
-        m_state->queue.clear();
-        return ReplicaAcceptStatus::RejectedOversized;
-    }
-    if (m_state->gap || m_state->queue.size() >= m_state->queueLimit) {
-        m_state->gap = true;
-        m_state->queue.clear();
-        return ReplicaAcceptStatus::QueueFull;
-    }
-    m_state->queue.push_back(std::move(message));
-    return ReplicaAcceptStatus::Queued;
+    return m_state->enqueue(std::move(message));
 }
 
 ReplicaPumpStatus LoopbackReplica::pumpOne() {
@@ -127,13 +241,19 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
     if (m_state->queue.empty()) return ReplicaPumpStatus::Idle;
     auto message = std::move(m_state->queue.front());
     m_state->queue.erase(m_state->queue.begin());
+    const auto messageBytes = LoopbackReplica::State::retainedBytes(*message);
+    if (!messageBytes || *messageBytes > m_state->queueBytes) {
+        m_state->markGap();
+        return ReplicaPumpStatus::NeedsResnapshot;
+    }
+    m_state->queueBytes -= *messageBytes;
 
     auto fail = [&] {
-        m_state->gap = true;
-        m_state->queue.clear();
+        m_state->markGap();
         return ReplicaPumpStatus::NeedsResnapshot;
     };
-    return std::visit([&](const auto& value) -> ReplicaPumpStatus {
+    try {
+        return std::visit([&](const auto& value) -> ReplicaPumpStatus {
         using T = std::decay_t<decltype(value)>;
         if (value.content != m_state->content->identity() ||
             value.world != m_state->world || value.zone != m_state->zone ||
@@ -143,6 +263,14 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             const auto volume = value.bounds.volume(m_state->cellLimit);
             if (!volume || value.bounds != m_state->interest ||
                 value.cells.size() != *volume) return fail();
+            const auto projectedBytes =
+                LoopbackReplica::State::retainedBytes(value.cells);
+            size_t projectedTransient = m_state->cellBytes;
+            if (!projectedBytes ||
+                !addBytes(projectedTransient, m_state->queueBytes) ||
+                !addBytes(projectedTransient, *messageBytes) ||
+                !addBytes(projectedTransient, *projectedBytes) ||
+                projectedTransient > m_state->byteLimit) return fail();
             std::vector<PublishedCell> next = value.cells;
             std::sort(next.begin(), next.end(), [](const auto& a, const auto& b) {
                 return a.address < b.address;
@@ -160,7 +288,14 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             if (m_state->hasBaseline && value.revision < m_state->revision) {
                 return fail();
             }
+            const auto nextBytes = LoopbackReplica::State::retainedBytes(next);
+            size_t transient = m_state->cellBytes;
+            if (!nextBytes || !addBytes(transient, m_state->queueBytes) ||
+                !addBytes(transient, *messageBytes) ||
+                !addBytes(transient, *nextBytes) ||
+                transient > m_state->byteLimit) return fail();
             m_state->cells.swap(next);
+            m_state->cellBytes = *nextBytes;
             m_state->revision = value.revision;
             m_state->tick = value.tick;
             m_state->hasBaseline = true;
@@ -173,6 +308,11 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             if (value.baseRevision != m_state->revision ||
                 value.revision != value.baseRevision + 1 ||
                 value.tick < m_state->tick) return fail();
+            size_t projectedTransient = m_state->cellBytes;
+            if (!addBytes(projectedTransient, m_state->queueBytes) ||
+                !addBytes(projectedTransient, *messageBytes) ||
+                !addBytes(projectedTransient, m_state->cellBytes) ||
+                projectedTransient > m_state->byteLimit) return fail();
             std::vector<PublishedCell> next = m_state->cells;
             std::vector<CellAddress> seen;
             seen.reserve(value.changes.size());
@@ -193,12 +333,22 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
                 }
                 found->state = change.state;
             }
+            const auto nextBytes = LoopbackReplica::State::retainedBytes(next);
+            size_t transient = m_state->cellBytes;
+            if (!nextBytes || !addBytes(transient, m_state->queueBytes) ||
+                !addBytes(transient, *messageBytes) ||
+                !addBytes(transient, *nextBytes) ||
+                transient > m_state->byteLimit) return fail();
             m_state->cells.swap(next);
+            m_state->cellBytes = *nextBytes;
             m_state->revision = value.revision;
             m_state->tick = value.tick;
             return ReplicaPumpStatus::Applied;
         }
-    }, *message);
+        }, *message);
+    } catch (...) {
+        return fail();
+    }
 }
 
 ExactBlockRead LoopbackReplica::read(CellAddress address) const {
@@ -235,7 +385,6 @@ struct SimulationHost::Impl {
     std::unique_ptr<Voxel::World> world;
     std::vector<Receipt> receipts;
     std::vector<std::weak_ptr<LoopbackReplica::State>> replicas;
-    std::vector<std::shared_ptr<const PublicationMessage>> publications;
     SessionId currentSession = 0;
     SessionId sessionHighWater = 0;
     Entity::EntityId sessionActor;
@@ -251,8 +400,11 @@ SimulationHost::SimulationHost(
         m_config.zone.empty() || !m_config.domain.volume(m_config.maxSnapshotCells) ||
         m_config.tickRate.numerator == 0 || m_config.tickRate.denominator == 0 ||
         m_config.maxCatchUpTicks == 0 || m_config.maxPendingCommands == 0 ||
-        m_config.maxSessionReceipts == 0 || m_config.maxPublicationBatches == 0 ||
-        m_config.maxReplicaQueue == 0 || m_config.maxChangesPerCommand == 0) {
+        m_config.maxSessionReceipts == 0 || m_config.maxReplicaQueue == 0 ||
+        m_config.maxChangesPerCommand == 0 || m_config.maxCommandBytes == 0 ||
+        m_config.maxReplicaBytes == 0 ||
+        !std::isfinite(m_config.maxInteractionDistance) ||
+        m_config.maxInteractionDistance <= 0.0f) {
         throw std::invalid_argument("invalid bounded simulation host configuration");
     }
     const uint64_t threshold =
@@ -306,7 +458,6 @@ SimulationHost::SimulationHost(
 
     m_impl->receipts.reserve(m_config.maxSessionReceipts);
     m_impl->replicas.reserve(m_config.maxReplicas);
-    m_impl->publications.reserve(m_config.maxPublicationBatches);
 }
 
 SimulationHost::~SimulationHost() = default;
@@ -335,10 +486,12 @@ ExactBlockRead SimulationHost::read(CellAddress address) const {
 Entity::EntityId SimulationHost::spawnEntity(
     std::unique_ptr<Entity::Entity> entity
 ) {
-    if (!entity || m_nextEntityId == 0) return Entity::EntityId::Null();
-    if (entity->id().isNull()) {
-        entity->setId({1, m_config.world, m_nextEntityId++});
+    if (!entity || m_nextEntityId == 0 || !entity->id().isNull() ||
+        !m_content->supportsEntity(*entity) || !finite(entity->position()) ||
+        !finite(entity->velocity()) || !finite(entity->viewDirection())) {
+        return Entity::EntityId::Null();
     }
+    entity->setId({1, m_config.world, m_nextEntityId++});
     return m_impl->world->entities().spawn(std::move(entity));
 }
 
@@ -366,8 +519,29 @@ SessionStartStatus SimulationHost::startSession(
 }
 
 SubmitResult SimulationHost::submit(EditCommand command) {
+    return submit(std::move(command), false);
+}
+
+SubmitResult SimulationHost::submit(
+    EditCommand command,
+    const AuthorityEditCapability& capability
+) {
+    if (capability.m_owner.lock() != m_authorityEditKey) {
+        return {.status = SubmitStatus::InvalidRequest};
+    }
+    return submit(std::move(command), true);
+}
+
+SubmitResult SimulationHost::submit(EditCommand command, bool privileged) {
     if (command.session != m_impl->currentSession || command.session == 0) {
         return {.status = SubmitStatus::OldSession};
+    }
+    const bool authorizedAction = privileged
+        ? command.action == EditAction::Atomic
+        : (command.action == EditAction::Remove ||
+           command.action == EditAction::Place);
+    if (!authorizedAction) {
+        return {.status = SubmitStatus::InvalidRequest};
     }
     const auto duplicate = std::find_if(
         m_impl->receipts.begin(), m_impl->receipts.end(),
@@ -395,6 +569,12 @@ SubmitResult SimulationHost::submit(EditCommand command) {
         (command.action != EditAction::Atomic && command.mutations.size() != 1)) {
         return {.status = SubmitStatus::InvalidRequest};
     }
+    if (command.interaction &&
+        (!finite(command.interaction->origin) ||
+         !finite(command.interaction->direction) ||
+         !std::isfinite(command.interaction->maxDistance))) {
+        return {.status = SubmitStatus::InvalidRequest};
+    }
     for (const auto& mutation : command.mutations) {
         if (!m_content->contains(mutation.expected.blockKey) ||
             !m_content->contains(mutation.replacement.blockKey)) {
@@ -408,6 +588,10 @@ SubmitResult SimulationHost::submit(EditCommand command) {
         m_impl->receipts.begin(), m_impl->receipts.end(),
         [](const auto& receipt) { return receipt.pending; }));
     if (pending >= m_config.maxPendingCommands) {
+        return {.status = SubmitStatus::CommandCapacity};
+    }
+    const auto retainedBytes = commandRetainedBytes(command);
+    if (!retainedBytes || *retainedBytes > m_config.maxCommandBytes) {
         return {.status = SubmitStatus::CommandCapacity};
     }
     m_impl->receipts.push_back({
@@ -485,15 +669,28 @@ void SimulationHost::runTick() {
 
         if (outcome.status == CommandOutcomeStatus::Applied && command.interaction) {
             const InteractionIntent& intent = *command.interaction;
+            const Entity::Entity* actor =
+                m_impl->world->entities().get(command.actor);
             const float directionLength = glm::length(intent.direction);
-            bool validRay = std::isfinite(directionLength) &&
+            constexpr float OriginTolerance = 0.0001f;
+            bool validRay = actor && finite(actor->position()) &&
+                finite(intent.origin) && finite(intent.direction) &&
+                std::abs(intent.origin.x - actor->position().x) <= OriginTolerance &&
+                std::abs(intent.origin.y - actor->position().y) <= OriginTolerance &&
+                std::abs(intent.origin.z - actor->position().z) <= OriginTolerance &&
+                std::isfinite(directionLength) &&
                 directionLength > 0.0f && std::isfinite(intent.maxDistance) &&
-                intent.maxDistance >= 0.0f;
+                intent.maxDistance >= 0.0f &&
+                intent.maxDistance <= m_config.maxInteractionDistance;
             std::optional<Voxel::BlockTarget> target;
             if (validRay) {
                 const glm::vec3 direction = intent.direction / directionLength;
                 const glm::vec3 endpoint =
                     intent.origin + direction * intent.maxDistance;
+                if (!finite(direction) || !finite(endpoint)) {
+                    validRay = false;
+                    outcome.status = CommandOutcomeStatus::InvalidRequest;
+                }
                 CellBounds coverage;
                 const auto& extents =
                     m_impl->world->blockRegistry().modelExtents();
@@ -563,7 +760,8 @@ void SimulationHost::runTick() {
                         }
                     }
                 }
-            } else {
+            }
+            if (!validRay && outcome.status == CommandOutcomeStatus::Applied) {
                 outcome.status = CommandOutcomeStatus::InvalidRequest;
             }
 
@@ -676,6 +874,8 @@ void SimulationHost::runTick() {
 
     auto message = std::make_shared<const PublicationMessage>(std::move(batch));
 
+    m_impl->world->entities().prepareTick();
+
     if (receipt && outcome.status == CommandOutcomeStatus::Applied) {
         for (const auto& [address, state] : commits) {
             auto* chunk = m_impl->world->chunkManager().getChunk(
@@ -689,7 +889,7 @@ void SimulationHost::runTick() {
         }
     }
 
-    m_impl->world->tickEntities(
+    m_impl->world->entities().tickPrepared(
         static_cast<float>(m_config.tickRate.denominator) /
         static_cast<float>(m_config.tickRate.numerator));
     m_tick = nextTick;
@@ -699,19 +899,10 @@ void SimulationHost::runTick() {
         receipt->pending = false;
     }
 
-    if (m_impl->publications.size() == m_config.maxPublicationBatches) {
-        m_impl->publications.erase(m_impl->publications.begin());
-    }
-    m_impl->publications.push_back(message);
     for (auto iterator = m_impl->replicas.begin();
          iterator != m_impl->replicas.end();) {
         if (auto state = iterator->lock()) {
-            if (state->gap || state->queue.size() >= state->queueLimit) {
-                state->gap = true;
-                state->queue.clear();
-            } else {
-                state->queue.push_back(message);
-            }
+            state->enqueue(message);
             ++iterator;
         } else {
             iterator = m_impl->replicas.erase(iterator);
@@ -763,10 +954,13 @@ ReplicaConnection SimulationHost::connectReplica(CellBounds interest) {
     state->queueLimit = m_config.maxReplicaQueue;
     state->cellLimit = m_config.maxSnapshotCells;
     state->changeLimit = m_config.maxChangesPerCommand;
+    state->byteLimit = m_config.maxReplicaBytes;
     state->queue.reserve(m_config.maxReplicaQueue);
     state->cells.reserve(baseline.cells.size());
-    state->queue.push_back(std::make_shared<const PublicationMessage>(
-        std::move(baseline)));
+    if (state->enqueue(std::make_shared<const PublicationMessage>(
+            std::move(baseline))) != ReplicaAcceptStatus::Queued) {
+        return {.status = ReplicaConnectStatus::Capacity};
+    }
     m_impl->replicas.push_back(state);
     return {
         .status = ReplicaConnectStatus::Connected,
@@ -783,6 +977,8 @@ ReplicaConnectStatus SimulationHost::resnapshot(LoopbackReplica& replica) {
             return locked && locked == state;
         });
     if (!connected) return ReplicaConnectStatus::InvalidInterest;
+
+    state->markGap();
 
     WorldBaseline baseline{
         .content = m_content->identity(),
@@ -807,10 +1003,10 @@ ReplicaConnectStatus SimulationHost::resnapshot(LoopbackReplica& replica) {
         }
     }
     auto message = std::make_shared<const PublicationMessage>(std::move(baseline));
-    state->queue.clear();
     state->gap = false;
-    state->hasBaseline = false;
-    state->queue.push_back(std::move(message));
+    if (state->enqueue(std::move(message)) != ReplicaAcceptStatus::Queued) {
+        return ReplicaConnectStatus::Capacity;
+    }
     return ReplicaConnectStatus::Connected;
 }
 

@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -68,6 +69,21 @@ enum class EditAction {
     Remove,
     Place,
     Atomic,
+};
+
+class SimulationHost;
+
+/** Explicit host-bound authority required for multi-cell edits. */
+class AuthorityEditCapability final {
+public:
+    AuthorityEditCapability(const AuthorityEditCapability&) = default;
+
+private:
+    explicit AuthorityEditCapability(std::weak_ptr<const uint8_t> owner)
+        : m_owner(std::move(owner)) {}
+
+    std::weak_ptr<const uint8_t> m_owner;
+    friend class SimulationHost;
 };
 
 struct InteractionIntent {
@@ -249,9 +265,11 @@ struct SimulationHostConfig {
     size_t maxChangesPerCommand = 8;
     size_t maxPendingCommands = 64;
     size_t maxSessionReceipts = 256;
-    size_t maxPublicationBatches = 128;
     size_t maxReplicas = 8;
     size_t maxReplicaQueue = 32;
+    size_t maxCommandBytes = 64 * 1024;
+    size_t maxReplicaBytes = 64 * 1024 * 1024;
+    float maxInteractionDistance = 8.0f;
     size_t maxCatchUpTicks = 8;
 };
 
@@ -282,7 +300,13 @@ public:
         SessionId session,
         Entity::EntityId actor,
         const ContentManifestId& content);
+    AuthorityEditCapability authorityEditCapability() const {
+        return AuthorityEditCapability(m_authorityEditKey);
+    }
     SubmitResult submit(EditCommand command);
+    SubmitResult submit(
+        EditCommand command,
+        const AuthorityEditCapability& capability);
     AdvanceResult advance(std::chrono::nanoseconds elapsed);
 
     ReplicaConnection connectReplica(CellBounds interest);
@@ -291,6 +315,8 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
+    std::shared_ptr<const uint8_t> m_authorityEditKey =
+        std::make_shared<const uint8_t>(0);
     std::shared_ptr<const ContentDictionary> m_content;
     SimulationHostConfig m_config;
     Tick m_tick = 0;
@@ -298,6 +324,7 @@ private:
     uint64_t m_timeDebt = 0;
     uint32_t m_nextEntityId = 1;
 
+    SubmitResult submit(EditCommand command, bool privileged);
     void runTick();
 };
 

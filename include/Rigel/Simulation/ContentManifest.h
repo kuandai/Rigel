@@ -15,6 +15,10 @@ class BlockRegistry;
 class WorldGenerator;
 }
 
+namespace Rigel::Entity {
+class Entity;
+}
+
 namespace Rigel::Simulation {
 
 /** Stable identity for every simulation-relevant content record. */
@@ -78,6 +82,8 @@ public:
     SemanticBlockState semanticState(Voxel::BlockState state) const;
     Voxel::BlockState localState(const SemanticBlockState& state) const;
     bool contains(std::string_view stableKey) const;
+    /** True only for the built-in entity rule and hitbox bound by this manifest. */
+    bool supportsEntity(const Entity::Entity& entity) const;
     void requireIdentity(const ContentManifestId& identity) const;
 
 private:

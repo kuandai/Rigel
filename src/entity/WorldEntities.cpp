@@ -3,6 +3,7 @@
 #include "Rigel/Voxel/World.h"
 
 #include <algorithm>
+#include <stdexcept>
 #include <vector>
 
 namespace Rigel::Entity {
@@ -20,7 +21,6 @@ EntityId WorldEntities::spawn(std::unique_ptr<Entity> entity) {
         id = EntityId::New();
         entity->setId(id);
     }
-    m_tickIds.reserve(m_entities.size() + 1);
     m_pendingDespawns.reserve(m_entities.size() + 1);
     auto [it, inserted] = m_entities.emplace(id, std::move(entity));
     if (!inserted) {
@@ -73,33 +73,56 @@ void WorldEntities::forEach(const std::function<void(const Entity&)>& fn) const 
     }
 }
 
-void WorldEntities::tick(float dt) {
-    if (!m_world) {
-        return;
+void WorldEntities::prepareTick() {
+    if (m_isTicking) {
+        throw std::logic_error("cannot prepare entity tick during update");
     }
-    m_isTicking = true;
     m_tickIds.clear();
-    for (auto& [id, _] : m_entities) {
+    m_tickIds.reserve(m_entities.size());
+    m_pendingDespawns.reserve(m_entities.size());
+    for (const auto& [id, _] : m_entities) {
         m_tickIds.push_back(id);
     }
     std::sort(m_tickIds.begin(), m_tickIds.end());
-    for (const EntityId& id : m_tickIds) {
-        auto it = m_entities.find(id);
-        if (it == m_entities.end()) {
-            continue;
-        }
-        Entity* entity = it->second.get();
-        entity->update(*m_world, dt);
-    }
-    m_isTicking = false;
+    m_tickPrepared = true;
+}
 
-    if (!m_pendingDespawns.empty()) {
-        std::vector<EntityId> pending = std::move(m_pendingDespawns);
-        m_pendingDespawns.clear();
-        for (const EntityId& id : pending) {
-            despawn(id);
-        }
+void WorldEntities::tickPrepared(float dt) {
+    if (!m_world || !m_tickPrepared) {
+        return;
     }
+    m_tickPrepared = false;
+
+    auto finishTick = [&] {
+        m_isTicking = false;
+        if (!m_pendingDespawns.empty()) {
+            std::vector<EntityId> pending = std::move(m_pendingDespawns);
+            m_pendingDespawns.clear();
+            for (const EntityId& id : pending) {
+                despawn(id);
+            }
+        }
+    };
+
+    m_isTicking = true;
+    try {
+        for (const EntityId& id : m_tickIds) {
+            auto it = m_entities.find(id);
+            if (it != m_entities.end()) {
+                it->second->update(*m_world, dt);
+            }
+        }
+    } catch (...) {
+        finishTick();
+        throw;
+    }
+    finishTick();
+}
+
+void WorldEntities::tick(float dt) {
+    if (!m_world) return;
+    prepareTick();
+    tickPrepared(dt);
 }
 
 } // namespace Rigel::Entity

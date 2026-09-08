@@ -22,6 +22,12 @@ the manifest identity, while a generator seed or semantic rule change does.
 Untyped block extension data is rejected because its simulation meaning cannot be
 encoded safely.
 
+The manifest also binds the built-in entity update rule and its centered one-unit
+hitbox. This bounded host admits only exact `Entity` instances using that rule and
+hitbox, with no entity model attached. Virtual subclasses, custom local bounds,
+preassigned IDs, non-finite state, and model-derived hitboxes are rejected before
+spawn because their simulation or replay meaning is outside this manifest.
+
 ## Exact bounded terrain
 
 The host configuration declares one inclusive cell domain and explicit resource
@@ -50,8 +56,12 @@ payload for the session:
   deduplication protection.
 
 Remove and place commands require an exact shape-aware interaction expectation.
-The internal atomic edit form requires expected state for every addressed cell.
-All cells and publication effects are prepared before block state changes. A stale,
+The ray origin must match the authoritative session actor position, and reach is
+limited by the configured host policy; non-finite rays reject without admission.
+The multi-cell atomic edit form additionally requires a capability issued by the
+same host, so a client action value alone cannot invoke it. It requires expected
+state for every addressed cell. All cells, deterministic entity tick membership,
+and publication effects are prepared before block state changes. A stale,
 unavailable, invalid, or out-of-domain member rejects the whole edit.
 
 The clock uses a rational ticks-per-second rate and integer nanosecond debt.
@@ -72,8 +82,11 @@ Replica application validates manifest, world, zone, completeness, bounds, stabl
 keys, duplicate cells, and revision continuity before swapping visible state.
 Malformed, missing, future-based, or oversized input requires a fresh baseline.
 A slow replica whose queue fills is marked as needing resnapshot without blocking
-or corrupting other replicas. The host publication ring, each replica queue,
-snapshots, command payloads, and session receipts all have explicit caps.
+or corrupting other replicas. Each replica applies one aggregate byte cap to its
+installed cells, queued immutable messages, string storage, and apply-time copy;
+message count and element caps remain independent. The host retains no unused
+publication ring. Command payloads have a per-receipt byte cap, and the receipt
+count therefore bounds aggregate session memory.
 
 This publication stream is process-local applied state. It does not acknowledge
 durability, define a wire codec, or expose transport or authentication behavior.

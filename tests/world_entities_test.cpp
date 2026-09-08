@@ -69,6 +69,36 @@ private:
     std::vector<EntityId>& m_order;
 };
 
+class SpawnDuringUpdateEntity final : public Entity {
+public:
+    explicit SpawnDuringUpdateEntity(bool& childUpdated)
+        : m_childUpdated(childUpdated) {}
+
+    void update(World& world, float) override {
+        if (m_spawned) return;
+        class Child final : public Entity {
+        public:
+            explicit Child(bool& updated) : m_updated(updated) {}
+            void update(World&, float) override { m_updated = true; }
+        private:
+            bool& m_updated;
+        };
+        m_spawned = !world.entities().spawn(
+            std::make_unique<Child>(m_childUpdated)).isNull();
+    }
+
+private:
+    bool& m_childUpdated;
+    bool m_spawned = false;
+};
+
+class ThrowDuringUpdateEntity final : public Entity {
+public:
+    void update(World&, float) override {
+        throw Rigel::Test::TestFailure("injected entity update failure");
+    }
+};
+
 } // namespace
 
 TEST_CASE(WorldEntities_SpawnDespawn) {
@@ -183,4 +213,31 @@ TEST_CASE(WorldEntities_AssignsIdsOnSpawnAndTicksInStableIdOrder) {
     CHECK_EQ(order.size(), static_cast<size_t>(2));
     CHECK_EQ(order[0], (EntityId{1, 0, 0}));
     CHECK_EQ(order[1], (EntityId{2, 0, 0}));
+}
+
+TEST_CASE(WorldEntities_SpawnDuringTickStartsOnNextTick) {
+    WorldResources resources;
+    World world(resources);
+    bool childUpdated = false;
+    CHECK(!world.entities().spawn(
+        std::make_unique<SpawnDuringUpdateEntity>(childUpdated)).isNull());
+
+    world.tickEntities(1.0f);
+    CHECK(!childUpdated);
+    CHECK_EQ(world.entities().size(), static_cast<size_t>(2));
+
+    world.tickEntities(1.0f);
+    CHECK(childUpdated);
+}
+
+TEST_CASE(WorldEntities_UpdateFailureRestoresLifecycleState) {
+    WorldResources resources;
+    World world(resources);
+    const EntityId id = world.entities().spawn(
+        std::make_unique<ThrowDuringUpdateEntity>());
+    CHECK(!id.isNull());
+
+    CHECK_THROWS(world.tickEntities(1.0f));
+    CHECK(world.entities().despawn(id));
+    CHECK_EQ(world.entities().size(), static_cast<size_t>(0));
 }

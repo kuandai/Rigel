@@ -9,6 +9,7 @@
 #include "Rigel/Voxel/WorldResources.h"
 
 #include <chrono>
+#include <limits>
 #include <memory>
 
 namespace {
@@ -39,7 +40,8 @@ struct HostFixture {
 
     explicit HostFixture(
         SimulationHostConfig config = {},
-        glm::vec3 actorPosition = {12.0f, 4.0f, 12.0f}
+        glm::vec3 actorPosition = {5.5f, 6.0f, 5.5f},
+        glm::vec3 actorVelocity = {0.0f, 0.0f, 0.0f}
     ) {
         for (const std::string identifier : {
                  "rigel:stone", "rigel:grass", "rigel:water"}) {
@@ -73,10 +75,10 @@ struct HostFixture {
             config.maxSnapshotCells = 25'000;
         }
         host = std::make_unique<SimulationHost>(resources, generator, config);
-        auto entity = std::make_unique<Entity::Entity>("rigel:test_actor");
+        auto entity = std::make_unique<Entity::Entity>();
         entity->addTag(Entity::EntityTags::NoClip);
         entity->setPosition(actorPosition);
-        entity->setVelocity({1.0f, 0.0f, 0.0f});
+        entity->setVelocity(actorVelocity);
         actor = host->spawnEntity(std::move(entity));
         CHECK(!actor.isNull());
     }
@@ -107,7 +109,7 @@ struct HostFixture {
             .content = host->content().identity(),
             .action = EditAction::Remove,
             .interaction = InteractionIntent{
-                .origin = {5.5f, 6.0f, 5.5f},
+                .origin = host->world().entities().get(actor)->position(),
                 .direction = {0.0f, -1.0f, 0.0f},
                 .maxDistance = 8.0f,
                 .expectedTarget = target,
@@ -153,6 +155,25 @@ TEST_CASE(SimulationHost_exact_reads_preserve_known_air_and_unavailable) {
     CHECK_EQ(fixture.host->read({64, 7, 1}).status, ExactReadStatus::OutsideDomain);
 }
 
+TEST_CASE(SimulationHost_entity_motion_stops_at_unavailable_frontier) {
+    SimulationHostConfig config;
+    config.domain = {{0, 0, 0}, {63, 7, 7}};
+    config.preloadedChunks = {{0, 0, 0}};
+    config.maxPreloadedChunks = 1;
+    config.maxSnapshotCells = 8'000;
+    HostFixture fixture(config, {2.0f, 4.0f, 2.0f});
+
+    auto moving = std::make_unique<Entity::Entity>();
+    moving->setPosition({30.0f, 4.0f, 2.0f});
+    moving->setVelocity({600.0f, 0.0f, 0.0f});
+    const auto movingId = fixture.host->spawnEntity(std::move(moving));
+    CHECK(!movingId.isNull());
+    fixture.host->advance(17ms);
+    const auto* entity = fixture.host->world().entities().get(movingId);
+    CHECK(entity != nullptr);
+    CHECK(entity->position().x <= 31.5f);
+}
+
 TEST_CASE(SimulationHost_atomic_failure_changes_neither_chunk) {
     SimulationHostConfig config;
     config.domain = {{0, 0, 0}, {63, 7, 7}};
@@ -177,10 +198,13 @@ TEST_CASE(SimulationHost_atomic_failure_changes_neither_chunk) {
             {unavailable, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
         },
     };
-    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    const auto capability = fixture.host->authorityEditCapability();
+    CHECK_EQ(
+        fixture.host->submit(command, capability).status,
+        SubmitStatus::Accepted);
     CHECK_EQ(fixture.host->advance(17ms).ticksRun, static_cast<size_t>(1));
     CHECK_EQ(
-        fixture.host->submit(command).outcome->status,
+        fixture.host->submit(command, capability).outcome->status,
         CommandOutcomeStatus::Unavailable);
     CHECK_EQ(
         fixture.host->read(available).state.blockKey,
@@ -232,6 +256,22 @@ TEST_CASE(SimulationHost_admits_edit_once_and_retains_session_receipts) {
         SessionStartStatus::OldSession);
 }
 
+TEST_CASE(SimulationHost_rejects_oversized_retained_command_payloads) {
+    SimulationHostConfig config;
+    config.maxCommandBytes = 1024;
+    HostFixture fixture(config);
+    fixture.start();
+    auto command = fixture.removeCommand(1);
+    const auto address = command.mutations.front().address;
+    command.mutations.front().replacement.blockKey.reserve(4096);
+    CHECK_EQ(
+        fixture.host->submit(std::move(command)).status,
+        SubmitStatus::CommandCapacity);
+    CHECK_NE(
+        fixture.host->read(address).state.blockKey,
+        std::string("base:air"));
+}
+
 TEST_CASE(SimulationHost_orders_racing_edits_against_authoritative_state) {
     HostFixture fixture;
     fixture.start();
@@ -256,7 +296,7 @@ TEST_CASE(SimulationHost_interaction_cannot_cross_unavailable_terrain) {
     config.preloadedChunks = {{0, -1, 0}, {0, 0, 0}};
     config.maxPreloadedChunks = 2;
     config.maxSnapshotCells = 30'000;
-    HostFixture fixture(config);
+    HostFixture fixture(config, {31.5f, 6.0f, 5.5f});
     fixture.start();
     const CellAddress target = fixture.surface(31, 5);
     EditCommand command = fixture.removeCommand(1);
@@ -279,6 +319,7 @@ TEST_CASE(SimulationHost_ignores_unavailable_terrain_behind_a_known_hit) {
     config.preloadedChunks = {{0, 0, 0}};
     config.maxPreloadedChunks = 1;
     config.maxSnapshotCells = 50'000;
+    config.maxInteractionDistance = 20.0f;
     HostFixture fixture(config);
     fixture.start();
     EditCommand command = fixture.removeCommand(1);
@@ -318,9 +359,156 @@ TEST_CASE(SimulationHost_rejects_content_and_shape_invalid_interactions) {
         SubmitStatus::ContentMismatch);
 }
 
+TEST_CASE(SimulationHost_rejects_unbound_and_nonfinite_interactions) {
+    {
+        HostFixture fixture;
+        fixture.start();
+        auto command = fixture.removeCommand(1);
+        const auto address = command.mutations.front().address;
+        const auto before = fixture.host->read(address).state;
+        command.interaction->origin = {6.5f, 6.0f, 5.5f};
+        CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+        fixture.host->advance(17ms);
+        CHECK_EQ(
+            fixture.host->submit(command).outcome->status,
+            CommandOutcomeStatus::InvalidRequest);
+        CHECK_EQ(fixture.host->read(address).state, before);
+    }
+
+    for (const glm::vec3 origin : {
+             glm::vec3{std::numeric_limits<float>::quiet_NaN(), 6.0f, 5.5f},
+             glm::vec3{std::numeric_limits<float>::infinity(), 6.0f, 5.5f}}) {
+        HostFixture nonfinite;
+        nonfinite.start();
+        auto command = nonfinite.removeCommand(1);
+        const auto address = command.mutations.front().address;
+        const auto before = nonfinite.host->read(address).state;
+        command.interaction->origin = origin;
+        CHECK_EQ(
+            nonfinite.host->submit(command).status,
+            SubmitStatus::InvalidRequest);
+        CHECK_EQ(nonfinite.host->read(address).state, before);
+    }
+
+    HostFixture fixture;
+    fixture.start();
+    auto tooFar = fixture.removeCommand(2);
+    const auto before = fixture.host->read(tooFar.mutations.front().address).state;
+    tooFar.interaction->maxDistance = 9.0f;
+    CHECK_EQ(fixture.host->submit(tooFar).status, SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(
+        fixture.host->submit(tooFar).outcome->status,
+        CommandOutcomeStatus::InvalidRequest);
+    CHECK_EQ(fixture.host->read(tooFar.mutations.front().address).state, before);
+
+    auto unrepresentable = fixture.removeCommand(3);
+    unrepresentable.interaction->direction = {
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max(),
+        0.0f,
+    };
+    CHECK_EQ(
+        fixture.host->submit(unrepresentable).status,
+        SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(
+        fixture.host->submit(unrepresentable).outcome->status,
+        CommandOutcomeStatus::InvalidRequest);
+    CHECK_EQ(
+        fixture.host->read(unrepresentable.mutations.front().address).state,
+        before);
+}
+
+TEST_CASE(SimulationHost_rejects_unknown_action_values) {
+    HostFixture fixture;
+    fixture.start();
+    auto command = fixture.removeCommand(1);
+    const auto address = command.mutations.front().address;
+    const auto before = fixture.host->read(address).state;
+    command.action = static_cast<EditAction>(255);
+    CHECK_EQ(
+        fixture.host->submit(command).status,
+        SubmitStatus::InvalidRequest);
+    CHECK_EQ(fixture.host->read(address).state, before);
+}
+
+TEST_CASE(SimulationHost_bulk_edits_require_host_bound_authority) {
+    SimulationHostConfig config;
+    config.domain = {{0, 0, 0}, {63, 7, 7}};
+    config.preloadedChunks = {{0, 0, 0}, {1, 0, 0}};
+    config.maxPreloadedChunks = 2;
+    config.maxSnapshotCells = 8'000;
+    HostFixture fixture(config, {1.5f, 6.0f, 1.5f});
+    fixture.start();
+
+    const CellAddress first{31, 7, 1};
+    const CellAddress second{32, 7, 1};
+    EditCommand command{
+        .session = 1,
+        .command = 1,
+        .actor = fixture.actor,
+        .world = 0,
+        .zone = "base:default",
+        .content = fixture.host->content().identity(),
+        .action = EditAction::Atomic,
+        .mutations = {
+            {first, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
+            {second, {"rigel:stone", 0, 0}, {"rigel:stone", 0, 0}},
+        },
+    };
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::InvalidRequest);
+    CHECK_EQ(fixture.host->read(first).state.blockKey, std::string("base:air"));
+
+    HostFixture other;
+    const auto wrongCapability = other.host->authorityEditCapability();
+    CHECK_EQ(
+        fixture.host->submit(command, wrongCapability).status,
+        SubmitStatus::InvalidRequest);
+
+    const auto capability = fixture.host->authorityEditCapability();
+    CHECK_EQ(
+        fixture.host->submit(command, capability).status,
+        SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(
+        fixture.host->submit(command, capability).outcome->status,
+        CommandOutcomeStatus::StaleState);
+    CHECK_EQ(fixture.host->read(first).state.blockKey, std::string("base:air"));
+    CHECK_EQ(fixture.host->read(second).state.blockKey, std::string("base:air"));
+}
+
+namespace {
+class ThrowingHostEntity final : public Entity::Entity {
+public:
+    void update(Voxel::World&, float) override {
+        throw Test::TestFailure("unsupported update ran");
+    }
+};
+}
+
+TEST_CASE(SimulationHost_rejects_entity_rules_outside_its_manifest) {
+    HostFixture fixture;
+    auto throwing = std::make_unique<ThrowingHostEntity>();
+    throwing->setPosition({5.5f, 6.0f, 5.5f});
+    CHECK(fixture.host->spawnEntity(std::move(throwing)).isNull());
+
+    auto customHitbox = std::make_unique<Entity::Entity>();
+    customHitbox->setLocalBounds({{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}});
+    CHECK(fixture.host->spawnEntity(std::move(customHitbox)).isNull());
+
+    fixture.start();
+    const auto command = fixture.removeCommand(1);
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    CHECK_EQ(fixture.host->advance(17ms).ticksRun, static_cast<size_t>(1));
+    CHECK_EQ(
+        fixture.host->submit(command).outcome->status,
+        CommandOutcomeStatus::Applied);
+}
+
 TEST_CASE(SimulationHost_fixed_tick_is_render_pacing_independent_and_retains_debt) {
     auto run = [](int frames) {
-        HostFixture fixture;
+        HostFixture fixture({}, {5.5f, 6.0f, 5.5f}, {1.0f, 0.0f, 0.0f});
         uint64_t previous = 0;
         for (int frame = 1; frame <= frames; ++frame) {
             const uint64_t elapsed =
@@ -471,4 +659,43 @@ TEST_CASE(LoopbackReplica_rejects_incomplete_and_oversized_messages) {
     CHECK_EQ(
         fixture.host->connectReplica({{-5, 0, 0}, {1, 1, 1}}).status,
         ReplicaConnectStatus::InvalidInterest);
+}
+
+TEST_CASE(LoopbackReplica_rejects_oversized_string_payloads_by_bytes) {
+    SimulationHostConfig config;
+    config.maxReplicaBytes = 64 * 1024;
+    HostFixture fixture(config);
+    auto connection = fixture.host->connectReplica({{3, -1, 3}, {7, 3, 7}});
+    CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+
+    WorldChangeBatch oversizedZone{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = std::string(128 * 1024, 'z'),
+        .baseRevision = replica.revision(),
+        .revision = replica.revision() + 1,
+        .tick = replica.tick() + 1,
+    };
+    CHECK_EQ(
+        replica.accept(std::make_shared<const PublicationMessage>(oversizedZone)),
+        ReplicaAcceptStatus::RejectedOversized);
+    CHECK(replica.needsResnapshot());
+
+    CHECK_EQ(fixture.host->resnapshot(replica), ReplicaConnectStatus::Connected);
+    pumpBaseline(replica);
+    WorldChangeBatch oversizedKey{
+        .content = fixture.host->content().identity(),
+        .world = 0,
+        .zone = "base:default",
+        .baseRevision = replica.revision(),
+        .revision = replica.revision() + 1,
+        .tick = replica.tick() + 1,
+        .changes = {{{5, 0, 5}, {std::string(128 * 1024, 'b'), 0, 0}}},
+    };
+    CHECK_EQ(
+        replica.accept(std::make_shared<const PublicationMessage>(oversizedKey)),
+        ReplicaAcceptStatus::RejectedOversized);
+    CHECK(replica.needsResnapshot());
 }

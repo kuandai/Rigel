@@ -24,6 +24,10 @@ public:
 
     void forEach(const std::function<void(Entity&)>& fn);
     void forEach(const std::function<void(const Entity&)>& fn) const;
+    /** Capture deterministic current-tick membership before a nonfailing commit. */
+    void prepareTick();
+    /** Tick the membership captured by prepareTick without allocating. */
+    void tickPrepared(float dt);
     void tick(float dt);
 
     size_t size() const { return m_entities.size(); }
@@ -34,6 +38,7 @@ private:
     std::vector<EntityId> m_tickIds;
     std::vector<EntityId> m_pendingDespawns;
     bool m_isTicking = false;
+    bool m_tickPrepared = false;
 };
 
 } // namespace Rigel::Entity

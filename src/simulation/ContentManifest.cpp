@@ -1,5 +1,6 @@
 #include "Rigel/Simulation/ContentManifest.h"
 
+#include "Rigel/Entity/Entity.h"
 #include "Rigel/Voxel/BlockModel.h"
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/GeneratorDefinition.h"
@@ -10,6 +11,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <typeinfo>
 
 namespace Rigel::Simulation {
 namespace {
@@ -169,6 +171,19 @@ std::string blockRecord(const Voxel::BlockType& type) {
     return out.data();
 }
 
+std::string entityRuleRecord() {
+    CanonicalWriter out;
+    out.string("rigel.entity-rule");
+    out.u32(1);
+    out.string("rigel:entity");
+    out.string("axis-sweep-block-collision-v1");
+    out.string("gravity-friction-tags-v1");
+    for (float value : {-0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f}) {
+        out.floating(value);
+    }
+    return out.data();
+}
+
 } // namespace
 
 std::string ContentManifestId::hex() const {
@@ -206,13 +221,14 @@ ContentDictionary::ContentDictionary(
     m_byLocalId.resize(registry.size());
     CanonicalWriter manifest;
     manifest.string("rigel.content-manifest");
-    manifest.u32(1);
+    manifest.u32(2);
     manifest.u32(static_cast<uint32_t>(m_entries.size()));
     for (const auto& entry : m_entries) {
         m_byLocalId[entry.localId.type] = &entry;
         manifest.string(entry.blockKey);
         manifest.string(entry.semanticRecord);
     }
+    manifest.string(entityRuleRecord());
 
     CanonicalWriter generatorRecord;
     generatorRecord.string("rigel.world-generator");
@@ -245,6 +261,14 @@ bool ContentDictionary::contains(std::string_view stableKey) const {
             return entry.blockKey < key;
         });
     return found != m_entries.end() && found->blockKey == stableKey;
+}
+
+bool ContentDictionary::supportsEntity(const Entity::Entity& entity) const {
+    const auto& bounds = entity.localBounds();
+    return typeid(entity) == typeid(Entity::Entity) &&
+        entity.typeId() == "rigel:entity" && !entity.model() &&
+        entity.modelIdentifier().empty() &&
+        bounds.min == glm::vec3(-0.5f) && bounds.max == glm::vec3(0.5f);
 }
 
 SemanticBlockState ContentDictionary::semanticState(Voxel::BlockState state) const {

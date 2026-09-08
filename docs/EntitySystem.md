@@ -47,7 +47,9 @@ physics limitations.
 Entity constructors leave IDs null. `WorldEntities::spawn()` assigns a missing ID
 at the collection owner; `SimulationHost` assigns its deterministic host ID before
 spawning. Tick traversal sorts IDs, so unordered-map layout cannot choose update
-order. Scratch capacity is reserved during spawn rather than during a tick.
+order. Tick membership is captured before updates, so an entity spawned by an
+update starts on the following tick and cannot invalidate active traversal. The
+simulation host prepares this bounded capture before committing a block edit.
 
 ### 3.2 Persistence Grouping
 

@@ -1,7 +1,7 @@
 # Application Lifecycle
 
 This document describes the `Application` lifecycle and the asynchronous
-execution paths used by world generation, meshing, and disk IO.
+execution paths used by simulation publication, meshing, and disk IO.
 
 ## Index
 
@@ -14,7 +14,7 @@ execution paths used by world generation, meshing, and disk IO.
   - [A) Chunk Generation (world data)](#a-chunk-generation-world-data)
   - [B) Chunk Meshing (render data)](#b-chunk-meshing-render-data)
   - [C) Async Chunk IO (disk reads)](#c-async-chunk-io-disk-reads)
-  - [D) World Save / Load](#d-world-save--load)
+  - [D) Gallery World Save / Entity Bootstrap](#d-gallery-world-save--entity-bootstrap)
 - [Known Caveats](#known-caveats)
 - [Relevant Code](#relevant-code)
 
@@ -38,14 +38,16 @@ Shutdown persists world state and releases resources.
 2. Prepare the installed persistence bootstrap context.
    - Formats are registered with `WorldSet::persistenceFormats()` and the root
      path is resolved from the world id.
-   - The active `World` is created to own the concrete persistence providers.
+   - A bootstrap `World` owns the concrete persistence providers and saved
+     generator identity. It is not passed to normal rendering.
    - Installed desktop policy selects uncompressed CR for new-world creation;
      there is no persistence YAML or working-directory override.
    - The resulting context is retained unchanged until save bootstrap. Existing
      worlds require an authoritative saved format marker and do not consult the
      installed new-world policy when resolving their backend.
-   - After bootstrap resolves the backend, the active world retains that format
-     for lazy loads, eviction writes, and close-time persistence.
+   - The block gallery retains that backend for lazy loads, eviction writes,
+     and close-time persistence. Normal mode saves its simulation cut through
+     the checkpoint manager under the save root instead.
 3. Initialize GLEW and log the OpenGL version string.
 4. Register window callbacks.
    - Framebuffer resize -> `glViewport`.
@@ -79,47 +81,57 @@ Shutdown persists world state and releases resources.
      semantic registry without decoding or uploading textures.
    - Failed block definitions or an all-air registry abort world bootstrap
      before spawn discovery.
-7. Load save-owned world identity and create the `WorldView` for the active
-   `World`.
+7. Load save-owned world identity and create the mode-specific owner path.
    - The view derives and uploads its texture atlas from the complete registry.
    - For a new world, Rigel stages backend world metadata with world settings
      and the generator snapshot, verifies the authoritative format probe, and
      atomically publishes the complete save while holding the per-world
      bootstrap lock. A root without the authoritative backend marker is
      rejected unchanged before either runtime owner receives a generator.
-   - `WorldGenerator` is attached to the semantic world by bootstrap, then the
-     application attaches the same immutable generator to the view.
-8. Load entity data from disk (chunks are lazy-loaded).
-   - `loadBootstrapEntities(...)` first requires the published settings,
-     generator snapshot, and backend identity. Only then may it replay an
-     entity journal, validate records, and add persisted entities without
-     changing live chunks or unrelated entities.
-9. Create the async chunk loader (disk IO) and wire it into `WorldView`.
-   - Loader provides non-blocking requests + budgeted apply callbacks.
-10. Install automatic streaming policy, derive the accepted View Distance
-    policy, prepare the requested shadow state from the shipped internal
-    profile, and enable profiler collection only when `RIGEL_PROFILE=1`.
-11. Snap the camera to the first air block, mark spawn discovery complete, and
-    initialize `FrameRenderer`.
+   - In normal mode the application recovers or creates a bounded
+     `SimulationHost` over two pinned generated chunks. It creates a separate
+     replica `World`, connects an in-process loopback baseline, and gives only
+     that replica to `WorldView`. Unknown or incompatible save roots are
+     rejected without rewriting them.
+   - In block-gallery mode `WorldGenerator` is attached to the existing
+     presentation world and the view keeps the prior read-only path.
+8. Establish mode-specific entities.
+   - Normal mode uses the checkpoint's complete built-in entity state, starts
+     one local observer session, and publishes entity presentation state through
+     the same loopback stream as block changes.
+   - The gallery alone calls `loadBootstrapEntities(...)` for its presentation
+     world.
+9. In gallery mode, create the async chunk loader and wire it into `WorldView`.
+   Normal bounded mode has no disk-loader or generation path after bootstrap.
+10. Install streaming policy and prepare the requested shadow state. The gallery
+    uses automatic streaming. Normal mode fixes a zero-radius view on the pinned
+    authority center; camera motion cannot admit new terrain.
+11. Snap the camera to the first air block, populate the normal replica baseline,
+    mark spawn discovery complete, and initialize `FrameRenderer`.
 
 ## Phase 2: Runtime Loop (Application::run)
 
 Per frame:
 
-1. Compute `deltaTime`, poll GLFW events, apply any focus-driven time reset, and
-   clamp the frame time.
+1. Compute raw nonnegative elapsed nanoseconds, poll GLFW events, and apply any
+   focus-driven time reset. Clamp a separate presentation delta. A focus reset
+   explicitly passes zero elapsed time to authority as well as presentation.
 2. Begin the ImGui and profiler frames.
 3. Record the frame-time sample and call `InputState::beginFrame()` to publish
    callback-fed key and mouse-button state and notify action listeners.
 4. Apply cursor-capture actions, then update camera and interaction logic.
    - Mouse look is applied if the cursor is captured.
-   - The application resolves one shape-aware center `BlockTarget`, then block
-     edits use its owning coordinate and selected-face normal with semantic
-     remove/place action edges. A successful edit refreshes the target before
-     presentation and rendering. Demo entity spawning uses its developer
-     action press edge.
-5. Tick entities (`World::tickEntities`).
-6. Update chunk streaming (load/generation/mesh decisions).
+   - The application resolves one shape-aware center `BlockTarget`. In normal
+     mode an edit edge admits the trusted local observer pose and submits an
+     owned semantic command; neither input nor the graphical client changes the
+     replica immediately. The gallery suppresses edits and demo spawning.
+5. Normal mode advances `SimulationHost` with the raw elapsed time. Fixed ticks
+   update authoritative entities and emit immutable changes/outcomes. The
+   loopback client installs each coherent publication into the independent
+   replica and prioritizes meshes for changed chunks. The gallery directly
+   ticks its presentation-only entities with clamped frame time.
+6. Update chunk streaming. Normal mode keeps attention on the pinned authority
+   center; the gallery performs its existing load/generation decisions.
 7. Drain and apply completed generation, load, and mesh work.
 8. Read the refreshed streaming lifecycle snapshot and log state transitions.
 9. Submit the active world, camera, viewport, frame time, and already-resolved
@@ -137,9 +149,11 @@ exit action in the current binding set.
 
 Spawn discovery completes during bootstrap, before the world becomes ready.
 The first runtime streaming update begins the initial-stream phase. After each
-normal update and completion drain, `ChunkStreamer` combines its generation and
-mesh counts, eviction state, and the `AsyncChunkLoader` load counts supplied by
-`WorldView`.
+update and completion drain, `ChunkStreamer` combines its generation and mesh
+counts and eviction state. The gallery also includes the `AsyncChunkLoader`
+counts supplied by `WorldView`. Normal mode begins with its two authority chunks
+fully populated by the loopback baseline, so its lifecycle covers only the
+bounded mesh installation path and cannot request additional terrain.
 
 Pending counts include capacity-blocked generation and mesh requests, mesh
 requests waiting for neighbor data, deferred region loads, and persistence or
@@ -164,23 +178,27 @@ query.
 
 ## Phase 3: Shutdown (Application::close)
 
-1. Save world to disk (synchronous) if initialized.
+1. Persist the current owner if initialized. Normal mode requests a coherent
+   simulation checkpoint and polls its terminal durable outcome before
+   teardown; a coalesced request is followed by a new capture of the current
+   cut. The gallery synchronously saves its presentation world.
 2. Make the application context current and shut down ImGui.
 3. Disconnect streaming callbacks and stop the asynchronous chunk loader.
-4. Release view GPU state, then destroy views, streaming workers, and worlds.
+4. Release view GPU state, disconnect the graphical replica, then destroy
+   views, streaming workers, replica worlds, simulation host/checkpoint owner,
+   and the bootstrap world.
 5. Release the shared atlas, frame renderer, and cached assets while the
    context remains current.
 6. Destroy the window and terminate GLFW.
 
 Normal process exit calls `close()` after the runtime loop. Persistence errors
-leave the world resident, propagate to the process entry point, produce an
-error diagnostic, and result in a failed process exit. Destructor cleanup makes
-one final best-effort save attempt without throwing, including after an explicit
-close error. A pending entity recovery journal is replayed before that retry can
-publish another journal. Callers that omit `close()` receive the same
-best-effort persistence before teardown. Failed construction skips the save and
-tears down only the resources acquired so far. Repeated successful shutdown
-requests are harmless.
+leave the owning state resident, propagate to the process entry point, produce
+an error diagnostic, and result in a failed process exit. Destructor cleanup
+makes one final best-effort save attempt without throwing, including after an
+explicit close error. Gallery persistence retains its entity journal recovery
+behavior. Callers that omit `close()` receive the same best-effort persistence
+before teardown. Failed construction skips the save and tears down only the
+resources acquired so far. Repeated successful shutdown requests are harmless.
 
 ---
 
@@ -190,13 +208,15 @@ Main thread:
 - Chunk creation/destruction.
 - Applying gen/mesh results.
 - Mesh store updates + rendering.
-- World save/load.
-- Entity updates and block edits.
+- Gallery world save/load.
+- Simulation command admission, fixed ticks, loopback publication application,
+  and checkpoint capture.
 
 Worker threads:
 - World generation (`WorldGenerator::generate`).
 - Mesh building (`MeshBuilder::build`).
 - Region IO via `PersistenceFormat` in AsyncChunkLoader.
+- Atomic checkpoint publication through `SimulationCheckpointManager`.
 
 Synchronization:
 - `detail::ConcurrentQueue` for result handoff.
@@ -324,12 +344,14 @@ Synchronization:
 - If a chunk has a pending disk request, the streamer skips world-gen until the
   request completes or is canceled.
 
-### D) World Save / Entity Bootstrap
+### D) Gallery World Save / Entity Bootstrap
 
 **Where**: `Persistence::saveWorldToDisk`, `loadBootstrapEntities`
 (`src/persistence/WorldPersistence.cpp`)
 
 **Behavior**:
+- This path belongs to the gallery presentation world. Normal simulation state
+  uses the coherent checkpoint lifecycle described in `SimulationAuthority.md`.
 - Synchronous on the main thread.
 - Startup locks the world, validates any still-needed creation candidate,
   completes durable publication handoffs, reclaims deletion-authorized sibling

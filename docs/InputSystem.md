@@ -80,6 +80,22 @@ The main queries are `isActionPressed()`, `isActionJustPressed()`, and
 `isActionJustReleased()`. Direct physical queries remain available for device
 diagnostics, but gameplay movement and block edits use semantic actions.
 
+## Gameplay authority handoff
+
+`GameplayInput` interprets remove and place action edges but does not own a
+world or mutate blocks. In normal play it hands the selected action and the
+already resolved shape-aware `BlockTarget` to the application-owned graphical
+authority client. The client captures the camera ray and semantic expected
+states in an owned command, and the CPU simulation host validates and applies
+that command at a fixed tick. The rendered replica changes only after the
+resulting immutable publication is pumped.
+
+Removal wins if both edit actions acquire an edge in the same frame. Holding a
+button does not repeat the action. A missing target, an uncaptured cursor, or
+the block gallery's read-only mode suppresses the handoff. The fixed F2 demo
+spawn follows the same read-only policy and normal mode submits it through the
+simulation host rather than adding it directly to the rendered world.
+
 ## Mouse Look and Cursor Capture
 
 The cursor callback reads the effective global mouse sensitivity and invert-Y

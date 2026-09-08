@@ -5,6 +5,7 @@
 #include "ApplicationEntry.h"
 #include "ApplicationTestAccess.h"
 #include "DeveloperDiagnostics.h"
+#include "GraphicalAuthorityClient.h"
 #include "GlfwRuntime.h"
 #include "StreamingPolicy.h"
 #include "WorldGenerationBootstrap.h"
@@ -12,6 +13,7 @@
 #include "Rigel/Asset/ShaderLoader.h"
 #include "Rigel/Asset/TextureLoader.h"
 #include "Rigel/Core/Profiler.h"
+#include "Rigel/Entity/Entity.h"
 #include "Rigel/Entity/EntityModelLoader.h"
 #include "Rigel/Persistence/AsyncChunkLoader.h"
 #include "Rigel/Persistence/Backends/CR/CRFormat.h"
@@ -20,6 +22,8 @@
 #include "Rigel/Persistence/InMemoryStorage.h"
 #include "Rigel/Persistence/Storage.h"
 #include "Rigel/Persistence/WorldSettings.h"
+#include "Rigel/Simulation/SimulationCheckpoint.h"
+#include "Rigel/Simulation/SimulationHost.h"
 #include "Rigel/Render/FrameRenderer.h"
 #include "Rigel/Render/OpenGLRuntime.h"
 #include "Rigel/Voxel/ChunkBenchmark.h"
@@ -56,6 +60,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -72,6 +77,29 @@ constexpr std::string_view kBlockGalleryPersistenceFormat = "memory";
 constexpr std::string_view kBlockGalleryVirtualRoot =
     "developer/block-gallery";
 constexpr float kBlockTargetDistance = 8.0f;
+constexpr std::string_view kAuthorityCheckpointDirectory = "authority";
+
+bool emptyOrAuthoritySave(
+    Persistence::StorageBackend& storage,
+    const std::string& root
+) {
+    const auto kind = storage.entryKind(root);
+    if (kind == Persistence::StorageEntryKind::Missing) return true;
+    if (kind != Persistence::StorageEntryKind::Directory) return false;
+    bool empty = true;
+    bool authority = false;
+    storage.forEachEntry(root, [&](const std::string& name) {
+        empty = false;
+        if (std::filesystem::path(name).filename() ==
+            kAuthorityCheckpointDirectory) {
+            authority = storage.entryKind(root + "/" +
+                std::string(kAuthorityCheckpointDirectory)) ==
+                Persistence::StorageEntryKind::Directory;
+        }
+        return true;
+    });
+    return empty || authority;
+}
 
 void applyInstalledPersistencePolicy(
     Voxel::WorldSet& worldSet,
@@ -304,7 +332,9 @@ struct Application::Impl {
     struct WorldState {
         Voxel::WorldSet worldSet;
         Voxel::WorldId activeWorldId = Voxel::WorldSet::defaultWorldId();
+        Voxel::World* persistenceWorld = nullptr;
         Voxel::World* world = nullptr;
+        std::unique_ptr<Voxel::World> replicaWorld;
         std::unique_ptr<Voxel::WorldView> ownedWorldView;
         Voxel::WorldView* worldView = nullptr;
         std::shared_ptr<Persistence::AsyncChunkLoader> chunkLoader;
@@ -315,12 +345,18 @@ struct Application::Impl {
         std::optional<Voxel::BlockGalleryTargetPresentation>
             galleryTargetPresentation;
         std::optional<Persistence::WorldSettings> settings;
+        std::unique_ptr<Simulation::SimulationCheckpointManager> checkpoints;
+        std::unique_ptr<Simulation::SimulationHost> authorityHost;
+        std::unique_ptr<detail::GraphicalAuthorityClient> authorityClient;
+        Simulation::CellBounds authorityBounds;
+        glm::vec3 authorityViewCenter{};
+        Entity::EntityId observer;
+        Simulation::SessionId session = 0;
         bool ready = false;
         bool streamingLifecycleLogged = false;
         Voxel::StreamingLifecycleState lastStreamingLifecycle =
             Voxel::StreamingLifecycleState::DiscoveringSpawn;
         Voxel::StreamingDiagnosticSnapshot lastStreamingDiagnostics;
-        Voxel::BlockID placeBlock = Voxel::BlockRegistry::airId();
     };
 
     GlfwRuntime runtime;
@@ -498,17 +534,24 @@ void Application::initialize() {
         m_impl->world.worldSet.setPersistenceRoot(
             Persistence::mainWorldRootPath(m_impl->world.activeWorldId));
     }
-    m_impl->world.world = &m_impl->world.worldSet.createWorld(
+    m_impl->world.persistenceWorld = &m_impl->world.worldSet.createWorld(
         m_impl->world.activeWorldId);
+    m_impl->world.world = m_impl->world.persistenceWorld;
     if (blockGallery) {
         applyBlockGalleryPersistencePolicy(m_impl->world.worldSet);
     } else {
         applyInstalledPersistencePolicy(
-            m_impl->world.worldSet, *m_impl->world.world);
+            m_impl->world.worldSet, *m_impl->world.persistenceWorld);
     }
     const Persistence::PersistenceContext bootstrapPersistenceContext =
         m_impl->world.worldSet.persistenceContext(
             m_impl->world.activeWorldId);
+    if (!blockGallery && !emptyOrAuthoritySave(
+            *bootstrapPersistenceContext.storage,
+            bootstrapPersistenceContext.rootPath)) {
+        throw std::runtime_error(
+            "Existing save is not a bounded authority checkpoint; choose a fresh save destination");
+    }
     if (m_impl->afterInstalledPersistenceContextPrepared) {
         const auto settings = bootstrapPersistenceContext.providers->findAs<
             Persistence::Backends::CR::CRPersistenceSettings>(
@@ -650,10 +693,6 @@ void Application::initialize() {
         m_impl->imguiOverlayListener.enabled = &m_impl->renderer.profilerWindowEnabled();
         m_impl->input.addListener(&m_impl->imguiOverlayListener);
 
-        m_impl->world.ownedWorldView = std::make_unique<Voxel::WorldView>(
-            *m_impl->world.world, m_impl->world.worldSet.resources());
-        m_impl->world.ownedWorldView->initialize(m_impl->assets);
-        m_impl->world.worldView = m_impl->world.ownedWorldView.get();
         Persistence::NewWorldGenerationFactory creationFactory = [&] {
             if (m_impl->world.galleryGenerator) {
                 return Persistence::NewWorldGeneration{
@@ -676,12 +715,11 @@ void Application::initialize() {
             detail::bootstrapApplicationWorldGeneration(
                 m_impl->world.worldSet,
                 m_impl->world.activeWorldId,
-                *m_impl->world.world,
+                *m_impl->world.persistenceWorld,
                 creationFactory,
                 bootstrapPersistenceContext,
                 m_impl->world.galleryGenerator);
         auto generator = std::move(bootstrapped.generator);
-        m_impl->world.worldView->setGenerator(generator);
         m_impl->world.settings = std::move(bootstrapped.settings);
         Persistence::PersistenceContext persistenceContext =
             bootstrapPersistenceContext;
@@ -689,38 +727,169 @@ void Application::initialize() {
             bootstrapped.persistenceFormat;
         persistenceContext.discoverExistingFormat = false;
 
-        Persistence::loadBootstrapEntities(
-            *m_impl->world.world,
-            m_impl->assets,
-            m_impl->world.worldSet.persistenceService(),
-            persistenceContext);
+        std::string placeBlockKey = generator->definition().terrain.solidMaterial;
+        const auto& blockRegistry =
+            m_impl->world.worldSet.resources().registry();
+        if (!blockRegistry.findByIdentifier(placeBlockKey)) {
+            placeBlockKey = "base:stone_shale";
+        }
+        if (!blockRegistry.findByIdentifier(placeBlockKey) &&
+            blockRegistry.size() > 1) {
+            placeBlockKey = blockRegistry.getType(Voxel::BlockID{1}).identifier;
+        }
 
-        uint32_t worldGenVersion = generator->semanticsVersion();
-        m_impl->world.chunkLoader = std::make_shared<Persistence::AsyncChunkLoader>(
-            m_impl->world.worldSet.persistenceService(),
-            std::move(persistenceContext),
-            *m_impl->world.world,
-            worldGenVersion,
-            streamingPolicy.ioThreads,
-            streamingPolicy.loadWorkerThreads,
-            generator);
-        m_impl->world.chunkLoader->setLoadQueueLimit(
-            streamingPolicy.loadQueueLimit);
-        m_impl->world.chunkLoader->setRegionDrainBudget(
-            streamingPolicy.loadRegionDrainBudget);
-        m_impl->world.chunkLoader->setMaxCachedRegions(
-            streamingPolicy.loadMaxCachedRegions);
-        m_impl->world.chunkLoader->setMaxInFlightRegions(
-            streamingPolicy.loadMaxInFlightRegions);
-        connectChunkLoader(
-            *m_impl->world.worldView, m_impl->world.chunkLoader);
+        if (blockGallery) {
+            m_impl->world.ownedWorldView = std::make_unique<Voxel::WorldView>(
+                *m_impl->world.world, m_impl->world.worldSet.resources());
+            m_impl->world.ownedWorldView->initialize(m_impl->assets);
+            m_impl->world.worldView = m_impl->world.ownedWorldView.get();
+            m_impl->world.worldView->setGenerator(generator);
+            Persistence::loadBootstrapEntities(
+                *m_impl->world.world,
+                m_impl->assets,
+                m_impl->world.worldSet.persistenceService(),
+                persistenceContext);
+
+            const uint32_t worldGenVersion = generator->semanticsVersion();
+            m_impl->world.chunkLoader =
+                std::make_shared<Persistence::AsyncChunkLoader>(
+                    m_impl->world.worldSet.persistenceService(),
+                    std::move(persistenceContext),
+                    *m_impl->world.world,
+                    worldGenVersion,
+                    streamingPolicy.ioThreads,
+                    streamingPolicy.loadWorkerThreads,
+                    generator);
+            m_impl->world.chunkLoader->setLoadQueueLimit(
+                streamingPolicy.loadQueueLimit);
+            m_impl->world.chunkLoader->setRegionDrainBudget(
+                streamingPolicy.loadRegionDrainBudget);
+            m_impl->world.chunkLoader->setMaxCachedRegions(
+                streamingPolicy.loadMaxCachedRegions);
+            m_impl->world.chunkLoader->setMaxInFlightRegions(
+                streamingPolicy.loadMaxInFlightRegions);
+            connectChunkLoader(
+                *m_impl->world.worldView, m_impl->world.chunkLoader);
+        } else {
+            const int spawnX = static_cast<int>(
+                std::floor(m_impl->camera.position.x));
+            const int spawnZ = static_cast<int>(
+                std::floor(m_impl->camera.position.z));
+            const int spawnY = Voxel::findFirstAirY(
+                *generator, spawnX, spawnZ);
+            m_impl->camera.position.y = static_cast<float>(spawnY) + 0.5f;
+            const Voxel::ChunkCoord center = Voxel::worldToChunk(
+                spawnX, spawnY, spawnZ);
+            const Voxel::ChunkCoord surfaceCenter = Voxel::worldToChunk(
+                spawnX, spawnY - 1, spawnZ);
+            m_impl->world.authorityViewCenter = surfaceCenter.toWorldCenter();
+            m_impl->world.authorityBounds = {
+                {center.x * Voxel::Chunk::SIZE,
+                 (center.y - 1) * Voxel::Chunk::SIZE,
+                 center.z * Voxel::Chunk::SIZE},
+                {(center.x + 1) * Voxel::Chunk::SIZE - 1,
+                 (center.y + 1) * Voxel::Chunk::SIZE - 1,
+                 (center.z + 1) * Voxel::Chunk::SIZE - 1},
+            };
+            Simulation::SimulationHostConfig hostConfig;
+            hostConfig.world = m_impl->world.activeWorldId;
+            hostConfig.domain = m_impl->world.authorityBounds;
+            hostConfig.preloadedChunks = {
+                {center.x, center.y - 1, center.z},
+                center,
+            };
+            hostConfig.maxPreloadedChunks = 2;
+            hostConfig.maxSnapshotCells = 2 * Voxel::Chunk::VOLUME;
+
+            const std::string checkpointRoot =
+                bootstrapPersistenceContext.rootPath + "/" +
+                std::string(kAuthorityCheckpointDirectory);
+            m_impl->world.checkpoints =
+                std::make_unique<Simulation::SimulationCheckpointManager>(
+                    bootstrapPersistenceContext.storage,
+                    checkpointRoot);
+            auto recovery = m_impl->world.checkpoints->recover(
+                m_impl->world.worldSet.resources(), generator);
+            if (recovery.status == Simulation::CheckpointRecoveryStatus::Recovered) {
+                m_impl->world.authorityHost = std::move(recovery.host);
+            } else if (recovery.status ==
+                       Simulation::CheckpointRecoveryStatus::Empty) {
+                m_impl->world.authorityHost =
+                    std::make_unique<Simulation::SimulationHost>(
+                        m_impl->world.worldSet.resources(), generator,
+                        std::move(hostConfig));
+            } else {
+                throw std::runtime_error(
+                    "Bounded authority checkpoint cannot be recovered: " +
+                    recovery.detail);
+            }
+
+            m_impl->world.authorityHost->world().entities().forEach(
+                [&](const Entity::Entity& entity) {
+                    if (m_impl->world.observer.isNull() &&
+                        entity.hasTag(Entity::EntityTags::LocalObserver) &&
+                        entity.hasTag(Entity::EntityTags::NoClip)) {
+                        m_impl->world.observer = entity.id();
+                        m_impl->camera.position = entity.position();
+                    }
+                });
+            if (m_impl->world.observer.isNull()) {
+                auto observer = std::make_unique<Entity::Entity>();
+                observer->addTag(Entity::EntityTags::NoClip);
+                observer->addTag(Entity::EntityTags::LocalObserver);
+                observer->setPosition(m_impl->camera.position);
+                m_impl->world.observer =
+                    m_impl->world.authorityHost->spawnEntity(
+                        std::move(observer));
+            }
+            m_impl->world.session =
+                m_impl->world.authorityHost->nextSessionId();
+            if (m_impl->world.observer.isNull() ||
+                m_impl->world.session == 0 ||
+                m_impl->world.authorityHost->startSession(
+                    m_impl->world.session,
+                    m_impl->world.observer,
+                    m_impl->world.authorityHost->content().identity()) !=
+                    Simulation::SessionStartStatus::Started) {
+                throw std::runtime_error(
+                    "Bounded graphical authority session could not start");
+            }
+
+            m_impl->world.replicaWorld = std::make_unique<Voxel::World>(
+                m_impl->world.worldSet.resources());
+            m_impl->world.replicaWorld->setId(m_impl->world.activeWorldId);
+            m_impl->world.replicaWorld->setGenerator(generator);
+            m_impl->world.world = m_impl->world.replicaWorld.get();
+            m_impl->world.ownedWorldView = std::make_unique<Voxel::WorldView>(
+                *m_impl->world.world, m_impl->world.worldSet.resources());
+            m_impl->world.ownedWorldView->initialize(m_impl->assets);
+            m_impl->world.worldView = m_impl->world.ownedWorldView.get();
+            m_impl->world.worldView->setGenerator(generator);
+            m_impl->world.authorityClient =
+                std::make_unique<detail::GraphicalAuthorityClient>(
+                    *m_impl->world.authorityHost,
+                    *m_impl->world.replicaWorld,
+                    m_impl->assets,
+                    m_impl->world.authorityBounds,
+                    m_impl->world.observer,
+                    m_impl->world.session,
+                    placeBlockKey);
+        }
 
         Core::Profiler::setEnabled(
             detail::profilerEnabledFromEnvironment());
-        m_impl->world.worldView->setStreamConfig(streamingConfig);
-        m_impl->preferences->initializeViewDistance(
-            *m_impl->world.worldView,
-            m_impl->world.chunkLoader.get());
+        if (blockGallery) {
+            m_impl->world.worldView->setStreamConfig(streamingConfig);
+            m_impl->preferences->initializeViewDistance(
+                *m_impl->world.worldView,
+                m_impl->world.chunkLoader.get());
+        } else {
+            Voxel::StreamingConfig boundedStreaming = streamingConfig;
+            boundedStreaming.viewDistanceChunks = 0;
+            boundedStreaming.unloadDistanceChunks = 1;
+            boundedStreaming.maxResidentChunks = 2;
+            m_impl->world.worldView->setStreamConfig(boundedStreaming);
+        }
         const PreferenceApplyResult shadowStartup =
             m_impl->preferences->initializeShadows(
                 *m_impl->world.worldView);
@@ -742,29 +911,10 @@ void Application::initialize() {
             m_impl->world.worldView->setBenchmark(&m_impl->timing.benchmark);
         }
 
-        auto placeId = m_impl->world.world->blockRegistry().findByIdentifier(
-            generator->definition().terrain.solidMaterial);
-        if (!placeId) {
-            placeId = m_impl->world.world->blockRegistry().findByIdentifier("base:stone_shale");
-        }
-        if (placeId) {
-            m_impl->world.placeBlock = *placeId;
-        } else if (m_impl->world.world->blockRegistry().size() > 1) {
-            m_impl->world.placeBlock = Voxel::BlockID{1};
-        }
-
         if (m_impl->world.galleryGenerator) {
             applyBlockGalleryOverview(
                 m_impl->camera,
                 m_impl->world.galleryGenerator->overview());
-        } else {
-            int spawnX = static_cast<int>(
-                std::floor(m_impl->camera.position.x));
-            int spawnZ = static_cast<int>(
-                std::floor(m_impl->camera.position.z));
-            int spawnY = Voxel::findFirstAirY(
-                *generator, spawnX, spawnZ);
-            m_impl->camera.position.y = static_cast<float>(spawnY) + 0.5f;
         }
         m_impl->world.worldView->markSpawnDiscoveryComplete();
 
@@ -788,6 +938,45 @@ void Application::Impl::persistWorld() {
     if (!world.settings) {
         throw std::logic_error(
             "Cannot persist a world without save-owned settings");
+    }
+
+    if (world.authorityHost) {
+        if (!world.checkpoints) {
+            throw std::logic_error(
+                "Cannot persist authority without a checkpoint owner");
+        }
+        for (;;) {
+            const auto request = world.checkpoints->request(*world.authorityHost);
+            if (request == Simulation::CheckpointRequestStatus::UnsupportedState ||
+                request == Simulation::CheckpointRequestStatus::Uncertain) {
+                throw std::runtime_error(
+                    "Bounded authority checkpoint request was rejected");
+            }
+            if (request == Simulation::CheckpointRequestStatus::Coalesced) {
+                while (world.checkpoints->writeInFlight()) {
+                    std::this_thread::yield();
+                }
+                const auto prior = world.checkpoints->poll();
+                if (!prior) continue;
+                if (prior->status != Simulation::CheckpointWriteStatus::Durable) {
+                    throw std::runtime_error(
+                        "Bounded authority checkpoint did not become durable: " +
+                        prior->detail);
+                }
+                continue;
+            }
+            while (world.checkpoints->writeInFlight()) {
+                std::this_thread::yield();
+            }
+            const auto outcome = world.checkpoints->poll();
+            if (!outcome ||
+                outcome->status != Simulation::CheckpointWriteStatus::Durable) {
+                throw std::runtime_error(
+                    "Bounded authority checkpoint did not become durable" +
+                    (outcome ? std::string(": ") + outcome->detail : std::string{}));
+            }
+            return;
+        }
     }
 
     Persistence::saveWorldToDisk(
@@ -947,10 +1136,15 @@ void Application::Impl::shutdown() noexcept {
     world.galleryTargetPresentation.reset();
     world.galleryGenerator.reset();
     world.galleryCatalog.reset();
+    world.authorityClient.reset();
     world.ownedWorldView.reset();
+    world.replicaWorld.reset();
+    world.authorityHost.reset();
+    world.checkpoints.reset();
     world.worldSet.clear();
     world.worldView = nullptr;
     world.world = nullptr;
+    world.persistenceWorld = nullptr;
     world.ready = false;
     completeShutdownStage(ApplicationShutdownStage::WorldsReleased);
 
@@ -1453,7 +1647,11 @@ void Application::run() {
     // Render loop
     while (!m_impl->runtime.windowShouldClose(m_impl->window.window)) {
         double now = m_impl->runtime.time();
-        float deltaTime = static_cast<float>(now - m_impl->timing.lastTime);
+        const double elapsedSeconds = std::max(
+            0.0, now - m_impl->timing.lastTime);
+        auto authorityElapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::duration<double>(elapsedSeconds));
+        float deltaTime = static_cast<float>(elapsedSeconds);
         m_impl->timing.lastTime = now;
 
         // Flush event queue
@@ -1527,6 +1725,7 @@ void Application::run() {
         if (m_impl->window.pendingTimeReset) {
             m_impl->timing.lastTime = m_impl->runtime.time();
             deltaTime = 0.0f;
+            authorityElapsed = std::chrono::nanoseconds::zero();
             m_impl->window.pendingTimeReset = false;
             m_impl->preferences->resetFramePacingSchedule();
         }
@@ -1560,12 +1759,28 @@ void Application::run() {
                         m_impl->worldMode == WorldMode::BlockGallery
                             ? Input::GameplayMutationMode::ReadOnly
                             : Input::GameplayMutationMode::ReadWrite;
-                    Input::handleDemoSpawn(
-                        m_impl->input,
-                        m_impl->assets,
-                        *m_impl->world.world,
-                        m_impl->camera,
-                        mutationMode);
+                    if (Input::requestsDemoSpawn(
+                            m_impl->input, mutationMode) &&
+                        m_impl->world.authorityHost) {
+                        auto entity = std::make_unique<Entity::Entity>();
+                        glm::vec3 spawnPosition =
+                            m_impl->camera.position +
+                            m_impl->camera.forward * 2.0f;
+                        spawnPosition.y += 0.5f;
+                        entity->setPosition(spawnPosition);
+                        if (m_impl->assets.exists(
+                                "entity_models/model_drone_interceptor")) {
+                            entity->setModelIdentifier(
+                                "entity_models/model_drone_interceptor");
+                        }
+                        const Entity::EntityId spawned =
+                            m_impl->world.authorityHost->spawnEntity(
+                                std::move(entity));
+                        if (spawned.isNull()) {
+                            spdlog::warn(
+                                "Simulation authority rejected demo entity spawn");
+                        }
+                    }
                     const auto refreshBlockTarget = [&] {
                         m_impl->world.blockTarget = Voxel::raycastBlock(
                             *m_impl->world.world,
@@ -1574,19 +1789,40 @@ void Application::run() {
                             kBlockTargetDistance);
                     };
                     refreshBlockTarget();
-                    const bool worldEdited = Input::handleBlockEdits(
+                    const bool editSubmitted = Input::handleBlockEdits(
                         m_impl->input,
                         m_impl->window,
                         m_impl->world.blockTarget
                             ? &*m_impl->world.blockTarget
                             : nullptr,
-                        *m_impl->world.world,
-                        *m_impl->world.worldView,
-                        m_impl->world.placeBlock,
-                        mutationMode);
-                    if (worldEdited) {
+                        mutationMode,
+                        [&](Input::GameplayBlockEditAction action,
+                            const Voxel::BlockTarget& target) {
+                            return m_impl->world.authorityClient &&
+                                m_impl->world.authorityClient->submit(
+                                    action, target, m_impl->camera);
+                        });
+                    bool presentationChanged = false;
+                    if (m_impl->world.authorityClient) {
+                        m_impl->world.authorityClient->advance(authorityElapsed);
+                        for (const Voxel::ChunkCoord chunk :
+                             m_impl->world.authorityClient->changedChunks()) {
+                            m_impl->world.worldView->prioritizeChunkMesh(chunk);
+                            presentationChanged = true;
+                        }
+                        for (const auto& outcome :
+                             m_impl->world.authorityClient->outcomes()) {
+                            presentationChanged = presentationChanged ||
+                                outcome.status ==
+                                    Simulation::CommandOutcomeStatus::Applied;
+                        }
+                    } else {
+                        m_impl->world.world->tickEntities(deltaTime);
+                    }
+                    if (presentationChanged) {
                         refreshBlockTarget();
                     }
+                    (void)editSubmitted;
                     if (m_impl->world.galleryCatalog) {
                         m_impl->world.galleryTargetPresentation =
                             m_impl->world.blockTarget
@@ -1596,7 +1832,6 @@ void Application::run() {
                                   *m_impl->world.blockTarget)
                             : std::nullopt;
                     }
-                    m_impl->world.world->tickEntities(deltaTime);
                 }
 
                 const auto [width, height] =
@@ -1606,7 +1841,10 @@ void Application::run() {
                     PROFILE_SCOPE("Streaming");
                     {
                         PROFILE_SCOPE("Streaming/Update");
-                        m_impl->world.worldView->updateStreaming(m_impl->camera.position);
+                        m_impl->world.worldView->updateStreaming(
+                            m_impl->world.authorityClient
+                                ? m_impl->world.authorityViewCenter
+                                : m_impl->camera.position);
                     }
                     {
                         PROFILE_SCOPE("Streaming/Apply");

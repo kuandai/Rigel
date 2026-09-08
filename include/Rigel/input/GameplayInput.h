@@ -7,13 +7,14 @@
 
 #include <glm/glm.hpp>
 
+#include <functional>
 #include <memory>
 
 struct GLFWwindow;
 
 namespace Rigel {
 namespace Asset { class AssetManager; }
-namespace Voxel { class World; class WorldView; struct BlockTarget; }
+namespace Voxel { class World; struct BlockTarget; }
 
 namespace Input {
 
@@ -42,6 +43,15 @@ enum class GameplayMutationMode {
     ReadWrite,
     ReadOnly,
 };
+
+enum class GameplayBlockEditAction {
+    Remove,
+    Place,
+};
+
+using BlockEditIntentSink = std::function<bool(
+    GameplayBlockEditAction,
+    const Voxel::BlockTarget&)>;
 
 struct DebugOverlayListener : InputListener {
     bool* enabled = nullptr;
@@ -96,21 +106,18 @@ void applyCursorPosition(
 
 void updateCamera(const InputState& input, CameraState& camera, float dt);
 
-void handleDemoSpawn(const InputState& input,
-                     Asset::AssetManager& assets,
-                     Voxel::World& world,
-                     const CameraState& camera,
-                     GameplayMutationMode mode);
+bool requestsDemoSpawn(
+    const InputState& input,
+    GameplayMutationMode mode);
 
-/** Apply edit actions to an already-resolved center target. Returns true
- * when the world changed and the owning frame should refresh its target. */
+/** Capture one edge-triggered edit against an already-resolved presentation
+ * target. The sink converts it to semantic authority input; this layer owns no
+ * mutable world shortcut. Removal wins when both edges arrive together. */
 bool handleBlockEdits(const InputState& input,
                       const WindowState& window,
                       const Voxel::BlockTarget* target,
-                      Voxel::World& world,
-                      Voxel::WorldView& worldView,
-                      Voxel::BlockID placeBlock,
-                      GameplayMutationMode mode);
+                      GameplayMutationMode mode,
+                      const BlockEditIntentSink& submit);
 
 } // namespace Input
 } // namespace Rigel

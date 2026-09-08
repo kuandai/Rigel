@@ -40,11 +40,14 @@ The developer block-gallery generator has additional runtime placements beyond
 its serialized terrain definition. This initial authority rejects that generator
 explicitly rather than assigning it the ordinary empty generator's identity.
 
-The manifest also binds the built-in entity update rule and its centered one-unit
-hitbox. This bounded host admits only exact `Entity` instances using that rule and
-hitbox, with no entity model attached. Virtual subclasses, custom local bounds,
-preassigned IDs, non-finite state, and model-derived hitboxes are rejected before
-spawn because their simulation or replay meaning is outside this manifest.
+The manifest also binds the built-in entity update rule, its centered one-unit
+authority hitbox, and the two currently admitted cosmetic presentation model
+identities. This bounded host admits only exact `Entity` instances using that rule
+and hitbox. It retains a supported model identifier without loading a graphical
+model into authority; the graphical replica resolves that handle for rendering.
+Virtual subclasses, custom local bounds, preassigned IDs, non-finite state, loaded
+model handles, and model-derived authority hitboxes are rejected before spawn
+because their simulation or replay meaning is outside this manifest.
 Configured entity-count, tag-count, and retained semantic-storage limits bound admitted
 entity state. The retained byte check includes tag hash buckets, tag string objects
 and capacities, and the fixed entity-type and empty model-handle/identifier capacities,
@@ -85,6 +88,12 @@ payload for the session:
 Remove and place commands require an exact shape-aware interaction expectation.
 The ray origin must match the authoritative session actor position, and reach is
 limited by the configured host policy; non-finite rays reject without admission.
+The graphical client has one narrower exception for its existing local free-fly
+camera: a host-bound capability may admit the tagged no-clip observer's finite pose
+between ticks. That pose admission is recorded before the edit and becomes the
+ordinary authoritative ray origin. It is not a player controller, a remote pose
+proposal, or a general movement API. The local observer is excluded from placement
+collision because it is a developer camera rather than physical occupancy.
 The multi-cell atomic edit form additionally requires a capability issued by the
 same host, so a client action value alone cannot invoke it. It requires expected
 state for every addressed cell. All cells, deterministic entity tick membership,
@@ -100,7 +109,7 @@ an earlier cut. Consumers must pump these bounded publications, or explicitly
 recover after falling behind. Host entity
 IDs are allocated by the host rather than by entity constructors.
 
-Entity spawn/despawn, session start, and command submission are inter-tick
+Entity spawn/despawn, session start, local-observer pose, and command submission are inter-tick
 admissions. Their effects are immediately visible to an owner-side checkpoint and
 to the next tick; they never appear partway through a tick. The recording stores
 successful admissions in that same order with the tick after which they became
@@ -184,7 +193,10 @@ Connecting a replica captures a complete immutable baseline and installs its
 subscription at the same revision. Each replica has independent bounded message
 and cell storage; the host never exposes its mutable `World`. Change batches name
 their base and resulting revisions and contain the complete atomic edit projection
-plus ordered outcomes.
+plus ordered outcomes. Baselines and tick changes also carry a bounded full list
+of built-in entity simulation states. Entity state storage is allocated and copied
+before an edit becomes visible; after the fixed update only scalar dynamic fields
+are refreshed in that prepared publication.
 
 Public message ingestion validates payload capacity before taking a private
 immutable copy. A sender retaining a mutable shared-pointer alias cannot change or
@@ -218,3 +230,28 @@ bounds aggregate session memory.
 
 This publication stream is process-local applied state. It does not acknowledge
 durability, define a wire codec, or expose transport or authentication behavior.
+
+## Graphical bounded client
+
+Normal graphical startup uses the same semantic registry, saved generator snapshot,
+and `SimulationHost` as the CPU path. The initial policy pins the camera's one
+horizontal chunk and the chunk immediately below it. It is deliberately not general
+streaming authority. `WorldView` receives a separately allocated replica `World`;
+the host's mutable world is never passed to input or rendering. A loopback baseline
+populates the replica before readiness, and only revision-continuous change batches
+alter it afterward. Changed chunks drive mesh priority. Fixed streaming attention
+stays on the pinned center, so camera motion cannot generate, load, evict, or claim
+authority over terrain outside the initial coverage.
+
+Input captures remove/place press edges against the replica's shape-aware target.
+The graphical client converts compact block IDs to semantic states, records the
+actual origin, direction, owner cell and face, submits asynchronously, and changes
+nothing immediately. The host re-raycasts exact coverage at a fixed tick. Outcomes
+and cell changes return in that tick's immutable publication. Holding a key cannot
+submit another command because edge capture occurs once per presentation frame,
+even when the host performs multiple catch-up ticks.
+
+The replica also replaces its entity set from each coherent publication. It alone
+loads cosmetic model assets; entity removal drops the replica entity before the
+renderer prunes its model instance. The block gallery keeps its previous read-only
+presentation generator and streaming path and never constructs a simulation host.

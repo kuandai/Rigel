@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -39,6 +40,9 @@ struct HeadlessRuntimeState {
     int height = 600;
     int decorated = GLFW_TRUE;
     bool shouldClose = false;
+    size_t polls = 0;
+    size_t closeAfterPolls = 0;
+    size_t renderedFrames = 0;
 };
 
 HeadlessRuntimeState* g_runtime = nullptr;
@@ -106,8 +110,17 @@ double runtimeTime() {
 int windowShouldClose(GLFWwindow*) {
     return g_runtime->shouldClose ? GLFW_TRUE : GLFW_FALSE;
 }
-void pollEvents() {}
-void swapBuffers(GLFWwindow*) { glFinish(); }
+void pollEvents() {
+    ++g_runtime->polls;
+    if (g_runtime->closeAfterPolls != 0 &&
+        g_runtime->polls >= g_runtime->closeAfterPolls) {
+        g_runtime->shouldClose = true;
+    }
+}
+void swapBuffers(GLFWwindow*) {
+    glFinish();
+    ++g_runtime->renderedFrames;
+}
 void setWindowShouldClose(GLFWwindow*, int value) {
     g_runtime->shouldClose = value != GLFW_FALSE;
 }
@@ -144,7 +157,96 @@ Rigel::GlfwRuntime::Api headlessRuntimeApi() {
     };
 }
 
+void runAndClose(Rigel::Application& application) {
+    application.run();
+    application.close();
+}
+
+void runNormalApplication(
+    HeadlessRuntimeState& runtime,
+    const std::filesystem::path& preferencesPath
+) {
+    runtime.shouldClose = false;
+    runtime.polls = 0;
+    runtime.closeAfterPolls = 4;
+    g_runtime = &runtime;
+    Rigel::ApplicationConstructionHooks hooks;
+    hooks.runtimeApi = headlessRuntimeApi();
+    hooks.userPreferencesPath = preferencesPath;
+    hooks.initializeWindowIntegrations = false;
+    try {
+        Rigel::ApplicationTestAccess::constructAndRun(
+            std::move(hooks), &runAndClose);
+    } catch (...) {
+        g_runtime = nullptr;
+        throw;
+    }
+    g_runtime = nullptr;
+}
+
 } // namespace
+
+TEST_CASE(Application_NormalAuthorityLaunchRendersCheckpointsAndRecovers) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_normal_authority_launch");
+    ScopedCurrentDirectory currentDirectory(directory.path());
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+    HeadlessRuntimeState runtime;
+    runtime.videoMode.width = 1280;
+    runtime.videoMode.height = 720;
+    runtime.videoMode.refreshRate = 60;
+
+    Rigel::Preferences::UserPreferences preferences;
+    preferences.display.vsync = false;
+    preferences.display.fpsLimit = 120;
+    preferences.graphics.viewDistanceChunks = 8;
+    preferences.graphics.shadows = false;
+    const std::filesystem::path preferencesPath =
+        directory.path() / "config/user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath)
+        .saveRequested(preferences);
+
+    runNormalApplication(runtime, preferencesPath);
+    CHECK(runtime.renderedFrames >= 3);
+    const std::filesystem::path authorityRoot =
+        directory.path() / "saves/world_0/authority";
+    CHECK(std::filesystem::exists(authorityRoot / "current"));
+
+    const size_t firstLaunchFrames = runtime.renderedFrames;
+    runNormalApplication(runtime, preferencesPath);
+    CHECK(runtime.renderedFrames >= firstLaunchFrames + 3);
+    CHECK(std::filesystem::exists(authorityRoot / "current"));
+}
+
+TEST_CASE(Application_NormalAuthorityRejectsUnknownSaveWithoutMutation) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_normal_authority_unknown_save");
+    ScopedCurrentDirectory currentDirectory(directory.path());
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+    HeadlessRuntimeState runtime;
+    runtime.videoMode.width = 1280;
+    runtime.videoMode.height = 720;
+    runtime.videoMode.refreshRate = 60;
+
+    const auto saveRoot = directory.path() / "saves/world_0";
+    std::filesystem::create_directories(saveRoot);
+    const auto markerPath = saveRoot / "unknown-format.bin";
+    std::ofstream(markerPath, std::ios::binary) << "preserve me";
+    const std::filesystem::path preferencesPath =
+        directory.path() / "config/user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath)
+        .saveRequested({});
+
+    CHECK_THROWS(runNormalApplication(runtime, preferencesPath));
+    g_runtime = nullptr;
+    std::ifstream marker(markerPath, std::ios::binary);
+    std::string contents;
+    std::getline(marker, contents);
+    CHECK_EQ(contents, std::string("preserve me"));
+    CHECK(!std::filesystem::exists(saveRoot / "authority"));
+}
 
 TEST_CASE(Application_BlockGalleryLaunchUsesProductionLifecycle) {
     Rigel::Test::TemporaryDirectory directory(

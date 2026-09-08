@@ -4,13 +4,7 @@
 #include "Rigel/input/GameplayInput.h"
 
 #include "Rigel/Asset/AssetManager.h"
-#include "Rigel/Entity/Entity.h"
-#include "Rigel/Entity/EntityModelLoader.h"
-#include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/BlockTargeting.h"
-#include "Rigel/Voxel/Chunk.h"
-#include "Rigel/Voxel/World.h"
-#include "Rigel/Voxel/WorldView.h"
 
 #include <spdlog/spdlog.h>
 
@@ -306,93 +300,29 @@ void updateCamera(const InputState& input, CameraState& camera, float dt) {
     camera.target = camera.position + forward;
 }
 
-void handleDemoSpawn(const InputState& input,
-                     Asset::AssetManager& assets,
-                     Voxel::World& world,
-                     const CameraState& camera,
-                     GameplayMutationMode mode) {
-    if (mode == GameplayMutationMode::ReadOnly ||
-        !input.isActionJustPressed("demo_spawn_entity")) {
-        return;
-    }
-
-    auto entity = std::make_unique<Entity::Entity>("rigel:demo_entity");
-    glm::vec3 spawnPos = camera.position + camera.forward * 2.0f;
-    spawnPos.y += 0.5f;
-    entity->setPosition(spawnPos);
-    if (assets.exists("entity_models/model_drone_interceptor")) {
-        auto model = assets.get<Entity::EntityModelAsset>("entity_models/model_drone_interceptor");
-        entity->setModel(std::move(model));
-    }
-    Entity::EntityId id = world.entities().spawn(std::move(entity));
-    if (!id.isNull()) {
-        spdlog::info("Spawned demo entity {}:{}:{} at {:.2f}, {:.2f}, {:.2f}",
-                     id.time, id.random, id.counter,
-                     spawnPos.x, spawnPos.y, spawnPos.z);
-    } else {
-        spdlog::warn("Failed to spawn demo entity");
-    }
+bool requestsDemoSpawn(
+    const InputState& input,
+    GameplayMutationMode mode
+) {
+    return mode == GameplayMutationMode::ReadWrite &&
+        input.isActionJustPressed("demo_spawn_entity");
 }
 
 bool handleBlockEdits(const InputState& input,
                       const WindowState& window,
                       const Voxel::BlockTarget* target,
-                      Voxel::World& world,
-                      Voxel::WorldView& worldView,
-                      Voxel::BlockID placeBlock,
-                      GameplayMutationMode mode) {
+                      GameplayMutationMode mode,
+                      const BlockEditIntentSink& submit) {
     if (mode == GameplayMutationMode::ReadOnly ||
-        !window.cursorCaptured || !target) {
+        !window.cursorCaptured || !target || !submit) {
         return false;
     }
-    bool worldEdited = false;
-    auto prioritizeEditedChunk = [&](const glm::ivec3& worldPos) {
-        Voxel::ChunkCoord coord = Voxel::worldToChunk(worldPos.x, worldPos.y, worldPos.z);
-        int lx = 0;
-        int ly = 0;
-        int lz = 0;
-        Voxel::worldToLocal(worldPos.x, worldPos.y, worldPos.z, lx, ly, lz);
-        worldView.prioritizeChunkMesh(coord);
-        if (lx == 0) {
-            worldView.prioritizeChunkMesh(coord.offset(-1, 0, 0));
-        } else if (lx == Voxel::Chunk::SIZE - 1) {
-            worldView.prioritizeChunkMesh(coord.offset(1, 0, 0));
-        }
-        if (ly == 0) {
-            worldView.prioritizeChunkMesh(coord.offset(0, -1, 0));
-        } else if (ly == Voxel::Chunk::SIZE - 1) {
-            worldView.prioritizeChunkMesh(coord.offset(0, 1, 0));
-        }
-        if (lz == 0) {
-            worldView.prioritizeChunkMesh(coord.offset(0, 0, -1));
-        } else if (lz == Voxel::Chunk::SIZE - 1) {
-            worldView.prioritizeChunkMesh(coord.offset(0, 0, 1));
-        }
-    };
-
     if (input.isActionJustPressed("remove_block")) {
-        world.setBlock(
-            target->block.x,
-            target->block.y,
-            target->block.z,
-            Voxel::BlockState{});
-        prioritizeEditedChunk(target->block);
-        worldEdited = true;
+        return submit(GameplayBlockEditAction::Remove, *target);
     } else if (input.isActionJustPressed("place_block")) {
-        // Removal takes precedence when both actions begin in one frame because
-        // removing the owning block invalidates every surface datum in target.
-        const glm::ivec3 placePos = target->block + target->normal;
-        if (target->normal != glm::ivec3(0) &&
-            placeBlock != Voxel::BlockRegistry::airId() &&
-            world.getBlock(placePos.x, placePos.y, placePos.z).isAir()) {
-            Voxel::BlockState state;
-            state.id = placeBlock;
-            world.setBlock(placePos.x, placePos.y, placePos.z, state);
-            prioritizeEditedChunk(placePos);
-            worldEdited = true;
-        }
+        return submit(GameplayBlockEditAction::Place, *target);
     }
-    return worldEdited;
+    return false;
 }
 
 } // namespace Rigel::Input

@@ -36,6 +36,7 @@ set(RIGEL_GRAPHICS_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/asset/TextureLoader.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/Application.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/ApplicationPreferences.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/GraphicalAuthorityClient.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/GlfwRuntime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/entity/EntityModelInstance.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/entity/EntityRenderer.cpp

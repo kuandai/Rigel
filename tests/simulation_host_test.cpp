@@ -1397,7 +1397,10 @@ TEST_CASE(SimulationCheckpoint_publishes_the_captured_cut_and_restores_pending_w
     CHECK_EQ(outcome.status, CheckpointWriteStatus::Durable);
     CHECK_EQ(outcome.stateHash, capturedHash);
 
-    auto recovered = manager.recover(fixture.resources, fixture.generator);
+    SimulationHostConfig currentPolicy;
+    currentPolicy.maxSnapshotCells = 25'000;
+    auto recovered = manager.recover(
+        fixture.resources, fixture.generator, currentPolicy);
     CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
     CHECK_EQ(recovered.generation, uint64_t{1});
     CHECK_EQ(recovered.host->stateHash(), capturedHash);
@@ -1910,7 +1913,10 @@ TEST_CASE(SimulationCheckpoint_preserves_pending_command_after_actor_removal) {
         std::make_shared<Persistence::InMemoryStorageBackend>(), "/save");
     CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
     CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
-    auto restored = manager.recover(fixture.resources, fixture.generator);
+    SimulationHostConfig currentPolicy;
+    currentPolicy.maxSnapshotCells = 25'000;
+    auto restored = manager.recover(
+        fixture.resources, fixture.generator, currentPolicy);
     CHECK_EQ(restored.status, CheckpointRecoveryStatus::Recovered);
     CHECK_EQ(restored.host->stateHash(), fixture.host->stateHash());
     restored.host->advance(17ms);

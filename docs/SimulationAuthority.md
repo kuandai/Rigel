@@ -23,7 +23,12 @@ are current policy values, not a promise that future worlds use the same bounds:
 | Checkpoint and replay | 64 MiB configured for each checkpoint or recording; 4,096 replay admissions |
 
 The checkpoint encoding also rejects any single payload above its independent
-256 MiB format ceiling. Constructors can select smaller or different fixture
+256 MiB format ceiling. The bounded host caps snapshot/interaction coverage at
+1,048,576 cells (four times the default snapshot budget). Live configuration and
+decoded replay envelopes both enforce this current execution ceiling before
+constructing a host or traversing interaction coverage; a recording cannot raise
+it. This is a replaceable implementation limit, not durable world meaning.
+Constructors can select smaller or different fixture
 limits, but normal startup overrides terrain coverage to exactly the two chunks
 above. Resource exhaustion is a typed refusal or recovery requirement; it does
 not authorize eviction of receipts, partial commands, missing terrain, or

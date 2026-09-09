@@ -66,6 +66,10 @@ bool addElements(size_t& total, size_t count, size_t elementSize) {
 constexpr uint64_t CheckpointMagic = 0x524947454c435031ULL; // RIGELCP1
 constexpr uint64_t RecordingMagic = 0x524947454c525031ULL; // RIGELRP1
 constexpr uint32_t StateFormatVersion = 4;
+// Current bounded-host execution ceiling, not a durable world rule. Apply it
+// equally to live configuration and decoded replay budgets so a small recording
+// cannot authorize unbounded interaction-coverage traversal.
+constexpr size_t MaximumSnapshotCells = 1'048'576;
 
 class Encoder {
 public:
@@ -1064,6 +1068,7 @@ SimulationHost::SimulationHost(
     SimulationHostConfig config
 ) : m_impl(std::make_unique<Impl>()), m_config(std::move(config)) {
     if (!generator || !resources.registry().frozen() ||
+        m_config.maxSnapshotCells > MaximumSnapshotCells ||
         m_config.zone.empty() || !m_config.domain.volume(m_config.maxSnapshotCells) ||
         m_config.tickRate.numerator == 0 || m_config.tickRate.denominator == 0 ||
         m_config.maxCatchUpTicks == 0 || m_config.maxPendingCommands == 0 ||
@@ -1327,6 +1332,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         replayPolicy.maxEntityTagBytes == 0 ||
         replayPolicy.maxCommandBytes == 0 ||
         replayPolicy.maxSnapshotCells == 0 ||
+        replayPolicy.maxSnapshotCells > MaximumSnapshotCells ||
         !savedDomain.volume(replayPolicy.maxSnapshotCells) ||
         replayPolicy.maxChangesPerCommand >
             HardSerializedBytes / sizeof(CellMutation) ||

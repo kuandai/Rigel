@@ -1013,6 +1013,61 @@ TEST_CASE(SimulationHost_recording_decoder_rejects_nonfinite_entity_scalar) {
         ResimulationStatus::MalformedRecording);
 }
 
+TEST_CASE(SimulationHost_bounds_live_and_recorded_snapshot_execution) {
+    SimulationHostConfig bounded;
+    bounded.domain = {{0, 0, 0}, {7, 7, 7}};
+    bounded.maxSnapshotCells = 1'048'576;
+    HostFixture atLimit(bounded);
+    ++bounded.maxSnapshotCells;
+    CHECK_THROWS(HostFixture{bounded});
+
+    SimulationHostConfig policy;
+    policy.maxInteractionDistance = 200'000'000.0f;
+    HostFixture fixture(policy);
+    fixture.start();
+    auto command = fixture.removeCommand(1);
+    command.interaction->direction = {0, 0, 1};
+    command.interaction->maxDistance = policy.maxInteractionDistance;
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+
+    // An excessive saved budget is corrupt before pending commands or terrain
+    // are reconstructed, even when a finite, very long interaction is pending.
+    CHECK_EQ(recoverMutatedCheckpoint(fixture, [](auto& bytes, const auto& layout) {
+        writeBigU64(bytes, layout.replayLimits.at(7),
+                    std::numeric_limits<uint64_t>::max());
+    }), CheckpointRecoveryStatus::Corrupt);
+
+    fixture.host->advance(17ms);
+    const auto outcome = fixture.host->submit(command).outcome;
+    CHECK(outcome.has_value());
+    CHECK_EQ(outcome->status, CommandOutcomeStatus::InvalidRequest);
+    const auto recording = fixture.host->recording();
+    CHECK(recording.has_value());
+    const auto valid = SimulationHost::resimulate(
+        fixture.resources, fixture.generator, *recording, {17ms});
+    CHECK_EQ(valid.status, ResimulationStatus::Complete);
+    CHECK_EQ(valid.stateHash, recording->finalHash);
+
+    constexpr size_t baselineLengthOffset = 8 + 4 + 32 + 8 + 8;
+    constexpr size_t baselineOffset = baselineLengthOffset + 8;
+    const size_t baselineSize = readBigU64(recording->bytes, baselineLengthOffset);
+    CHECK(baselineOffset + baselineSize <= recording->bytes.size());
+    const std::vector<uint8_t> baseline(
+        recording->bytes.begin() + baselineOffset,
+        recording->bytes.begin() + baselineOffset + baselineSize);
+    const auto layout = checkpointLayout(baseline);
+    for (const uint64_t budget : {
+             uint64_t{1'048'577}, std::numeric_limits<uint64_t>::max()}) {
+        auto malformed = *recording;
+        writeBigU64(malformed.bytes, baselineOffset + layout.replayLimits.at(7),
+                    budget);
+        const auto rejected = SimulationHost::resimulate(
+            fixture.resources, fixture.generator, malformed, {17ms});
+        CHECK_EQ(rejected.status, ResimulationStatus::MalformedRecording);
+        CHECK(!rejected.host);
+    }
+}
+
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES
 TEST_CASE(SimulationHost_failed_spawn_does_not_consume_authority_identity) {
     HostFixture fixture;

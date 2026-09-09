@@ -132,8 +132,20 @@ std::string blockRecord(const Voxel::BlockType& type) {
     }
     CanonicalWriter out;
     out.string(type.identifier);
-    out.u32(static_cast<uint32_t>(type.model->cuboids().size()));
+    const auto selectableCuboids = static_cast<uint32_t>(std::count_if(
+        type.model->cuboids().begin(), type.model->cuboids().end(),
+        [](const Voxel::BlockModelCuboid& cuboid) {
+            return std::any_of(
+                cuboid.faces.begin(), cuboid.faces.end(),
+                [](const auto& face) { return face.has_value(); });
+        }));
+    out.u32(selectableCuboids);
     for (const auto& cuboid : type.model->cuboids()) {
+        if (std::none_of(
+                cuboid.faces.begin(), cuboid.faces.end(),
+                [](const auto& face) { return face.has_value(); })) {
+            continue;
+        }
         const auto bounds = Voxel::detail::orientedBounds(
             cuboid.bounds, type.model.orientation);
         for (float value : bounds.min) out.floating(value);
@@ -236,7 +248,7 @@ ContentDictionary::ContentDictionary(
     }
     CanonicalWriter manifest;
     manifest.string("rigel.content-manifest");
-    manifest.u32(3);
+    manifest.u32(4);
     manifest.u32(static_cast<uint32_t>(m_entries.size()));
     for (const auto& entry : m_entries) {
         m_byLocalId[entry.localId.type] = &entry;

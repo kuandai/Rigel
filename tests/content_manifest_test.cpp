@@ -5,7 +5,10 @@
 #include "Rigel/Voxel/BlockGalleryCatalog.h"
 #include "Rigel/Voxel/BlockGalleryChunkGenerator.h"
 #include "Rigel/Voxel/BlockRegistry.h"
+#include "Rigel/Voxel/BlockTargeting.h"
+#include "Rigel/Voxel/World.h"
 #include "Rigel/Voxel/WorldGenerator.h"
+#include "Rigel/Voxel/WorldResources.h"
 
 #include <memory>
 #include <string>
@@ -106,6 +109,60 @@ ManifestFixture fixture(
     return result;
 }
 
+enum class InertPlacement { None, Before, After };
+
+struct InertGeometryFixture {
+    Voxel::WorldResources resources;
+    Voxel::World world{resources};
+    std::shared_ptr<Voxel::WorldGenerator> generator;
+    std::unique_ptr<Simulation::ContentDictionary> dictionary;
+    Voxel::BlockID raised;
+
+    InertGeometryFixture(
+        InertPlacement placement,
+        Voxel::BlockModelBounds inertBounds,
+        bool giveInertCuboidFace = false
+    ) {
+        resources.registry().registerBlock(
+            "rigel:stone", block("rigel:stone", false));
+        auto raisedType = block("rigel:raised", true);
+        std::vector<Voxel::BlockModelCuboid> cuboids(
+            raisedType.model->cuboids().begin(),
+            raisedType.model->cuboids().end());
+        if (placement != InertPlacement::None) {
+            Voxel::BlockModelCuboid inert{.bounds = inertBounds};
+            if (giveInertCuboidFace) {
+                inert.faces[static_cast<size_t>(Voxel::Direction::PosY)] =
+                    Voxel::BlockModelFace{.textureSlot = "surface"};
+            }
+            cuboids.insert(
+                placement == InertPlacement::Before
+                    ? cuboids.begin() : cuboids.end(),
+                std::move(inert));
+            raisedType.model = std::make_shared<const Voxel::BlockModel>(
+                "fixture:raised", std::vector<std::string>{"surface"},
+                std::move(cuboids));
+        }
+        raised = resources.registry().registerBlock(
+            "rigel:raised", std::move(raisedType));
+        resources.registry().freeze();
+        generator = std::make_shared<Voxel::WorldGenerator>(
+            resources.registry(),
+            Test::generatorDefinitionFixture(
+                "rigel:stone", "rigel:raised", "base:air"),
+            91);
+        dictionary = std::make_unique<Simulation::ContentDictionary>(
+            resources.registry(), *generator);
+        world.setBlock(0, 0, 0, Voxel::BlockState{raised});
+    }
+
+    std::optional<Voxel::BlockTarget> target() const {
+        return Voxel::raycastBlock(
+            world, glm::vec3{0.5f, 2.0f, 0.5f},
+            glm::vec3{0.0f, -1.0f, 0.0f}, 4.0f);
+    }
+};
+
 } // namespace
 
 TEST_CASE(ContentManifest_is_stable_across_compact_registration_order) {
@@ -196,6 +253,41 @@ TEST_CASE(ContentManifest_excludes_presentation_but_preserves_authority_geometry
     CHECK_NE(originalDictionary.identity(), orientationDictionary.identity());
     CHECK_NE(originalDictionary.identity(), collisionDictionary.identity());
     CHECK_NE(modelDictionary.identity(), collisionDictionary.identity());
+}
+
+TEST_CASE(ContentManifest_excludes_faceless_cuboids_from_selection_identity) {
+    InertGeometryFixture original(
+        InertPlacement::None, {{0, 0, 0}, {1, 1, 1}});
+    InertGeometryFixture inertBefore(
+        InertPlacement::Before, {{-32, -4, -16}, {48, 12, 24}});
+    InertGeometryFixture inertAfter(
+        InertPlacement::After, {{-128, -8, -64}, {96, 20, 80}});
+    InertGeometryFixture selectableOverhang(
+        InertPlacement::Before, {{-2, 0, -2}, {3, 2, 3}}, true);
+
+    CHECK_EQ(original.dictionary->identity(), inertBefore.dictionary->identity());
+    CHECK_EQ(original.dictionary->identity(), inertAfter.dictionary->identity());
+    CHECK_NE(
+        original.dictionary->identity(),
+        selectableOverhang.dictionary->identity());
+    CHECK_EQ(
+        original.resources.registry().modelExtents(),
+        inertBefore.resources.registry().modelExtents());
+    CHECK_EQ(
+        original.resources.registry().modelExtents(),
+        inertAfter.resources.registry().modelExtents());
+
+    const auto expected = original.target();
+    CHECK(expected.has_value());
+    for (const auto* equivalent : {&inertBefore, &inertAfter}) {
+        const auto actual = equivalent->target();
+        CHECK(actual.has_value());
+        CHECK_EQ(actual->block, expected->block);
+        CHECK_EQ(actual->face, expected->face);
+        CHECK_EQ(actual->normal, expected->normal);
+        CHECK_NEAR(actual->distance, expected->distance, 0.00001f);
+        CHECK_EQ(actual->position, expected->position);
+    }
 }
 
 TEST_CASE(ContentManifest_rejects_unrepresented_gallery_generation) {

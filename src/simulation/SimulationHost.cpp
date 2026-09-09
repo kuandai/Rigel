@@ -171,6 +171,12 @@ public:
         m_at += size;
         return size;
     }
+    size_t skipStringBytes() {
+        const size_t size = u32();
+        require(size);
+        m_at += size;
+        return size;
+    }
     bool done() const { return m_at == m_data.size(); }
     // Conservative encoded lower bounds prevent a corrupt count from reserving
     // storage that cannot be justified by either input bytes or the saved budget.
@@ -1354,13 +1360,42 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
             "checkpoint does not fit current checkpoint byte limit");
     }
     if (!currentPolicy) {
+        const auto contentRequirement =
+            ContentDictionary::retainedStorageRequirement(resources.registry());
+        if (!contentRequirement ||
+            *contentRequirement > ContentDictionary::kMaximumRetainedBytes) {
+            throw std::runtime_error(
+                "recorded content exceeds reconstruction limit");
+        }
+        config.maxContentBytes = *contentRequirement;
         config.maxCheckpointBytes = std::max(config.maxCheckpointBytes, bytes.size());
     }
 
-    const size_t dictionaryCount = in.u32();
+    auto dictionaryPreflight = in;
+    const size_t dictionaryCount = dictionaryPreflight.u32();
     if (dictionaryCount == 0 || dictionaryCount > 65536) {
         throw std::runtime_error("checkpoint dictionary count is invalid");
     }
+    size_t dictionaryBytes = 0;
+    if (!addElements(
+            dictionaryBytes, dictionaryCount, sizeof(std::string))) {
+        throw std::runtime_error("checkpoint dictionary storage overflowed");
+    }
+    for (size_t i = 0; i < dictionaryCount; ++i) {
+        const size_t size = dictionaryPreflight.skipStringBytes();
+        if (!addBytes(
+                dictionaryBytes,
+                std::max(size, std::string{}.capacity())) ||
+            dictionaryBytes > config.maxContentBytes) {
+            if (currentPolicy) {
+                throw std::invalid_argument(
+                    "checkpoint dictionary does not fit current content limit");
+            }
+            throw std::runtime_error(
+                "recorded dictionary exceeds content reconstruction limit");
+        }
+    }
+    in.u32();
     std::vector<std::string> dictionary;
     in.requireCollection(dictionaryCount, 4, sizeof(std::string), config.maxContentBytes);
     dictionary.reserve(dictionaryCount);

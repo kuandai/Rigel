@@ -447,6 +447,7 @@ struct CheckpointLayout {
     };
 
     std::array<size_t, 8> replayLimits{};
+    size_t dictionaryCount = 0;
     size_t nextEntity = 0;
     std::vector<Receipt> receipts;
     std::vector<size_t> entities;
@@ -500,6 +501,7 @@ CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
         result.replayLimits[i] = at;
         skip(8);
     }
+    result.dictionaryCount = at;
     const size_t dictionary = u32();
     for (size_t i = 0; i < dictionary; ++i) string();
     skip(8 + 8 + 8);
@@ -1066,6 +1068,79 @@ TEST_CASE(SimulationHost_bounds_live_and_recorded_snapshot_execution) {
         CHECK_EQ(rejected.status, ResimulationStatus::MalformedRecording);
         CHECK(!rejected.host);
     }
+}
+
+TEST_CASE(SimulationHost_resimulation_derives_content_reconstruction_budget) {
+    Voxel::WorldResources resources;
+    for (const std::string identifier : {
+             "rigel:stone", "rigel:grass", "rigel:water"}) {
+        Voxel::BlockType type;
+        type.identifier = identifier;
+        resources.registry().registerBlock(identifier, std::move(type));
+    }
+    for (size_t index = 0; index < 260; ++index) {
+        const std::string identifier =
+            "rigel:large_" + std::to_string(index) + "_" +
+            std::string(65'536, static_cast<char>('a' + index % 26));
+        Voxel::BlockType type;
+        type.identifier = identifier;
+        resources.registry().registerBlock(identifier, std::move(type));
+    }
+    resources.registry().freeze();
+    auto generator = std::make_shared<Voxel::WorldGenerator>(
+        resources.registry(), flatDefinition(), 17);
+    const auto requirement = ContentDictionary::retainedStorageRequirement(
+        resources.registry());
+    CHECK(requirement.has_value());
+    CHECK(*requirement > ContentDictionary::kDefaultMaxRetainedBytes);
+    CHECK(*requirement <= ContentDictionary::kMaximumRetainedBytes);
+
+    SimulationHostConfig policy;
+    policy.domain = {{0, 0, 0}, {0, 0, 0}};
+    policy.preloadedChunks = {{0, 0, 0}};
+    policy.maxPreloadedChunks = 1;
+    policy.maxSnapshotCells = 1;
+    policy.maxContentBytes = *requirement;
+    SimulationHost host(resources, generator, policy);
+    host.advance(17ms);
+    const auto recording = host.recording();
+    CHECK(recording.has_value());
+    const auto replay = SimulationHost::resimulate(
+        resources, generator, *recording, {3ms, 7ms, 11ms});
+    CHECK_EQ(replay.status, ResimulationStatus::Complete);
+    CHECK_EQ(replay.stateHash, host.stateHash());
+    CHECK_EQ(replay.stateHash, recording->finalHash);
+    CHECK(replay.host->content().retainedStorageBytes().has_value());
+    CHECK(*replay.host->content().retainedStorageBytes() >
+          ContentDictionary::kDefaultMaxRetainedBytes);
+}
+
+TEST_CASE(SimulationHost_preflights_forged_recording_dictionary_count) {
+    HostFixture fixture;
+    auto recording = fixture.host->recording();
+    CHECK(recording.has_value());
+    constexpr size_t baselineLengthOffset = 8 + 4 + 32 + 8 + 8;
+    constexpr size_t baselineOffset = baselineLengthOffset + 8;
+    const size_t baselineSize = readBigU64(recording->bytes, baselineLengthOffset);
+    const std::vector<uint8_t> baseline(
+        recording->bytes.begin() + baselineOffset,
+        recording->bytes.begin() + baselineOffset + baselineSize);
+    const auto layout = checkpointLayout(baseline);
+    writeBigU32(
+        recording->bytes, baselineOffset + layout.dictionaryCount, 65'536);
+
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+    watchedAllocationObserved = false;
+    watchedAllocationSize = 65'536 * sizeof(std::string);
+#endif
+    const auto replay = SimulationHost::resimulate(
+        fixture.resources, fixture.generator, *recording, {17ms});
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+    watchedAllocationSize = 0;
+    CHECK(!watchedAllocationObserved);
+#endif
+    CHECK_EQ(replay.status, ResimulationStatus::MalformedRecording);
+    CHECK(!replay.host);
 }
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES

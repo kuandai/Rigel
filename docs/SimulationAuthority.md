@@ -61,6 +61,13 @@ and lookup-table storage before copying keys, then verifies actual retained
 capacity before exposing the dictionary. Replica budgets also account for their
 shared dictionary ownership. The asset registry itself remains owned by semantic
 content initialization; this dictionary cap is not a general asset-memory budget.
+Content dictionaries have a separate 256 MiB implementation ceiling. Command
+resimulation derives its content allowance from the frozen local registry rather
+than inheriting the producing process's arbitrary allowance or falling back to the
+16 MiB default. The decoded saved dictionary is preflighted against that derived
+allowance before its vector or strings are allocated, then the constructed local
+dictionary must match the recording's manifest and stable keys. Normal checkpoint
+recovery continues to use the current process's configured content limit.
 
 The current authoritative chunk storage preserves semantic metadata and a separate
 packed light byte for non-air blocks. Air is representable only as canonical

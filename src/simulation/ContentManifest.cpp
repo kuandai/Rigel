@@ -206,23 +206,10 @@ ContentDictionary::ContentDictionary(
             "block gallery generation is unsupported by simulation authority");
     }
 
-    // Reject aggregate key storage before copying any registry entry. Include
-    // both lookup tables and inline-string capacity in this conservative estimate.
-    size_t projectedBytes = 0;
-    const auto charge = [&](size_t bytes) {
-        if (bytes > maxRetainedBytes - projectedBytes) {
-            throw ContentManifestError("content dictionary exceeds retained byte limit");
-        }
-        projectedBytes += bytes;
-    };
-    charge(sizeof(ContentDictionary));
-    const size_t inlineStringCapacity = std::string{}.capacity();
-    for (size_t index = 0; index < registry.size(); ++index) {
-        charge(sizeof(ContentDictionaryEntry) + sizeof(const ContentDictionaryEntry*));
-        const auto& key = registry.getType(
-            Voxel::BlockID{static_cast<uint16_t>(index)}).identifier;
-        charge(std::max(key.size(), inlineStringCapacity));
-        charge(1);
+    const auto requirement = retainedStorageRequirement(registry);
+    if (!requirement || *requirement > maxRetainedBytes ||
+        *requirement > kMaximumRetainedBytes) {
+        throw ContentManifestError("content dictionary exceeds retained byte limit");
     }
 
     m_entries.reserve(registry.size());
@@ -265,6 +252,27 @@ ContentDictionary::ContentDictionary(
         Voxel::serializeGeneratorDefinitionSnapshot(generator.definition()));
     manifest.string(generatorRecord.data());
     m_identity = sha256(manifest.data());
+}
+
+std::optional<size_t> ContentDictionary::retainedStorageRequirement(
+    const Voxel::BlockRegistry& registry
+) {
+    size_t total = sizeof(ContentDictionary);
+    const auto charge = [&](size_t bytes) {
+        if (bytes > std::numeric_limits<size_t>::max() - total) return false;
+        total += bytes;
+        return true;
+    };
+    const size_t inlineStringCapacity = std::string{}.capacity();
+    for (size_t index = 0; index < registry.size(); ++index) {
+        if (!charge(sizeof(ContentDictionaryEntry)) ||
+            !charge(sizeof(const ContentDictionaryEntry*))) return std::nullopt;
+        const auto& key = registry.getType(
+            Voxel::BlockID{static_cast<uint16_t>(index)}).identifier;
+        if (!charge(std::max(key.size(), inlineStringCapacity)) ||
+            !charge(1)) return std::nullopt;
+    }
+    return total;
 }
 
 std::optional<size_t> ContentDictionary::retainedStorageBytes() const {

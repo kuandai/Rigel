@@ -64,6 +64,10 @@ public:
 class ContentDictionary final {
 public:
     static constexpr size_t kDefaultMaxRetainedBytes = 16 * 1024 * 1024;
+    static constexpr size_t kMaximumRetainedBytes = 256 * 1024 * 1024;
+    /** Conservative allocation-free allowance required by a frozen registry. */
+    static std::optional<size_t> retainedStorageRequirement(
+        const Voxel::BlockRegistry& registry);
     ContentDictionary(
         const Voxel::BlockRegistry& registry,
         const Voxel::WorldGenerator& generator,

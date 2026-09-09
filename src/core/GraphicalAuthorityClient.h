@@ -79,6 +79,9 @@ public:
     Simulation::Tick tick() const { return m_visibleTick; }
     bool projectionRetryPending() const { return m_projectionBlocked; }
     Simulation::SessionId session() const { return m_session; }
+    const Simulation::AuthorityCommandDescriptor& commandDescriptor() const {
+        return m_commandDescriptor;
+    }
     size_t pendingSubmissionCount() const { return m_pendingSubmissions.size(); }
     const GraphicalEditSubmissionStats& submissionStats() const {
         return m_submissionStats;

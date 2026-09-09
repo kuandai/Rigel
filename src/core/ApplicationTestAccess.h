@@ -51,6 +51,8 @@ struct ApplicationConstructionHooks {
         ApplicationPersistencePolicyState) = nullptr;
     WorldMode worldMode = WorldMode::Normal;
     bool initializeWindowIntegrations = true;
+    std::optional<std::string> authorityZone;
+    std::optional<float> authorityInteractionDistance;
 };
 
 struct ApplicationCloseHooks {
@@ -120,6 +122,8 @@ struct ApplicationNormalAuthorityLifecycleState {
     uint64_t acceptedEdits = 0;
     uint64_t rejectedEdits = 0;
     uint64_t appliedEditOutcomes = 0;
+    std::string authorityZone;
+    float authorityInteractionDistance = 0.0f;
     std::array<int, 3> editedCell{};
     bool targetSelected = false;
     bool editSubmitted = false;
@@ -172,7 +176,10 @@ public:
         GlfwRuntime::Api runtimeApi,
         std::filesystem::path userPreferencesPath,
         bool submitEdit,
-        std::optional<std::array<int, 3>> expectedRemovedCell = std::nullopt);
+        std::optional<std::array<int, 3>> expectedRemovedCell = std::nullopt,
+        std::optional<std::string> authorityZone = std::nullopt,
+        std::optional<float> authorityInteractionDistance = std::nullopt,
+        float targetDistance = 1.0f);
     static ApplicationPendingEditCloseState
     closeNormalAuthorityWithPendingEdit(
         GlfwRuntime::Api runtimeApi,

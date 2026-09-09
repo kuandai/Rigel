@@ -76,7 +76,7 @@ constexpr std::string_view kInstalledPersistenceFormat = "cr";
 constexpr std::string_view kBlockGalleryPersistenceFormat = "memory";
 constexpr std::string_view kBlockGalleryVirtualRoot =
     "developer/block-gallery";
-constexpr float kBlockTargetDistance = 8.0f;
+constexpr float kBlockGalleryTargetDistance = 8.0f;
 constexpr std::string_view kAuthorityCheckpointDirectory = "authority";
 
 bool emptyOrBoundedAuthoritySave(
@@ -414,6 +414,8 @@ struct Application::Impl {
     bool shutDown = false;
     bool initializeWindowIntegrations = true;
     WorldMode worldMode = WorldMode::Normal;
+    std::optional<std::string> authorityZone;
+    std::optional<float> authorityInteractionDistance;
     void (*afterContextAcquired)() = nullptr;
     void (*shutdownStageCompleted)(ApplicationShutdownStage) noexcept = nullptr;
     void (*afterDisplayInitialized)(Application&) = nullptr;
@@ -428,6 +430,8 @@ struct Application::Impl {
         , preferencesPath(std::move(hooks.userPreferencesPath))
         , initializeWindowIntegrations(hooks.initializeWindowIntegrations)
         , worldMode(hooks.worldMode)
+        , authorityZone(std::move(hooks.authorityZone))
+        , authorityInteractionDistance(hooks.authorityInteractionDistance)
         , afterContextAcquired(hooks.afterContextAcquired)
         , shutdownStageCompleted(hooks.shutdownStageCompleted)
         , afterDisplayInitialized(hooks.afterDisplayInitialized)
@@ -830,6 +834,13 @@ void Application::initialize() {
             };
             Simulation::SimulationHostConfig hostConfig;
             hostConfig.world = m_impl->world.activeWorldId;
+            if (m_impl->authorityZone) {
+                hostConfig.zone = *m_impl->authorityZone;
+            }
+            if (m_impl->authorityInteractionDistance) {
+                hostConfig.maxInteractionDistance =
+                    *m_impl->authorityInteractionDistance;
+            }
             hostConfig.domain = m_impl->world.authorityBounds;
             hostConfig.preloadedChunks = {
                 {center.x, center.y - 1, center.z},
@@ -1422,7 +1433,10 @@ ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
     GlfwRuntime::Api runtimeApi,
     std::filesystem::path userPreferencesPath,
     bool submitEdit,
-    std::optional<std::array<int, 3>> expectedRemovedCell
+    std::optional<std::array<int, 3>> expectedRemovedCell,
+    std::optional<std::string> authorityZone,
+    std::optional<float> authorityInteractionDistance,
+    float targetDistance
 ) {
     if (g_normalAuthorityLaunchLifecycleProbe) {
         throw std::logic_error(
@@ -1440,6 +1454,8 @@ ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
     hooks.runtimeApi = runtimeApi;
     hooks.userPreferencesPath = std::move(userPreferencesPath);
     hooks.initializeWindowIntegrations = false;
+    hooks.authorityZone = std::move(authorityZone);
+    hooks.authorityInteractionDistance = authorityInteractionDistance;
 
     try {
         Application application(std::make_unique<Application::Impl>(
@@ -1453,6 +1469,11 @@ ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
                 "normal authority lifecycle did not initialize");
         }
         observed.authorityChunkCount = impl.world.authorityChunks.size();
+        const auto& commandDescriptor =
+            impl.world.authorityClient->commandDescriptor();
+        observed.authorityZone = commandDescriptor.zone;
+        observed.authorityInteractionDistance =
+            commandDescriptor.maxInteractionDistance;
         const auto activeSession =
             impl.world.authorityHost->activeSession();
         observed.checkpointRecovered =
@@ -1495,7 +1516,7 @@ ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
         }
         impl.camera.position = {
             static_cast<float>(selected->x) + 0.5f,
-            static_cast<float>(selected->y) + 2.0f,
+            static_cast<float>(selected->y) + 1.0f + targetDistance,
             static_cast<float>(selected->z) + 0.5f,
         };
         impl.camera.pitch = -89.0f;
@@ -1574,7 +1595,8 @@ ApplicationTestAccess::closeNormalAuthorityWithPendingEdit(
         *impl.world.replicaWorld,
         impl.camera.position,
         impl.camera.forward,
-        kBlockTargetDistance);
+        impl.world.authorityClient->commandDescriptor()
+            .maxInteractionDistance);
 
     ApplicationPendingEditCloseState observed;
     observed.editedCell = {selected->x, selected->y, selected->z};
@@ -2175,11 +2197,17 @@ void Application::run() {
                         }
                     }
                     const auto refreshBlockTarget = [&] {
+                        const float maxDistance =
+                            m_impl->world.authorityClient
+                                ? m_impl->world.authorityClient
+                                      ->commandDescriptor()
+                                      .maxInteractionDistance
+                                : kBlockGalleryTargetDistance;
                         m_impl->world.blockTarget = Voxel::raycastBlock(
                             *m_impl->world.world,
                             m_impl->camera.position,
                             m_impl->camera.forward,
-                            kBlockTargetDistance);
+                            maxDistance);
                     };
                     refreshBlockTarget();
                     const bool editSubmitted = Input::handleBlockEdits(

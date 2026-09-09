@@ -330,6 +330,43 @@ TEST_CASE(Application_NormalAuthorityMeshesEditsAndRecoversPublishedReplica) {
     CHECK(reopened.renderedFrames < 600);
 }
 
+TEST_CASE(Application_NormalAuthorityTargetsWithAdvertisedSessionPolicy) {
+    Rigel::Test::TemporaryDirectory directory(
+        "rigel_application_normal_authority_custom_policy");
+    ScopedCurrentDirectory currentDirectory(directory.path());
+    Rigel::Test::HiddenOpenGLContext context;
+    context.require();
+    HeadlessRuntimeState runtime;
+    runtime.videoMode.width = 1280;
+    runtime.videoMode.height = 720;
+    runtime.videoMode.refreshRate = 60;
+    runtime.pollDelay = std::chrono::milliseconds(2);
+    g_runtime = &runtime;
+
+    Rigel::Preferences::UserPreferences preferences;
+    preferences.display.vsync = false;
+    preferences.display.fpsLimit = 120;
+    preferences.graphics.shadows = false;
+    const std::filesystem::path preferencesPath =
+        directory.path() / "config/user-preferences.yaml";
+    Rigel::Preferences::UserPreferencesStore(preferencesPath)
+        .saveRequested(preferences);
+
+    const auto observed =
+        Rigel::ApplicationTestAccess::runNormalAuthorityLaunchLifecycle(
+            headlessRuntimeApi(), preferencesPath, true, std::nullopt,
+            "rigel:custom-zone", 12.0f, 9.0f);
+    g_runtime = nullptr;
+    CHECK_EQ(observed.authorityZone, std::string("rigel:custom-zone"));
+    CHECK_EQ(observed.authorityInteractionDistance, 12.0f);
+    CHECK(observed.targetSelected);
+    CHECK(observed.editSubmitted);
+    CHECK(observed.editApplied);
+    CHECK_EQ(observed.acceptedEdits, uint64_t{1});
+    CHECK_EQ(observed.rejectedEdits, uint64_t{0});
+    CHECK(observed.renderedFrames < 600);
+}
+
 TEST_CASE(Application_NormalAuthorityRecoversAcceptedEditBeforeItsFirstTick) {
     Rigel::Test::TemporaryDirectory directory(
         "rigel_application_normal_authority_pending_edit");

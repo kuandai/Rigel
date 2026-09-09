@@ -1372,13 +1372,12 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     }
 
     const size_t dictionaryCount = in.u32();
-    if (dictionaryCount == 0 ||
-        dictionaryCount != resources.registry().size()) {
-        throw std::runtime_error("checkpoint semantic dictionary mismatch");
+    if (dictionaryCount == 0 || dictionaryCount > 65'535) {
+        throw std::runtime_error("checkpoint dictionary count is invalid");
     }
     std::vector<Voxel::BlockID> localBySemantic;
-    localBySemantic.reserve(dictionaryCount);
-    for (size_t i = 0; i < dictionaryCount; ++i) {
+    localBySemantic.reserve(resources.registry().size());
+    for (size_t i = 0; i < resources.registry().size(); ++i) {
         localBySemantic.push_back(
             Voxel::BlockID{static_cast<uint16_t>(i)});
     }
@@ -1388,13 +1387,22 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
             return resources.registry().getType(left).identifier <
                 resources.registry().getType(right).identifier;
         });
+    bool dictionaryMatches = dictionaryCount == localBySemantic.size();
+    std::string_view previousKey;
     for (size_t i = 0; i < dictionaryCount; ++i) {
         const std::string_view savedKey = in.stringView();
-        if (savedKey != resources.registry()
-                .getType(localBySemantic[i]).identifier) {
+        if (savedKey.empty() || (i && previousKey >= savedKey)) {
             throw std::runtime_error(
-                "checkpoint semantic dictionary mismatch");
+                "checkpoint dictionary is not canonical");
         }
+        if (i >= localBySemantic.size() || savedKey != resources.registry()
+                .getType(localBySemantic[i]).identifier) {
+            dictionaryMatches = false;
+        }
+        previousKey = savedKey;
+    }
+    if (!dictionaryMatches) {
+        throw ContentManifestError("checkpoint semantic dictionary mismatch");
     }
     if (*contentRequirement > config.maxContentBytes) {
         throw std::invalid_argument(

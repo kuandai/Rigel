@@ -1189,8 +1189,50 @@ TEST_CASE(SimulationCheckpoint_rejects_mismatched_dictionary_before_content_copy
             failureAllocationSize = 0;
 #endif
         });
-    CHECK_EQ(status, CheckpointRecoveryStatus::Corrupt);
+    CHECK_EQ(status, CheckpointRecoveryStatus::Incompatible);
     CHECK(!contentCopyAttempted);
+}
+
+TEST_CASE(SimulationCheckpoint_incompatible_registry_preserves_compatibility_status) {
+    HostFixture fixture;
+    const auto recording = fixture.host->recording();
+    CHECK(recording.has_value());
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager manager(storage, "/registry-compatibility");
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    for (const bool changeCount : {false, true}) {
+        Voxel::WorldResources other;
+        for (size_t i = 1; i < fixture.resources.registry().size(); ++i) {
+            auto type = fixture.resources.registry().getType(
+                Voxel::BlockID{static_cast<uint16_t>(i)});
+            if (!changeCount && type.identifier == "rigel:overhang") {
+                type.identifier = "rigel:renamed_overhang";
+            }
+            const auto key = type.identifier;
+            other.registry().registerBlock(key, std::move(type));
+        }
+        if (changeCount) {
+            Voxel::BlockType extra;
+            extra.identifier = "rigel:extra";
+            other.registry().registerBlock(extra.identifier, extra);
+        }
+        other.registry().freeze();
+        auto generator = std::make_shared<Voxel::WorldGenerator>(
+            other.registry(), flatDefinition(), 17);
+        CHECK_EQ(manager.recover(other, generator).status,
+                 CheckpointRecoveryStatus::Incompatible);
+        CHECK_EQ(SimulationHost::resimulate(
+            other, generator, *recording, {17ms}).status,
+            ResimulationStatus::EnvelopeMismatch);
+    }
+}
+
+TEST_CASE(SimulationCheckpoint_rejects_noncanonical_dictionary) {
+    HostFixture fixture;
+    CHECK_EQ(recoverMutatedCheckpoint(fixture, [](auto& bytes, const auto& layout) {
+        bytes.at(layout.dictionaryValues.front()) = 'z';
+    }), CheckpointRecoveryStatus::Corrupt);
 }
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES

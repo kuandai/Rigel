@@ -70,6 +70,9 @@ registry before content reconstruction, without allocating a second saved-key
 table; only an exact dictionary may reach the current-process budget check and
 local dictionary construction. Normal checkpoint recovery continues to use the
 current process's configured content limit.
+Malformed dictionary structure is rejected as corrupt. A canonical dictionary
+that differs from the local registry reports content incompatibility; saved keys
+alone cannot establish whether that difference came from another content version.
 
 The current authoritative chunk storage preserves semantic metadata and a separate
 packed light byte for non-air blocks. Air is representable only as canonical

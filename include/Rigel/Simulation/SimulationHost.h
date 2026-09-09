@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <variant>
@@ -452,7 +453,7 @@ private:
     static std::unique_ptr<SimulationHost> restoreCheckpointBytes(
         Voxel::WorldResources& resources,
         std::shared_ptr<const Voxel::WorldGenerator> generator,
-        const std::vector<uint8_t>& bytes,
+        std::span<const uint8_t> bytes,
         uint64_t expectedGeneration,
         uint64_t expectedParentHash,
         const SimulationHostConfig* currentPolicy);

@@ -1147,8 +1147,19 @@ TEST_CASE(SimulationHost_preflights_forged_recording_dictionary_count) {
     writeBigU32(
         recording->bytes, baselineOffset + layout.dictionaryCount, 65'536);
 
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+    // The fixture contains several chunks; malformed content must be rejected
+    // without first duplicating its embedded checkpoint payload.
+    CHECK(baselineSize > 1024 * 1024);
+    watchedAllocationSize = baselineSize;
+    watchedAllocationObserved = false;
+#endif
     const auto replay = SimulationHost::resimulate(
         fixture.resources, fixture.generator, *recording, {17ms});
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+    watchedAllocationSize = 0;
+    CHECK(!watchedAllocationObserved);
+#endif
     CHECK_EQ(replay.status, ResimulationStatus::MalformedRecording);
     CHECK(!replay.host);
 }

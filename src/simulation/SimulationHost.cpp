@@ -115,7 +115,7 @@ private:
 
 class Decoder {
 public:
-    explicit Decoder(const std::vector<uint8_t>& data) : m_data(data) {}
+    explicit Decoder(std::span<const uint8_t> data) : m_data(data) {}
     uint8_t u8() { require(1); return m_data[m_at++]; }
     bool boolean() {
         const uint8_t value = u8();
@@ -157,13 +157,11 @@ public:
         m_at += size;
         return result;
     }
-    std::vector<uint8_t> blob(size_t limit) {
+    std::span<const uint8_t> blob(size_t limit) {
         const uint64_t size = u64();
         if (size > limit) throw std::runtime_error("checkpoint blob exceeds limit");
         require(static_cast<size_t>(size));
-        std::vector<uint8_t> result(
-            m_data.begin() + static_cast<std::ptrdiff_t>(m_at),
-            m_data.begin() + static_cast<std::ptrdiff_t>(m_at + size));
+        const auto result = m_data.subspan(m_at, static_cast<size_t>(size));
         m_at += static_cast<size_t>(size);
         return result;
     }
@@ -195,7 +193,7 @@ private:
             throw std::runtime_error("truncated checkpoint");
         }
     }
-    const std::vector<uint8_t>& m_data;
+    std::span<const uint8_t> m_data;
     size_t m_at = 0;
 };
 
@@ -1293,7 +1291,7 @@ void SimulationHost::discardRecording() {
 std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     Voxel::WorldResources& resources,
     std::shared_ptr<const Voxel::WorldGenerator> generator,
-    const std::vector<uint8_t>& bytes,
+    std::span<const uint8_t> bytes,
     uint64_t expectedGeneration,
     uint64_t expectedParentHash,
     const SimulationHostConfig* currentPolicy

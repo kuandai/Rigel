@@ -149,6 +149,14 @@ public:
         m_at += size;
         return result;
     }
+    std::string_view stringView() {
+        const size_t size = u32();
+        require(size);
+        const std::string_view result(
+            reinterpret_cast<const char*>(m_data.data() + m_at), size);
+        m_at += size;
+        return result;
+    }
     std::vector<uint8_t> blob(size_t limit) {
         const uint64_t size = u64();
         if (size > limit) throw std::runtime_error("checkpoint blob exceeds limit");
@@ -168,12 +176,6 @@ public:
         }
         require(size);
         if (size > currentLimit) throw std::invalid_argument(currentError);
-        m_at += size;
-        return size;
-    }
-    size_t skipStringBytes() {
-        const size_t size = u32();
-        require(size);
         m_at += size;
         return size;
     }
@@ -1359,51 +1361,46 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         throw std::invalid_argument(
             "checkpoint does not fit current checkpoint byte limit");
     }
+    const auto contentRequirement =
+        ContentDictionary::retainedStorageRequirement(resources.registry());
+    if (!contentRequirement ||
+        *contentRequirement > ContentDictionary::kMaximumRetainedBytes) {
+        throw std::runtime_error(
+            "content exceeds reconstruction limit");
+    }
     if (!currentPolicy) {
-        const auto contentRequirement =
-            ContentDictionary::retainedStorageRequirement(resources.registry());
-        if (!contentRequirement ||
-            *contentRequirement > ContentDictionary::kMaximumRetainedBytes) {
-            throw std::runtime_error(
-                "recorded content exceeds reconstruction limit");
-        }
         config.maxContentBytes = *contentRequirement;
         config.maxCheckpointBytes = std::max(config.maxCheckpointBytes, bytes.size());
     }
 
-    auto dictionaryPreflight = in;
-    const size_t dictionaryCount = dictionaryPreflight.u32();
-    if (dictionaryCount == 0 || dictionaryCount > 65536) {
-        throw std::runtime_error("checkpoint dictionary count is invalid");
+    const size_t dictionaryCount = in.u32();
+    if (dictionaryCount == 0 ||
+        dictionaryCount != resources.registry().size()) {
+        throw std::runtime_error("checkpoint semantic dictionary mismatch");
     }
-    size_t dictionaryBytes = 0;
-    if (!addElements(
-            dictionaryBytes, dictionaryCount, sizeof(std::string))) {
-        throw std::runtime_error("checkpoint dictionary storage overflowed");
-    }
+    std::vector<Voxel::BlockID> localBySemantic;
+    localBySemantic.reserve(dictionaryCount);
     for (size_t i = 0; i < dictionaryCount; ++i) {
-        const size_t size = dictionaryPreflight.skipStringBytes();
-        if (!addBytes(
-                dictionaryBytes,
-                std::max(size, std::string{}.capacity())) ||
-            dictionaryBytes > config.maxContentBytes) {
-            if (currentPolicy) {
-                throw std::invalid_argument(
-                    "checkpoint dictionary does not fit current content limit");
-            }
+        localBySemantic.push_back(
+            Voxel::BlockID{static_cast<uint16_t>(i)});
+    }
+    std::sort(
+        localBySemantic.begin(), localBySemantic.end(),
+        [&](Voxel::BlockID left, Voxel::BlockID right) {
+            return resources.registry().getType(left).identifier <
+                resources.registry().getType(right).identifier;
+        });
+    for (size_t i = 0; i < dictionaryCount; ++i) {
+        const std::string_view savedKey = in.stringView();
+        if (savedKey != resources.registry()
+                .getType(localBySemantic[i]).identifier) {
             throw std::runtime_error(
-                "recorded dictionary exceeds content reconstruction limit");
+                "checkpoint semantic dictionary mismatch");
         }
     }
-    in.u32();
-    std::vector<std::string> dictionary;
-    in.requireCollection(dictionaryCount, 4, sizeof(std::string), config.maxContentBytes);
-    dictionary.reserve(dictionaryCount);
-    for (size_t i = 0; i < dictionaryCount; ++i) {
-        dictionary.push_back(in.string(config.maxContentBytes));
-        if (i && dictionary[i - 1] >= dictionary[i]) {
-            throw std::runtime_error("checkpoint dictionary is not canonical");
-        }
+    if (*contentRequirement > config.maxContentBytes) {
+        throw std::invalid_argument(
+            "checkpoint dictionary does not fit current content limit");
     }
 
     const Tick tick = in.u64(); const Revision revision = in.u64();
@@ -1591,7 +1588,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         }
         for (auto& block : chunk.blocks) {
             const uint32_t semantic = in.u32();
-            if (semantic >= dictionary.size()) {
+            if (semantic >= dictionaryCount) {
                 throw std::runtime_error("checkpoint block dictionary index is invalid");
             }
             block = {Voxel::BlockID{static_cast<uint16_t>(semantic)}, in.u8(), in.u8()};
@@ -1606,15 +1603,8 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     auto host = std::unique_ptr<SimulationHost>(
         new SimulationHost(resources, std::move(generator), config));
     host->m_content->requireIdentity(savedContent);
-    if (host->m_content->entries().size() != dictionary.size()) {
+    if (host->m_content->entries().size() != dictionaryCount) {
         throw std::runtime_error("checkpoint semantic dictionary mismatch");
-    }
-    std::vector<Voxel::BlockID> localBySemantic(dictionary.size());
-    for (size_t i = 0; i < dictionary.size(); ++i) {
-        if (host->m_content->entries()[i].blockKey != dictionary[i]) {
-            throw std::runtime_error("checkpoint semantic dictionary mismatch");
-        }
-        localBySemantic[i] = host->m_content->entries()[i].localId;
     }
     for (auto& chunk : chunks) {
         for (auto& block : chunk.blocks) {

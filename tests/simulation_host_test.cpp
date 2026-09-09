@@ -132,7 +132,8 @@ struct HostFixture {
     explicit HostFixture(
         SimulationHostConfig config = {},
         glm::vec3 actorPosition = {5.5f, 6.0f, 5.5f},
-        glm::vec3 actorVelocity = {0.0f, 0.0f, 0.0f}
+        glm::vec3 actorVelocity = {0.0f, 0.0f, 0.0f},
+        size_t extraBlockCount = 0
     ) {
         for (const std::string identifier : {
                  "rigel:stone", "rigel:grass", "rigel:water"}) {
@@ -156,6 +157,13 @@ struct HostFixture {
         overhanging.collision = Voxel::BlockCollisionShape::empty();
         resources.registry().registerBlock(
             "rigel:overhang", std::move(overhanging));
+        for (size_t index = 0; index < extraBlockCount; ++index) {
+            const std::string identifier =
+                "rigel:dictionary_test_" + std::to_string(index);
+            Voxel::BlockType type;
+            type.identifier = identifier;
+            resources.registry().registerBlock(identifier, std::move(type));
+        }
         resources.registry().freeze();
         generator = std::make_shared<Voxel::WorldGenerator>(
             resources.registry(), flatDefinition(), 17);
@@ -448,6 +456,7 @@ struct CheckpointLayout {
 
     std::array<size_t, 8> replayLimits{};
     size_t dictionaryCount = 0;
+    std::vector<size_t> dictionaryValues;
     size_t nextEntity = 0;
     std::vector<Receipt> receipts;
     std::vector<size_t> entities;
@@ -503,7 +512,11 @@ CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
     }
     result.dictionaryCount = at;
     const size_t dictionary = u32();
-    for (size_t i = 0; i < dictionary; ++i) string();
+    for (size_t i = 0; i < dictionary; ++i) {
+        const size_t size = u32();
+        result.dictionaryValues.push_back(at);
+        skip(size);
+    }
     skip(8 + 8 + 8);
     result.nextEntity = at; skip(4);
     skip(8 + 4 + 8 + 8 + 16);
@@ -529,7 +542,9 @@ CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
 
 CheckpointRecoveryStatus recoverMutatedCheckpoint(
     HostFixture& fixture,
-    const std::function<void(std::vector<uint8_t>&, const CheckpointLayout&)>& mutate
+    const std::function<void(std::vector<uint8_t>&, const CheckpointLayout&)>& mutate,
+    const std::function<void()>& beforeRecover = {},
+    const std::function<void()>& afterRecover = {}
 ) {
     auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
     {
@@ -556,8 +571,11 @@ CheckpointRecoveryStatus recoverMutatedCheckpoint(
     SimulationCheckpointManager reopened(storage, "/save");
     SimulationHostConfig currentPolicy;
     currentPolicy.maxSnapshotCells = 25'000;
-    return reopened.recover(
+    if (beforeRecover) beforeRecover();
+    const auto status = reopened.recover(
         fixture.resources, fixture.generator, currentPolicy).status;
+    if (afterRecover) afterRecover();
+    return status;
 }
 
 void pumpBaseline(LoopbackReplica& replica) {
@@ -1129,18 +1147,39 @@ TEST_CASE(SimulationHost_preflights_forged_recording_dictionary_count) {
     writeBigU32(
         recording->bytes, baselineOffset + layout.dictionaryCount, 65'536);
 
-#ifdef RIGEL_TEST_ALLOCATION_FAILURES
-    watchedAllocationObserved = false;
-    watchedAllocationSize = 65'536 * sizeof(std::string);
-#endif
     const auto replay = SimulationHost::resimulate(
         fixture.resources, fixture.generator, *recording, {17ms});
-#ifdef RIGEL_TEST_ALLOCATION_FAILURES
-    watchedAllocationSize = 0;
-    CHECK(!watchedAllocationObserved);
-#endif
     CHECK_EQ(replay.status, ResimulationStatus::MalformedRecording);
     CHECK(!replay.host);
+}
+
+TEST_CASE(SimulationCheckpoint_rejects_mismatched_dictionary_before_content_copy) {
+    HostFixture fixture(
+        {}, {5.5f, 6.0f, 5.5f}, {0.0f, 0.0f, 0.0f}, 100);
+    bool contentCopyAttempted = false;
+    const auto status = recoverMutatedCheckpoint(
+        fixture,
+        [](auto& bytes, const auto& layout) {
+            CHECK(!layout.dictionaryValues.empty());
+            bytes.at(layout.dictionaryValues.front()) ^= 1;
+        },
+        [&] {
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+            failureAllocationSize = fixture.resources.registry().size() *
+                sizeof(ContentDictionaryEntry);
+            allocationsBeforeFailure = 0;
+            failAllocation = true;
+#endif
+        },
+        [&] {
+#ifdef RIGEL_TEST_ALLOCATION_FAILURES
+            contentCopyAttempted = !failAllocation;
+            failAllocation = false;
+            failureAllocationSize = 0;
+#endif
+        });
+    CHECK_EQ(status, CheckpointRecoveryStatus::Corrupt);
+    CHECK(!contentCopyAttempted);
 }
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES
@@ -1339,6 +1378,11 @@ TEST_CASE(SimulationCheckpoint_refuses_insufficient_current_limits_without_loss)
     insufficient.maxEntities = 1;
     CHECK_EQ(manager.recover(
         fixture.resources, fixture.generator, insufficient).status,
+        CheckpointRecoveryStatus::Incompatible);
+    auto insufficientContent = savedPolicy;
+    insufficientContent.maxContentBytes = 1;
+    CHECK_EQ(manager.recover(
+        fixture.resources, fixture.generator, insufficientContent).status,
         CheckpointRecoveryStatus::Incompatible);
     CHECK_EQ(readStorageBytes(*storage, "/bounded-recovery/current"), pointer);
     CHECK_EQ(readStorageBytes(

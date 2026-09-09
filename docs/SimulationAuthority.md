@@ -35,8 +35,9 @@ unmodeled entity state.
 `WorldGenerator`. It hashes canonical semantic records for every block and the
 generator inputs into its SHA-256 manifest identity, then retains only the sorted
 stable-key/local-ID mapping needed at runtime. A block record includes its stable
-identifier, selectable cuboid bounds and face presence, orientation, and collision
-shape. Model names, texture slots and coordinates, shading, ambient occlusion,
+identifier, oriented selectable cuboid bounds and face presence, and collision
+shape. Orientations that produce the same selectable geometry are equivalent.
+Model names, texture slots and coordinates, shading, ambient occlusion,
 render culling, collision provenance, opacity, and light presentation do not
 contribute because the authority does not consume them. Generator inputs and the
 built-in entity update and hitbox rules remain part of simulation identity.
@@ -169,14 +170,23 @@ while that write or its terminal outcome is outstanding coalesce without a secon
 capture. Destruction joins the writer before releasing the root lock.
 
 Checkpoint payloads contain the complete semantic dictionary, content/generator
-manifest, normalized loaded-chunk coverage and block states, complete admitted
-built-in entity state, tick and time debt, allocator, session, command receipts,
-admission counters, configuration, and pending decisions. Compact block IDs in the
-payload index the saved semantic dictionary and are rebound only after its stable
-keys and manifest match the current process. Unsupported entity rules, models,
-states, or block meaning reject capture or recovery. The current admitted rule has
-no mutable RNG; the checkpoint records that RNG scheme explicitly, while generator
-randomness remains fixed by the generator definition and seed in the manifest.
+manifest, world/zone/domain, fixed tick and interaction rules, normalized
+loaded-chunk coverage and block states, complete admitted built-in entity state,
+tick and time debt, allocator, session, command receipts, admission counters, and
+pending decisions. Compact block IDs in the payload index the saved semantic
+dictionary and are rebound only after its stable keys and manifest match the current
+process. Unsupported entity rules, models, states, or block meaning reject capture
+or recovery. The current admitted rule has no mutable RNG; the checkpoint records
+that RNG scheme explicitly, while generator randomness remains fixed by the
+generator definition and seed in the manifest.
+
+Memory, queue, replica, catch-up, checkpoint, and replay resource limits belong to
+the current process and are not restored from a save. Recovery overlays the saved
+world rules on caller-supplied current policy, then requires the complete dictionary,
+terrain, receipts, pending commands, and entities to fit those current bounds before
+returning a candidate host. An insufficient policy rejects recovery without
+truncating state or changing checkpoint files. A later checkpoint uses that host's
+current policy while retaining the acknowledged payload hash as its durable parent.
 
 Restored state is validated as a complete authority cut before the candidate host
 is returned. Entity IDs must belong to the saved world's authority allocation
@@ -190,10 +200,13 @@ candidate, so malformed input cannot replace the live host or alter save files.
 
 Each captured payload binds its generation and the complete serialized parent-cut
 hash, including scheduler debt. This durable ancestry is deliberately distinct
-from the frame-pacing-independent simulation comparison hash. After the payload
-is committed, a small atomic pointer publishes that generation, ancestry, cut,
-payload length, and payload hash. A durable publication-pending fence is installed
-before pointer replacement and removed only after replacement succeeds. Its
+from the frame-pacing-independent simulation comparison hash. The comparison hash
+includes saved world rules and authoritative state while omitting scheduler debt,
+packed presentation light, current runtime policy, and the replay admission
+envelope. After the payload is committed, a small atomic pointer publishes that
+generation, ancestry, cut, payload length, and payload hash. A durable
+publication-pending fence is installed before pointer replacement and removed only
+after replacement succeeds. Its
 presence survives manager teardown and makes recovery and later publication stop
 conservatively after a post-replacement durability uncertainty. Only a durable
 pointer advances acknowledged history. A definitely unpublished error removes the
@@ -225,10 +238,13 @@ with caller-supplied frame pacing. It compares a canonical semantic hash at the
 declared final tick and reports envelope mismatch, malformed input, or divergence.
 The final cut and every admission must be at or after the saved baseline tick;
 a recording cannot report success for a different tick than the one it declares.
-The replay byte policy covers the retained baseline, admission containers, and
-owned event payloads rather than only the eventual encoding. Exceeding either the
-event or aggregate byte limit creates a permanent detectable gap and immediately
-releases the unusable baseline and events.
+The recording stores only the admission limits that can change whether its already
+accepted commands and entities are admitted again: per-command changes, pending and
+retained receipts, entity/tag storage, and command storage. This narrow replay
+envelope does not become recovered-host policy. The recording's live event and byte
+limits still cover the retained baseline, admission containers, and owned event
+payloads rather than only the eventual encoding. Exceeding either limit creates a
+permanent detectable gap and immediately releases the unusable baseline and events.
 The envelope is the current built-in CPU entity rule and bounded terrain; this is
 not a claim of cross-platform floating-point or external physics lockstep.
 

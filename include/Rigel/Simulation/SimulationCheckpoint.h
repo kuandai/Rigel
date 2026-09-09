@@ -69,7 +69,8 @@ public:
     /** Poll the terminal write outcome before attempting recovery on this owner. */
     CheckpointRecovery recover(
         Voxel::WorldResources& resources,
-        std::shared_ptr<const Voxel::WorldGenerator> generator);
+        std::shared_ptr<const Voxel::WorldGenerator> generator,
+        SimulationHostConfig currentPolicy = {});
 
 private:
     struct Impl;

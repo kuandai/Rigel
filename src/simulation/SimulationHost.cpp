@@ -1004,7 +1004,7 @@ SimulationHost::SimulationHost(
 
 std::vector<uint8_t> SimulationHost::checkpointBytes(
     uint64_t generation, uint64_t parentHash, bool includeTimeDebt,
-    bool includeTransitionalLight
+    bool includeTransitionalLight, bool includeReplayEnvelope
 ) const {
     Encoder out(m_config.maxCheckpointBytes);
     out.u64(CheckpointMagic); out.u32(StateFormatVersion);
@@ -1024,17 +1024,19 @@ std::vector<uint8_t> SimulationHost::checkpointBytes(
     out.i32(m_config.domain.min.z); out.i32(m_config.domain.max.x);
     out.i32(m_config.domain.max.y); out.i32(m_config.domain.max.z);
     out.u32(m_config.tickRate.numerator); out.u32(m_config.tickRate.denominator);
-    for (const size_t value : {
-             m_config.maxPreloadedChunks, m_config.maxSnapshotCells,
-             m_config.maxChangesPerCommand, m_config.maxPendingCommands,
-             m_config.maxSessionReceipts, m_config.maxReplicas,
-             m_config.maxReplicaQueue, m_config.maxEntities,
-             m_config.maxEntityTags, m_config.maxEntityTagBytes,
-             m_config.maxCommandBytes, m_config.maxContentBytes,
-             m_config.maxReplicaBytes, m_config.maxCatchUpTicks,
-             m_config.maxCheckpointBytes, m_config.maxReplayEvents,
-             m_config.maxReplayBytes}) out.u64(value);
     out.floating(m_config.maxInteractionDistance);
+    if (includeReplayEnvelope) {
+        for (const size_t value : {
+                 m_config.maxChangesPerCommand,
+                 m_config.maxPendingCommands,
+                 m_config.maxSessionReceipts,
+                 m_config.maxEntities,
+                 m_config.maxEntityTags,
+                 m_config.maxEntityTagBytes,
+                 m_config.maxCommandBytes}) {
+            out.u64(value);
+        }
+    }
 
     out.u32(static_cast<uint32_t>(m_content->entries().size()));
     std::vector<uint32_t> canonicalByLocal(m_content->entries().size());
@@ -1146,7 +1148,8 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     std::shared_ptr<const Voxel::WorldGenerator> generator,
     const std::vector<uint8_t>& bytes,
     uint64_t expectedGeneration,
-    uint64_t expectedParentHash
+    uint64_t expectedParentHash,
+    const SimulationHostConfig* currentPolicy
 ) {
     if (bytes.size() > 256ULL * 1024 * 1024) {
         throw std::runtime_error("checkpoint exceeds hard byte limit");
@@ -1157,39 +1160,61 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         throw std::runtime_error("checkpoint envelope mismatch");
     }
     const ContentManifestId savedContent = decodeManifest(in);
-    SimulationHostConfig config;
-    config.world = in.u32(); config.zone = in.string(64 * 1024);
-    config.domain.min = {in.i32(), in.i32(), in.i32()};
-    config.domain.max = {in.i32(), in.i32(), in.i32()};
-    config.tickRate = {in.u32(), in.u32()};
-    size_t* limits[] = {
-        &config.maxPreloadedChunks, &config.maxSnapshotCells,
-        &config.maxChangesPerCommand, &config.maxPendingCommands,
-        &config.maxSessionReceipts, &config.maxReplicas,
-        &config.maxReplicaQueue, &config.maxEntities, &config.maxEntityTags,
-        &config.maxEntityTagBytes, &config.maxCommandBytes,
-        &config.maxContentBytes, &config.maxReplicaBytes,
-        &config.maxCatchUpTicks, &config.maxCheckpointBytes,
-        &config.maxReplayEvents, &config.maxReplayBytes};
-    for (size_t* target : limits) {
+    const Voxel::WorldId savedWorld = in.u32();
+    const std::string savedZone = in.string(64 * 1024);
+    CellBounds savedDomain;
+    savedDomain.min = {in.i32(), in.i32(), in.i32()};
+    savedDomain.max = {in.i32(), in.i32(), in.i32()};
+    const TickRate savedTickRate{in.u32(), in.u32()};
+    const float savedInteractionDistance = in.floating();
+
+    SimulationHostConfig replayPolicy;
+    size_t* replayLimits[] = {
+        &replayPolicy.maxChangesPerCommand,
+        &replayPolicy.maxPendingCommands,
+        &replayPolicy.maxSessionReceipts,
+        &replayPolicy.maxEntities,
+        &replayPolicy.maxEntityTags,
+        &replayPolicy.maxEntityTagBytes,
+        &replayPolicy.maxCommandBytes};
+    for (size_t* target : replayLimits) {
         const uint64_t value = in.u64();
         if (value > std::numeric_limits<size_t>::max()) {
-            throw std::runtime_error("checkpoint configuration exceeds platform range");
+            throw std::runtime_error("checkpoint replay envelope exceeds platform range");
         }
         *target = static_cast<size_t>(value);
     }
-    config.maxInteractionDistance = in.floating();
     constexpr size_t HardSerializedBytes = 256ULL * 1024 * 1024;
-    if (bytes.size() > config.maxCheckpointBytes ||
-        config.maxCheckpointBytes > HardSerializedBytes ||
-        config.maxReplayBytes > HardSerializedBytes ||
-        config.maxSessionReceipts >
-            config.maxCheckpointBytes / sizeof(Impl::Receipt) ||
-        config.maxReplicas >
-            config.maxReplicaBytes / sizeof(std::weak_ptr<LoopbackReplica::State>) ||
-        config.maxReplayEvents >
-            config.maxReplayBytes / sizeof(Impl::RecordedAdmission)) {
-        throw std::runtime_error("checkpoint exceeds saved byte limit");
+    if (replayPolicy.maxChangesPerCommand == 0 ||
+        replayPolicy.maxPendingCommands == 0 ||
+        replayPolicy.maxSessionReceipts == 0 ||
+        replayPolicy.maxEntities == 0 || replayPolicy.maxEntityTags == 0 ||
+        replayPolicy.maxEntityTagBytes == 0 ||
+        replayPolicy.maxCommandBytes == 0 ||
+        replayPolicy.maxChangesPerCommand >
+            HardSerializedBytes / sizeof(CellMutation) ||
+        replayPolicy.maxSessionReceipts >
+            HardSerializedBytes / sizeof(Impl::Receipt) ||
+        replayPolicy.maxEntities >
+            HardSerializedBytes / sizeof(Entity::EntitySimulationState)) {
+        throw std::runtime_error("checkpoint replay envelope is invalid");
+    }
+
+    SimulationHostConfig config = currentPolicy ? *currentPolicy : replayPolicy;
+    config.world = savedWorld;
+    config.zone = savedZone;
+    config.domain = savedDomain;
+    config.tickRate = savedTickRate;
+    config.maxInteractionDistance = savedInteractionDistance;
+    if (currentPolicy && bytes.size() > config.maxCheckpointBytes) {
+        throw std::invalid_argument(
+            "checkpoint does not fit current checkpoint byte limit");
+    }
+    if (!currentPolicy) {
+        const auto volume = savedDomain.volume(std::numeric_limits<size_t>::max());
+        if (!volume) throw std::runtime_error("checkpoint domain is invalid");
+        config.maxSnapshotCells = *volume;
+        config.maxCheckpointBytes = std::max(config.maxCheckpointBytes, bytes.size());
     }
 
     const size_t dictionaryCount = in.u32();
@@ -1227,18 +1252,24 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         std::optional<CommandOutcome> outcome;
     };
     const size_t receiptCount = in.u32();
+    if (receiptCount > replayPolicy.maxSessionReceipts) {
+        throw std::runtime_error("checkpoint exceeds its replay receipt envelope");
+    }
+    in.requireCollection(receiptCount, 10, sizeof(SavedReceipt),
+                         config.maxCheckpointBytes);
     if (receiptCount > config.maxSessionReceipts) {
-        throw std::runtime_error("checkpoint receipt cap exceeded");
+        throw std::invalid_argument(
+            "checkpoint receipts do not fit current session receipt limit");
     }
     std::vector<SavedReceipt> receipts;
-    in.requireCollection(receiptCount, 10, sizeof(SavedReceipt), config.maxCheckpointBytes);
     receipts.reserve(receiptCount);
     size_t pendingReceipts = 0;
     size_t receiptBytes = 0;
     for (size_t i = 0; i < receiptCount; ++i) {
         SavedReceipt receipt;
         receipt.command = decodeCommand(
-            in, config.maxChangesPerCommand, config.maxCommandBytes);
+            in, replayPolicy.maxChangesPerCommand,
+            replayPolicy.maxCommandBytes);
         receipt.admission = in.u64(); receipt.pending = in.boolean();
         if (in.boolean()) {
             CommandOutcome value;
@@ -1274,13 +1305,29 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
             throw std::runtime_error("checkpoint receipt identity is duplicated");
         }
         const auto retained = commandRetainedBytes(receipt.command);
-        if (!retained || *retained > config.maxCommandBytes ||
-            !addBytes(receiptBytes, *retained) ||
+        if (!retained || *retained > replayPolicy.maxCommandBytes) {
+            throw std::runtime_error(
+                "checkpoint command exceeds its replay byte envelope");
+        }
+        if (receipt.command.mutations.size() > config.maxChangesPerCommand ||
+            *retained > config.maxCommandBytes) {
+            throw std::invalid_argument(
+                "checkpoint command does not fit current command limits");
+        }
+        if (!addBytes(receiptBytes, *retained) ||
             receiptBytes > config.maxCheckpointBytes) {
             throw std::runtime_error("checkpoint receipt storage exceeds limit");
         }
-        if (receipt.pending && ++pendingReceipts > config.maxPendingCommands) {
-            throw std::runtime_error("checkpoint pending receipt cap exceeded");
+        if (receipt.pending) {
+            ++pendingReceipts;
+            if (pendingReceipts > replayPolicy.maxPendingCommands) {
+                throw std::runtime_error(
+                    "checkpoint exceeds its replay pending-command envelope");
+            }
+            if (pendingReceipts > config.maxPendingCommands) {
+                throw std::invalid_argument(
+                    "checkpoint pending commands do not fit current limit");
+            }
         }
         if (receipt.outcome &&
             (receipt.outcome->session != receipt.command.session ||
@@ -1295,22 +1342,32 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     }
 
     const size_t entityCount = in.u32();
+    if (entityCount > replayPolicy.maxEntities) {
+        throw std::runtime_error("checkpoint exceeds its replay entity envelope");
+    }
+    in.requireCollection(entityCount, 16,
+                         sizeof(Entity::EntitySimulationState),
+                         config.maxCheckpointBytes);
     if (entityCount > config.maxEntities) {
-        throw std::runtime_error("checkpoint entity cap exceeded");
+        throw std::invalid_argument(
+            "checkpoint entities do not fit current entity limit");
     }
     std::vector<Entity::EntitySimulationState> entities;
-    in.requireCollection(entityCount, 16, sizeof(Entity::EntitySimulationState),
-                         config.maxCheckpointBytes);
     entities.reserve(entityCount);
     size_t entityBytes = 0;
     for (size_t i = 0; i < entityCount; ++i) {
         entities.push_back(decodeEntityState(
-            in, config.maxEntityTags, config.maxEntityTagBytes));
+            in, replayPolicy.maxEntityTags,
+            replayPolicy.maxEntityTagBytes));
         if (i && !(entities[i - 1].id < entities[i].id)) {
             throw std::runtime_error("checkpoint entity order is invalid");
         }
         const auto& state = entities.back();
         const auto retained = entityStateRetainedBytes(state);
+        if (state.tags.size() > config.maxEntityTags) {
+            throw std::invalid_argument(
+                "checkpoint entity state does not fit current entity limits");
+        }
         if (state.id.time != 1 || state.id.random != config.world ||
             state.id.counter == 0 || state.id.counter >= nextEntityId ||
             !retained || !addBytes(entityBytes, *retained) ||
@@ -1320,16 +1377,23 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     }
 
     const size_t chunkCount = in.u32();
-    if (chunkCount == 0 || chunkCount > config.maxPreloadedChunks) {
+    if (chunkCount == 0) {
         throw std::runtime_error("checkpoint chunk cap exceeded");
     }
+    in.requireCollection(chunkCount, 12 + Voxel::Chunk::VOLUME * 6,
+                         sizeof(std::array<Voxel::BlockState,
+                             Voxel::Chunk::VOLUME>) + sizeof(Voxel::ChunkCoord),
+                         config.maxCheckpointBytes);
+    if (currentPolicy && chunkCount > config.maxPreloadedChunks) {
+        throw std::invalid_argument(
+            "checkpoint chunks do not fit current preloaded chunk limit");
+    }
+    if (!currentPolicy) config.maxPreloadedChunks = chunkCount;
     struct SavedChunk {
         Voxel::ChunkCoord coord;
         std::array<Voxel::BlockState, Voxel::Chunk::VOLUME> blocks;
     };
     std::vector<SavedChunk> chunks;
-    in.requireCollection(chunkCount, 12 + Voxel::Chunk::VOLUME * 6,
-                         sizeof(SavedChunk), config.maxCheckpointBytes);
     chunks.reserve(chunkCount);
     for (size_t i = 0; i < chunkCount; ++i) {
         SavedChunk chunk{{in.i32(), in.i32(), in.i32()}, {}};
@@ -1347,7 +1411,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     }
     if (!in.done()) throw std::runtime_error("checkpoint has trailing bytes");
 
-    config.preloadedChunks.clear();
+    std::vector<Voxel::ChunkCoord>().swap(config.preloadedChunks);
     config.preloadedChunks.reserve(chunkCount);
     for (const auto& chunk : chunks) config.preloadedChunks.push_back(chunk.coord);
     auto host = std::unique_ptr<SimulationHost>(
@@ -1383,9 +1447,15 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         if (!tagBytes ||
             !addBytes(semanticBytes, entity->typeId().capacity()) ||
             !addBytes(semanticBytes, entity->modelIdentifier().capacity()) ||
-            !addBytes(semanticBytes, entity->model().id().capacity()) ||
-            semanticBytes > config.maxEntityTagBytes ||
-            !host->m_content->supportsEntity(*entity) ||
+            !addBytes(semanticBytes, entity->model().id().capacity())) {
+            throw std::runtime_error(
+                "checkpoint entity storage accounting overflowed");
+        }
+        if (semanticBytes > config.maxEntityTagBytes) {
+            throw std::invalid_argument(
+                "checkpoint entity state does not fit current entity byte limit");
+        }
+        if (!host->m_content->supportsEntity(*entity) ||
             host->m_impl->world->entities().spawn(std::move(entity)) != state.id) {
             throw std::runtime_error("checkpoint entity state is unsupported");
         }
@@ -1433,7 +1503,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
 }
 
 uint64_t SimulationHost::stateHash() const {
-    return stableHash(checkpointBytes(0, 0, false, false));
+    return stableHash(checkpointBytes(0, 0, false, false, false));
 }
 
 std::optional<SimulationRecording> SimulationHost::recording() const {
@@ -1502,18 +1572,18 @@ ResimulationResult SimulationHost::resimulate(
         if (content != recording.content || finalTick != recording.finalTick ||
             finalHash != recording.finalHash) return result;
         auto baseline = in.blob(256ULL * 1024 * 1024);
-        auto host = restoreCheckpointBytes(resources, generator, baseline, 0, 0);
+        auto host = restoreCheckpointBytes(
+            resources, generator, baseline, 0, 0, nullptr);
         if (host->tick() > finalTick) return result;
         if (host->content().identity() != content) {
             result.status = ResimulationStatus::EnvelopeMismatch;
             return result;
         }
-        if (recording.bytes.size() > host->m_config.maxReplayBytes) return result;
         const size_t count = in.u32();
-        if (count > host->m_config.maxReplayEvents) return result;
+        if (count > recording.bytes.size() / 9) return result;
         std::vector<Impl::RecordedAdmission> events;
         in.requireCollection(count, 9, sizeof(Impl::RecordedAdmission),
-                             host->m_config.maxReplayBytes);
+                             recording.bytes.size());
         events.reserve(count);
         for (size_t i = 0; i < count; ++i) {
             const Tick afterTick = in.u64(); const uint8_t kind = in.u8();
@@ -2201,8 +2271,8 @@ void SimulationHost::runTick() {
                     break;
                 }
                 const auto local = m_content->localState(mutation.replacement);
-                commits.emplace_back(mutation.address, local);
                 if (current.state != mutation.replacement) {
+                    commits.emplace_back(mutation.address, local);
                     changed = true;
                     batch.changes.push_back({
                         mutation.address, mutation.replacement, local.lightLevel});

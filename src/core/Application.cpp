@@ -847,7 +847,7 @@ void Application::initialize() {
                     bootstrapPersistenceContext.storage,
                     checkpointRoot);
             auto recovery = m_impl->world.checkpoints->recover(
-                m_impl->world.worldSet.resources(), generator);
+                m_impl->world.worldSet.resources(), generator, hostConfig);
             if (recovery.status == Simulation::CheckpointRecoveryStatus::Recovered) {
                 m_impl->world.authorityHost = std::move(recovery.host);
             } else if (recovery.status ==

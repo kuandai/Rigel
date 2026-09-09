@@ -417,7 +417,8 @@ bool SimulationCheckpointManager::durabilityUncertain() const {
 
 CheckpointRecovery SimulationCheckpointManager::recover(
     Voxel::WorldResources& resources,
-    std::shared_ptr<const Voxel::WorldGenerator> generator
+    std::shared_ptr<const Voxel::WorldGenerator> generator,
+    SimulationHostConfig currentPolicy
 ) {
     if (m_impl->running.load(std::memory_order_acquire)) {
         return {CheckpointRecoveryStatus::PublicationPending, 0, nullptr,
@@ -447,6 +448,10 @@ CheckpointRecovery SimulationCheckpointManager::recover(
             pointer.payloadBytes > MaximumPayloadBytes) {
             throw std::runtime_error("checkpoint pointer changed outside live owner");
         }
+        if (pointer.payloadBytes > currentPolicy.maxCheckpointBytes) {
+            throw std::invalid_argument(
+                "checkpoint does not fit current checkpoint byte limit");
+        }
         auto payload = readPayload(
             *m_impl->storage, payloadPath(m_impl->root, pointer.generation),
             static_cast<size_t>(pointer.payloadBytes));
@@ -455,7 +460,7 @@ CheckpointRecovery SimulationCheckpointManager::recover(
         }
         auto host = SimulationHost::restoreCheckpointBytes(
             resources, std::move(generator), payload,
-            pointer.generation, pointer.parentHash);
+            pointer.generation, pointer.parentHash, &currentPolicy);
         if (host->tick() != pointer.tick ||
             host->revision() != pointer.revision ||
             host->stateHash() != pointer.stateHash) {

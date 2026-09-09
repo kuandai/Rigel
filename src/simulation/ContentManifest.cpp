@@ -5,6 +5,7 @@
 #include "Rigel/Voxel/BlockRegistry.h"
 #include "Rigel/Voxel/GeneratorDefinition.h"
 #include "Rigel/Voxel/WorldGenerator.h"
+#include "../voxel/BlockModelGeometry.h"
 
 #include <algorithm>
 #include <bit>
@@ -131,14 +132,21 @@ std::string blockRecord(const Voxel::BlockType& type) {
     }
     CanonicalWriter out;
     out.string(type.identifier);
-    out.byte(static_cast<uint8_t>(type.model.orientation));
     out.u32(static_cast<uint32_t>(type.model->cuboids().size()));
     for (const auto& cuboid : type.model->cuboids()) {
-        for (float value : cuboid.bounds.min) out.floating(value);
-        for (float value : cuboid.bounds.max) out.floating(value);
-        for (const auto& face : cuboid.faces) {
-            out.boolean(face.has_value());
+        const auto bounds = Voxel::detail::orientedBounds(
+            cuboid.bounds, type.model.orientation);
+        for (float value : bounds.min) out.floating(value);
+        for (float value : bounds.max) out.floating(value);
+        std::array<bool, Voxel::DirectionCount> faces{};
+        for (size_t source = 0; source < cuboid.faces.size(); ++source) {
+            if (!cuboid.faces[source]) continue;
+            const auto oriented = Voxel::detail::orientedDirection(
+                static_cast<Voxel::Direction>(source),
+                type.model.orientation);
+            faces[static_cast<size_t>(oriented)] = true;
         }
+        for (const bool face : faces) out.boolean(face);
     }
 
     out.byte(static_cast<uint8_t>(type.collision.kind()));

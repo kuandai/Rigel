@@ -435,7 +435,8 @@ private:
     std::vector<uint8_t> checkpointBytes(
         uint64_t generation, uint64_t parentHash,
         bool includeTimeDebt = true,
-        bool includeTransitionalLight = true) const;
+        bool includeTransitionalLight = true,
+        bool includeReplayEnvelope = true) const;
     bool prepareRecordingBaseline();
     bool recordingWithinLimit();
     void discardRecording();
@@ -444,7 +445,8 @@ private:
         std::shared_ptr<const Voxel::WorldGenerator> generator,
         const std::vector<uint8_t>& bytes,
         uint64_t expectedGeneration,
-        uint64_t expectedParentHash);
+        uint64_t expectedParentHash,
+        const SimulationHostConfig* currentPolicy);
 
     friend class SimulationCheckpointManager;
 };

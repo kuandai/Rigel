@@ -441,7 +441,7 @@ struct CheckpointLayout {
         size_t mutationCount = 0;
     };
 
-    std::array<size_t, 17> limits{};
+    std::array<size_t, 7> replayLimits{};
     size_t nextEntity = 0;
     std::vector<Receipt> receipts;
     std::vector<size_t> entities;
@@ -490,12 +490,11 @@ CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
     };
 
     skip(8 + 4 + 8 + 8 + 32 + 4); string();
-    skip(24 + 8);
-    for (size_t i = 0; i < result.limits.size(); ++i) {
-        result.limits[i] = at;
+    skip(24 + 8 + 4);
+    for (size_t i = 0; i < result.replayLimits.size(); ++i) {
+        result.replayLimits[i] = at;
         skip(8);
     }
-    skip(4);
     const size_t dictionary = u32();
     for (size_t i = 0; i < dictionary; ++i) string();
     skip(8 + 8 + 8);
@@ -918,6 +917,44 @@ TEST_CASE(SimulationHost_recording_rejects_envelope_mismatch_and_event_gap) {
     CHECK(!byteOverflow.host->recording().has_value());
 }
 
+TEST_CASE(SimulationRecording_replays_the_recorded_admission_envelope) {
+    SimulationHostConfig config;
+    config.maxChangesPerCommand = 9;
+    HostFixture fixture(config);
+    fixture.start();
+
+    EditCommand command{
+        .session = 1,
+        .command = 1,
+        .actor = fixture.actor,
+        .world = 0,
+        .zone = "base:default",
+        .content = fixture.host->content().identity(),
+        .action = EditAction::Atomic,
+    };
+    for (int x = 2; x < 11; ++x) {
+        const CellAddress address{x, 7, 3};
+        const auto current = fixture.host->read(address);
+        CHECK_EQ(current.status, ExactReadStatus::Known);
+        CHECK_EQ(current.state.blockKey, std::string("base:air"));
+        command.mutations.push_back({
+            address, current.state, {"rigel:stone", 0}});
+    }
+    CHECK_EQ(
+        fixture.host->submit(
+            command, fixture.host->authorityEditCapability()).status,
+        SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    const auto recording = fixture.host->recording();
+    CHECK(recording.has_value());
+
+    auto replayed = SimulationHost::resimulate(
+        fixture.resources, fixture.generator, *recording,
+        {7ms, 19ms, 3ms});
+    CHECK_EQ(replayed.status, ResimulationStatus::Complete);
+    CHECK_EQ(replayed.stateHash, recording->finalHash);
+}
+
 TEST_CASE(SimulationHost_rejects_nonfinite_entity_tint_before_admission) {
     HostFixture fixture;
     const size_t before = fixture.host->world().entities().size();
@@ -1098,6 +1135,81 @@ TEST_CASE(SimulationCheckpoint_rebinds_compact_ids_to_saved_semantic_keys) {
     fixture.host->advance(17ms);
     recovered.host->advance(17ms);
     CHECK_EQ(recovered.host->stateHash(), fixture.host->stateHash());
+}
+
+TEST_CASE(SimulationCheckpoint_restores_rules_under_current_runtime_policy) {
+    SimulationHostConfig savedPolicy;
+    savedPolicy.maxCatchUpTicks = 1;
+    savedPolicy.maxInteractionDistance = 8.0f;
+    HostFixture fixture(savedPolicy);
+    fixture.start();
+    const uint64_t expectedHash = fixture.host->stateHash();
+
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager manager(storage, "/current-policy");
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+
+    SimulationHostConfig currentPolicy;
+    currentPolicy.world = 77;
+    currentPolicy.zone = "ignored:runtime-domain";
+    currentPolicy.tickRate = {1, 1};
+    currentPolicy.maxCatchUpTicks = 3;
+    currentPolicy.maxSessionReceipts = 512;
+    currentPolicy.maxReplicaQueue = 1;
+    currentPolicy.maxInteractionDistance = 0.5f;
+    auto recovered = manager.recover(
+        fixture.resources, fixture.generator, currentPolicy);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(recovered.host->stateHash(), expectedHash);
+
+    const EditCommand command = fixture.removeCommand(1);
+    CHECK_EQ(recovered.host->submit(command).status, SubmitStatus::Accepted);
+    CHECK_EQ(recovered.host->advance(100ms).ticksRun, size_t{3});
+    CHECK_EQ(
+        recovered.host->submit(command).outcome->status,
+        CommandOutcomeStatus::Applied);
+}
+
+TEST_CASE(SimulationCheckpoint_refuses_insufficient_current_limits_without_loss) {
+    SimulationHostConfig savedPolicy;
+    savedPolicy.maxPendingCommands = 2;
+    savedPolicy.maxSessionReceipts = 4;
+    HostFixture fixture(savedPolicy);
+    fixture.start();
+    CHECK_EQ(fixture.host->submit(fixture.removeCommand(1)).status,
+             SubmitStatus::Accepted);
+    CHECK_EQ(fixture.host->submit(fixture.removeCommand(2)).status,
+             SubmitStatus::Accepted);
+    auto extra = std::make_unique<Entity::Entity>();
+    extra->addTag(Entity::EntityTags::NoClip);
+    extra->setPosition({9.0f, 7.0f, 9.0f});
+    CHECK(!fixture.host->spawnEntity(std::move(extra)).isNull());
+
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager manager(storage, "/bounded-recovery");
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    const auto pointer = readStorageBytes(*storage, "/bounded-recovery/current");
+    const auto payload = readStorageBytes(
+        *storage, "/bounded-recovery/checkpoints/1.bin");
+
+    SimulationHostConfig insufficient;
+    insufficient.maxPendingCommands = 1;
+    insufficient.maxSessionReceipts = 1;
+    insufficient.maxEntities = 1;
+    CHECK_EQ(manager.recover(
+        fixture.resources, fixture.generator, insufficient).status,
+        CheckpointRecoveryStatus::Incompatible);
+    CHECK_EQ(readStorageBytes(*storage, "/bounded-recovery/current"), pointer);
+    CHECK_EQ(readStorageBytes(
+        *storage, "/bounded-recovery/checkpoints/1.bin"), payload);
+
+    auto recovered = manager.recover(
+        fixture.resources, fixture.generator, savedPolicy);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(recovered.host->activeSession()->pendingCommands.size(), size_t{2});
+    CHECK_EQ(recovered.host->world().entities().size(), size_t{2});
 }
 
 TEST_CASE(SimulationCheckpoint_payload_io_failures_preserve_the_acknowledged_cut) {
@@ -1527,7 +1639,7 @@ TEST_CASE(SimulationCheckpoint_recovery_rejects_malformed_authority_state) {
         bytes.at(layout.receipts.at(0).pending) = 0;
     });
     rejects([](auto& bytes, const auto& layout) {
-        writeBigU64(bytes, layout.limits.at(3), 1);
+        writeBigU64(bytes, layout.replayLimits.at(1), 1);
     });
     rejects([](auto& bytes, const auto& layout) {
         std::copy_n(bytes.begin() + layout.entities.at(0), 16,
@@ -1537,10 +1649,10 @@ TEST_CASE(SimulationCheckpoint_recovery_rejects_malformed_authority_state) {
         writeBigU32(bytes, layout.nextEntity, 1);
     });
     rejects([](auto& bytes, const auto& layout) {
-        writeBigU64(bytes, layout.limits.at(9), 1);
+        writeBigU64(bytes, layout.replayLimits.at(5), 1);
     });
     rejects([](auto& bytes, const auto& layout) {
-        writeBigU64(bytes, layout.limits.at(10), 32);
+        writeBigU64(bytes, layout.replayLimits.at(6), 32);
     });
     rejects([](auto& bytes, const auto&) { bytes.pop_back(); });
 
@@ -1563,16 +1675,15 @@ TEST_CASE(SimulationCheckpoint_preflights_collection_counts_before_allocation) {
             status = recoverMutatedCheckpoint(fixture, [&](auto& bytes, const auto& layout) {
                 constexpr uint32_t forgedCount = 1'000'000;
                 if (collection == 0) {
-                    writeBigU64(bytes, layout.limits.at(7), forgedCount);
+                    writeBigU64(bytes, layout.replayLimits.at(3), forgedCount);
                     writeBigU32(bytes, layout.entities.front() - 4, forgedCount);
                 } else if (collection == 1) {
-                    writeBigU64(bytes, layout.limits.at(8), forgedCount);
+                    writeBigU64(bytes, layout.replayLimits.at(4), forgedCount);
                     writeBigU32(bytes, layout.entityTagCounts.front(), forgedCount);
                 } else if (collection == 2) {
-                    writeBigU64(bytes, layout.limits.at(2), forgedCount);
+                    writeBigU64(bytes, layout.replayLimits.at(0), forgedCount);
                     writeBigU32(bytes, layout.receipts.front().mutationCount, forgedCount);
                 } else {
-                    writeBigU64(bytes, layout.limits.at(0), forgedCount);
                     writeBigU32(bytes, layout.chunkCount, forgedCount);
                 }
                 // Intercept an unsafe request without allocating its advertised size.
@@ -1874,10 +1985,10 @@ TEST_CASE(SimulationHost_rejects_unrepresentable_air_without_publication) {
 TEST_CASE(SimulationHost_keeps_packed_light_out_of_semantic_edits_and_hashes) {
     HostFixture fixture;
     fixture.start();
-    const EditCommand command = fixture.removeCommand(1);
+    const EditCommand command = fixture.removeCommand(2);
     const CellAddress target = command.mutations.front().address;
     const auto before = fixture.host->read(target);
-    const uint64_t semanticHash = fixture.host->stateHash();
+    const uint64_t lightIndependentHash = fixture.host->stateHash();
 
     auto& world = const_cast<Voxel::World&>(fixture.host->world());
     world.setBlock(
@@ -1886,7 +1997,7 @@ TEST_CASE(SimulationHost_keeps_packed_light_out_of_semantic_edits_and_hashes) {
     const auto relit = fixture.host->read(target);
     CHECK_EQ(relit.state, before.state);
     CHECK_EQ(relit.lightLevel, uint8_t{0xa3});
-    CHECK_EQ(fixture.host->stateHash(), semanticHash);
+    CHECK_EQ(fixture.host->stateHash(), lightIndependentHash);
 
     auto connection = fixture.host->connectReplica({target, target});
     CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
@@ -1894,6 +2005,23 @@ TEST_CASE(SimulationHost_keeps_packed_light_out_of_semantic_edits_and_hashes) {
     pumpBaseline(replica);
     CHECK_EQ(replica.read(target).state, before.state);
     CHECK_EQ(replica.read(target).lightLevel, uint8_t{0xa3});
+
+    EditCommand unchanged{
+        .session = 1,
+        .command = 1,
+        .actor = fixture.actor,
+        .world = 0,
+        .zone = "base:default",
+        .content = fixture.host->content().identity(),
+        .action = EditAction::Atomic,
+        .mutations = {{target, before.state, before.state}},
+    };
+    CHECK_EQ(fixture.host->submit(
+        unchanged, fixture.host->authorityEditCapability()).status,
+        SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(fixture.host->read(target).lightLevel, uint8_t{0xa3});
+    const uint64_t checkpointHash = fixture.host->stateHash();
 
     auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
     SimulationCheckpointManager manager(storage, "/light-checkpoint");
@@ -1903,7 +2031,7 @@ TEST_CASE(SimulationHost_keeps_packed_light_out_of_semantic_edits_and_hashes) {
     CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
     CHECK_EQ(recovered.host->read(target).state, before.state);
     CHECK_EQ(recovered.host->read(target).lightLevel, uint8_t{0xa3});
-    CHECK_EQ(recovered.host->stateHash(), semanticHash);
+    CHECK_EQ(recovered.host->stateHash(), checkpointHash);
 
     CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
     fixture.host->advance(17ms);

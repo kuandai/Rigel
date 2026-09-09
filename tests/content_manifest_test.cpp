@@ -165,9 +165,12 @@ TEST_CASE(ContentManifest_excludes_presentation_but_preserves_authority_geometry
     auto changedPresentation = fixture(false, 91, 0.25f, 0.25f, true);
     auto changedModel = fixture(false, 91, 0.125f, 0.25f);
     auto changedFaces = fixture(false, 91, 0.25f, 0.25f, false, true);
-    auto changedOrientation = fixture(
+    auto equivalentOrientation = fixture(
         false, 91, 0.25f, 0.25f, false, false,
         Voxel::BlockModelOrientation::RotateY90);
+    auto changedOrientation = fixture(
+        false, 91, 0.25f, 0.25f, false, false,
+        Voxel::BlockModelOrientation::RotateX90);
     auto changedCollision = fixture(false, 91, 0.25f, 0.125f);
     Simulation::ContentDictionary originalDictionary(
         original.registry, *original.generator);
@@ -181,8 +184,13 @@ TEST_CASE(ContentManifest_excludes_presentation_but_preserves_authority_geometry
         changedFaces.registry, *changedFaces.generator);
     Simulation::ContentDictionary orientationDictionary(
         changedOrientation.registry, *changedOrientation.generator);
+    Simulation::ContentDictionary equivalentOrientationDictionary(
+        equivalentOrientation.registry, *equivalentOrientation.generator);
 
     CHECK_EQ(originalDictionary.identity(), presentationDictionary.identity());
+    CHECK_EQ(
+        originalDictionary.identity(),
+        equivalentOrientationDictionary.identity());
     CHECK_NE(originalDictionary.identity(), modelDictionary.identity());
     CHECK_NE(originalDictionary.identity(), faceDictionary.identity());
     CHECK_NE(originalDictionary.identity(), orientationDictionary.identity());

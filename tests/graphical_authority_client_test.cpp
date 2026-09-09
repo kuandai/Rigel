@@ -647,7 +647,10 @@ TEST_CASE(GraphicalAuthorityClient_ReattachesToRecoveredPendingSession) {
     fixture.host.reset();
     Simulation::SimulationCheckpointManager reopened(
         storage, "/graphical-pending");
-    auto recovery = reopened.recover(fixture.resources, fixture.generator);
+    Simulation::SimulationHostConfig currentPolicy;
+    currentPolicy.maxSnapshotCells = 25'000;
+    auto recovery = reopened.recover(
+        fixture.resources, fixture.generator, currentPolicy);
     CHECK_EQ(recovery.status,
              Simulation::CheckpointRecoveryStatus::Recovered);
     CHECK(recovery.host != nullptr);

@@ -1327,6 +1327,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         replayPolicy.maxEntityTagBytes == 0 ||
         replayPolicy.maxCommandBytes == 0 ||
         replayPolicy.maxSnapshotCells == 0 ||
+        !savedDomain.volume(replayPolicy.maxSnapshotCells) ||
         replayPolicy.maxChangesPerCommand >
             HardSerializedBytes / sizeof(CellMutation) ||
         replayPolicy.maxSessionReceipts >

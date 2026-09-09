@@ -1770,6 +1770,9 @@ TEST_CASE(SimulationCheckpoint_recovery_rejects_malformed_authority_state) {
     rejects([](auto& bytes, const auto& layout) {
         writeBigU64(bytes, layout.replayLimits.at(6), 32);
     });
+    rejects([](auto& bytes, const auto& layout) {
+        writeBigU64(bytes, layout.replayLimits.at(7), 1);
+    });
     rejects([](auto& bytes, const auto&) { bytes.pop_back(); });
 
     CHECK_EQ(fixture.host->advance(34ms).ticksRun, size_t{2});

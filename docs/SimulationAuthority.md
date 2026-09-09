@@ -56,11 +56,13 @@ capacity before exposing the dictionary. Replica budgets also account for their
 shared dictionary ownership. The asset registry itself remains owned by semantic
 content initialization; this dictionary cap is not a general asset-memory budget.
 
-The current authoritative chunk storage preserves metadata and packed light bytes
-for non-air blocks. Air is representable only as canonical `base:air` with both
-bytes zero because empty subchunks are compressed. Commands reject noncanonical
-air before admission, and replicas reject it before changing visible state; the
-host never acknowledges or publishes a state different from retained storage.
+The current authoritative chunk storage preserves semantic metadata and a separate
+packed light byte for non-air blocks. Air is representable only as canonical
+`base:air` with zero metadata and zero packed light because empty subchunks are
+compressed. Commands contain no light field and reject noncanonical air metadata;
+replicas and checkpoint reconstruction additionally reject nonzero air light before
+changing visible state. The host never acknowledges or publishes a state different
+from retained storage.
 
 The developer block-gallery generator has additional runtime placements beyond
 its serialized terrain definition. This initial authority rejects that generator

@@ -142,8 +142,8 @@ GraphicalEditSubmitResult GraphicalAuthorityClient::submit(
         .address = destinationAddress,
         .expected = expected.state,
         .replacement = action == Input::GameplayBlockEditAction::Remove
-            ? Simulation::SemanticBlockState{"base:air", 0, 0}
-            : Simulation::SemanticBlockState{m_placeBlockKey, 0, 0},
+            ? Simulation::SemanticBlockState{"base:air", 0}
+            : Simulation::SemanticBlockState{m_placeBlockKey, 0},
     });
 
     Simulation::SubmitResult result = m_host->submit(command);
@@ -303,7 +303,8 @@ void GraphicalAuthorityClient::apply(
         for (const auto& cell : cells) {
             preparedCells.push_back({
                 .address = cell.address,
-                .state = m_host->content().localState(cell.state),
+                .state = m_host->content().localState(
+                    cell.state, cell.lightLevel),
                 .chunk = Voxel::worldToChunk(
                     cell.address.x, cell.address.y, cell.address.z),
             });

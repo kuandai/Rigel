@@ -61,6 +61,7 @@ enum class ExactReadStatus {
 struct ExactBlockRead {
     ExactReadStatus status = ExactReadStatus::Unavailable;
     SemanticBlockState state;
+    uint8_t lightLevel = 0;
 };
 
 using SessionId = uint64_t;
@@ -179,6 +180,7 @@ struct SubmitResult {
 struct PublishedCell {
     CellAddress address;
     SemanticBlockState state;
+    uint8_t lightLevel = 0;
 
     bool operator==(const PublishedCell&) const = default;
 };
@@ -432,7 +434,8 @@ private:
 
     std::vector<uint8_t> checkpointBytes(
         uint64_t generation, uint64_t parentHash,
-        bool includeTimeDebt = true) const;
+        bool includeTimeDebt = true,
+        bool includeTransitionalLight = true) const;
     bool prepareRecordingBaseline();
     bool recordingWithinLimit();
     void discardRecording();

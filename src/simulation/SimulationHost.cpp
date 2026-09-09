@@ -65,7 +65,7 @@ bool addElements(size_t& total, size_t count, size_t elementSize) {
 
 constexpr uint64_t CheckpointMagic = 0x524947454c435031ULL; // RIGELCP1
 constexpr uint64_t RecordingMagic = 0x524947454c525031ULL; // RIGELRP1
-constexpr uint32_t StateFormatVersion = 2;
+constexpr uint32_t StateFormatVersion = 3;
 
 class Encoder {
 public:
@@ -192,11 +192,11 @@ glm::vec3 decodeVec3(Decoder& in) {
 }
 
 void encodeSemantic(Encoder& out, const SemanticBlockState& state) {
-    out.string(state.blockKey); out.u8(state.metadata); out.u8(state.lightLevel);
+    out.string(state.blockKey); out.u8(state.metadata);
 }
 
 SemanticBlockState decodeSemantic(Decoder& in, size_t stringLimit) {
-    return {in.string(stringLimit), in.u8(), in.u8()};
+    return {in.string(stringLimit), in.u8()};
 }
 
 void encodeEntityState(Encoder& out, const Entity::EntitySimulationState& state) {
@@ -698,7 +698,8 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             });
             for (size_t index = 0; index < next.size(); ++index) {
                 if (!value.bounds.contains(next[index].address) ||
-                    !m_state->content->supportsState(next[index].state) ||
+                    !m_state->content->supportsPublishedState(
+                        next[index].state, next[index].lightLevel) ||
                     (index && next[index - 1].address == next[index].address)) {
                     return fail();
                 }
@@ -739,7 +740,8 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
             }
             for (size_t index = 0; index < value.changes.size(); ++index) {
                 const auto& change = value.changes[index];
-                if (!m_state->content->supportsState(change.state) ||
+                if (!m_state->content->supportsPublishedState(
+                        change.state, change.lightLevel) ||
                     std::any_of(value.changes.begin(), value.changes.begin() + index,
                         [&](const PublishedCell& earlier) {
                             return earlier.address == change.address;
@@ -808,6 +810,7 @@ ReplicaPumpStatus LoopbackReplica::pumpOne() {
                     return fail();
                 }
                 found->state = change.state;
+                found->lightLevel = change.lightLevel;
             }
             const auto nextBytes = LoopbackReplica::State::retainedBytes(next);
             size_t nextOutcomeBytes = 0;
@@ -873,7 +876,11 @@ ExactBlockRead LoopbackReplica::read(CellAddress address) const {
     if (found == m_state->cells.end() || found->address != address) {
         return {.status = ExactReadStatus::Unavailable};
     }
-    return {.status = ExactReadStatus::Known, .state = found->state};
+    return {
+        .status = ExactReadStatus::Known,
+        .state = found->state,
+        .lightLevel = found->lightLevel,
+    };
 }
 
 bool LoopbackReplica::needsResnapshot() const { return m_state->gap; }
@@ -996,7 +1003,8 @@ SimulationHost::SimulationHost(
 }
 
 std::vector<uint8_t> SimulationHost::checkpointBytes(
-    uint64_t generation, uint64_t parentHash, bool includeTimeDebt
+    uint64_t generation, uint64_t parentHash, bool includeTimeDebt,
+    bool includeTransitionalLight
 ) const {
     Encoder out(m_config.maxCheckpointBytes);
     out.u64(CheckpointMagic); out.u32(StateFormatVersion);
@@ -1076,11 +1084,13 @@ std::vector<uint8_t> SimulationHost::checkpointBytes(
         chunk->copyBlocks(blocks);
         for (const auto block : blocks) {
             if (block.id.type >= canonicalByLocal.size() ||
-                !m_content->supportsState(m_content->semanticState(block))) {
+                !m_content->supportsPublishedState(
+                    m_content->semanticState(block), block.lightLevel)) {
                 throw std::runtime_error("checkpoint contains unsupported block state");
             }
             out.u32(canonicalByLocal[block.id.type]);
-            out.u8(block.metadata); out.u8(block.lightLevel);
+            out.u8(block.metadata);
+            if (includeTransitionalLight) out.u8(block.lightLevel);
         }
     }
     return out.finish();
@@ -1356,7 +1366,9 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     for (auto& chunk : chunks) {
         for (auto& block : chunk.blocks) {
             block.id = localBySemantic.at(block.id.type);
-            if (!host->m_content->supportsState(host->m_content->semanticState(block))) {
+            const auto semantic = host->m_content->semanticState(block);
+            if (!host->m_content->supportsPublishedState(
+                    semantic, block.lightLevel)) {
                 throw std::runtime_error("checkpoint block state is unsupported");
             }
         }
@@ -1421,7 +1433,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
 }
 
 uint64_t SimulationHost::stateHash() const {
-    return stableHash(checkpointBytes(0, 0, false));
+    return stableHash(checkpointBytes(0, 0, false, false));
 }
 
 std::optional<SimulationRecording> SimulationHost::recording() const {
@@ -1632,9 +1644,11 @@ ExactBlockRead SimulationHost::read(CellAddress address) const {
     int x = 0, y = 0, z = 0;
     Voxel::worldToLocal(address.x, address.y, address.z, x, y, z);
     try {
+        const Voxel::BlockState local = chunk->getBlock(x, y, z);
         return {
             .status = ExactReadStatus::Known,
-            .state = m_content->semanticState(chunk->getBlock(x, y, z)),
+            .state = m_content->semanticState(local),
+            .lightLevel = local.lightLevel,
         };
     } catch (const ContentManifestError&) {
         return {.status = ExactReadStatus::InvalidState};
@@ -2191,7 +2205,7 @@ void SimulationHost::runTick() {
                 if (current.state != mutation.replacement) {
                     changed = true;
                     batch.changes.push_back({
-                        mutation.address, mutation.replacement});
+                        mutation.address, mutation.replacement, local.lightLevel});
                 }
             }
             if (outcome.status == CommandOutcomeStatus::Applied && !changed) {
@@ -2351,7 +2365,8 @@ ReplicaConnection SimulationHost::connectReplica(CellBounds interest) {
                     if (cell.status != ExactReadStatus::Known) {
                         return {.status = ReplicaConnectStatus::InvalidInterest};
                     }
-                    baseline.cells.push_back({address, cell.state});
+                    baseline.cells.push_back({
+                        address, cell.state, cell.lightLevel});
                 }
             }
         }
@@ -2424,7 +2439,8 @@ ReplicaConnectStatus SimulationHost::resnapshot(LoopbackReplica& replica) {
                     if (cell.status != ExactReadStatus::Known) {
                         return ReplicaConnectStatus::InvalidInterest;
                     }
-                    baseline.cells.push_back({address, cell.state});
+                    baseline.cells.push_back({
+                        address, cell.state, cell.lightLevel});
                 }
             }
         }

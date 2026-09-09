@@ -248,7 +248,7 @@ struct GraphicalFixture {
             command.mutations.push_back({
                 .address = address,
                 .expected = host->read(address).state,
-                .replacement = {std::move(replacement), 0, 0},
+                .replacement = {std::move(replacement), 0},
             });
         }
         CHECK_EQ(
@@ -378,7 +378,7 @@ TEST_CASE(GraphicalAuthorityClient_ChangeAllocationFailureRetriesWholeCut) {
         command.mutations.push_back({
             .address = address,
             .expected = fixture.host->read(address).state,
-            .replacement = {"rigel:stone", 0, 0},
+            .replacement = {"rigel:stone", 0},
         });
     }
     CHECK_EQ(

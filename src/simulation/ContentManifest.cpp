@@ -295,8 +295,14 @@ bool ContentDictionary::contains(std::string_view stableKey) const {
 
 bool ContentDictionary::supportsState(const SemanticBlockState& state) const {
     return contains(state.blockKey) &&
-        (state.blockKey != "base:air" ||
-         (state.metadata == 0 && state.lightLevel == 0));
+        (state.blockKey != "base:air" || state.metadata == 0);
+}
+
+bool ContentDictionary::supportsPublishedState(
+    const SemanticBlockState& state, uint8_t lightLevel
+) const {
+    return supportsState(state) &&
+        (state.blockKey != "base:air" || lightLevel == 0);
 }
 
 bool ContentDictionary::supportsEntity(const Entity::Entity& entity) const {
@@ -322,14 +328,13 @@ SemanticBlockState ContentDictionary::semanticState(Voxel::BlockState state) con
     return {
         m_byLocalId[state.id.type]->blockKey,
         state.metadata,
-        state.lightLevel,
     };
 }
 
 Voxel::BlockState ContentDictionary::localState(
-    const SemanticBlockState& state
+    const SemanticBlockState& state, uint8_t lightLevel
 ) const {
-    return {localId(state.blockKey), state.metadata, state.lightLevel};
+    return {localId(state.blockKey), state.metadata, lightLevel};
 }
 
 void ContentDictionary::requireIdentity(

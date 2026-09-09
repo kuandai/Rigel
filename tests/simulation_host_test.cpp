@@ -206,7 +206,7 @@ struct HostFixture {
             .mutations = {{
                 .address = target,
                 .expected = targetState,
-                .replacement = {"base:air", 0, 0},
+                .replacement = {"base:air", 0},
             }},
         };
         return command;
@@ -464,7 +464,7 @@ CheckpointLayout checkpointLayout(const std::vector<uint8_t>& bytes) {
         at += count;
     };
     auto string = [&] { const size_t count = u32(); skip(count); };
-    auto semantic = [&] { string(); skip(2); };
+    auto semantic = [&] { string(); skip(1); };
     auto entity = [&] {
         const size_t id = at;
         skip(16); string(); skip(48 + 4 + 4 + 4 + 24);
@@ -632,8 +632,8 @@ TEST_CASE(SimulationHost_atomic_failure_changes_neither_chunk) {
         .content = fixture.host->content().identity(),
         .action = EditAction::Atomic,
         .mutations = {
-            {available, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
-            {unavailable, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
+            {available, {"base:air", 0}, {"rigel:stone", 0}},
+            {unavailable, {"base:air", 0}, {"rigel:stone", 0}},
         },
     };
     const auto capability = fixture.host->authorityEditCapability();
@@ -674,8 +674,8 @@ TEST_CASE(SimulationHost_prepared_atomic_writes_survive_allocation_failure) {
             .zone = "base:default",
             .content = fixture.host->content().identity(),
             .action = EditAction::Atomic,
-            .mutations = {{first, {"base:air", 0, 0},
-                           {"rigel:stone", 0, 0}}},
+            .mutations = {{first, {"base:air", 0},
+                           {"rigel:stone", 0}}},
         };
         CHECK_EQ(
             fixture.host->submit(seed, capability).status,
@@ -693,8 +693,8 @@ TEST_CASE(SimulationHost_prepared_atomic_writes_survive_allocation_failure) {
             .content = fixture.host->content().identity(),
             .action = EditAction::Atomic,
             .mutations = {
-                {first, {"rigel:stone", 0, 0}, {"base:air", 0, 0}},
-                {second, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
+                {first, {"rigel:stone", 0}, {"base:air", 0}},
+                {second, {"base:air", 0}, {"rigel:stone", 0}},
             },
         };
         CHECK_EQ(
@@ -755,8 +755,8 @@ TEST_CASE(SimulationHost_second_empty_subchunk_prepare_is_atomic_on_failure) {
         .content = fixture.host->content().identity(),
         .action = EditAction::Atomic,
         .mutations = {
-            {first, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
-            {second, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
+            {first, {"base:air", 0}, {"rigel:stone", 0}},
+            {second, {"base:air", 0}, {"rigel:stone", 0}},
         },
     };
     CHECK_EQ(
@@ -1763,8 +1763,8 @@ TEST_CASE(SimulationHost_rejects_content_and_shape_invalid_interactions) {
     const auto target = place.interaction->expectedTarget;
     place.mutations.front() = {
         {target.x, target.y + 1, target.z},
-        {"base:air", 0, 0},
-        {"rigel:stone", 0, 0},
+        {"base:air", 0},
+        {"rigel:stone", 0},
     };
     CHECK_EQ(fixture.host->submit(place).status, SubmitStatus::Accepted);
     fixture.host->advance(17ms);
@@ -1792,8 +1792,8 @@ TEST_CASE(SimulationHost_places_on_the_admitted_tick_and_publishes_destination) 
     const CellAddress destination{target.x, target.y + 1, target.z};
     place.mutations.front() = {
         destination,
-        {"base:air", 0, 0},
-        {"rigel:stone", 0, 0},
+        {"base:air", 0},
+        {"rigel:stone", 0},
     };
 
     auto connection = fixture.host->connectReplica({destination, destination});
@@ -1831,7 +1831,7 @@ TEST_CASE(SimulationHost_rejects_unrepresentable_air_without_publication) {
     fixture.start();
     const CellAddress address{5, 20, 5};
     const SemanticBlockState air = fixture.host->read(address).state;
-    CHECK_EQ(air, (SemanticBlockState{"base:air", 0, 0}));
+    CHECK_EQ(air, (SemanticBlockState{"base:air", 0}));
 
     auto connection = fixture.host->connectReplica({address, address});
     CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
@@ -1846,7 +1846,7 @@ TEST_CASE(SimulationHost_rejects_unrepresentable_air_without_publication) {
         .zone = "base:default",
         .content = fixture.host->content().identity(),
         .action = EditAction::Atomic,
-        .mutations = {{address, air, {"base:air", 1, 7}}},
+        .mutations = {{address, air, {"base:air", 1}}},
     };
     const auto capability = fixture.host->authorityEditCapability();
     CHECK_EQ(
@@ -1859,7 +1859,7 @@ TEST_CASE(SimulationHost_rejects_unrepresentable_air_without_publication) {
 
     EditCommand supported = unsupported;
     supported.command = 2;
-    supported.mutations.front().replacement = {"rigel:stone", 1, 7};
+    supported.mutations.front().replacement = {"rigel:stone", 1};
     CHECK_EQ(
         fixture.host->submit(supported, capability).status,
         SubmitStatus::Accepted);
@@ -1869,6 +1869,72 @@ TEST_CASE(SimulationHost_rejects_unrepresentable_air_without_publication) {
              supported.mutations.front().replacement);
     CHECK_EQ(replica.read(address).state,
              supported.mutations.front().replacement);
+}
+
+TEST_CASE(SimulationHost_keeps_packed_light_out_of_semantic_edits_and_hashes) {
+    HostFixture fixture;
+    fixture.start();
+    const EditCommand command = fixture.removeCommand(1);
+    const CellAddress target = command.mutations.front().address;
+    const auto before = fixture.host->read(target);
+    const uint64_t semanticHash = fixture.host->stateHash();
+
+    auto& world = const_cast<Voxel::World&>(fixture.host->world());
+    world.setBlock(
+        target.x, target.y, target.z,
+        fixture.host->content().localState(before.state, 0xa3));
+    const auto relit = fixture.host->read(target);
+    CHECK_EQ(relit.state, before.state);
+    CHECK_EQ(relit.lightLevel, uint8_t{0xa3});
+    CHECK_EQ(fixture.host->stateHash(), semanticHash);
+
+    auto connection = fixture.host->connectReplica({target, target});
+    CHECK_EQ(connection.status, ReplicaConnectStatus::Connected);
+    auto replica = std::move(*connection.replica);
+    pumpBaseline(replica);
+    CHECK_EQ(replica.read(target).state, before.state);
+    CHECK_EQ(replica.read(target).lightLevel, uint8_t{0xa3});
+
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager manager(storage, "/light-checkpoint");
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    auto recovered = manager.recover(fixture.resources, fixture.generator);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(recovered.host->read(target).state, before.state);
+    CHECK_EQ(recovered.host->read(target).lightLevel, uint8_t{0xa3});
+    CHECK_EQ(recovered.host->stateHash(), semanticHash);
+
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    CHECK_EQ(
+        fixture.host->submit(command).outcome->status,
+        CommandOutcomeStatus::Applied);
+}
+
+TEST_CASE(SimulationRecording_reconstructs_transitional_light_separately) {
+    HostFixture fixture;
+    SimulationHostConfig config;
+    config.domain = {{-4, -4, -4}, {20, 8, 20}};
+    config.maxPreloadedChunks = 8;
+    config.maxSnapshotCells = 25'000;
+    SimulationHost host(fixture.resources, fixture.generator, config);
+    const CellAddress target{5, 0, 5};
+    const auto before = host.read(target);
+    CHECK_EQ(before.status, ExactReadStatus::Known);
+    auto& world = const_cast<Voxel::World&>(host.world());
+    world.setBlock(
+        target.x, target.y, target.z,
+        host.content().localState(before.state, 0x4d));
+
+    const auto recording = host.recording();
+    CHECK(recording.has_value());
+    auto replayed = SimulationHost::resimulate(
+        fixture.resources, fixture.generator, *recording, {17ms});
+    CHECK_EQ(replayed.status, ResimulationStatus::Complete);
+    CHECK(replayed.host != nullptr);
+    CHECK_EQ(replayed.host->read(target).state, before.state);
+    CHECK_EQ(replayed.host->read(target).lightLevel, uint8_t{0x4d});
 }
 
 TEST_CASE(SimulationHost_rejects_unbound_and_nonfinite_interactions) {
@@ -1971,8 +2037,8 @@ TEST_CASE(SimulationHost_bulk_edits_require_host_bound_authority) {
         .content = fixture.host->content().identity(),
         .action = EditAction::Atomic,
         .mutations = {
-            {first, {"base:air", 0, 0}, {"rigel:stone", 0, 0}},
-            {second, {"rigel:stone", 0, 0}, {"rigel:stone", 0, 0}},
+            {first, {"base:air", 0}, {"rigel:stone", 0}},
+            {second, {"rigel:stone", 0}, {"rigel:stone", 0}},
         },
     };
     CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::InvalidRequest);
@@ -2309,7 +2375,7 @@ TEST_CASE(LoopbackReplica_survives_authority_and_resource_teardown_with_bound_st
     }
 
     CHECK_EQ(survivor->read(target).status, ExactReadStatus::Known);
-    const SemanticBlockState air{"base:air", 0, 0};
+    const SemanticBlockState air{"base:air", 0};
     CHECK_EQ(survivor->read(target).state, air);
     CHECK_EQ(survivor->takeOutcome(), authoritative);
     CHECK(!survivor->takeOutcome().has_value());
@@ -2323,7 +2389,7 @@ TEST_CASE(LoopbackReplica_owns_publications_independently_of_mutable_sender_alia
     auto connection = fixture.host->connectReplica({address, address});
     auto replica = std::move(*connection.replica);
     pumpBaseline(replica);
-    const SemanticBlockState expected{"rigel:water", 0, 0};
+    const SemanticBlockState expected{"rigel:water", 0};
     auto sender = std::make_shared<PublicationMessage>(WorldChangeBatch{
         .content = fixture.host->content().identity(),
         .world = 0,
@@ -2339,7 +2405,8 @@ TEST_CASE(LoopbackReplica_owns_publications_independently_of_mutable_sender_alia
     auto& changed = std::get<WorldChangeBatch>(*sender);
     changed.content = {};
     changed.zone.assign(config.maxReplicaBytes * 2, 'x');
-    changed.changes.front().state = {"base:air", 1, 7};
+    changed.changes.front().state = {"base:air", 1};
+    changed.changes.front().lightLevel = 7;
     changed.changes.reserve(config.maxReplicaBytes);
     CHECK_EQ(replica.pumpOne(), ReplicaPumpStatus::Applied);
     CHECK_EQ(replica.read(address).state, expected);
@@ -2491,7 +2558,7 @@ TEST_CASE(LoopbackReplica_rejects_regressing_publication_ticks) {
 
         duplicate.revision = previousRevision + 1;
         duplicate.tick = previousTick - tickRegression;
-        duplicate.cells.front().state = {"rigel:water", 0, 0};
+        duplicate.cells.front().state = {"rigel:water", 0};
         CHECK_EQ(
             replica.accept(std::make_shared<const PublicationMessage>(duplicate)),
             ReplicaAcceptStatus::Queued);
@@ -2517,7 +2584,7 @@ TEST_CASE(LoopbackReplica_rejects_regressing_publication_ticks) {
             .baseRevision = previousRevision,
             .revision = previousRevision + 1,
             .tick = previousTick,
-            .changes = {{address, {"rigel:water", 0, 0}}},
+            .changes = {{address, {"rigel:water", 0}, 0}},
         };
         CHECK_EQ(
             replica.accept(std::make_shared<const PublicationMessage>(
@@ -2549,7 +2616,10 @@ TEST_CASE(LoopbackReplica_validates_old_batch_structure_before_duplicate_detecti
             .changes = {{address, fixture.host->read(address).state}},
         };
         if (malformed == 0) old.baseRevision = old.revision + 1;
-        if (malformed == 1) old.changes.front().state = {"base:air", 1, 7};
+        if (malformed == 1) {
+            old.changes.front().state = {"base:air", 1};
+            old.changes.front().lightLevel = 7;
+        }
         if (malformed == 2) old.changes.push_back(old.changes.front());
         CHECK_EQ(replica.accept(std::make_shared<const PublicationMessage>(old)),
                  ReplicaAcceptStatus::Queued);
@@ -2571,7 +2641,7 @@ TEST_CASE(LoopbackReplica_rejects_unrepresentable_air_state) {
         .baseRevision = replica.revision(),
         .revision = replica.revision() + 1,
         .tick = replica.tick() + 1,
-        .changes = {{{5, 0, 5}, {"base:air", 1, 7}}},
+        .changes = {{{5, 0, 5}, {"base:air", 1}, 7}},
     };
     CHECK_EQ(
         replica.accept(std::make_shared<const PublicationMessage>(invalid)),
@@ -2611,7 +2681,7 @@ TEST_CASE(LoopbackReplica_rejects_oversized_string_payloads_by_bytes) {
         .baseRevision = replica.revision(),
         .revision = replica.revision() + 1,
         .tick = replica.tick() + 1,
-        .changes = {{{5, 0, 5}, {std::string(128 * 1024, 'b'), 0, 0}}},
+        .changes = {{{5, 0, 5}, {std::string(128 * 1024, 'b'), 0}, 0}},
     };
     CHECK_EQ(
         replica.accept(std::make_shared<const PublicationMessage>(oversizedKey)),

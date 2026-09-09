@@ -42,7 +42,6 @@ private:
 struct SemanticBlockState {
     std::string blockKey;
     uint8_t metadata = 0;
-    uint8_t lightLevel = 0;
 
     bool operator==(const SemanticBlockState&) const = default;
 };
@@ -84,10 +83,14 @@ public:
 
     Voxel::BlockID localId(std::string_view stableKey) const;
     SemanticBlockState semanticState(Voxel::BlockState state) const;
-    Voxel::BlockState localState(const SemanticBlockState& state) const;
+    Voxel::BlockState localState(
+        const SemanticBlockState& state, uint8_t lightLevel = 0) const;
     bool contains(std::string_view stableKey) const;
     /** True when current authoritative chunk storage preserves this state exactly. */
     bool supportsState(const SemanticBlockState& state) const;
+    /** True when authoritative chunk storage preserves semantic and light data. */
+    bool supportsPublishedState(
+        const SemanticBlockState& state, uint8_t lightLevel) const;
     /** True only for the built-in entity rule and hitbox bound by this manifest. */
     bool supportsEntity(const Entity::Entity& entity) const;
     bool supportsEntityState(

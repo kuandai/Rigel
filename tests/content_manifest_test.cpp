@@ -129,12 +129,16 @@ TEST_CASE(ContentManifest_is_stable_across_compact_registration_order) {
     CHECK_EQ(reorderedDictionary.localState(semantic).metadata, uint8_t{7});
     CHECK_EQ(
         reorderedDictionary.semanticState(
-            reorderedDictionary.localState(semantic)),
+            reorderedDictionary.localState(semantic, local.lightLevel)),
         semantic);
+    CHECK_EQ(
+        reorderedDictionary.localState(semantic, local.lightLevel).lightLevel,
+        uint8_t{0x31});
     CHECK(reorderedDictionary.supportsState(semantic));
-    CHECK(reorderedDictionary.supportsState({"base:air", 0, 0}));
-    CHECK(!reorderedDictionary.supportsState({"base:air", 1, 0}));
-    CHECK(!reorderedDictionary.supportsState({"base:air", 0, 1}));
+    CHECK(reorderedDictionary.supportsState({"base:air", 0}));
+    CHECK(!reorderedDictionary.supportsState({"base:air", 1}));
+    CHECK(reorderedDictionary.supportsPublishedState({"base:air", 0}, 0));
+    CHECK(!reorderedDictionary.supportsPublishedState({"base:air", 0}, 1));
 }
 
 TEST_CASE(ContentManifest_rejects_mismatch_and_unfrozen_content) {

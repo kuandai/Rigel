@@ -93,6 +93,7 @@ private:
     Voxel::World* m_replicaWorld = nullptr;
     Asset::AssetManager* m_assets = nullptr;
     Simulation::LoopbackReplica m_replica;
+    const Simulation::AuthorityCommandDescriptor m_commandDescriptor;
     Simulation::LocalObserverCapability m_observerCapability;
     Entity::EntityId m_observer;
     Simulation::SessionId m_session = 0;

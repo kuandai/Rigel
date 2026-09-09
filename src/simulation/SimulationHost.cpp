@@ -2024,6 +2024,15 @@ std::optional<ActiveSessionState> SimulationHost::activeSession() const {
     return state;
 }
 
+AuthorityCommandDescriptor SimulationHost::commandDescriptor() const {
+    return {
+        .world = m_config.world,
+        .zone = m_config.zone,
+        .content = m_content->identity(),
+        .maxInteractionDistance = m_config.maxInteractionDistance,
+    };
+}
+
 std::optional<CommandOutcome> SimulationHost::completedOutcome(
     SessionId session,
     CommandId command

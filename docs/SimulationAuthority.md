@@ -121,6 +121,12 @@ payload for the session:
   deduplication protection.
 
 Remove and place commands require an exact shape-aware interaction expectation.
+The host advertises an immutable command descriptor containing its world, zone,
+content manifest and interaction-distance policy. The loopback graphical client
+copies this descriptor and uses it to construct commands; presentation code does
+not duplicate those authority defaults or receive mutable host configuration.
+The descriptor is semantic session bootstrap data suitable for a later remote
+client boundary, not a transport or wire representation.
 The ray origin must match the authoritative session actor position, and reach is
 limited by the configured host policy; non-finite rays reject without admission.
 The graphical client has one narrower exception for its existing local free-fly

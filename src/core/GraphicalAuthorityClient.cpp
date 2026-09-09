@@ -72,6 +72,7 @@ GraphicalAuthorityClient::GraphicalAuthorityClient(
         }
         return std::move(*connection.replica);
     }()),
+    m_commandDescriptor(host.commandDescriptor()),
     m_observerCapability(host.localObserverCapability()),
     m_observer(observer),
     m_session(session),
@@ -113,16 +114,16 @@ GraphicalEditSubmitResult GraphicalAuthorityClient::submit(
         .session = m_session,
         .command = m_nextCommand,
         .actor = m_observer,
-        .world = m_host->world().id(),
-        .zone = "base:default",
-        .content = m_host->content().identity(),
+        .world = m_commandDescriptor.world,
+        .zone = m_commandDescriptor.zone,
+        .content = m_commandDescriptor.content,
         .action = action == Input::GameplayBlockEditAction::Remove
             ? Simulation::EditAction::Remove
             : Simulation::EditAction::Place,
         .interaction = Simulation::InteractionIntent{
             .origin = camera.position,
             .direction = camera.forward,
-            .maxDistance = 8.0f,
+            .maxDistance = m_commandDescriptor.maxInteractionDistance,
             .expectedTarget = addressOf(target.block),
             .expectedFace = target.face,
             .expectedTargetState = m_host->content().semanticState(target.state),

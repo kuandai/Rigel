@@ -298,6 +298,14 @@ struct ActiveSessionState {
     std::vector<CommandId> pendingCommands;
 };
 
+/** Immutable semantic command domain advertised to a client. */
+struct AuthorityCommandDescriptor {
+    Voxel::WorldId world = Voxel::kDefaultWorldId;
+    std::string zone;
+    ContentManifestId content;
+    float maxInteractionDistance = 0.0f;
+};
+
 struct TickRate {
     uint32_t numerator = 60;
     uint32_t denominator = 1;
@@ -367,6 +375,7 @@ public:
     SimulationHost& operator=(const SimulationHost&) = delete;
 
     const ContentDictionary& content() const { return *m_content; }
+    AuthorityCommandDescriptor commandDescriptor() const;
     const Voxel::World& world() const;
     Tick tick() const { return m_tick; }
     Revision revision() const { return m_revision; }

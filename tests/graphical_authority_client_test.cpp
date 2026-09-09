@@ -138,7 +138,9 @@ struct GraphicalFixture {
         size_t maxSessionReceipts = 256,
         bool connectClient = true,
         std::string initialModel = "entity_models/demo_cube",
-        std::shared_ptr<bool> modelLoadFailure = {})
+        std::shared_ptr<bool> modelLoadFailure = {},
+        std::string zone = "base:default",
+        float interactionDistance = 8.0f)
         : replica(resources) {
         Voxel::BlockType stone;
         stone.identifier = "rigel:stone";
@@ -171,6 +173,8 @@ struct GraphicalFixture {
         config.maxPreloadedChunks = 8;
         config.maxSnapshotCells = 25'000;
         config.maxSessionReceipts = maxSessionReceipts;
+        config.zone = std::move(zone);
+        config.maxInteractionDistance = interactionDistance;
         host = std::make_unique<Simulation::SimulationHost>(
             resources, generator, config);
         auto entity = std::make_unique<Entity::Entity>();
@@ -257,13 +261,14 @@ struct GraphicalFixture {
     }
 
     void install(std::vector<std::pair<Simulation::CellAddress, std::string>> cells) {
+        const auto descriptor = host->commandDescriptor();
         Simulation::EditCommand command{
             .session = 1,
             .command = setupCommand++,
             .actor = observer,
-            .world = host->world().id(),
-            .zone = "base:default",
-            .content = host->content().identity(),
+            .world = descriptor.world,
+            .zone = descriptor.zone,
+            .content = descriptor.content,
             .action = Simulation::EditAction::Atomic,
         };
         for (auto& [address, replacement] : cells) {
@@ -350,6 +355,35 @@ TEST_CASE(GraphicalAuthorityClient_InputQueuesTickAndAppliesPublication) {
     CHECK(fixture.host->despawnEntity(fixture.modeledEntity));
     fixture.client->advance(17ms);
     CHECK(!fixture.replica.entities().get(fixture.modeledEntity));
+}
+
+TEST_CASE(GraphicalAuthorityClient_UsesAdvertisedAuthorityCommandPolicy) {
+    GraphicalFixture fixture(
+        256, true, "entity_models/demo_cube", {},
+        "rigel:custom-zone", 12.0f);
+    const auto descriptor = fixture.host->commandDescriptor();
+    CHECK_EQ(descriptor.world, fixture.host->world().id());
+    CHECK_EQ(descriptor.zone, std::string("rigel:custom-zone"));
+    CHECK_EQ(descriptor.content, fixture.host->content().identity());
+    CHECK_EQ(descriptor.maxInteractionDistance, 12.0f);
+
+    const Simulation::CellAddress distant{15, 6, 5};
+    fixture.install({{distant, "rigel:stone"}});
+    fixture.camera.position = {5.5f, 6.5f, 5.5f};
+    fixture.camera.forward = {1.0f, 0.0f, 0.0f};
+    const auto target = Voxel::raycastBlock(
+        fixture.replica, fixture.camera.position, fixture.camera.forward,
+        descriptor.maxInteractionDistance);
+    CHECK(target.has_value());
+    CHECK_EQ(target->block, glm::ivec3(15, 6, 5));
+    CHECK(fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove,
+        *target, fixture.camera).accepted());
+    fixture.client->advance(17ms);
+    CHECK_EQ(fixture.host->read(distant).state.blockKey, std::string("base:air"));
+    CHECK_EQ(fixture.client->outcomes().size(), size_t{1});
+    CHECK_EQ(fixture.client->outcomes().front().status,
+             Simulation::CommandOutcomeStatus::Applied);
 }
 
 TEST_CASE(GraphicalAuthorityClient_ProjectsNonzeroLightAcrossChangeRetry) {

@@ -2040,6 +2040,36 @@ TEST_CASE(SimulationHost_keeps_packed_light_out_of_semantic_edits_and_hashes) {
         CommandOutcomeStatus::Applied);
 }
 
+TEST_CASE(SimulationHost_preserves_light_for_unchanged_atomic_members) {
+    HostFixture fixture;
+    fixture.start();
+    const auto retained = fixture.surface();
+    const auto removed = fixture.surface(6, 5);
+    auto& world = const_cast<Voxel::World&>(fixture.host->world());
+    const auto retainedState = fixture.host->read(retained).state;
+    world.setBlock(retained.x, retained.y, retained.z,
+                   fixture.host->content().localState(retainedState, 0x73));
+    EditCommand command{
+        .session = 1, .command = 1, .actor = fixture.actor,
+        .world = 0, .zone = "base:default",
+        .content = fixture.host->content().identity(),
+        .action = EditAction::Atomic,
+        .mutations = {
+            {retained, retainedState, retainedState},
+            {removed, fixture.host->read(removed).state, {"base:air", 0}},
+        },
+    };
+    CHECK_EQ(fixture.host->submit(command, fixture.host->authorityEditCapability()).status,
+             SubmitStatus::Accepted);
+    fixture.host->advance(17ms);
+    const auto repeated = fixture.host->submit(command, fixture.host->authorityEditCapability());
+    CHECK(repeated.outcome.has_value());
+    CHECK_EQ(repeated.outcome->status, CommandOutcomeStatus::Applied);
+    CHECK_EQ(fixture.host->read(removed).state.blockKey, std::string("base:air"));
+    CHECK_EQ(fixture.host->read(retained).state, retainedState);
+    CHECK_EQ(fixture.host->read(retained).lightLevel, uint8_t{0x73});
+}
+
 TEST_CASE(SimulationRecording_reconstructs_transitional_light_separately) {
     HostFixture fixture;
     SimulationHostConfig config;

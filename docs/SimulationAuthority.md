@@ -181,12 +181,18 @@ that RNG scheme explicitly, while generator randomness remains fixed by the
 generator definition and seed in the manifest.
 
 Memory, queue, replica, catch-up, checkpoint, and replay resource limits belong to
-the current process and are not restored from a save. Recovery overlays the saved
+the current process and are not restored from a save. The replay execution envelope
+separately records the admission limits needed to reconstruct admitted work and
+`maxSnapshotCells`, which gates interaction execution. Recovery overlays the saved
 world rules on caller-supplied current policy, then requires the complete dictionary,
 terrain, receipts, pending commands, and entities to fit those current bounds before
-returning a candidate host. An insufficient policy rejects recovery without
-truncating state or changing checkpoint files. A later checkpoint uses that host's
-current policy while retaining the acknowledged payload hash as its durable parent.
+returning a candidate host. A pending interaction requires the current and recorded
+snapshot-cell budgets to match; either direction of change rejects recovery instead
+of adopting the old process policy or changing an admitted outcome. Once pending
+interactions drain, a changed current budget is accepted normally. An insufficient
+or incompatible policy rejects recovery without truncating state or changing
+checkpoint files. A later checkpoint uses that host's current policy while retaining
+the acknowledged payload hash as its durable parent.
 
 Restored state is validated as a complete authority cut before the candidate host
 is returned. Entity IDs must belong to the saved world's authority allocation
@@ -202,7 +208,7 @@ Each captured payload binds its generation and the complete serialized parent-cu
 hash, including scheduler debt. This durable ancestry is deliberately distinct
 from the frame-pacing-independent simulation comparison hash. The comparison hash
 includes saved world rules and authoritative state while omitting scheduler debt,
-packed presentation light, current runtime policy, and the replay admission
+packed presentation light, current runtime policy, and the replay execution
 envelope. After the payload is committed, a small atomic pointer publishes that
 generation, ancestry, cut, payload length, and payload hash. A durable
 publication-pending fence is installed before pointer replacement and removed only

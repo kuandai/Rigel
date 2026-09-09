@@ -441,7 +441,7 @@ struct CheckpointLayout {
         size_t mutationCount = 0;
     };
 
-    std::array<size_t, 7> replayLimits{};
+    std::array<size_t, 8> replayLimits{};
     size_t nextEntity = 0;
     std::vector<Receipt> receipts;
     std::vector<size_t> entities;
@@ -1175,6 +1175,7 @@ TEST_CASE(SimulationCheckpoint_refuses_insufficient_current_limits_without_loss)
     SimulationHostConfig savedPolicy;
     savedPolicy.maxPendingCommands = 2;
     savedPolicy.maxSessionReceipts = 4;
+    savedPolicy.maxSnapshotCells = 25'000;
     HostFixture fixture(savedPolicy);
     fixture.start();
     CHECK_EQ(fixture.host->submit(fixture.removeCommand(1)).status,
@@ -1210,6 +1211,110 @@ TEST_CASE(SimulationCheckpoint_refuses_insufficient_current_limits_without_loss)
     CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
     CHECK_EQ(recovered.host->activeSession()->pendingCommands.size(), size_t{2});
     CHECK_EQ(recovered.host->world().entities().size(), size_t{2});
+}
+
+TEST_CASE(SimulationCheckpoint_preserves_interaction_execution_budget) {
+    SimulationHostConfig savedPolicy;
+    savedPolicy.domain = {{0, -4, 0}, {7, 3, 7}};
+    savedPolicy.maxPreloadedChunks = 2;
+    savedPolicy.maxSnapshotCells = 2'048;
+    savedPolicy.maxInteractionDistance = 64.0f;
+    HostFixture fixture(savedPolicy, {5.5f, 2.0f, 5.5f});
+    fixture.start();
+    auto command = fixture.removeCommand(1);
+    command.interaction->maxDistance = 64.0f;
+    const CellAddress target = command.mutations.front().address;
+    CHECK_EQ(fixture.host->submit(command).status, SubmitStatus::Accepted);
+
+    auto pendingStorage =
+        std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager pendingManager(
+        pendingStorage, "/pending-interaction-budget");
+    CHECK_EQ(pendingManager.request(*fixture.host),
+             CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(pendingManager).status,
+             CheckpointWriteStatus::Durable);
+    const auto pendingPointer = readStorageBytes(
+        *pendingStorage, "/pending-interaction-budget/current");
+    const auto pendingPayload = readStorageBytes(
+        *pendingStorage,
+        "/pending-interaction-budget/checkpoints/1.bin");
+
+    for (const size_t changedBudget : {size_t{512}, size_t{4'096}}) {
+        auto changedPolicy = savedPolicy;
+        changedPolicy.maxSnapshotCells = changedBudget;
+        auto rejected = pendingManager.recover(
+            fixture.resources, fixture.generator, changedPolicy);
+        CHECK_EQ(rejected.status, CheckpointRecoveryStatus::Incompatible);
+        CHECK(rejected.detail.find("pending interaction commands") !=
+              std::string::npos);
+        CHECK(rejected.detail.find(std::to_string(savedPolicy.maxSnapshotCells)) !=
+              std::string::npos);
+        CHECK(rejected.detail.find(std::to_string(changedBudget)) !=
+              std::string::npos);
+        CHECK_EQ(readStorageBytes(
+                     *pendingStorage,
+                     "/pending-interaction-budget/current"),
+                 pendingPointer);
+        CHECK_EQ(readStorageBytes(
+                     *pendingStorage,
+                     "/pending-interaction-budget/checkpoints/1.bin"),
+                 pendingPayload);
+    }
+
+    auto recovered = pendingManager.recover(
+        fixture.resources, fixture.generator, savedPolicy);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    fixture.host->advance(17ms);
+    recovered.host->advance(17ms);
+    CHECK_EQ(fixture.host->read(target).state.blockKey,
+             std::string("base:air"));
+    CHECK_EQ(recovered.host->stateHash(), fixture.host->stateHash());
+
+    const auto recording = fixture.host->recording();
+    CHECK(recording.has_value());
+    auto replayed = SimulationHost::resimulate(
+        fixture.resources, fixture.generator, *recording, {1ms, 16ms});
+    CHECK_EQ(replayed.status, ResimulationStatus::Complete);
+    CHECK_EQ(replayed.stateHash, fixture.host->stateHash());
+    CHECK_EQ(replayed.host->read(target).state.blockKey,
+             std::string("base:air"));
+
+    auto drainedStorage =
+        std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager drainedManager(
+        drainedStorage, "/drained-interaction-budget");
+    CHECK_EQ(drainedManager.request(*fixture.host),
+             CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(drainedManager).status,
+             CheckpointWriteStatus::Durable);
+    auto nextCommand = fixture.removeCommand(2);
+    nextCommand.interaction->maxDistance = 64.0f;
+    const CellAddress nextTarget = nextCommand.mutations.front().address;
+
+    auto lowerPolicy = savedPolicy;
+    lowerPolicy.maxSnapshotCells = 512;
+    auto lower = drainedManager.recover(
+        fixture.resources, fixture.generator, lowerPolicy);
+    CHECK_EQ(lower.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(lower.host->submit(nextCommand).status, SubmitStatus::Accepted);
+    lower.host->advance(17ms);
+    CHECK_EQ(lower.host->submit(nextCommand).outcome->status,
+             CommandOutcomeStatus::InvalidRequest);
+    CHECK_NE(lower.host->read(nextTarget).state.blockKey,
+             std::string("base:air"));
+
+    auto higherPolicy = savedPolicy;
+    higherPolicy.maxSnapshotCells = 4'096;
+    auto higher = drainedManager.recover(
+        fixture.resources, fixture.generator, higherPolicy);
+    CHECK_EQ(higher.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(higher.host->submit(nextCommand).status, SubmitStatus::Accepted);
+    higher.host->advance(17ms);
+    CHECK_EQ(higher.host->submit(nextCommand).outcome->status,
+             CommandOutcomeStatus::Applied);
+    CHECK_EQ(higher.host->read(nextTarget).state.blockKey,
+             std::string("base:air"));
 }
 
 TEST_CASE(SimulationCheckpoint_payload_io_failures_preserve_the_acknowledged_cut) {

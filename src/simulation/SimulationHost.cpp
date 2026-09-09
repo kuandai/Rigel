@@ -65,7 +65,7 @@ bool addElements(size_t& total, size_t count, size_t elementSize) {
 
 constexpr uint64_t CheckpointMagic = 0x524947454c435031ULL; // RIGELCP1
 constexpr uint64_t RecordingMagic = 0x524947454c525031ULL; // RIGELRP1
-constexpr uint32_t StateFormatVersion = 3;
+constexpr uint32_t StateFormatVersion = 4;
 
 class Encoder {
 public:
@@ -1033,7 +1033,8 @@ std::vector<uint8_t> SimulationHost::checkpointBytes(
                  m_config.maxEntities,
                  m_config.maxEntityTags,
                  m_config.maxEntityTagBytes,
-                 m_config.maxCommandBytes}) {
+                 m_config.maxCommandBytes,
+                 m_config.maxSnapshotCells}) {
             out.u64(value);
         }
     }
@@ -1176,7 +1177,8 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         &replayPolicy.maxEntities,
         &replayPolicy.maxEntityTags,
         &replayPolicy.maxEntityTagBytes,
-        &replayPolicy.maxCommandBytes};
+        &replayPolicy.maxCommandBytes,
+        &replayPolicy.maxSnapshotCells};
     for (size_t* target : replayLimits) {
         const uint64_t value = in.u64();
         if (value > std::numeric_limits<size_t>::max()) {
@@ -1191,6 +1193,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         replayPolicy.maxEntities == 0 || replayPolicy.maxEntityTags == 0 ||
         replayPolicy.maxEntityTagBytes == 0 ||
         replayPolicy.maxCommandBytes == 0 ||
+        replayPolicy.maxSnapshotCells == 0 ||
         replayPolicy.maxChangesPerCommand >
             HardSerializedBytes / sizeof(CellMutation) ||
         replayPolicy.maxSessionReceipts >
@@ -1211,9 +1214,6 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
             "checkpoint does not fit current checkpoint byte limit");
     }
     if (!currentPolicy) {
-        const auto volume = savedDomain.volume(std::numeric_limits<size_t>::max());
-        if (!volume) throw std::runtime_error("checkpoint domain is invalid");
-        config.maxSnapshotCells = *volume;
         config.maxCheckpointBytes = std::max(config.maxCheckpointBytes, bytes.size());
     }
 
@@ -1264,6 +1264,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     std::vector<SavedReceipt> receipts;
     receipts.reserve(receiptCount);
     size_t pendingReceipts = 0;
+    bool pendingInteraction = false;
     size_t receiptBytes = 0;
     for (size_t i = 0; i < receiptCount; ++i) {
         SavedReceipt receipt;
@@ -1320,6 +1321,8 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         }
         if (receipt.pending) {
             ++pendingReceipts;
+            pendingInteraction = pendingInteraction ||
+                receipt.command.interaction.has_value();
             if (pendingReceipts > replayPolicy.maxPendingCommands) {
                 throw std::runtime_error(
                     "checkpoint exceeds its replay pending-command envelope");
@@ -1339,6 +1342,15 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
             throw std::runtime_error("checkpoint receipt outcome is inconsistent");
         }
         receipts.push_back(std::move(receipt));
+    }
+    if (currentPolicy && pendingInteraction &&
+        config.maxSnapshotCells != replayPolicy.maxSnapshotCells) {
+        throw std::invalid_argument(
+            "checkpoint pending interaction commands require recorded "
+            "maxSnapshotCells " +
+            std::to_string(replayPolicy.maxSnapshotCells) +
+            ", but current policy provides " +
+            std::to_string(config.maxSnapshotCells));
     }
 
     const size_t entityCount = in.u32();

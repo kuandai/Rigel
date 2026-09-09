@@ -224,6 +224,28 @@ struct GraphicalFixture {
             replica, camera.position, camera.forward, 8.0f);
     }
 
+    Simulation::CellAddress authoritySurface(int x = 5, int z = 5) const {
+        for (int y = 4; y >= -3; --y) {
+            const auto current = host->read({x, y, z});
+            const auto above = host->read({x, y + 1, z});
+            if (current.status == Simulation::ExactReadStatus::Known &&
+                current.state.blockKey != "base:air" &&
+                above.status == Simulation::ExactReadStatus::Known &&
+                above.state.blockKey == "base:air") {
+                return {x, y, z};
+            }
+        }
+        throw Test::TestFailure("graphical fixture has no authority surface");
+    }
+
+    void setAuthorityLight(Simulation::CellAddress address, uint8_t light) {
+        auto& mutableWorld = const_cast<Voxel::World&>(host->world());
+        auto state = mutableWorld.getBlock(address.x, address.y, address.z);
+        CHECK(!state.isAir());
+        state.lightLevel = light;
+        mutableWorld.setBlock(address.x, address.y, address.z, state);
+    }
+
     bool capture(const Voxel::BlockTarget* targetValue) {
         return Input::handleBlockEdits(
             input, window, targetValue,
@@ -328,6 +350,45 @@ TEST_CASE(GraphicalAuthorityClient_InputQueuesTickAndAppliesPublication) {
     CHECK(fixture.host->despawnEntity(fixture.modeledEntity));
     fixture.client->advance(17ms);
     CHECK(!fixture.replica.entities().get(fixture.modeledEntity));
+}
+
+TEST_CASE(GraphicalAuthorityClient_ProjectsNonzeroLightAcrossChangeRetry) {
+    auto failModel = std::make_shared<bool>(false);
+    GraphicalFixture fixture(256, false, "", failModel);
+    const auto lit = fixture.authoritySurface();
+    fixture.setAuthorityLight(lit, 0xa3);
+    fixture.connect();
+    CHECK_EQ(
+        fixture.replica.getBlock(lit.x, lit.y, lit.z).lightLevel,
+        uint8_t{0xa3});
+
+    const auto selected = fixture.target();
+    CHECK(selected.has_value());
+    CHECK_EQ(
+        (Simulation::CellAddress{
+            selected->block.x, selected->block.y, selected->block.z}),
+        lit);
+    CHECK(fixture.client->submit(
+        Input::GameplayBlockEditAction::Remove,
+        *selected,
+        fixture.camera).accepted());
+    CHECK(!fixture.spawnModeled("entity_models/demo_cube").isNull());
+
+    *failModel = true;
+    fixture.client->advance(17ms);
+    CHECK(fixture.client->projectionRetryPending());
+    CHECK(fixture.host->read(lit).state.blockKey == "base:air");
+    const auto retained = fixture.replica.getBlock(lit.x, lit.y, lit.z);
+    CHECK(!retained.isAir());
+    CHECK_EQ(retained.lightLevel, uint8_t{0xa3});
+
+    *failModel = false;
+    fixture.client->advance(0ns);
+    CHECK(!fixture.client->projectionRetryPending());
+    CHECK_EQ(fixture.client->revision(), fixture.host->revision());
+    const auto projected = fixture.replica.getBlock(lit.x, lit.y, lit.z);
+    CHECK(projected.isAir());
+    CHECK_EQ(projected.lightLevel, uint8_t{0});
 }
 
 #ifdef RIGEL_TEST_ALLOCATION_FAILURES
@@ -517,6 +578,7 @@ TEST_CASE(GraphicalAuthorityClient_ChangeModelFailureRetainsRetry) {
 TEST_CASE(GraphicalAuthorityClient_RetryResnapshotsAfterProducerPressure) {
     auto failModel = std::make_shared<bool>(false);
     GraphicalFixture fixture(256, true, "", failModel);
+    const auto relit = fixture.authoritySurface(6, 5);
     const auto selected = fixture.target();
     CHECK(selected.has_value());
     const Simulation::Revision visibleRevision = fixture.client->revision();
@@ -533,6 +595,7 @@ TEST_CASE(GraphicalAuthorityClient_RetryResnapshotsAfterProducerPressure) {
     CHECK(fixture.client->projectionRetryPending());
     CHECK_EQ(fixture.client->revision(), visibleRevision);
     CHECK_EQ(fixture.client->pendingSubmissionCount(), size_t{1});
+    fixture.setAuthorityLight(relit, 0xb4);
 
     for (int pass = 0; pass < 5; ++pass) {
         fixture.host->advance(250ms);
@@ -543,6 +606,9 @@ TEST_CASE(GraphicalAuthorityClient_RetryResnapshotsAfterProducerPressure) {
     CHECK_EQ(fixture.client->revision(), fixture.host->revision());
     CHECK(fixture.replica.entities().get(added));
     CHECK_EQ(fixture.client->pendingSubmissionCount(), size_t{0});
+    CHECK_EQ(
+        fixture.replica.getBlock(relit.x, relit.y, relit.z).lightLevel,
+        uint8_t{0xb4});
     CHECK_EQ(fixture.client->outcomes().size(), size_t{1});
     CHECK_EQ(fixture.client->outcomes().front().status,
              Simulation::CommandOutcomeStatus::Applied);

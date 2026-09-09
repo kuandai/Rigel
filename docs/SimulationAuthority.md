@@ -194,6 +194,11 @@ or incompatible policy rejects recovery without truncating state or changing
 checkpoint files. A later checkpoint uses that host's current policy while retaining
 the acknowledged payload hash as its durable parent.
 
+Command mutation count/bytes and entity tag count/bytes are checked against both
+the saved execution envelope and the current process policy before decoder vectors
+or strings are allocated. Malformed saved counts remain corrupt input; a valid
+saved cut that exceeds a lower current sub-limit is reported as incompatible.
+
 Restored state is validated as a complete authority cut before the candidate host
 is returned. Entity IDs must belong to the saved world's authority allocation
 domain and precede its saved frontier. Entity state must have finite motion, rule

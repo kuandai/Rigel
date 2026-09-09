@@ -36,9 +36,14 @@ size_t trackedAllocations = 0;
 size_t trackedAllocationBytes = 0;
 thread_local size_t allocationCeiling = 0;
 thread_local bool allocationCeilingExceeded = false;
+thread_local size_t watchedAllocationSize = 0;
+thread_local bool watchedAllocationObserved = false;
 }
 
 void* operator new(std::size_t bytes) {
+    if (watchedAllocationSize && bytes == watchedAllocationSize) {
+        watchedAllocationObserved = true;
+    }
     if (allocationCeiling && bytes > allocationCeiling) {
         allocationCeilingExceeded = true;
         throw std::bad_alloc();
@@ -547,7 +552,10 @@ CheckpointRecoveryStatus recoverMutatedCheckpoint(
         write->commit();
     }
     SimulationCheckpointManager reopened(storage, "/save");
-    return reopened.recover(fixture.resources, fixture.generator).status;
+    SimulationHostConfig currentPolicy;
+    currentPolicy.maxSnapshotCells = 25'000;
+    return reopened.recover(
+        fixture.resources, fixture.generator, currentPolicy).status;
 }
 
 void pumpBaseline(LoopbackReplica& replica) {
@@ -1800,9 +1808,95 @@ TEST_CASE(SimulationCheckpoint_preflights_collection_counts_before_allocation) {
             throw;
         }
         allocationCeiling = 0;
-        CHECK_EQ(status, CheckpointRecoveryStatus::Corrupt);
+        if (status != CheckpointRecoveryStatus::Corrupt) {
+            throw Test::TestFailure(
+                "forged collection " + std::to_string(collection) +
+                " was not diagnosed as corrupt");
+        }
         CHECK(!allocationCeilingExceeded);
     }
+}
+
+TEST_CASE(SimulationCheckpoint_applies_current_sub_limits_before_decode_allocations) {
+    SimulationHostConfig savedPolicy;
+    savedPolicy.maxChangesPerCommand = 37;
+    savedPolicy.maxEntityTags = 32;
+    savedPolicy.maxEntityTagBytes = 4'096;
+    savedPolicy.maxSnapshotCells = 25'000;
+    HostFixture fixture(savedPolicy);
+    fixture.start();
+
+    EditCommand command{
+        .session = 1,
+        .command = 1,
+        .actor = fixture.actor,
+        .world = 0,
+        .zone = "base:default",
+        .content = fixture.host->content().identity(),
+        .action = EditAction::Atomic,
+    };
+    for (int index = 0; index < 37; ++index) {
+        const CellAddress address{
+            1 + index % 10, 7, 1 + index / 10};
+        command.mutations.push_back({
+            .address = address,
+            .expected = fixture.host->read(address).state,
+            .replacement = {"rigel:stone", 0},
+        });
+    }
+    CHECK_EQ(fixture.host->submit(
+                 command, fixture.host->authorityEditCapability()).status,
+             SubmitStatus::Accepted);
+
+    auto tagged = std::make_unique<Entity::Entity>();
+    tagged->setPosition({9.0f, 7.0f, 9.0f});
+    for (int index = 0; index < 23; ++index) {
+        tagged->addTag("saved-tag:" + std::to_string(100 + index));
+    }
+    CHECK(!fixture.host->spawnEntity(std::move(tagged)).isNull());
+
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager manager(storage, "/current-decode-limits");
+    CHECK_EQ(manager.request(*fixture.host), CheckpointRequestStatus::Started);
+    CHECK_EQ(waitForCheckpoint(manager).status, CheckpointWriteStatus::Durable);
+    const auto pointer = readStorageBytes(
+        *storage, "/current-decode-limits/current");
+    const auto payload = readStorageBytes(
+        *storage, "/current-decode-limits/checkpoints/1.bin");
+
+    const auto rejectsBefore = [&](SimulationHostConfig current,
+                                   size_t allocationSize) {
+        watchedAllocationSize = allocationSize;
+        watchedAllocationObserved = false;
+        const auto recovery = manager.recover(
+            fixture.resources, fixture.generator, std::move(current));
+        watchedAllocationSize = 0;
+        CHECK_EQ(recovery.status, CheckpointRecoveryStatus::Incompatible);
+        CHECK(!watchedAllocationObserved);
+        CHECK_EQ(readStorageBytes(
+                     *storage, "/current-decode-limits/current"),
+                 pointer);
+        CHECK_EQ(readStorageBytes(
+                     *storage,
+                     "/current-decode-limits/checkpoints/1.bin"),
+                 payload);
+    };
+
+    auto commandCount = savedPolicy;
+    commandCount.maxChangesPerCommand = 1;
+    rejectsBefore(commandCount, 37 * sizeof(CellMutation));
+
+    auto commandBytes = savedPolicy;
+    commandBytes.maxCommandBytes = 1'024;
+    rejectsBefore(commandBytes, 37 * sizeof(CellMutation));
+
+    auto tagCount = savedPolicy;
+    tagCount.maxEntityTags = 1;
+    rejectsBefore(tagCount, 23 * sizeof(std::string));
+
+    auto tagBytes = savedPolicy;
+    tagBytes.maxEntityTagBytes = 1'024;
+    rejectsBefore(tagBytes, 23 * sizeof(std::string));
 }
 #endif
 

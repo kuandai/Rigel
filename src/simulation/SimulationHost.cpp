@@ -155,6 +155,18 @@ public:
         m_at += static_cast<size_t>(size);
         return result;
     }
+    size_t skipString(
+        size_t savedLimit, size_t currentLimit, const char* currentError
+    ) {
+        const size_t size = u32();
+        if (size > savedLimit) {
+            throw std::runtime_error("checkpoint string exceeds saved limit");
+        }
+        require(size);
+        if (size > currentLimit) throw std::invalid_argument(currentError);
+        m_at += size;
+        return size;
+    }
     bool done() const { return m_at == m_data.size(); }
     // Conservative encoded lower bounds prevent a corrupt count from reserving
     // storage that cannot be justified by either input bytes or the saved budget.
@@ -215,10 +227,67 @@ void encodeEntityState(Encoder& out, const Entity::EntitySimulationState& state)
 }
 
 Entity::EntitySimulationState decodeEntityState(
-    Decoder& in, size_t tagLimit, size_t stringLimit
+    Decoder& in, size_t savedTagLimit, size_t savedStringLimit,
+    size_t currentTagLimit, size_t currentStringLimit
 ) {
+    auto preflight = in;
+    decodeId(preflight);
+    size_t savedBytes = 0;
+    size_t currentBytes = 0;
+    const auto accountString = [&](size_t size) {
+        const size_t retained = std::max(size, std::string{}.capacity());
+        if (!addBytes(savedBytes, retained) ||
+            savedBytes > savedStringLimit) {
+            throw std::runtime_error(
+                "checkpoint entity strings exceed saved byte limit");
+        }
+        if (!addBytes(currentBytes, retained) ||
+            currentBytes > currentStringLimit) {
+            throw std::invalid_argument(
+                "checkpoint entity strings do not fit current byte limit");
+        }
+    };
+    accountString(preflight.skipString(
+        savedStringLimit, currentStringLimit,
+        "checkpoint entity string does not fit current byte limit"));
+    decodeVec3(preflight); decodeVec3(preflight);
+    decodeVec3(preflight); decodeVec3(preflight);
+    preflight.floating(); preflight.boolean(); preflight.boolean();
+    preflight.boolean(); preflight.boolean(); preflight.floating();
+    decodeVec3(preflight); decodeVec3(preflight);
+    const size_t preflightTags = preflight.u32();
+    if (preflightTags > savedTagLimit) {
+        throw std::runtime_error("checkpoint entity tag cap exceeded");
+    }
+    preflight.requireCollection(
+        preflightTags, 4, sizeof(std::string), savedStringLimit);
+    if (preflightTags > currentTagLimit) {
+        throw std::invalid_argument(
+            "checkpoint entity tags do not fit current count limit");
+    }
+    if (!addElements(savedBytes, preflightTags, sizeof(std::string)) ||
+        savedBytes > savedStringLimit) {
+        throw std::runtime_error(
+            "checkpoint entity tags exceed saved byte limit");
+    }
+    if (!addElements(currentBytes, preflightTags, sizeof(std::string)) ||
+        currentBytes > currentStringLimit) {
+        throw std::invalid_argument(
+            "checkpoint entity tags do not fit current byte limit");
+    }
+    for (size_t i = 0; i < preflightTags; ++i) {
+        accountString(preflight.skipString(
+            savedStringLimit, currentStringLimit,
+            "checkpoint entity tag does not fit current byte limit"));
+    }
+    accountString(preflight.skipString(
+        savedStringLimit, currentStringLimit,
+        "checkpoint entity model identifier does not fit current byte limit"));
+    preflight.floating(); preflight.floating();
+    preflight.floating(); preflight.floating();
+
     Entity::EntitySimulationState state;
-    state.id = decodeId(in); state.typeId = in.string(stringLimit);
+    state.id = decodeId(in); state.typeId = in.string(savedStringLimit);
     state.position = decodeVec3(in); state.velocity = decodeVec3(in);
     state.acceleration = decodeVec3(in); state.viewDirection = decodeVec3(in);
     state.gravityModifier = in.floating(); state.onGround = in.boolean();
@@ -226,11 +295,12 @@ Entity::EntitySimulationState decodeEntityState(
     state.collidedZ = in.boolean(); state.floorFriction = in.floating();
     state.localBounds = {decodeVec3(in), decodeVec3(in)};
     const size_t tags = in.u32();
-    if (tags > tagLimit) throw std::runtime_error("checkpoint entity tag cap exceeded");
-    in.requireCollection(tags, 4, sizeof(std::string), stringLimit);
+    in.requireCollection(tags, 4, sizeof(std::string), savedStringLimit);
     state.tags.reserve(tags);
-    for (size_t i = 0; i < tags; ++i) state.tags.push_back(in.string(stringLimit));
-    state.modelIdentifier = in.string(stringLimit);
+    for (size_t i = 0; i < tags; ++i) {
+        state.tags.push_back(in.string(savedStringLimit));
+    }
+    state.modelIdentifier = in.string(savedStringLimit);
     state.renderTint = {in.floating(), in.floating(), in.floating(), in.floating()};
     return state;
 }
@@ -264,11 +334,75 @@ ContentManifestId decodeManifest(Decoder& in) {
     return ContentManifestId(bytes);
 }
 
-EditCommand decodeCommand(Decoder& in, size_t changes, size_t stringLimit) {
+EditCommand decodeCommand(
+    Decoder& in, size_t savedChanges, size_t savedStringLimit,
+    size_t currentChanges, size_t currentStringLimit
+) {
+    auto preflight = in;
+    preflight.u64(); preflight.u64(); decodeId(preflight); preflight.u32();
+    size_t savedBytes = sizeof(EditCommand);
+    size_t currentBytes = sizeof(EditCommand);
+    const auto accountString = [&](size_t size) {
+        const size_t retained = std::max(size, std::string{}.capacity());
+        if (!addBytes(savedBytes, retained) ||
+            savedBytes > savedStringLimit) {
+            throw std::runtime_error(
+                "checkpoint command exceeds saved byte limit");
+        }
+        if (!addBytes(currentBytes, retained) ||
+            currentBytes > currentStringLimit) {
+            throw std::invalid_argument(
+                "checkpoint command does not fit current byte limit");
+        }
+    };
+    accountString(preflight.skipString(
+        savedStringLimit, currentStringLimit,
+        "checkpoint command string does not fit current byte limit"));
+    decodeManifest(preflight); preflight.u8();
+    if (preflight.boolean()) {
+        decodeVec3(preflight); decodeVec3(preflight); preflight.floating();
+        preflight.i32(); preflight.i32(); preflight.i32(); preflight.u8();
+        accountString(preflight.skipString(
+            savedStringLimit, currentStringLimit,
+            "checkpoint interaction string does not fit current byte limit"));
+        preflight.u8();
+    }
+    const size_t preflightCount = preflight.u32();
+    if (preflightCount > savedChanges) {
+        throw std::runtime_error("checkpoint mutation cap exceeded");
+    }
+    preflight.requireCollection(
+        preflightCount, 24, sizeof(CellMutation), savedStringLimit);
+    if (preflightCount > currentChanges) {
+        throw std::invalid_argument(
+            "checkpoint mutations do not fit current count limit");
+    }
+    if (!addElements(savedBytes, preflightCount, sizeof(CellMutation)) ||
+        savedBytes > savedStringLimit) {
+        throw std::runtime_error("checkpoint command exceeds saved byte limit");
+    }
+    if (!addElements(currentBytes, preflightCount, sizeof(CellMutation)) ||
+        currentBytes > currentStringLimit) {
+        throw std::invalid_argument(
+            "checkpoint command does not fit current byte limit");
+    }
+    for (size_t i = 0; i < preflightCount; ++i) {
+        preflight.i32(); preflight.i32(); preflight.i32();
+        accountString(preflight.skipString(
+            savedStringLimit, currentStringLimit,
+            "checkpoint mutation string does not fit current byte limit"));
+        preflight.u8();
+        accountString(preflight.skipString(
+            savedStringLimit, currentStringLimit,
+            "checkpoint mutation string does not fit current byte limit"));
+        preflight.u8();
+    }
+
     EditCommand command;
     command.session = in.u64(); command.command = in.u64();
     command.actor = decodeId(in); command.world = in.u32();
-    command.zone = in.string(stringLimit); command.content = decodeManifest(in);
+    command.zone = in.string(savedStringLimit);
+    command.content = decodeManifest(in);
     command.action = static_cast<EditAction>(in.u8());
     if (in.boolean()) {
         InteractionIntent intent;
@@ -276,18 +410,17 @@ EditCommand decodeCommand(Decoder& in, size_t changes, size_t stringLimit) {
         intent.maxDistance = in.floating();
         intent.expectedTarget = {in.i32(), in.i32(), in.i32()};
         intent.expectedFace = static_cast<Voxel::Direction>(in.u8());
-        intent.expectedTargetState = decodeSemantic(in, stringLimit);
+        intent.expectedTargetState = decodeSemantic(in, savedStringLimit);
         command.interaction = std::move(intent);
     }
     const size_t count = in.u32();
-    if (count > changes) throw std::runtime_error("checkpoint mutation cap exceeded");
-    in.requireCollection(count, 24, sizeof(CellMutation), stringLimit);
+    in.requireCollection(count, 24, sizeof(CellMutation), savedStringLimit);
     command.mutations.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         CellMutation mutation;
         mutation.address = {in.i32(), in.i32(), in.i32()};
-        mutation.expected = decodeSemantic(in, stringLimit);
-        mutation.replacement = decodeSemantic(in, stringLimit);
+        mutation.expected = decodeSemantic(in, savedStringLimit);
+        mutation.replacement = decodeSemantic(in, savedStringLimit);
         command.mutations.push_back(std::move(mutation));
     }
     return command;
@@ -1270,7 +1403,8 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
         SavedReceipt receipt;
         receipt.command = decodeCommand(
             in, replayPolicy.maxChangesPerCommand,
-            replayPolicy.maxCommandBytes);
+            replayPolicy.maxCommandBytes,
+            config.maxChangesPerCommand, config.maxCommandBytes);
         receipt.admission = in.u64(); receipt.pending = in.boolean();
         if (in.boolean()) {
             CommandOutcome value;
@@ -1370,7 +1504,8 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     for (size_t i = 0; i < entityCount; ++i) {
         entities.push_back(decodeEntityState(
             in, replayPolicy.maxEntityTags,
-            replayPolicy.maxEntityTagBytes));
+            replayPolicy.maxEntityTagBytes,
+            config.maxEntityTags, config.maxEntityTagBytes));
         if (i && !(entities[i - 1].id < entities[i].id)) {
             throw std::runtime_error("checkpoint entity order is invalid");
         }
@@ -1606,6 +1741,8 @@ ResimulationResult SimulationHost::resimulate(
             if (kind == 1) {
                 events.push_back({afterTick, Impl::SpawnAdmission{
                     decodeEntityState(in, host->m_config.maxEntityTags,
+                                      host->m_config.maxEntityTagBytes,
+                                      host->m_config.maxEntityTags,
                                       host->m_config.maxEntityTagBytes)}});
             } else if (kind == 2) {
                 events.push_back({afterTick, Impl::DespawnAdmission{decodeId(in)}});
@@ -1618,6 +1755,8 @@ ResimulationResult SimulationHost::resimulate(
                 const bool privileged = in.boolean();
                 events.push_back({afterTick, Impl::CommandAdmission{
                     decodeCommand(in, host->m_config.maxChangesPerCommand,
+                                  host->m_config.maxCommandBytes,
+                                  host->m_config.maxChangesPerCommand,
                                   host->m_config.maxCommandBytes), privileged}});
             } else if (kind == 5) {
                 events.push_back({afterTick, Impl::ObserverPoseAdmission{

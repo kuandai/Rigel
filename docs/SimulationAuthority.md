@@ -35,11 +35,14 @@ unmodeled entity state.
 `WorldGenerator`. It hashes canonical semantic records for every block and the
 generator inputs into its SHA-256 manifest identity, then retains only the sorted
 stable-key/local-ID mapping needed at runtime. A block record includes its stable
-identifier, selection model and orientation, collision shape and provenance,
-opacity, culling, and light behavior. Cosmetic texture paths and render layers are
-not simulation identity.
+identifier, selectable cuboid bounds and face presence, orientation, and collision
+shape. Model names, texture slots and coordinates, shading, ambient occlusion,
+render culling, collision provenance, opacity, and light presentation do not
+contribute because the authority does not consume them. Generator inputs and the
+built-in entity update and hitbox rules remain part of simulation identity.
 
-Publications and commands carry stable block keys plus metadata and light bytes.
+Commands carry stable block keys plus semantic metadata. Publications additionally
+carry packed light as separate transitional presentation state.
 The dictionary maps these records to the current registry's compact `BlockID` only
 after manifest validation. Registry registration order therefore does not alter
 the manifest identity, while a generator seed or semantic rule change does.
@@ -63,11 +66,12 @@ The developer block-gallery generator has additional runtime placements beyond
 its serialized terrain definition. This initial authority rejects that generator
 explicitly rather than assigning it the ordinary empty generator's identity.
 
-The manifest also binds the built-in entity update rule, its centered one-unit
-authority hitbox, and the two currently admitted cosmetic presentation model
-identities. This bounded host admits only exact `Entity` instances using that rule
-and hitbox. It retains a supported model identifier without loading a graphical
-model into authority; the graphical replica resolves that handle for rendering.
+The manifest also binds the built-in entity update rule and its centered one-unit
+authority hitbox. Cosmetic entity model identifiers are retained for graphical
+projection but do not contribute to simulation content identity. This bounded host
+admits only exact `Entity` instances using that rule and hitbox. It retains a
+supported model identifier without loading a graphical model into authority; the
+graphical replica resolves that handle for rendering.
 Virtual subclasses, custom local bounds, preassigned IDs, non-finite state, loaded
 model handles, and model-derived authority hitboxes are rejected before spawn
 because their simulation or replay meaning is outside this manifest.

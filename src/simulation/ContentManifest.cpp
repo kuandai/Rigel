@@ -131,38 +131,17 @@ std::string blockRecord(const Voxel::BlockType& type) {
     }
     CanonicalWriter out;
     out.string(type.identifier);
-    out.boolean(type.isOpaque);
-    out.boolean(type.cullSameType);
-    out.byte(type.emittedLight);
-    out.byte(type.lightAttenuation);
-
-    out.string(type.model->identifier());
     out.byte(static_cast<uint8_t>(type.model.orientation));
-    out.boolean(type.model.rotateTopBottomUv);
-    out.u32(static_cast<uint32_t>(type.model->textureSlots().size()));
-    for (const auto& slot : type.model->textureSlots()) out.string(slot);
     out.u32(static_cast<uint32_t>(type.model->cuboids().size()));
     for (const auto& cuboid : type.model->cuboids()) {
         for (float value : cuboid.bounds.min) out.floating(value);
         for (float value : cuboid.bounds.max) out.floating(value);
         for (const auto& face : cuboid.faces) {
             out.boolean(face.has_value());
-            if (!face) continue;
-            out.string(face->textureSlot);
-            out.floating(face->uv.u0); out.floating(face->uv.v0);
-            out.floating(face->uv.u1); out.floating(face->uv.v1);
-            out.byte(static_cast<uint8_t>(face->rotation));
-            out.boolean(face->shadingFace.has_value());
-            if (face->shadingFace) {
-                out.byte(static_cast<uint8_t>(*face->shadingFace));
-            }
-            out.boolean(face->ambientOcclusion);
-            out.boolean(face->cullAgainstOpaqueNeighbor);
         }
     }
 
     out.byte(static_cast<uint8_t>(type.collision.kind()));
-    out.byte(static_cast<uint8_t>(type.collision.provenance()));
     out.u32(static_cast<uint32_t>(type.collision.boxes().size()));
     for (const auto& box : type.collision.boxes()) {
         for (float value : box.min) out.floating(value);
@@ -181,9 +160,6 @@ std::string entityRuleRecord() {
     for (float value : {-0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f}) {
         out.floating(value);
     }
-    out.string("cosmetic-model-identity-v1");
-    out.string("entity_models/model_drone_interceptor");
-    out.string("entity_models/demo_cube");
     return out.data();
 }
 
@@ -252,7 +228,7 @@ ContentDictionary::ContentDictionary(
     }
     CanonicalWriter manifest;
     manifest.string("rigel.content-manifest");
-    manifest.u32(2);
+    manifest.u32(3);
     manifest.u32(static_cast<uint32_t>(m_entries.size()));
     for (const auto& entry : m_entries) {
         m_byLocalId[entry.localId.type] = &entry;

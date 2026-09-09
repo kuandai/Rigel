@@ -19,23 +19,52 @@ Voxel::BlockType block(
     std::string identifier,
     bool raised,
     float modelBottom = 0.25f,
-    float collisionBottom = 0.25f
+    float collisionBottom = 0.25f,
+    bool alternatePresentation = false,
+    bool omitFace = false,
+    Voxel::BlockModelOrientation orientation =
+        Voxel::BlockModelOrientation::Identity
 ) {
     Voxel::BlockType type;
     type.identifier = std::move(identifier);
-    type.isOpaque = !raised;
-    type.emittedLight = raised ? 3 : 0;
+    type.isOpaque = alternatePresentation ? raised : !raised;
+    type.cullSameType = alternatePresentation;
+    type.emittedLight = alternatePresentation ? 12 : (raised ? 3 : 0);
+    type.lightAttenuation = alternatePresentation ? 2 : 15;
     if (raised) {
+        Voxel::BlockModelCuboid cuboid{
+            .bounds = {{0.0f, modelBottom, 0.0f}, {1.0f, 1.0f, 1.0f}},
+        };
+        if (!omitFace) {
+            cuboid.faces[static_cast<size_t>(Voxel::Direction::PosY)] =
+                Voxel::BlockModelFace{
+                    .textureSlot = alternatePresentation ? "renamed" : "surface",
+                    .uv = alternatePresentation
+                        ? Voxel::BlockModelUvRect{0.25f, 0.5f, 0.75f, 1.0f}
+                        : Voxel::BlockModelUvRect{},
+                    .rotation = alternatePresentation
+                        ? Voxel::BlockModelUvRotation::Quarter
+                        : Voxel::BlockModelUvRotation::None,
+                    .shadingFace = alternatePresentation
+                        ? std::optional(Voxel::Direction::NegX)
+                        : std::nullopt,
+                    .ambientOcclusion = alternatePresentation,
+                    .cullAgainstOpaqueNeighbor = alternatePresentation,
+                };
+        }
         type.model = std::make_shared<const Voxel::BlockModel>(
-            "fixture:raised",
-            std::vector<std::string>{"surface"},
-            std::vector<Voxel::BlockModelCuboid>{Voxel::BlockModelCuboid{
-                .bounds = {{0.0f, modelBottom, 0.0f}, {1.0f, 1.0f, 1.0f}},
-            }});
+            alternatePresentation ? "fixture:renamed" : "fixture:raised",
+            std::vector<std::string>{
+                alternatePresentation ? "renamed" : "surface"},
+            std::vector<Voxel::BlockModelCuboid>{std::move(cuboid)});
+        type.model.orientation = orientation;
+        type.model.rotateTopBottomUv = alternatePresentation;
         type.collision = Voxel::BlockCollisionShape::boxes({{
             .min = {0.0f, collisionBottom, 0.0f},
             .max = {1.0f, 1.0f, 1.0f},
-        }});
+        }}, alternatePresentation
+            ? Voxel::BlockCollisionShape::Provenance::Exact
+            : Voxel::BlockCollisionShape::Provenance::Authored);
     }
     return type;
 }
@@ -49,19 +78,25 @@ ManifestFixture fixture(
     bool reverse,
     uint32_t seed = 91,
     float modelBottom = 0.25f,
-    float collisionBottom = 0.25f
+    float collisionBottom = 0.25f,
+    bool alternatePresentation = false,
+    bool omitFace = false,
+    Voxel::BlockModelOrientation orientation =
+        Voxel::BlockModelOrientation::Identity
 ) {
     ManifestFixture result;
     if (reverse) {
         result.registry.registerBlock(
             "rigel:raised",
-            block("rigel:raised", true, modelBottom, collisionBottom));
+            block("rigel:raised", true, modelBottom, collisionBottom,
+                  alternatePresentation, omitFace, orientation));
         result.registry.registerBlock("rigel:stone", block("rigel:stone", false));
     } else {
         result.registry.registerBlock("rigel:stone", block("rigel:stone", false));
         result.registry.registerBlock(
             "rigel:raised",
-            block("rigel:raised", true, modelBottom, collisionBottom));
+            block("rigel:raised", true, modelBottom, collisionBottom,
+                  alternatePresentation, omitFace, orientation));
     }
     result.registry.freeze();
     auto definition = Test::generatorDefinitionFixture(
@@ -121,18 +156,32 @@ TEST_CASE(ContentManifest_rejects_mismatch_and_unfrozen_content) {
     CHECK_THROWS(Simulation::ContentDictionary(mutableRegistry, generator));
 }
 
-TEST_CASE(ContentManifest_changes_for_visual_and_collision_geometry) {
+TEST_CASE(ContentManifest_excludes_presentation_but_preserves_authority_geometry) {
     auto original = fixture(false);
+    auto changedPresentation = fixture(false, 91, 0.25f, 0.25f, true);
     auto changedModel = fixture(false, 91, 0.125f, 0.25f);
+    auto changedFaces = fixture(false, 91, 0.25f, 0.25f, false, true);
+    auto changedOrientation = fixture(
+        false, 91, 0.25f, 0.25f, false, false,
+        Voxel::BlockModelOrientation::RotateY90);
     auto changedCollision = fixture(false, 91, 0.25f, 0.125f);
     Simulation::ContentDictionary originalDictionary(
         original.registry, *original.generator);
+    Simulation::ContentDictionary presentationDictionary(
+        changedPresentation.registry, *changedPresentation.generator);
     Simulation::ContentDictionary modelDictionary(
         changedModel.registry, *changedModel.generator);
     Simulation::ContentDictionary collisionDictionary(
         changedCollision.registry, *changedCollision.generator);
+    Simulation::ContentDictionary faceDictionary(
+        changedFaces.registry, *changedFaces.generator);
+    Simulation::ContentDictionary orientationDictionary(
+        changedOrientation.registry, *changedOrientation.generator);
 
+    CHECK_EQ(originalDictionary.identity(), presentationDictionary.identity());
     CHECK_NE(originalDictionary.identity(), modelDictionary.identity());
+    CHECK_NE(originalDictionary.identity(), faceDictionary.identity());
+    CHECK_NE(originalDictionary.identity(), orientationDictionary.identity());
     CHECK_NE(originalDictionary.identity(), collisionDictionary.identity());
     CHECK_NE(modelDictionary.identity(), collisionDictionary.identity());
 }

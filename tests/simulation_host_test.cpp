@@ -1090,6 +1090,9 @@ TEST_CASE(SimulationHost_bounds_live_and_recorded_snapshot_execution) {
 
 TEST_CASE(SimulationHost_resimulation_derives_content_reconstruction_budget) {
     Voxel::WorldResources resources;
+    // The registry permits an empty key; dictionary reconstruction must retain
+    // the same key domain as the producer.
+    resources.registry().registerBlock("", Voxel::BlockType{});
     for (const std::string identifier : {
              "rigel:stone", "rigel:grass", "rigel:water"}) {
         Voxel::BlockType type;
@@ -1131,6 +1134,20 @@ TEST_CASE(SimulationHost_resimulation_derives_content_reconstruction_budget) {
     CHECK(replay.host->content().retainedStorageBytes().has_value());
     CHECK(*replay.host->content().retainedStorageBytes() >
           ContentDictionary::kDefaultMaxRetainedBytes);
+    auto storage = std::make_shared<Persistence::InMemoryStorageBackend>();
+    SimulationCheckpointManager manager(storage, "/large-content");
+    CHECK_EQ(manager.request(host), CheckpointRequestStatus::Started);
+    std::optional<CheckpointOutcome> saved;
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (!saved && std::chrono::steady_clock::now() < deadline) {
+        saved = manager.poll();
+        if (!saved) std::this_thread::sleep_for(1ms);
+    }
+    CHECK(saved.has_value());
+    CHECK_EQ(saved->status, CheckpointWriteStatus::Durable);
+    auto recovered = manager.recover(resources, generator, policy);
+    CHECK_EQ(recovered.status, CheckpointRecoveryStatus::Recovered);
+    CHECK_EQ(recovered.host->stateHash(), host.stateHash());
 }
 
 TEST_CASE(SimulationHost_preflights_forged_recording_dictionary_count) {

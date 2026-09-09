@@ -1391,7 +1391,7 @@ std::unique_ptr<SimulationHost> SimulationHost::restoreCheckpointBytes(
     std::string_view previousKey;
     for (size_t i = 0; i < dictionaryCount; ++i) {
         const std::string_view savedKey = in.stringView();
-        if (savedKey.empty() || (i && previousKey >= savedKey)) {
+        if (i && previousKey >= savedKey) {
             throw std::runtime_error(
                 "checkpoint dictionary is not canonical");
         }
